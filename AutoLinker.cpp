@@ -348,10 +348,13 @@ bool FneInit() {
 
 	//此时NotifySys还不可用
 	//HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
-	//std::string s = std::format("{} {} {}", processID, (int)g_hwnd, (int)hWnd);
-	//OutputStringToELog(s);
+
 
 	g_toolBarHwnd = FindChildWindowByTitle(g_hwnd);
+
+
+	std::string s = std::format("{} {} {}", processID, (int)g_hwnd, (int)g_toolBarHwnd);
+	OutputStringToELog(s);
 
 	if (g_hwnd != NULL && g_toolBarHwnd != NULL)
 	{
@@ -370,13 +373,25 @@ bool FneInit() {
 	}
 	else
 	{
-		
+		OutputStringToELog("初始化失败，未找到窗口");
+
+
+
 	}
 	
 	return false;
 }
 
 /*-----------------支持库消息处理函数------------------*/
+
+UINT_PTR timerId;
+
+VOID CALLBACK AsyncFneInit(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
+	if (!FneInit()) {
+		timerId = SetTimer(g_hwnd, 0, 1000, &AsyncFneInit);
+	}
+	KillTimer(hwnd, idEvent);  // Stop the timer
+}
 
 EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 {
@@ -398,7 +413,11 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 		if (dwParam1) {
 			if (!g_buttonHwnd) {
 				//窗口已经建立
-				FneInit();
+				if (!FneInit()) {
+					DWORD processID = GetCurrentProcessId();
+					EnumWindows(EnumWindowsProc, processID);
+					timerId = SetTimer(g_hwnd, 0, 1000, &AsyncFneInit);
+				}
 			}
 
 		}
