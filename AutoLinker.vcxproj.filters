@@ -33,8 +33,10 @@
     <ClCompile Include="detours\detours.cpp">
       <Filter>detours</Filter>
     </ClCompile>
-    <ClCompile Include="ConfigManager.cpp" />
     <ClCompile Include="PathHelper.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="ConfigManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
   </ItemGroup>
@@ -46,11 +48,13 @@
     <ClInclude Include="detours\detver.h">
       <Filter>detours</Filter>
     </ClInclude>
-    <ClInclude Include="ConfigManager.h" />
     <ClInclude Include="PathHelper.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="LinkerManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="ConfigManager.h">
       <Filter>Utils</Filter>
     </ClInclude>
   </ItemGroup>

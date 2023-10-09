@@ -55,7 +55,7 @@ HANDLE WINAPI MyCreateFileA(
 
 			if (std::filesystem::exists(linkConfig.path)) {
 				//切换路径
-				OutputStringToELog("[AutoLinker]切换为Linker:" + linkConfig.name + " " + linkConfig.path);
+				OutputStringToELog("切换为Linker:" + linkConfig.name + " " + linkConfig.path);
 
 				return originalCreateFileA(linkConfig.path.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes,
 					dwCreationDisposition,
@@ -63,12 +63,12 @@ HANDLE WINAPI MyCreateFileA(
 					hTemplateFile);
 			}
 			else {
-				OutputStringToELog("[AutoLinker]无法切换Linker，Linker文件不存在#1");
+				OutputStringToELog("无法切换Linker，Linker文件不存在#1");
 			}
 
 		}
 		else {
-			OutputStringToELog("[AutoLinker]未设置此源文件的Linker，使用默认");
+			OutputStringToELog("未设置此源文件的Linker，使用默认");
 		}
 	}
 
@@ -240,7 +240,7 @@ void UpdateCurrentFileLinkerWithId(int id) {
 /// <param name="hParent"></param>
 void CreateAndSubclassButton(HWND hParent) {
 
-	int buttonWidth = 80;
+	int buttonWidth = 90;
 	int buttonHeight = 20;
 
 
@@ -249,7 +249,7 @@ void CreateAndSubclassButton(HWND hParent) {
 	HWND hButton = CreateWindow(
 		"BUTTON",  // 预定义的按钮类名
 		"AutoLinker", // 按钮文本
-		WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, // 按钮样式
+		WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON | BS_FLAT, // 按钮样式
 		500, // x位置
 		5, // y位置
 		buttonWidth, // 按钮宽度
