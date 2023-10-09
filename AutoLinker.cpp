@@ -456,22 +456,6 @@ static LIB_INFO LibInfo =
 
 PLIB_INFO WINAPI GetNewInf()
 {
-	//获取当前进程的主窗口
-	//如果没有初始化，在这里初始化
-	//std::thread t([]() {
-	//	while (true) {
-	//		if (!_buttonHwnd) {
-	//			if (FneInitThread()) {
-	//				OutputStringToELog("AutoLinker Init");
-	//				break;
-	//			}
-	//		}
-	//		std::this_thread::sleep_for(std::chrono::milliseconds(500));
-	//	}
-	//	});
-
-	//t.detach();
-	
 	return (&LibInfo);
 };
 #endif
