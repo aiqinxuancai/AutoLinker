@@ -28,8 +28,8 @@ EXTERN_C INT WINAPI  AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dw
 #ifndef __E_STATIC_LIB
 #define LIB_GUID_STR "EA968347-300C-4515-8888-F1D3BA3DF67E" /*GUID串*/
 #define LIB_MajorVersion 1 /*库主版本号*/
-#define LIB_MinorVersion 1 /*库次版本号*/
-#define LIB_BuildNumber 20180810 /*构建版本号*/
+#define LIB_MinorVersion 2 /*库次版本号*/
+#define LIB_BuildNumber 20231009 /*构建版本号*/
 #define LIB_SysMajorVer 3 /*系统主版本号*/
 #define LIB_SysMinorVer 0 /*系统次版本号*/
 #define LIB_KrnlLibMajorVer 3 /*核心库主版本号*/
