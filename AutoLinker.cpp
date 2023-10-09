@@ -272,22 +272,18 @@ void CreateAndSubclassButton(HWND hParent) {
 //工具条子类过程
 LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	if (uMsg == WM_COMMAND && LOWORD(wParam) == BN_CLICKED) {
-		OutputStringToELog("弹出菜单，选择当前的ini配置");
+		//OutputStringToELog("弹出菜单，选择当前的ini配置");
 		//HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
 		ShowMenu(hWnd);
 		return 0;
 	}
 
-	std::string s = std::format("菜单条消息 {0} {1}", (int)hWnd, uMsg);
-	OutputStringToELog(s);
+	//std::string s = std::format("菜单条消息 {0} {1}", (int)hWnd, uMsg);
+	//OutputStringToELog(s);
 
 
 	switch (uMsg)
 	{
-	case 10601: {
-		OutputStringToELog("主窗口需要初始化");
-		break;
-	}
 	case WM_PAINT: {
 		//获取当前的文件
 
@@ -295,6 +291,9 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 		//OutputStringToELog(sourceFile);
 		g_nowOpenSourceFilePath = sourceFile;
 		//TODO 更新按钮文本
+		UpdateButton();
+
+
 		break;
 	}
 

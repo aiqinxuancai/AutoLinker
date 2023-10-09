@@ -15,7 +15,7 @@ public:
 class LinkerManager {
 public:
     LinkerManager() {
-        int idCounter = 10000;
+        int idCounter = 17750;
 
         // 获取当前进程的路径
         std::filesystem::path currentPath = GetBasePath();
