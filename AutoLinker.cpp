@@ -27,7 +27,7 @@ HWND g_hwnd = NULL;
 HWND g_toolBarHwnd = NULL;
 
 //在窗口上添加的Button句柄
-HWND _buttonHwnd;
+HWND g_buttonHwnd;
 
 static auto originalCreateFileA = CreateFileA;
 
@@ -217,10 +217,10 @@ std::string GetSourceFilePath(HWND hParent) {
 void UpdateButton() {
 	auto linkName = g_configManager.getValue(g_nowOpenSourceFilePath);
 	if (!linkName.empty()) {
-		SetWindowTextA(_buttonHwnd, linkName.c_str());
+		SetWindowTextA(g_buttonHwnd, linkName.c_str());
 	}
 	else {
-		SetWindowTextA(_buttonHwnd, "默认");
+		SetWindowTextA(g_buttonHwnd, "默认");
 	}
 }
 
@@ -266,7 +266,7 @@ void CreateAndSubclassButton(HWND hParent) {
 	HFONT hFont = CreateFont(fontHeight, 0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, TEXT("Microsoft YaHei UI"));
 	SendMessage(hButton, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-	_buttonHwnd = hButton;
+	g_buttonHwnd = hButton;
 
 }
 
@@ -396,7 +396,7 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 
 	else if (nMsg == NL_SYS_NOTIFY_FUNCTION) {
 		if (dwParam1) {
-			if (!_buttonHwnd) {
+			if (!g_buttonHwnd) {
 				//窗口已经建立
 				FneInit();
 			}
