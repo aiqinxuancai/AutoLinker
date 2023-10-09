@@ -358,6 +358,7 @@ bool FneInit() {
 
 	if (g_hwnd != NULL && g_toolBarHwnd != NULL)
 	{
+		OutputStringToELog("找到工具条");
 		//OutputStringToELog("查找到菜单条");
 		SetWindowSubclass(g_toolBarHwnd, ToolbarSubclassProc, 0, 0);
 		//std::string s = std::format("菜单条句柄{0}", (int)g_toolBarHwnd);
