@@ -63,12 +63,12 @@ HANDLE WINAPI MyCreateFileA(
 					hTemplateFile);
 			}
 			else {
-				OutputStringToELog("[AutoLinker]无法切换Linker，link文件不存在#1");
+				OutputStringToELog("[AutoLinker]无法切换Linker，Linker文件不存在#1");
 			}
 
 		}
 		else {
-			OutputStringToELog("[AutoLinker]无法切换Linker，link文件不存在#2");
+			OutputStringToELog("[AutoLinker]未设置此源文件的Linker，使用默认");
 		}
 	}
 
@@ -179,7 +179,7 @@ void ShowMenu(HWND hParent) {
 		DestroyMenu(hPopupMenu);
 	}
 	else {
-		OutputStringToELog("当前没有配置任何Link文件，请在e目录的AutoLinker\\Config中添加ini文件");
+		OutputStringToELog("当前没有Linker配置文件，请在e目录的AutoLinker\\Config中添加ini文件");
 	}
 
 	
@@ -235,6 +235,7 @@ void UpdateCurrentFileLinkerWithId(int id) {
 
 /// <summary>
 /// 创建按钮
+/// TODO 和其他插件UI覆盖冲突的问题？
 /// </summary>
 /// <param name="hParent"></param>
 void CreateAndSubclassButton(HWND hParent) {
@@ -340,10 +341,12 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
 	return TRUE;
 }
 
-bool FneInitThread() {
+bool FneInit() {
 	OutputStringToELog("开始初始化");
 	DWORD processID = GetCurrentProcessId();
 	EnumWindows(EnumWindowsProc, processID);
+
+	//此时NotifySys还不可用
 	//HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
 	//std::string s = std::format("{} {} {}", processID, (int)g_hwnd, (int)hWnd);
 	//OutputStringToELog(s);
@@ -352,18 +355,17 @@ bool FneInitThread() {
 
 	if (g_hwnd != NULL && g_toolBarHwnd != NULL)
 	{
-		OutputStringToELog("查找到菜单条");
+		//OutputStringToELog("查找到菜单条");
 		SetWindowSubclass(g_toolBarHwnd, ToolbarSubclassProc, 0, 0);
-		if (g_toolBarHwnd) {
-			std::string s = std::format("菜单条句柄{0}", (int)g_toolBarHwnd);
-			OutputStringToELog(s);
-			CreateAndSubclassButton(g_toolBarHwnd);
-			//Hook读文件的函数，修改link.ini的路径
-			StartHookCreateFileA();
-			std::string sourceFile = GetSourceFilePath(g_hwnd);
-			OutputStringToELog(sourceFile);
+		//std::string s = std::format("菜单条句柄{0}", (int)g_toolBarHwnd);
+		//OutputStringToELog(s);
+		CreateAndSubclassButton(g_toolBarHwnd);
+		//Hook读文件的函数，修改link.ini的路径
+		StartHookCreateFileA();
+		//std::string sourceFile = GetSourceFilePath(g_hwnd);
+		//OutputStringToELog(sourceFile);
 
-		}
+		OutputStringToELog("初始化完成");
 		return true;
 	}
 	else
@@ -378,8 +380,8 @@ bool FneInitThread() {
 
 EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 {
-	std::string s = std::format("AutoLinker_MessageNotify {0} {1} {2}", (int)nMsg, dwParam1, dwParam2);
-	OutputStringToELog(s);
+	//std::string s = std::format("AutoLinker_MessageNotify {0} {1} {2}", (int)nMsg, dwParam1, dwParam2);
+	//OutputStringToELog(s);
 
 #ifndef __E_STATIC_LIB
 	if (nMsg == NL_GET_CMD_FUNC_NAMES) // 返回所有命令实现函数的的函数名称数组(char*[]), 支持静态编译的动态库必须处理
@@ -396,7 +398,7 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 		if (dwParam1) {
 			if (!_buttonHwnd) {
 				//窗口已经建立
-				FneInitThread();
+				FneInit();
 			}
 
 		}
