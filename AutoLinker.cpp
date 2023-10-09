@@ -25,10 +25,14 @@ ConfigManager _configManager;
 //管理当前所有的link文件
 LinkerManager _linkerManager;
 
+//e主窗口句柄
+HWND g_hwnd = NULL;
+
+HWND g_toolBarHwnd = NULL;
+
+HANDLE hMainThread = NULL;
 
 static auto originalCreateFileA = CreateFileA;
-//static auto originalGetFullPathNameA = GetFullPathNameA;
-
 
 void OutputStringToELog(std::string szbuf);
 
@@ -43,17 +47,10 @@ HANDLE WINAPI MyCreateFileA(
 
 
 ) {
-	OutputStringToELog("MyCreateFileA");
-	//OutputStringToELog(lpFileName);
-
+	//OutputStringToELog("MyCreateFileA");
 	std::filesystem::path currentPath = GetBasePath();
 	std::filesystem::path autoLoaderPath = currentPath / "tools" / "link.ini";
-
-	//OutputStringToELog(autoLoaderPath.string());
 	if (autoLoaderPath.string() == std::string(lpFileName)) {
-		//OutputStringToELog("准备启动链接器！");
-
-
 		auto linkName = _configManager.getValue(_nowOpenSourceFilePath);
 
 		if (!linkName.empty() ) {
@@ -61,21 +58,21 @@ HANDLE WINAPI MyCreateFileA(
 
 			if (std::filesystem::exists(linkConfig.path)) {
 				//切换路径
-				OutputStringToELog("[AutoLinker]切换为Linker" + linkConfig.name + " " + linkConfig.path);
+				OutputStringToELog("[AutoLinker]切换为Linker:" + linkConfig.name + " " + linkConfig.path);
 
 				return originalCreateFileA(linkConfig.path.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes,
 					dwCreationDisposition,
 					dwFlagsAndAttributes,
 					hTemplateFile);
-
 			}
 			else {
-				OutputStringToELog("[AutoLinker]无法切换Linker，link文件不存在");
+				OutputStringToELog("[AutoLinker]无法切换Linker，link文件不存在#1");
 			}
 
 		}
-
-
+		else {
+			OutputStringToELog("[AutoLinker]无法切换Linker，link文件不存在#2");
+		}
 	}
 
 
@@ -85,21 +82,11 @@ HANDLE WINAPI MyCreateFileA(
 								hTemplateFile);
 }
 
-//DWORD WINAPI MyGetFullPathNameA(
-//	LPCSTR lpFileName,
-//	DWORD nBufferLength,
-//	LPSTR lpBuffer,
-//	LPSTR* lpFilePart
-//) {
-//	return originalGetFullPathNameA(lpFileName, nBufferLength, lpBuffer, lpFilePart);
-//}
-
 void StartHookCreateFileA() {
 	DetourRestoreAfterWith();
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
 	DetourAttach(&(PVOID&)originalCreateFileA, MyCreateFileA);
-	//DetourAttach(&(PVOID&)originalGetFullPathNameA, MyGetFullPathNameA);
 	DetourTransactionCommit();
 }
 
@@ -130,6 +117,9 @@ HWND FindOutputWindow(HWND hParent) {
 /// </summary>
 /// <param name="szbuf"></param>
 void OutputStringToELog(std::string szbuf) {
+	szbuf.insert(0, "[AutoLinker]");
+
+	OutputDebugString(szbuf.c_str());
 	HWND hwnd = FindOutputWindow((HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0));
 	if (hwnd) {
 		SendMessageA(hwnd, 194, 1, (LPARAM)szbuf.c_str());
@@ -250,10 +240,42 @@ void UpdateCurrentFileLinkerWithId(int id) {
 	UpdateButton();
 
 }
+void CreateAndSubclassButton(HWND hParent) {
+
+	int buttonWidth = 80;
+	int buttonHeight = 20;
 
 
-// 子类过程
-LRESULT CALLBACK ButtonSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+	//获取当前的源文件路径
+
+	HWND hButton = CreateWindow(
+		"BUTTON",  // 预定义的按钮类名
+		"AutoLinker", // 按钮文本
+		WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, // 按钮样式
+		500, // x位置
+		5, // y位置
+		buttonWidth, // 按钮宽度
+		buttonHeight, // 按钮高度
+		hParent, // 父窗口句柄
+		0, // 没有菜单
+		(HINSTANCE)GetWindowLong(hParent, GWL_HINSTANCE), // 程序实例句柄
+		NULL); // 无附加参数
+
+
+
+	//设置字体
+	int fontSize = 10;
+	int dpi = GetDeviceCaps(GetDC(NULL), LOGPIXELSY);
+	int fontHeight = -MulDiv(fontSize, dpi, 72);
+	HFONT hFont = CreateFont(fontHeight, 0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, TEXT("Microsoft YaHei UI"));
+	SendMessage(hButton, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+	_button = hButton;
+
+}
+
+//工具条子类过程
+LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	if (uMsg == WM_COMMAND && LOWORD(wParam) == BN_CLICKED) {
 		OutputStringToELog("弹出菜单，选择当前的ini配置");
 		//HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
@@ -261,12 +283,16 @@ LRESULT CALLBACK ButtonSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		return 0;
 	}
 
-	//std::string s = std::format("菜单条消息 {0} {1}", (int)hWnd, uMsg);
-	//OutputStringToELog(s);
+	std::string s = std::format("菜单条消息 {0} {1}", (int)hWnd, uMsg);
+	OutputStringToELog(s);
 
 
 	switch (uMsg)
 	{
+	case 10601: {
+		OutputStringToELog("主窗口需要初始化");
+		break;
+	}
 	case WM_PAINT: {
 		//获取当前的文件
 
@@ -292,46 +318,11 @@ LRESULT CALLBACK ButtonSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 
 	}
 
-
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
 
-void CreateAndSubclassButton(HWND hParent) {
-	RECT rcParent;
-	GetWindowRect(hParent, &rcParent);
 
-	int buttonWidth = 80;
-	int buttonHeight = 20;
-
-
-	//获取当前的源文件路径
-
-	HWND hButton = CreateWindow(
-		"BUTTON",  // 预定义的按钮类名
-		"-", // 按钮文本
-		WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON, // 按钮样式
-		500, // x位置
-		5, // y位置
-		buttonWidth, // 按钮宽度
-		buttonHeight, // 按钮高度
-		hParent, // 父窗口句柄
-		0, // 没有菜单
-		(HINSTANCE)GetWindowLong(hParent, GWL_HINSTANCE), // 程序实例句柄
-		NULL); // 无附加参数
-
-	SetWindowSubclass(hParent, ButtonSubclassProc, 0, 0);
-
-	//设置字体
-	int fontSize = 10;
-	int dpi = GetDeviceCaps(GetDC(NULL), LOGPIXELSY);
-	int fontHeight = -MulDiv(fontSize, dpi, 72);
-	HFONT hFont = CreateFont(fontHeight, 0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, TEXT("Microsoft YaHei UI"));
-	SendMessage(hButton, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-	_button = hButton;
-
-}
 
 INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 	if (nAddInFnIndex == 0) { 
@@ -340,73 +331,82 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 	return 0;
 }
 
-bool FneInit() {
-	HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
-	if (hWnd != NULL) {
-		HWND toolBarHWnd = FindChildWindowByTitle(hWnd);
-		std::string s = std::format("菜单条句柄{0}", (int)toolBarHWnd);
-		OutputStringToELog(s);
-		CreateAndSubclassButton(toolBarHWnd);
-		//Hook读文件的函数，修改link.ini的路径
-		StartHookCreateFileA();
-		std::string sourceFile = GetSourceFilePath(hWnd);
-		OutputStringToELog(sourceFile);
+
+
+BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
+{
+	DWORD lpdwProcessId;
+	GetWindowThreadProcessId(hwnd, &lpdwProcessId);
+	if (lpdwProcessId == lParam)
+	{
+		HWND hwndTopLevel = GetAncestor(hwnd, GA_ROOTOWNER);
+		g_hwnd = hwndTopLevel;
+		return FALSE;
+	}
+	return TRUE;
+}
+
+bool FneInitThread() {
+	OutputStringToELog("开始初始化");
+	DWORD processID = GetCurrentProcessId();
+	EnumWindows(EnumWindowsProc, processID);
+	//HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
+	//std::string s = std::format("{} {} {}", processID, (int)g_hwnd, (int)hWnd);
+	//OutputStringToELog(s);
+
+	g_toolBarHwnd = FindChildWindowByTitle(g_hwnd);
+
+	if (g_hwnd != NULL && g_toolBarHwnd != NULL)
+	{
+		OutputStringToELog("查找到菜单条");
+		SetWindowSubclass(g_toolBarHwnd, ToolbarSubclassProc, 0, 0);
+		if (g_toolBarHwnd) {
+			std::string s = std::format("菜单条句柄{0}", (int)g_toolBarHwnd);
+			OutputStringToELog(s);
+			CreateAndSubclassButton(g_toolBarHwnd);
+			//Hook读文件的函数，修改link.ini的路径
+			StartHookCreateFileA();
+			std::string sourceFile = GetSourceFilePath(g_hwnd);
+			OutputStringToELog(sourceFile);
+
+		}
 		return true;
 	}
-	else {
-		MessageBox(0, "111", "", 0);
+	else
+	{
+		
 	}
+	
 	return false;
 }
-
-
-__declspec(naked) int toEax(int a) {
-	__asm {
-		mov eax,[ebp+8]
-		leave
-		retn 04
-	};
-}
-
-__declspec(naked) int getEax() {
-	__asm {
-		leave
-		retn
-	};
-}
-
-
 
 /*-----------------支持库消息处理函数------------------*/
 
 EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 {
-	//std::string s = std::format("AutoLinker_MessageNotify {0} {1} {2}", (int)nMsg, dwParam1, dwParam2);
-	//OutputStringToELog(s);
-
-	//MessageBox(0,"111","",0);
+	std::string s = std::format("AutoLinker_MessageNotify {0} {1} {2}", (int)nMsg, dwParam1, dwParam2);
+	OutputStringToELog(s);
 
 #ifndef __E_STATIC_LIB
 	if (nMsg == NL_GET_CMD_FUNC_NAMES) // 返回所有命令实现函数的的函数名称数组(char*[]), 支持静态编译的动态库必须处理
 		return NULL;
 	else if (nMsg == NL_GET_NOTIFY_LIB_FUNC_NAME) // 返回处理系统通知的函数名称(PFN_NOTIFY_LIB函数名称), 支持静态编译的动态库必须处理
 		return (INT)LIBARAYNAME;
-	else if (nMsg == NL_GET_DEPENDENT_LIBS) 
-		return (INT)NULL;
-	else if (nMsg == NL_SYS_NOTIFY_FUNCTION)  {
-		// 返回处理系统通知的函数名称(PFN_NOTIFY_LIB函数名称), 支持静态编译的动态库必须处理
-		// 返回静态库所依赖的其它静态库文件名列表(格式为\0分隔的文本,结尾两个\0), 支持静态编译的动态库必须处理
-		// kernel32.lib user32.lib gdi32.lib 等常用的系统库不需要放在此列表中
-		// 返回NULL或NR_ERR表示不指定依赖文件  
-		return (INT)LIBARAYNAME;
-	}
-	else if (nMsg == NL_IDE_READY) {
-		//MessageBox(0, "111", "", 0);
-		FneInit();
-		return 0;
-	}
+	else if (nMsg == NL_GET_DEPENDENT_LIBS) return (INT)NULL;
+	//else if (nMsg == NL_GET_DEPENDENT_LIBS) return (INT)NULL;
+	// 返回静态库所依赖的其它静态库文件名列表(格式为\0分隔的文本,结尾两个\0), 支持静态编译的动态库必须处理
+	// kernel32.lib user32.lib gdi32.lib 等常用的系统库不需要放在此列表中
+	// 返回NULL或NR_ERR表示不指定依赖文件  
 
-	
+	else if (nMsg == NL_SYS_NOTIFY_FUNCTION) {
+		if (dwParam1) {
+			if (!_button) {
+				//窗口已经建立
+				FneInitThread();
+			}
+
+		}
+	}
 
 #endif
 	return ProcessNotifyLib(nMsg, dwParam1, dwParam2);
@@ -433,7 +433,7 @@ static LIB_INFO LibInfo =
 	_T(LIB_NAME_STR),
 	__GBK_LANG_VER,
 	_WT(LIB_DESCRIPTION_STR),
-	LBS_IDE_PLUGIN | LBS_LIB_INFO2 ,//_LIB_OS(__OS_WIN), //#LBS_IDE_PLUGIN  LBS_LIB_INFO2
+	_LIB_OS(__OS_WIN), //#LBS_IDE_PLUGIN  LBS_LIB_INFO2
 	_WT(LIB_Author),
 	_WT(LIB_ZipCode),
 	_WT(LIB_Address),
@@ -461,11 +461,12 @@ static LIB_INFO LibInfo =
 
 PLIB_INFO WINAPI GetNewInf()
 {
+	//获取当前进程的主窗口
 	//如果没有初始化，在这里初始化
 	//std::thread t([]() {
 	//	while (true) {
 	//		if (!_button) {
-	//			if (FneInit()) {
+	//			if (FneInitThread()) {
 	//				OutputStringToELog("AutoLinker Init");
 	//				break;
 	//			}

@@ -1,3 +1,4 @@
+#pragma once
 #ifndef __ELIBFNE__
 #define __ELIBFNE__
 
