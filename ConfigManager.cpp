@@ -17,15 +17,28 @@ ConfigManager::ConfigManager() {
 
 std::string ConfigManager::getValue(const std::string& key) {
 
-    if (configData.contains(key)) {
-        return configData[key];
+    std::string k = key;
+
+    std::transform(k.begin(), k.end(), k.begin(),
+        [](unsigned char c) { return std::tolower(c); });
+
+    if (configData.contains(k)) {
+        return configData[k];
     }
     return std::string();
     
 }
 
 void ConfigManager::setValue(const std::string& key, const std::string& value) {
-    configData[key] = value;
+    //将key转为路径?
+    //std::filesystem::path p = key;
+
+    std::string k = key;
+
+    std::transform(k.begin(), k.end(), k.begin(),
+        [](unsigned char c) { return std::tolower(c); });
+
+    configData[k] = value;
     saveConfig();
 }
 

@@ -216,12 +216,16 @@ std::string GetSourceFilePath(HWND hParent) {
 
 void UpdateButton() {
 	auto linkName = g_configManager.getValue(g_nowOpenSourceFilePath);
+
+	OutputStringToELog(linkName);
+
 	if (!linkName.empty()) {
 		SetWindowTextA(g_buttonHwnd, linkName.c_str());
 	}
 	else {
 		SetWindowTextA(g_buttonHwnd, "默认");
 	}
+
 }
 
 /// <summary>
@@ -289,9 +293,12 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 		//获取当前的文件
 
 		std::string sourceFile = GetSourceFilePath(hWnd);
-		//OutputStringToELog(sourceFile);
+		if (g_nowOpenSourceFilePath != sourceFile) {
+			OutputStringToELog(sourceFile);
+		}
 		g_nowOpenSourceFilePath = sourceFile;
 		//TODO 更新按钮文本
+
 		UpdateButton();
 
 
@@ -365,9 +372,10 @@ bool FneInit() {
 		CreateAndSubclassButton(g_toolBarHwnd);
 		//Hook读文件的函数，修改link.ini的路径
 		StartHookCreateFileA();
+
 		//std::string sourceFile = GetSourceFilePath(g_hwnd);
 		//OutputStringToELog(sourceFile);
-
+		PostAppMessageA(g_toolBarHwnd, WM_PRINT, 0, 0);
 		OutputStringToELog("初始化完成");
 		return true;
 	}
