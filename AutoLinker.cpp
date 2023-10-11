@@ -33,6 +33,8 @@ static auto originalCreateFileA = CreateFileA;
 
 void OutputStringToELog(std::string szbuf);
 
+void UpdateCurrentOpenSourceFile();
+
 HANDLE WINAPI MyCreateFileA(
 	LPCSTR lpFileName,
 	DWORD dwDesiredAccess,
@@ -235,6 +237,9 @@ void UpdateButton() {
 
 
 }
+
+
+
 
 /// <summary>
 /// 更新当前源文件使用的link文件
