@@ -196,23 +196,24 @@ std::string GetSourceFilePath() {
 
 	char buffer[256] = { 0 };
 	GetWindowText(hWnd, buffer, sizeof(buffer));
-	std::regex path_regex(R"((([A-Za-z]:|\\)\\[^ /:*?"<>|\r\n]+\\?)*)");
-	std::smatch match;
-	auto title = std::string(buffer);
 
-	//OutputStringToELog("完整路径" + title);
+	auto path = ExtractBetweenDashes(std::string(buffer));
 
-	// 使用迭代器找到所有匹配项
-	for (std::sregex_iterator it = std::sregex_iterator(title.begin(), title.end(), path_regex);
-		it != std::sregex_iterator(); ++it) {
+	//std::regex path_regex(R"((([A-Za-z]:|\\)\\[^ /:*?"<>|\r\n]+\\?)*)");
+	//std::smatch match;
+	//auto title = std::string(buffer);
+	////OutputStringToELog("完整路径" + title);
+	//// 使用迭代器找到所有匹配项
+	//for (std::sregex_iterator it = std::sregex_iterator(title.begin(), title.end(), path_regex);
+	//	it != std::sregex_iterator(); ++it) {
 
-		if (!it->str().empty()) {
-			//OutputStringToELog(it->str());
-			return it->str();
-		}
-		
-	}
-	return "";
+	//	if (!it->str().empty()) {
+	//		//OutputStringToELog(it->str());
+	//		return it->str();
+	//	}
+	//	
+	//}
+	return path;
 
 }
 
@@ -304,7 +305,7 @@ void UpdateCurrentOpenSourceFile() {
 	std::string sourceFile = GetSourceFilePath();
 
 	if (sourceFile.empty()) {
-		OutputStringToELog("无法获取源文件路径");
+		//OutputStringToELog("无法获取源文件路径");
 	}
 
 	if (g_nowOpenSourceFilePath != sourceFile) {
