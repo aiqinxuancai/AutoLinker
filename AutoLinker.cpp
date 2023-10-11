@@ -289,6 +289,11 @@ void CreateAndSubclassButton(HWND hParent) {
 
 void UpdateCurrentOpenSourceFile() {
 	std::string sourceFile = GetSourceFilePath();
+
+	if (sourceFile.empty()) {
+		OutputStringToELog("无法获取源文件路径");
+	}
+
 	if (g_nowOpenSourceFilePath != sourceFile) {
 		OutputStringToELog(sourceFile);
 	}
