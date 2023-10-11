@@ -215,16 +215,24 @@ std::string GetSourceFilePath() {
 }
 
 void UpdateButton() {
-	auto linkName = g_configManager.getValue(g_nowOpenSourceFilePath);
 
-	OutputStringToELog(linkName);
-
-	if (!linkName.empty()) {
-		SetWindowTextA(g_buttonHwnd, linkName.c_str());
-	}
-	else {
+	if (g_nowOpenSourceFilePath.empty()) {
 		SetWindowTextA(g_buttonHwnd, "默认");
 	}
+	else {
+		auto linkName = g_configManager.getValue(g_nowOpenSourceFilePath);
+
+		//OutputStringToELog(linkName);
+
+		if (!linkName.empty()) {
+			SetWindowTextA(g_buttonHwnd, linkName.c_str());
+		}
+		else {
+			SetWindowTextA(g_buttonHwnd, "默认");
+		}
+
+	}
+
 
 }
 
