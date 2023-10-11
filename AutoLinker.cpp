@@ -189,7 +189,7 @@ void ShowMenu(HWND hParent) {
 /// 获取当前源文件的路径
 /// </summary>
 /// <param name="hParent"></param>
-std::string GetSourceFilePath(HWND hParent) {
+std::string GetSourceFilePath() {
 	HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
 
 	char buffer[256] = { 0 };
@@ -233,8 +233,21 @@ void UpdateButton() {
 /// </summary>
 /// <param name="id"></param>
 void UpdateCurrentFileLinkerWithId(int id) {
-	g_configManager.setValue(g_nowOpenSourceFilePath, g_linkerManager.getConfig(id).name);
-	UpdateButton();
+
+	//先更新一下
+	UpdateCurrentOpenSourceFile();
+
+	if (g_nowOpenSourceFilePath.empty()) {
+		//当前好像没有打开源文件
+		OutputStringToELog("当前没有打开源文件，无法切换Linker");
+
+	}
+	else {
+		g_configManager.setValue(g_nowOpenSourceFilePath, g_linkerManager.getConfig(id).name);
+		UpdateButton();
+	}
+
+
 }
 
 /// <summary>
@@ -274,6 +287,15 @@ void CreateAndSubclassButton(HWND hParent) {
 
 }
 
+void UpdateCurrentOpenSourceFile() {
+	std::string sourceFile = GetSourceFilePath();
+	if (g_nowOpenSourceFilePath != sourceFile) {
+		OutputStringToELog(sourceFile);
+	}
+	g_nowOpenSourceFilePath = sourceFile;
+}
+
+
 //工具条子类过程
 LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	if (uMsg == WM_COMMAND && LOWORD(wParam) == BN_CLICKED) {
@@ -291,14 +313,9 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 	{
 	case WM_PAINT: {
 		//获取当前的文件
+		UpdateCurrentOpenSourceFile();
 
-		std::string sourceFile = GetSourceFilePath(hWnd);
-		if (g_nowOpenSourceFilePath != sourceFile) {
-			OutputStringToELog(sourceFile);
-		}
-		g_nowOpenSourceFilePath = sourceFile;
-		//TODO 更新按钮文本
-
+		//更新按钮文本
 		UpdateButton();
 
 
@@ -404,8 +421,8 @@ VOID CALLBACK AsyncFneInit(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime)
 
 EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 {
-	//std::string s = std::format("AutoLinker_MessageNotify {0} {1} {2}", (int)nMsg, dwParam1, dwParam2);
-	//OutputStringToELog(s);
+	std::string s = std::format("AutoLinker_MessageNotify {0} {1} {2}", (int)nMsg, dwParam1, dwParam2);
+	OutputStringToELog(s);
 
 #ifndef __E_STATIC_LIB
 	if (nMsg == NL_GET_CMD_FUNC_NAMES) // 返回所有命令实现函数的的函数名称数组(char*[]), 支持静态编译的动态库必须处理
