@@ -99,8 +99,8 @@ HANDLE WINAPI MyCreateFileA(
 
 
 ) {
-	OutputStringToELog("MyCreateFileA");
-	OutputStringToELog(lpFileName);
+	//OutputStringToELog("MyCreateFileA");
+	//OutputStringToELog(lpFileName);
 	
 
 	if (std::string(lpFileName).find("\\Temp\\e_debug\\") != std::string::npos) {
