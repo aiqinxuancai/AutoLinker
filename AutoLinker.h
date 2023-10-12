@@ -18,7 +18,9 @@
 #define LIBARAYNAME "AutoLinker_MessageNotify"
 
 
+typedef int (__thiscall* OriginalFunctionWithDebugStart)(void *, int, int);
 
+typedef void (WINAPIV* OriginalFunctionWithBuildStart)();
 
 
 void StartHookCreateFileA();

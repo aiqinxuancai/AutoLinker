@@ -39,6 +39,9 @@
     <ClCompile Include="ConfigManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="ModelManager.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AutoLinker.h" />
@@ -55,6 +58,12 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="ConfigManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="InlineHook.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="ModelManager.h">
       <Filter>Utils</Filter>
     </ClInclude>
   </ItemGroup>

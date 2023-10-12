@@ -1,0 +1,4 @@
+LIBRARY AutoLinkerBuild
+
+EXPORTS
+	CompileProcessor

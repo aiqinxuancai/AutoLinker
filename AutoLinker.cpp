@@ -8,6 +8,8 @@
 #include <regex>
 #include "PathHelper.h"
 #include "LinkerManager.h"
+#include "InlineHook.h"
+#include "ModelManager.h"
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -20,6 +22,9 @@ ConfigManager g_configManager;
 //管理当前所有的link文件
 LinkerManager g_linkerManager;
 
+//管理模块调试版及编译版本的管理器
+ModelManager g_modelManager;
+
 //e主窗口句柄
 HWND g_hwnd = NULL;
 
@@ -29,11 +34,46 @@ HWND g_toolBarHwnd = NULL;
 //在窗口上添加的Button句柄
 HWND g_buttonHwnd;
 
-static auto originalCreateFileA = CreateFileA;
+//准备开始调试
+bool g_preDebugging;
+
+//准备开始编译
+bool g_preCompiling;
+
 
 void OutputStringToELog(std::string szbuf);
 
 void UpdateCurrentOpenSourceFile();
+
+static auto originalCreateFileA = CreateFileA;
+
+OriginalFunctionWithDebugStart originalFunctionWithDebugStart = (OriginalFunctionWithDebugStart)0x0040A080;
+OriginalFunctionWithBuildStart originalFunctionWithBuildStart = (OriginalFunctionWithBuildStart)0x0040C2C9;
+
+void OnDebugStart() {
+	OutputStringToELog("调试开始");
+}
+
+void OnBuildStart() {
+	OutputStringToELog("编译开始");
+}
+
+
+
+int WINAPIV HookedFunctionWithTwoArgs(void* arg1, int arg2, int arg3)
+{
+	OnDebugStart();
+	int ret = originalFunctionWithDebugStart(arg1, arg2, arg3);
+	return ret;
+}
+
+void WINAPIV HookedFunctionWithNoArgs()
+{
+	//OnBuildStart();
+	//originalFunctionWithBuildStart();
+}
+
+
 
 HANDLE WINAPI MyCreateFileA(
 	LPCSTR lpFileName,
@@ -46,10 +86,54 @@ HANDLE WINAPI MyCreateFileA(
 
 
 ) {
-	//OutputStringToELog("MyCreateFileA");
+	OutputStringToELog("MyCreateFileA");
+	OutputStringToELog(lpFileName);
+	
+	//
+	if (g_preDebugging) {
+		//不处理
+	}
+
+	if (g_preCompiling) {
+		if (std::string(lpFileName).ends_with(".ec")) {
+
+			//获取文件名
+			std::filesystem::path p(lpFileName);
+
+			auto oldName = p.filename().string();
+			auto libModelName = g_modelManager.getValue(oldName);
+
+			OutputStringToELog("切换静态模块#1:" + oldName + " -> " + libModelName);
+
+
+			if (!libModelName.empty() && libModelName.ends_with(".ec")) {
+
+
+				auto newPath = p.parent_path().append(libModelName).string();
+
+
+				OutputStringToELog("切换静态模块:" + oldName + " -> " + libModelName + " " + newPath);
+
+				//替换为lib库路径
+				//VMPSDK.ec -> VMPSDK_LIB.ec
+				return originalCreateFileA(newPath.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes,
+					dwCreationDisposition,
+					dwFlagsAndAttributes,
+					hTemplateFile);
+
+			}
+
+		}
+		
+	}
+
+
 	std::filesystem::path currentPath = GetBasePath();
 	std::filesystem::path autoLoaderPath = currentPath / "tools" / "link.ini";
 	if (autoLoaderPath.string() == std::string(lpFileName)) {
+		g_preCompiling = false;
+
+		//EC编译阶段结束
 		auto linkName = g_configManager.getValue(g_nowOpenSourceFilePath);
 
 		if (!linkName.empty() ) {
@@ -81,12 +165,16 @@ HANDLE WINAPI MyCreateFileA(
 								hTemplateFile);
 }
 
+
 void StartHookCreateFileA() {
 	DetourRestoreAfterWith();
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
 	DetourAttach(&(PVOID&)originalCreateFileA, MyCreateFileA);
+	//DetourAttach(&(PVOID&)originalFunctionWithDebugStart, HookedFunctionWithTwoArgs);
+	//DetourAttach(&(PVOID&)originalFunctionWithBuildStart, HookedFunctionWithNoArgs);
 	DetourTransactionCommit();
+
 }
 
 
@@ -359,6 +447,25 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
+//工具条子类过程
+LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+	if (uMsg == 20707) {
+		if (wParam) {
+			//编译
+			g_preCompiling = true;
+			OutputStringToELog("开始编译");
+		}
+		else {
+			//调试
+			g_preDebugging = true;
+			OutputStringToELog("开始调试");
+		}
+		return 0;
+	}
+	//std::string s = std::format("{} {} {} {}", (int)hWnd, (int)uMsg, (int)wParam, (int)lParam);
+	//OutputStringToELog(s);
+	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
 
 
 
@@ -404,6 +511,9 @@ bool FneInit() {
 		OutputStringToELog("找到工具条");
 		//OutputStringToELog("查找到菜单条");
 		SetWindowSubclass(g_toolBarHwnd, ToolbarSubclassProc, 0, 0);
+		SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0);
+
+		
 		//std::string s = std::format("菜单条句柄{0}", (int)g_toolBarHwnd);
 		//OutputStringToELog(s);
 		CreateAndSubclassButton(g_toolBarHwnd);
