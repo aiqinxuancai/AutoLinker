@@ -66,6 +66,7 @@
     <ClInclude Include="ModelManager.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="Global.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="AutoLinker.def" />

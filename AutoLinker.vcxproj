@@ -446,6 +446,7 @@
     <ClInclude Include="ConfigManager.h" />
     <ClInclude Include="detours\detours.h" />
     <ClInclude Include="detours\detver.h" />
+    <ClInclude Include="Global.h" />
     <ClInclude Include="InlineHook.h" />
     <ClInclude Include="LinkerManager.h" />
     <ClInclude Include="ModelManager.h" />

@@ -10,6 +10,7 @@
 #include "LinkerManager.h"
 #include "InlineHook.h"
 #include "ModelManager.h"
+#include "Global.h"
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -46,9 +47,13 @@ void OutputStringToELog(std::string szbuf);
 void UpdateCurrentOpenSourceFile();
 
 static auto originalCreateFileA = CreateFileA;
+static auto originalGetSaveFileNameA = GetSaveFileNameA;
+
+
 
 OriginalFunctionWithDebugStart originalFunctionWithDebugStart = (OriginalFunctionWithDebugStart)0x0040A080;
 OriginalFunctionWithBuildStart originalFunctionWithBuildStart = (OriginalFunctionWithBuildStart)0x0040C2C9;
+OriginalCompilerFunction originalCompilerFunction = (OriginalCompilerFunction)0;
 
 void OnDebugStart() {
 	OutputStringToELog("调试开始");
@@ -60,10 +65,18 @@ void OnBuildStart() {
 
 
 
-int WINAPIV HookedFunctionWithTwoArgs(void* arg1, int arg2, int arg3)
+int __stdcall HookedFunctionWithTwoArgs(void* arg1, int arg2, int arg3)
 {
-	OnDebugStart();
+	__asm {
+		pushad
+	}
+	//OnDebugStart();
 	int ret = originalFunctionWithDebugStart(arg1, arg2, arg3);
+
+	__asm {
+		popad
+	}
+
 	return ret;
 }
 
@@ -89,9 +102,15 @@ HANDLE WINAPI MyCreateFileA(
 	OutputStringToELog("MyCreateFileA");
 	OutputStringToELog(lpFileName);
 	
-	//
+
+	if (std::string(lpFileName).find("\\Temp\\e_debug\\") != std::string::npos) {
+		OutputStringToELog("结束预编译代码（调试）");
+		g_preDebugging = false;
+	}
+
+
 	if (g_preDebugging) {
-		//不处理
+		//不处理 默认应该选择dll链接方式
 	}
 
 	if (g_preCompiling) {
@@ -105,13 +124,8 @@ HANDLE WINAPI MyCreateFileA(
 
 			OutputStringToELog("切换静态模块#1:" + oldName + " -> " + libModelName);
 
-
 			if (!libModelName.empty() && libModelName.ends_with(".ec")) {
-
-
 				auto newPath = p.parent_path().append(libModelName).string();
-
-
 				OutputStringToELog("切换静态模块:" + oldName + " -> " + libModelName + " " + newPath);
 
 				//替换为lib库路径
@@ -120,11 +134,8 @@ HANDLE WINAPI MyCreateFileA(
 					dwCreationDisposition,
 					dwFlagsAndAttributes,
 					hTemplateFile);
-
 			}
-
 		}
-		
 	}
 
 
@@ -165,14 +176,48 @@ HANDLE WINAPI MyCreateFileA(
 								hTemplateFile);
 }
 
+//__declspec(naked) void MyNakedFunction() {
+//	__asm {
+//		//pushad
+//		//popad
+//		push ebx
+//	}
+//	//处理代码
+//
+//	originalCompilerFunction();
+//
+//	__asm {
+//		pop ebx
+//		leave
+//		jmp eax
+//	}
+//}
+
+BOOL APIENTRY MyGetSaveFileNameA(LPOPENFILENAMEA item) {
+	if (g_preCompiling) {
+		OutputStringToELog("结束预编译代码");
+		g_preCompiling = false;
+	}
+
+	return originalGetSaveFileNameA(item);
+}
 
 void StartHookCreateFileA() {
+
+	//originalCompilerFunction = (OriginalCompilerFunction)g_compilerAddress;
+
 	DetourRestoreAfterWith();
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
 	DetourAttach(&(PVOID&)originalCreateFileA, MyCreateFileA);
+	DetourAttach(&(PVOID&)originalGetSaveFileNameA, MyGetSaveFileNameA);
+
+	//DetourAttach(&(PVOID&)originalCompilerFunction, MyNakedFunction);
+
 	//DetourAttach(&(PVOID&)originalFunctionWithDebugStart, HookedFunctionWithTwoArgs);
 	//DetourAttach(&(PVOID&)originalFunctionWithBuildStart, HookedFunctionWithNoArgs);
+
+
 	DetourTransactionCommit();
 
 }
@@ -447,7 +492,7 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
-//工具条子类过程
+//主窗口子类过程
 LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	if (uMsg == 20707) {
 		if (wParam) {
@@ -467,6 +512,24 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
+////日志窗口
+//LRESULT CALLBACK LogViewSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+//	if (uMsg == 194) {
+//		//if (wParam == 1) {
+//		//	std::string outputText = (const char *)lParam;
+//
+//		//	OutputDebugStringA(outputText.c_str());
+//
+//		//	if (outputText.find("正在编译...") != std::string::npos) {
+//		//		g_preCompiling = false;
+//		//		OutputStringToELog("结束预编译代码");
+//		//	}
+//		//}
+//	}
+//	//std::string s = std::format("{} {} {} {}", (int)hWnd, (int)uMsg, (int)wParam, (int)lParam);
+//	//OutputStringToELog(s);
+//	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+//}
 
 
 INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
@@ -513,6 +576,9 @@ bool FneInit() {
 		SetWindowSubclass(g_toolBarHwnd, ToolbarSubclassProc, 0, 0);
 		SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0);
 
+
+		//HWND hwnd = FindOutputWindow(g_hwnd);
+		//SetWindowSubclass(hwnd, LogViewSubclassProc, 0, 0);
 		
 		//std::string s = std::format("菜单条句柄{0}", (int)g_toolBarHwnd);
 		//OutputStringToELog(s);

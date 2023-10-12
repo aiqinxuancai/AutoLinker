@@ -22,6 +22,8 @@ typedef int (__thiscall* OriginalFunctionWithDebugStart)(void *, int, int);
 
 typedef void (WINAPIV* OriginalFunctionWithBuildStart)();
 
+typedef void(* OriginalCompilerFunction)();
+
 
 void StartHookCreateFileA();
 
