@@ -18,7 +18,7 @@
 #define LIBARAYNAME "AutoLinker_MessageNotify"
 
 
-typedef int (__thiscall* OriginalFunctionWithDebugStart)(void *, int, int);
+typedef DWORD(* OriginalFunctionWithDebugStart)(DWORD*, DWORD, DWORD);
 
 typedef void (WINAPIV* OriginalFunctionWithBuildStart)();
 

@@ -52,8 +52,8 @@ static auto originalGetSaveFileNameA = GetSaveFileNameA;
 
 
 OriginalFunctionWithDebugStart originalFunctionWithDebugStart = (OriginalFunctionWithDebugStart)0x0040A080;
-OriginalFunctionWithBuildStart originalFunctionWithBuildStart = (OriginalFunctionWithBuildStart)0x0040C2C9;
-OriginalCompilerFunction originalCompilerFunction = (OriginalCompilerFunction)0;
+//OriginalFunctionWithBuildStart originalFunctionWithBuildStart = (OriginalFunctionWithBuildStart)0x0040C2C9;
+//OriginalCompilerFunction originalCompilerFunction = (OriginalCompilerFunction)0;
 
 void OnDebugStart() {
 	OutputStringToELog("调试开始");
@@ -65,19 +65,20 @@ void OnBuildStart() {
 
 
 
-int __stdcall HookedFunctionWithTwoArgs(void* arg1, int arg2, int arg3)
+DWORD __stdcall HookedoriginalFunctionWithDebugStart(DWORD* t, DWORD arg2, DWORD arg3)
 {
-	__asm {
-		pushad
-	}
-	//OnDebugStart();
-	int ret = originalFunctionWithDebugStart(arg1, arg2, arg3);
+	//int ret = originalFunctionWithDebugStart(t, arg2, arg3);
+	__asm pushad
 
-	__asm {
-		popad
+	//TODO
+	__asm popad
+	__asm
+	{
+		push arg3
+		push arg2
+		push t
+		call originalFunctionWithDebugStart
 	}
-
-	return ret;
 }
 
 void WINAPIV HookedFunctionWithNoArgs()
@@ -99,10 +100,6 @@ HANDLE WINAPI MyCreateFileA(
 
 
 ) {
-	//OutputStringToELog("MyCreateFileA");
-	//OutputStringToELog(lpFileName);
-	
-
 	if (std::string(lpFileName).find("\\Temp\\e_debug\\") != std::string::npos) {
 		OutputStringToELog("结束预编译代码（调试）");
 		g_preDebugging = false;
@@ -115,8 +112,6 @@ HANDLE WINAPI MyCreateFileA(
 
 	if (g_preCompiling) {
 		if (std::string(lpFileName).ends_with(".ec")) {
-
-			//获取文件名
 			std::filesystem::path p(lpFileName);
 
 			auto oldName = p.filename().string();
@@ -128,8 +123,7 @@ HANDLE WINAPI MyCreateFileA(
 				auto newPath = p.parent_path().append(libModelName).string();
 				OutputStringToELog("切换静态模块:" + oldName + " -> " + libModelName + " " + newPath);
 
-				//替换为lib库路径
-				//VMPSDK.ec -> VMPSDK_LIB.ec
+				//替换为lib库路径？？
 				return originalCreateFileA(newPath.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes,
 					dwCreationDisposition,
 					dwFlagsAndAttributes,
@@ -176,23 +170,6 @@ HANDLE WINAPI MyCreateFileA(
 								hTemplateFile);
 }
 
-//__declspec(naked) void MyNakedFunction() {
-//	__asm {
-//		//pushad
-//		//popad
-//		push ebx
-//	}
-//	//处理代码
-//
-//	originalCompilerFunction();
-//
-//	__asm {
-//		pop ebx
-//		leave
-//		jmp eax
-//	}
-//}
-
 BOOL APIENTRY MyGetSaveFileNameA(LPOPENFILENAMEA item) {
 	if (g_preCompiling) {
 		OutputStringToELog("结束预编译代码");
@@ -214,7 +191,7 @@ void StartHookCreateFileA() {
 
 	//DetourAttach(&(PVOID&)originalCompilerFunction, MyNakedFunction);
 
-	//DetourAttach(&(PVOID&)originalFunctionWithDebugStart, HookedFunctionWithTwoArgs);
+	//DetourAttach(&(PVOID&)originalFunctionWithDebugStart, HookedoriginalFunctionWithDebugStart);
 	//DetourAttach(&(PVOID&)originalFunctionWithBuildStart, HookedFunctionWithNoArgs);
 
 
@@ -258,7 +235,7 @@ void OutputStringToELog(std::string szbuf) {
 		SendMessageA(hwnd, 194, 1, (long)"\r\n");
 	}
 	else {
-		//::MessageBox(0, "没有找到", "辅助工具", MB_YESNO);
+
 	}
 }
 
@@ -451,8 +428,6 @@ void UpdateCurrentOpenSourceFile() {
 //工具条子类过程
 LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	if (uMsg == WM_COMMAND && LOWORD(wParam) == BN_CLICKED) {
-		//OutputStringToELog("弹出菜单，选择当前的ini配置");
-		//HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
 		ShowMenu(hWnd);
 		return 0;
 	}
@@ -460,33 +435,21 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 	//std::string s = std::format("菜单条消息 {0} {1}", (int)hWnd, uMsg);
 	//OutputStringToELog(s);
 
-
 	switch (uMsg)
 	{
-	case WM_PAINT: {
-		//获取当前的文件
-		UpdateCurrentOpenSourceFile();
+		case WM_PAINT: {
+			UpdateCurrentOpenSourceFile();
+			UpdateButton();
+			break;
+		}
 
-		//更新按钮文本
-		UpdateButton();
-
-
-		break;
-	}
-
-	case WM_INITMENUPOPUP:
-		//if (!HIWORD(lParam))
-		//{
-		//	HMENU hMenu = (HMENU)wParam;
-		//	EnableMenuItem(hMenu, ID_MENU_OPTION1, MF_BYCOMMAND | MF_ENABLED);
-		//}
-		break;
-	case WM_COMMAND: {
-		auto low = LOWORD(wParam);
-		UpdateCurrentFileLinkerWithId(low);
-		break;
-	}
-
+		case WM_INITMENUPOPUP:
+			break;
+		case WM_COMMAND: {
+			auto low = LOWORD(wParam);
+			UpdateCurrentFileLinkerWithId(low);
+			break;
+		}
 	}
 
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
@@ -496,12 +459,10 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	if (uMsg == 20707) {
 		if (wParam) {
-			//编译
 			g_preCompiling = true;
 			OutputStringToELog("开始编译");
 		}
 		else {
-			//调试
 			g_preDebugging = true;
 			OutputStringToELog("开始调试");
 		}
@@ -511,26 +472,6 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	//OutputStringToELog(s);
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
-
-////日志窗口
-//LRESULT CALLBACK LogViewSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
-//	if (uMsg == 194) {
-//		//if (wParam == 1) {
-//		//	std::string outputText = (const char *)lParam;
-//
-//		//	OutputDebugStringA(outputText.c_str());
-//
-//		//	if (outputText.find("正在编译...") != std::string::npos) {
-//		//		g_preCompiling = false;
-//		//		OutputStringToELog("结束预编译代码");
-//		//	}
-//		//}
-//	}
-//	//std::string s = std::format("{} {} {} {}", (int)hWnd, (int)uMsg, (int)wParam, (int)lParam);
-//	//OutputStringToELog(s);
-//	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
-//}
-
 
 INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 	if (nAddInFnIndex == 0) { 
@@ -562,7 +503,6 @@ bool FneInit() {
 	//此时NotifySys还不可用
 	//HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
 
-
 	g_toolBarHwnd = FindChildWindowByTitle(g_hwnd);
 
 
@@ -572,22 +512,10 @@ bool FneInit() {
 	if (g_hwnd != NULL && g_toolBarHwnd != NULL)
 	{
 		OutputStringToELog("找到工具条");
-		//OutputStringToELog("查找到菜单条");
 		SetWindowSubclass(g_toolBarHwnd, ToolbarSubclassProc, 0, 0);
 		SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0);
-
-
-		//HWND hwnd = FindOutputWindow(g_hwnd);
-		//SetWindowSubclass(hwnd, LogViewSubclassProc, 0, 0);
-		
-		//std::string s = std::format("菜单条句柄{0}", (int)g_toolBarHwnd);
-		//OutputStringToELog(s);
 		CreateAndSubclassButton(g_toolBarHwnd);
-		//Hook读文件的函数，修改link.ini的路径
 		StartHookCreateFileA();
-
-		//std::string sourceFile = GetSourceFilePath(g_hwnd);
-		//OutputStringToELog(sourceFile);
 		PostAppMessageA(g_toolBarHwnd, WM_PRINT, 0, 0);
 		OutputStringToELog("初始化完成");
 		return true;
@@ -595,9 +523,6 @@ bool FneInit() {
 	else
 	{
 		OutputStringToELog("初始化失败，未找到窗口");
-
-
-
 	}
 	
 	return false;
