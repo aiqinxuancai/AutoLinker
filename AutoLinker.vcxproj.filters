@@ -42,6 +42,9 @@
     <ClCompile Include="ModelManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="StringHelper.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AutoLinker.h" />
@@ -67,6 +70,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="Global.h" />
+    <ClInclude Include="StringHelper.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="AutoLinker.def" />

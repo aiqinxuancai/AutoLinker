@@ -5,6 +5,9 @@
 #include <regex>
 #include <fstream>
 #include <algorithm>
+#include <regex>
+#include <filesystem>
+
 
 std::string GetBasePath() {
     char buffer[MAX_PATH];
@@ -56,5 +59,27 @@ std::optional<size_t> FindByteInFile(const std::string& filename, const std::vec
     else {
         // 如果没有找到，返回 std::nullopt
         return std::nullopt;
+    }
+}
+
+
+
+
+/// <summary>
+/// 获取out的文件名
+/// </summary>
+/// <param name="s"></param>
+/// <returns></returns>
+std::string GetLinkerCommandOutFileName(const std::string& s) {
+    std::regex reg("/out:\"([^\"]*)\"");  
+    std::smatch match;
+
+    if (std::regex_search(s, match, reg) && match.size() > 1) {
+        std::string path = match.str(1); 
+        std::filesystem::path fs_path(path);
+        return fs_path.filename().string(); 
+    }
+    else {
+        return ""; 
     }
 }

@@ -11,6 +11,7 @@
 #include "InlineHook.h"
 #include "ModelManager.h"
 #include "Global.h"
+#include "StringHelper.h"
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -48,7 +49,7 @@ void UpdateCurrentOpenSourceFile();
 
 static auto originalCreateFileA = CreateFileA;
 static auto originalGetSaveFileNameA = GetSaveFileNameA;
-
+static auto originalCreateProcessA = CreateProcessA;
 
 
 OriginalFunctionWithDebugStart originalFunctionWithDebugStart = (OriginalFunctionWithDebugStart)0x0040A080;
@@ -179,6 +180,48 @@ BOOL APIENTRY MyGetSaveFileNameA(LPOPENFILENAMEA item) {
 	return originalGetSaveFileNameA(item);
 }
 
+
+BOOL WINAPI MyCreateProcessA(
+	LPCSTR lpApplicationName,
+	LPSTR lpCommandLine,
+	LPSECURITY_ATTRIBUTES lpProcessAttributes,
+	LPSECURITY_ATTRIBUTES lpThreadAttributes,
+	BOOL bInheritHandles,
+	DWORD dwCreationFlags,
+	LPVOID lpEnvironment,
+	LPCSTR lpCurrentDirectory,
+	LPSTARTUPINFOA lpStartupInfo,
+	LPPROCESS_INFORMATION lpProcessInformation
+) {
+	std::string commandLine = lpCommandLine;
+	auto outFileName = GetLinkerCommandOutFileName(lpCommandLine);
+
+	//std::string s = std::format("进程创建 [{}] {}", lpApplicationName, lpCommandLine);
+	//OutputStringToELog(s);
+
+	if (!outFileName.empty()) {
+		//需要输出PDB
+		if (commandLine.find("/pdb:\"build.pdb\"")) {
+			//PDB更名
+
+			std::string newPdbCommand = std::format("/pdb:\"{}.pdb\"", outFileName);
+			commandLine = replaceSubstring(commandLine, "/pdb:\"build.pdb\"", newPdbCommand);
+
+			std::vector<char> commandLineBuffer(commandLine.begin(), commandLine.end());
+			commandLineBuffer.push_back('\0'); // 确保以null字符结尾
+
+			return originalCreateProcessA(lpApplicationName, commandLineBuffer.data(), lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
+
+		}
+	}
+
+
+
+
+	return originalCreateProcessA(lpApplicationName, lpCommandLine, lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
+}
+
+
 void StartHookCreateFileA() {
 
 	//originalCompilerFunction = (OriginalCompilerFunction)g_compilerAddress;
@@ -188,7 +231,7 @@ void StartHookCreateFileA() {
 	DetourUpdateThread(GetCurrentThread());
 	DetourAttach(&(PVOID&)originalCreateFileA, MyCreateFileA);
 	DetourAttach(&(PVOID&)originalGetSaveFileNameA, MyGetSaveFileNameA);
-
+	DetourAttach(&(PVOID&)originalCreateProcessA, MyCreateProcessA);
 	//DetourAttach(&(PVOID&)originalCompilerFunction, MyNakedFunction);
 
 	//DetourAttach(&(PVOID&)originalFunctionWithDebugStart, HookedoriginalFunctionWithDebugStart);
@@ -198,6 +241,9 @@ void StartHookCreateFileA() {
 	DetourTransactionCommit();
 
 }
+
+
+///pdb:"build.pdb"
 
 
 BOOL CALLBACK EnumChildProcOutputWindow(HWND hwnd, LPARAM lParam) {

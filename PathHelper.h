@@ -16,3 +16,11 @@ std::string ExtractBetweenDashes(const std::string& text);
 /// <param name="search_bytes"></param>
 /// <returns></returns>
 std::optional<size_t> FindByteInFile(const std::string& filename, const std::vector<char>& search_bytes);
+
+
+/// <summary>
+/// 获取out的文件名
+/// </summary>
+/// <param name="s"></param>
+/// <returns></returns>
+std::string GetLinkerCommandOutFileName(const std::string& s);
