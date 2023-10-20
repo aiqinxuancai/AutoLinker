@@ -200,23 +200,18 @@ BOOL WINAPI MyCreateProcessA(
 	//OutputStringToELog(s);
 
 	if (!outFileName.empty()) {
-		//需要输出PDB
 		if (commandLine.find("/pdb:\"build.pdb\"")) {
-			//PDB更名
+			//PDB更名为当前编译的程序的名字+.pdb，看起来更正规
 
 			std::string newPdbCommand = std::format("/pdb:\"{}.pdb\"", outFileName);
 			commandLine = replaceSubstring(commandLine, "/pdb:\"build.pdb\"", newPdbCommand);
 
 			std::vector<char> commandLineBuffer(commandLine.begin(), commandLine.end());
-			commandLineBuffer.push_back('\0'); // 确保以null字符结尾
+			commandLineBuffer.push_back('\0');
 
 			return originalCreateProcessA(lpApplicationName, commandLineBuffer.data(), lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
-
 		}
 	}
-
-
-
 
 	return originalCreateProcessA(lpApplicationName, lpCommandLine, lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
 }
