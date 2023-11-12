@@ -422,7 +422,7 @@ void UpdateCurrentFileLinkerWithId(int id) {
 /// <param name="hParent"></param>
 void CreateAndSubclassButton(HWND hParent) {
 
-	int buttonWidth = 90;
+	int buttonWidth = 100;
 	int buttonHeight = 20;
 
 
@@ -515,9 +515,19 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 }
 
 INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
-	if (nAddInFnIndex == 0) { 
 
+	switch (nAddInFnIndex) {
+		case 0: {
+			//TODO 打开Auto配置目录
+		}
+		case 1: {
+			//TODO ？？
+		}
+		default: {
+
+		}
 	}
+
 	return 0;
 }
 
