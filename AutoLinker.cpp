@@ -517,11 +517,20 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 
 	switch (nAddInFnIndex) {
-		case 0: {
-			//TODO 打开Auto配置目录
+		case 0: { //TODO 打开项目目录
+			std::string cmd = std::format("/select,{}", g_nowOpenSourceFilePath);
+			ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
+			break;
 		}
-		case 1: {
-			//TODO ？？
+		case 1: { //Auto 目录
+			std::string cmd = std::format("{}\\AutoLoader", GetBasePath());
+			ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
+			break;
+		}
+		case 2: { //E 目录
+			std::string cmd = std::format("{}", GetBasePath());
+			ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
+			break;
 		}
 		default: {
 
@@ -662,7 +671,7 @@ static LIB_INFO LibInfo =
 	NULL,
 	NULL,
 	fnAddInFunc,
-	_T("辅助功能1\0这是个用作测试的辅助工具功能。\0辅助功能2\0这是个用作测试的辅助工具功能。\0\0") ,
+	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLoader配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0\0") ,
 	AutoLinker_MessageNotify,
 	NULL,
 	NULL,
