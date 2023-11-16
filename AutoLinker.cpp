@@ -50,11 +50,9 @@ void UpdateCurrentOpenSourceFile();
 static auto originalCreateFileA = CreateFileA;
 static auto originalGetSaveFileNameA = GetSaveFileNameA;
 static auto originalCreateProcessA = CreateProcessA;
-
+static auto originalMessageBoxA = MessageBoxA;
 
 OriginalFunctionWithDebugStart originalFunctionWithDebugStart = (OriginalFunctionWithDebugStart)0x0040A080;
-//OriginalFunctionWithBuildStart originalFunctionWithBuildStart = (OriginalFunctionWithBuildStart)0x0040C2C9;
-//OriginalCompilerFunction originalCompilerFunction = (OriginalCompilerFunction)0;
 
 void OnDebugStart() {
 	OutputStringToELog("调试开始");
@@ -63,8 +61,6 @@ void OnDebugStart() {
 void OnBuildStart() {
 	OutputStringToELog("编译开始");
 }
-
-
 
 DWORD __stdcall HookedoriginalFunctionWithDebugStart(DWORD* t, DWORD arg2, DWORD arg3)
 {
@@ -88,8 +84,6 @@ void WINAPIV HookedFunctionWithNoArgs()
 	//originalFunctionWithBuildStart();
 }
 
-
-
 HANDLE WINAPI MyCreateFileA(
 	LPCSTR lpFileName,
 	DWORD dwDesiredAccess,
@@ -97,15 +91,11 @@ HANDLE WINAPI MyCreateFileA(
 	LPSECURITY_ATTRIBUTES lpSecurityAttributes,
 	DWORD dwCreationDisposition,
 	DWORD dwFlagsAndAttributes,
-	HANDLE hTemplateFile
-
-
-) {
+	HANDLE hTemplateFile) {
 	if (std::string(lpFileName).find("\\Temp\\e_debug\\") != std::string::npos) {
 		OutputStringToELog("结束预编译代码（调试）");
 		g_preDebugging = false;
 	}
-
 
 	if (g_preDebugging) {
 		//不处理 默认应该选择dll链接方式
@@ -125,14 +115,10 @@ HANDLE WINAPI MyCreateFileA(
 				OutputStringToELog("切换静态模块:" + oldName + " -> " + libModelName + " " + newPath);
 
 				//替换为lib库路径？？
-				return originalCreateFileA(newPath.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes,
-					dwCreationDisposition,
-					dwFlagsAndAttributes,
-					hTemplateFile);
+				return originalCreateFileA(newPath.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes,dwCreationDisposition,dwFlagsAndAttributes,hTemplateFile);
 			}
 		}
 	}
-
 
 	std::filesystem::path currentPath = GetBasePath();
 	std::filesystem::path autoLoaderPath = currentPath / "tools" / "link.ini";
@@ -216,6 +202,15 @@ BOOL WINAPI MyCreateProcessA(
 	return originalCreateProcessA(lpApplicationName, lpCommandLine, lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
 }
 
+int WINAPI MyMessageBoxA(
+	HWND hWnd,
+	LPCSTR lpText,
+	LPCSTR lpCaption,
+	UINT uType) {
+	//TODO 自动返回确认编译
+	return originalMessageBoxA(hWnd, lpText, lpCaption, uType);
+}
+
 
 void StartHookCreateFileA() {
 
@@ -227,6 +222,7 @@ void StartHookCreateFileA() {
 	DetourAttach(&(PVOID&)originalCreateFileA, MyCreateFileA);
 	DetourAttach(&(PVOID&)originalGetSaveFileNameA, MyGetSaveFileNameA);
 	DetourAttach(&(PVOID&)originalCreateProcessA, MyCreateProcessA);
+	DetourAttach(&(PVOID&)originalMessageBoxA, MyMessageBoxA);
 	//DetourAttach(&(PVOID&)originalCompilerFunction, MyNakedFunction);
 
 	//DetourAttach(&(PVOID&)originalFunctionWithDebugStart, HookedoriginalFunctionWithDebugStart);
@@ -280,7 +276,7 @@ void OutputStringToELog(std::string szbuf) {
 	}
 }
 
-BOOL CALLBACK EnumChildProc(HWND hwnd, LPARAM lParam) {
+BOOL CALLBACK FindMenuBarEnumChildProc(HWND hwnd, LPARAM lParam) {
 	char buffer[256] = { 0 };
 	GetWindowText(hwnd, buffer, sizeof(buffer));
 	char bufferClassName[256] = { 0 };
@@ -301,9 +297,9 @@ BOOL CALLBACK EnumChildProc(HWND hwnd, LPARAM lParam) {
 /// </summary>
 /// <param name="hParent"></param>
 /// <returns></returns>
-HWND FindChildWindowByTitle(HWND hParent) {
+HWND FindMenuBar(HWND hParent) {
 	HWND hResult = NULL;
-	EnumChildWindows(hParent, EnumChildProc, reinterpret_cast<LPARAM>(&hResult));
+	EnumChildWindows(hParent, FindMenuBarEnumChildProc, reinterpret_cast<LPARAM>(&hResult));
 	return hResult;
 }
 
@@ -338,59 +334,33 @@ void ShowMenu(HWND hParent) {
 	
 }
 
+
 /// <summary>
 /// 获取当前源文件的路径
 /// </summary>
 /// <param name="hParent"></param>
 std::string GetSourceFilePath() {
 	HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
-
 	char buffer[256] = { 0 };
 	GetWindowText(hWnd, buffer, sizeof(buffer));
-
 	auto path = ExtractBetweenDashes(std::string(buffer));
-
-	//std::regex path_regex(R"((([A-Za-z]:|\\)\\[^ /:*?"<>|\r\n]+\\?)*)");
-	//std::smatch match;
-	//auto title = std::string(buffer);
-	////OutputStringToELog("完整路径" + title);
-	//// 使用迭代器找到所有匹配项
-	//for (std::sregex_iterator it = std::sregex_iterator(title.begin(), title.end(), path_regex);
-	//	it != std::sregex_iterator(); ++it) {
-
-	//	if (!it->str().empty()) {
-	//		//OutputStringToELog(it->str());
-	//		return it->str();
-	//	}
-	//	
-	//}
 	return path;
-
 }
 
-void UpdateButton() {
 
+void UpdateButton() {
 	if (g_nowOpenSourceFilePath.empty()) {
 		SetWindowTextA(g_buttonHwnd, "默认");
-	}
-	else {
+	} else {
 		auto linkName = g_configManager.getValue(g_nowOpenSourceFilePath);
-
-		//OutputStringToELog(linkName);
-
 		if (!linkName.empty()) {
 			SetWindowTextA(g_buttonHwnd, linkName.c_str());
 		}
 		else {
 			SetWindowTextA(g_buttonHwnd, "默认");
 		}
-
 	}
-
-
 }
-
-
 
 
 /// <summary>
@@ -401,18 +371,13 @@ void UpdateCurrentFileLinkerWithId(int id) {
 
 	//先更新一下
 	UpdateCurrentOpenSourceFile();
-
 	if (g_nowOpenSourceFilePath.empty()) {
 		//当前好像没有打开源文件
 		OutputStringToELog("当前没有打开源文件，无法切换Linker");
-
-	}
-	else {
+	} else {
 		g_configManager.setValue(g_nowOpenSourceFilePath, g_linkerManager.getConfig(id).name);
 		UpdateButton();
 	}
-
-
 }
 
 /// <summary>
@@ -424,7 +389,6 @@ void CreateAndSubclassButton(HWND hParent) {
 
 	int buttonWidth = 100;
 	int buttonHeight = 20;
-
 
 	//获取当前的源文件路径
 
@@ -567,7 +531,7 @@ bool FneInit() {
 	//此时NotifySys还不可用
 	//HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
 
-	g_toolBarHwnd = FindChildWindowByTitle(g_hwnd);
+	g_toolBarHwnd = FindMenuBar(g_hwnd);
 
 
 	std::string s = std::format("{} {} {}", processID, (int)g_hwnd, (int)g_toolBarHwnd);
