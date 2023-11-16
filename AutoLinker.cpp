@@ -2,7 +2,6 @@
 #include <vector>
 #include <Windows.h>
 #include <CommCtrl.h>
-
 #include <format>
 #include "ConfigManager.h"
 #include <regex>
@@ -45,7 +44,7 @@ bool g_preDebugging;
 bool g_preCompiling;
 
 
-void UpdateCurrentOpenSourceFile();
+
 
 static auto originalCreateFileA = CreateFileA;
 static auto originalGetSaveFileNameA = GetSaveFileNameA;
@@ -54,14 +53,20 @@ static auto originalMessageBoxA = MessageBoxA;
 
 OriginalFunctionWithDebugStart originalFunctionWithDebugStart = (OriginalFunctionWithDebugStart)0x0040A080;
 
+
+void UpdateCurrentOpenSourceFile();
+
 void OnDebugStart() {
 	OutputStringToELog("调试开始");
 }
+
 
 void OnBuildStart() {
 	OutputStringToELog("编译开始");
 }
 
+
+//暂时不使用
 DWORD __stdcall HookedoriginalFunctionWithDebugStart(DWORD* t, DWORD arg2, DWORD arg3)
 {
 	//int ret = originalFunctionWithDebugStart(t, arg2, arg3);
@@ -78,11 +83,14 @@ DWORD __stdcall HookedoriginalFunctionWithDebugStart(DWORD* t, DWORD arg2, DWORD
 	}
 }
 
+
+//暂时不使用
 void WINAPIV HookedFunctionWithNoArgs()
 {
 	//OnBuildStart();
 	//originalFunctionWithBuildStart();
 }
+
 
 HANDLE WINAPI MyCreateFileA(
 	LPCSTR lpFileName,
@@ -218,9 +226,6 @@ int WINAPI MyMessageBoxA(
 
 
 void StartHookCreateFileA() {
-
-	//originalCompilerFunction = (OriginalCompilerFunction)g_compilerAddress;
-
 	DetourRestoreAfterWith();
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
@@ -233,14 +238,8 @@ void StartHookCreateFileA() {
 	//DetourAttach(&(PVOID&)originalFunctionWithDebugStart, HookedoriginalFunctionWithDebugStart);
 	//DetourAttach(&(PVOID&)originalFunctionWithBuildStart, HookedFunctionWithNoArgs);
 
-
 	DetourTransactionCommit();
-
 }
-
-
-///pdb:"build.pdb"
-
 
 BOOL CALLBACK EnumChildProcOutputWindow(HWND hwnd, LPARAM lParam) {
 	char buffer[256] = { 0 };

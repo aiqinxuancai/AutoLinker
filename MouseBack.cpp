@@ -1,25 +1,18 @@
 
 #include "MouseBack.h"
 #include <vector>
-#include <Windows.h>
-#include <CommCtrl.h>
-
 #include <format>
-#include "ConfigManager.h"
-#include <regex>
-#include "PathHelper.h"
-#include "LinkerManager.h"
-#include "InlineHook.h"
-#include "ModelManager.h"
 #include "Global.h"
 #include "StringHelper.h"
 #include <thread>
+#include <CommCtrl.h>
 
+//本代码用于在使用鼠标后退键时，按下Ctrl+J快捷键，实现其他IDE的鼠标键快速后退到上次编辑的位置
 
 std::jthread g_mouseBackThread;
 std::vector<HWND> g_subclassedWindows;
 
-//处理输入框代码编辑框
+//处理代码编辑框的消息
 LRESULT CALLBACK EditViewSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	switch (uMsg) {
 	case WM_XBUTTONDOWN:
@@ -57,6 +50,7 @@ LRESULT CALLBACK EditViewSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
+
 
 BOOL CALLBACK EnumChildProcEditView(HWND hwndChild, LPARAM lParam) {
 	char className[100];
