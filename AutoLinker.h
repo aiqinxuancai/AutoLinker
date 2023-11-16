@@ -27,6 +27,8 @@ typedef void(* OriginalCompilerFunction)();
 
 void StartHookCreateFileA();
 
+
+
 EXTERN_C INT WINAPI  AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwParam2);
 
 #ifndef __E_STATIC_LIB

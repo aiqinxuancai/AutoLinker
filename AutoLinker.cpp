@@ -12,6 +12,8 @@
 #include "ModelManager.h"
 #include "Global.h"
 #include "StringHelper.h"
+#include <thread>
+#include "MouseBack.h"
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -42,8 +44,6 @@ bool g_preDebugging;
 //准备开始编译
 bool g_preCompiling;
 
-
-void OutputStringToELog(std::string szbuf);
 
 void UpdateCurrentOpenSourceFile();
 
@@ -509,8 +509,12 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 		}
 		return 0;
 	}
-	//std::string s = std::format("{} {} {} {}", (int)hWnd, (int)uMsg, (int)wParam, (int)lParam);
-	//OutputStringToELog(s);
+
+	if (uMsg == 20708) { 
+		BOOL result = SetWindowSubclass((HWND)wParam, EditViewSubclassProc, 0, 0);
+		return result ? 1 : 0;
+	}	
+
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
@@ -540,8 +544,6 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 	return 0;
 }
 
-
-
 BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
 {
 	DWORD lpdwProcessId;
@@ -554,6 +556,8 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
 	}
 	return TRUE;
 }
+
+
 
 bool FneInit() {
 	OutputStringToELog("开始初始化");
@@ -571,6 +575,8 @@ bool FneInit() {
 
 	if (g_hwnd != NULL && g_toolBarHwnd != NULL)
 	{
+		StartEditViewSubclassTask();
+
 		OutputStringToELog("找到工具条");
 		SetWindowSubclass(g_toolBarHwnd, ToolbarSubclassProc, 0, 0);
 		SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0);

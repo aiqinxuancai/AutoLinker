@@ -45,6 +45,9 @@
     <ClCompile Include="StringHelper.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="MouseBack.cpp">
+      <Filter>Sevices</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AutoLinker.h" />
@@ -73,6 +76,9 @@
     <ClInclude Include="StringHelper.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="MouseBack.h">
+      <Filter>Sevices</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="AutoLinker.def" />
@@ -86,6 +92,9 @@
     </Filter>
     <Filter Include="Utils">
       <UniqueIdentifier>{d5a424f7-ff34-4fe9-a590-c5d088f11ed9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Sevices">
+      <UniqueIdentifier>{d885c58a-c222-4232-aa86-64fa354980b2}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>

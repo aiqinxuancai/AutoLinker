@@ -439,6 +439,7 @@
     <ClCompile Include="detours\modules.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="ModelManager.cpp" />
+    <ClCompile Include="MouseBack.cpp" />
     <ClCompile Include="PathHelper.cpp" />
     <ClCompile Include="StringHelper.cpp" />
   </ItemGroup>
@@ -451,6 +452,7 @@
     <ClInclude Include="InlineHook.h" />
     <ClInclude Include="LinkerManager.h" />
     <ClInclude Include="ModelManager.h" />
+    <ClInclude Include="MouseBack.h" />
     <ClInclude Include="PathHelper.h" />
     <ClInclude Include="StringHelper.h" />
   </ItemGroup>
