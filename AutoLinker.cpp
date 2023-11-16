@@ -208,6 +208,11 @@ int WINAPI MyMessageBoxA(
 	LPCSTR lpCaption,
 	UINT uType) {
 	//TODO 自动返回确认编译
+
+	if (std::string(lpCaption).find("链接器输出了大量错误或警告信息")) {
+		return IDNO;
+	}
+
 	return originalMessageBoxA(hWnd, lpText, lpCaption, uType);
 }
 
