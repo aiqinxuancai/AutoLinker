@@ -194,7 +194,7 @@ BOOL WINAPI MyCreateProcessA(
 	//OutputStringToELog(s);
 
 	if (!outFileName.empty()) {
-		if (commandLine.find("/pdb:\"build.pdb\"")) {
+		if (commandLine.find("/pdb:\"build.pdb\"") != std::string::npos) {
 			//PDB更名为当前编译的程序的名字+.pdb，看起来更正规
 
 			std::string newPdbCommand = std::format("/pdb:\"{}.pdb\"", outFileName);
@@ -217,7 +217,7 @@ int WINAPI MyMessageBoxA(
 	UINT uType) {
 	//TODO 自动返回确认编译
 
-	if (std::string(lpCaption).find("链接器输出了大量错误或警告信息")) {
+	if (std::string(lpCaption).find("链接器输出了大量错误或警告信息") != std::string::npos) {
 		return IDNO;
 	}
 
