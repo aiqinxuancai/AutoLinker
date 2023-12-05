@@ -37,9 +37,9 @@ EXTERN_C INT WINAPI  AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dw
 #define LIB_MinorVersion 2 /*库次版本号*/
 #define LIB_BuildNumber 20231009 /*构建版本号*/
 #define LIB_SysMajorVer 3 /*系统主版本号*/
-#define LIB_SysMinorVer 0 /*系统次版本号*/
-#define LIB_KrnlLibMajorVer 3 /*核心库主版本号*/
-#define LIB_KrnlLibMinorVer 0 /*核心库次版本号*/
+#define LIB_SysMinorVer 7 /*系统次版本号*/
+#define LIB_KrnlLibMajorVer 5 /*核心库主版本号*/
+#define LIB_KrnlLibMinorVer 3 /*核心库次版本号*/
 #define LIB_NAME_STR "AutoLinker" /*支持库名*/
 #define LIB_DESCRIPTION_STR "AutoLinker" /*功能描述*/
 #define LIB_Author "" /*作者名称*/

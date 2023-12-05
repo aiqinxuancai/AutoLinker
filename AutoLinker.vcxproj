@@ -437,6 +437,7 @@
     <ClCompile Include="detours\disolx86.cpp" />
     <ClCompile Include="detours\image.cpp" />
     <ClCompile Include="detours\modules.cpp" />
+    <ClCompile Include="ECOMEx.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="ModelManager.cpp" />
     <ClCompile Include="MouseBack.cpp" />
@@ -448,6 +449,14 @@
     <ClInclude Include="ConfigManager.h" />
     <ClInclude Include="detours\detours.h" />
     <ClInclude Include="detours\detver.h" />
+    <ClInclude Include="ECOMEx.h" />
+    <ClInclude Include="elib\fnshare.h" />
+    <ClInclude Include="elib\krnllib.h" />
+    <ClInclude Include="elib\lang.h" />
+    <ClInclude Include="elib\lib2.h" />
+    <ClInclude Include="elib\mtypes.h" />
+    <ClInclude Include="elib\PublicIDEFunctions.h" />
+    <ClInclude Include="elib\untshare.h" />
     <ClInclude Include="Global.h" />
     <ClInclude Include="InlineHook.h" />
     <ClInclude Include="LinkerManager.h" />

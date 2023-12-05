@@ -13,6 +13,8 @@
 #include "StringHelper.h"
 #include <thread>
 #include "MouseBack.h"
+#include <PublicIDEFunctions.h>
+#include "ECOMEx.h"
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -50,6 +52,12 @@ static auto originalCreateFileA = CreateFileA;
 static auto originalGetSaveFileNameA = GetSaveFileNameA;
 static auto originalCreateProcessA = CreateProcessA;
 static auto originalMessageBoxA = MessageBoxA;
+
+
+typedef INT(WINAPI* NotifySys3Func)(INT, DWORD, DWORD);
+
+static NotifySys3Func NotifySys3 ;
+
 
 OriginalFunctionWithDebugStart originalFunctionWithDebugStart = (OriginalFunctionWithDebugStart)0x0040A080;
 
@@ -486,6 +494,12 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
+INT NESRUNFUNC(INT code, DWORD p1, DWORD p2) {
+	DWORD p[2] = {p1, p2};
+	return NotifySys(NES_RUN_FUNC, code, (DWORD) & p);
+}
+
+
 INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 
 	switch (nAddInFnIndex) {
@@ -504,6 +518,41 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 			ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
 			break;
 		}
+		case 3: { //切换到VMPSDK静态
+
+			int sdk = FindEModelNameIndex("VMPSDK");
+			if (sdk != -1) {
+				RemoveEModel(sdk); //移除
+			}
+			int sdkLib = FindEModelNameIndex("VMPSDK_LIB");
+			if (sdkLib == -1) {
+				char buffer[MAX_PATH] = { 0 };
+				NotifySys(NAS_GET_PATH, 1004, (DWORD)buffer);
+				std::string cmd = std::format("{}VMPSDK_LIB.ec", buffer);
+
+				OutputStringToELog(cmd);
+				AddEModel2(cmd);
+			}
+			
+			break;
+		}
+		case 4: { //切换到VMPSDK动态
+
+			int sdk = FindEModelNameIndex("VMPSDK_LIB");
+			if (sdk != -1) {
+				RemoveEModel(sdk); //移除
+			}
+			int sdkLib = FindEModelNameIndex("VMPSDK");
+			if (sdkLib == -1) {
+				char buffer[MAX_PATH] = { 0 };
+				NotifySys(NAS_GET_PATH, 1004, (DWORD)buffer);
+				std::string cmd = std::format("{}VMPSDK.ec", buffer);
+				OutputStringToELog(cmd);
+				AddEModel2(cmd);
+			}
+			break;
+		}
+			  
 		default: {
 
 		}
@@ -590,6 +639,7 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 	// 返回NULL或NR_ERR表示不指定依赖文件  
 
 	else if (nMsg == NL_SYS_NOTIFY_FUNCTION) {
+		NotifySys3 = (NotifySys3Func)dwParam1;
 		if (dwParam1) {
 			if (!g_buttonHwnd) {
 				//窗口已经建立
@@ -608,7 +658,7 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 }
 /*定义支持库基本信息*/
 #ifndef __E_STATIC_LIB
-static LIB_INFO LibInfo =
+static LIB_INFOX LibInfo =
 {
 	/* { 库格式号, GUID串号, 主版本号, 次版本号, 构建版本号, 系统主版本号, 系统次版本号, 核心库主版本号, 核心库次版本号,
 	支持库名, 支持库语言, 支持库描述, 支持库状态,
@@ -628,7 +678,7 @@ static LIB_INFO LibInfo =
 	_T(LIB_NAME_STR),
 	__GBK_LANG_VER,
 	_WT(LIB_DESCRIPTION_STR),
-	_LIB_OS(__OS_WIN), //#LBS_IDE_PLUGIN  LBS_LIB_INFO2
+	LBS_IDE_PLUGIN | LBS_LIB_INFO2, //_LIB_OS(__OS_WIN), //#LBS_IDE_PLUGIN  LBS_LIB_INFO2
 	_WT(LIB_Author),
 	_WT(LIB_ZipCode),
 	_WT(LIB_Address),
@@ -645,17 +695,24 @@ static LIB_INFO LibInfo =
 	NULL,
 	NULL,
 	fnAddInFunc,
-	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLoader配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0\0") ,
+	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLoader配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0切换到VMPSDK_LIB模块\0这是个用作测试的辅助工具功能。\0切换到VMPSDK模块\0这是个用作测试的辅助工具功能。\0\0") ,
 	AutoLinker_MessageNotify,
 	NULL,
 	NULL,
 	0,
 	NULL,
-	NULL
+	NULL,
+	//-----------------
+	NULL,
+	0,
+	NULL,
+	"You",
+
 };
 
-PLIB_INFO WINAPI GetNewInf()
+PLIB_INFOX WINAPI GetNewInf()
 {
+	//LibInfo.m_szLicenseToUserName = "You"
 	return (&LibInfo);
 };
 #endif

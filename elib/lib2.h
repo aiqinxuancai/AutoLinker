@@ -1314,6 +1314,82 @@ typedef struct
 
 }LIB_INFO, * PLIB_INFO;
 
+
+typedef struct
+{
+    DWORD  m_dwLibFormatVer;        // 库格式号,应该等于LIB_FORMAT_VER。主要用途如下：譬如 krnln.fnX 库,在做其它与此同名但功能完全不一致的库时,应当改变此格式号,以防止错误装载。
+    LPCSTR m_szGuid;                // 对应于本库的唯一GUID串,不能为NULL或空,库的所有版本此串都应相同。如果为ActiveX控件,此串记录其CLSID。
+    INT    m_nMajorVersion;         // 本库的主版本号,必须大于0。
+    INT    m_nMinorVersion;         // 本库的次版本号。
+    INT    m_nBuildNumber;          // 构建版本号,无需对此版本号作任何处理。本版本号仅用作区分相同正式版本号的系统软件(譬如仅仅修改了几个 BUG,不值得升级正式版本的系统软件)。任何公布过给用户使用的版本其构建版本号都应该不一样。赋值时应该顺序递增。
+    INT    m_nRqSysMajorVer;        // 所需要的易语言系统的主版本号。
+    INT    m_nRqSysMinorVer;        // 所需要的易语言系统的次版本号。
+    INT    m_nRqSysKrnlLibMajorVer; // 所需要的系统核心支持库的主版本号。
+    INT    m_nRqSysKrnlLibMinorVer; // 所需要的系统核心支持库的次版本号。
+
+    LPCSTR m_szName;    // 库名,不能为NULL或空。
+    INT    m_nLanguage;    // 库所支持的语言。
+    LPCSTR m_szExplain;    // 库详细解释
+
+#define LBS_FUNC_NO_RUN_CODE        (1 << 2)    // 本库仅为声明库,没有对应功能的支持代码,因此不能运行。
+#define LBS_NO_EDIT_INFO            (1 << 3)    // 本库内无供编辑用的信息(编辑信息主要为：各种名称、解释字符串等)。
+#define LBS_IS_DB_LIB               (1 << 5)    // 本库是否为数据库操作支持库。
+#define LBS_LIB_INFO2               (1 << 7)    // 本信息结构实际上是否为LIB_INFO2
+#define LBS_IDE_PLUGIN              (1 << 8)    // 本支持库是否为易语言IDE插件. 注意: 只有设置了此标志的支持库,才会接收到来自易语言IDE的NL_IDE_READY和NL_RIGHT_POPUP_MENU_SHOW等相关通知.
+
+//!!! 注意高位包含 __OS_xxxx 宏用于表明本支持库具有的所有操作系统版本。
+#define _LIB_OS(os)     (os)    // 用作转换os类型以便加入到m_dwState。
+#define _TEST_LIB_OS(m_dwState,os)    ((_LIB_OS (os) & m_dwState) != 0) // 用作测试支持库是否具有指定操作系统的版本。
+    DWORD  m_dwState;           // _LIB_OS() | LBS_ 开头常量, 如果是插件,必须包含 LBS_IDE_PLUGIN
+
+    LPCSTR m_szAuthor;          // 作者
+    LPCSTR m_szZipCode;         // 邮编
+    LPCSTR m_szAddress;         // 地址
+    LPCSTR m_szPhoto;           // 电话
+    LPCSTR m_szFax;             // 传真
+    LPCSTR m_szEmail;           // 邮箱
+    LPCSTR m_szHomePage;        // 主页
+    LPCSTR m_szOther;           // 其他信息
+
+    //////////////////
+    INT                 m_nDataTypeCount;   // 本库中自定义数据类型的数目。
+    PLIB_DATA_TYPE_INFO m_pDataType;        // 本库中所有的自定义数据类型。可以参考使用系统核心支持库中的自定义数据类型,系统核心支持库在程序的库登记数组中的索引值加1后的值为1。
+    INT                 m_nCategoryCount;   // 全局命令类别数目,可为0。
+    LPCSTR              m_szzCategory;      // 全局命令类别说明表
+
+
+    INT                 m_nCmdCount;        // 本库中提供的所有命令(全局命令及对象命令)的数目(可为0)。
+    PCMD_INFO           m_pBeginCmdInfo;    // 可为NULL
+    PFN_EXECUTE_CMD*    m_pCmdsFunc;        // 指向每个命令的实现代码首地址,可为NULL
+
+
+    // 有关AddIn功能的说明,两个字符串说明一个功能。第一个为功能名称(仅限一行20字符,如果希望自行初始位置而不被自动加入到工具菜单,
+    // 则名称应该以@开始,此时会接收到值为 -(nAddInFnIndex + 1) 的调用通知),
+    // 第二个为功能详细介绍(仅限一行60字符),最后由两个空串结束。
+    PFN_RUN_ADDIN_FN    m_pfnRunAddInFn;    // 可为NULL
+    LPCSTR              m_szzAddInFnInfo;   // 功能详细介绍（仅限一行60字符），最后由两个空串结束。
+
+    PFN_NOTIFY_LIB      m_pfnNotify;        // 不能为NULL,和易语言通讯的函数
+
+    // 超级模板暂时保留不用。
+    // 有关SuperTemplate的说明,两个字符串说明一个SuperTemplate。
+    // 第一个为SuperTemplate名称(仅限一行30字符),第二个为详细介绍(不限),最后由两个空串结束。
+    PFN_SUPER_TEMPLATE  m_pfnSuperTemplate;   // 可为NULL
+    LPCSTR              m_szzSuperTemplateInfo;              // 详细介绍(不限长度), 最后由两个空串结束。
+
+    INT                 m_nLibConstCount;            // 本库预先定义的所有常量数量。
+    PLIB_CONST_INFO     m_pLibConst;    // 本库预先定义的所有常量。
+
+    LPCSTR              m_szzDependFiles;        // 可为NULL, 本库正常运行所需要依赖的其他支持文件
+
+    // 支持库授权信息
+    LPCSTR m_szHardwareCode;  // // 提供给支持库购买者的本计算机硬件特征码,如无则为NULL或空文本.
+    LPCSTR m_szBuyingTips;  // 提供给支持库购买者的提示信息,如无则为NULL或空文本.
+    LPCSTR m_szBuyingURL;  // 如果不为NULL或空文本,则提供一个用作接受购买信息的URL,用户选择购买本支持库时系统将自动调用浏览器打开此URL,并将相关用户信息参数附在其后.
+    LPCSTR m_szLicenseToUserName;  // 本支持库所授权给的用户名称,如果为NULL/空文本,说明当前使用者尚未得到授权.
+
+}LIB_INFOX, * PLIB_INFOX;
+
 #define    FUNCNAME_GET_LIB_INFO        "GetNewInf"     // 此名称必须固定(3.0以前为"GetLibInf")
 typedef PLIB_INFO(WINAPI* PFN_GET_LIB_INFO) ();    // 取支持库信息函数
 typedef INT(*PFN_ADD_IN_FUNC) ();

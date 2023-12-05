@@ -48,6 +48,9 @@
     <ClCompile Include="MouseBack.cpp">
       <Filter>Sevices</Filter>
     </ClCompile>
+    <ClCompile Include="ECOMEx.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AutoLinker.h" />
@@ -78,6 +81,30 @@
     </ClInclude>
     <ClInclude Include="MouseBack.h">
       <Filter>Sevices</Filter>
+    </ClInclude>
+    <ClInclude Include="elib\krnllib.h">
+      <Filter>elib</Filter>
+    </ClInclude>
+    <ClInclude Include="elib\lang.h">
+      <Filter>elib</Filter>
+    </ClInclude>
+    <ClInclude Include="elib\lib2.h">
+      <Filter>elib</Filter>
+    </ClInclude>
+    <ClInclude Include="elib\mtypes.h">
+      <Filter>elib</Filter>
+    </ClInclude>
+    <ClInclude Include="elib\PublicIDEFunctions.h">
+      <Filter>elib</Filter>
+    </ClInclude>
+    <ClInclude Include="elib\untshare.h">
+      <Filter>elib</Filter>
+    </ClInclude>
+    <ClInclude Include="elib\fnshare.h">
+      <Filter>elib</Filter>
+    </ClInclude>
+    <ClInclude Include="ECOMEx.h">
+      <Filter>Utils</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
