@@ -228,7 +228,9 @@ int WINAPI MyMessageBoxA(
 	if (std::string(lpCaption).find("链接器输出了大量错误或警告信息") != std::string::npos) {
 		return IDNO;
 	}
-
+	if (std::string(lpText).find("链接器输出了大量错误或警告信息") != std::string::npos) {
+		return IDNO;
+	}
 	return originalMessageBoxA(hWnd, lpText, lpCaption, uType);
 }
 
