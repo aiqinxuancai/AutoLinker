@@ -46,19 +46,22 @@ bool g_preDebugging;
 bool g_preCompiling;
 
 
-
-
 static auto originalCreateFileA = CreateFileA;
 static auto originalGetSaveFileNameA = GetSaveFileNameA;
 static auto originalCreateProcessA = CreateProcessA;
 static auto originalMessageBoxA = MessageBoxA;
 
 
+typedef int(__thiscall* OriginalEStartBuildFuncType)(DWORD* thisPtr, int a2);
+OriginalEStartBuildFuncType originalEStartBuildFunc = (OriginalEStartBuildFuncType)0x40A9F1;
+
+
+typedef int(__thiscall* OriginalEStartDebugFuncType)(DWORD* thisPtr, int a2, int a3); //int __thiscall sub_40A080(int this, int a2, int a3)
+OriginalEStartDebugFuncType originalEStartDebugFunc = (OriginalEStartDebugFuncType)0x40A080;
+
+
 typedef INT(WINAPI* NotifySys3Func)(INT, DWORD, DWORD);
-
 static NotifySys3Func NotifySys3 ;
-
-
 OriginalFunctionWithDebugStart originalFunctionWithDebugStart = (OriginalFunctionWithDebugStart)0x0040A080;
 
 
@@ -74,22 +77,47 @@ void OnBuildStart() {
 }
 
 
-//暂时不使用
-DWORD __stdcall HookedoriginalFunctionWithDebugStart(DWORD* t, DWORD arg2, DWORD arg3)
-{
-	//int ret = originalFunctionWithDebugStart(t, arg2, arg3);
-	__asm pushad
-
-	//TODO
-	__asm popad
-	__asm
-	{
-		push arg3
-		push arg2
-		push t
-		call originalFunctionWithDebugStart
-	}
+int __fastcall MyEStartBuildFunc(DWORD* thisPtr, int dummy, int a2) {
+	// 在这里编写你的拦截逻辑
+	OutputStringToELog("编译开始#2");
+	ChangeVMPModel(true);
+	// 调用原始函数
+	return originalEStartBuildFunc(thisPtr, a2);
 }
+
+int __fastcall MyEStartDebugFunc(DWORD* thisPtr, int dummy, int a2, int a3) {
+	// 在这里编写你的拦截逻辑
+	OutputStringToELog("调试开始#2");
+	ChangeVMPModel(false);
+	// 调用原始函数
+	return originalEStartDebugFunc(thisPtr, a2, a3);
+}
+
+
+//// Hook 函数
+//void __declspec(naked) HookFunction() {
+//	__asm {
+//		// 保存寄存器
+//		pushad
+//		pushfd
+//
+//		// 在这里添加你的代码
+//		// 你可以访问寄存器来获取函数参数
+//		// 例如，ECX 会包含 this 指针
+//		// OutputStringToELog("编译开始#3");
+//
+//		// 调用原始函数
+//		call originalFunctionAddr
+//
+//		// 恢复寄存器
+//		popfd
+//		popad
+//
+//		// 返回到调用者
+//		ret
+//	}
+//}
+
 
 
 //暂时不使用
@@ -117,24 +145,24 @@ HANDLE WINAPI MyCreateFileA(
 		//不处理 默认应该选择dll链接方式
 	}
 
-	if (g_preCompiling) {
-		if (std::string(lpFileName).ends_with(".ec")) {
-			std::filesystem::path p(lpFileName);
+	//if (g_preCompiling) {
+	//	if (std::string(lpFileName).ends_with(".ec")) {
+	//		std::filesystem::path p(lpFileName);
 
-			auto oldName = p.filename().string();
-			auto libModelName = g_modelManager.getValue(oldName);
+	//		auto oldName = p.filename().string();
+	//		auto libModelName = g_modelManager.getValue(oldName);
 
-			OutputStringToELog("切换静态模块#1:" + oldName + " -> " + libModelName);
+	//		OutputStringToELog("切换静态模块#1:" + oldName + " -> " + libModelName);
 
-			if (!libModelName.empty() && libModelName.ends_with(".ec")) {
-				auto newPath = p.parent_path().append(libModelName).string();
-				OutputStringToELog("切换静态模块:" + oldName + " -> " + libModelName + " " + newPath);
+	//		if (!libModelName.empty() && libModelName.ends_with(".ec")) {
+	//			auto newPath = p.parent_path().append(libModelName).string();
+	//			OutputStringToELog("切换静态模块:" + oldName + " -> " + libModelName + " " + newPath);
 
-				//替换为lib库路径？？
-				return originalCreateFileA(newPath.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes,dwCreationDisposition,dwFlagsAndAttributes,hTemplateFile);
-			}
-		}
-	}
+	//			//替换为lib库路径？？
+	//			return originalCreateFileA(newPath.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes,dwCreationDisposition,dwFlagsAndAttributes,hTemplateFile);
+	//		}
+	//	}
+	//}
 
 	std::filesystem::path currentPath = GetBasePath();
 	std::filesystem::path autoLoaderPath = currentPath / "tools" / "link.ini";
@@ -234,7 +262,6 @@ int WINAPI MyMessageBoxA(
 	return originalMessageBoxA(hWnd, lpText, lpCaption, uType);
 }
 
-
 void StartHookCreateFileA() {
 	DetourRestoreAfterWith();
 	DetourTransactionBegin();
@@ -243,10 +270,11 @@ void StartHookCreateFileA() {
 	DetourAttach(&(PVOID&)originalGetSaveFileNameA, MyGetSaveFileNameA);
 	DetourAttach(&(PVOID&)originalCreateProcessA, MyCreateProcessA);
 	DetourAttach(&(PVOID&)originalMessageBoxA, MyMessageBoxA);
-	//DetourAttach(&(PVOID&)originalCompilerFunction, MyNakedFunction);
 
-	//DetourAttach(&(PVOID&)originalFunctionWithDebugStart, HookedoriginalFunctionWithDebugStart);
-	//DetourAttach(&(PVOID&)originalFunctionWithBuildStart, HookedFunctionWithNoArgs);
+	
+	DetourAttach(&(PVOID&)originalEStartBuildFunc, MyEStartBuildFunc);
+	DetourAttach(&(PVOID&)originalEStartDebugFunc, MyEStartDebugFunc);
+
 
 	DetourTransactionCommit();
 }
@@ -474,16 +502,66 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
+
+void PeekAllMessage() {
+	MSG msg;
+	while (PeekMessage(&msg, 0, 0, 0, 1))
+	{
+		DispatchMessage(&msg);
+		TranslateMessage(&msg);
+	}
+}
+
+void ChangeVMPModel(bool isLib) {
+	if (isLib) {
+		
+		int sdk = FindEModelNameIndex("VMPSDK");
+		if (sdk != -1) {
+			RemoveEModel(sdk); //移除
+		}
+		int sdkLib = FindEModelNameIndex("VMPSDK_LIB");
+		if (sdkLib == -1) {
+			OutputStringToELog("切换到静态VMP模块");
+			char buffer[MAX_PATH] = { 0 };
+			NotifySys(NAS_GET_PATH, 1004, (DWORD)buffer);
+			std::string cmd = std::format("{}VMPSDK_LIB.ec", buffer);
+
+			OutputStringToELog(cmd);
+			AddEModel2(cmd);
+			PeekAllMessage();
+		}
+	}
+	else {
+		int sdk = FindEModelNameIndex("VMPSDK_LIB");
+		if (sdk != -1) {
+			RemoveEModel(sdk); //移除
+		}
+		int sdkLib = FindEModelNameIndex("VMPSDK");
+		if (sdkLib == -1) {
+			OutputStringToELog("切换到动态VMP模块");
+			char buffer[MAX_PATH] = { 0 };
+			NotifySys(NAS_GET_PATH, 1004, (DWORD)buffer);
+			std::string cmd = std::format("{}VMPSDK.ec", buffer);
+			OutputStringToELog(cmd);
+			AddEModel2(cmd);
+			PeekAllMessage();
+		}
+	}
+	//
+}
+
 //主窗口子类过程
 LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	if (uMsg == 20707) {
 		if (wParam) {
 			g_preCompiling = true;
 			OutputStringToELog("开始编译");
+			ChangeVMPModel(true);
 		}
 		else {
 			g_preDebugging = true;
 			OutputStringToELog("开始调试");
+			ChangeVMPModel(false);
 		}
 		return 0;
 	}
@@ -500,6 +578,9 @@ INT NESRUNFUNC(INT code, DWORD p1, DWORD p2) {
 	DWORD p[2] = {p1, p2};
 	return NotifySys(NES_RUN_FUNC, code, (DWORD) & p);
 }
+
+
+
 
 
 INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
@@ -521,37 +602,12 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 			break;
 		}
 		case 3: { //切换到VMPSDK静态
-
-			int sdk = FindEModelNameIndex("VMPSDK");
-			if (sdk != -1) {
-				RemoveEModel(sdk); //移除
-			}
-			int sdkLib = FindEModelNameIndex("VMPSDK_LIB");
-			if (sdkLib == -1) {
-				char buffer[MAX_PATH] = { 0 };
-				NotifySys(NAS_GET_PATH, 1004, (DWORD)buffer);
-				std::string cmd = std::format("{}VMPSDK_LIB.ec", buffer);
-
-				OutputStringToELog(cmd);
-				AddEModel2(cmd);
-			}
-			
+			ChangeVMPModel(true);
 			break;
 		}
 		case 4: { //切换到VMPSDK动态
+			ChangeVMPModel(false);
 
-			int sdk = FindEModelNameIndex("VMPSDK_LIB");
-			if (sdk != -1) {
-				RemoveEModel(sdk); //移除
-			}
-			int sdkLib = FindEModelNameIndex("VMPSDK");
-			if (sdkLib == -1) {
-				char buffer[MAX_PATH] = { 0 };
-				NotifySys(NAS_GET_PATH, 1004, (DWORD)buffer);
-				std::string cmd = std::format("{}VMPSDK.ec", buffer);
-				OutputStringToELog(cmd);
-				AddEModel2(cmd);
-			}
 			break;
 		}
 			  
@@ -603,6 +659,10 @@ bool FneInit() {
 		StartHookCreateFileA();
 		PostAppMessageA(g_toolBarHwnd, WM_PRINT, 0, 0);
 		OutputStringToELog("初始化完成");
+
+
+
+		//初始化Lib相关库的状态
 		return true;
 	}
 	else

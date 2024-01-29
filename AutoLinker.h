@@ -26,7 +26,7 @@ typedef void(* OriginalCompilerFunction)();
 
 
 void StartHookCreateFileA();
-
+void ChangeVMPModel(bool isLib);
 
 
 EXTERN_C INT WINAPI  AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwParam2);
