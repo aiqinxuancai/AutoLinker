@@ -440,7 +440,7 @@ void PeekAllMessage() {
 	}
 }
 
-void ChangeVMPModel(bool isLib) {
+void ChangeVMProtectModel(bool isLib) {
 	if (isLib) {
 		
 		int sdk = FindEModelNameIndex("VMPSDK");
@@ -481,15 +481,16 @@ void ChangeVMPModel(bool isLib) {
 //主窗口子类过程
 LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	if (uMsg == 20707) {
+		//此消息配合AutoLinkerBuild，已废弃！
 		if (wParam) {
 			g_preCompiling = true;
 			OutputStringToELog("开始编译");
-			ChangeVMPModel(true);
+			//ChangeVMPModel(true);
 		}
 		else {
 			g_preDebugging = true;
 			OutputStringToELog("开始调试");
-			ChangeVMPModel(false);
+			//ChangeVMPModel(false);
 		}
 		return 0;
 	}
