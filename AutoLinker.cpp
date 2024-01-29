@@ -60,20 +60,8 @@ typedef int(__thiscall* OriginalEStartDebugFuncType)(DWORD* thisPtr, int a2, int
 OriginalEStartDebugFuncType originalEStartDebugFunc = (OriginalEStartDebugFuncType)0x40A080; //int __thiscall sub_40A080(int this, int a2, int a3)
 
 
-typedef INT(WINAPI* NotifySys3Func)(INT, DWORD, DWORD);
-static NotifySys3Func NotifySys3 ;
-OriginalFunctionWithDebugStart originalFunctionWithDebugStart = (OriginalFunctionWithDebugStart)0x0040A080;
-
-
-void UpdateCurrentOpenSourceFile();
-
-void OnDebugStart() {
-	OutputStringToELog("调试开始");
-}
-
-void OnBuildStart() {
-	OutputStringToELog("编译开始");
-}
+//typedef INT(WINAPI* NotifySys3Func)(INT, DWORD, DWORD);
+//static NotifySys3Func NotifySys3 ;
 
 int __fastcall MyEStartBuildFunc(DWORD* thisPtr, int dummy, int a2) {
 	OutputStringToELog("编译开始#2");
@@ -443,7 +431,6 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
-
 void PeekAllMessage() {
 	MSG msg;
 	while (PeekMessage(&msg, 0, 0, 0, 1))
@@ -642,7 +629,7 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 	// 返回NULL或NR_ERR表示不指定依赖文件  
 
 	else if (nMsg == NL_SYS_NOTIFY_FUNCTION) {
-		NotifySys3 = (NotifySys3Func)dwParam1;
+		//NotifySys3 = (NotifySys3Func)dwParam1;
 		if (dwParam1) {
 			if (!g_buttonHwnd) {
 				//窗口已经建立

@@ -24,10 +24,11 @@ typedef void (WINAPIV* OriginalFunctionWithBuildStart)();
 
 typedef void(* OriginalCompilerFunction)();
 
-
 void StartHookCreateFileA();
+
 void ChangeVMPModel(bool isLib);
 
+void UpdateCurrentOpenSourceFile();
 
 EXTERN_C INT WINAPI  AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwParam2);
 
