@@ -53,11 +53,11 @@ static auto originalMessageBoxA = MessageBoxA;
 
 
 typedef int(__thiscall* OriginalEStartBuildFuncType)(DWORD* thisPtr, int a2);
-OriginalEStartBuildFuncType originalEStartBuildFunc = (OriginalEStartBuildFuncType)0x40A9F1;
+OriginalEStartBuildFuncType originalEStartBuildFunc = (OriginalEStartBuildFuncType)0x40A9F1;  //int __thiscall sub_40A9F1(_DWORD *this, int a2)
 
 
-typedef int(__thiscall* OriginalEStartDebugFuncType)(DWORD* thisPtr, int a2, int a3); //int __thiscall sub_40A080(int this, int a2, int a3)
-OriginalEStartDebugFuncType originalEStartDebugFunc = (OriginalEStartDebugFuncType)0x40A080;
+typedef int(__thiscall* OriginalEStartDebugFuncType)(DWORD* thisPtr, int a2, int a3); 
+OriginalEStartDebugFuncType originalEStartDebugFunc = (OriginalEStartDebugFuncType)0x40A080; //int __thiscall sub_40A080(int this, int a2, int a3)
 
 
 typedef INT(WINAPI* NotifySys3Func)(INT, DWORD, DWORD);
@@ -71,62 +71,21 @@ void OnDebugStart() {
 	OutputStringToELog("调试开始");
 }
 
-
 void OnBuildStart() {
 	OutputStringToELog("编译开始");
 }
 
-
 int __fastcall MyEStartBuildFunc(DWORD* thisPtr, int dummy, int a2) {
-	// 在这里编写你的拦截逻辑
 	OutputStringToELog("编译开始#2");
 	ChangeVMPModel(true);
-	// 调用原始函数
 	return originalEStartBuildFunc(thisPtr, a2);
 }
 
 int __fastcall MyEStartDebugFunc(DWORD* thisPtr, int dummy, int a2, int a3) {
-	// 在这里编写你的拦截逻辑
 	OutputStringToELog("调试开始#2");
 	ChangeVMPModel(false);
-	// 调用原始函数
 	return originalEStartDebugFunc(thisPtr, a2, a3);
 }
-
-
-//// Hook 函数
-//void __declspec(naked) HookFunction() {
-//	__asm {
-//		// 保存寄存器
-//		pushad
-//		pushfd
-//
-//		// 在这里添加你的代码
-//		// 你可以访问寄存器来获取函数参数
-//		// 例如，ECX 会包含 this 指针
-//		// OutputStringToELog("编译开始#3");
-//
-//		// 调用原始函数
-//		call originalFunctionAddr
-//
-//		// 恢复寄存器
-//		popfd
-//		popad
-//
-//		// 返回到调用者
-//		ret
-//	}
-//}
-
-
-
-//暂时不使用
-void WINAPIV HookedFunctionWithNoArgs()
-{
-	//OnBuildStart();
-	//originalFunctionWithBuildStart();
-}
-
 
 HANDLE WINAPI MyCreateFileA(
 	LPCSTR lpFileName,
@@ -142,27 +101,8 @@ HANDLE WINAPI MyCreateFileA(
 	}
 
 	if (g_preDebugging) {
-		//不处理 默认应该选择dll链接方式
+		
 	}
-
-	//if (g_preCompiling) {
-	//	if (std::string(lpFileName).ends_with(".ec")) {
-	//		std::filesystem::path p(lpFileName);
-
-	//		auto oldName = p.filename().string();
-	//		auto libModelName = g_modelManager.getValue(oldName);
-
-	//		OutputStringToELog("切换静态模块#1:" + oldName + " -> " + libModelName);
-
-	//		if (!libModelName.empty() && libModelName.ends_with(".ec")) {
-	//			auto newPath = p.parent_path().append(libModelName).string();
-	//			OutputStringToELog("切换静态模块:" + oldName + " -> " + libModelName + " " + newPath);
-
-	//			//替换为lib库路径？？
-	//			return originalCreateFileA(newPath.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes,dwCreationDisposition,dwFlagsAndAttributes,hTemplateFile);
-	//		}
-	//	}
-	//}
 
 	std::filesystem::path currentPath = GetBasePath();
 	std::filesystem::path autoLoaderPath = currentPath / "tools" / "link.ini";
@@ -272,6 +212,7 @@ void StartHookCreateFileA() {
 	DetourAttach(&(PVOID&)originalMessageBoxA, MyMessageBoxA);
 
 	
+	//用于自动在编译和调试之间切换Lib与Dll模块
 	DetourAttach(&(PVOID&)originalEStartBuildFunc, MyEStartBuildFunc);
 	DetourAttach(&(PVOID&)originalEStartDebugFunc, MyEStartDebugFunc);
 
