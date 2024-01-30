@@ -209,9 +209,6 @@ void StartHookCreateFileA() {
 	else {
 		//无法启用
 	}
-
-
-
 	DetourTransactionCommit();
 }
 
@@ -233,7 +230,6 @@ void OutputStringToELog(std::string szbuf) {
 
 	}
 }
-
 
 
 /// <summary>
