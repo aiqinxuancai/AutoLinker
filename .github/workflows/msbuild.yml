@@ -31,13 +31,10 @@ jobs:
 
     - name: Compress-Archive
       run: |
-        $tagName = "${{ github.ref }}" -replace 'refs/tags/', ''
-        $zipPath = "AutoLinker-$tagName.zip"
-        powershell Compress-Archive -Path "bin/${{env.BUILD_CONFIGURATION}}/AutoLinker.fne" -DestinationPath $zipPath
-
+        powershell Compress-Archive -Path "bin/${{env.BUILD_CONFIGURATION}}/AutoLinker.fne" -DestinationPath AutoLinker-${{github.ref_name}}.zip
 
     - name: Create a Release
       uses: ncipollo/release-action@v1
       with:
-        artifacts: "AutoLinker-$tagName.zip"
+        artifacts: "AutoLinker-${{github.ref_name}}.zip"
         token: ${{ secrets.GITHUB_TOKEN }}
