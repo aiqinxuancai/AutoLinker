@@ -261,6 +261,9 @@ void ShowMenu(HWND hParent) {
 	}
 }
 
+/// <summary>
+/// 更新按钮内容
+/// </summary>
 void UpdateButton() {
 	if (g_nowOpenSourceFilePath.empty()) {
 		SetWindowTextA(g_buttonHwnd, "默认");
@@ -341,7 +344,6 @@ void UpdateCurrentOpenSourceFile() {
 	g_nowOpenSourceFilePath = sourceFile;
 }
 
-
 //工具条子类过程
 LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	if (uMsg == WM_COMMAND && LOWORD(wParam) == BN_CLICKED) {
@@ -414,20 +416,20 @@ void ChangeVMProtectModel(bool isLib) {
 
 //主窗口子类过程
 LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
-	if (uMsg == 20707) {
-		//此消息配合AutoLinkerBuild，已废弃！
-		if (wParam) {
-			g_preCompiling = true;
-			OutputStringToELog("开始编译");
-			//ChangeVMPModel(true);
-		}
-		else {
-			g_preDebugging = true;
-			OutputStringToELog("开始调试");
-			//ChangeVMPModel(false);
-		}
-		return 0;
-	}
+	//if (uMsg == 20707) {
+	//	//此消息配合AutoLinkerBuild，已废弃！
+	//	if (wParam) {
+	//		g_preCompiling = true;
+	//		OutputStringToELog("开始编译");
+	//		//ChangeVMPModel(true);
+	//	}
+	//	else {
+	//		g_preDebugging = true;
+	//		OutputStringToELog("开始调试");
+	//		//ChangeVMPModel(false);
+	//	}
+	//	return 0;
+	//}
 
 	if (uMsg == 20708) { 
 		BOOL result = SetWindowSubclass((HWND)wParam, EditViewSubclassProc, 0, 0);
@@ -460,15 +462,14 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 			ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
 			break;
 		}
-		case 3: { //切换到VMPSDK静态（自用）
-			ChangeVMProtectModel(true);
-			break;
-		}
-		case 4: { //切换到VMPSDK动态（自用）
-			ChangeVMProtectModel(false);
-
-			break;
-		}
+		//case 3: { //切换到VMPSDK静态（自用）
+		//	ChangeVMProtectModel(true);
+		//	break;
+		//}
+		//case 4: { //切换到VMPSDK动态（自用）
+		//	ChangeVMProtectModel(false);
+		//	break;
+		//}
 			  
 		default: {
 
@@ -518,8 +519,6 @@ bool FneInit() {
 		StartHookCreateFileA();
 		PostAppMessageA(g_toolBarHwnd, WM_PRINT, 0, 0);
 		OutputStringToELog("初始化完成");
-
-
 
 		//初始化Lib相关库的状态
 		return true;
@@ -616,7 +615,7 @@ static LIB_INFOX LibInfo =
 	NULL,
 	NULL,
 	fnAddInFunc,
-	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLoader配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0切换到VMPSDK_LIB模块\0这是个用作测试的辅助工具功能。\0切换到VMPSDK模块\0这是个用作测试的辅助工具功能。\0\0") ,
+	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLoader配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0\0") ,
 	AutoLinker_MessageNotify,
 	NULL,
 	NULL,
