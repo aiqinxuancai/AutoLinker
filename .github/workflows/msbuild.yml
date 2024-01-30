@@ -30,10 +30,14 @@ jobs:
         msbuild ${{env.SOLUTION_FILE_PATH}} -t:rebuild -verbosity:diag -property:Configuration=${{env.BUILD_CONFIGURATION}} -property:Platform=${{env.BUILD_PLATFORM}}
 
     - name: Compress-Archive
-      run: powershell Compress-Archive -Path "bin/${{env.BUILD_CONFIGURATION}}/AutoLinker.fne" -DestinationPath "AutoLinker.zip"
+      run: |
+        $tagName = ${{ github.ref }} -replace 'refs/tags/', ''
+        $zipPath = "AutoLinker-$tagName.zip"
+        powershell Compress-Archive -Path "bin/${{env.BUILD_CONFIGURATION}}/AutoLinker.fne" -DestinationPath $zipPath
+
 
     - name: Create a Release
       uses: ncipollo/release-action@v1
       with:
-        artifacts: "AutoLinker.zip"
+        artifacts: "AutoLinker-$tagName.zip"
         token: ${{ secrets.GITHUB_TOKEN }}
