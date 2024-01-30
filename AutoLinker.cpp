@@ -375,7 +375,10 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 }
 
 
-
+/// <summary>
+/// 废弃，使用新的配置来切换了
+/// </summary>
+/// <param name="isLib"></param>
 void ChangeVMProtectModel(bool isLib) {
 	if (isLib) {
 		
