@@ -10,7 +10,6 @@
 #include <lang.h>
 #include <fnshare.h>
 #include <fnshare.cpp>
-
 #include <detver.h>
 #include <detours.h>
 #include <string>
@@ -26,7 +25,7 @@ typedef void(* OriginalCompilerFunction)();
 
 void StartHookCreateFileA();
 
-void ChangeVMPModel(bool isLib);
+void ChangeVMProtectModel(bool isLib);
 
 void UpdateCurrentOpenSourceFile();
 

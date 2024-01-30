@@ -443,6 +443,7 @@
     <ClCompile Include="MouseBack.cpp" />
     <ClCompile Include="PathHelper.cpp" />
     <ClCompile Include="StringHelper.cpp" />
+    <ClCompile Include="WindowHelper.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AutoLinker.h" />
@@ -464,6 +465,7 @@
     <ClInclude Include="MouseBack.h" />
     <ClInclude Include="PathHelper.h" />
     <ClInclude Include="StringHelper.h" />
+    <ClInclude Include="WindowHelper.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="AutoLinker.def" />

@@ -15,6 +15,7 @@
 #include "MouseBack.h"
 #include <PublicIDEFunctions.h>
 #include "ECOMEx.h"
+#include "WindowHelper.h"
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -51,27 +52,21 @@ static auto originalGetSaveFileNameA = GetSaveFileNameA;
 static auto originalCreateProcessA = CreateProcessA;
 static auto originalMessageBoxA = MessageBoxA;
 
-
 typedef int(__thiscall* OriginalEStartBuildFuncType)(DWORD* thisPtr, int a2);
 OriginalEStartBuildFuncType originalEStartBuildFunc = (OriginalEStartBuildFuncType)0x40A9F1;  //int __thiscall sub_40A9F1(_DWORD *this, int a2)
-
 
 typedef int(__thiscall* OriginalEStartDebugFuncType)(DWORD* thisPtr, int a2, int a3); 
 OriginalEStartDebugFuncType originalEStartDebugFunc = (OriginalEStartDebugFuncType)0x40A080; //int __thiscall sub_40A080(int this, int a2, int a3)
 
-
-//typedef INT(WINAPI* NotifySys3Func)(INT, DWORD, DWORD);
-//static NotifySys3Func NotifySys3 ;
-
 int __fastcall MyEStartBuildFunc(DWORD* thisPtr, int dummy, int a2) {
 	OutputStringToELog("编译开始#2");
-	ChangeVMPModel(true);
+	ChangeVMProtectModel(true);
 	return originalEStartBuildFunc(thisPtr, a2);
 }
 
 int __fastcall MyEStartDebugFunc(DWORD* thisPtr, int dummy, int a2, int a3) {
 	OutputStringToELog("调试开始#2");
-	ChangeVMPModel(false);
+	ChangeVMProtectModel(false);
 	return originalEStartDebugFunc(thisPtr, a2, a3);
 }
 
@@ -179,8 +174,7 @@ int WINAPI MyMessageBoxA(
 	LPCSTR lpText,
 	LPCSTR lpCaption,
 	UINT uType) {
-	//TODO 自动返回确认编译
-
+	//自动返回确认编译
 	if (std::string(lpCaption).find("链接器输出了大量错误或警告信息") != std::string::npos) {
 		return IDNO;
 	}
@@ -204,30 +198,10 @@ void StartHookCreateFileA() {
 	DetourAttach(&(PVOID&)originalEStartBuildFunc, MyEStartBuildFunc);
 	DetourAttach(&(PVOID&)originalEStartDebugFunc, MyEStartDebugFunc);
 
-
 	DetourTransactionCommit();
 }
 
-BOOL CALLBACK EnumChildProcOutputWindow(HWND hwnd, LPARAM lParam) {
-	char buffer[256] = { 0 };
-	if (GetDlgCtrlID(hwnd) == 1011) {
-		HWND* pResult = reinterpret_cast<HWND*>(lParam);
-		*pResult = hwnd;
-		return FALSE;
-	}
-	return TRUE;
-}
 
-/// <summary>
-/// 查找输出窗口
-/// </summary>
-/// <param name="hParent"></param>
-/// <returns></returns>
-HWND FindOutputWindow(HWND hParent) {
-	HWND hResult = NULL;
-	EnumChildWindows(hParent, EnumChildProcOutputWindow, reinterpret_cast<LPARAM>(&hResult));
-	return hResult;
-}
 
 /// <summary>
 /// 输出文本
@@ -247,32 +221,7 @@ void OutputStringToELog(std::string szbuf) {
 	}
 }
 
-BOOL CALLBACK FindMenuBarEnumChildProc(HWND hwnd, LPARAM lParam) {
-	char buffer[256] = { 0 };
-	GetWindowText(hwnd, buffer, sizeof(buffer));
-	char bufferClassName[256] = { 0 };
-	GetClassName(hwnd, bufferClassName, sizeof(bufferClassName));
 
-	if (std::string(buffer) == "菜单条" && std::string(bufferClassName) == "Afx:400000:b:10003:10:0") {
-		HWND* pResult = reinterpret_cast<HWND*>(lParam);
-		*pResult = hwnd;
-		return FALSE;
-	}
-
-	// 继续枚举
-	return TRUE;
-}
-
-/// <summary>
-/// 查找菜单条
-/// </summary>
-/// <param name="hParent"></param>
-/// <returns></returns>
-HWND FindMenuBar(HWND hParent) {
-	HWND hResult = NULL;
-	EnumChildWindows(hParent, FindMenuBarEnumChildProc, reinterpret_cast<LPARAM>(&hResult));
-	return hResult;
-}
 
 /// <summary>
 /// 弹出菜单
@@ -305,20 +254,6 @@ void ShowMenu(HWND hParent) {
 	
 }
 
-
-/// <summary>
-/// 获取当前源文件的路径
-/// </summary>
-/// <param name="hParent"></param>
-std::string GetSourceFilePath() {
-	HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
-	char buffer[256] = { 0 };
-	GetWindowText(hWnd, buffer, sizeof(buffer));
-	auto path = ExtractBetweenDashes(std::string(buffer));
-	return path;
-}
-
-
 void UpdateButton() {
 	if (g_nowOpenSourceFilePath.empty()) {
 		SetWindowTextA(g_buttonHwnd, "默认");
@@ -332,7 +267,6 @@ void UpdateButton() {
 		}
 	}
 }
-
 
 /// <summary>
 /// 更新当前源文件使用的link文件
@@ -431,14 +365,7 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
-void PeekAllMessage() {
-	MSG msg;
-	while (PeekMessage(&msg, 0, 0, 0, 1))
-	{
-		DispatchMessage(&msg);
-		TranslateMessage(&msg);
-	}
-}
+
 
 void ChangeVMProtectModel(bool isLib) {
 	if (isLib) {
@@ -508,10 +435,6 @@ INT NESRUNFUNC(INT code, DWORD p1, DWORD p2) {
 	return NotifySys(NES_RUN_FUNC, code, (DWORD) & p);
 }
 
-
-
-
-
 INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 
 	switch (nAddInFnIndex) {
@@ -531,11 +454,11 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 			break;
 		}
 		case 3: { //切换到VMPSDK静态
-			ChangeVMPModel(true);
+			ChangeVMProtectModel(true);
 			break;
 		}
 		case 4: { //切换到VMPSDK动态
-			ChangeVMPModel(false);
+			ChangeVMProtectModel(false);
 
 			break;
 		}

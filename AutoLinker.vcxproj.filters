@@ -51,6 +51,9 @@
     <ClCompile Include="ECOMEx.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="WindowHelper.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AutoLinker.h" />
@@ -104,6 +107,9 @@
       <Filter>elib</Filter>
     </ClInclude>
     <ClInclude Include="ECOMEx.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="WindowHelper.h">
       <Filter>Utils</Filter>
     </ClInclude>
   </ItemGroup>
