@@ -72,14 +72,43 @@ int FindEModelNameIndex(std::string ecomName) {
 	int ecomCount = GetEModelCount();
 	for (int i = 0; i < ecomCount; i++) {
 		std::string item = GetEModelPath(i);
-
 		std::filesystem::path pathObj(item);
-
 		std::string fileNameWithoutExtension = pathObj.stem().string();
-
 		if (fileNameWithoutExtension == ecomName) {
 			return i;
 		}
 	}
 	return -1;
 }
+
+
+/// <summary>
+/// 根据当前是否是调试，自动切换模块
+/// </summary>
+/// <param name="isDebug"></param>
+void RunChangeECOM(bool isDebug) {
+	int ecomCount = GetEModelCount();
+	for (int i = 0; i < ecomCount; i++) {
+		std::string item = GetEModelPath(i);
+		std::filesystem::path pathObj(item);
+		std::string fileName = pathObj.filename().string();
+		std::string needChangeModelName;
+
+		if (isDebug) {
+			needChangeModelName = g_modelManager.getValue(fileName);
+		}
+		else {
+			needChangeModelName = g_modelManager.getKeyFromValue(fileName);
+		}
+
+		if (!needChangeModelName.empty()) {
+			auto newPath = pathObj.parent_path().append(needChangeModelName).string();
+			RemoveEModel(i);
+			AddEModel2(newPath);
+			OutputStringToELog("切换模块:" + item + " -> " + newPath);
+		}
+	}
+}
+
+
+

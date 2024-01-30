@@ -42,6 +42,15 @@ void ModelManager::setValue(const std::string& key, const std::string& value) {
     saveConfig();
 }
 
+std::string ModelManager::getKeyFromValue(const std::string& value) {
+    for (const auto& kv : configData) {
+        if (kv.second == value) {
+            return kv.first; // 找到值后返回对应的键
+        }
+    }
+    return std::string(); // 如果没有找到，返回空字符串
+}
+
 void ModelManager::loadConfig() {
     std::ifstream configFile(configFilePath);
     std::string line;

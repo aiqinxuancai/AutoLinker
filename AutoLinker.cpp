@@ -28,8 +28,9 @@ ConfigManager g_configManager;
 //管理当前所有的link文件
 LinkerManager g_linkerManager;
 
-//管理模块调试版及编译版本的管理器
+//管理模块 调试 -> 编译 的管理器
 ModelManager g_modelManager;
+
 
 //e主窗口句柄
 HWND g_hwnd = NULL;
@@ -62,13 +63,15 @@ OriginalEStartCompileFuncType originalEStartCompileFunc = (OriginalEStartCompile
 
 int __fastcall MyEStartCompileFunc(DWORD* thisPtr, int dummy, int a2) {
 	OutputStringToELog("编译开始#2");
-	ChangeVMProtectModel(true);
+	//ChangeVMProtectModel(true);
+	RunChangeECOM(true);
 	return originalEStartCompileFunc(thisPtr, a2);
 }
 
 int __fastcall MyEStartDebugFunc(DWORD* thisPtr, int dummy, int a2, int a3) {
 	OutputStringToELog("调试开始#2");
-	ChangeVMProtectModel(false);
+	//ChangeVMProtectModel(false);
+	RunChangeECOM(false);
 	return originalEStartDebugFunc(thisPtr, a2, a3);
 }
 

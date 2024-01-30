@@ -13,6 +13,7 @@ public:
     ModelManager();
     std::string getValue(const std::string& key);
     void setValue(const std::string& key, const std::string& value);
+    std::string getKeyFromValue(const std::string& value);
 
 private:
     void loadConfig();

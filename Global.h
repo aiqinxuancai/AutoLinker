@@ -1,5 +1,6 @@
 // global.h
 #pragma once
+#include "ModelManager.h"
 #ifndef GLOBAL_H
 #define GLOBAL_H
 
@@ -10,6 +11,10 @@ extern int g_debugStartAddress;
 extern int g_compileStartAddress;
 
 extern HWND g_hwnd;
+
+
+//管理模块调试版及编译版本的管理器
+extern ModelManager g_modelManager;
 
 /// <summary>
 /// 输出文本

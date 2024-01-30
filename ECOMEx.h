@@ -21,3 +21,6 @@ BOOL RemoveEModel(std::string filePah);
 int FindEModelIndex(std::string filePah);
 
 int FindEModelNameIndex(std::string ecomName);
+
+
+void RunChangeECOM(bool isDebug);
