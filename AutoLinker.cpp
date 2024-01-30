@@ -40,10 +40,10 @@ HWND g_toolBarHwnd = NULL;
 //在窗口上添加的Button句柄
 HWND g_buttonHwnd;
 
-//准备开始调试
+//准备开始调试 废弃
 bool g_preDebugging;
 
-//准备开始编译
+//准备开始编译 废弃
 bool g_preCompiling;
 
 
@@ -52,16 +52,18 @@ static auto originalGetSaveFileNameA = GetSaveFileNameA;
 static auto originalCreateProcessA = CreateProcessA;
 static auto originalMessageBoxA = MessageBoxA;
 
-typedef int(__thiscall* OriginalEStartBuildFuncType)(DWORD* thisPtr, int a2);
-OriginalEStartBuildFuncType originalEStartBuildFunc = (OriginalEStartBuildFuncType)0x40A9F1;  //int __thiscall sub_40A9F1(_DWORD *this, int a2)
-
-typedef int(__thiscall* OriginalEStartDebugFuncType)(DWORD* thisPtr, int a2, int a3); 
+//开始调试 5.71
+typedef int(__thiscall* OriginalEStartDebugFuncType)(DWORD* thisPtr, int a2, int a3);
 OriginalEStartDebugFuncType originalEStartDebugFunc = (OriginalEStartDebugFuncType)0x40A080; //int __thiscall sub_40A080(int this, int a2, int a3)
 
-int __fastcall MyEStartBuildFunc(DWORD* thisPtr, int dummy, int a2) {
+//开始编译 5.71
+typedef int(__thiscall* OriginalEStartCompileFuncType)(DWORD* thisPtr, int a2);
+OriginalEStartCompileFuncType originalEStartCompileFunc = (OriginalEStartCompileFuncType)0x40A9F1;  //int __thiscall sub_40A9F1(_DWORD *this, int a2)
+
+int __fastcall MyEStartCompileFunc(DWORD* thisPtr, int dummy, int a2) {
 	OutputStringToELog("编译开始#2");
 	ChangeVMProtectModel(true);
-	return originalEStartBuildFunc(thisPtr, a2);
+	return originalEStartCompileFunc(thisPtr, a2);
 }
 
 int __fastcall MyEStartDebugFunc(DWORD* thisPtr, int dummy, int a2, int a3) {
@@ -193,10 +195,20 @@ void StartHookCreateFileA() {
 	DetourAttach(&(PVOID&)originalCreateProcessA, MyCreateProcessA);
 	DetourAttach(&(PVOID&)originalMessageBoxA, MyMessageBoxA);
 
-	
-	//用于自动在编译和调试之间切换Lib与Dll模块
-	DetourAttach(&(PVOID&)originalEStartBuildFunc, MyEStartBuildFunc);
-	DetourAttach(&(PVOID&)originalEStartDebugFunc, MyEStartDebugFunc);
+
+	if (g_debugStartAddress != -1 && g_compileStartAddress != -1) {
+		originalEStartCompileFunc = (OriginalEStartCompileFuncType)g_compileStartAddress;
+		originalEStartDebugFunc = (OriginalEStartDebugFuncType)g_debugStartAddress;
+
+		//用于自动在编译和调试之间切换Lib与Dll模块
+		DetourAttach(&(PVOID&)originalEStartCompileFunc, MyEStartCompileFunc);
+		DetourAttach(&(PVOID&)originalEStartDebugFunc, MyEStartDebugFunc);
+	}
+	else {
+		//无法启用
+	}
+
+
 
 	DetourTransactionCommit();
 }
@@ -209,7 +221,6 @@ void StartHookCreateFileA() {
 /// <param name="szbuf"></param>
 void OutputStringToELog(std::string szbuf) {
 	szbuf.insert(0, "[AutoLinker]");
-
 	OutputDebugString(szbuf.c_str());
 	HWND hwnd = FindOutputWindow((HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0));
 	if (hwnd) {
@@ -250,8 +261,6 @@ void ShowMenu(HWND hParent) {
 	else {
 		OutputStringToELog("当前没有Linker配置文件，请在e目录的AutoLinker\\Config中添加ini文件");
 	}
-
-	
 }
 
 void UpdateButton() {
@@ -453,11 +462,11 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 			ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
 			break;
 		}
-		case 3: { //切换到VMPSDK静态
+		case 3: { //切换到VMPSDK静态（自用）
 			ChangeVMProtectModel(true);
 			break;
 		}
-		case 4: { //切换到VMPSDK动态
+		case 4: { //切换到VMPSDK动态（自用）
 			ChangeVMProtectModel(false);
 
 			break;

@@ -5,48 +5,11 @@
 #include <vector>
 #include <algorithm>
 #include "Global.h"
-
-int g_compilerAddress;
-
-
-std::vector<byte> get_module_bytes(HMODULE h) {
-	MODULEINFO module_info;
-	GetModuleInformation(GetCurrentProcess(), h, &module_info, sizeof(module_info));
-
-	std::vector<byte> bytes(module_info.SizeOfImage);
-	CopyMemory(bytes.data(), h, bytes.size());
-
-	return bytes;
-}
-
-ptrdiff_t find_bytes(const std::vector<byte>& bytes, const std::vector<byte>& pattern) {
-	auto it = std::search(bytes.begin(), bytes.end(), pattern.begin(), pattern.end());
-	if (it != bytes.end()) {
-		return std::distance(bytes.begin(), it);
-	}
-	else {
-		return -1;
-	}
-}
+#include "MemFind.h"
 
 
-int get_build_base() {
-	HMODULE h = GetModuleHandle(NULL);
-	if (h == NULL) {
-		//MessageBox(NULL, "h=0", NULL, MB_OK);
-		return 0;
-	}
-	std::vector<byte> module_bytes = get_module_bytes(h);
-	std::vector<byte> pattern = { 139, 69, 240, 139, 78, 8, 87, 80, 131, 193, 72 };  // 特征码
-
-	ptrdiff_t address = find_bytes(module_bytes, pattern);
-	if (address != -1) {
-		address -= 1;
-		return reinterpret_cast<int>(h) + address;
-	}
-	return 0;
-}
-
+int g_debugStartAddress;
+int g_compileStartAddress;
 
 
 BOOL APIENTRY DllMain(HMODULE hModule,
@@ -57,7 +20,15 @@ BOOL APIENTRY DllMain(HMODULE hModule,
 	switch (ul_reason_for_call)
 	{
 	case DLL_PROCESS_ATTACH: {
-		g_compilerAddress = get_build_base();
+		g_debugStartAddress = FindSelfModelMemory("55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 81 EC ?? ?? 00 00 56 89 8D ?? FB FF FF 8B 8D ?? FB FF FF 81 C1 C0 00 00 00 E8 ?? ?? ?? ?? 85 C0 74 05 E9 ?? 08 00 00");
+		g_compileStartAddress = FindSelfModelMemory("55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 81 EC C4 00");
+
+
+		std::string s = std::format("找到内存地址 {:X} {:X}", g_debugStartAddress, g_compileStartAddress);
+
+		OutputDebugString(s.c_str());
+
+
 		break;
 	}
 	case DLL_THREAD_ATTACH:

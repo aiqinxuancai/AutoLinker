@@ -439,6 +439,7 @@
     <ClCompile Include="detours\modules.cpp" />
     <ClCompile Include="ECOMEx.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="MemFind.cpp" />
     <ClCompile Include="ModelManager.cpp" />
     <ClCompile Include="MouseBack.cpp" />
     <ClCompile Include="PathHelper.cpp" />
@@ -461,6 +462,7 @@
     <ClInclude Include="Global.h" />
     <ClInclude Include="InlineHook.h" />
     <ClInclude Include="LinkerManager.h" />
+    <ClInclude Include="MemFind.h" />
     <ClInclude Include="ModelManager.h" />
     <ClInclude Include="MouseBack.h" />
     <ClInclude Include="PathHelper.h" />

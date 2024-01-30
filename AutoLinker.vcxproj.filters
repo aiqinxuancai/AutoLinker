@@ -54,6 +54,9 @@
     <ClCompile Include="WindowHelper.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="MemFind.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AutoLinker.h" />
@@ -110,6 +113,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="WindowHelper.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="MemFind.h">
       <Filter>Utils</Filter>
     </ClInclude>
   </ItemGroup>

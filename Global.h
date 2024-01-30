@@ -3,8 +3,11 @@
 #ifndef GLOBAL_H
 #define GLOBAL_H
 
-//编译器地址
-extern int g_compilerAddress;
+//调试开始地址
+extern int g_debugStartAddress;
+
+//编译开始地址
+extern int g_compileStartAddress;
 
 extern HWND g_hwnd;
 
