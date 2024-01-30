@@ -31,7 +31,7 @@ jobs:
 
     - name: Compress-Archive
       run: |
-        $tagName = ${{ github.ref }} -replace 'refs/tags/', ''
+        $tagName = "${{ github.ref }}" -replace 'refs/tags/', ''
         $zipPath = "AutoLinker-$tagName.zip"
         powershell Compress-Archive -Path "bin/${{env.BUILD_CONFIGURATION}}/AutoLinker.fne" -DestinationPath $zipPath
 
