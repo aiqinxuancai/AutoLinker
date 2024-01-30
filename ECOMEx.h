@@ -6,21 +6,21 @@
 
 ///Ä£¿é²Ù×÷À©Õ¹
 
-int GetEModelCount();
+int GetECOMCount();
 
-std::string GetEModelPath(int index);
+std::string GetECOMPath(int index);
 
-BOOL AddEModel(std::string filePath);
+BOOL AddECOM(std::string filePath);
 
-BOOL AddEModel2(std::string filePath);
+BOOL AddECOM2(std::string filePath);
 
-BOOL RemoveEModel(int index);
+BOOL RemoveECOM(int index);
 
-BOOL RemoveEModel(std::string filePah);
+BOOL RemoveECOM(std::string filePah);
 
-int FindEModelIndex(std::string filePah);
+int FindECOMIndex(std::string filePah);
 
-int FindEModelNameIndex(std::string ecomName);
+int FindECOMNameIndex(std::string ecomName);
 
 
 void RunChangeECOM(bool isDebug);

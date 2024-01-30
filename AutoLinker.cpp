@@ -31,7 +31,6 @@ LinkerManager g_linkerManager;
 //管理模块 调试 -> 编译 的管理器
 ModelManager g_modelManager;
 
-
 //e主窗口句柄
 HWND g_hwnd = NULL;
 
@@ -53,11 +52,11 @@ static auto originalGetSaveFileNameA = GetSaveFileNameA;
 static auto originalCreateProcessA = CreateProcessA;
 static auto originalMessageBoxA = MessageBoxA;
 
-//开始调试 5.71
+//开始调试 5.71-5.95
 typedef int(__thiscall* OriginalEStartDebugFuncType)(DWORD* thisPtr, int a2, int a3);
 OriginalEStartDebugFuncType originalEStartDebugFunc = (OriginalEStartDebugFuncType)0x40A080; //int __thiscall sub_40A080(int this, int a2, int a3)
 
-//开始编译 5.71
+//开始编译 5.71-5.95
 typedef int(__thiscall* OriginalEStartCompileFuncType)(DWORD* thisPtr, int a2);
 OriginalEStartCompileFuncType originalEStartCompileFunc = (OriginalEStartCompileFuncType)0x40A9F1;  //int __thiscall sub_40A9F1(_DWORD *this, int a2)
 
@@ -162,7 +161,7 @@ BOOL WINAPI MyCreateProcessA(
 			//PDB更名为当前编译的程序的名字+.pdb，看起来更正规
 
 			std::string newPdbCommand = std::format("/pdb:\"{}.pdb\"", outFileName);
-			commandLine = replaceSubstring(commandLine, "/pdb:\"build.pdb\"", newPdbCommand);
+			commandLine = ReplaceSubstring(commandLine, "/pdb:\"build.pdb\"", newPdbCommand);
 
 			std::vector<char> commandLineBuffer(commandLine.begin(), commandLine.end());
 			commandLineBuffer.push_back('\0');
@@ -382,11 +381,11 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 void ChangeVMProtectModel(bool isLib) {
 	if (isLib) {
 		
-		int sdk = FindEModelNameIndex("VMPSDK");
+		int sdk = FindECOMNameIndex("VMPSDK");
 		if (sdk != -1) {
-			RemoveEModel(sdk); //移除
+			RemoveECOM(sdk); //移除
 		}
-		int sdkLib = FindEModelNameIndex("VMPSDK_LIB");
+		int sdkLib = FindECOMNameIndex("VMPSDK_LIB");
 		if (sdkLib == -1) {
 			OutputStringToELog("切换到静态VMP模块");
 			char buffer[MAX_PATH] = { 0 };
@@ -394,23 +393,23 @@ void ChangeVMProtectModel(bool isLib) {
 			std::string cmd = std::format("{}VMPSDK_LIB.ec", buffer);
 
 			OutputStringToELog(cmd);
-			AddEModel2(cmd);
+			AddECOM2(cmd);
 			PeekAllMessage();
 		}
 	}
 	else {
-		int sdk = FindEModelNameIndex("VMPSDK_LIB");
+		int sdk = FindECOMNameIndex("VMPSDK_LIB");
 		if (sdk != -1) {
-			RemoveEModel(sdk); //移除
+			RemoveECOM(sdk); //移除
 		}
-		int sdkLib = FindEModelNameIndex("VMPSDK");
+		int sdkLib = FindECOMNameIndex("VMPSDK");
 		if (sdkLib == -1) {
 			OutputStringToELog("切换到动态VMP模块");
 			char buffer[MAX_PATH] = { 0 };
 			NotifySys(NAS_GET_PATH, 1004, (DWORD)buffer);
 			std::string cmd = std::format("{}VMPSDK.ec", buffer);
 			OutputStringToELog(cmd);
-			AddEModel2(cmd);
+			AddECOM2(cmd);
 			PeekAllMessage();
 		}
 	}

@@ -3,25 +3,25 @@
 #include <PublicIDEFunctions.h>
 #include <filesystem>
 
-int GetEModelCount() {
+int GetECOMCount() {
 	int ecomCount;
 	int e2 = NESRUNFUNC(FN_GET_NUM_ECOM, (DWORD)(&ecomCount), 0);
 	return ecomCount;
 }
 
-std::string GetEModelPath(int index) {
+std::string GetECOMPath(int index) {
 	char path[MAX_PATH];
 	NESRUNFUNC(FN_GET_ECOM_FILE_NAME, index, (DWORD)path);
 	return path;
 }
 
-BOOL AddEModel(std::string filePath) {
+BOOL AddECOM(std::string filePath) {
 	BOOL isSuccess;
 	NESRUNFUNC(FN_INPUT_ECOM, (DWORD)filePath.c_str(), (DWORD)&isSuccess);
 	return isSuccess;
 }
 
-BOOL AddEModel2(std::string filePath) {
+BOOL AddECOM2(std::string filePath) {
 	BOOL isSuccess;
 	NESRUNFUNC(FN_ADD_NEW_ECOM2, (DWORD)filePath.c_str(), (DWORD)&isSuccess);
 	return isSuccess;
@@ -29,17 +29,17 @@ BOOL AddEModel2(std::string filePath) {
 
 
 
-BOOL RemoveEModel(int index) {
+BOOL RemoveECOM(int index) {
 	char path[MAX_PATH];
 	BOOL isSuccess;
 	isSuccess = NESRUNFUNC(FN_REMOVE_SPEC_ECOM, index, 0);
 	return isSuccess;
 }
 
-BOOL RemoveEModel(std::string filePah) {
+BOOL RemoveECOM(std::string filePah) {
 	char path[MAX_PATH];
 	BOOL isSuccess;
-	int index = FindEModelIndex(filePah);
+	int index = FindECOMIndex(filePah);
 	if (index != -1) {
 		NESRUNFUNC(FN_REMOVE_SPEC_ECOM, index, 0);
 		return true;
@@ -48,12 +48,12 @@ BOOL RemoveEModel(std::string filePah) {
 	return false;
 }
 
-int FindEModelIndex(std::string filePah) {
+int FindECOMIndex(std::string filePah) {
 	char path[MAX_PATH];
 	BOOL isSuccess;
-	int ecomCount = GetEModelCount();
+	int ecomCount = GetECOMCount();
 	for (int i = 0; i < ecomCount; i++) {
-		std::string item = GetEModelPath(i);
+		std::string item = GetECOMPath(i);
 		if (item == filePah) {
 			return i;
 		}
@@ -66,12 +66,12 @@ int FindEModelIndex(std::string filePah) {
 /// </summary>
 /// <param name="ecomName"></param>
 /// <returns></returns>
-int FindEModelNameIndex(std::string ecomName) {
+int FindECOMNameIndex(std::string ecomName) {
 	char path[MAX_PATH];
 	BOOL isSuccess;
-	int ecomCount = GetEModelCount();
+	int ecomCount = GetECOMCount();
 	for (int i = 0; i < ecomCount; i++) {
-		std::string item = GetEModelPath(i);
+		std::string item = GetECOMPath(i);
 		std::filesystem::path pathObj(item);
 		std::string fileNameWithoutExtension = pathObj.stem().string();
 		if (fileNameWithoutExtension == ecomName) {
@@ -87,24 +87,24 @@ int FindEModelNameIndex(std::string ecomName) {
 /// </summary>
 /// <param name="isDebug"></param>
 void RunChangeECOM(bool isDebug) {
-	int ecomCount = GetEModelCount();
+	int ecomCount = GetECOMCount();
 	for (int i = 0; i < ecomCount; i++) {
-		std::string item = GetEModelPath(i);
+		std::string item = GetECOMPath(i);
 		std::filesystem::path pathObj(item);
 		std::string fileName = pathObj.filename().string();
-		std::string needChangeModelName;
+		std::string needChangECOMName;
 
 		if (isDebug) {
-			needChangeModelName = g_modelManager.getValue(fileName);
+			needChangECOMName = g_modelManager.getValue(fileName);
 		}
 		else {
-			needChangeModelName = g_modelManager.getKeyFromValue(fileName);
+			needChangECOMName = g_modelManager.getKeyFromValue(fileName);
 		}
 
-		if (!needChangeModelName.empty()) {
-			auto newPath = pathObj.parent_path().append(needChangeModelName).string();
-			RemoveEModel(i);
-			AddEModel2(newPath);
+		if (!needChangECOMName.empty()) {
+			auto newPath = pathObj.parent_path().append(needChangECOMName).string();
+			RemoveECOM(i);
+			AddECOM2(newPath);
 			OutputStringToELog("ÇÐ»»Ä£¿é:" + item + " -> " + newPath);
 		}
 	}
