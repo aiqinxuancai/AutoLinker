@@ -27,7 +27,7 @@ jobs:
     - name: Build
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: |
-        msbuild ${{env.SOLUTION_FILE_PATH}} -t:rebuild -verbosity:diag -property:Configuration=${{env.BUILD_CONFIGURATION}} -property:Platform=${{env.BUILD_PLATFORM}}
+        msbuild ${{env.SOLUTION_FILE_PATH}}/AutoLinker.vcxproj -t:rebuild -verbosity:diag -property:Configuration=${{env.BUILD_CONFIGURATION}} -property:Platform=${{env.BUILD_PLATFORM}}
 
     - name: Compress-Archive
       run: |
