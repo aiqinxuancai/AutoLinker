@@ -170,13 +170,18 @@ BOOL WINAPI MyCreateProcessA(
 		if (libList.size() > 0) {
 			std::string libCmd;
 			for (const auto& line : libList) {
-				auto lines = SplitStringTwo(line, ':');
+
+
+				auto lines = SplitStringTwo(line, '=');
 				auto libPath = line;
 				std::string linkerName;
 				if (lines.size() == 2) {
 					linkerName = line[0];
 					libPath = line[1];
 				}
+
+				OutputStringToELog("找到设定的强制链接Lib：" + linkerName + "->" + libPath);
+
 				if (!linkerName.empty()) {
 					//要求必须指定Linker才可使用（包含名称既可）
 					if (currentLinkerName.find(linkerName) != std::string::npos) {
