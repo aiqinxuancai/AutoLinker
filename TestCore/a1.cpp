@@ -30,6 +30,13 @@ extern "C" void _cdecl krnln_fnBAnd(PMDATA_INF pRetData, INT nArgCount, PMDATA_I
 }
 
 
+/// <summary>
+/// 使用现代C++方法实现寻找文本，大约是核心库的300%速度
+/// </summary>
+/// <param name="pRetData"></param>
+/// <param name="nArgCount"></param>
+/// <param name="pArgInf"></param>
+/// <returns></returns>
 extern "C" void __cdecl krnln_fnInStr(PMDATA_INF pRetData, INT nArgCount, PMDATA_INF pArgInf) {
     // 获取输入字符串
     std::string_view inputString = pArgInf[0].m_pText;
