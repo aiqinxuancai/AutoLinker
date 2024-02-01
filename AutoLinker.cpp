@@ -164,19 +164,52 @@ BOOL WINAPI MyCreateProcessA(
 		std::string libFilePath = std::format("{}\\AutoLoader\\ForceLinkLib.txt", GetBasePath());
 		auto libList = ReadFileAndSplitLines(libFilePath);
 
+		//和链接器关联
+		auto currentLinkerName = g_configManager.getValue(g_nowOpenSourceFilePath);
+
 		if (libList.size() > 0) {
 			std::string libCmd;
 			for (const auto& line : libList) {
-				if (std::filesystem::exists(line)) {
-					if (!libCmd.empty()) {
-						libCmd += " ";
-					}
-					libCmd += "\"" + line + "\"";
+				auto lines = SplitStringTwo(line, ':');
+				auto libPath = line;
+				std::string linkerName;
+				if (lines.size() == 2) {
+					linkerName = line[0];
+					libPath = line[1];
 				}
+				if (!linkerName.empty()) {
+					//要求必须指定Linker才可使用（包含名称既可）
+					if (currentLinkerName.find(linkerName) != std::string::npos) {
+						//可使用，link名称一致
+						if (std::filesystem::exists(libPath)) {
+							OutputStringToELog("增加链接Lib："+ linkerName + "->" + libPath);
+							if (!libCmd.empty()) {
+								libCmd += " ";
+							}
+							libCmd += "\"" + libPath + "\"";
+						}
+					} else {
+						//不可使用
+					}
+
+				} else {
+					//
+					if (std::filesystem::exists(libPath)) {
+						OutputStringToELog("增加链接Lib：" + libPath);
+						if (!libCmd.empty()) {
+							libCmd += " ";
+						}
+						libCmd += "\"" + libPath + "\"";
+					}
+				}
+
+
 			}
 
 			std::string newLibs = libCmd + " \"" + krnlnPath + "\" /FORCE";
 			commandLine = ReplaceSubstring(commandLine, "\"" + krnlnPath + "\"", newLibs);
+
+
 		}
 	}
 
