@@ -151,26 +151,45 @@ BOOL WINAPI MyCreateProcessA(
 	LPPROCESS_INFORMATION lpProcessInformation
 ) {
 	std::string commandLine = lpCommandLine;
-	auto outFileName = GetLinkerCommandOutFileName(lpCommandLine);
 
-	//std::string s = std::format("进程创建 [{}] {}", lpApplicationName, lpCommandLine);
-	//OutputStringToELog(s);
+	//检查加入提前链接
+	auto krnlnPath = GetLinkerCommandKrnlnFileName(lpCommandLine);
+	OutputStringToELog(krnlnPath);
 
-	if (!outFileName.empty()) {
-		if (commandLine.find("/pdb:\"build.pdb\"") != std::string::npos) {
-			//PDB更名为当前编译的程序的名字+.pdb，看起来更正规
+	if (!krnlnPath.empty()) {
+		//核心库代码优先使用黑月的，然后再使用核心库的
+		//std::string bklib = "D:\\git\\KanAutoControls\\Release\\TestCore.lib";
+		
+		//将把这个Lib插入的链接器的前方，添加/FORCE强制链接，忽略重定义
+		std::string libFilePath = std::format("{}\\AutoLoader\\ForceLinkLib.txt", GetBasePath());
+		auto libList = ReadFileAndSplitLines(libFilePath);
 
-			std::string newPdbCommand = std::format("/pdb:\"{}.pdb\"", outFileName);
-			commandLine = ReplaceSubstring(commandLine, "/pdb:\"build.pdb\"", newPdbCommand);
+		if (libList.size() > 0) {
+			std::string libCmd;
+			for (const auto& line : libList) {
+				if (std::filesystem::exists(line)) {
+					if (!libCmd.empty()) {
+						libCmd += " ";
+					}
+					libCmd += "\"" + line + "\"";
+				}
+			}
 
-			std::vector<char> commandLineBuffer(commandLine.begin(), commandLine.end());
-			commandLineBuffer.push_back('\0');
-
-			return originalCreateProcessA(lpApplicationName, commandLineBuffer.data(), lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
+			std::string newLibs = libCmd + " \"" + krnlnPath + "\" /FORCE";
+			commandLine = ReplaceSubstring(commandLine, "\"" + krnlnPath + "\"", newLibs);
 		}
 	}
 
-	return originalCreateProcessA(lpApplicationName, lpCommandLine, lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
+	auto outFileName = GetLinkerCommandOutFileName(lpCommandLine);
+	if (!outFileName.empty()) {
+		if (commandLine.find("/pdb:\"build.pdb\"") != std::string::npos) {
+			//PDB更名为当前编译的程序的名字+.pdb，看起来更正规
+			std::string newPdbCommand = std::format("/pdb:\"{}.pdb\"", outFileName);
+			commandLine = ReplaceSubstring(commandLine, "/pdb:\"build.pdb\"", newPdbCommand);
+		}
+	}
+	OutputStringToELog("启动命令行：" + commandLine);
+	return originalCreateProcessA(lpApplicationName, (char *)commandLine.c_str(), lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
 }
 
 int WINAPI MyMessageBoxA(

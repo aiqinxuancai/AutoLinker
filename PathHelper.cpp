@@ -83,3 +83,30 @@ std::string GetLinkerCommandOutFileName(const std::string& s) {
         return ""; 
     }
 }
+
+
+
+// 函数：从命令行文本中提取包含特定特征的路径
+std::string ExtractPathFromCommand(const std::string& commandLine, const std::string& target) {
+    std::string foundPath;
+    size_t pos = commandLine.find(target);
+    if (pos != std::string::npos) {
+        // 从特征字符串的位置向前查找第一个双引号
+        size_t start = commandLine.rfind('"', pos);
+        // 从特征字符串的位置向后查找第一个双引号
+        size_t end = commandLine.find('"', pos + target.length());
+
+        // 如果找到了双引号，提取路径
+        if (start != std::string::npos && end != std::string::npos) {
+            foundPath = commandLine.substr(start + 1, end - start - 1);
+        }
+    }
+    return foundPath;
+}
+
+std::string GetLinkerCommandKrnlnFileName(const std::string& s) {
+    std::string target = "\\static_lib\\krnln_static.lib";
+    std::string foundPath = ExtractPathFromCommand(s, target);
+    return foundPath;
+}
+

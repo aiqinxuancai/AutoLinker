@@ -24,3 +24,6 @@ std::optional<size_t> FindByteInFile(const std::string& filename, const std::vec
 /// <param name="s"></param>
 /// <returns></returns>
 std::string GetLinkerCommandOutFileName(const std::string& s);
+
+
+std::string GetLinkerCommandKrnlnFileName(const std::string& s);
