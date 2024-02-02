@@ -6,7 +6,7 @@ AutoLinker支持库，通过各种方法实现以下功能：
 * 强制将Lib链接到核心库之前（并开启/FORCE忽略冲突），用现代方法替换核心库函数
 
 ## 使用方法
-编译后将AutoLinker.fne放在e的lib目录中，并启动候选AutoLinker支持库。
+编译后将AutoLinker.fne放在e的lib目录中，并启用AutoLinker支持库。
 
 ### ⭐不同的.e源文件使用不同的链接器
 此功能实现针对不同.e源文件使用不同链接器，再也不用来回切换链接器了。
