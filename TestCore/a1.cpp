@@ -4,22 +4,15 @@
 #include <string_view>
 #include <string>
 #include <algorithm>
+#include <variant>
 
-//LIBAPI(int, krnln_fnBAnd)
-//{
-//	PMDATA_INF pArg = &ArgInf;
-//	ret
-//	int n = pArg->m_int;
-//	for (int i = 1; i < nArgCount; i++)
-//	{
-//		n &= pArg[i].m_int;
-//	}
-//
-//	return n;
-//
-//}
-
-
+/// <summary>
+/// 位与运算
+/// </summary>
+/// <param name="pRetData"></param>
+/// <param name="nArgCount"></param>
+/// <param name="pArgInf"></param>
+/// <returns></returns>
 extern "C" void _cdecl krnln_fnBAnd(PMDATA_INF pRetData, INT nArgCount, PMDATA_INF pArgInf) {
 	int n = pArgInf->m_int;
 	for (int i = 1; i < nArgCount; i++)
@@ -38,6 +31,9 @@ extern "C" void _cdecl krnln_fnBAnd(PMDATA_INF pRetData, INT nArgCount, PMDATA_I
 /// <param name="pArgInf"></param>
 /// <returns></returns>
 extern "C" void __cdecl krnln_fnInStr(PMDATA_INF pRetData, INT nArgCount, PMDATA_INF pArgInf) {
+
+    //TODO 你还可以在这里添加VMP标志
+
     // 获取输入字符串
     std::string_view inputString = pArgInf[0].m_pText;
     std::string_view searchString = pArgInf[1].m_pText;
