@@ -164,43 +164,45 @@ BOOL WINAPI MyCreateProcessA(
 		std::string libFilePath = std::format("{}\\AutoLoader\\ForceLinkLib.txt", GetBasePath());
 		auto libList = ReadFileAndSplitLines(libFilePath);
 
-		//和链接器关联
-		auto currentLinkerName = g_configManager.getValue(g_nowOpenSourceFilePath);
+
 
 		if (libList.size() > 0) {
+			//和链接器关联
+			auto currentLinkerName = g_configManager.getValue(g_nowOpenSourceFilePath);
+
+			OutputStringToELog(std::format("当前指定的链接器：{}", currentLinkerName));
+
 			std::string libCmd;
 			for (const auto& line : libList) {
-
-
 				auto lines = SplitStringTwo(line, '=');
 				auto libPath = line;
 				std::string linkerName;
 				if (lines.size() == 2) {
-					linkerName = line[0];
-					libPath = line[1];
+					linkerName = lines[0];
+					libPath = lines[1];
 				}
 
-				OutputStringToELog("找到设定的强制链接Lib：" + linkerName + "->" + libPath);
+				//OutputStringToELog(std::format("找到设定的强制链接Lib：{} -> {}", linkerName, libPath));
 
 				if (!linkerName.empty()) {
 					//要求必须指定Linker才可使用（包含名称既可）
 					if (currentLinkerName.find(linkerName) != std::string::npos) {
 						//可使用，link名称一致
 						if (std::filesystem::exists(libPath)) {
-							OutputStringToELog("增加链接Lib："+ linkerName + "->" + libPath);
+							OutputStringToELog(std::format("强制链接Lib：{} -> {}", linkerName, libPath));
 							if (!libCmd.empty()) {
 								libCmd += " ";
 							}
 							libCmd += "\"" + libPath + "\"";
 						}
 					} else {
-						//不可使用
+						
+						OutputStringToELog(std::format("链接器{}不符合当前的链接器{}，不链接：{}", linkerName, currentLinkerName, libPath));
 					}
 
 				} else {
-					//
 					if (std::filesystem::exists(libPath)) {
-						OutputStringToELog("增加链接Lib：" + libPath);
+						OutputStringToELog(std::format("强制链接Lib：{}", libPath));
 						if (!libCmd.empty()) {
 							libCmd += " ";
 						}

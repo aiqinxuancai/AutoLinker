@@ -53,7 +53,7 @@ std::vector<std::string> ReadFileAndSplitLines(const std::string& filePath) {
 }
 
 /// <summary>
-/// 根据符号分割为两半，如果没符号，则为一个原文本
+/// 根据符号分割为两半，如果没找到'='，则为一个原文本
 /// </summary>
 /// <param name="input"></param>
 /// <param name="delimiter"></param>
@@ -67,15 +67,14 @@ std::vector<std::string> SplitStringTwo(const std::string& input, char delimiter
         std::string first = input.substr(0, pos);
         std::string second = input.substr(pos + 1);
 
-        if (!second.empty()) {
-            // 如果第二部分非空，添加两部分
-            result.push_back(first);
-            result.push_back(second);
-            return result;
-        }
+        // 添加两部分，即使第二部分为空也添加
+        result.push_back(first);
+        result.push_back(second);
+    }
+    else {
+        // 如果没有找到分隔符，返回原字符串
+        result.push_back(input);
     }
 
-    // 其他情况，返回原字符串
-    result.push_back(input);
     return result;
 }
