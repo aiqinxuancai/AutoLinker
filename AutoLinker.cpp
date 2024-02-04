@@ -587,7 +587,8 @@ bool FneInit() {
 	}
 	else
 	{
-		OutputStringToELog("初始化失败，未找到窗口");
+
+		OutputStringToELog(std::format("初始化失败，未找到窗口{} {}", (int)g_hwnd, (int)g_toolBarHwnd));
 	}
 	
 	return false;

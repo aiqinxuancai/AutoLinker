@@ -9,8 +9,9 @@ BOOL CALLBACK FindMenuBarEnumChildProc(HWND hwnd, LPARAM lParam) {
 	GetWindowText(hwnd, buffer, sizeof(buffer));
 	char bufferClassName[256] = { 0 };
 	GetClassName(hwnd, bufferClassName, sizeof(bufferClassName));
+	auto className = std::string(bufferClassName);
 
-	if (std::string(buffer) == "菜单条" && std::string(bufferClassName) == "Afx:400000:b:10003:10:0") {
+	if (std::string(buffer) == "菜单条" && className.starts_with("Afx:400000:b:100") && className.ends_with(":10:0")) {
 		HWND* pResult = reinterpret_cast<HWND*>(lParam);
 		*pResult = hwnd;
 		return FALSE;
