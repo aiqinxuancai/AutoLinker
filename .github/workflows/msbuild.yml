@@ -19,10 +19,6 @@ jobs:
 
     - name: Set System Locale to Chinese
       run: |
-        $languageList = New-Object System.Collections.Generic.List[Microsoft.InternationalSettings.Commands.WinUserLanguage]
-        $languageList.Add((New-Object Microsoft.InternationalSettings.Commands.WinUserLanguage -ArgumentList "zh-CN"))
-        Set-WinUserLanguageList $languageList -Force
-        # 设置系统代码页为简体中文
         Set-WinSystemLocale zh-CN
 
     - name: Add MSBuild to PATH
