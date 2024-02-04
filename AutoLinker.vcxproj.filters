@@ -57,6 +57,9 @@
     <ClCompile Include="MemFind.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="WinINetUtil.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="AutoLinker.h" />
@@ -116,6 +119,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="MemFind.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="WinINetUtil.h">
       <Filter>Utils</Filter>
     </ClInclude>
   </ItemGroup>

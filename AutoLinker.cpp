@@ -16,6 +16,8 @@
 #include <PublicIDEFunctions.h>
 #include "ECOMEx.h"
 #include "WindowHelper.h"
+#include <future>
+#include "WinINetUtil.h"
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -30,6 +32,7 @@ LinkerManager g_linkerManager;
 
 //管理模块 调试 -> 编译 的管理器
 ModelManager g_modelManager;
+
 
 //e主窗口句柄
 HWND g_hwnd = NULL;
@@ -554,7 +557,39 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
 	return TRUE;
 }
 
+void FneCheckNewVersion(void* pParams) {
+	OutputStringToELog("检测新版本");
+	std::string url = "https://api.github.com/repos/aiqinxuancai/AutoLinker/releases/latest";
+	//std::string customHeaders = "user-agent: Mozilla/5.0";
+	auto response = PerformGetRequest(url);
 
+	if (response.second == 200) {
+		std::string nowGithubVersion = "0.0.0";
+		std::string currentVersion = "{VERSION}"; //TODO 需要用脚本替换
+
+		if (!response.first.empty()) {
+			auto pos = response.first.find("\"tag_name\"");
+			if (pos != std::string::npos) {
+				auto start = response.first.find('"', pos + 10) + 1;
+				auto end = response.first.find('"', start);
+				std::string tagName = response.first.substr(start, end - start);
+
+				nowGithubVersion = tagName;
+
+				if (nowGithubVersion != currentVersion) {
+					OutputStringToELog("新版本");
+					OutputStringToELog(nowGithubVersion);
+				}
+			}
+		}
+
+	}
+	else {
+		OutputStringToELog("无新版本");
+	}
+
+	//return false;
+}
 
 bool FneInit() {
 	OutputStringToELog("开始初始化");
@@ -583,6 +618,14 @@ bool FneInit() {
 		OutputStringToELog("初始化完成");
 
 		//初始化Lib相关库的状态
+
+		//启动线程运行
+		//auto future = std::async(std::launch::async, FneCheckNewVersion);
+		//std::thread versionCheckThread(FneCheckNewVersion);
+		uintptr_t threadID = _beginthread(FneCheckNewVersion, 0, NULL);
+
+
+
 		return true;
 	}
 	else
