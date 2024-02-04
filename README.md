@@ -90,7 +90,9 @@ AutoLinker支持库，通过各种方法实现以下功能：
     vc2022+pf=D:\git\X\Release\TestCore.lib
     D:\git\X\Release\TestCore.lib
     ```
-  * 静态编译既可，会提示如下内容，不会影响代码运行
+    **注意**：例子TestCore使用C++20，必须使用VC2022链接器才可链接
+    
+  * 进行静态编译既可，会提示如下内容，不会影响代码运行
     ```
     krnln_static.lib(Libfn.obj) : warning LNK4006: _krnln_fnBAnd 已在 TestCore.lib(a1.obj) 中定义；已忽略第二个定义
     krnln_static.lib(Libfn.obj) : warning LNK4006: _krnln_fnSin 已在 TestCore.lib(a1.obj) 中定义；已忽略第二个定义
