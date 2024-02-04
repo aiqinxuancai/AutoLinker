@@ -17,6 +17,11 @@ jobs:
     steps:
     - uses: actions/checkout@v2
 
+    - name: Set System Locale to Chinese
+      run: |
+        Set-WinSystemLocale zh-CN
+        Set-WinUserLanguageList zh-CN -Force
+
     - name: Add MSBuild to PATH
       uses: microsoft/setup-msbuild@v1.1
 
