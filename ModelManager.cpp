@@ -5,13 +5,13 @@
 ModelManager::ModelManager() {
     // 获取当前进程的路径
     std::filesystem::path currentPath = GetBasePath();
-    // 创建AutoLoader目录
-    std::filesystem::path autoLoaderPath = currentPath / "AutoLoader";
-    if (!std::filesystem::exists(autoLoaderPath)) {
-        std::filesystem::create_directory(autoLoaderPath);
+    // 创建AutoLinker目录
+    std::filesystem::path autoLinkerPath = currentPath / "AutoLinker";
+    if (!std::filesystem::exists(autoLinkerPath)) {
+        std::filesystem::create_directory(autoLinkerPath);
     }
     // 创建并打开配置文件
-    configFilePath = autoLoaderPath / "ModelManager.ini";
+    configFilePath = autoLinkerPath / "ModelManager.ini";
     loadConfig();
 }
 

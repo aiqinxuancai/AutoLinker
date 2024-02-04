@@ -92,8 +92,8 @@ HANDLE WINAPI MyCreateFileA(
 	}
 
 	std::filesystem::path currentPath = GetBasePath();
-	std::filesystem::path autoLoaderPath = currentPath / "tools" / "link.ini";
-	if (autoLoaderPath.string() == std::string(lpFileName)) {
+	std::filesystem::path autoLinkerPath = currentPath / "tools" / "link.ini";
+	if (autoLinkerPath.string() == std::string(lpFileName)) {
 		g_preCompiling = false;
 
 		//EC编译阶段结束
@@ -161,7 +161,7 @@ BOOL WINAPI MyCreateProcessA(
 		//std::string bklib = "D:\\git\\KanAutoControls\\Release\\TestCore.lib";
 		
 		//将把这个Lib插入的链接器的前方，添加/FORCE强制链接，忽略重定义
-		std::string libFilePath = std::format("{}\\AutoLoader\\ForceLinkLib.txt", GetBasePath());
+		std::string libFilePath = std::format("{}\\AutoLinker\\ForceLinkLib.txt", GetBasePath());
 		auto libList = ReadFileAndSplitLines(libFilePath);
 
 
@@ -515,7 +515,7 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 			break;
 		}
 		case 1: { //Auto 目录
-			std::string cmd = std::format("{}\\AutoLoader", GetBasePath());
+			std::string cmd = std::format("{}\\AutoLinker", GetBasePath());
 			ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
 			break;
 		}
@@ -678,7 +678,7 @@ static LIB_INFOX LibInfo =
 	NULL,
 	NULL,
 	fnAddInFunc,
-	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLoader配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0\0") ,
+	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0\0") ,
 	AutoLinker_MessageNotify,
 	NULL,
 	NULL,

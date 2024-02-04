@@ -19,13 +19,13 @@ public:
 
         // 获取当前进程的路径
         std::filesystem::path currentPath = GetBasePath();
-        // 创建AutoLoader目录
-        std::filesystem::path autoLoaderPath = currentPath / "AutoLoader" / "Config";
-        if (!std::filesystem::exists(autoLoaderPath)) {
-            std::filesystem::create_directory(autoLoaderPath);
+        // 创建AutoLinker目录
+        std::filesystem::path autoLinkerPath = currentPath / "AutoLinker" / "Config";
+        if (!std::filesystem::exists(autoLinkerPath)) {
+            std::filesystem::create_directory(autoLinkerPath);
         }
 
-        for (const auto& entry : std::filesystem::directory_iterator(autoLoaderPath)) {
+        for (const auto& entry : std::filesystem::directory_iterator(autoLinkerPath)) {
             if (entry.is_regular_file() && entry.path().extension() == ".ini") {
                 LinkConfig config;
                 config.name = entry.path().stem().string();
