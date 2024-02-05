@@ -43,7 +43,7 @@ LRESULT CALLBACK EditViewSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARA
 			}
 		}
 		else if (xButton == XBUTTON2) {
-			OutputStringToELog("2");
+			//OutputStringToELog("2");
 		}
 		break;
 	}
@@ -61,11 +61,11 @@ BOOL CALLBACK EnumChildProcEditView(HWND hwndChild, LPARAM lParam) {
 			if (result != 1) {
 				// Handle error
 				std::string s = std::format("子类化失败 {}", (int)hwndChild);
-				OutputStringToELog(s);
+				//OutputStringToELog(s);
 			}
 			else {
 				std::string s = std::format("子类化 {}", (int)hwndChild);
-				OutputStringToELog(s);
+				//OutputStringToELog(s);
 				g_subclassedWindows.push_back(hwndChild);
 			}
 		}

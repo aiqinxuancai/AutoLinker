@@ -18,6 +18,7 @@
 #include "WindowHelper.h"
 #include <future>
 #include "WinINetUtil.h"
+#include "Version.h"
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -558,31 +559,41 @@ BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
 }
 
 void FneCheckNewVersion(void* pParams) {
-	OutputStringToELog("检测新版本");
+	Sleep(1000);
+
+	OutputStringToELog("AutoLinker开源下载地址：https://github.com/aiqinxuancai/AutoLinker");
 	std::string url = "https://api.github.com/repos/aiqinxuancai/AutoLinker/releases/latest";
 	//std::string customHeaders = "user-agent: Mozilla/5.0";
 	auto response = PerformGetRequest(url);
 
 	if (response.second == 200) {
 		std::string nowGithubVersion = "0.0.0";
-		std::string currentVersion = "{VERSION}"; //TODO 需要用脚本替换
+		std::string currentVersion = AUTOLINKER_VERSION;
 
-		if (!response.first.empty()) {
-			auto pos = response.first.find("\"tag_name\"");
-			if (pos != std::string::npos) {
-				auto start = response.first.find('"', pos + 10) + 1;
-				auto end = response.first.find('"', start);
-				std::string tagName = response.first.substr(start, end - start);
+		if (strcmp(AUTOLINKER_VERSION, "0.0.0") == 0) {
+			//自行编译，无需检查版本更新
 
-				nowGithubVersion = tagName;
+		} else {
+			if (!response.first.empty()) {
+				auto releases = json::parse(response.first);
+				for (const auto& release : releases) {
+					if (!release["prerelease"].get<bool>()) {
+						nowGithubVersion = release["tag_name"];
+						break; 
+					}
+				}
 
-				if (nowGithubVersion != currentVersion) {
-					OutputStringToELog("新版本");
-					OutputStringToELog(nowGithubVersion);
+				Version nowGithubVersionObj(nowGithubVersion);
+				Version currentVersionObj(AUTOLINKER_VERSION);
+
+				if (nowGithubVersionObj > currentVersionObj) {
+					OutputStringToELog(std::format("有新版本 {}", nowGithubVersion));
+				}
+				else {
+
 				}
 			}
 		}
-
 	}
 	else {
 		OutputStringToELog("无新版本");

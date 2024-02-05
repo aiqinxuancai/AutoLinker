@@ -28,6 +28,12 @@ jobs:
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: nuget restore ${{env.SOLUTION_FILE_PATH}}
 
+    - name: Set Version
+      run: powershell -Command "(gc $env:GITHUB_WORKSPACE\AutoLinker.h) -replace '0.0.0', '$env:GITHUB_REF_NAME' | Out-File $env:GITHUB_WORKSPACE\AutoLinker.h"
+      
+    - name: Set Build
+      run: powershell -Command "(gc $env:GITHUB_WORKSPACE\AutoLinker.h) -replace '1000000', '$env:GITHUB_RUN_NUMBER' | Out-File $env:GITHUB_WORKSPACE\AutoLinker.h"
+
     - name: Build
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: |

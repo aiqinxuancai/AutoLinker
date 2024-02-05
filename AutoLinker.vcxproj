@@ -409,7 +409,7 @@
     </Link>
     <ClCompile>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;ELIB_FNE_EXPORTS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)elib;.\detours;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)elib;.\detours;.\Header;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <ExceptionHandling>Sync</ExceptionHandling>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -444,6 +444,7 @@
     <ClCompile Include="MouseBack.cpp" />
     <ClCompile Include="PathHelper.cpp" />
     <ClCompile Include="StringHelper.cpp" />
+    <ClCompile Include="Version.cpp" />
     <ClCompile Include="WindowHelper.cpp" />
     <ClCompile Include="WinINetUtil.cpp" />
   </ItemGroup>
@@ -468,6 +469,7 @@
     <ClInclude Include="MouseBack.h" />
     <ClInclude Include="PathHelper.h" />
     <ClInclude Include="StringHelper.h" />
+    <ClInclude Include="Version.h" />
     <ClInclude Include="WindowHelper.h" />
     <ClInclude Include="WinINetUtil.h" />
   </ItemGroup>

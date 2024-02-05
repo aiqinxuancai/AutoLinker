@@ -1,2 +1,0 @@
-#define AUTOLINKERBUILD_API __declspec(dllexport)
-#define AUTOLINKERBUILD_API __declspec(dllimport)
