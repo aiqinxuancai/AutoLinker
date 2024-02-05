@@ -562,7 +562,7 @@ void FneCheckNewVersion(void* pParams) {
 	Sleep(1000);
 
 	OutputStringToELog("AutoLinker开源下载地址：https://github.com/aiqinxuancai/AutoLinker");
-	std::string url = "https://api.github.com/repos/aiqinxuancai/AutoLinker/releases/latest";
+	std::string url = "https://api.github.com/repos/aiqinxuancai/AutoLinker/releases";
 	//std::string customHeaders = "user-agent: Mozilla/5.0";
 	auto response = PerformGetRequest(url);
 
@@ -570,30 +570,41 @@ void FneCheckNewVersion(void* pParams) {
 		std::string nowGithubVersion = "0.0.0";
 		std::string currentVersion = AUTOLINKER_VERSION;
 
-		if (strcmp(AUTOLINKER_VERSION, "0.0.0") == 0) {
+		if (strcmp(AUTOLINKER_VERSION, "0.0.1") == 0) {
 			//自行编译，无需检查版本更新
-
+			OutputStringToELog(std::format("自编译版本，不检查更新，当前版本：{}", currentVersion));
 		} else {
 			if (!response.first.empty()) {
-				auto releases = json::parse(response.first);
-				for (const auto& release : releases) {
-					if (!release["prerelease"].get<bool>()) {
-						nowGithubVersion = release["tag_name"];
-						break; 
+
+				try
+				{
+					auto releases = json::parse(response.first);
+					for (const auto& release : releases) {
+						if (!release["prerelease"].get<bool>()) {
+							nowGithubVersion = release["tag_name"];
+							break;
+						}
+					}
+
+					Version nowGithubVersionObj(nowGithubVersion);
+					Version currentVersionObj(AUTOLINKER_VERSION);
+
+					if (nowGithubVersionObj > currentVersionObj) {
+						OutputStringToELog(std::format("有新版本：{}", nowGithubVersion));
+					}
+					else {
+
 					}
 				}
-
-				Version nowGithubVersionObj(nowGithubVersion);
-				Version currentVersionObj(AUTOLINKER_VERSION);
-
-				if (nowGithubVersionObj > currentVersionObj) {
-					OutputStringToELog(std::format("有新版本 {}", nowGithubVersion));
+				catch (const std::exception& e) {
+					OutputStringToELog(std::format("检查新版本失败，当前版本：{} 错误：{}", currentVersion, e.what()));
 				}
-				else {
 
-				}
+
 			}
 		}
+
+		
 	}
 	else {
 		OutputStringToELog("无新版本");
