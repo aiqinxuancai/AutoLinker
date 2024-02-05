@@ -38,9 +38,6 @@
     <ClCompile Include="src\ECOMEx.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
-    <ClCompile Include="src\GAHelper.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
     <ClCompile Include="src\MemFind.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -100,9 +97,6 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\ECOMEx.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="src\GAHelper.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\Global.h">

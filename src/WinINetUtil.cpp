@@ -69,6 +69,8 @@ std::pair<std::string, int> PerformPostRequest(const std::string& url, const std
         return std::make_pair("Error in InternetConnect", 0);
     }
 
+    //std::string headers =  "Content-Type: application/json\r\n" ; ?
+
     // ´´½¨ HTTP ÇëÇó¾ä±ú
     hRequest = HttpOpenRequest(hConnect, "POST", urlComp.lpszUrlPath, NULL, NULL, NULL, dwFlags, 0);
     if (!hRequest) {

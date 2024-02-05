@@ -436,7 +436,6 @@
     <ClCompile Include="src\AutoLinker.cpp" />
     <ClCompile Include="src\ConfigManager.cpp" />
     <ClCompile Include="src\ECOMEx.cpp" />
-    <ClCompile Include="src\GAHelper.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\MemFind.cpp" />
     <ClCompile Include="src\ModelManager.cpp" />
@@ -460,7 +459,6 @@
     <ClInclude Include="src\AutoLinker.h" />
     <ClInclude Include="src\ConfigManager.h" />
     <ClInclude Include="src\ECOMEx.h" />
-    <ClInclude Include="src\GAHelper.h" />
     <ClInclude Include="src\Global.h" />
     <ClInclude Include="src\InlineHook.h" />
     <ClInclude Include="src\LinkerManager.h" />
