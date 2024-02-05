@@ -2,7 +2,6 @@
 #ifndef __ELIBFNE__
 #define __ELIBFNE__
 
-
 #include <windows.h>
 #include <tchar.h>
 #include <cassert>
