@@ -610,7 +610,7 @@ void FneCheckNewVersion(void* pParams) {
 		
 	}
 	else {
-		OutputStringToELog(std::format("检查新版本失败，当前版本：{} 错误码：{}", currentVersion, response.second));
+		//OutputStringToELog(std::format("检查新版本失败，当前版本：{} 错误码：{}", currentVersion, response.second));
 	}
 
 	//return false;
