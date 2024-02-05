@@ -31,19 +31,41 @@
     <ClCompile Include="detours\detours.cpp">
       <Filter>detours</Filter>
     </ClCompile>
-    <ClCompile Include="src\main.cpp" />
-    <ClCompile Include="src\MemFind.cpp" />
-    <ClCompile Include="src\ModelManager.cpp" />
-    <ClCompile Include="src\MouseBack.cpp" />
-    <ClCompile Include="src\PathHelper.cpp" />
-    <ClCompile Include="src\StringHelper.cpp" />
-    <ClCompile Include="src\Version.cpp" />
-    <ClCompile Include="src\WindowHelper.cpp" />
-    <ClCompile Include="src\WinINetUtil.cpp" />
     <ClCompile Include="src\AutoLinker.cpp" />
-    <ClCompile Include="src\ConfigManager.cpp" />
-    <ClCompile Include="src\ECOMEx.cpp" />
-    <ClCompile Include="src\GAHelper.cpp" />
+    <ClCompile Include="src\ConfigManager.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ECOMEx.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\GAHelper.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\MemFind.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ModelManager.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\MouseBack.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\PathHelper.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\StringHelper.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Version.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\WindowHelper.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\WinINetUtil.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\main.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="detours\detours.h">
@@ -73,22 +95,52 @@
     <ClInclude Include="elib\fnshare.h">
       <Filter>elib</Filter>
     </ClInclude>
-    <ClInclude Include="src\Global.h" />
-    <ClInclude Include="src\InlineHook.h" />
-    <ClInclude Include="src\LinkerManager.h" />
-    <ClInclude Include="src\MemFind.h" />
-    <ClInclude Include="src\ModelManager.h" />
-    <ClInclude Include="src\MouseBack.h" />
-    <ClInclude Include="src\PathHelper.h" />
-    <ClInclude Include="src\StringHelper.h" />
-    <ClInclude Include="src\TimeManager.h" />
-    <ClInclude Include="src\Version.h" />
-    <ClInclude Include="src\WindowHelper.h" />
-    <ClInclude Include="src\WinINetUtil.h" />
     <ClInclude Include="src\AutoLinker.h" />
-    <ClInclude Include="src\ConfigManager.h" />
-    <ClInclude Include="src\ECOMEx.h" />
-    <ClInclude Include="src\GAHelper.h" />
+    <ClInclude Include="src\ConfigManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ECOMEx.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GAHelper.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Global.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\InlineHook.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\LinkerManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\MemFind.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ModelManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\MouseBack.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\PathHelper.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\StringHelper.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\TimeManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Version.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\WindowHelper.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\WinINetUtil.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="elib">
@@ -96,6 +148,9 @@
     </Filter>
     <Filter Include="detours">
       <UniqueIdentifier>{bccb807d-f223-4bcd-b7e9-ed0546a6e408}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Utils">
+      <UniqueIdentifier>{50cb1a3e-5558-4bc2-bed4-ebfa7f5b25bc}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
