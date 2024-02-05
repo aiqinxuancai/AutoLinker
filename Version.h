@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 // Version.h
 #ifndef VERSION_H
 #define VERSION_H
@@ -8,14 +8,14 @@
 
 class Version {
 public:
-    // Ä¬ÈÏ¹¹Ôìº¯Êı
+    // é»˜è®¤æ„é€ å‡½æ•°
     Version() = default;
-    // ´ÓÕûÊı¹¹Ôì
+    // ä»æ•´æ•°æ„é€ 
     Version(int major, int minor, int build = -1, int revision = -1);
-    // ´Ó×Ö·û´®¹¹Ôì
+    // ä»å­—ç¬¦ä¸²æ„é€ 
     Version(const std::string& versionStr);
 
-    // ±È½Ï²Ù×÷·û
+    // æ¯”è¾ƒæ“ä½œç¬¦
     bool operator==(const Version& other) const;
     bool operator!=(const Version& other) const;
     bool operator<(const Version& other) const;
@@ -23,7 +23,7 @@ public:
     bool operator<=(const Version& other) const;
     bool operator>=(const Version& other) const;
 
-    // Êä³ö°æ±¾ºÅ
+    // è¾“å‡ºç‰ˆæœ¬å·
     friend std::ostream& operator<<(std::ostream& os, const Version& v);
 
 private:
