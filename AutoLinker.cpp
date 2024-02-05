@@ -566,9 +566,12 @@ void FneCheckNewVersion(void* pParams) {
 	//std::string customHeaders = "user-agent: Mozilla/5.0";
 	auto response = PerformGetRequest(url);
 
+	std::string currentVersion = AUTOLINKER_VERSION;
+
+
 	if (response.second == 200) {
 		std::string nowGithubVersion = "0.0.0";
-		std::string currentVersion = AUTOLINKER_VERSION;
+		
 
 		if (strcmp(AUTOLINKER_VERSION, "0.0.1") == 0) {
 			//自行编译，无需检查版本更新
@@ -607,7 +610,7 @@ void FneCheckNewVersion(void* pParams) {
 		
 	}
 	else {
-		OutputStringToELog("无新版本");
+		OutputStringToELog(std::format("检查新版本失败，当前版本：{} 错误码：{}", currentVersion, response.second));
 	}
 
 	//return false;
