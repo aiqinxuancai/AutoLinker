@@ -573,7 +573,7 @@ void FneCheckNewVersion(void* pParams) {
 		std::string nowGithubVersion = "0.0.0";
 		
 
-		if (strcmp(AUTOLINKER_VERSION, "0.0.1") == 0) {
+		if (strcmp(AUTOLINKER_VERSION, "0.0.0") == 0) {
 			//自行编译，无需检查版本更新
 			OutputStringToELog(std::format("自编译版本，不检查更新，当前版本：{}", currentVersion));
 		} else {
