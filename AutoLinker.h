@@ -1,4 +1,4 @@
-#pragma once
+ï»¿#pragma once
 #ifndef __ELIBFNE__
 #define __ELIBFNE__
 
@@ -37,26 +37,26 @@ EXTERN_C INT WINAPI  AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dw
 
 
 #ifndef __E_STATIC_LIB
-#define LIB_GUID_STR "EA968347-300C-4515-8888-F1D3BA3DF67E" /*GUID´®*/
-#define LIB_MajorVersion 1 /*¿âÖ÷°æ±¾ºÅ*/
-#define LIB_MinorVersion 0 /*¿â´Î°æ±¾ºÅ*/
-#define LIB_BuildNumber 1000000 /*¹¹½¨°æ±¾ºÅ*/
-#define LIB_SysMajorVer 3 /*ÏµÍ³Ö÷°æ±¾ºÅ*/
-#define LIB_SysMinorVer 7 /*ÏµÍ³´Î°æ±¾ºÅ*/
-#define LIB_KrnlLibMajorVer 5 /*ºËĞÄ¿âÖ÷°æ±¾ºÅ*/
-#define LIB_KrnlLibMinorVer 3 /*ºËĞÄ¿â´Î°æ±¾ºÅ*/
-#define LIB_NAME_STR "AutoLinker" /*Ö§³Ö¿âÃû*/
-#define LIB_DESCRIPTION_STR "AutoLinker 0.0.0.1000000£¬ÊµÏÖÖ¸¶¨µ¥.eÎÄ¼şµÄÁ´½ÓÆ÷£¬±àÒë¼°µ÷ÊÔÊ±.ec³É¶ÔµÄ×Ô¶¯ÇĞ»»£¬ÖØĞ´ºËĞÄ¿âº¯ÊıµÈ¹¦ÄÜ¡£¿ªÔ´µØÖ·£ºhttps://github.com/aiqinxuancai/AutoLinker" /*¹¦ÄÜÃèÊö*/
-#define LIB_Author "aiqinxuancai" /*×÷ÕßÃû³Æ*/
-#define LIB_ZipCode "" /*ÓÊÕş±àÂë*/
-#define LIB_Address "" /*Í¨ĞÅµØÖ·*/
-#define LIB_Phone	"" /*µç»°ºÅÂë*/
-#define LIB_Fax		"" /*QQºÅÂë*/
-#define LIB_Email	 "" /*µç×ÓÓÊÏä*/
-#define LIB_HomePage "https://github.com/aiqinxuancai" /*Ö÷Ò³µØÖ·*/
-#define LIB_Other	"" /*ÆäËüĞÅÏ¢*/
-#define LIB_TYPE_COUNT 1 /*ÃüÁî·ÖÀàÊıÁ¿*/
-#define LIB_TYPE_STR "0000»ù±¾ÃüÁî\0""\0" /*ÃüÁî·ÖÀà*/
+#define LIB_GUID_STR "EA968347-300C-4515-8888-F1D3BA3DF67E" /*GUIDä¸²*/
+#define LIB_MajorVersion 1 /*åº“ä¸»ç‰ˆæœ¬å·*/
+#define LIB_MinorVersion 0 /*åº“æ¬¡ç‰ˆæœ¬å·*/
+#define LIB_BuildNumber 1000000 /*æ„å»ºç‰ˆæœ¬å·*/
+#define LIB_SysMajorVer 3 /*ç³»ç»Ÿä¸»ç‰ˆæœ¬å·*/
+#define LIB_SysMinorVer 7 /*ç³»ç»Ÿæ¬¡ç‰ˆæœ¬å·*/
+#define LIB_KrnlLibMajorVer 5 /*æ ¸å¿ƒåº“ä¸»ç‰ˆæœ¬å·*/
+#define LIB_KrnlLibMinorVer 3 /*æ ¸å¿ƒåº“æ¬¡ç‰ˆæœ¬å·*/
+#define LIB_NAME_STR "AutoLinker" /*æ”¯æŒåº“å*/
+#define LIB_DESCRIPTION_STR "AutoLinker 0.0.0.1000000ï¼Œå®ç°æŒ‡å®šå•.eæ–‡ä»¶çš„é“¾æ¥å™¨ï¼Œç¼–è¯‘åŠè°ƒè¯•æ—¶.ecæˆå¯¹çš„è‡ªåŠ¨åˆ‡æ¢ï¼Œé‡å†™æ ¸å¿ƒåº“å‡½æ•°ç­‰åŠŸèƒ½ã€‚å¼€æºåœ°å€ï¼šhttps://github.com/aiqinxuancai/AutoLinker" /*åŠŸèƒ½æè¿°*/
+#define LIB_Author "aiqinxuancai" /*ä½œè€…åç§°*/
+#define LIB_ZipCode "" /*é‚®æ”¿ç¼–ç */
+#define LIB_Address "" /*é€šä¿¡åœ°å€*/
+#define LIB_Phone	"" /*ç”µè¯å·ç */
+#define LIB_Fax		"" /*QQå·ç */
+#define LIB_Email	 "" /*ç”µå­é‚®ç®±*/
+#define LIB_HomePage "https://github.com/aiqinxuancai" /*ä¸»é¡µåœ°å€*/
+#define LIB_Other	"" /*å…¶å®ƒä¿¡æ¯*/
+#define LIB_TYPE_COUNT 1 /*å‘½ä»¤åˆ†ç±»æ•°é‡*/
+#define LIB_TYPE_STR "0000åŸºæœ¬å‘½ä»¤\0""\0" /*å‘½ä»¤åˆ†ç±»*/
 #endif
 
 #endif
