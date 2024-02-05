@@ -1,8 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-    <ClCompile Include="AutoLinker.cpp" />
-    <ClCompile Include="main.cpp" />
     <ClCompile Include="detours\disasm.cpp">
       <Filter>detours</Filter>
     </ClCompile>
@@ -33,66 +31,26 @@
     <ClCompile Include="detours\detours.cpp">
       <Filter>detours</Filter>
     </ClCompile>
-    <ClCompile Include="PathHelper.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="ConfigManager.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="ModelManager.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="StringHelper.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="MouseBack.cpp">
-      <Filter>Sevices</Filter>
-    </ClCompile>
-    <ClCompile Include="ECOMEx.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="WindowHelper.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="MemFind.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="WinINetUtil.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
-    <ClCompile Include="Version.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\MemFind.cpp" />
+    <ClCompile Include="src\ModelManager.cpp" />
+    <ClCompile Include="src\MouseBack.cpp" />
+    <ClCompile Include="src\PathHelper.cpp" />
+    <ClCompile Include="src\StringHelper.cpp" />
+    <ClCompile Include="src\Version.cpp" />
+    <ClCompile Include="src\WindowHelper.cpp" />
+    <ClCompile Include="src\WinINetUtil.cpp" />
+    <ClCompile Include="src\AutoLinker.cpp" />
+    <ClCompile Include="src\ConfigManager.cpp" />
+    <ClCompile Include="src\ECOMEx.cpp" />
+    <ClCompile Include="src\GAHelper.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="AutoLinker.h" />
     <ClInclude Include="detours\detours.h">
       <Filter>detours</Filter>
     </ClInclude>
     <ClInclude Include="detours\detver.h">
       <Filter>detours</Filter>
-    </ClInclude>
-    <ClInclude Include="PathHelper.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="LinkerManager.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="ConfigManager.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="InlineHook.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="ModelManager.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="Global.h" />
-    <ClInclude Include="StringHelper.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="MouseBack.h">
-      <Filter>Sevices</Filter>
     </ClInclude>
     <ClInclude Include="elib\krnllib.h">
       <Filter>elib</Filter>
@@ -115,24 +73,22 @@
     <ClInclude Include="elib\fnshare.h">
       <Filter>elib</Filter>
     </ClInclude>
-    <ClInclude Include="ECOMEx.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="WindowHelper.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="MemFind.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="WinINetUtil.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-    <ClInclude Include="Version.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="AutoLinker.def" />
+    <ClInclude Include="src\Global.h" />
+    <ClInclude Include="src\InlineHook.h" />
+    <ClInclude Include="src\LinkerManager.h" />
+    <ClInclude Include="src\MemFind.h" />
+    <ClInclude Include="src\ModelManager.h" />
+    <ClInclude Include="src\MouseBack.h" />
+    <ClInclude Include="src\PathHelper.h" />
+    <ClInclude Include="src\StringHelper.h" />
+    <ClInclude Include="src\TimeManager.h" />
+    <ClInclude Include="src\Version.h" />
+    <ClInclude Include="src\WindowHelper.h" />
+    <ClInclude Include="src\WinINetUtil.h" />
+    <ClInclude Include="src\AutoLinker.h" />
+    <ClInclude Include="src\ConfigManager.h" />
+    <ClInclude Include="src\ECOMEx.h" />
+    <ClInclude Include="src\GAHelper.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="elib">
@@ -141,11 +97,8 @@
     <Filter Include="detours">
       <UniqueIdentifier>{bccb807d-f223-4bcd-b7e9-ed0546a6e408}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Utils">
-      <UniqueIdentifier>{d5a424f7-ff34-4fe9-a590-c5d088f11ed9}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="Sevices">
-      <UniqueIdentifier>{d885c58a-c222-4232-aa86-64fa354980b2}</UniqueIdentifier>
-    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="src\AutoLinker.def" />
   </ItemGroup>
 </Project>

@@ -402,7 +402,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='fne_release|Win32'">
     <Link>
-      <ModuleDefinitionFile>AutoLinker.def</ModuleDefinitionFile>
+      <ModuleDefinitionFile>.\src\AutoLinker.def</ModuleDefinitionFile>
       <SubSystem>NotSet</SubSystem>
       <MinimumRequiredVersion />
       <ImportLibrary>$(OutDir)$(TargetName).lib</ImportLibrary>
@@ -423,10 +423,6 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="AutoLinker.cpp">
-      <IntrinsicFunctions Condition="'$(Configuration)|$(Platform)'=='fne_release|Win32'">true</IntrinsicFunctions>
-    </ClCompile>
-    <ClCompile Include="ConfigManager.cpp" />
     <ClCompile Include="detours\creatwth.cpp" />
     <ClCompile Include="detours\detours.cpp" />
     <ClCompile Include="detours\disasm.cpp" />
@@ -437,23 +433,23 @@
     <ClCompile Include="detours\disolx86.cpp" />
     <ClCompile Include="detours\image.cpp" />
     <ClCompile Include="detours\modules.cpp" />
-    <ClCompile Include="ECOMEx.cpp" />
-    <ClCompile Include="main.cpp" />
-    <ClCompile Include="MemFind.cpp" />
-    <ClCompile Include="ModelManager.cpp" />
-    <ClCompile Include="MouseBack.cpp" />
-    <ClCompile Include="PathHelper.cpp" />
-    <ClCompile Include="StringHelper.cpp" />
-    <ClCompile Include="Version.cpp" />
-    <ClCompile Include="WindowHelper.cpp" />
-    <ClCompile Include="WinINetUtil.cpp" />
+    <ClCompile Include="src\AutoLinker.cpp" />
+    <ClCompile Include="src\ConfigManager.cpp" />
+    <ClCompile Include="src\ECOMEx.cpp" />
+    <ClCompile Include="src\GAHelper.cpp" />
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\MemFind.cpp" />
+    <ClCompile Include="src\ModelManager.cpp" />
+    <ClCompile Include="src\MouseBack.cpp" />
+    <ClCompile Include="src\PathHelper.cpp" />
+    <ClCompile Include="src\StringHelper.cpp" />
+    <ClCompile Include="src\Version.cpp" />
+    <ClCompile Include="src\WindowHelper.cpp" />
+    <ClCompile Include="src\WinINetUtil.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="AutoLinker.h" />
-    <ClInclude Include="ConfigManager.h" />
     <ClInclude Include="detours\detours.h" />
     <ClInclude Include="detours\detver.h" />
-    <ClInclude Include="ECOMEx.h" />
     <ClInclude Include="elib\fnshare.h" />
     <ClInclude Include="elib\krnllib.h" />
     <ClInclude Include="elib\lang.h" />
@@ -461,20 +457,25 @@
     <ClInclude Include="elib\mtypes.h" />
     <ClInclude Include="elib\PublicIDEFunctions.h" />
     <ClInclude Include="elib\untshare.h" />
-    <ClInclude Include="Global.h" />
-    <ClInclude Include="InlineHook.h" />
-    <ClInclude Include="LinkerManager.h" />
-    <ClInclude Include="MemFind.h" />
-    <ClInclude Include="ModelManager.h" />
-    <ClInclude Include="MouseBack.h" />
-    <ClInclude Include="PathHelper.h" />
-    <ClInclude Include="StringHelper.h" />
-    <ClInclude Include="Version.h" />
-    <ClInclude Include="WindowHelper.h" />
-    <ClInclude Include="WinINetUtil.h" />
+    <ClInclude Include="src\AutoLinker.h" />
+    <ClInclude Include="src\ConfigManager.h" />
+    <ClInclude Include="src\ECOMEx.h" />
+    <ClInclude Include="src\GAHelper.h" />
+    <ClInclude Include="src\Global.h" />
+    <ClInclude Include="src\InlineHook.h" />
+    <ClInclude Include="src\LinkerManager.h" />
+    <ClInclude Include="src\MemFind.h" />
+    <ClInclude Include="src\ModelManager.h" />
+    <ClInclude Include="src\MouseBack.h" />
+    <ClInclude Include="src\PathHelper.h" />
+    <ClInclude Include="src\StringHelper.h" />
+    <ClInclude Include="src\TimeManager.h" />
+    <ClInclude Include="src\Version.h" />
+    <ClInclude Include="src\WindowHelper.h" />
+    <ClInclude Include="src\WinINetUtil.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="AutoLinker.def" />
+    <None Include="src\AutoLinker.def" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
