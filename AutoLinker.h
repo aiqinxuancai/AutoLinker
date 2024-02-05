@@ -1,6 +1,4 @@
 ﻿#pragma once
-#ifndef __ELIBFNE__
-#define __ELIBFNE__
 
 #include <windows.h>
 #include <tchar.h>
@@ -35,7 +33,6 @@ void UpdateCurrentOpenSourceFile();
 
 EXTERN_C INT WINAPI  AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwParam2);
 
-
 #ifndef __E_STATIC_LIB
 #define LIB_GUID_STR "EA968347-300C-4515-8888-F1D3BA3DF67E" /*GUID串*/
 #define LIB_MajorVersion 1 /*库主版本号*/
@@ -57,6 +54,4 @@ EXTERN_C INT WINAPI  AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dw
 #define LIB_Other	"" /*其它信息*/
 #define LIB_TYPE_COUNT 1 /*命令分类数量*/
 #define LIB_TYPE_STR "0000基本命令\0""\0" /*命令分类*/
-#endif
-
 #endif
