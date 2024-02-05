@@ -26,11 +26,19 @@ jobs:
       uses: microsoft/setup-msbuild@v1.1
 
     - name: Set Version
-      run: (Get-Content ".\AutoLinker.h" -Encoding UTF8) | ForEach-Object {$_ -replace "0\.0\.0", "$env:GITHUB_REF_NAME"} | Set-Content ".\AutoLinker.h" -Encoding UTF8
+      run: |
+        (Get-Content ".\AutoLinker.h" -Encoding UTF8) |
+        ForEach-Object { $_ -replace "0\.0\.0", "$env:GITHUB_REF_NAME" } |
+        Set-Content ".\AutoLinker.h" -Encoding UTF8
+        Get-Content ".\AutoLinker.h" -Encoding UTF8 | Out-String | Write-Output
       shell: pwsh
 
     - name: Set Build
-      run: (Get-Content ".\AutoLinker.h" -Encoding UTF8) | ForEach-Object {$_ -replace "1000000", "$env:GITHUB_RUN_NUMBER"} | Set-Content ".\AutoLinker.h" -Encoding UTF8
+      run: |
+        (Get-Content ".\AutoLinker.h" -Encoding UTF8) |
+        ForEach-Object { $_ -replace "1000000", "$env:GITHUB_RUN_NUMBER" } |
+        Set-Content ".\AutoLinker.h" -Encoding UTF8
+        Get-Content ".\AutoLinker.h" -Encoding UTF8 | Out-String | Write-Output
       shell: pwsh
 
     - name: Build
