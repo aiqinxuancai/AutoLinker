@@ -25,13 +25,13 @@ jobs:
       uses: microsoft/setup-msbuild@v1.1
 
     - name: Set Version
-      run: (Get-Content ".\AutoLinker.h") -replace "0\.0\.0", "$env:GITHUB_REF_NAME" | Set-Content ".\AutoLinker.h"
+      run: (Get-Content "${{env.SOLUTION_FILE_PATH}}\AutoLinker.h") -replace "0\.0\.0", "$env:GITHUB_REF_NAME" | Set-Content "${{env.SOLUTION_FILE_PATH}}\AutoLinker.h"
       shell: pwsh
      
     - name: Set Build
-      run: (Get-Content ".\AutoLinker.h") -replace "1000000", "$env:GITHUB_RUN_NUMBER" | Set-Content ".\AutoLinker.h"
+      run: (Get-Content "${{env.SOLUTION_FILE_PATH}}\AutoLinker.h") -replace "1000000", "$env:GITHUB_RUN_NUMBER" | Set-Content "${{env.SOLUTION_FILE_PATH}}\AutoLinker.h"
       shell: pwsh
-      
+
     - name: Build
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: |
