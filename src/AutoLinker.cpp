@@ -231,6 +231,11 @@ BOOL WINAPI MyCreateProcessA(
 			std::string newPdbCommand = std::format("/pdb:\"{}.pdb\"", outFileName);
 			commandLine = ReplaceSubstring(commandLine, "/pdb:\"build.pdb\"", newPdbCommand);
 		}
+		if (commandLine.find("/map:\"build.map\"") != std::string::npos) {
+			//Map更名
+			std::string newPdbCommand = std::format("/map:\"{}.map\"", outFileName);
+			commandLine = ReplaceSubstring(commandLine, "/map:\"build.map\"", newPdbCommand);
+		}
 	}
 	OutputStringToELog("启动命令行：" + commandLine);
 	return originalCreateProcessA(lpApplicationName, (char *)commandLine.c_str(), lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags, lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation);
