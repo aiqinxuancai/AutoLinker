@@ -1,18 +1,21 @@
-#pragma once
+ï»¿#pragma once
 
 #include "Windows.h"
 #include <string>
 
-//²éÕÒE´°¿Ú²Ëµ¥Ìõ
+//æŸ¥æ‰¾Eçª—å£èœå•æ¡
 HWND FindMenuBar(HWND hParent);
 
-//²éÕÒÊä³ö´°¿Ú
+//æŸ¥æ‰¾è¾“å‡ºçª—å£
 HWND FindOutputWindow(HWND hParent);
 
 
-//»ñÈ¡µ±Ç°Ô´ÎÄ¼şµÄÂ·¾¶ £¨´Ó±êÌâÀ¸£©
+//è·å–å½“å‰æºæ–‡ä»¶çš„è·¯å¾„ ï¼ˆä»æ ‡é¢˜æ ï¼‰
 std::string GetSourceFilePath();
 
 
-//µÈÓÚ¡°´¦ÀíÊÂ¼ş¡±
+//ç­‰äº"å¤„ç†äº‹ä»¶"
 void PeekAllMessage();
+
+//è·å–Eä¸»çª—å£å¥æŸ„ï¼ˆé€šè¿‡è¿›ç¨‹IDæšä¸¾ï¼‰
+HWND GetMainWindowByProcessId();

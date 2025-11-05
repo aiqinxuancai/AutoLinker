@@ -485,6 +485,10 @@ void ChangeVMProtectModel(bool isLib) {
 	//
 }
 
+#define WM_AUTOLINKER_INIT (WM_USER + 1000)
+
+bool FneInit();
+
 //主窗口子类过程
 LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	//if (uMsg == 20707) {
@@ -502,10 +506,19 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	//	return 0;
 	//}
 
-	if (uMsg == 20708) { 
+	if (uMsg == WM_AUTOLINKER_INIT) {
+		OutputStringToELog("收到初始化消息，尝试初始化");
+		if (FneInit()) {
+			OutputStringToELog("初始化成功");
+			return 1;
+		}
+		return 0;
+	}
+
+	if (uMsg == 20708) {
 		BOOL result = SetWindowSubclass((HWND)wParam, EditViewSubclassProc, 0, 0);
 		return result ? 1 : 0;
-	}	
+	}
 
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
@@ -550,18 +563,6 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 	return 0;
 }
 
-BOOL CALLBACK EnumWindowsProc(HWND hwnd, LPARAM lParam)
-{
-	DWORD lpdwProcessId;
-	GetWindowThreadProcessId(hwnd, &lpdwProcessId);
-	if (lpdwProcessId == lParam)
-	{
-		HWND hwndTopLevel = GetAncestor(hwnd, GA_ROOTOWNER);
-		g_hwnd = hwndTopLevel;
-		return FALSE;
-	}
-	return TRUE;
-}
 
 void FneCheckNewVersion(void* pParams) {
 	Sleep(1000);
@@ -623,25 +624,25 @@ void FneCheckNewVersion(void* pParams) {
 
 bool FneInit() {
 	OutputStringToELog("开始初始化");
-	DWORD processID = GetCurrentProcessId();
-	EnumWindows(EnumWindowsProc, processID);
 
-	//此时NotifySys还不可用
-	//HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
+	// g_hwnd 已经在外部获取并子类化
+	if (g_hwnd == NULL) {
+		OutputStringToELog("g_hwnd 为空");
+		return false;
+	}
 
 	g_toolBarHwnd = FindMenuBar(g_hwnd);
 
-
-	std::string s = std::format("{} {} {}", processID, (int)g_hwnd, (int)g_toolBarHwnd);
+	DWORD processID = GetCurrentProcessId();
+	std::string s = std::format("E进程ID{} 主句柄{} 菜单栏句柄{}", processID, (int)g_hwnd, (int)g_toolBarHwnd);
 	OutputStringToELog(s);
 
-	if (g_hwnd != NULL && g_toolBarHwnd != NULL)
+	if (g_toolBarHwnd != NULL)
 	{
 		StartEditViewSubclassTask();
 
 		OutputStringToELog("找到工具条");
 		SetWindowSubclass(g_toolBarHwnd, ToolbarSubclassProc, 0, 0);
-		SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0);
 		CreateAndSubclassButton(g_toolBarHwnd);
 		StartHookCreateFileA();
 		PostAppMessageA(g_toolBarHwnd, WM_PRINT, 0, 0);
@@ -649,33 +650,43 @@ bool FneInit() {
 
 		//初始化Lib相关库的状态
 
-		//启动线程运行
-		//auto future = std::async(std::launch::async, FneCheckNewVersion);
-		//std::thread versionCheckThread(FneCheckNewVersion);
+		//启动版本检查线程
 		uintptr_t threadID = _beginthread(FneCheckNewVersion, 0, NULL);
-
-
 
 		return true;
 	}
 	else
 	{
-
-		OutputStringToELog(std::format("初始化失败，未找到窗口{} {}", (int)g_hwnd, (int)g_toolBarHwnd));
+		OutputStringToELog(std::format("初始化失败，未找到工具条窗口 {}", (int)g_toolBarHwnd));
 	}
-	
+
 	return false;
 }
 
 /*-----------------支持库消息处理函数------------------*/
 
-UINT_PTR timerId;
+// 初始化重试线程函数
+void InitRetryThread(void* pParams) {
+	const int MAX_RETRY_COUNT = 5;
+	int retryCount = 0;
 
-VOID CALLBACK AsyncFneInit(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
-	if (!FneInit()) {
-		timerId = SetTimer(g_hwnd, 0, 1000, &AsyncFneInit);
+	while (retryCount < MAX_RETRY_COUNT) {
+		Sleep(1000); // 每秒重试一次
+		retryCount++;
+
+		OutputStringToELog(std::format("初始化重试第 {}/{} 次", retryCount, MAX_RETRY_COUNT));
+
+		// 发送自定义消息到主窗口进行初始化
+		LRESULT result = SendMessage(g_hwnd, WM_AUTOLINKER_INIT, 0, 0);
+
+		if (result == 1) {
+			// 初始化成功
+			OutputStringToELog("初始化线程完成"); 
+			return;
+		}
 	}
-	KillTimer(hwnd, idEvent);  // Stop the timer
+
+	OutputStringToELog(std::format("初始化失败，已重试 {} 次", MAX_RETRY_COUNT));
 }
 
 EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwParam2)
@@ -695,14 +706,17 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 	// 返回NULL或NR_ERR表示不指定依赖文件  
 
 	else if (nMsg == NL_SYS_NOTIFY_FUNCTION) {
-		//NotifySys3 = (NotifySys3Func)dwParam1;
 		if (dwParam1) {
 			if (!g_buttonHwnd) {
-				//窗口已经建立
-				if (!FneInit()) {
-					DWORD processID = GetCurrentProcessId();
-					EnumWindows(EnumWindowsProc, processID);
-					timerId = SetTimer(g_hwnd, 0, 1000, &AsyncFneInit);
+				// 获取主窗口句柄
+				g_hwnd = GetMainWindowByProcessId();
+
+				if (g_hwnd) {
+					SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0);
+					OutputStringToELog("主窗口子类化完成，启动初始化线程");
+					uintptr_t threadID = _beginthread(InitRetryThread, 0, NULL);
+				} else {
+					OutputStringToELog("无法获取主窗口句柄");
 				}
 			}
 
