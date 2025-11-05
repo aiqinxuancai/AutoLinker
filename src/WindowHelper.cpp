@@ -18,12 +18,13 @@ BOOL CALLBACK FindMenuBarEnumChildProc(HWND hwnd, LPARAM lParam) {
 		return FALSE;
 	}
 
-	if (std::string(buffer) == "菜单条" && className.starts_with("AfxControlBar42s")) {
-		HWND* pResult = reinterpret_cast<HWND*>(lParam);
-		*pResult = hwnd;
-		return FALSE;
-	}
-	
+
+	//if (std::string(buffer) == "菜单条" && className.starts_with("AfxControlBar42s")) {
+	//	HWND* pResult = reinterpret_cast<HWND*>(lParam);
+	//	*pResult = hwnd;
+	//	return FALSE;
+	//}
+	//
 
 	// 继续枚举
 	return TRUE;
