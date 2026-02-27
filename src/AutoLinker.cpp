@@ -19,6 +19,7 @@
 #include <future>
 #include "WinINetUtil.h"
 #include "Version.h"
+#include "IDEFacade.h"
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -49,6 +50,30 @@ bool g_preDebugging;
 
 //准备开始编译 废弃
 bool g_preCompiling;
+
+namespace {
+constexpr UINT IDM_AUTOLINKER_CTX_COPY_FUNC = 0xA204;
+bool g_isContextMenuRegistered = false;
+
+void RegisterIDEContextMenu()
+{
+	if (g_isContextMenuRegistered) {
+		return;
+	}
+
+	auto& ide = IDEFacade::Instance();
+	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_COPY_FUNC, "复制当前函数代码", []() {
+		if (IDEFacade::Instance().CopyCurrentFunctionCodeToClipboard()) {
+			OutputStringToELog("已复制当前函数代码到剪贴板");
+		}
+		else {
+			OutputStringToELog("复制当前函数代码失败，当前位置可能不在代码函数中");
+		}
+	});
+
+	g_isContextMenuRegistered = true;
+}
+}
 
 
 static auto originalCreateFileA = CreateFileA;
@@ -506,6 +531,10 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	//	return 0;
 	//}
 
+	if (uMsg == WM_COMMAND && IDEFacade::Instance().HandleMainWindowCommand(wParam)) {
+		return 0;
+	}
+
 	if (uMsg == WM_AUTOLINKER_INIT) {
 		OutputStringToELog("收到初始化消息，尝试初始化");
 		if (FneInit()) {
@@ -524,8 +553,7 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 }
 
 INT NESRUNFUNC(INT code, DWORD p1, DWORD p2) {
-	DWORD p[2] = {p1, p2};
-	return NotifySys(NES_RUN_FUNC, code, (DWORD) & p);
+	return IDEFacade::Instance().RunFunctionRaw(code, p1, p2);
 }
 
 INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
@@ -713,6 +741,7 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 
 				if (g_hwnd) {
 					SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0);
+					RegisterIDEContextMenu();
 					OutputStringToELog("主窗口子类化完成，启动初始化线程");
 					uintptr_t threadID = _beginthread(InitRetryThread, 0, NULL);
 				} else {
@@ -721,6 +750,9 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 			}
 
 		}
+	}
+	else if (nMsg == NL_RIGHT_POPUP_MENU_SHOW) {
+		IDEFacade::Instance().HandleNotifyMessage(nMsg, dwParam1, dwParam2);
 	}
 
 #endif

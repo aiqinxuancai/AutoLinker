@@ -123,7 +123,7 @@
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)'=='fne_release|Win32'">
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
@@ -414,7 +414,7 @@
       <ExceptionHandling>Sync</ExceptionHandling>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <LanguageStandard>stdcpp23</LanguageStandard>
+      <LanguageStandard>stdcpp20</LanguageStandard>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='fne_release|x64'">
@@ -436,6 +436,7 @@
     <ClCompile Include="src\AutoLinker.cpp" />
     <ClCompile Include="src\ConfigManager.cpp" />
     <ClCompile Include="src\ECOMEx.cpp" />
+    <ClCompile Include="src\IDEFacade.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\MemFind.cpp" />
     <ClCompile Include="src\ModelManager.cpp" />
@@ -460,6 +461,7 @@
     <ClInclude Include="src\ConfigManager.h" />
     <ClInclude Include="src\ECOMEx.h" />
     <ClInclude Include="src\Global.h" />
+    <ClInclude Include="src\IDEFacade.h" />
     <ClInclude Include="src\InlineHook.h" />
     <ClInclude Include="src\LinkerManager.h" />
     <ClInclude Include="src\MemFind.h" />
