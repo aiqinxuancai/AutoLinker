@@ -52,8 +52,18 @@ bool g_preDebugging;
 bool g_preCompiling;
 
 namespace {
-constexpr UINT IDM_AUTOLINKER_CTX_COPY_FUNC = 0xA204;
 bool g_isContextMenuRegistered = false;
+constexpr UINT IDM_AUTOLINKER_CTX_COPY_FUNC = 31001; // Keep < 0x8000 to avoid signed-ID issues in some hosts.
+
+void TryCopyCurrentFunctionCode()
+{
+	if (IDEFacade::Instance().CopyCurrentFunctionCodeToClipboard()) {
+		OutputStringToELog("已复制当前函数代码到剪贴板");
+	}
+	else {
+		OutputStringToELog("复制当前函数代码失败，当前位置可能不在代码函数中");
+	}
+}
 
 void RegisterIDEContextMenu()
 {
@@ -63,12 +73,7 @@ void RegisterIDEContextMenu()
 
 	auto& ide = IDEFacade::Instance();
 	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_COPY_FUNC, "复制当前函数代码", []() {
-		if (IDEFacade::Instance().CopyCurrentFunctionCodeToClipboard()) {
-			OutputStringToELog("已复制当前函数代码到剪贴板");
-		}
-		else {
-			OutputStringToELog("复制当前函数代码失败，当前位置可能不在代码函数中");
-		}
+		TryCopyCurrentFunctionCode();
 	});
 
 	g_isContextMenuRegistered = true;
@@ -549,6 +554,18 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 		return result ? 1 : 0;
 	}
 
+	if (uMsg == WM_INITMENUPOPUP) {
+		LRESULT result = DefSubclassProc(hWnd, uMsg, wParam, lParam);
+		HMENU hMenu = reinterpret_cast<HMENU>(wParam);
+		if (hMenu != NULL) {
+			UINT state = GetMenuState(hMenu, IDM_AUTOLINKER_CTX_COPY_FUNC, MF_BYCOMMAND);
+			if (state != 0xFFFFFFFF) {
+				EnableMenuItem(hMenu, IDM_AUTOLINKER_CTX_COPY_FUNC, MF_BYCOMMAND | MF_ENABLED);
+			}
+		}
+		return result;
+	}
+
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
@@ -574,11 +591,15 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 			ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
 			break;
 		}
-		//case 3: { //切换到VMPSDK静态（自用）
+		case 3: { // 复制当前函数代码
+			TryCopyCurrentFunctionCode();
+			break;
+		}
+		//case 4: { //切换到VMPSDK静态（自用）
 		//	ChangeVMProtectModel(true);
 		//	break;
 		//}
-		//case 4: { //切换到VMPSDK动态（自用）
+		//case 5: { //切换到VMPSDK动态（自用）
 		//	ChangeVMProtectModel(false);
 		//	break;
 		//}
@@ -797,7 +818,7 @@ static LIB_INFOX LibInfo =
 	NULL,
 	NULL,
 	fnAddInFunc,
-	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0\0") ,
+	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0\0") ,
 	AutoLinker_MessageNotify,
 	NULL,
 	NULL,

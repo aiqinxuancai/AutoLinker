@@ -3,6 +3,7 @@
 #include <fnshare.h>
 #include <lib2.h>
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <vector>
 
@@ -10,6 +11,159 @@ namespace {
 DWORD PtrToDWORD(const void* ptr)
 {
 	return static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(ptr));
+}
+
+bool IsSubRelatedType(int type)
+{
+	switch (type)
+	{
+	case VT_SUB_NAME:
+	case VT_SUB_RET_TYPE:
+	case VT_SUB_EPK_NAME:
+	case VT_SUB_EXPLAIN:
+	case VT_SUB_EXPORT:
+	case VT_SUB_ARG_NAME:
+	case VT_SUB_ARG_TYPE:
+	case VT_SUB_ARG_POINTER_TYPE:
+	case VT_SUB_ARG_NULL_TYPE:
+	case VT_SUB_ARG_ARY_TYPE:
+	case VT_SUB_ARG_EXPLAIN:
+	case VT_SUB_VAR_NAME:
+	case VT_SUB_VAR_TYPE:
+	case VT_SUB_VAR_STATIC_TYPE:
+	case VT_SUB_VAR_ARY_TYPE:
+	case VT_SUB_VAR_EXPLAIN:
+	case VT_SUB_PRG_ITEM:
+		return true;
+	default:
+		return false;
+	}
+}
+
+void TrimTrailingLineBreaks(std::string& text)
+{
+	while (!text.empty() && (text.back() == '\r' || text.back() == '\n')) {
+		text.pop_back();
+	}
+}
+
+void TrimTrailingLineBreaks(std::wstring& text)
+{
+	while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n')) {
+		text.pop_back();
+	}
+}
+
+void RemoveLastLine(std::string& text)
+{
+	TrimTrailingLineBreaks(text);
+	size_t pos = text.find_last_of('\n');
+	if (pos == std::string::npos) {
+		text.clear();
+		return;
+	}
+	size_t keep = pos;
+	if (keep > 0 && text[keep - 1] == '\r') {
+		--keep;
+	}
+	text.resize(keep);
+}
+
+void RemoveLastLine(std::wstring& text)
+{
+	TrimTrailingLineBreaks(text);
+	size_t pos = text.find_last_of(L'\n');
+	if (pos == std::wstring::npos) {
+		text.clear();
+		return;
+	}
+	size_t keep = pos;
+	if (keep > 0 && text[keep - 1] == L'\r') {
+		--keep;
+	}
+	text.resize(keep);
+}
+
+bool SetClipboardUnicodeText(const std::wstring& text)
+{
+	const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+	HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+	if (hMem == nullptr) {
+		return false;
+	}
+
+	void* memPtr = GlobalLock(hMem);
+	if (memPtr == nullptr) {
+		GlobalFree(hMem);
+		return false;
+	}
+	std::memcpy(memPtr, text.c_str(), bytes);
+	GlobalUnlock(hMem);
+	if (SetClipboardData(CF_UNICODETEXT, hMem) == nullptr) {
+		GlobalFree(hMem);
+		return false;
+	}
+	return true;
+}
+
+bool SetClipboardAnsiText(const std::string& text)
+{
+	const size_t bytes = text.size() + 1;
+	HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+	if (hMem == nullptr) {
+		return false;
+	}
+
+	void* memPtr = GlobalLock(hMem);
+	if (memPtr == nullptr) {
+		GlobalFree(hMem);
+		return false;
+	}
+	std::memcpy(memPtr, text.c_str(), bytes);
+	GlobalUnlock(hMem);
+	if (SetClipboardData(CF_TEXT, hMem) == nullptr) {
+		GlobalFree(hMem);
+		return false;
+	}
+	return true;
+}
+
+bool TrimClipboardLastLine()
+{
+	if (!OpenClipboard(nullptr)) {
+		return false;
+	}
+
+	bool ok = false;
+	if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+		HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+		if (hData != nullptr) {
+			const wchar_t* textPtr = static_cast<const wchar_t*>(GlobalLock(hData));
+			if (textPtr != nullptr) {
+				std::wstring text(textPtr);
+				GlobalUnlock(hData);
+				RemoveLastLine(text);
+				EmptyClipboard();
+				ok = SetClipboardUnicodeText(text);
+			}
+		}
+	}
+	else if (IsClipboardFormatAvailable(CF_TEXT)) {
+		HANDLE hData = GetClipboardData(CF_TEXT);
+		if (hData != nullptr) {
+			const char* textPtr = static_cast<const char*>(GlobalLock(hData));
+			if (textPtr != nullptr) {
+				std::string text(textPtr);
+				GlobalUnlock(hData);
+				RemoveLastLine(text);
+				EmptyClipboard();
+				ok = SetClipboardAnsiText(text);
+			}
+		}
+	}
+
+	CloseClipboard();
+	return ok;
 }
 
 #ifdef UNICODE
@@ -159,13 +313,92 @@ bool IDEFacade::CopySelection() const
 
 bool IDEFacade::CopyCurrentFunctionCodeToClipboard() const
 {
-	// Try to enter the subroutine context first. If it cannot jump, continue.
-	const bool moved = OpenCurrentSub();
-	const bool selected = SelectAll();
-	const bool copied = selected && CopySelection();
-	if (moved) {
+	int originalRow = -1;
+	int originalCol = -1;
+	if (!GetCaretPosition(originalRow, originalCol)) {
+		return false;
+	}
+	const int initialRow = originalRow;
+	const int initialCol = originalCol;
+
+	int workRow = originalRow;
+	int workCol = originalCol;
+	ProgramText currentText = {};
+	if (!GetProgramText(workRow, workCol, currentText)) {
+		return false;
+	}
+
+	bool movedIntoSub = false;
+	if (!IsSubRelatedType(currentText.type)) {
+		movedIntoSub = OpenCurrentSub();
+		if (!movedIntoSub) {
+			return false;
+		}
+		if (!GetCaretPosition(workRow, workCol) || !GetProgramText(workRow, workCol, currentText)) {
+			MoveBackSub();
+			return false;
+		}
+	}
+
+	int startRow = -1;
+	for (int row = workRow; row >= 0; --row) {
+		ProgramText rowText = {};
+		if (!GetProgramText(row, workCol, rowText)) {
+			continue;
+		}
+		if (rowText.isTitle) {
+			continue;
+		}
+		if (rowText.type == VT_SUB_NAME) {
+			startRow = row;
+			break;
+		}
+	}
+
+	if (startRow < 0) {
+		if (movedIntoSub) {
+			MoveBackSub();
+		}
+		return false;
+	}
+
+	int endRow = startRow;
+	for (int row = startRow + 1;; ++row) {
+		ProgramText rowText = {};
+		if (!GetProgramText(row, workCol, rowText)) {
+			endRow = row - 1;
+			break;
+		}
+		if (rowText.isTitle) {
+			continue;
+		}
+		if (rowText.type == VT_SUB_NAME) {
+			endRow = row - 1;
+			break;
+		}
+		if (!IsSubRelatedType(rowText.type)) {
+			endRow = row - 1;
+			break;
+		}
+	}
+
+	if (endRow < startRow) {
+		endRow = startRow;
+	}
+
+	RunFunction(FN_BLK_CLEAR_ALL_DEF, 0, 0);
+	bool selected = RunFunction(FN_BLK_ADD_DEF, static_cast<DWORD>(startRow), static_cast<DWORD>(endRow));
+	bool copied = selected && CopySelection();
+	RunFunction(FN_BLK_CLEAR_ALL_DEF, 0, 0);
+
+	if (copied) {
+		TrimClipboardLastLine();
+	}
+
+	if (movedIntoSub) {
 		MoveBackSub();
 	}
+	MoveCaret(initialRow, initialCol);
 	return copied;
 }
 
@@ -397,17 +630,11 @@ bool IDEFacade::HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 		return false;
 	}
 
-	HMENU subMenu = CreatePopupMenu();
-	if (subMenu == nullptr) {
-		return false;
-	}
-
-	for (const auto& item : m_contextMenuItems) {
-		AppendMenuA(subMenu, MF_STRING | MF_ENABLED, item.commandId, item.text.c_str());
-	}
-
 	AppendMenuA(popupMenu, MF_SEPARATOR, 0, nullptr);
-	AppendMenuA(popupMenu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(subMenu), "AutoLinker");
+	for (const auto& item : m_contextMenuItems) {
+		AppendMenuA(popupMenu, MF_STRING | MF_ENABLED, item.commandId, item.text.c_str());
+		EnableMenuItem(popupMenu, item.commandId, MF_BYCOMMAND | MF_ENABLED);
+	}
 	return true;
 }
 
