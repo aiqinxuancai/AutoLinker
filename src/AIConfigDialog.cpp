@@ -1,6 +1,16 @@
 #include "AIConfigDialog.h"
 
 #include <array>
+#include <CommCtrl.h>
+
+#pragma comment(lib, "comctl32.lib")
+#if defined _M_IX86
+#pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='x86' publicKeyToken='6595b64144ccf1df' language='*'\"")
+#elif defined _M_X64
+#pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='amd64' publicKeyToken='6595b64144ccf1df' language='*'\"")
+#else
+#pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+#endif
 
 namespace {
 constexpr int IDC_CFG_BASE_URL = 1001;
@@ -325,6 +335,11 @@ bool RunModalWindow(HWND owner, HWND hDialog)
 
 bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 {
+	INITCOMMONCONTROLSEX icex = {};
+	icex.dwSize = sizeof(icex);
+	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES;
+	InitCommonControlsEx(&icex);
+
 	WNDCLASSEXA wc = {};
 	wc.cbSize = sizeof(wc);
 	wc.lpfnWndProc = AIConfigDialogProc;
@@ -358,6 +373,11 @@ bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 
 bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string& content, const std::string& confirmText)
 {
+	INITCOMMONCONTROLSEX icex = {};
+	icex.dwSize = sizeof(icex);
+	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES;
+	InitCommonControlsEx(&icex);
+
 	WNDCLASSEXA wc = {};
 	wc.cbSize = sizeof(wc);
 	wc.lpfnWndProc = AIPreviewDialogProc;
@@ -393,6 +413,11 @@ bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string
 
 bool ShowAITextInputDialog(HWND owner, const std::string& title, const std::string& hint, std::string& ioText)
 {
+	INITCOMMONCONTROLSEX icex = {};
+	icex.dwSize = sizeof(icex);
+	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES;
+	InitCommonControlsEx(&icex);
+
 	WNDCLASSEXA wc = {};
 	wc.cbSize = sizeof(wc);
 	wc.lpfnWndProc = AIInputDialogProc;

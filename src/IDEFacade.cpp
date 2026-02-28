@@ -254,6 +254,7 @@ std::wstring ToWide(const std::string& text)
 #endif
 
 constexpr int kMaxRowScan = 200000;
+constexpr int kMaxFunctionScan = 4096;
 
 std::string TrimAsciiSpaceCopy(const std::string& value)
 {
@@ -778,21 +779,38 @@ bool IDEFacade::GetCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const
 
 bool IDEFacade::GetCurrentPageCode(std::string& outCode) const
 {
-	PageCodeSnapshot snapshot = {};
-	if (!BuildCurrentPageSnapshot(snapshot)) {
+	outCode.clear();
+
+	int caretRow = -1;
+	int caretCol = -1;
+	GetCaretPosition(caretRow, caretCol);
+
+	const DWORD beforeSeq = GetClipboardSequenceNumber();
+	RunBlkClearAllDef();
+	if (!RunMoveBlkSelAll()) {
+		RunBlkClearAllDef();
 		return false;
 	}
-	outCode = snapshot.code;
-	return true;
+
+	const bool copied = CopySelection();
+	RunBlkClearAllDef();
+
+	if (caretRow >= 0 && caretCol >= 0) {
+		MoveCaret(caretRow, caretCol);
+	}
+
+	if (!copied) {
+		return false;
+	}
+	if (GetClipboardSequenceNumber() == beforeSeq) {
+		return false;
+	}
+	return ReadClipboardText(outCode) && !outCode.empty();
 }
 
 bool IDEFacade::ReplaceCurrentPageCode(const std::string& newPageCode, bool preCompile) const
 {
-	PageCodeSnapshot snapshot = {};
-	if (!BuildCurrentPageSnapshot(snapshot)) {
-		return false;
-	}
-	if (snapshot.firstRow < 0 || snapshot.lastRow < snapshot.firstRow) {
+	if (newPageCode.empty()) {
 		return false;
 	}
 
@@ -800,15 +818,15 @@ bool IDEFacade::ReplaceCurrentPageCode(const std::string& newPageCode, bool preC
 	int caretCol = -1;
 	GetCaretPosition(caretRow, caretCol);
 
-	if (!MoveCaret(snapshot.firstRow, 0)) {
-		return false;
-	}
-	if (!SelectRowRange(snapshot.firstRow, snapshot.lastRow)) {
+	RunBlkClearAllDef();
+	if (!RunMoveBlkSelAll()) {
+		RunBlkClearAllDef();
 		return false;
 	}
 
 	const bool ok = ReplaceSelectedRowsText(newPageCode, preCompile);
 	RunBlkClearAllDef();
+
 	if (caretRow >= 0 && caretCol >= 0) {
 		MoveCaret(caretRow, caretCol);
 	}
@@ -832,17 +850,15 @@ bool IDEFacade::GetFunctionCodeByName(const std::string& functionName, std::stri
 
 bool IDEFacade::GetCurrentFunctionCode(std::string& outCode) const
 {
-	PageCodeSnapshot snapshot = {};
-	if (!BuildCurrentPageSnapshot(snapshot)) {
+	outCode.clear();
+	const DWORD beforeSeq = GetClipboardSequenceNumber();
+	if (!CopyCurrentFunctionCodeToClipboard()) {
 		return false;
 	}
-
-	FunctionBlock block = {};
-	if (!FindCurrentFunctionBlock(snapshot, block)) {
+	if (GetClipboardSequenceNumber() == beforeSeq) {
 		return false;
 	}
-	outCode = block.code;
-	return true;
+	return ReadClipboardText(outCode) && !outCode.empty();
 }
 
 bool IDEFacade::ReplaceFunctionCodeByName(const std::string& functionName, const std::string& newFunctionCode, bool preCompile) const
@@ -879,17 +895,111 @@ bool IDEFacade::ReplaceFunctionCodeByName(const std::string& functionName, const
 
 bool IDEFacade::ReplaceCurrentFunctionCode(const std::string& newFunctionCode, bool preCompile) const
 {
-	PageCodeSnapshot snapshot = {};
-	if (!BuildCurrentPageSnapshot(snapshot)) {
+	if (TrimAsciiSpace(newFunctionCode).empty()) {
 		return false;
 	}
 
-	FunctionBlock block = {};
-	if (!FindCurrentFunctionBlock(snapshot, block)) {
+	int initialRow = -1;
+	int initialCol = -1;
+	if (!GetCaretPosition(initialRow, initialCol)) {
 		return false;
 	}
 
-	return ReplaceFunctionCodeByName(block.name, newFunctionCode, preCompile);
+	int workRow = initialRow;
+	int workCol = initialCol;
+	ProgramText currentText = {};
+	if (!GetProgramText(workRow, workCol, currentText)) {
+		return false;
+	}
+
+	bool movedIntoSub = false;
+	if (!IsSubRelatedType(currentText.type)) {
+		movedIntoSub = OpenCurrentSub();
+		if (!movedIntoSub) {
+			return false;
+		}
+		if (!GetCaretPosition(workRow, workCol) || !GetProgramText(workRow, workCol, currentText)) {
+			MoveBackSub();
+			MoveCaret(initialRow, initialCol);
+			return false;
+		}
+	}
+
+	int startRow = -1;
+	for (int i = 0, row = workRow; i < kMaxFunctionScan && row >= 0; ++i, --row) {
+		ProgramText rowText = {};
+		if (!GetProgramText(row, -1, rowText)) {
+			continue;
+		}
+		if (rowText.isTitle) {
+			continue;
+		}
+		if (rowText.type == VT_SUB_NAME) {
+			startRow = row;
+			break;
+		}
+	}
+
+	if (startRow < 0) {
+		if (movedIntoSub) {
+			MoveBackSub();
+		}
+		MoveCaret(initialRow, initialCol);
+		return false;
+	}
+
+	int endRow = startRow;
+	ProgramText prevRowText = {};
+	bool hasPrevRowText = false;
+	int repeatedRowCount = 0;
+	for (int i = 0, row = startRow + 1; i < kMaxFunctionScan; ++i, ++row) {
+		ProgramText rowText = {};
+		if (!GetProgramText(row, -1, rowText)) {
+			endRow = row - 1;
+			break;
+		}
+		if (rowText.isTitle) {
+			continue;
+		}
+		if (rowText.type == VT_SUB_NAME || !IsSubRelatedType(rowText.type)) {
+			endRow = row - 1;
+			break;
+		}
+
+		if (hasPrevRowText &&
+			rowText.type == prevRowText.type &&
+			rowText.isTitle == prevRowText.isTitle &&
+			rowText.text == prevRowText.text) {
+			++repeatedRowCount;
+			if (repeatedRowCount >= 32) {
+				endRow = row - 1;
+				break;
+			}
+		}
+		else {
+			repeatedRowCount = 0;
+		}
+		prevRowText = rowText;
+		hasPrevRowText = true;
+
+		endRow = row;
+	}
+
+	if (endRow < startRow) {
+		endRow = startRow;
+	}
+
+	bool ok = false;
+	if (MoveCaret(startRow, 0) && SelectRowRange(startRow, endRow)) {
+		ok = ReplaceSelectedRowsText(newFunctionCode, preCompile);
+	}
+
+	RunBlkClearAllDef();
+	if (movedIntoSub) {
+		MoveBackSub();
+	}
+	MoveCaret(initialRow, initialCol);
+	return ok;
 }
 
 bool IDEFacade::InsertCodeBelowFunction(const std::string& functionName, const std::string& codeToInsert, bool appendIfNotFound, bool preCompile) const
@@ -1015,14 +1125,6 @@ bool IDEFacade::InsertCodeAtPageTop(const std::string& codeToInsert, bool preCom
 		return false;
 	}
 
-	PageCodeSnapshot snapshot = {};
-	if (!BuildCurrentPageSnapshot(snapshot)) {
-		return false;
-	}
-	if (snapshot.firstRow < 0) {
-		return false;
-	}
-
 	int caretRow = -1;
 	int caretCol = -1;
 	GetCaretPosition(caretRow, caretCol);
@@ -1032,12 +1134,12 @@ bool IDEFacade::InsertCodeAtPageTop(const std::string& codeToInsert, bool preCom
 		}
 	};
 
-	int insertRow = snapshot.firstRow;
+	int insertRow = 0;
 	ProgramText firstRowText = {};
-	if (RunGetPrgText(snapshot.firstRow, -1, firstRowText)) {
+	if (RunGetPrgText(0, -1, firstRowText)) {
 		const std::string firstLine = TrimAsciiSpace(firstRowText.text);
 		if (!firstLine.empty() && firstLine.rfind(".", 0) == 0) {
-			insertRow = snapshot.firstRow + 1;
+			insertRow = 1;
 		}
 	}
 
@@ -1046,7 +1148,7 @@ bool IDEFacade::InsertCodeAtPageTop(const std::string& codeToInsert, bool preCom
 	if (MoveCaret(insertRow, 0)) {
 		inserted = RunInsertText(finalInsert, false);
 	}
-	else if (MoveCaret(snapshot.firstRow, 0)) {
+	else if (MoveCaret(0, 0)) {
 		inserted = RunInsertText(finalInsert, false);
 	}
 
