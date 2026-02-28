@@ -56,7 +56,7 @@ std::string RemoveCodeFence(const std::string& text)
 
 	return AIService::Trim(content.substr(firstLineEnd + 1, fenceEnd - (firstLineEnd + 1)));
 }
-}
+} // namespace
 
 bool AIService::LoadSettings(ConfigManager& config, AISettings& outSettings)
 {
@@ -69,7 +69,7 @@ bool AIService::LoadSettings(ConfigManager& config, AISettings& outSettings)
 	const std::string timeoutValue = config.getValue("ai.timeout_ms");
 	if (!timeoutValue.empty()) {
 		try {
-			outSettings.timeoutMs = std::max(1000, std::stoi(timeoutValue));
+			outSettings.timeoutMs = (std::max)(1000, std::stoi(timeoutValue));
 		}
 		catch (...) {
 			outSettings.timeoutMs = 120000;
@@ -122,17 +122,17 @@ std::string AIService::BuildTaskDisplayName(AITaskKind kind)
 	switch (kind)
 	{
 	case AITaskKind::OptimizeFunction:
-		return "AI优化函数";
+		return "AI Optimize Function";
 	case AITaskKind::AddCommentsToFunction:
-		return "AI添加函数注释";
+		return "AI Add Function Comments";
 	case AITaskKind::TranslateFunctionAndVariables:
-		return "AI翻译函数与变量名";
+		return "AI Translate Function And Variables";
 	case AITaskKind::TranslateText:
-		return "AI翻译文本";
+		return "AI Translate Text";
 	case AITaskKind::CompleteApiDeclarations:
-		return "AI补全API声明";
+		return "AI Complete API Declarations";
 	default:
-		return "AI任务";
+		return "AI Task";
 	}
 }
 
@@ -141,7 +141,7 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 	AIResult result = {};
 	std::string missingField;
 	if (!HasRequiredSettings(settings, missingField)) {
-		result.error = "AI配置缺失: " + missingField;
+		result.error = "AI settings missing: " + missingField;
 		return result;
 	}
 
@@ -204,15 +204,15 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 			}
 		}
 
-		if (parsed.contains("error") && parsed["error"].contains("message")) {
+		if (parsed.contains("error") && parsed["error"].contains("message") && parsed["error"]["message"].is_string()) {
 			result.error = parsed["error"]["message"].get<std::string>();
 			return result;
 		}
 
-		result.error = "AI响应格式不符合 chat/completions 预期";
+		result.error = "AI response does not match expected chat/completions schema";
 	}
 	catch (const std::exception& ex) {
-		result.error = std::string("解析AI响应失败: ") + ex.what();
+		result.error = std::string("Failed to parse AI response: ") + ex.what();
 	}
 
 	return result;
@@ -254,40 +254,40 @@ std::string AIService::BuildEndpoint(const std::string& baseUrl)
 std::string AIService::BuildSystemPrompt(AITaskKind kind, const AISettings& settings)
 {
 	std::string prompt =
-		"你是中文编程语言“易语言”代码助手。\n"
-		"严格遵守以下规则：\n"
-		"1) 注释使用单引号 '。\n"
-		"2) 代码结构遵循 .版本 2 和易语言语法。\n"
-		"3) 如非特别要求，仅返回结果代码或结果文本，不要解释。\n"
-		"4) 不要输出 Markdown 标题或多余说明。\n\n"
-		"易语言布局示例：\n"
-		".版本 2\n"
-		".子程序 示例, 整数型\n"
-		"返回 (0)\n\n";
+		"You are a coding assistant for E-language (Yi language), a Chinese programming language.\n"
+		"Rules:\n"
+		"1) Use single quote (') for inline comments in code.\n"
+		"2) Follow E-language syntax and keep '.version 2' style layout.\n"
+		"3) Unless explicitly requested, output only final code/text, no extra explanation.\n"
+		"4) Do not output markdown headings or extra wrappers.\n\n"
+		"E-language layout example:\n"
+		".version 2\n"
+		".subroutine demo, integer\n"
+		"return (0)\n\n";
 
 	switch (kind)
 	{
 	case AITaskKind::OptimizeFunction:
-		prompt += "任务：优化用户提供的当前函数代码，可提升可读性与健壮性，但必须保持功能等价。仅输出完整函数代码。";
+		prompt += "Task: optimize the provided current function code for readability and robustness while keeping behavior equivalent. Return only complete function code.";
 		break;
 	case AITaskKind::AddCommentsToFunction:
-		prompt += "任务：为用户提供的函数添加适量注释（函数注释、关键行注释），不要改变代码逻辑。仅输出完整函数代码。";
+		prompt += "Task: add appropriate comments to the provided function (function comment and key-line comments) without changing logic. Return only complete function code.";
 		break;
 	case AITaskKind::TranslateFunctionAndVariables:
-		prompt += "任务：将函数名、参数名、局部变量名改为英文，使用 lowerCamelCase（首字母小写），逻辑不变。仅输出完整函数代码。";
+		prompt += "Task: rename function name, parameter names, and local variable names to English using lowerCamelCase (first letter lowercase) while preserving logic. Return only complete function code.";
 		break;
 	case AITaskKind::TranslateText:
-		prompt += "任务：翻译用户提供的文本。仅输出翻译结果纯文本，不要附加解释。";
+		prompt += "Task: translate user-provided text. Return only translated plain text with no extra explanation.";
 		break;
 	case AITaskKind::CompleteApiDeclarations:
 		prompt +=
-			"任务：基于用户提供函数，补全可能缺失的 .DLL命令 / .参数 / .数据类型 / .成员 声明。\n"
-			"只返回声明代码块，不返回函数实现。\n"
-			"声明示例：\n"
-			".DLL命令 GetDC, 整数型, \"user32\", \"GetDC\", 公开\n"
-			".参数 hwnd, 整数型\n"
-			".数据类型 BITMAPFILEHEADER\n"
-			".成员 bfType, 短整数型";
+			"Task: based on the provided function, complete potentially missing .DLL command / .parameter / .data type / .member declarations.\n"
+			"Return declarations only, do not return function implementation.\n"
+			"Declaration example:\n"
+			".DLL command GetDC, integer, \"user32\", \"GetDC\", public\n"
+			".parameter hwnd, integer\n"
+			".data type BITMAPFILEHEADER\n"
+			".member bfType, short integer";
 		break;
 	default:
 		break;
@@ -295,7 +295,7 @@ std::string AIService::BuildSystemPrompt(AITaskKind kind, const AISettings& sett
 
 	const std::string extraPrompt = Trim(settings.extraSystemPrompt);
 	if (!extraPrompt.empty()) {
-		prompt += "\n\n用户追加系统提示：\n";
+		prompt += "\n\nUser extra system prompt:\n";
 		prompt += extraPrompt;
 	}
 

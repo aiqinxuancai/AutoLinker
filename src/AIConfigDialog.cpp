@@ -92,9 +92,9 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
 			120, 118, 500, 180, hWnd, reinterpret_cast<HMENU>(IDC_CFG_EXTRA_PROMPT), nullptr, nullptr);
 
-		HWND hSave = CreateWindowA("BUTTON", "保存并继续", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+		HWND hSave = CreateWindowA("BUTTON", "Save and Continue", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
 			420, 314, 100, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_SAVE), nullptr, nullptr);
-		HWND hCancel = CreateWindowA("BUTTON", "取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+		HWND hCancel = CreateWindowA("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
 			530, 314, 90, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_CANCEL), nullptr, nullptr);
 
 		std::array<HWND, 6> controls = { ctx->hBaseUrl, ctx->hApiKey, ctx->hModel, ctx->hExtraPrompt, hSave, hCancel };
@@ -119,7 +119,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			next.extraSystemPrompt = GetEditTextA(ctx->hExtraPrompt);
 
 			if (next.baseUrl.empty() || next.apiKey.empty() || next.model.empty()) {
-				MessageBoxA(hWnd, "baseUrl / apiKey / model 不能为空。", "AI配置", MB_ICONWARNING | MB_OK);
+				MessageBoxA(hWnd, "baseUrl / apiKey / model cannot be empty.", "AI Config", MB_ICONWARNING | MB_OK);
 				return 0;
 			}
 
@@ -187,7 +187,7 @@ LRESULT CALLBACK AIPreviewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 590, 474, 84, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_PREVIEW_OK), nullptr, nullptr);
 
-		HWND hCancel = CreateWindowA("BUTTON", "取消",
+		HWND hCancel = CreateWindowA("BUTTON", "Cancel",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 682, 474, 84, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_PREVIEW_CANCEL), nullptr, nullptr);
 
@@ -247,10 +247,10 @@ LRESULT CALLBACK AIInputDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
 			14, 44, 612, 200, hWnd, reinterpret_cast<HMENU>(IDC_INPUT_EDIT), nullptr, nullptr);
 
-		HWND hOk = CreateWindowA("BUTTON", "确定",
+		HWND hOk = CreateWindowA("BUTTON", "OK",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 448, 254, 84, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_INPUT_OK), nullptr, nullptr);
-		HWND hCancel = CreateWindowA("BUTTON", "取消",
+		HWND hCancel = CreateWindowA("BUTTON", "Cancel",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 542, 254, 84, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_INPUT_CANCEL), nullptr, nullptr);
 
@@ -258,6 +258,7 @@ LRESULT CALLBACK AIInputDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 		SetDefaultFont(ctx->hEdit);
 		SetDefaultFont(hOk);
 		SetDefaultFont(hCancel);
+		SetFocus(ctx->hEdit);
 		return 0;
 	}
 
@@ -320,7 +321,7 @@ bool RunModalWindow(HWND owner, HWND hDialog)
 	}
 	return true;
 }
-}
+} // namespace
 
 bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 {
@@ -339,7 +340,7 @@ bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 	HWND hDialog = CreateWindowExA(
 		WS_EX_DLGMODALFRAME,
 		wc.lpszClassName,
-		"AutoLinker AI 配置",
+		"AutoLinker AI Config",
 		WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
 		CW_USEDEFAULT, CW_USEDEFAULT, 650, 390,
 		owner,
@@ -369,7 +370,7 @@ bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string
 	AIPreviewDialogContext ctx = {};
 	ctx.title = title;
 	ctx.content = content;
-	ctx.confirmText = confirmText.empty() ? "确定" : confirmText;
+	ctx.confirmText = confirmText.empty() ? "OK" : confirmText;
 
 	HWND hDialog = CreateWindowExA(
 		WS_EX_DLGMODALFRAME,
