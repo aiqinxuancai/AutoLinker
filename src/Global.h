@@ -22,7 +22,7 @@ extern ModelManager g_modelManager;
 /// Êä³öÎÄ±¾
 /// </summary>
 /// <param name="szbuf"></param>
-void OutputStringToELog(std::string szbuf);
+void OutputStringToELog(const std::string& szbuf);
 
 
 /// <summary>

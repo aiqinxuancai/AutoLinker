@@ -568,17 +568,10 @@ void StartHookCreateFileA() {
 /// 输出文本
 /// </summary>
 /// <param name="szbuf"></param>
-void OutputStringToELog(std::string szbuf) {
-	szbuf.insert(0, "[AutoLinker]");
-	OutputDebugString(szbuf.c_str());
-	HWND hwnd = FindOutputWindow((HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0));
-	if (hwnd) {
-		SendMessageA(hwnd, 194, 1, (LPARAM)szbuf.c_str());
-		SendMessageA(hwnd, 194, 1, (long)"\r\n");
-	}
-	else {
-
-	}
+void OutputStringToELog(const std::string& szbuf) {
+	const std::string line = "[AutoLinker]" + szbuf;
+	OutputDebugStringA((line + "\n").c_str());
+	IDEFacade::Instance().AppendOutputWindowLine(line);
 }
 
 

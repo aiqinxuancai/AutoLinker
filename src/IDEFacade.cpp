@@ -3,8 +3,11 @@
 #include <fnshare.h>
 #include <lib2.h>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <filesystem>
+#include <limits>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -179,16 +182,84 @@ std::wstring ToWide(const std::string& text)
 		if (size <= 0) {
 			return std::wstring();
 		}
-		std::wstring out(static_cast<size_t>(size - 1), L'\0');
+		std::wstring out(static_cast<size_t>(size), L'\0');
 		MultiByteToWideChar(CP_ACP, 0, text.c_str(), -1, out.data(), size);
+		if (!out.empty() && out.back() == L'\0') {
+			out.pop_back();
+		}
 		return out;
 	}
 
-	std::wstring out(static_cast<size_t>(size - 1), L'\0');
+	std::wstring out(static_cast<size_t>(size), L'\0');
 	MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, out.data(), size);
+	if (!out.empty() && out.back() == L'\0') {
+		out.pop_back();
+	}
 	return out;
 }
 #endif
+
+constexpr int kMaxRowScan = 200000;
+
+std::string TrimAsciiSpaceCopy(const std::string& value)
+{
+	size_t begin = 0;
+	size_t end = value.size();
+	while (begin < end && std::isspace(static_cast<unsigned char>(value[begin])) != 0) {
+		++begin;
+	}
+	while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+		--end;
+	}
+	return value.substr(begin, end - begin);
+}
+
+std::string ParseSubNameFromHeader(const std::string& headerLine)
+{
+	std::string line = TrimAsciiSpaceCopy(headerLine);
+	if (line.empty()) {
+		return std::string();
+	}
+
+	// 兼容“.子程序 名称, 返回类型”以及直接传入“名称, 返回类型”的情况。
+	std::string remain = line;
+	if (remain.front() == '.') {
+		size_t pos = 1;
+		while (pos < remain.size() && std::isspace(static_cast<unsigned char>(remain[pos])) == 0) {
+			++pos;
+		}
+		while (pos < remain.size() && std::isspace(static_cast<unsigned char>(remain[pos])) != 0) {
+			++pos;
+		}
+		remain = TrimAsciiSpaceCopy(remain.substr(pos));
+	}
+
+	size_t comma = remain.find(',');
+	size_t commaCN = remain.find("，");
+	size_t cutPos = (std::min)(
+		comma == std::string::npos ? std::numeric_limits<size_t>::max() : comma,
+		commaCN == std::string::npos ? std::numeric_limits<size_t>::max() : commaCN);
+	if (cutPos != std::numeric_limits<size_t>::max()) {
+		remain = remain.substr(0, cutPos);
+	}
+	return TrimAsciiSpaceCopy(remain);
+}
+
+void AppendLineWithCrLf(std::string& target, const std::string& line)
+{
+	target += line;
+	target += "\r\n";
+}
+
+BOOL CALLBACK EnumChildProcFindOutputWindow(HWND hwnd, LPARAM lParam)
+{
+	if (GetDlgCtrlID(hwnd) == 1011) {
+		HWND* out = reinterpret_cast<HWND*>(lParam);
+		*out = hwnd;
+		return FALSE;
+	}
+	return TRUE;
+}
 }
 
 IDEFacade& IDEFacade::Instance()
@@ -208,35 +279,220 @@ bool IDEFacade::RunFunction(INT code, DWORD p1, DWORD p2) const
 	return RunFunctionRaw(code, p1, p2) != FALSE;
 }
 
-HWND IDEFacade::GetMainWindow() const
+bool IDEFacade::Invoke(INT fnCode, DWORD p1, DWORD p2) const
 {
-	return reinterpret_cast<HWND>(NotifySys(NES_GET_MAIN_HWND, 0, 0));
+	return RunFunction(fnCode, p1, p2);
 }
 
-bool IDEFacade::IsFunctionEnabled(INT code) const
+bool IDEFacade::IsFnEnabled(INT fnCode) const
 {
-	BOOL enabled = FALSE;
-	if (!RunFunction(FN_IS_FUNC_ENABLED, static_cast<DWORD>(code), PtrToDWORD(&enabled))) {
+	bool enabled = false;
+	return RunIsFuncEnabled(fnCode, enabled) && enabled;
+}
+
+bool IDEFacade::TryGetInt(INT fnCode, int& outValue) const
+{
+	outValue = 0;
+	return Invoke(fnCode, PtrToDWORD(&outValue), 0);
+}
+
+bool IDEFacade::TryGetBool(INT fnCode, bool& outValue) const
+{
+	BOOL value = FALSE;
+	if (!Invoke(fnCode, PtrToDWORD(&value), 0)) {
+		outValue = false;
 		return false;
 	}
-	return enabled == TRUE;
+	outValue = (value == TRUE);
+	return true;
 }
 
-IDEFacade::ActiveWindowType IDEFacade::GetActiveWindowType() const
+#define IDEFACADE_DEFINE_NOARG_METHOD(methodName, fnCode) \
+	bool IDEFacade::methodName() const { return Invoke(fnCode); }
+IDEFACADE_NOARG_FN_LIST(IDEFACADE_DEFINE_NOARG_METHOD)
+#undef IDEFACADE_DEFINE_NOARG_METHOD
+
+bool IDEFacade::RunMoveOpenSpecRowArg(int rowIndex) const
 {
-	int activeType = 0;
-	RunFunction(FN_GET_ACTIVE_WND_TYPE, PtrToDWORD(&activeType), 0);
-	return static_cast<ActiveWindowType>(activeType);
+	return Invoke(FN_MOVE_OPEN_SPEC_ROW_ARG, static_cast<DWORD>(rowIndex), 0);
 }
 
-bool IDEFacade::GetCaretPosition(int& rowIndex, int& colIndex) const
+bool IDEFacade::RunMoveCloseSpecRowArg(int rowIndex) const
+{
+	return Invoke(FN_MOVE_CLOSE_SPEC_ROW_ARG, static_cast<DWORD>(rowIndex), 0);
+}
+
+bool IDEFacade::RunMoveCaret(int rowIndex, int colIndex) const
+{
+	return Invoke(FN_MOVE_CARET, static_cast<DWORD>(rowIndex), static_cast<DWORD>(colIndex));
+}
+
+bool IDEFacade::RunScrollSpecHorzPos(int pos) const
+{
+	return Invoke(FN_SCROLL_SPEC_HORZ_POS, static_cast<DWORD>(pos), 0);
+}
+
+bool IDEFacade::RunScrollSpecVertPos(int pos) const
+{
+	return Invoke(FN_SCROLL_SPEC_VERT_POS, static_cast<DWORD>(pos), 0);
+}
+
+bool IDEFacade::RunBlkAddDef(int topRowIndex, int bottomRowIndex) const
+{
+	return Invoke(FN_BLK_ADD_DEF, static_cast<DWORD>(topRowIndex), static_cast<DWORD>(bottomRowIndex));
+}
+
+bool IDEFacade::RunBlkRemoveDef(int topRowIndex, int bottomRowIndex) const
+{
+	return Invoke(FN_BLK_REMOVE_DEF, static_cast<DWORD>(topRowIndex), static_cast<DWORD>(bottomRowIndex));
+}
+
+bool IDEFacade::RunInsertText(const std::string& text, bool asKeyboardInput) const
+{
+	return Invoke(FN_INSERT_TEXT, PtrToDWORD(text.c_str()), asKeyboardInput ? 1 : 0);
+}
+
+bool IDEFacade::RunPreCompile(bool& success) const
+{
+	BOOL compileOk = FALSE;
+	if (!Invoke(FN_PRE_COMPILE, PtrToDWORD(&compileOk), 0)) {
+		success = false;
+		return false;
+	}
+	success = (compileOk == TRUE);
+	return true;
+}
+
+bool IDEFacade::RunSetAndCompilePrgItemText(const std::string& text, bool preCompile) const
+{
+	return Invoke(FN_SET_AND_COMPILE_PRG_ITEM_TEXT, PtrToDWORD(text.c_str()), preCompile ? 1 : 0);
+}
+
+bool IDEFacade::RunReplaceAll2(const std::string& findText, const std::string& replaceText, bool caseSensitive) const
+{
+	REPLACE_ALL2_PARAM replaceParam = {};
+	replaceParam.m_szFind = findText.c_str();
+	replaceParam.m_szReplace = replaceText.c_str();
+	replaceParam.m_blCase = caseSensitive ? TRUE : FALSE;
+	return Invoke(FN_REPLACE_ALL2, PtrToDWORD(&replaceParam), 0);
+}
+
+bool IDEFacade::RunInputPrg2(const std::string& filePath) const
+{
+	return Invoke(FN_INPUT_PRG2, PtrToDWORD(filePath.c_str()), 0);
+}
+
+bool IDEFacade::RunAddNewEcom2(const std::string& filePath, bool& success) const
+{
+	BOOL addOk = FALSE;
+	if (!Invoke(FN_ADD_NEW_ECOM2, PtrToDWORD(filePath.c_str()), PtrToDWORD(&addOk))) {
+		success = false;
+		return false;
+	}
+	success = (addOk == TRUE);
+	return true;
+}
+
+bool IDEFacade::RunRemoveSpecEcom(int index) const
+{
+	return Invoke(FN_REMOVE_SPEC_ECOM, static_cast<DWORD>(index), 0);
+}
+
+bool IDEFacade::RunOpenFile2(const std::string& filePath) const
+{
+	return Invoke(FN_OPEN_FILE2, PtrToDWORD(filePath.c_str()), 0);
+}
+
+bool IDEFacade::RunAddTab(HWND hWnd, const std::string& caption, const std::string& toolTip, HICON hIcon) const
+{
+	ADD_TAB_INF tabInf = {};
+	tabInf.m_hWnd = hWnd;
+	tabInf.m_hIcon = hIcon;
+#ifdef UNICODE
+	std::wstring captionW = ToWide(caption);
+	std::wstring toolTipW = ToWide(toolTip);
+	tabInf.m_szCaption = const_cast<LPWSTR>(captionW.c_str());
+	tabInf.m_szToolTip = const_cast<LPWSTR>(toolTipW.c_str());
+#else
+	tabInf.m_szCaption = const_cast<LPSTR>(caption.c_str());
+	tabInf.m_szToolTip = const_cast<LPSTR>(toolTip.c_str());
+#endif
+	return Invoke(FN_ADD_TAB, PtrToDWORD(&tabInf), 0);
+}
+
+bool IDEFacade::RunGetActiveWndType(int& outType) const
+{
+	outType = 0;
+	return Invoke(FN_GET_ACTIVE_WND_TYPE, PtrToDWORD(&outType), 0);
+}
+
+bool IDEFacade::RunInputEcom(const std::string& filePath, bool& success) const
+{
+	BOOL importOk = FALSE;
+	if (!Invoke(FN_INPUT_ECOM, PtrToDWORD(filePath.c_str()), PtrToDWORD(&importOk))) {
+		success = false;
+		return false;
+	}
+	success = (importOk == TRUE);
+	return true;
+}
+
+bool IDEFacade::RunIsFuncEnabled(INT fnCode, bool& enabled) const
+{
+	BOOL ideEnabled = FALSE;
+	if (!Invoke(FN_IS_FUNC_ENABLED, static_cast<DWORD>(fnCode), PtrToDWORD(&ideEnabled))) {
+		enabled = false;
+		return false;
+	}
+	enabled = (ideEnabled == TRUE);
+	return true;
+}
+
+bool IDEFacade::RunClipGetEprgDataSize(int& size) const
+{
+	size = 0;
+	return Invoke(FN_CLIP_GET_EPRG_DATA_SIZE, PtrToDWORD(&size), 0);
+}
+
+bool IDEFacade::RunClipGetEprgData(std::vector<uint8_t>& data) const
+{
+	data.clear();
+	int size = 0;
+	if (!RunClipGetEprgDataSize(size) || size <= 0) {
+		return false;
+	}
+
+	data.resize(static_cast<size_t>(size));
+	BOOL success = FALSE;
+	if (!Invoke(FN_CLIP_GET_EPRG_DATA, PtrToDWORD(data.data()), PtrToDWORD(&success))) {
+		data.clear();
+		return false;
+	}
+	if (success != TRUE) {
+		data.clear();
+		return false;
+	}
+	return true;
+}
+
+bool IDEFacade::RunClipSetEprgData(const std::vector<uint8_t>& data) const
+{
+	if (data.empty()) {
+		return false;
+	}
+	return Invoke(FN_CLIP_SET_EPRG_DATA, PtrToDWORD(data.data()), static_cast<DWORD>(data.size()));
+}
+
+bool IDEFacade::RunGetCaretRowIndex(int& rowIndex) const
 {
 	rowIndex = -1;
-	colIndex = -1;
+	return Invoke(FN_GET_CARET_ROW_INDEX, PtrToDWORD(&rowIndex), 0);
+}
 
-	BOOL rowOk = RunFunction(FN_GET_CARET_ROW_INDEX, PtrToDWORD(&rowIndex), 0);
-	BOOL colOk = RunFunction(FN_GET_CARET_COL_INDEX, PtrToDWORD(&colIndex), 0);
-	return rowOk && colOk;
+bool IDEFacade::RunGetCaretColIndex(int& colIndex) const
+{
+	colIndex = -1;
+	return Invoke(FN_GET_CARET_COL_INDEX, PtrToDWORD(&colIndex), 0);
 }
 
 bool IDEFacade::ReadProgramLikeText(INT functionCode, int rowIndex, int colIndex, ProgramText& outText) const
@@ -247,12 +503,12 @@ bool IDEFacade::ReadProgramLikeText(INT functionCode, int rowIndex, int colIndex
 	query.m_pBuf = nullptr;
 	query.m_nBufSize = 0;
 
-	if (!RunFunction(functionCode, PtrToDWORD(&query), 0)) {
+	if (!Invoke(functionCode, PtrToDWORD(&query), 0)) {
 		return false;
 	}
 
 	outText.type = query.m_nType;
-	outText.isTitle = query.m_blIsTitle == TRUE;
+	outText.isTitle = (query.m_blIsTitle == TRUE);
 	outText.text.clear();
 	if (query.m_nBufSize <= 0) {
 		return true;
@@ -262,53 +518,543 @@ bool IDEFacade::ReadProgramLikeText(INT functionCode, int rowIndex, int colIndex
 	query.m_pBuf = buffer.data();
 	query.m_nBufSize = static_cast<int>(buffer.size());
 
-	if (!RunFunction(functionCode, PtrToDWORD(&query), 0)) {
+	if (!Invoke(functionCode, PtrToDWORD(&query), 0)) {
 		return false;
 	}
 
 	outText.type = query.m_nType;
-	outText.isTitle = query.m_blIsTitle == TRUE;
+	outText.isTitle = (query.m_blIsTitle == TRUE);
 	outText.text.assign(buffer.data());
 	return true;
 }
 
-bool IDEFacade::GetProgramText(int rowIndex, int colIndex, ProgramText& outText) const
+std::string IDEFacade::TrimAsciiSpace(const std::string& s)
+{
+	return TrimAsciiSpaceCopy(s);
+}
+
+std::string IDEFacade::NormalizeFunctionName(const std::string& name)
+{
+	std::string normalized = TrimAsciiSpace(name);
+	if (!normalized.empty() && normalized.front() == '.') {
+		const std::string parsed = ParseSubNameFromHeader(normalized);
+		if (!parsed.empty()) {
+			return parsed;
+		}
+	}
+
+	size_t comma = normalized.find(',');
+	size_t commaCN = normalized.find("，");
+	size_t cutPos = (std::min)(
+		comma == std::string::npos ? std::numeric_limits<size_t>::max() : comma,
+		commaCN == std::string::npos ? std::numeric_limits<size_t>::max() : commaCN);
+	if (cutPos != std::numeric_limits<size_t>::max()) {
+		normalized = normalized.substr(0, cutPos);
+	}
+	return TrimAsciiSpace(normalized);
+}
+
+std::string IDEFacade::EnsureTrailingLineBreak(const std::string& text)
+{
+	if (text.empty()) {
+		return "\r\n";
+	}
+	if (text.back() == '\n') {
+		return text;
+	}
+	if (text.back() == '\r') {
+		return text + "\n";
+	}
+	return text + "\r\n";
+}
+
+bool IDEFacade::SelectRowRange(int startRow, int endRow) const
+{
+	if (startRow < 0 || endRow < startRow) {
+		return false;
+	}
+	RunBlkClearAllDef();
+	return RunBlkAddDef(startRow, endRow);
+}
+
+bool IDEFacade::ReplaceSelectedRowsText(const std::string& text, bool preCompile) const
+{
+	if (!RunRemove()) {
+		return false;
+	}
+	if (!RunInsertText(EnsureTrailingLineBreak(text), false)) {
+		return false;
+	}
+	if (!preCompile) {
+		return true;
+	}
+
+	bool compileOk = false;
+	if (!RunPreCompile(compileOk)) {
+		return false;
+	}
+	return compileOk;
+}
+
+bool IDEFacade::BuildCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const
+{
+	outSnapshot = {};
+
+	int caretRow = -1;
+	int caretCol = -1;
+	if (!GetCaretPosition(caretRow, caretCol)) {
+		return false;
+	}
+
+	ProgramText currentRowText = {};
+	if (!RunGetPrgText(caretRow, -1, currentRowText)) {
+		return false;
+	}
+
+	int firstRow = caretRow;
+	for (int i = 0; i < kMaxRowScan && firstRow > 0; ++i) {
+		ProgramText probe = {};
+		if (!RunGetPrgText(firstRow - 1, -1, probe)) {
+			break;
+		}
+		--firstRow;
+	}
+
+	int lastRow = caretRow;
+	for (int i = 0; i < kMaxRowScan; ++i) {
+		ProgramText probe = {};
+		if (!RunGetPrgText(lastRow + 1, -1, probe)) {
+			break;
+		}
+		++lastRow;
+	}
+
+	if (firstRow < 0 || lastRow < firstRow) {
+		return false;
+	}
+
+	outSnapshot.firstRow = firstRow;
+	outSnapshot.lastRow = lastRow;
+
+	std::vector<ProgramText> rows;
+	rows.reserve(static_cast<size_t>(lastRow - firstRow + 1));
+	for (int row = firstRow; row <= lastRow; ++row) {
+		ProgramText rowText = {};
+		if (!RunGetPrgText(row, -1, rowText)) {
+			return false;
+		}
+		rows.push_back(rowText);
+		AppendLineWithCrLf(outSnapshot.code, rowText.text);
+	}
+
+	std::vector<int> subStartRows;
+	subStartRows.reserve(32);
+	for (int row = firstRow; row <= lastRow; ++row) {
+		const ProgramText& rowText = rows[static_cast<size_t>(row - firstRow)];
+		if (!rowText.isTitle && rowText.type == VT_SUB_NAME) {
+			subStartRows.push_back(row);
+		}
+	}
+
+	for (size_t i = 0; i < subStartRows.size(); ++i) {
+		const int start = subStartRows[i];
+		const int end = (i + 1 < subStartRows.size()) ? (subStartRows[i + 1] - 1) : lastRow;
+		if (end < start) {
+			continue;
+		}
+
+		FunctionBlock block = {};
+		block.startRow = start;
+		block.endRow = end;
+		block.headerCol = -1;
+		block.name = NormalizeFunctionName(rows[static_cast<size_t>(start - firstRow)].text);
+
+		for (int row = start; row <= end; ++row) {
+			AppendLineWithCrLf(block.code, rows[static_cast<size_t>(row - firstRow)].text);
+		}
+		outSnapshot.functions.push_back(std::move(block));
+	}
+
+	return true;
+}
+
+bool IDEFacade::FindFunctionBlockByName(const PageCodeSnapshot& snapshot, const std::string& name, FunctionBlock& outBlock) const
+{
+	const std::string target = NormalizeFunctionName(name);
+	if (target.empty()) {
+		return false;
+	}
+
+	for (const auto& block : snapshot.functions) {
+		if (NormalizeFunctionName(block.name) == target) {
+			outBlock = block;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool IDEFacade::FindCurrentFunctionBlock(const PageCodeSnapshot& snapshot, FunctionBlock& outBlock) const
+{
+	int caretRow = -1;
+	int caretCol = -1;
+	if (!GetCaretPosition(caretRow, caretCol)) {
+		return false;
+	}
+
+	for (const auto& block : snapshot.functions) {
+		if (caretRow >= block.startRow && caretRow <= block.endRow) {
+			outBlock = block;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool IDEFacade::GetCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const
+{
+	return BuildCurrentPageSnapshot(outSnapshot);
+}
+
+bool IDEFacade::GetCurrentPageCode(std::string& outCode) const
+{
+	PageCodeSnapshot snapshot = {};
+	if (!BuildCurrentPageSnapshot(snapshot)) {
+		return false;
+	}
+	outCode = snapshot.code;
+	return true;
+}
+
+bool IDEFacade::GetFunctionCodeByName(const std::string& functionName, std::string& outCode) const
+{
+	PageCodeSnapshot snapshot = {};
+	if (!BuildCurrentPageSnapshot(snapshot)) {
+		return false;
+	}
+
+	FunctionBlock block = {};
+	if (!FindFunctionBlockByName(snapshot, functionName, block)) {
+		return false;
+	}
+	outCode = block.code;
+	return true;
+}
+
+bool IDEFacade::GetCurrentFunctionCode(std::string& outCode) const
+{
+	PageCodeSnapshot snapshot = {};
+	if (!BuildCurrentPageSnapshot(snapshot)) {
+		return false;
+	}
+
+	FunctionBlock block = {};
+	if (!FindCurrentFunctionBlock(snapshot, block)) {
+		return false;
+	}
+	outCode = block.code;
+	return true;
+}
+
+bool IDEFacade::ReplaceFunctionCodeByName(const std::string& functionName, const std::string& newFunctionCode, bool preCompile) const
+{
+	PageCodeSnapshot snapshot = {};
+	if (!BuildCurrentPageSnapshot(snapshot)) {
+		return false;
+	}
+
+	FunctionBlock block = {};
+	if (!FindFunctionBlockByName(snapshot, functionName, block)) {
+		return false;
+	}
+
+	int caretRow = -1;
+	int caretCol = -1;
+	GetCaretPosition(caretRow, caretCol);
+
+	if (!MoveCaret(block.startRow, 0)) {
+		return false;
+	}
+	if (!SelectRowRange(block.startRow, block.endRow)) {
+		return false;
+	}
+
+	const bool ok = ReplaceSelectedRowsText(newFunctionCode, preCompile);
+	RunBlkClearAllDef();
+
+	if (caretRow >= 0 && caretCol >= 0) {
+		MoveCaret(caretRow, caretCol);
+	}
+	return ok;
+}
+
+bool IDEFacade::ReplaceCurrentFunctionCode(const std::string& newFunctionCode, bool preCompile) const
+{
+	PageCodeSnapshot snapshot = {};
+	if (!BuildCurrentPageSnapshot(snapshot)) {
+		return false;
+	}
+
+	FunctionBlock block = {};
+	if (!FindCurrentFunctionBlock(snapshot, block)) {
+		return false;
+	}
+
+	return ReplaceFunctionCodeByName(block.name, newFunctionCode, preCompile);
+}
+
+bool IDEFacade::InsertCodeBelowFunction(const std::string& functionName, const std::string& codeToInsert, bool appendIfNotFound, bool preCompile) const
+{
+	if (TrimAsciiSpace(codeToInsert).empty()) {
+		return false;
+	}
+
+	PageCodeSnapshot snapshot = {};
+	if (!BuildCurrentPageSnapshot(snapshot)) {
+		return false;
+	}
+
+	int caretRow = -1;
+	int caretCol = -1;
+	GetCaretPosition(caretRow, caretCol);
+	const auto restoreCaret = [this, caretRow, caretCol]() {
+		if (caretRow >= 0 && caretCol >= 0) {
+			MoveCaret(caretRow, caretCol);
+		}
+	};
+
+	std::string finalInsert = EnsureTrailingLineBreak(codeToInsert);
+	bool inserted = false;
+
+	FunctionBlock target = {};
+	if (FindFunctionBlockByName(snapshot, functionName, target)) {
+		if (MoveCaret(target.endRow + 1, 0)) {
+			inserted = RunInsertText(finalInsert, false);
+		}
+		else if (MoveCaret(target.endRow, 0)) {
+			RunMoveEditCaretToEnd();
+			inserted = RunInsertText(std::string("\r\n") + finalInsert, false);
+		}
+	}
+	else {
+		if (!appendIfNotFound) {
+			return false;
+		}
+
+		if (snapshot.lastRow >= 0 && MoveCaret(snapshot.lastRow + 1, 0)) {
+			inserted = RunInsertText(finalInsert, false);
+		}
+		else if (snapshot.lastRow >= 0 && MoveCaret(snapshot.lastRow, 0)) {
+			RunMoveEditCaretToEnd();
+			inserted = RunInsertText(std::string("\r\n") + finalInsert, false);
+		}
+		else if (MoveCaret(0, 0)) {
+			inserted = RunInsertText(finalInsert, false);
+		}
+	}
+
+	if (!inserted) {
+		restoreCaret();
+		return false;
+	}
+
+	if (preCompile) {
+		bool compileOk = false;
+		if (!RunPreCompile(compileOk) || !compileOk) {
+			restoreCaret();
+			return false;
+		}
+	}
+
+	restoreCaret();
+	return true;
+}
+
+bool IDEFacade::InsertDllDeclaration(const std::string& dllDeclarationCode, bool preCompile) const
+{
+	if (TrimAsciiSpace(dllDeclarationCode).empty()) {
+		return false;
+	}
+
+	PageCodeSnapshot snapshot = {};
+	if (!BuildCurrentPageSnapshot(snapshot)) {
+		return false;
+	}
+
+	int caretRow = -1;
+	int caretCol = -1;
+	GetCaretPosition(caretRow, caretCol);
+	const auto restoreCaret = [this, caretRow, caretCol]() {
+		if (caretRow >= 0 && caretCol >= 0) {
+			MoveCaret(caretRow, caretCol);
+		}
+	};
+
+	const std::string finalInsert = EnsureTrailingLineBreak(dllDeclarationCode);
+	bool inserted = false;
+	if (snapshot.lastRow >= 0 && MoveCaret(snapshot.lastRow + 1, 0)) {
+		inserted = RunInsertText(finalInsert, false);
+	}
+	else if (snapshot.lastRow >= 0 && MoveCaret(snapshot.lastRow, 0)) {
+		RunMoveEditCaretToEnd();
+		inserted = RunInsertText(std::string("\r\n") + finalInsert, false);
+	}
+	else if (MoveCaret(0, 0)) {
+		inserted = RunInsertText(finalInsert, false);
+	}
+
+	if (!inserted) {
+		restoreCaret();
+		return false;
+	}
+
+	if (preCompile) {
+		bool compileOk = false;
+		if (!RunPreCompile(compileOk) || !compileOk) {
+			restoreCaret();
+			return false;
+		}
+	}
+
+	restoreCaret();
+	return true;
+}
+
+bool IDEFacade::InsertDllDeclarationByTemplate(const std::string& dllName, const std::string& commandName, const std::string& returnType, const std::string& argList, bool preCompile) const
+{
+	const std::string cmdName = TrimAsciiSpace(commandName);
+	if (cmdName.empty()) {
+		return false;
+	}
+
+	std::string decl = ".DLL命令 " + cmdName;
+	if (!TrimAsciiSpace(returnType).empty()) {
+		decl += ", " + TrimAsciiSpace(returnType);
+	}
+	if (!TrimAsciiSpace(dllName).empty()) {
+		decl += ", \"" + TrimAsciiSpace(dllName) + "\"";
+	}
+	if (!TrimAsciiSpace(argList).empty()) {
+		decl += "\r\n";
+		decl += argList;
+	}
+	return InsertDllDeclaration(decl, preCompile);
+}
+
+bool IDEFacade::JumpToFunctionHeaderByName(const std::string& functionName) const
+{
+	PageCodeSnapshot snapshot = {};
+	if (!BuildCurrentPageSnapshot(snapshot)) {
+		return false;
+	}
+
+	FunctionBlock block = {};
+	if (!FindFunctionBlockByName(snapshot, functionName, block)) {
+		return false;
+	}
+
+	return MoveCaret(block.startRow, 0);
+}
+
+bool IDEFacade::RunGetPrgText(int rowIndex, int colIndex, ProgramText& outText) const
 {
 	return ReadProgramLikeText(FN_GET_PRG_TEXT, rowIndex, colIndex, outText);
 }
 
-bool IDEFacade::GetProgramHelp(int rowIndex, int colIndex, ProgramText& outText) const
+bool IDEFacade::RunGetPrgHelp(int rowIndex, int colIndex, ProgramText& outText) const
 {
 	return ReadProgramLikeText(FN_GET_PRG_HELP, rowIndex, colIndex, outText);
 }
 
+bool IDEFacade::RunGetNumEcom(int& count) const
+{
+	count = 0;
+	return Invoke(FN_GET_NUM_ECOM, PtrToDWORD(&count), 0);
+}
+
+bool IDEFacade::RunGetEcomFileName(int index, std::string& path) const
+{
+	char buffer[MAX_PATH] = {};
+	if (!Invoke(FN_GET_ECOM_FILE_NAME, static_cast<DWORD>(index), PtrToDWORD(buffer))) {
+		return false;
+	}
+	path.assign(buffer);
+	return true;
+}
+
+bool IDEFacade::RunGetNumLib(int& count) const
+{
+	count = 0;
+	return Invoke(FN_GET_NUM_LIB, PtrToDWORD(&count), 0);
+}
+
+bool IDEFacade::RunGetLibInfoText(int index, std::string& text) const
+{
+	char* libText = nullptr;
+	if (!Invoke(FN_GET_LIB_INFO_TEXT, static_cast<DWORD>(index), PtrToDWORD(&libText))) {
+		return false;
+	}
+	text.assign(libText == nullptr ? "" : libText);
+	return true;
+}
+
+HWND IDEFacade::GetMainWindow() const
+{
+	return reinterpret_cast<HWND>(NotifySys(NES_GET_MAIN_HWND, 0, 0));
+}
+
+bool IDEFacade::IsFunctionEnabled(INT code) const
+{
+	return IsFnEnabled(code);
+}
+
+IDEFacade::ActiveWindowType IDEFacade::GetActiveWindowType() const
+{
+	int activeType = 0;
+	RunGetActiveWndType(activeType);
+	return static_cast<ActiveWindowType>(activeType);
+}
+
+bool IDEFacade::GetCaretPosition(int& rowIndex, int& colIndex) const
+{
+	BOOL rowOk = RunGetCaretRowIndex(rowIndex);
+	BOOL colOk = RunGetCaretColIndex(colIndex);
+	return rowOk && colOk;
+}
+
+bool IDEFacade::GetProgramText(int rowIndex, int colIndex, ProgramText& outText) const
+{
+	return RunGetPrgText(rowIndex, colIndex, outText);
+}
+
+bool IDEFacade::GetProgramHelp(int rowIndex, int colIndex, ProgramText& outText) const
+{
+	return RunGetPrgHelp(rowIndex, colIndex, outText);
+}
+
 bool IDEFacade::InsertText(const std::string& text, bool asKeyboardInput) const
 {
-	return RunFunction(FN_INSERT_TEXT, PtrToDWORD(text.c_str()), asKeyboardInput ? 1 : 0);
+	return RunInsertText(text, asKeyboardInput);
 }
 
 bool IDEFacade::SetAndCompileCurrentItemText(const std::string& text, bool preCompile) const
 {
-	return RunFunction(FN_SET_AND_COMPILE_PRG_ITEM_TEXT, PtrToDWORD(text.c_str()), preCompile ? 1 : 0);
+	return RunSetAndCompilePrgItemText(text, preCompile);
 }
 
 bool IDEFacade::ReplaceAll(const std::string& findText, const std::string& replaceText, bool caseSensitive) const
 {
-	REPLACE_ALL2_PARAM replaceParam = {};
-	replaceParam.m_szFind = findText.c_str();
-	replaceParam.m_szReplace = replaceText.c_str();
-	replaceParam.m_blCase = caseSensitive ? TRUE : FALSE;
-	return RunFunction(FN_REPLACE_ALL2, PtrToDWORD(&replaceParam), 0);
+	return RunReplaceAll2(findText, replaceText, caseSensitive);
 }
 
 bool IDEFacade::SelectAll() const
 {
-	return RunFunction(FN_MOVE_BLK_SEL_ALL);
+	return RunMoveBlkSelAll();
 }
 
 bool IDEFacade::CopySelection() const
 {
-	return RunFunction(FN_EDIT_COPY);
+	return RunEditCopy();
 }
 
 bool IDEFacade::CopyCurrentFunctionCodeToClipboard() const
@@ -386,10 +1132,10 @@ bool IDEFacade::CopyCurrentFunctionCodeToClipboard() const
 		endRow = startRow;
 	}
 
-	RunFunction(FN_BLK_CLEAR_ALL_DEF, 0, 0);
-	bool selected = RunFunction(FN_BLK_ADD_DEF, static_cast<DWORD>(startRow), static_cast<DWORD>(endRow));
+	RunBlkClearAllDef();
+	bool selected = RunBlkAddDef(startRow, endRow);
 	bool copied = selected && CopySelection();
-	RunFunction(FN_BLK_CLEAR_ALL_DEF, 0, 0);
+	RunBlkClearAllDef();
 
 	if (copied) {
 		TrimClipboardLastLine();
@@ -404,140 +1150,151 @@ bool IDEFacade::CopyCurrentFunctionCodeToClipboard() const
 
 bool IDEFacade::MovePrevUnit() const
 {
-	return RunFunction(FN_MOVE_PREV_UNIT);
+	return RunMovePrevUnit();
 }
 
 bool IDEFacade::MoveNextUnit() const
 {
-	return RunFunction(FN_MOVE_NEXT_UNIT);
+	return RunMoveNextUnit();
 }
 
 bool IDEFacade::MoveToParentCommand() const
 {
-	return RunFunction(FN_MOVE_TO_PARENT_CMD);
+	return RunMoveToParentCmd();
 }
 
 bool IDEFacade::MoveCaret(int rowIndex, int colIndex) const
 {
-	return RunFunction(FN_MOVE_CARET, static_cast<DWORD>(rowIndex), static_cast<DWORD>(colIndex));
+	return RunMoveCaret(rowIndex, colIndex);
 }
 
 bool IDEFacade::MoveToReferencedSub() const
 {
-	return RunFunction(FN_MOVE_SPEC_SUB);
+	return RunMoveSpecSub();
 }
 
 bool IDEFacade::OpenCurrentSub() const
 {
-	return RunFunction(FN_MOVE_OPEN_SPEC_SUB);
+	return RunMoveOpenSpecSub();
 }
 
 bool IDEFacade::CloseCurrentSub() const
 {
-	return RunFunction(FN_MOVE_CLOSE_SPEC_SUB);
+	return RunMoveCloseSpecSub();
 }
 
 bool IDEFacade::MoveBackSub() const
 {
-	return RunFunction(FN_MOVE_BACK_SUB);
+	return RunMoveBackSub();
 }
 
 bool IDEFacade::OpenViewTab(ViewTab tab) const
 {
-	INT funcNo = FN_NULL;
 	switch (tab)
 	{
 	case ViewTab::DataType:
-		funcNo = FN_VIEW_DATA_TYPE_TAB;
-		break;
+		return RunViewDataTypeTab();
 	case ViewTab::GlobalVar:
-		funcNo = FN_VIEW_GLOBAL_VAR_TAB;
-		break;
+		return RunViewGlobalVarTab();
 	case ViewTab::DllCommand:
-		funcNo = FN_VIEW_DLLCMD_TAB;
-		break;
+		return RunViewDllcmdTab();
 	case ViewTab::ConstResource:
-		funcNo = FN_VIEW_CONST_TAB;
-		break;
+		return RunViewConstTab();
 	case ViewTab::PictureResource:
-		funcNo = FN_VIEW_PIC_TAB;
-		break;
+		return RunViewPicTab();
 	case ViewTab::SoundResource:
-		funcNo = FN_VIEW_SOUND_TAB;
-		break;
+		return RunViewSoundTab();
 	default:
 		return false;
 	}
-
-	return RunFunction(funcNo);
 }
 
 bool IDEFacade::SaveFile() const
 {
-	return RunFunction(FN_SAVE_FILE);
+	return RunSaveFile();
 }
 
 bool IDEFacade::OpenFile(const std::string& filePath) const
 {
-	return RunFunction(FN_OPEN_FILE2, PtrToDWORD(filePath.c_str()), 0);
+	return RunOpenFile2(filePath);
 }
 
 bool IDEFacade::Compile() const
 {
-	return RunFunction(FN_COMPILE);
+	return RunCompile();
 }
 
 bool IDEFacade::CompileAndRun() const
 {
-	return RunFunction(FN_COMPILE_AND_RUN);
+	return RunCompileAndRun();
 }
 
 bool IDEFacade::AddOutputTab(HWND hWnd, const std::string& caption, const std::string& toolTip, HICON hIcon) const
 {
-	ADD_TAB_INF tabInf = {};
-	tabInf.m_hWnd = hWnd;
-	tabInf.m_hIcon = hIcon;
-#ifdef UNICODE
-	std::wstring captionW = ToWide(caption);
-	std::wstring toolTipW = ToWide(toolTip);
-	tabInf.m_szCaption = const_cast<LPWSTR>(captionW.c_str());
-	tabInf.m_szToolTip = const_cast<LPWSTR>(toolTipW.c_str());
-#else
-	tabInf.m_szCaption = const_cast<LPSTR>(caption.c_str());
-	tabInf.m_szToolTip = const_cast<LPSTR>(toolTip.c_str());
-#endif
-	return RunFunction(FN_ADD_TAB, PtrToDWORD(&tabInf), 0);
+	return RunAddTab(hWnd, caption, toolTip, hIcon);
+}
+
+HWND IDEFacade::FindOutputWindowHandle() const
+{
+	HWND mainHwnd = GetMainWindow();
+	if (mainHwnd == nullptr) {
+		return nullptr;
+	}
+
+	HWND outputHwnd = nullptr;
+	EnumChildWindows(mainHwnd, EnumChildProcFindOutputWindow, reinterpret_cast<LPARAM>(&outputHwnd));
+	return outputHwnd;
+}
+
+bool IDEFacade::AppendOutputWindowText(const std::string& text) const
+{
+	HWND outputHwnd = FindOutputWindowHandle();
+	if (outputHwnd == nullptr) {
+		return false;
+	}
+
+	SendMessageA(outputHwnd, EM_SETSEL, static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
+	SendMessageA(outputHwnd, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(text.c_str()));
+	return true;
+}
+
+bool IDEFacade::AppendOutputWindowLine(const std::string& text) const
+{
+	if (!AppendOutputWindowText(text)) {
+		return false;
+	}
+	return AppendOutputWindowText("\r\n");
 }
 
 bool IDEFacade::GetImportedECOMCount(int& count) const
 {
-	count = 0;
-	return RunFunction(FN_GET_NUM_ECOM, PtrToDWORD(&count), 0);
+	return RunGetNumEcom(count);
 }
 
 bool IDEFacade::GetImportedECOMPath(int index, std::string& path) const
 {
-	char buffer[MAX_PATH] = {};
-	if (!RunFunction(FN_GET_ECOM_FILE_NAME, static_cast<DWORD>(index), PtrToDWORD(buffer))) {
-		return false;
-	}
-	path.assign(buffer);
-	return true;
+	return RunGetEcomFileName(index, path);
 }
 
 bool IDEFacade::InputECOM(const std::string& filePath, bool useNewAddMethod) const
 {
-	BOOL success = FALSE;
-	INT fnNo = useNewAddMethod ? FN_ADD_NEW_ECOM2 : FN_INPUT_ECOM;
-	if (!RunFunction(fnNo, PtrToDWORD(filePath.c_str()), PtrToDWORD(&success))) {
+	bool success = false;
+	if (useNewAddMethod) {
+		if (!RunAddNewEcom2(filePath, success)) {
+			return false;
+		}
+		return success;
+	}
+
+	if (!RunInputEcom(filePath, success)) {
 		return false;
 	}
-	return success == TRUE;
+	return success;
 }
 
 bool IDEFacade::RemoveECOM(int index) const
 {
-	return RunFunction(FN_REMOVE_SPEC_ECOM, static_cast<DWORD>(index), 0);
+	return RunRemoveSpecEcom(index);
 }
 
 bool IDEFacade::AddECOM(const std::string& filePath) const

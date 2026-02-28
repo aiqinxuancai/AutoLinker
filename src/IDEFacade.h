@@ -1,14 +1,20 @@
 #pragma once
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <Windows.h>
 #include <PublicIDEFunctions.h>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
 
+#include "IDEFacadeNoArgFnList.inl"
+
 class IDEFacade {
 public:
-	// 当前活动编辑页类型（对应 FN_GET_ACTIVE_WND_TYPE 的返回值）。
+	// IDE 当前激活页面类型（对应 FN_GET_ACTIVE_WND_TYPE）。
 	enum class ActiveWindowType : int {
 		None = 0,
 		Module = 1,
@@ -21,7 +27,7 @@ public:
 		SoundResource = 8
 	};
 
-	// 可由 OpenViewTab 打开的常用编辑页类型。
+	// 常用视图页签（用于 OpenViewTab）。
 	enum class ViewTab {
 		DataType,
 		GlobalVar,
@@ -31,49 +37,98 @@ public:
 		SoundResource
 	};
 
-	// GetProgramText / GetProgramHelp 的返回载体。
+	// 代码文本查询结果（对应 FN_GET_PRG_TEXT / FN_GET_PRG_HELP）。
 	struct ProgramText {
 		std::string text;
 		int type = 0;
 		bool isTitle = false;
 	};
 
+	// 子程序代码块信息（按当前页扫描得到）。
+	struct FunctionBlock {
+		std::string name;
+		int startRow = -1;
+		int endRow = -1;
+		int headerCol = -1;
+		std::string code;
+	};
+
+	// 当前页代码快照：整页文本 + 子程序列表。
+	struct PageCodeSnapshot {
+		std::string code;
+		int firstRow = -1;
+		int lastRow = -1;
+		std::vector<FunctionBlock> functions;
+	};
+
 	using MenuHandler = std::function<void()>;
 
 	static IDEFacade& Instance();
 
-	// 调用任意 FN_* 功能号，返回 IDE 原始返回值。
+	// 直接调用 IDE 功能号（FN_*），返回原始结果/布尔结果。
 	INT RunFunctionRaw(INT code, DWORD p1 = 0, DWORD p2 = 0) const;
-	// 调用任意 FN_* 功能号，并将结果转换为 bool。
 	bool RunFunction(INT code, DWORD p1 = 0, DWORD p2 = 0) const;
 
-	// 获取 IDE 主窗口句柄（NES_GET_MAIN_HWND）。
+	// 通用调用与结果辅助。
+	bool Invoke(INT fnCode, DWORD p1 = 0, DWORD p2 = 0) const;
+	bool IsFnEnabled(INT fnCode) const;
+	bool TryGetInt(INT fnCode, int& outValue) const;
+	bool TryGetBool(INT fnCode, bool& outValue) const;
+
+	// 无参 FN_* 的一键封装（由宏列表展开）。
+#define IDEFACADE_DECLARE_NOARG_METHOD(methodName, fnCode) bool methodName() const;
+	IDEFACADE_NOARG_FN_LIST(IDEFACADE_DECLARE_NOARG_METHOD)
+#undef IDEFACADE_DECLARE_NOARG_METHOD
+
+	// 常用带参 FN_* 封装。
+	bool RunMoveOpenSpecRowArg(int rowIndex) const;
+	bool RunMoveCloseSpecRowArg(int rowIndex) const;
+	bool RunMoveCaret(int rowIndex, int colIndex) const;
+	bool RunScrollSpecHorzPos(int pos) const;
+	bool RunScrollSpecVertPos(int pos) const;
+	bool RunBlkAddDef(int topRowIndex, int bottomRowIndex) const;
+	bool RunBlkRemoveDef(int topRowIndex, int bottomRowIndex) const;
+	bool RunInsertText(const std::string& text, bool asKeyboardInput = false) const;
+	bool RunPreCompile(bool& success) const;
+	bool RunSetAndCompilePrgItemText(const std::string& text, bool preCompile = true) const;
+	bool RunReplaceAll2(const std::string& findText, const std::string& replaceText, bool caseSensitive = false) const;
+	bool RunInputPrg2(const std::string& filePath) const;
+	bool RunAddNewEcom2(const std::string& filePath, bool& success) const;
+	bool RunRemoveSpecEcom(int index) const;
+	bool RunOpenFile2(const std::string& filePath) const;
+	bool RunAddTab(HWND hWnd, const std::string& caption, const std::string& toolTip, HICON hIcon = nullptr) const;
+	bool RunGetActiveWndType(int& outType) const;
+	bool RunInputEcom(const std::string& filePath, bool& success) const;
+	bool RunIsFuncEnabled(INT fnCode, bool& enabled) const;
+	bool RunClipGetEprgDataSize(int& size) const;
+	bool RunClipGetEprgData(std::vector<uint8_t>& data) const;
+	bool RunClipSetEprgData(const std::vector<uint8_t>& data) const;
+	bool RunGetCaretRowIndex(int& rowIndex) const;
+	bool RunGetCaretColIndex(int& colIndex) const;
+	bool RunGetPrgText(int rowIndex, int colIndex, ProgramText& outText) const;
+	bool RunGetPrgHelp(int rowIndex, int colIndex, ProgramText& outText) const;
+	bool RunGetNumEcom(int& count) const;
+	bool RunGetEcomFileName(int index, std::string& path) const;
+	bool RunGetNumLib(int& count) const;
+	bool RunGetLibInfoText(int index, std::string& text) const;
+
+	// IDE 状态/光标/文本读取。
 	HWND GetMainWindow() const;
-	// 检查某个 FN_* 功能当前是否可用。
 	bool IsFunctionEnabled(INT code) const;
-	// 获取当前活动编辑页类型。
 	ActiveWindowType GetActiveWindowType() const;
-	// 获取当前光标行列。
 	bool GetCaretPosition(int& rowIndex, int& colIndex) const;
-	// 读取指定行列处的程序文本，row/col 传 -1 表示当前光标位置。
 	bool GetProgramText(int rowIndex, int colIndex, ProgramText& outText) const;
-	// 读取指定行列处的帮助文本，row/col 传 -1 表示当前光标位置。
 	bool GetProgramHelp(int rowIndex, int colIndex, ProgramText& outText) const;
 
-	// 在当前光标处插入文本。
+	// 编辑操作封装。
 	bool InsertText(const std::string& text, bool asKeyboardInput = false) const;
-	// 设置当前项文本，并可选择立即预编译。
 	bool SetAndCompileCurrentItemText(const std::string& text, bool preCompile = true) const;
-	// 在当前编辑窗口执行全量替换。
 	bool ReplaceAll(const std::string& findText, const std::string& replaceText, bool caseSensitive = false) const;
-	// 全选当前代码视图内容。
 	bool SelectAll() const;
-	// 复制当前选中内容到系统剪贴板。
 	bool CopySelection() const;
-	// 复制光标所在函数（子程序）代码到系统剪贴板。
 	bool CopyCurrentFunctionCodeToClipboard() const;
 
-	// 代码结构导航能力。
+	// 代码导航。
 	bool MovePrevUnit() const;
 	bool MoveNextUnit() const;
 	bool MoveToParentCommand() const;
@@ -83,32 +138,51 @@ public:
 	bool CloseCurrentSub() const;
 	bool MoveBackSub() const;
 
-	// 打开常用编辑页，以及文件/编译操作。
+	// 页面切换与编译保存。
 	bool OpenViewTab(ViewTab tab) const;
 	bool SaveFile() const;
 	bool OpenFile(const std::string& filePath) const;
 	bool Compile() const;
 	bool CompileAndRun() const;
-
-	// 在 IDE 输出栏添加自定义页签。
 	bool AddOutputTab(HWND hWnd, const std::string& caption, const std::string& toolTip, HICON hIcon = nullptr) const;
+	// 向 IDE 输出窗口追加文本/行文本（行文本会自动追加 CRLF）。
+	bool AppendOutputWindowText(const std::string& text) const;
+	bool AppendOutputWindowLine(const std::string& text) const;
 
-	// ECOM 导入与查询能力。
-	// 以传统导入方式添加 ECOM（对应 FN_INPUT_ECOM）。
+	// ECOM 管理。
 	bool AddECOM(const std::string& filePath) const;
-	// 以新导入方式添加 ECOM（对应 FN_ADD_NEW_ECOM2）。
 	bool AddECOM2(const std::string& filePath) const;
 	bool GetImportedECOMCount(int& count) const;
 	bool GetImportedECOMPath(int index, std::string& path) const;
 	bool InputECOM(const std::string& filePath, bool useNewAddMethod = false) const;
 	bool RemoveECOM(int index) const;
-	// 按路径删除 ECOM。
 	bool RemoveECOM(const std::string& filePath) const;
-	// 按完整路径或按模块名查找 ECOM 索引，找不到返回 -1。
 	int FindECOMIndex(const std::string& filePath) const;
 	int FindECOMNameIndex(const std::string& ecomName) const;
 
-	// 右键菜单注册与消息分发。
+	// ===== 强化源码操作接口（当前编辑页范围）=====
+	// 获取当前页完整代码文本。
+	bool GetCurrentPageCode(std::string& outCode) const;
+	// 获取当前页快照（含函数分块信息）。
+	bool GetCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const;
+	// 按函数名获取代码（只在当前页查找）。
+	bool GetFunctionCodeByName(const std::string& functionName, std::string& outCode) const;
+	// 获取光标所在函数代码。
+	bool GetCurrentFunctionCode(std::string& outCode) const;
+	// 按函数名替换函数代码；找不到返回 false。
+	bool ReplaceFunctionCodeByName(const std::string& functionName, const std::string& newFunctionCode, bool preCompile = true) const;
+	// 替换光标所在函数代码。
+	bool ReplaceCurrentFunctionCode(const std::string& newFunctionCode, bool preCompile = true) const;
+	// 在指定函数下方插入代码；找不到时可追加到页末。
+	bool InsertCodeBelowFunction(const std::string& functionName, const std::string& codeToInsert, bool appendIfNotFound = true, bool preCompile = true) const;
+	// 在当前页追加 DLL 声明代码块。
+	bool InsertDllDeclaration(const std::string& dllDeclarationCode, bool preCompile = true) const;
+	// 按模板构建并插入 DLL 声明代码块。
+	bool InsertDllDeclarationByTemplate(const std::string& dllName, const std::string& commandName, const std::string& returnType, const std::string& argList, bool preCompile = true) const;
+	// 按函数名定位并跳转到函数头（只在当前页查找）。
+	bool JumpToFunctionHeaderByName(const std::string& functionName) const;
+
+	// 右键菜单扩展（注册、清理、消息分发）。
 	void RegisterContextMenuItem(UINT commandId, const std::string& text, MenuHandler handler);
 	void ClearContextMenuItems();
 	bool HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2);
@@ -116,7 +190,23 @@ public:
 
 private:
 	IDEFacade() = default;
+	// 内部工具：读取代码项文本。
 	bool ReadProgramLikeText(INT functionCode, int rowIndex, int colIndex, ProgramText& outText) const;
+	// 内部工具：构建当前页快照并拆分函数块。
+	bool BuildCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const;
+	// 内部工具：按名称查找函数块。
+	bool FindFunctionBlockByName(const PageCodeSnapshot& snapshot, const std::string& name, FunctionBlock& outBlock) const;
+	// 内部工具：按光标位置查找当前函数块。
+	bool FindCurrentFunctionBlock(const PageCodeSnapshot& snapshot, FunctionBlock& outBlock) const;
+	// 内部工具：选择行范围并替换选中代码。
+	bool SelectRowRange(int startRow, int endRow) const;
+	bool ReplaceSelectedRowsText(const std::string& text, bool preCompile) const;
+	// 内部工具：函数名规范化与文本整理。
+	static std::string NormalizeFunctionName(const std::string& name);
+	static std::string EnsureTrailingLineBreak(const std::string& text);
+	static std::string TrimAsciiSpace(const std::string& s);
+	// 内部工具：查找 IDE 输出窗口句柄（非公开控件）。
+	HWND FindOutputWindowHandle() const;
 
 	struct ContextMenuItem {
 		UINT commandId;
