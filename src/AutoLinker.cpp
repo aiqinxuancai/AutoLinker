@@ -43,20 +43,19 @@ HWND g_hwnd = NULL;
 //工具条句柄
 HWND g_toolBarHwnd = NULL;
 
-//在窗口上添加的Button句柄
-HWND g_buttonHwnd;
-
 //准备开始调试 废弃
 bool g_preDebugging;
 
 //准备开始编译 废弃
 bool g_preCompiling;
 
+bool g_initStarted = false;
+
 HMENU g_topLinkerSubMenu = NULL;
 std::unordered_map<UINT, std::string> g_topLinkerCommandMap;
 
 void UpdateCurrentOpenSourceFile();
-void UpdateButton();
+void OutputCurrentSourceLinker();
 
 namespace {
 bool g_isContextMenuRegistered = false;
@@ -305,7 +304,7 @@ bool HandleTopLinkerMenuCommand(UINT cmd)
 	}
 
 	g_configManager.setValue(g_nowOpenSourceFilePath, it->second);
-	UpdateButton();
+	OutputCurrentSourceLinker();
 	RebuildTopLinkerSubMenu();
 	return true;
 }
@@ -583,114 +582,6 @@ void OutputStringToELog(std::string szbuf) {
 }
 
 
-/// <summary>
-/// 弹出菜单
-/// </summary>
-/// <param name="hParent"></param>
-void ShowMenu(HWND hParent) {
-	if (g_linkerManager.getCount() > 0) {
-		HMENU hPopupMenu = CreatePopupMenu();
-
-		auto nowLinkConfigName = g_configManager.getValue(g_nowOpenSourceFilePath);
-		//获取当前的所有配置
-		for (const auto& [key, value] : g_linkerManager.getMap()) {
-			if (!nowLinkConfigName.empty() && nowLinkConfigName == key) {
-				AppendMenu(hPopupMenu, MF_STRING | MF_ENABLED | MF_CHECKED, value.id, key.c_str());
-			}
-			else {
-				AppendMenu(hPopupMenu, MF_STRING | MF_ENABLED, value.id, key.c_str());
-			}
-		}
-
-		POINT pt;
-		GetCursorPos(&pt);
-		TrackPopupMenu(hPopupMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hParent, NULL);
-		DestroyMenu(hPopupMenu);
-	}
-	else {
-		OutputStringToELog("当前没有Linker配置文件，请在e目录的AutoLinker\\Config中添加ini文件");
-	}
-}
-
-/// <summary>
-/// 更新按钮内容
-/// </summary>
-void UpdateButton() {
-	if (g_buttonHwnd == NULL) {
-		return;
-	}
-
-	if (g_nowOpenSourceFilePath.empty()) {
-		SetWindowTextA(g_buttonHwnd, "默认");
-	} else {
-		auto linkName = g_configManager.getValue(g_nowOpenSourceFilePath);
-		if (!linkName.empty()) {
-			SetWindowTextA(g_buttonHwnd, linkName.c_str());
-		}
-		else {
-			SetWindowTextA(g_buttonHwnd, "默认");
-		}
-	}
-}
-
-/// <summary>
-/// 更新当前源文件使用的link文件
-/// </summary>
-/// <param name="id"></param>
-void UpdateCurrentFileLinkerWithId(int id) {
-
-	//先更新一下
-	UpdateCurrentOpenSourceFile();
-	if (g_nowOpenSourceFilePath.empty()) {
-		//当前好像没有打开源文件
-		OutputStringToELog("当前没有打开源文件，无法切换Linker");
-	} else {
-		const auto& config = g_linkerManager.getConfig(id);
-		if (config.name.empty()) {
-			return;
-		}
-		g_configManager.setValue(g_nowOpenSourceFilePath, config.name);
-		UpdateButton();
-		RebuildTopLinkerSubMenu();
-	}
-}
-
-/// <summary>
-/// 创建按钮
-/// TODO 和其他插件UI覆盖冲突的问题？
-/// </summary>
-/// <param name="hParent"></param>
-void CreateAndSubclassButton(HWND hParent) {
-
-	int buttonWidth = 100;
-	int buttonHeight = 20;
-
-	//获取当前的源文件路径
-
-	HWND hButton = CreateWindow(
-		"BUTTON",  // 预定义的按钮类名
-		"AutoLinker", // 按钮文本
-		WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON | BS_FLAT, // 按钮样式
-		500, // x位置
-		5, // y位置
-		buttonWidth, // 按钮宽度
-		buttonHeight, // 按钮高度
-		hParent, // 父窗口句柄
-		0, // 没有菜单
-		(HINSTANCE)GetWindowLong(hParent, GWL_HINSTANCE), // 程序实例句柄
-		NULL); // 无附加参数
-
-	//设置字体
-	int fontSize = 10;
-	int dpi = GetDeviceCaps(GetDC(NULL), LOGPIXELSY);
-	int fontHeight = -MulDiv(fontSize, dpi, 72);
-	HFONT hFont = CreateFont(fontHeight, 0, 0, 0, FW_DONTCARE, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, TEXT("Microsoft YaHei UI"));
-	SendMessage(hButton, WM_SETFONT, (WPARAM)hFont, TRUE);
-
-	g_buttonHwnd = hButton;
-
-}
-
 void UpdateCurrentOpenSourceFile() {
 	std::string sourceFile = GetSourceFilePath();
 
@@ -704,32 +595,28 @@ void UpdateCurrentOpenSourceFile() {
 	g_nowOpenSourceFilePath = sourceFile;
 }
 
-//工具条子类过程
-LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
-	if (uMsg == WM_COMMAND && LOWORD(wParam) == BN_CLICKED) {
-		ShowMenu(hWnd);
-		return 0;
+void OutputCurrentSourceLinker()
+{
+	UpdateCurrentOpenSourceFile();
+
+	std::string linkerName = "默认";
+	if (!g_nowOpenSourceFilePath.empty()) {
+		std::string configured = g_configManager.getValue(g_nowOpenSourceFilePath);
+		if (!configured.empty()) {
+			linkerName = configured;
+		}
 	}
 
-	//std::string s = std::format("菜单条消息 {0} {1}", (int)hWnd, uMsg);
-	//OutputStringToELog(s);
+	OutputStringToELog("当前源码链接器：" + linkerName);
+}
 
+//工具条子类过程
+LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
 	switch (uMsg)
 	{
-		case WM_PAINT: {
-			UpdateCurrentOpenSourceFile();
-			UpdateButton();
-			break;
-		}
-
 		case WM_INITMENUPOPUP:
 			HandleInitMenuPopup(reinterpret_cast<HMENU>(wParam));
 			break;
-		case WM_COMMAND: {
-			auto low = LOWORD(wParam);
-			UpdateCurrentFileLinkerWithId(low);
-			break;
-		}
 	}
 
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
@@ -953,10 +840,10 @@ bool FneInit() {
 	{
 		StartEditViewSubclassTask();
 		RebuildTopLinkerSubMenu();
+		OutputCurrentSourceLinker();
 
 		OutputStringToELog("找到工具条");
 		SetWindowSubclass(g_toolBarHwnd, ToolbarSubclassProc, 0, 0);
-		CreateAndSubclassButton(g_toolBarHwnd);
 		StartHookCreateFileA();
 		PostAppMessageA(g_toolBarHwnd, WM_PRINT, 0, 0);
 		OutputStringToELog("初始化完成");
@@ -1020,11 +907,12 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 
 	else if (nMsg == NL_SYS_NOTIFY_FUNCTION) {
 		if (dwParam1) {
-			if (!g_buttonHwnd) {
+			if (!g_initStarted) {
 				// 获取主窗口句柄
 				g_hwnd = GetMainWindowByProcessId();
 
 				if (g_hwnd) {
+					g_initStarted = true;
 					SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0);
 					RegisterIDEContextMenu();
 					OutputStringToELog("主窗口子类化完成，启动初始化线程");
