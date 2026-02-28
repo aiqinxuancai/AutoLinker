@@ -126,6 +126,8 @@ public:
 	bool ReplaceAll(const std::string& findText, const std::string& replaceText, bool caseSensitive = false) const;
 	bool SelectAll() const;
 	bool CopySelection() const;
+	// 获取当前选中文本（通过 IDE 复制后读取剪贴板）。
+	bool GetSelectedText(std::string& outText) const;
 	bool CopyCurrentFunctionCodeToClipboard() const;
 
 	// 代码导航。
@@ -163,6 +165,8 @@ public:
 	// ===== 强化源码操作接口（当前编辑页范围）=====
 	// 获取当前页完整代码文本。
 	bool GetCurrentPageCode(std::string& outCode) const;
+	// 替换当前页全部代码文本。
+	bool ReplaceCurrentPageCode(const std::string& newPageCode, bool preCompile = true) const;
 	// 获取当前页快照（含函数分块信息）。
 	bool GetCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const;
 	// 按函数名获取代码（只在当前页查找）。
@@ -177,6 +181,8 @@ public:
 	bool InsertCodeBelowFunction(const std::string& functionName, const std::string& codeToInsert, bool appendIfNotFound = true, bool preCompile = true) const;
 	// 在当前页追加 DLL 声明代码块。
 	bool InsertDllDeclaration(const std::string& dllDeclarationCode, bool preCompile = true) const;
+	// 在当前页页首插入代码（优先插入到“.版本”下一行）。
+	bool InsertCodeAtPageTop(const std::string& codeToInsert, bool preCompile = true) const;
 	// 按模板构建并插入 DLL 声明代码块。
 	bool InsertDllDeclarationByTemplate(const std::string& dllName, const std::string& commandName, const std::string& returnType, const std::string& argList, bool preCompile = true) const;
 	// 按函数名定位并跳转到函数头（只在当前页查找）。

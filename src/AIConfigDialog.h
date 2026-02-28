@@ -1,0 +1,10 @@
+#pragma once
+
+#include <Windows.h>
+#include <string>
+
+#include "AIService.h"
+
+bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings);
+bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string& content, const std::string& confirmText = "替换");
+bool ShowAITextInputDialog(HWND owner, const std::string& title, const std::string& hint, std::string& ioText);

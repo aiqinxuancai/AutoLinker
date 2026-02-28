@@ -3,6 +3,8 @@
 #include <Windows.h>
 #include <CommCtrl.h>
 #include <format>
+#include <algorithm>
+#include <cctype>
 #include "ConfigManager.h"
 #include <regex>
 #include "PathHelper.h"
@@ -20,7 +22,10 @@
 #include "WinINetUtil.h"
 #include "Version.h"
 #include "IDEFacade.h"
+#include "AIService.h"
+#include "AIConfigDialog.h"
 #include <unordered_map>
+#include <unordered_set>
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -60,8 +65,409 @@ void OutputCurrentSourceLinker();
 namespace {
 bool g_isContextMenuRegistered = false;
 constexpr UINT IDM_AUTOLINKER_CTX_COPY_FUNC = 31001; // Keep < 0x8000 to avoid signed-ID issues in some hosts.
+constexpr UINT IDM_AUTOLINKER_CTX_AI_OPTIMIZE_FUNC = 31101;
+constexpr UINT IDM_AUTOLINKER_CTX_AI_COMMENT_FUNC = 31102;
+constexpr UINT IDM_AUTOLINKER_CTX_AI_TRANSLATE_FUNC = 31103;
+constexpr UINT IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT = 31104;
+constexpr UINT IDM_AUTOLINKER_CTX_AI_COMPLETE_DECL = 31105;
 constexpr UINT IDM_AUTOLINKER_LINKER_BASE = 34000;
 constexpr UINT IDM_AUTOLINKER_LINKER_MAX = 34999;
+
+std::string TrimAsciiCopy(const std::string& text)
+{
+	size_t begin = 0;
+	size_t end = text.size();
+	while (begin < end && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
+		++begin;
+	}
+	while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])) != 0) {
+		--end;
+	}
+	return text.substr(begin, end - begin);
+}
+
+std::vector<std::string> SplitLinesNormalized(const std::string& text)
+{
+	std::string normalized = text;
+	for (size_t pos = 0; (pos = normalized.find("\r\n", pos)) != std::string::npos; ) {
+		normalized.replace(pos, 2, "\n");
+		++pos;
+	}
+
+	std::vector<std::string> lines;
+	size_t start = 0;
+	while (start <= normalized.size()) {
+		size_t end = normalized.find('\n', start);
+		if (end == std::string::npos) {
+			lines.push_back(normalized.substr(start));
+			break;
+		}
+		lines.push_back(normalized.substr(start, end - start));
+		start = end + 1;
+	}
+	return lines;
+}
+
+std::string JoinLinesCrLf(const std::vector<std::string>& lines)
+{
+	std::string output;
+	for (const std::string& line : lines) {
+		output += line;
+		output += "\r\n";
+	}
+	return output;
+}
+
+std::string ToLowerAsciiCopy(const std::string& text)
+{
+	std::string lowered = text;
+	std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+		return static_cast<char>(std::tolower(c));
+	});
+	return lowered;
+}
+
+bool StartsWithAscii(const std::string& text, const std::string& prefix)
+{
+	return text.rfind(prefix, 0) == 0;
+}
+
+std::string ExtractNameAfterPrefix(const std::string& line, const std::string& prefix)
+{
+	if (!StartsWithAscii(line, prefix)) {
+		return std::string();
+	}
+	size_t pos = prefix.size();
+	while (pos < line.size() && std::isspace(static_cast<unsigned char>(line[pos])) != 0) {
+		++pos;
+	}
+	size_t end = pos;
+	while (end < line.size()) {
+		const unsigned char c = static_cast<unsigned char>(line[end]);
+		if (c == ',' || c == '\t' || c == ' ') {
+			break;
+		}
+		++end;
+	}
+	return TrimAsciiCopy(line.substr(pos, end - pos));
+}
+
+bool IsLikelyChineseText(const std::string& text)
+{
+	for (unsigned char ch : text) {
+		if (ch >= 0x80) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void OutputMultiline(const std::string& title, const std::string& body)
+{
+	OutputStringToELog(title);
+	auto lines = SplitLinesNormalized(body);
+	for (const std::string& line : lines) {
+		IDEFacade::Instance().AppendOutputWindowLine(line);
+	}
+}
+
+bool EnsureAISettingsReady(AISettings& settings)
+{
+	AIService::LoadSettings(g_configManager, settings);
+	std::string missing;
+	if (AIService::HasRequiredSettings(settings, missing)) {
+		return true;
+	}
+
+	OutputStringToELog("AI配置缺失，准备打开配置窗口");
+	if (!ShowAIConfigDialog(g_hwnd, settings)) {
+		OutputStringToELog("AI配置已取消，本次操作终止");
+		return false;
+	}
+	AIService::SaveSettings(g_configManager, settings);
+	OutputStringToELog("AI配置已保存");
+	return true;
+}
+
+void RunAiFunctionReplaceTask(AITaskKind kind)
+{
+	const std::string displayName = AIService::BuildTaskDisplayName(kind);
+	OutputStringToELog("[AI]开始执行：" + displayName);
+
+	IDEFacade& ide = IDEFacade::Instance();
+	std::string functionCode;
+	if (!ide.GetCurrentFunctionCode(functionCode)) {
+		OutputStringToELog("[AI]无法获取当前函数代码");
+		return;
+	}
+
+	AISettings settings = {};
+	if (!EnsureAISettingsReady(settings)) {
+		return;
+	}
+
+	const std::string userInput =
+		"请处理以下易语言函数代码，并严格返回完整可替换代码：\n```e\n" +
+		functionCode + "\n```";
+	std::string finalInput = userInput;
+	if (kind == AITaskKind::OptimizeFunction) {
+		std::string extraRequirement;
+		if (!ShowAITextInputDialog(g_hwnd, "AI优化函数 - 输入优化要求", "请输入你希望优化的方向（可为空）：", extraRequirement)) {
+			OutputStringToELog("[AI]已取消输入优化要求");
+			return;
+		}
+		extraRequirement = TrimAsciiCopy(extraRequirement);
+		if (!extraRequirement.empty()) {
+			finalInput = std::string("额外优化要求：\n") + extraRequirement + "\n\n" + userInput;
+		}
+	}
+
+	OutputStringToELog("[AI]正在请求模型...");
+	AIResult result = AIService::ExecuteTask(kind, finalInput, settings);
+	if (!result.ok) {
+		OutputStringToELog("[AI]请求失败：" + result.error);
+		return;
+	}
+
+	std::string generatedCode = AIService::NormalizeModelOutputToCode(result.content);
+	generatedCode = AIService::Trim(generatedCode);
+	if (generatedCode.empty()) {
+		OutputStringToELog("[AI]模型返回为空");
+		return;
+	}
+
+	if (!ShowAIPreviewDialog(g_hwnd, displayName + " - 结果预览", generatedCode, "替换")) {
+		OutputStringToELog("[AI]用户取消替换");
+		return;
+	}
+
+	if (!ide.ReplaceCurrentFunctionCode(generatedCode, true)) {
+		OutputStringToELog("[AI]替换当前函数失败");
+		return;
+	}
+	OutputStringToELog("[AI]替换完成");
+}
+
+void RunAiTranslateSelectedTextTask()
+{
+	OutputStringToELog("[AI]开始执行：AI翻译文本");
+	IDEFacade& ide = IDEFacade::Instance();
+	std::string selectedText;
+	if (!ide.GetSelectedText(selectedText)) {
+		OutputStringToELog("[AI]未检测到有效选中文本");
+		return;
+	}
+
+	AISettings settings = {};
+	if (!EnsureAISettingsReady(settings)) {
+		return;
+	}
+
+	const bool sourceIsChinese = IsLikelyChineseText(selectedText);
+	const std::string direction = sourceIsChinese ? "请把以下中文翻译为英文，仅输出翻译结果：" : "请把以下英文翻译为中文，仅输出翻译结果：";
+	const std::string input = direction + "\n" + selectedText;
+
+	OutputStringToELog("[AI]正在请求模型...");
+	AIResult result = AIService::ExecuteTask(AITaskKind::TranslateText, input, settings);
+	if (!result.ok) {
+		OutputStringToELog("[AI]请求失败：" + result.error);
+		return;
+	}
+
+	std::string translated = AIService::NormalizeModelOutputToCode(result.content);
+	translated = AIService::Trim(translated);
+	if (translated.empty()) {
+		OutputStringToELog("[AI]翻译结果为空");
+		return;
+	}
+
+	OutputMultiline("[AI]翻译结果：", translated);
+}
+
+struct DeclarationBlock {
+	bool isDllCommand = false;
+	std::string name;
+	std::vector<std::string> lines;
+};
+
+void CollectExistingDeclarationNames(
+	const std::string& pageCode,
+	std::unordered_set<std::string>& dllCommands,
+	std::unordered_set<std::string>& dataTypes)
+{
+	for (const std::string& rawLine : SplitLinesNormalized(pageCode)) {
+		const std::string line = TrimAsciiCopy(rawLine);
+		std::string name = ExtractNameAfterPrefix(line, ".DLL命令");
+		if (!name.empty()) {
+			dllCommands.insert(ToLowerAsciiCopy(name));
+			continue;
+		}
+		name = ExtractNameAfterPrefix(line, ".数据类型");
+		if (!name.empty()) {
+			dataTypes.insert(ToLowerAsciiCopy(name));
+		}
+	}
+}
+
+std::vector<DeclarationBlock> ParseGeneratedDeclarationBlocks(const std::string& generatedText)
+{
+	std::vector<DeclarationBlock> blocks;
+	DeclarationBlock current = {};
+	bool inBlock = false;
+
+	auto flushCurrent = [&]() {
+		if (inBlock && !current.name.empty() && !current.lines.empty()) {
+			blocks.push_back(current);
+		}
+		current = {};
+		inBlock = false;
+	};
+
+	for (const std::string& rawLine : SplitLinesNormalized(generatedText)) {
+		const std::string line = TrimAsciiCopy(rawLine);
+		if (line.empty()) {
+			if (inBlock) {
+				current.lines.push_back("");
+			}
+			continue;
+		}
+
+		if (StartsWithAscii(line, ".版本")) {
+			continue;
+		}
+
+		const std::string dllName = ExtractNameAfterPrefix(line, ".DLL命令");
+		if (!dllName.empty()) {
+			flushCurrent();
+			inBlock = true;
+			current.isDllCommand = true;
+			current.name = dllName;
+			current.lines.push_back(line);
+			continue;
+		}
+
+		const std::string typeName = ExtractNameAfterPrefix(line, ".数据类型");
+		if (!typeName.empty()) {
+			flushCurrent();
+			inBlock = true;
+			current.isDllCommand = false;
+			current.name = typeName;
+			current.lines.push_back(line);
+			continue;
+		}
+
+		if (inBlock) {
+			current.lines.push_back(line);
+		}
+	}
+
+	flushCurrent();
+	return blocks;
+}
+
+std::string BuildUniqueDeclarationInsertText(const std::string& currentPageCode, const std::string& generatedDeclText, int& addedCount, int& skippedCount)
+{
+	addedCount = 0;
+	skippedCount = 0;
+
+	std::unordered_set<std::string> existingDlls;
+	std::unordered_set<std::string> existingTypes;
+	CollectExistingDeclarationNames(currentPageCode, existingDlls, existingTypes);
+
+	std::vector<DeclarationBlock> generatedBlocks = ParseGeneratedDeclarationBlocks(generatedDeclText);
+	std::vector<std::string> outputLines;
+
+	for (const DeclarationBlock& block : generatedBlocks) {
+		const std::string key = ToLowerAsciiCopy(block.name);
+		bool duplicated = false;
+		if (block.isDllCommand) {
+			duplicated = existingDlls.contains(key);
+			if (!duplicated) {
+				existingDlls.insert(key);
+			}
+		}
+		else {
+			duplicated = existingTypes.contains(key);
+			if (!duplicated) {
+				existingTypes.insert(key);
+			}
+		}
+
+		if (duplicated) {
+			++skippedCount;
+			continue;
+		}
+
+		++addedCount;
+		outputLines.insert(outputLines.end(), block.lines.begin(), block.lines.end());
+		outputLines.push_back("");
+	}
+
+	return JoinLinesCrLf(outputLines);
+}
+
+void RunAiCompleteDeclarationsTask()
+{
+	OutputStringToELog("[AI]开始执行：AI补全API声明");
+	IDEFacade& ide = IDEFacade::Instance();
+
+	std::string functionCode;
+	if (!ide.GetCurrentFunctionCode(functionCode)) {
+		OutputStringToELog("[AI]无法获取当前函数代码");
+		return;
+	}
+
+	std::string currentPageCode;
+	if (!ide.GetCurrentPageCode(currentPageCode)) {
+		OutputStringToELog("[AI]无法获取当前页代码");
+		return;
+	}
+
+	AISettings settings = {};
+	if (!EnsureAISettingsReady(settings)) {
+		return;
+	}
+
+	const std::string userInput =
+		"请根据以下易语言函数，补全缺失的 Windows API 声明和必要结构体声明。\n"
+		"只返回 .DLL命令/.参数/.数据类型/.成员 声明代码，不返回函数实现。\n"
+		"函数代码：\n```e\n" + functionCode + "\n```";
+
+	OutputStringToELog("[AI]正在请求模型...");
+	AIResult result = AIService::ExecuteTask(AITaskKind::CompleteApiDeclarations, userInput, settings);
+	if (!result.ok) {
+		OutputStringToELog("[AI]请求失败：" + result.error);
+		return;
+	}
+
+	std::string generatedDecl = AIService::NormalizeModelOutputToCode(result.content);
+	generatedDecl = AIService::Trim(generatedDecl);
+	if (generatedDecl.empty()) {
+		OutputStringToELog("[AI]模型未返回声明代码");
+		return;
+	}
+
+	int addedCount = 0;
+	int skippedCount = 0;
+	std::string insertText = BuildUniqueDeclarationInsertText(currentPageCode, generatedDecl, addedCount, skippedCount);
+	insertText = AIService::Trim(insertText);
+	if (insertText.empty() || addedCount <= 0) {
+		OutputStringToELog("[AI]未发现可新增声明（可能均已存在）");
+		return;
+	}
+
+	if (!ShowAIPreviewDialog(g_hwnd, "AI补全API声明 - 结果预览", insertText, "插入")) {
+		OutputStringToELog("[AI]用户取消插入");
+		return;
+	}
+
+	if (!ide.InsertCodeAtPageTop(insertText, true)) {
+		OutputStringToELog("[AI]插入声明失败");
+		return;
+	}
+
+	OutputStringToELog(std::format("[AI]插入完成：新增 {} 项，跳过 {} 项", addedCount, skippedCount));
+}
 
 void TryCopyCurrentFunctionCode()
 {
@@ -82,6 +488,21 @@ void RegisterIDEContextMenu()
 	auto& ide = IDEFacade::Instance();
 	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_COPY_FUNC, "复制当前函数代码", []() {
 		TryCopyCurrentFunctionCode();
+	});
+	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_OPTIMIZE_FUNC, "AI优化函数", []() {
+		RunAiFunctionReplaceTask(AITaskKind::OptimizeFunction);
+	});
+	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_COMMENT_FUNC, "AI为当前函数添加注释", []() {
+		RunAiFunctionReplaceTask(AITaskKind::AddCommentsToFunction);
+	});
+	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_TRANSLATE_FUNC, "AI翻译当前函数+变量名", []() {
+		RunAiFunctionReplaceTask(AITaskKind::TranslateFunctionAndVariables);
+	});
+	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT, "AI翻译文本", []() {
+		RunAiTranslateSelectedTextTask();
+	});
+	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_COMPLETE_DECL, "AI为当前函数补全API声明", []() {
+		RunAiCompleteDeclarationsTask();
 	});
 
 	g_isContextMenuRegistered = true;
@@ -328,6 +749,20 @@ void HandleInitMenuPopup(HMENU hMenu)
 	UINT state = GetMenuState(hMenu, IDM_AUTOLINKER_CTX_COPY_FUNC, MF_BYCOMMAND);
 	if (state != 0xFFFFFFFF) {
 		EnableMenuItem(hMenu, IDM_AUTOLINKER_CTX_COPY_FUNC, MF_BYCOMMAND | MF_ENABLED);
+	}
+
+	const UINT aiCmdIds[] = {
+		IDM_AUTOLINKER_CTX_AI_OPTIMIZE_FUNC,
+		IDM_AUTOLINKER_CTX_AI_COMMENT_FUNC,
+		IDM_AUTOLINKER_CTX_AI_TRANSLATE_FUNC,
+		IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT,
+		IDM_AUTOLINKER_CTX_AI_COMPLETE_DECL
+	};
+	for (UINT cmdId : aiCmdIds) {
+		UINT aiState = GetMenuState(hMenu, cmdId, MF_BYCOMMAND);
+		if (aiState != 0xFFFFFFFF) {
+			EnableMenuItem(hMenu, cmdId, MF_BYCOMMAND | MF_ENABLED);
+		}
 	}
 }
 }

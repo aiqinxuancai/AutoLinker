@@ -50,6 +50,12 @@
     <ClCompile Include="src\MouseBack.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\AIConfigDialog.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AIService.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\PathHelper.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -96,6 +102,12 @@
       <Filter>elib</Filter>
     </ClInclude>
     <ClInclude Include="src\AutoLinker.h" />
+    <ClInclude Include="src\AIConfigDialog.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AIService.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
     <ClInclude Include="src\ConfigManager.h">
       <Filter>Utils</Filter>
     </ClInclude>

@@ -131,6 +131,60 @@ bool SetClipboardAnsiText(const std::string& text)
 	return true;
 }
 
+std::string WideToUtf8(const std::wstring& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+
+	int size = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	if (size <= 0) {
+		return std::string();
+	}
+
+	std::string out(static_cast<size_t>(size), '\0');
+	WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, out.data(), size, nullptr, nullptr);
+	if (!out.empty() && out.back() == '\0') {
+		out.pop_back();
+	}
+	return out;
+}
+
+bool ReadClipboardText(std::string& outText)
+{
+	outText.clear();
+	if (!OpenClipboard(nullptr)) {
+		return false;
+	}
+
+	bool ok = false;
+	if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+		HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+		if (hData != nullptr) {
+			const wchar_t* textPtr = static_cast<const wchar_t*>(GlobalLock(hData));
+			if (textPtr != nullptr) {
+				outText = WideToUtf8(std::wstring(textPtr));
+				GlobalUnlock(hData);
+				ok = true;
+			}
+		}
+	}
+	else if (IsClipboardFormatAvailable(CF_TEXT)) {
+		HANDLE hData = GetClipboardData(CF_TEXT);
+		if (hData != nullptr) {
+			const char* textPtr = static_cast<const char*>(GlobalLock(hData));
+			if (textPtr != nullptr) {
+				outText.assign(textPtr);
+				GlobalUnlock(hData);
+				ok = true;
+			}
+		}
+	}
+
+	CloseClipboard();
+	return ok;
+}
+
 bool TrimClipboardLastLine()
 {
 	if (!OpenClipboard(nullptr)) {
@@ -732,6 +786,35 @@ bool IDEFacade::GetCurrentPageCode(std::string& outCode) const
 	return true;
 }
 
+bool IDEFacade::ReplaceCurrentPageCode(const std::string& newPageCode, bool preCompile) const
+{
+	PageCodeSnapshot snapshot = {};
+	if (!BuildCurrentPageSnapshot(snapshot)) {
+		return false;
+	}
+	if (snapshot.firstRow < 0 || snapshot.lastRow < snapshot.firstRow) {
+		return false;
+	}
+
+	int caretRow = -1;
+	int caretCol = -1;
+	GetCaretPosition(caretRow, caretCol);
+
+	if (!MoveCaret(snapshot.firstRow, 0)) {
+		return false;
+	}
+	if (!SelectRowRange(snapshot.firstRow, snapshot.lastRow)) {
+		return false;
+	}
+
+	const bool ok = ReplaceSelectedRowsText(newPageCode, preCompile);
+	RunBlkClearAllDef();
+	if (caretRow >= 0 && caretCol >= 0) {
+		MoveCaret(caretRow, caretCol);
+	}
+	return ok;
+}
+
 bool IDEFacade::GetFunctionCodeByName(const std::string& functionName, std::string& outCode) const
 {
 	PageCodeSnapshot snapshot = {};
@@ -926,6 +1009,64 @@ bool IDEFacade::InsertDllDeclaration(const std::string& dllDeclarationCode, bool
 	return true;
 }
 
+bool IDEFacade::InsertCodeAtPageTop(const std::string& codeToInsert, bool preCompile) const
+{
+	if (TrimAsciiSpace(codeToInsert).empty()) {
+		return false;
+	}
+
+	PageCodeSnapshot snapshot = {};
+	if (!BuildCurrentPageSnapshot(snapshot)) {
+		return false;
+	}
+	if (snapshot.firstRow < 0) {
+		return false;
+	}
+
+	int caretRow = -1;
+	int caretCol = -1;
+	GetCaretPosition(caretRow, caretCol);
+	const auto restoreCaret = [this, caretRow, caretCol]() {
+		if (caretRow >= 0 && caretCol >= 0) {
+			MoveCaret(caretRow, caretCol);
+		}
+	};
+
+	int insertRow = snapshot.firstRow;
+	ProgramText firstRowText = {};
+	if (RunGetPrgText(snapshot.firstRow, -1, firstRowText)) {
+		const std::string firstLine = TrimAsciiSpace(firstRowText.text);
+		if (!firstLine.empty() && firstLine.rfind(".", 0) == 0) {
+			insertRow = snapshot.firstRow + 1;
+		}
+	}
+
+	bool inserted = false;
+	const std::string finalInsert = EnsureTrailingLineBreak(codeToInsert);
+	if (MoveCaret(insertRow, 0)) {
+		inserted = RunInsertText(finalInsert, false);
+	}
+	else if (MoveCaret(snapshot.firstRow, 0)) {
+		inserted = RunInsertText(finalInsert, false);
+	}
+
+	if (!inserted) {
+		restoreCaret();
+		return false;
+	}
+
+	if (preCompile) {
+		bool compileOk = false;
+		if (!RunPreCompile(compileOk) || !compileOk) {
+			restoreCaret();
+			return false;
+		}
+	}
+
+	restoreCaret();
+	return true;
+}
+
 bool IDEFacade::InsertDllDeclarationByTemplate(const std::string& dllName, const std::string& commandName, const std::string& returnType, const std::string& argList, bool preCompile) const
 {
 	const std::string cmdName = TrimAsciiSpace(commandName);
@@ -1061,6 +1202,23 @@ bool IDEFacade::SelectAll() const
 bool IDEFacade::CopySelection() const
 {
 	return RunEditCopy();
+}
+
+bool IDEFacade::GetSelectedText(std::string& outText) const
+{
+	outText.clear();
+	const DWORD beforeSeq = GetClipboardSequenceNumber();
+	if (!CopySelection()) {
+		return false;
+	}
+	const DWORD afterSeq = GetClipboardSequenceNumber();
+	if (afterSeq == beforeSeq) {
+		return false;
+	}
+	if (!ReadClipboardText(outText)) {
+		return false;
+	}
+	return !TrimAsciiSpace(outText).empty();
 }
 
 bool IDEFacade::CopyCurrentFunctionCodeToClipboard() const
