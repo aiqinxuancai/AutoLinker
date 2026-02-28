@@ -20,6 +20,7 @@
 #include "WinINetUtil.h"
 #include "Version.h"
 #include "IDEFacade.h"
+#include <unordered_map>
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -51,9 +52,17 @@ bool g_preDebugging;
 //准备开始编译 废弃
 bool g_preCompiling;
 
+HMENU g_topLinkerSubMenu = NULL;
+std::unordered_map<UINT, std::string> g_topLinkerCommandMap;
+
+void UpdateCurrentOpenSourceFile();
+void UpdateButton();
+
 namespace {
 bool g_isContextMenuRegistered = false;
 constexpr UINT IDM_AUTOLINKER_CTX_COPY_FUNC = 31001; // Keep < 0x8000 to avoid signed-ID issues in some hosts.
+constexpr UINT IDM_AUTOLINKER_LINKER_BASE = 34000;
+constexpr UINT IDM_AUTOLINKER_LINKER_MAX = 34999;
 
 void TryCopyCurrentFunctionCode()
 {
@@ -77,6 +86,250 @@ void RegisterIDEContextMenu()
 	});
 
 	g_isContextMenuRegistered = true;
+}
+
+std::wstring GetMenuTitleW(HMENU hMenu, UINT item, UINT flags)
+{
+	wchar_t title[256] = { 0 };
+	int len = GetMenuStringW(hMenu, item, title, static_cast<int>(sizeof(title) / sizeof(title[0])), flags);
+	if (len <= 0) {
+		return L"";
+	}
+	return std::wstring(title, static_cast<size_t>(len));
+}
+
+bool IsCompileOrToolsTopPopup(HMENU hPopupMenu)
+{
+	if (g_hwnd == NULL || hPopupMenu == NULL) {
+		return false;
+	}
+	if (hPopupMenu == g_topLinkerSubMenu) {
+		return false;
+	}
+
+	// 右键菜单里会包含该命令，直接排除，避免“链接器切换”混入右键。
+	UINT copyState = GetMenuState(hPopupMenu, IDM_AUTOLINKER_CTX_COPY_FUNC, MF_BYCOMMAND);
+	if (copyState != 0xFFFFFFFF) {
+		return false;
+	}
+
+	auto popupKeywordMatch = [hPopupMenu]() -> bool {
+		int keywordHit = 0;
+		int itemCount = GetMenuItemCount(hPopupMenu);
+		for (int item = 0; item < itemCount; ++item) {
+			std::wstring itemTitle = GetMenuTitleW(hPopupMenu, static_cast<UINT>(item), MF_BYPOSITION);
+			if (itemTitle.find(L"编译") != std::wstring::npos ||
+				itemTitle.find(L"发布") != std::wstring::npos ||
+				itemTitle.find(L"静态") != std::wstring::npos ||
+				itemTitle.find(L"Build") != std::wstring::npos ||
+				itemTitle.find(L"Release") != std::wstring::npos) {
+				++keywordHit;
+			}
+		}
+		return keywordHit >= 1;
+	};
+
+	HMENU hMainMenu = GetMenu(g_hwnd);
+	if (hMainMenu == NULL) {
+		return popupKeywordMatch();
+	}
+
+	int count = GetMenuItemCount(hMainMenu);
+	int popupIndex = -1;
+	int compileIndex = -1;
+	int toolsIndex = -1;
+
+	for (int i = 0; i < count; ++i) {
+		HMENU subMenu = GetSubMenu(hMainMenu, i);
+		if (subMenu == NULL) {
+			continue;
+		}
+		if (subMenu == hPopupMenu) {
+			popupIndex = i;
+		}
+
+		std::wstring title = GetMenuTitleW(hMainMenu, static_cast<UINT>(i), MF_BYPOSITION);
+		if (title.find(L"编译") != std::wstring::npos || title.find(L"Build") != std::wstring::npos) {
+			if (compileIndex < 0) {
+				compileIndex = i;
+			}
+			continue;
+		}
+		if (title.find(L"工具") != std::wstring::npos || title.find(L"Tools") != std::wstring::npos) {
+			if (toolsIndex < 0) {
+				toolsIndex = i;
+			}
+		}
+	}
+
+	if (popupIndex < 0) {
+		return popupKeywordMatch();
+	}
+
+	int targetIndex = compileIndex >= 0 ? compileIndex : toolsIndex;
+	if (targetIndex >= 0) {
+		return popupIndex == targetIndex;
+	}
+
+	// 顶级标题不可读时，回退到子项关键词判断。
+	return popupKeywordMatch();
+}
+
+void ClearMenuItemsByPosition(HMENU hMenu)
+{
+	if (hMenu == NULL) {
+		return;
+	}
+
+	int count = GetMenuItemCount(hMenu);
+	for (int i = count - 1; i >= 0; --i) {
+		DeleteMenu(hMenu, static_cast<UINT>(i), MF_BYPOSITION);
+	}
+}
+
+bool EnsureTopLinkerSubMenu()
+{
+	if (g_topLinkerSubMenu == NULL || !IsMenu(g_topLinkerSubMenu)) {
+		g_topLinkerSubMenu = CreatePopupMenu();
+	}
+	if (g_topLinkerSubMenu == NULL) {
+		return false;
+	}
+
+	return true;
+}
+
+void EnsureTopLinkerSubMenuAttached(HMENU hTargetMenu)
+{
+	if (hTargetMenu == NULL) {
+		return;
+	}
+	if (!EnsureTopLinkerSubMenu()) {
+		return;
+	}
+
+	bool alreadyAttached = false;
+	int attachedIndex = -1;
+	for (int i = GetMenuItemCount(hTargetMenu) - 1; i >= 0; --i) {
+		MENUITEMINFOW mii = {};
+		mii.cbSize = sizeof(mii);
+		mii.fMask = MIIM_SUBMENU;
+		bool removeThis = false;
+		if (GetMenuItemInfoW(hTargetMenu, static_cast<UINT>(i), TRUE, &mii) && mii.hSubMenu == g_topLinkerSubMenu) {
+			alreadyAttached = true;
+			attachedIndex = i;
+			continue;
+		}
+		if (!removeThis) {
+			std::wstring title = GetMenuTitleW(hTargetMenu, static_cast<UINT>(i), MF_BYPOSITION);
+			if (title.find(L"链接器切换") != std::wstring::npos) {
+				removeThis = true;
+			}
+		}
+		if (removeThis) {
+			DeleteMenu(hTargetMenu, static_cast<UINT>(i), MF_BYPOSITION);
+			if (i > 0) {
+				UINT prevState = GetMenuState(hTargetMenu, static_cast<UINT>(i - 1), MF_BYPOSITION);
+				if (prevState != 0xFFFFFFFF && (prevState & MF_SEPARATOR) == MF_SEPARATOR) {
+					DeleteMenu(hTargetMenu, static_cast<UINT>(i - 1), MF_BYPOSITION);
+				}
+			}
+		}
+	}
+
+	if (alreadyAttached) {
+		if (attachedIndex > 0) {
+			UINT prevState = GetMenuState(hTargetMenu, static_cast<UINT>(attachedIndex - 1), MF_BYPOSITION);
+			if (prevState == 0xFFFFFFFF || (prevState & MF_SEPARATOR) != MF_SEPARATOR) {
+				InsertMenuW(hTargetMenu, static_cast<UINT>(attachedIndex), MF_BYPOSITION | MF_SEPARATOR, 0, NULL);
+			}
+		}
+		return;
+	}
+
+	int count = GetMenuItemCount(hTargetMenu);
+	if (count > 0) {
+		UINT lastState = GetMenuState(hTargetMenu, static_cast<UINT>(count - 1), MF_BYPOSITION);
+		if (lastState != 0xFFFFFFFF && (lastState & MF_SEPARATOR) != MF_SEPARATOR) {
+			AppendMenuW(hTargetMenu, MF_SEPARATOR, 0, NULL);
+		}
+	}
+	AppendMenuW(hTargetMenu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(g_topLinkerSubMenu), L"链接器切换");
+}
+
+void RebuildTopLinkerSubMenu()
+{
+	if (!EnsureTopLinkerSubMenu()) {
+		return;
+	}
+
+	ClearMenuItemsByPosition(g_topLinkerSubMenu);
+	g_topLinkerCommandMap.clear();
+
+	if (g_linkerManager.getCount() <= 0) {
+		AppendMenuA(g_topLinkerSubMenu, MF_STRING | MF_GRAYED, 0, "（未找到Linker配置）");
+		return;
+	}
+
+	UpdateCurrentOpenSourceFile();
+	std::string nowLinkConfigName = g_configManager.getValue(g_nowOpenSourceFilePath);
+
+	UINT cmd = IDM_AUTOLINKER_LINKER_BASE;
+	for (const auto& [key, value] : g_linkerManager.getMap()) {
+		if (cmd > IDM_AUTOLINKER_LINKER_MAX) {
+			break;
+		}
+
+		UINT flags = MF_STRING | MF_ENABLED;
+		if (!nowLinkConfigName.empty() && nowLinkConfigName == key) {
+			flags |= MF_CHECKED;
+		}
+
+		AppendMenuA(g_topLinkerSubMenu, flags, cmd, key.c_str());
+		g_topLinkerCommandMap[cmd] = key;
+		++cmd;
+	}
+}
+
+bool HandleTopLinkerMenuCommand(UINT cmd)
+{
+	auto it = g_topLinkerCommandMap.find(cmd);
+	if (it == g_topLinkerCommandMap.end()) {
+		return false;
+	}
+
+	UpdateCurrentOpenSourceFile();
+	if (g_nowOpenSourceFilePath.empty()) {
+		OutputStringToELog("当前没有打开源文件，无法切换Linker");
+		return true;
+	}
+
+	g_configManager.setValue(g_nowOpenSourceFilePath, it->second);
+	UpdateButton();
+	RebuildTopLinkerSubMenu();
+	return true;
+}
+
+void HandleInitMenuPopup(HMENU hMenu)
+{
+	if (hMenu == NULL) {
+		return;
+	}
+	if (hMenu == g_topLinkerSubMenu) {
+		RebuildTopLinkerSubMenu();
+		return;
+	}
+
+	if (IsCompileOrToolsTopPopup(hMenu)) {
+		EnsureTopLinkerSubMenuAttached(hMenu);
+		RebuildTopLinkerSubMenu();
+		return;
+	}
+
+	UINT state = GetMenuState(hMenu, IDM_AUTOLINKER_CTX_COPY_FUNC, MF_BYCOMMAND);
+	if (state != 0xFFFFFFFF) {
+		EnableMenuItem(hMenu, IDM_AUTOLINKER_CTX_COPY_FUNC, MF_BYCOMMAND | MF_ENABLED);
+	}
 }
 }
 
@@ -363,6 +616,10 @@ void ShowMenu(HWND hParent) {
 /// 更新按钮内容
 /// </summary>
 void UpdateButton() {
+	if (g_buttonHwnd == NULL) {
+		return;
+	}
+
 	if (g_nowOpenSourceFilePath.empty()) {
 		SetWindowTextA(g_buttonHwnd, "默认");
 	} else {
@@ -388,8 +645,13 @@ void UpdateCurrentFileLinkerWithId(int id) {
 		//当前好像没有打开源文件
 		OutputStringToELog("当前没有打开源文件，无法切换Linker");
 	} else {
-		g_configManager.setValue(g_nowOpenSourceFilePath, g_linkerManager.getConfig(id).name);
+		const auto& config = g_linkerManager.getConfig(id);
+		if (config.name.empty()) {
+			return;
+		}
+		g_configManager.setValue(g_nowOpenSourceFilePath, config.name);
 		UpdateButton();
+		RebuildTopLinkerSubMenu();
 	}
 }
 
@@ -461,6 +723,7 @@ LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 		}
 
 		case WM_INITMENUPOPUP:
+			HandleInitMenuPopup(reinterpret_cast<HMENU>(wParam));
 			break;
 		case WM_COMMAND: {
 			auto low = LOWORD(wParam);
@@ -536,8 +799,14 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	//	return 0;
 	//}
 
-	if (uMsg == WM_COMMAND && IDEFacade::Instance().HandleMainWindowCommand(wParam)) {
-		return 0;
+	if (uMsg == WM_COMMAND) {
+		UINT cmd = LOWORD(wParam);
+		if (HandleTopLinkerMenuCommand(cmd)) {
+			return 0;
+		}
+		if (IDEFacade::Instance().HandleMainWindowCommand(wParam)) {
+			return 0;
+		}
 	}
 
 	if (uMsg == WM_AUTOLINKER_INIT) {
@@ -556,13 +825,7 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 
 	if (uMsg == WM_INITMENUPOPUP) {
 		LRESULT result = DefSubclassProc(hWnd, uMsg, wParam, lParam);
-		HMENU hMenu = reinterpret_cast<HMENU>(wParam);
-		if (hMenu != NULL) {
-			UINT state = GetMenuState(hMenu, IDM_AUTOLINKER_CTX_COPY_FUNC, MF_BYCOMMAND);
-			if (state != 0xFFFFFFFF) {
-				EnableMenuItem(hMenu, IDM_AUTOLINKER_CTX_COPY_FUNC, MF_BYCOMMAND | MF_ENABLED);
-			}
-		}
+		HandleInitMenuPopup(reinterpret_cast<HMENU>(wParam));
 		return result;
 	}
 
@@ -689,6 +952,7 @@ bool FneInit() {
 	if (g_toolBarHwnd != NULL)
 	{
 		StartEditViewSubclassTask();
+		RebuildTopLinkerSubMenu();
 
 		OutputStringToELog("找到工具条");
 		SetWindowSubclass(g_toolBarHwnd, ToolbarSubclassProc, 0, 0);
