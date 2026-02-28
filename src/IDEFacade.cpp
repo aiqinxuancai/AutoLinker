@@ -235,10 +235,13 @@ std::string ParseSubNameFromHeader(const std::string& headerLine)
 	}
 
 	size_t comma = remain.find(',');
-	size_t commaCN = remain.find("，");
+	size_t commaCN_GBK = remain.find("\xA3\xAC");
+	size_t commaCN_UTF8 = remain.find("\xEF\xBC\x8C");
 	size_t cutPos = (std::min)(
 		comma == std::string::npos ? std::numeric_limits<size_t>::max() : comma,
-		commaCN == std::string::npos ? std::numeric_limits<size_t>::max() : commaCN);
+		(std::min)(
+			commaCN_GBK == std::string::npos ? std::numeric_limits<size_t>::max() : commaCN_GBK,
+			commaCN_UTF8 == std::string::npos ? std::numeric_limits<size_t>::max() : commaCN_UTF8));
 	if (cutPos != std::numeric_limits<size_t>::max()) {
 		remain = remain.substr(0, cutPos);
 	}
@@ -544,10 +547,13 @@ std::string IDEFacade::NormalizeFunctionName(const std::string& name)
 	}
 
 	size_t comma = normalized.find(',');
-	size_t commaCN = normalized.find("，");
+	size_t commaCN_GBK = normalized.find("\xA3\xAC");
+	size_t commaCN_UTF8 = normalized.find("\xEF\xBC\x8C");
 	size_t cutPos = (std::min)(
 		comma == std::string::npos ? std::numeric_limits<size_t>::max() : comma,
-		commaCN == std::string::npos ? std::numeric_limits<size_t>::max() : commaCN);
+		(std::min)(
+			commaCN_GBK == std::string::npos ? std::numeric_limits<size_t>::max() : commaCN_GBK,
+			commaCN_UTF8 == std::string::npos ? std::numeric_limits<size_t>::max() : commaCN_UTF8));
 	if (cutPos != std::numeric_limits<size_t>::max()) {
 		normalized = normalized.substr(0, cutPos);
 	}
