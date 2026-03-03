@@ -128,6 +128,8 @@ public:
 	bool CopySelection() const;
 	// 获取当前选中文本（通过 IDE 复制后读取剪贴板）。
 	bool GetSelectedText(std::string& outText) const;
+	// 将文本写入系统剪贴板（同时提供 Unicode/ANSI 格式）。
+	bool SetClipboardText(const std::string& text) const;
 	bool CopyCurrentFunctionCodeToClipboard() const;
 
 	// 代码导航。
@@ -208,7 +210,10 @@ private:
 	bool FindFunctionBlockByName(const PageCodeSnapshot& snapshot, const std::string& name, FunctionBlock& outBlock) const;
 	// 内部工具：按光标位置查找当前函数块。
 	bool FindCurrentFunctionBlock(const PageCodeSnapshot& snapshot, FunctionBlock& outBlock) const;
+	// 内部工具：基于当前光标定位函数的起止行（含首尾行）。
+	bool LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, std::string* outDiagnostics = nullptr) const;
 	// 内部工具：选择行范围并替换选中代码。
+	bool TranslateProgramRowRangeToBlockRange(int startProgramRow, int endProgramRow, int& outStartBlockRow, int& outEndBlockRow) const;
 	bool SelectRowRange(int startRow, int endRow) const;
 	bool ReplaceSelectedRowsText(const std::string& text, bool preCompile) const;
 	// 内部工具：函数名规范化与文本整理。

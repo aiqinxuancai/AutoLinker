@@ -578,21 +578,15 @@ void HandleAiTaskCompletionMessage(LPARAM lParam)
 			generatedCode = NormalizeCodeForEIDE(generatedCode);
 
 			const std::string title = result->displayName.empty() ? "AI结果预览" : (result->displayName + " - 结果预览");
-			if (!ShowAIPreviewDialog(g_hwnd, title, generatedCode, "替换")) {
-				OutputStringToELog("[AI]用户取消替换");
+			if (!ShowAIPreviewDialog(g_hwnd, title, generatedCode, "复制到剪贴板")) {
+				OutputStringToELog("[AI]用户取消复制");
 				return;
 			}
-			std::unique_ptr<AIApplyRequest> request(new (std::nothrow) AIApplyRequest());
-			if (!request) {
-				OutputStringToELog("[AI]内存不足，无法执行替换");
+			if (!IDEFacade::Instance().SetClipboardText(generatedCode)) {
+				OutputStringToELog("[AI]复制到剪贴板失败");
 				return;
 			}
-			request->action = AIAsyncUiAction::ReplaceCurrentFunction;
-			request->text = generatedCode;
-			request->sourceFunctionCode = result->sourceFunctionCode;
-			request->targetCaretRow = result->targetCaretRow;
-			request->targetCaretCol = result->targetCaretCol;
-			PostAiApplyRequest(request.release());
+			OutputStringToELog("[AI]已复制到剪贴板，请手动替换");
 			return;
 		}
 		case AIAsyncUiAction::OutputTranslation: {

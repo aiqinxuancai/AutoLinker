@@ -490,73 +490,6 @@ bool IsSubHeaderTextLine(const std::string& rawText)
 	return lower.rfind(".subroutine", 0) == 0 || lower.rfind(".sub", 0) == 0;
 }
 
-std::vector<std::string> SplitLinesNormalizedLf(const std::string& text)
-{
-	std::string normalized;
-	normalized.reserve(text.size() + 8);
-	for (size_t i = 0; i < text.size(); ++i) {
-		const char ch = text[i];
-		if (ch == '\r') {
-			if (i + 1 < text.size() && text[i + 1] == '\n') {
-				++i;
-			}
-			normalized.push_back('\n');
-			continue;
-		}
-		normalized.push_back(ch);
-	}
-
-	std::vector<std::string> lines;
-	size_t begin = 0;
-	while (begin <= normalized.size()) {
-		size_t end = normalized.find('\n', begin);
-		if (end == std::string::npos) {
-			lines.push_back(normalized.substr(begin));
-			break;
-		}
-		lines.push_back(normalized.substr(begin, end - begin));
-		begin = end + 1;
-	}
-	return lines;
-}
-
-bool LocateCurrentFunctionRowRangeByCaret(
-	const std::vector<std::string>& lines,
-	int caretRow,
-	int& outStartRow,
-	int& outEndRow)
-{
-	outStartRow = -1;
-	outEndRow = -1;
-	if (lines.empty()) {
-		return false;
-	}
-
-	const int clampedRow = (std::max)(0, (std::min)(caretRow, static_cast<int>(lines.size()) - 1));
-	int start = -1;
-	for (int row = clampedRow; row >= 0; --row) {
-		if (IsSubHeaderTextLine(lines[static_cast<size_t>(row)])) {
-			start = row;
-			break;
-		}
-	}
-	if (start < 0) {
-		return false;
-	}
-
-	int end = static_cast<int>(lines.size()) - 1;
-	for (int row = start + 1; row < static_cast<int>(lines.size()); ++row) {
-		if (IsSubHeaderTextLine(lines[static_cast<size_t>(row)])) {
-			end = row - 1;
-			break;
-		}
-	}
-
-	outStartRow = start;
-	outEndRow = (std::max)(start, end);
-	return true;
-}
-
 bool IsDataTypeHeaderTextLine(const std::string& rawText)
 {
 	const std::string line = TrimAsciiSpaceCopy(rawText);
@@ -991,6 +924,51 @@ bool IDEFacade::SelectRowRange(int startRow, int endRow) const
 	return RunBlkAddDef(startRow, endRow);
 }
 
+bool IDEFacade::TranslateProgramRowRangeToBlockRange(int startProgramRow, int endProgramRow, int& outStartBlockRow, int& outEndBlockRow) const
+{
+	outStartBlockRow = -1;
+	outEndBlockRow = -1;
+	if (startProgramRow < 0 || endProgramRow < startProgramRow) {
+		return false;
+	}
+
+	int nonTitleRowIndex = -1;
+	for (int row = 0; row <= endProgramRow; ++row) {
+		ProgramText rowText = {};
+		if (!RunGetPrgText(row, -1, rowText)) {
+			return false;
+		}
+
+		if (!rowText.isTitle) {
+			++nonTitleRowIndex;
+		}
+
+		if (row == startProgramRow) {
+			if (rowText.isTitle) {
+				// Map title row to the next editable row index.
+				outStartBlockRow = nonTitleRowIndex + 1;
+			}
+			else {
+				outStartBlockRow = nonTitleRowIndex;
+			}
+		}
+
+		if (row == endProgramRow) {
+			if (rowText.isTitle) {
+				outEndBlockRow = nonTitleRowIndex;
+			}
+			else {
+				outEndBlockRow = nonTitleRowIndex;
+			}
+		}
+	}
+
+	if (outStartBlockRow < 0 || outEndBlockRow < outStartBlockRow) {
+		return false;
+	}
+	return true;
+}
+
 bool IDEFacade::ReplaceSelectedRowsText(const std::string& text, bool preCompile) const
 {
 	ClipboardTextRestoreGuard clipboardGuard;
@@ -1138,6 +1116,74 @@ bool IDEFacade::FindCurrentFunctionBlock(const PageCodeSnapshot& snapshot, Funct
 	return false;
 }
 
+bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, std::string* outDiagnostics) const
+{
+	outStartRow = -1;
+	outEndRow = -1;
+	if (outDiagnostics != nullptr) {
+		outDiagnostics->clear();
+	}
+	auto setDiag = [&](const std::string& message) {
+		if (outDiagnostics != nullptr) {
+			*outDiagnostics = message;
+		}
+	};
+
+	int caretRow = -1;
+	int caretCol = -1;
+	if (!GetCaretPosition(caretRow, caretCol)) {
+		setDiag("GetCaretPosition failed");
+		return false;
+	}
+	if (caretRow < 0) {
+		setDiag("invalid caret row");
+		return false;
+	}
+
+	int startRow = -1;
+	ProgramText startRowText = {};
+	for (int probeRow = caretRow, scan = 0; probeRow >= 0 && scan < kMaxRowScan; --probeRow, ++scan) {
+		ProgramText rowText = {};
+		if (!RunGetPrgText(probeRow, -1, rowText)) {
+			continue;
+		}
+		if (!rowText.isTitle && rowText.type == VT_SUB_NAME) {
+			startRow = probeRow;
+			startRowText = rowText;
+			break;
+		}
+	}
+	if (startRow < 0) {
+		setDiag("cannot locate VT_SUB_NAME above caretRow=" + std::to_string(caretRow));
+		return false;
+	}
+
+	// Compatibility fix: some hosts expose the visual ".子程序" header one row above VT_SUB_NAME.
+	if (!IsSubHeaderTextLine(startRowText.text) && startRow > 0) {
+		ProgramText prevRow = {};
+		if (RunGetPrgText(startRow - 1, -1, prevRow) && IsSubHeaderTextLine(prevRow.text)) {
+			--startRow;
+		}
+	}
+
+	int endRow = startRow;
+	for (int scan = 0; scan < kMaxRowScan; ++scan) {
+		ProgramText nextRow = {};
+		if (!RunGetPrgText(endRow + 1, -1, nextRow)) {
+			break;
+		}
+		if (!nextRow.isTitle && nextRow.type == VT_SUB_NAME) {
+			break;
+		}
+		++endRow;
+	}
+
+	outStartRow = startRow;
+	outEndRow = (std::max)(startRow, endRow);
+	setDiag("ok: caret-range row=" + std::to_string(outStartRow) + "-" + std::to_string(outEndRow));
+	return true;
+}
+
 bool IDEFacade::GetCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const
 {
 	return BuildCurrentPageSnapshot(outSnapshot);
@@ -1216,7 +1262,12 @@ bool IDEFacade::ReplaceRowRangeText(int startRow, int endRow, const std::string&
 	if (!MoveCaret(startRow, 0)) {
 		return false;
 	}
-	if (!SelectRowRange(startRow, endRow)) {
+	int blockStartRow = -1;
+	int blockEndRow = -1;
+	if (!TranslateProgramRowRangeToBlockRange(startRow, endRow, blockStartRow, blockEndRow)) {
+		return false;
+	}
+	if (!SelectRowRange(blockStartRow, blockEndRow)) {
 		return false;
 	}
 
@@ -1256,40 +1307,31 @@ bool IDEFacade::GetCurrentFunctionCode(std::string& outCode, std::string* outDia
 		}
 	};
 
-	int caretRow = -1;
-	int caretCol = -1;
-	if (!GetCaretPosition(caretRow, caretCol)) {
-		setDiag("GetCaretPosition failed");
-		return false;
-	}
-
-	std::string pageCode;
-	if (!GetCurrentPageCode(pageCode)) {
-		setDiag("GetCurrentPageCode failed");
-		return false;
-	}
-
-	const std::vector<std::string> lines = SplitLinesNormalizedLf(pageCode);
 	int startRow = -1;
 	int endRow = -1;
-	if (!LocateCurrentFunctionRowRangeByCaret(lines, caretRow, startRow, endRow)) {
-		setDiag("cannot locate sub header from current context, caretRow=" + std::to_string(caretRow));
+	std::string locateDiag;
+	if (!LocateCurrentFunctionRowRange(startRow, endRow, &locateDiag)) {
+		setDiag(locateDiag.empty() ? "LocateCurrentFunctionRowRange failed" : locateDiag);
 		return false;
 	}
 
 	std::string code;
 	for (int row = startRow; row <= endRow; ++row) {
-		code += lines[static_cast<size_t>(row)];
-		code += "\r\n";
+		ProgramText rowText = {};
+		if (!RunGetPrgText(row, -1, rowText)) {
+			setDiag("RunGetPrgText failed at row=" + std::to_string(row));
+			return false;
+		}
+		AppendLineWithCrLf(code, rowText.text);
 	}
 	TrimTrailingLineBreaks(code);
 	if (TrimAsciiSpace(code).empty()) {
-		setDiag("located function range but code is empty after trim");
+		setDiag("located function block but code is empty after trim");
 		return false;
 	}
 
 	outCode = std::move(code);
-	setDiag("ok: page-text caret-range path row=" + std::to_string(startRow) + "-" + std::to_string(endRow));
+	setDiag("ok: row=" + std::to_string(startRow) + "-" + std::to_string(endRow));
 	return true;
 }
 bool IDEFacade::ReplaceFunctionCodeByName(const std::string& functionName, const std::string& newFunctionCode, bool preCompile) const
@@ -1303,25 +1345,7 @@ bool IDEFacade::ReplaceFunctionCodeByName(const std::string& functionName, const
 	if (!FindFunctionBlockByName(snapshot, functionName, block)) {
 		return false;
 	}
-
-	int caretRow = -1;
-	int caretCol = -1;
-	GetCaretPosition(caretRow, caretCol);
-
-	if (!MoveCaret(block.startRow, 0)) {
-		return false;
-	}
-	if (!SelectRowRange(block.startRow, block.endRow)) {
-		return false;
-	}
-
-	const bool ok = ReplaceSelectedRowsText(newFunctionCode, preCompile);
-	RunBlkClearAllDef();
-
-	if (caretRow >= 0 && caretCol >= 0) {
-		MoveCaret(caretRow, caretCol);
-	}
-	return ok;
+	return ReplaceRowRangeText(block.startRow, block.endRow, newFunctionCode, preCompile);
 }
 
 bool IDEFacade::ReplaceCurrentFunctionCode(const std::string& newFunctionCode, bool preCompile) const
@@ -1330,21 +1354,9 @@ bool IDEFacade::ReplaceCurrentFunctionCode(const std::string& newFunctionCode, b
 		return false;
 	}
 
-	int caretRow = -1;
-	int caretCol = -1;
-	if (!GetCaretPosition(caretRow, caretCol)) {
-		return false;
-	}
-
-	std::string pageCode;
-	if (!GetCurrentPageCode(pageCode)) {
-		return false;
-	}
-
-	const std::vector<std::string> lines = SplitLinesNormalizedLf(pageCode);
 	int startRow = -1;
 	int endRow = -1;
-	if (!LocateCurrentFunctionRowRangeByCaret(lines, caretRow, startRow, endRow)) {
+	if (!LocateCurrentFunctionRowRange(startRow, endRow, nullptr)) {
 		return false;
 	}
 
@@ -1734,6 +1746,14 @@ bool IDEFacade::GetSelectedText(std::string& outText) const
 		return false;
 	}
 	return !TrimAsciiSpace(outText).empty();
+}
+
+bool IDEFacade::SetClipboardText(const std::string& text) const
+{
+	if (text.empty()) {
+		return false;
+	}
+	return SetClipboardTextForPaste(text);
 }
 
 bool IDEFacade::CopyCurrentFunctionCodeToClipboard() const
