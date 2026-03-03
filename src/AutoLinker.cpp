@@ -29,7 +29,6 @@
 #include <new>
 #include <process.h>
 #include <unordered_map>
-#include <unordered_set>
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -73,7 +72,6 @@ constexpr UINT IDM_AUTOLINKER_CTX_AI_OPTIMIZE_FUNC = 31101;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_COMMENT_FUNC = 31102;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_TRANSLATE_FUNC = 31103;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT = 31104;
-constexpr UINT IDM_AUTOLINKER_CTX_AI_COMPLETE_DECL = 31105;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_ADD_BY_PAGE = 31106;
 constexpr UINT IDM_AUTOLINKER_LINKER_BASE = 34000;
 constexpr UINT IDM_AUTOLINKER_LINKER_MAX = 34999;
@@ -85,7 +83,6 @@ std::atomic_bool g_aiTaskInProgress = false;
 enum class AIAsyncUiAction {
 	ReplaceCurrentFunction,
 	OutputTranslation,
-	InsertDeclarations,
 	InsertAtPageBottom
 };
 
@@ -500,7 +497,7 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 void RunAiTranslateSelectedTextTask()
 {
 	try {
-		OutputStringToELog("[AI]开始执行：AI翻译文本");
+		OutputStringToELog("[AI]开始执行：AI翻译选中文本");
 		if (!TryBeginAiTask()) {
 			return;
 		}
@@ -531,7 +528,7 @@ void RunAiTranslateSelectedTextTask()
 		request->taskKind = AITaskKind::TranslateText;
 		request->settings = settings;
 		request->inputText = input;
-		request->displayName = "AI翻译文本";
+		request->displayName = "AI翻译选中文本";
 
 		OutputStringToELog("[AI]正在请求模型（后台）...");
 		uintptr_t threadId = _beginthread(RunAiTaskWorker, 0, request.get());
@@ -550,128 +547,6 @@ void RunAiTranslateSelectedTextTask()
 		OutputStringToELog("[AI]发生未知异常");
 		EndAiTask();
 	}
-}
-
-struct DeclarationBlock {
-	bool isDllCommand = false;
-	std::string name;
-	std::vector<std::string> lines;
-};
-
-void CollectExistingDeclarationNames(
-	const std::string& pageCode,
-	std::unordered_set<std::string>& dllCommands,
-	std::unordered_set<std::string>& dataTypes)
-{
-	for (const std::string& rawLine : SplitLinesNormalized(pageCode)) {
-		const std::string line = TrimAsciiCopy(rawLine);
-		std::string name = ExtractNameAfterPrefix(line, ".DLL命令");
-		if (!name.empty()) {
-			dllCommands.insert(ToLowerAsciiCopy(name));
-			continue;
-		}
-		name = ExtractNameAfterPrefix(line, ".数据类型");
-		if (!name.empty()) {
-			dataTypes.insert(ToLowerAsciiCopy(name));
-		}
-	}
-}
-
-std::vector<DeclarationBlock> ParseGeneratedDeclarationBlocks(const std::string& generatedText)
-{
-	std::vector<DeclarationBlock> blocks;
-	DeclarationBlock current = {};
-	bool inBlock = false;
-
-	auto flushCurrent = [&]() {
-		if (inBlock && !current.name.empty() && !current.lines.empty()) {
-			blocks.push_back(current);
-		}
-		current = {};
-		inBlock = false;
-	};
-
-	for (const std::string& rawLine : SplitLinesNormalized(generatedText)) {
-		const std::string line = TrimAsciiCopy(rawLine);
-		if (line.empty()) {
-			if (inBlock) {
-				current.lines.push_back("");
-			}
-			continue;
-		}
-
-		if (StartsWithAscii(line, ".版本")) {
-			continue;
-		}
-
-		const std::string dllName = ExtractNameAfterPrefix(line, ".DLL命令");
-		if (!dllName.empty()) {
-			flushCurrent();
-			inBlock = true;
-			current.isDllCommand = true;
-			current.name = dllName;
-			current.lines.push_back(line);
-			continue;
-		}
-
-		const std::string typeName = ExtractNameAfterPrefix(line, ".数据类型");
-		if (!typeName.empty()) {
-			flushCurrent();
-			inBlock = true;
-			current.isDllCommand = false;
-			current.name = typeName;
-			current.lines.push_back(line);
-			continue;
-		}
-
-		if (inBlock) {
-			current.lines.push_back(line);
-		}
-	}
-
-	flushCurrent();
-	return blocks;
-}
-
-std::string BuildUniqueDeclarationInsertText(const std::string& currentPageCode, const std::string& generatedDeclText, int& addedCount, int& skippedCount)
-{
-	addedCount = 0;
-	skippedCount = 0;
-
-	std::unordered_set<std::string> existingDlls;
-	std::unordered_set<std::string> existingTypes;
-	CollectExistingDeclarationNames(currentPageCode, existingDlls, existingTypes);
-
-	std::vector<DeclarationBlock> generatedBlocks = ParseGeneratedDeclarationBlocks(generatedDeclText);
-	std::vector<std::string> outputLines;
-
-	for (const DeclarationBlock& block : generatedBlocks) {
-		const std::string key = ToLowerAsciiCopy(block.name);
-		bool duplicated = false;
-		if (block.isDllCommand) {
-			duplicated = existingDlls.contains(key);
-			if (!duplicated) {
-				existingDlls.insert(key);
-			}
-		}
-		else {
-			duplicated = existingTypes.contains(key);
-			if (!duplicated) {
-				existingTypes.insert(key);
-			}
-		}
-
-		if (duplicated) {
-			++skippedCount;
-			continue;
-		}
-
-		++addedCount;
-		outputLines.insert(outputLines.end(), block.lines.begin(), block.lines.end());
-		outputLines.push_back("");
-	}
-
-	return JoinLinesCrLf(outputLines);
 }
 
 void HandleAiTaskCompletionMessage(LPARAM lParam)
@@ -728,40 +603,6 @@ void HandleAiTaskCompletionMessage(LPARAM lParam)
 				return;
 			}
 			OutputMultiline("[AI]翻译结果：", translated);
-			return;
-		}
-		case AIAsyncUiAction::InsertDeclarations: {
-			std::string generatedDecl = AIService::NormalizeModelOutputToCode(result->taskResult.content);
-			generatedDecl = AIService::Trim(generatedDecl);
-			if (generatedDecl.empty()) {
-				OutputStringToELog("[AI]模型未返回声明代码");
-				return;
-			}
-
-			int addedCount = 0;
-			int skippedCount = 0;
-			std::string insertText = BuildUniqueDeclarationInsertText(result->pageCodeSnapshot, generatedDecl, addedCount, skippedCount);
-			insertText = AIService::Trim(insertText);
-			if (insertText.empty() || addedCount <= 0) {
-				OutputStringToELog("[AI]未发现可新增声明（可能均已存在）");
-				return;
-			}
-			insertText = NormalizeCodeForEIDE(insertText);
-
-			if (!ShowAIPreviewDialog(g_hwnd, "AI补全API声明 - 结果预览", insertText, "插入")) {
-				OutputStringToELog("[AI]用户取消插入");
-				return;
-			}
-			std::unique_ptr<AIApplyRequest> request(new (std::nothrow) AIApplyRequest());
-			if (!request) {
-				OutputStringToELog("[AI]内存不足，无法执行插入");
-				return;
-			}
-			request->action = AIAsyncUiAction::InsertDeclarations;
-			request->text = insertText;
-			request->addedCount = addedCount;
-			request->skippedCount = skippedCount;
-			PostAiApplyRequest(request.release());
 			return;
 		}
 		case AIAsyncUiAction::InsertAtPageBottom: {
@@ -829,14 +670,6 @@ void HandleAiApplyMessage(LPARAM lParam)
 			return;
 		}
 
-		case AIAsyncUiAction::InsertDeclarations:
-			if (!ide.InsertCodeAtPageTop(request->text, kAiApplyPreCompile)) {
-				OutputStringToELog("[AI]插入声明失败");
-				return;
-			}
-			OutputStringToELog(std::format("[AI]插入完成：新增 {} 项，跳过 {} 项", request->addedCount, request->skippedCount));
-			return;
-
 		case AIAsyncUiAction::InsertAtPageBottom:
 			if (g_hwnd != NULL && IsWindow(g_hwnd)) {
 				SetForegroundWindow(g_hwnd);
@@ -857,75 +690,6 @@ void HandleAiApplyMessage(LPARAM lParam)
 	}
 	catch (...) {
 		OutputStringToELog("[AI]执行结果发生未知异常");
-	}
-}
-
-void RunAiCompleteDeclarationsTask()
-{
-	try {
-		OutputStringToELog("[AI]开始执行：AI补全API声明");
-		if (!TryBeginAiTask()) {
-			return;
-		}
-		IDEFacade& ide = IDEFacade::Instance();
-
-		std::string functionCode;
-		std::string functionDiag;
-		if (!ide.GetCurrentFunctionCode(functionCode, &functionDiag)) {
-			OutputStringToELog("[AI]无法获取当前函数代码");
-			if (!functionDiag.empty()) {
-				OutputStringToELog("[AI]函数代码获取诊断：" + functionDiag);
-			}
-			EndAiTask();
-			return;
-		}
-
-		std::string currentPageCode;
-		if (!ide.GetCurrentPageCode(currentPageCode)) {
-			OutputStringToELog("[AI]无法获取当前页代码");
-			EndAiTask();
-			return;
-		}
-
-		AISettings settings = {};
-		if (!EnsureAISettingsReady(settings)) {
-			EndAiTask();
-			return;
-		}
-
-		const std::string userInput =
-			"请根据以下易语言函数，补全缺失的 Windows API 声明和必要结构体声明。\n"
-			"只返回 .DLL命令/.参数/.数据类型/.成员 声明代码，不返回函数实现。\n"
-			"函数代码：\n```e\n" + functionCode + "\n```";
-		std::unique_ptr<AIAsyncRequest> request(new (std::nothrow) AIAsyncRequest());
-		if (!request) {
-			OutputStringToELog("[AI]内存不足，无法发起任务");
-			EndAiTask();
-			return;
-		}
-		request->action = AIAsyncUiAction::InsertDeclarations;
-		request->taskKind = AITaskKind::CompleteApiDeclarations;
-		request->settings = settings;
-		request->inputText = userInput;
-		request->displayName = "AI补全API声明";
-		request->pageCodeSnapshot = currentPageCode;
-
-		OutputStringToELog("[AI]正在请求模型（后台）...");
-		uintptr_t threadId = _beginthread(RunAiTaskWorker, 0, request.get());
-		if (threadId == static_cast<uintptr_t>(-1L)) {
-			OutputStringToELog("[AI]启动后台任务失败");
-			EndAiTask();
-			return;
-		}
-		request.release();
-	}
-	catch (const std::exception& ex) {
-		OutputStringToELog(std::string("[AI]发生异常：") + ex.what());
-		EndAiTask();
-	}
-	catch (...) {
-		OutputStringToELog("[AI]发生未知异常");
-		EndAiTask();
 	}
 }
 
@@ -1031,6 +795,9 @@ void RegisterIDEContextMenu()
 	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_COPY_FUNC, "复制当前函数代码", []() {
 		TryCopyCurrentFunctionCode();
 	});
+	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT, "AI翻译选中文本", []() {
+		RunAiTranslateSelectedTextTask();
+	});
 	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_OPTIMIZE_FUNC, "AI优化函数", []() {
 		RunAiFunctionReplaceTask(AITaskKind::OptimizeFunction);
 	});
@@ -1039,12 +806,6 @@ void RegisterIDEContextMenu()
 	});
 	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_TRANSLATE_FUNC, "AI翻译当前函数+变量名", []() {
 		RunAiFunctionReplaceTask(AITaskKind::TranslateFunctionAndVariables);
-	});
-	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT, "AI翻译文本", []() {
-		RunAiTranslateSelectedTextTask();
-	});
-	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_COMPLETE_DECL, "AI为当前函数补全API声明", []() {
-		RunAiCompleteDeclarationsTask();
 	});
 	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_ADD_BY_PAGE, "AI按当前页类型添加代码", []() {
 		RunAiAddByCurrentPageTypeTask();
@@ -1301,7 +1062,6 @@ void HandleInitMenuPopup(HMENU hMenu)
 		IDM_AUTOLINKER_CTX_AI_COMMENT_FUNC,
 		IDM_AUTOLINKER_CTX_AI_TRANSLATE_FUNC,
 		IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT,
-		IDM_AUTOLINKER_CTX_AI_COMPLETE_DECL,
 		IDM_AUTOLINKER_CTX_AI_ADD_BY_PAGE
 	};
 	const bool hasSelectedText = IDEFacade::Instance().IsFunctionEnabled(FN_EDIT_CUT);

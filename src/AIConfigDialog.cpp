@@ -2,6 +2,7 @@
 
 #include <array>
 #include <CommCtrl.h>
+#include <Shellapi.h>
 
 #pragma comment(lib, "comctl32.lib")
 #if defined _M_IX86
@@ -17,6 +18,8 @@ constexpr int IDC_CFG_BASE_URL = 1001;
 constexpr int IDC_CFG_API_KEY = 1002;
 constexpr int IDC_CFG_MODEL = 1003;
 constexpr int IDC_CFG_EXTRA_PROMPT = 1004;
+constexpr int IDC_CFG_GET_KEY_LINK = 1005;
+constexpr int IDC_CFG_FILL_RIGHT_CODES = 1006;
 constexpr int IDC_CFG_SAVE = 1;
 constexpr int IDC_CFG_CANCEL = 2;
 
@@ -27,6 +30,63 @@ constexpr int IDC_PREVIEW_CANCEL = 2;
 constexpr int IDC_INPUT_EDIT = 1201;
 constexpr int IDC_INPUT_OK = 1;
 constexpr int IDC_INPUT_CANCEL = 2;
+
+HMODULE GetCurrentModuleHandle()
+{
+	HMODULE module = nullptr;
+	GetModuleHandleExW(
+		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		reinterpret_cast<LPCWSTR>(&GetCurrentModuleHandle),
+		&module);
+	return module;
+}
+
+class ComCtl6ActivationScope {
+public:
+	ComCtl6ActivationScope()
+	{
+		const HMODULE module = GetCurrentModuleHandle();
+		if (module == nullptr) {
+			return;
+		}
+
+		ACTCTXW act = {};
+		act.cbSize = sizeof(act);
+		act.dwFlags = ACTCTX_FLAG_HMODULE_VALID | ACTCTX_FLAG_RESOURCE_NAME_VALID;
+		act.hModule = module;
+		act.lpResourceName = MAKEINTRESOURCEW(2);
+
+		m_actCtx = CreateActCtxW(&act);
+		if (m_actCtx == INVALID_HANDLE_VALUE) {
+			m_actCtx = nullptr;
+			return;
+		}
+
+		ULONG_PTR localCookie = 0;
+		if (ActivateActCtx(m_actCtx, &localCookie) != FALSE) {
+			m_cookie = localCookie;
+			m_active = true;
+		}
+	}
+
+	~ComCtl6ActivationScope()
+	{
+		if (m_active) {
+			DeactivateActCtx(0, m_cookie);
+		}
+		if (m_actCtx != nullptr && m_actCtx != INVALID_HANDLE_VALUE) {
+			ReleaseActCtx(m_actCtx);
+		}
+	}
+
+	ComCtl6ActivationScope(const ComCtl6ActivationScope&) = delete;
+	ComCtl6ActivationScope& operator=(const ComCtl6ActivationScope&) = delete;
+
+private:
+	HANDLE m_actCtx = nullptr;
+	ULONG_PTR m_cookie = 0;
+	bool m_active = false;
+};
 
 HFONT GetDialogFont()
 {
@@ -128,11 +188,32 @@ void SetDefaultFont(HWND hWnd)
 struct AIConfigDialogContext {
 	AISettings* settings = nullptr;
 	bool accepted = false;
+	bool useNativeLink = false;
 	HWND hBaseUrl = nullptr;
 	HWND hApiKey = nullptr;
 	HWND hModel = nullptr;
 	HWND hExtraPrompt = nullptr;
+	HWND hGetKeyLink = nullptr;
 };
+
+HFONT GetLinkFont()
+{
+	static HFONT s_linkFont = nullptr;
+	if (s_linkFont != nullptr) {
+		return s_linkFont;
+	}
+
+	LOGFONTA lf = {};
+	HFONT base = GetDialogFont();
+	if (base != nullptr && GetObjectA(base, sizeof(lf), &lf) == sizeof(lf)) {
+		lf.lfUnderline = TRUE;
+		s_linkFont = CreateFontIndirectA(&lf);
+	}
+	if (s_linkFont == nullptr) {
+		s_linkFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+	}
+	return s_linkFont;
+}
 
 LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -168,21 +249,47 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
 			120, 82, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_MODEL), nullptr, nullptr);
 
-		HWND hExtraPromptLabel = CreateWindowA("STATIC", "System Prompt Extra:", WS_CHILD | WS_VISIBLE,
-			16, 118, 140, 20, hWnd, nullptr, nullptr, nullptr);
+		const std::wstring getKeyLinkText =
+			L"<a href=\"https://right.codes/register?aff=3dc87885\">从转发平台获取Key</a>";
+		HWND hGetKeyLink = CreateWindowExW(0, L"SysLink",
+			getKeyLinkText.c_str(),
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+			120, 112, 240, 22, hWnd, reinterpret_cast<HMENU>(IDC_CFG_GET_KEY_LINK), nullptr, nullptr);
+		if (hGetKeyLink != nullptr) {
+			ctx->useNativeLink = true;
+			ctx->hGetKeyLink = hGetKeyLink;
+		}
+		else {
+			ctx->useNativeLink = false;
+			ctx->hGetKeyLink = CreateWindowW(
+				L"STATIC",
+				L"\u4ECE\u8F6C\u53D1\u5E73\u53F0\u83B7\u53D6Key",
+				WS_CHILD | WS_VISIBLE | WS_TABSTOP | SS_NOTIFY,
+				120, 112, 240, 22, hWnd, reinterpret_cast<HMENU>(IDC_CFG_GET_KEY_LINK), nullptr, nullptr);
+			hGetKeyLink = ctx->hGetKeyLink;
+		}
+
+		HWND hFillRightCodes = CreateWindowW(L"BUTTON", L"\u4E00\u952E\u586B\u5165 right.codes",
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+			430, 108, 190, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_FILL_RIGHT_CODES), nullptr, nullptr);
+
+		HWND hExtraPromptLabel = CreateWindowA("STATIC", "System Prompt:", WS_CHILD | WS_VISIBLE,
+			16, 148, 140, 20, hWnd, nullptr, nullptr, nullptr);
 		ctx->hExtraPrompt = CreateWindowExA(0, "EDIT", ctx->settings->extraSystemPrompt.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
-			120, 118, 500, 180, hWnd, reinterpret_cast<HMENU>(IDC_CFG_EXTRA_PROMPT), nullptr, nullptr);
+			120, 148, 500, 150, hWnd, reinterpret_cast<HMENU>(IDC_CFG_EXTRA_PROMPT), nullptr, nullptr);
 
-		HWND hSave = CreateWindowA("BUTTON", "Save and Continue", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+		HWND hSave = CreateWindowW(L"BUTTON", L"\u4FDD\u5B58\u5E76\u7EE7\u7EED", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
 			420, 314, 100, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_SAVE), nullptr, nullptr);
-		HWND hCancel = CreateWindowA("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+		HWND hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
 			530, 314, 90, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_CANCEL), nullptr, nullptr);
 
-		std::array<HWND, 10> controls = {
+		std::array<HWND, 12> controls = {
 			hBaseUrlLabel,
 			hApiKeyLabel,
 			hModelLabel,
+			ctx->hGetKeyLink,
+			hFillRightCodes,
 			hExtraPromptLabel,
 			ctx->hBaseUrl,
 			ctx->hApiKey,
@@ -193,6 +300,9 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		};
 		for (HWND hControl : controls) {
 			SetDefaultFont(hControl);
+		}
+		if (ctx->hGetKeyLink != nullptr && !ctx->useNativeLink) {
+			SendMessageA(ctx->hGetKeyLink, WM_SETFONT, reinterpret_cast<WPARAM>(GetLinkFont()), TRUE);
 		}
 		SetFocus(ctx->hBaseUrl);
 		return 0;
@@ -222,12 +332,43 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			return 0;
 		}
 
+		if (id == IDC_CFG_FILL_RIGHT_CODES) {
+			SetWindowTextA(ctx->hBaseUrl, "https://right.codes/codex");
+			SetWindowTextA(ctx->hModel, "gpt-5.2-medium");
+			SetFocus(ctx->hApiKey);
+			return 0;
+		}
+		if (id == IDC_CFG_GET_KEY_LINK && HIWORD(wParam) == STN_CLICKED) {
+			ShellExecuteA(hWnd, "open", "https://right.codes/register?aff=3dc87885", nullptr, nullptr, SW_SHOWNORMAL);
+			return 0;
+		}
+
 		if (id == IDC_CFG_CANCEL) {
 			ctx->accepted = false;
 			DestroyWindow(hWnd);
 			return 0;
 		}
 		return 0;
+	}
+
+	case WM_NOTIFY: {
+		const NMHDR* hdr = reinterpret_cast<const NMHDR*>(lParam);
+		if (hdr != nullptr && ctx != nullptr && ctx->useNativeLink && hdr->idFrom == IDC_CFG_GET_KEY_LINK &&
+			(hdr->code == NM_CLICK || hdr->code == NM_RETURN)) {
+			ShellExecuteA(hWnd, "open", "https://right.codes/register?aff=3dc87885", nullptr, nullptr, SW_SHOWNORMAL);
+			return 0;
+		}
+		break;
+	}
+
+	case WM_CTLCOLORSTATIC: {
+		if (ctx != nullptr && !ctx->useNativeLink && reinterpret_cast<HWND>(lParam) == ctx->hGetKeyLink) {
+			HDC hdc = reinterpret_cast<HDC>(wParam);
+			SetTextColor(hdc, RGB(0, 102, 204));
+			SetBkMode(hdc, TRANSPARENT);
+			return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
+		}
+		break;
 	}
 
 	case WM_CLOSE:
@@ -282,7 +423,7 @@ LRESULT CALLBACK AIPreviewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 590, 474, 84, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_PREVIEW_OK), nullptr, nullptr);
 
-		HWND hCancel = CreateWindowA("BUTTON", "Cancel",
+		HWND hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 682, 474, 84, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_PREVIEW_CANCEL), nullptr, nullptr);
 
@@ -342,10 +483,10 @@ LRESULT CALLBACK AIInputDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
 			14, 44, 612, 200, hWnd, reinterpret_cast<HMENU>(IDC_INPUT_EDIT), nullptr, nullptr);
 
-		HWND hOk = CreateWindowA("BUTTON", "OK",
+		HWND hOk = CreateWindowW(L"BUTTON", L"\u786E\u5B9A",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 448, 254, 84, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_INPUT_OK), nullptr, nullptr);
-		HWND hCancel = CreateWindowA("BUTTON", "Cancel",
+		HWND hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 542, 254, 84, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_INPUT_CANCEL), nullptr, nullptr);
 
@@ -420,9 +561,10 @@ bool RunModalWindow(HWND owner, HWND hDialog)
 
 bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 {
+	ComCtl6ActivationScope themeScope;
 	INITCOMMONCONTROLSEX icex = {};
 	icex.dwSize = sizeof(icex);
-	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES;
+	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES | ICC_LINK_CLASS;
 	InitCommonControlsEx(&icex);
 
 	WNDCLASSEXA wc = {};
@@ -458,9 +600,10 @@ bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 
 bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string& content, const std::string& confirmText)
 {
+	ComCtl6ActivationScope themeScope;
 	INITCOMMONCONTROLSEX icex = {};
 	icex.dwSize = sizeof(icex);
-	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES;
+	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES | ICC_LINK_CLASS;
 	InitCommonControlsEx(&icex);
 
 	WNDCLASSEXA wc = {};
@@ -475,7 +618,7 @@ bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string
 	AIPreviewDialogContext ctx = {};
 	ctx.title = title;
 	ctx.content = content;
-	ctx.confirmText = confirmText.empty() ? "OK" : confirmText;
+	ctx.confirmText = confirmText.empty() ? "\u786E\u5B9A" : confirmText;
 
 	HWND hDialog = CreateWindowExA(
 		WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
@@ -498,9 +641,10 @@ bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string
 
 bool ShowAITextInputDialog(HWND owner, const std::string& title, const std::string& hint, std::string& ioText)
 {
+	ComCtl6ActivationScope themeScope;
 	INITCOMMONCONTROLSEX icex = {};
 	icex.dwSize = sizeof(icex);
-	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES;
+	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES | ICC_LINK_CLASS;
 	InitCommonControlsEx(&icex);
 
 	WNDCLASSEXA wc = {};

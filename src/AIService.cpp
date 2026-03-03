@@ -211,19 +211,17 @@ std::string AIService::BuildTaskDisplayName(AITaskKind kind)
 	switch (kind)
 	{
 	case AITaskKind::OptimizeFunction:
-		return "AI Optimize Function";
+		return "AI优化函数";
 	case AITaskKind::AddCommentsToFunction:
-		return "AI Add Function Comments";
+		return "AI为当前函数添加注释";
 	case AITaskKind::TranslateFunctionAndVariables:
-		return "AI Translate Function And Variables";
+		return "AI翻译当前函数+变量名";
 	case AITaskKind::TranslateText:
-		return "AI Translate Text";
-	case AITaskKind::CompleteApiDeclarations:
-		return "AI Complete API Declarations";
+		return "AI翻译选中文本";
 	case AITaskKind::AddByCurrentPageType:
-		return "AI Add By Current Page Type";
+		return "AI按当前页类型添加代码";
 	default:
-		return "AI Task";
+		return "AI任务";
 	}
 }
 
@@ -469,23 +467,6 @@ EnumWindows (到整数 (&枚举窗口过程), 0)
 		break;
 	case AITaskKind::TranslateText:
 		prompt += "任务：翻译用户提供的文本。只返回翻译后的纯文本，不要附加解释。";
-		break;
-	case AITaskKind::CompleteApiDeclarations:
-		prompt +=
-			"任务：根据给定函数，补全可能缺失的 .DLL命令 / .参数 / .数据类型 / .成员 声明。\n"
-			"只返回声明，不要返回函数实现。\n"
-			"声明示例（DLL结构声明）：\n"
-			".版本 2\n"
-			".DLL命令 GetDC, 整数型, \"user32\", \"GetDC\", 公开\n"
-			".参数 hwnd, 整数型\n\n"
-			"声明示例（结构体声明）：\n"
-			".版本 2\n"
-			".数据类型 BITMAPFILEHEADER\n"
-			".成员 bfType, 短整数型\n"
-			".成员 bfSize, 整数型\n"
-			".成员 bfReserved1, 短整数型\n"
-			".成员 bfReserved2, 短整数型\n"
-			".成员 bfOffBits, 整数型";
 		break;
 	case AITaskKind::AddByCurrentPageType:
 		prompt +=

@@ -9,7 +9,6 @@ enum class AITaskKind {
 	AddCommentsToFunction,
 	TranslateFunctionAndVariables,
 	TranslateText,
-	CompleteApiDeclarations,
 	AddByCurrentPageType
 };
 

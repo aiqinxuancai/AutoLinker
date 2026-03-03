@@ -2000,6 +2000,9 @@ bool IDEFacade::HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 			flags = MF_STRING | MF_GRAYED;
 		}
 		AppendMenuA(autoLinkerMenu, flags, item.commandId, item.text.c_str());
+		if (item.commandId == kAiTranslateTextCommandId) {
+			AppendMenuA(autoLinkerMenu, MF_SEPARATOR, 0, nullptr);
+		}
 	}
 
 	const int menuCount = GetMenuItemCount(popupMenu);
