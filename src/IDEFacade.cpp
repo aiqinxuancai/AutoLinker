@@ -557,6 +557,80 @@ bool LocateCurrentFunctionRowRangeByCaret(
 	return true;
 }
 
+bool IsDataTypeHeaderTextLine(const std::string& rawText)
+{
+	const std::string line = TrimAsciiSpaceCopy(rawText);
+	if (line.empty() || line[0] != '.') {
+		return false;
+	}
+
+	std::string lower = line;
+	std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+		return static_cast<char>(std::tolower(ch));
+	});
+	if (lower.rfind(".datatype", 0) == 0) {
+		return true;
+	}
+
+	const std::wstring wide = MultiByteSmartToWide(line);
+	if (wide.empty()) {
+		return false;
+	}
+	return wide.rfind(L".数据类型", 0) == 0;
+}
+
+bool IsDllCommandHeaderTextLine(const std::string& rawText)
+{
+	const std::string line = TrimAsciiSpaceCopy(rawText);
+	if (line.empty() || line[0] != '.') {
+		return false;
+	}
+
+	std::string lower = line;
+	std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+		return static_cast<char>(std::tolower(ch));
+	});
+	if (lower.rfind(".dll", 0) == 0 || lower.rfind(".dllcommand", 0) == 0) {
+		return true;
+	}
+
+	const std::wstring wide = MultiByteSmartToWide(line);
+	if (wide.empty()) {
+		return false;
+	}
+	return wide.rfind(L".DLL命令", 0) == 0 || wide.rfind(L".dll命令", 0) == 0;
+}
+
+bool LocateLastBlockRowRangeByHeader(
+	const std::vector<std::string>& lines,
+	const std::function<bool(const std::string&)>& isHeader,
+	int& outStartRow,
+	int& outEndRow)
+{
+	outStartRow = -1;
+	outEndRow = -1;
+	if (lines.empty()) {
+		return false;
+	}
+
+	int effectiveLast = static_cast<int>(lines.size()) - 1;
+	while (effectiveLast >= 0 && TrimAsciiSpaceCopy(lines[static_cast<size_t>(effectiveLast)]).empty()) {
+		--effectiveLast;
+	}
+	if (effectiveLast < 0) {
+		return false;
+	}
+
+	for (int row = effectiveLast; row >= 0; --row) {
+		if (isHeader(lines[static_cast<size_t>(row)])) {
+			outStartRow = row;
+			outEndRow = effectiveLast;
+			return true;
+		}
+	}
+	return false;
+}
+
 void AppendLineWithCrLf(std::string& target, const std::string& line)
 {
 	target += line;
@@ -1427,6 +1501,69 @@ bool IDEFacade::InsertCodeAtPageTop(const std::string& codeToInsert, bool preCom
 		inserted = RunInsertText(finalInsert, false);
 	}
 
+	if (!inserted) {
+		restoreCaret();
+		return false;
+	}
+
+	if (preCompile) {
+		bool compileOk = false;
+		if (!RunPreCompile(compileOk) || !compileOk) {
+			restoreCaret();
+			return false;
+		}
+	}
+
+	restoreCaret();
+	return true;
+}
+
+bool IDEFacade::InsertCodeAtPageBottom(const std::string& codeToInsert, bool preCompile) const
+{
+	if (TrimAsciiSpace(codeToInsert).empty()) {
+		return false;
+	}
+
+	int caretRow = -1;
+	int caretCol = -1;
+	GetCaretPosition(caretRow, caretCol);
+	const auto restoreCaret = [this, caretRow, caretCol]() {
+		if (caretRow >= 0 && caretCol >= 0) {
+			MoveCaret(caretRow, caretCol);
+		}
+	};
+
+	const std::string finalInsert = EnsureTrailingLineBreak(codeToInsert);
+	int lastRow = -1;
+	int lastCol = -1;
+	if (RunMoveBottom() && GetCaretPosition(lastRow, lastCol) && lastRow < 0) {
+		lastRow = -1;
+	}
+	if (lastRow < 0) {
+		ProgramText probe = {};
+		const int seedRow = (caretRow >= 0) ? caretRow : 0;
+		if (RunGetPrgText(seedRow, -1, probe)) {
+			lastRow = seedRow;
+			while (RunGetPrgText(lastRow + 1, -1, probe)) {
+				++lastRow;
+			}
+		}
+	}
+
+	if (lastRow >= 0) {
+		ProgramText lastRowText = {};
+		if (RunGetPrgText(lastRow, -1, lastRowText)) {
+			const std::string replacePayload = EnsureTrailingLineBreak(lastRowText.text) + finalInsert;
+			const bool ok = ReplaceRowRangeText(lastRow, lastRow, replacePayload, preCompile);
+			restoreCaret();
+			return ok;
+		}
+	}
+
+	bool inserted = false;
+	if (MoveCaret(0, 0)) {
+		inserted = RunInsertText(finalInsert, false);
+	}
 	if (!inserted) {
 		restoreCaret();
 		return false;

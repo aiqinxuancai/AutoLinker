@@ -220,6 +220,8 @@ std::string AIService::BuildTaskDisplayName(AITaskKind kind)
 		return "AI Translate Text";
 	case AITaskKind::CompleteApiDeclarations:
 		return "AI Complete API Declarations";
+	case AITaskKind::AddByCurrentPageType:
+		return "AI Add By Current Page Type";
 	default:
 		return "AI Task";
 	}
@@ -484,6 +486,16 @@ EnumWindows (到整数 (&枚举窗口过程), 0)
 			".成员 bfReserved1, 短整数型\n"
 			".成员 bfReserved2, 短整数型\n"
 			".成员 bfOffBits, 整数型";
+		break;
+	case AITaskKind::AddByCurrentPageType:
+		prompt +=
+			"任务：根据“当前页类型 + 用户需求 + 当前页完整代码”，生成“仅新增”的代码片段。\n"
+			"严格要求：\n"
+			"1) 只返回要新增的代码，禁止返回整页代码。\n"
+			"2) 不要输出解释、不要输出 Markdown。\n"
+			"3) 不要输出 .版本 行。\n"
+			"4) 避免与当前页已有定义重复命名。\n"
+			"5) 输出内容需可直接粘贴到当前页底部。\n";
 		break;
 	default:
 		break;

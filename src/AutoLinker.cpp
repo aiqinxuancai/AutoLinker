@@ -74,6 +74,7 @@ constexpr UINT IDM_AUTOLINKER_CTX_AI_COMMENT_FUNC = 31102;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_TRANSLATE_FUNC = 31103;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT = 31104;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_COMPLETE_DECL = 31105;
+constexpr UINT IDM_AUTOLINKER_CTX_AI_ADD_BY_PAGE = 31106;
 constexpr UINT IDM_AUTOLINKER_LINKER_BASE = 34000;
 constexpr UINT IDM_AUTOLINKER_LINKER_MAX = 34999;
 constexpr UINT WM_AUTOLINKER_AI_TASK_DONE = WM_USER + 1001;
@@ -84,7 +85,8 @@ std::atomic_bool g_aiTaskInProgress = false;
 enum class AIAsyncUiAction {
 	ReplaceCurrentFunction,
 	OutputTranslation,
-	InsertDeclarations
+	InsertDeclarations,
+	InsertAtPageBottom
 };
 
 struct AIAsyncRequest {
@@ -266,6 +268,44 @@ bool IsLikelyChineseText(const std::string& text)
 		}
 	}
 	return false;
+}
+
+std::string DescribeActivePageType(IDEFacade::ActiveWindowType type)
+{
+	switch (type)
+	{
+	case IDEFacade::ActiveWindowType::Module:
+		return "程序集/类页面";
+	case IDEFacade::ActiveWindowType::UserDataType:
+		return "数据类型页面";
+	case IDEFacade::ActiveWindowType::DllCommand:
+		return "DLL命令声明页面";
+	case IDEFacade::ActiveWindowType::GlobalVar:
+		return "全局变量页面";
+	case IDEFacade::ActiveWindowType::ConstResource:
+		return "常量资源页面";
+	case IDEFacade::ActiveWindowType::PictureResource:
+		return "图片资源页面";
+	case IDEFacade::ActiveWindowType::SoundResource:
+		return "声音资源页面";
+	default:
+		return "未知/通用代码页面";
+	}
+}
+
+std::string BuildAddByPageTypeOutputRule(IDEFacade::ActiveWindowType type)
+{
+	switch (type)
+	{
+	case IDEFacade::ActiveWindowType::Module:
+		return "优先新增 .子程序（包含必要 .参数/.局部变量/实现语句），避免重复已有子程序名。";
+	case IDEFacade::ActiveWindowType::DllCommand:
+		return "优先新增 .DLL命令 + .参数 声明，避免重复已有命令名。";
+	case IDEFacade::ActiveWindowType::UserDataType:
+		return "优先新增 .数据类型 / .成员 声明，避免重复已有类型名。";
+	default:
+		return "根据用户需求新增最合适的易语言代码片段，保持可直接追加到页底。";
+	}
 }
 
 void OutputMultiline(const std::string& title, const std::string& body)
@@ -724,6 +764,30 @@ void HandleAiTaskCompletionMessage(LPARAM lParam)
 			PostAiApplyRequest(request.release());
 			return;
 		}
+		case AIAsyncUiAction::InsertAtPageBottom: {
+			std::string generatedText = AIService::NormalizeModelOutputToCode(result->taskResult.content);
+			generatedText = AIService::Trim(generatedText);
+			if (generatedText.empty()) {
+				OutputStringToELog("[AI]模型未返回可新增内容");
+				return;
+			}
+			generatedText = NormalizeCodeForEIDE(generatedText);
+
+			if (!ShowAIPreviewDialog(g_hwnd, "AI按页类型添加代码 - 结果预览", generatedText, "插入")) {
+				OutputStringToELog("[AI]用户取消插入");
+				return;
+			}
+
+			std::unique_ptr<AIApplyRequest> request(new (std::nothrow) AIApplyRequest());
+			if (!request) {
+				OutputStringToELog("[AI]内存不足，无法执行插入");
+				return;
+			}
+			request->action = AIAsyncUiAction::InsertAtPageBottom;
+			request->text = generatedText;
+			PostAiApplyRequest(request.release());
+			return;
+		}
 		default:
 			OutputStringToELog("[AI]未知任务结果类型");
 			return;
@@ -771,6 +835,17 @@ void HandleAiApplyMessage(LPARAM lParam)
 				return;
 			}
 			OutputStringToELog(std::format("[AI]插入完成：新增 {} 项，跳过 {} 项", request->addedCount, request->skippedCount));
+			return;
+
+		case AIAsyncUiAction::InsertAtPageBottom:
+			if (g_hwnd != NULL && IsWindow(g_hwnd)) {
+				SetForegroundWindow(g_hwnd);
+			}
+			if (!ide.InsertCodeAtPageBottom(request->text, kAiApplyPreCompile)) {
+				OutputStringToELog("[AI]追加到页底失败");
+				return;
+			}
+			OutputStringToELog("[AI]追加到页底完成");
 			return;
 
 		default:
@@ -854,6 +929,88 @@ void RunAiCompleteDeclarationsTask()
 	}
 }
 
+void RunAiAddByCurrentPageTypeTask()
+{
+	try {
+		OutputStringToELog("[AI]开始执行：AI按当前页类型添加代码");
+		if (!TryBeginAiTask()) {
+			return;
+		}
+
+		IDEFacade& ide = IDEFacade::Instance();
+		std::string currentPageCode;
+		if (!ide.GetCurrentPageCode(currentPageCode)) {
+			OutputStringToELog("[AI]无法获取当前页代码");
+			EndAiTask();
+			return;
+		}
+
+		const IDEFacade::ActiveWindowType pageType = ide.GetActiveWindowType();
+		const std::string pageTypeText = DescribeActivePageType(pageType);
+		const std::string outputRule = BuildAddByPageTypeOutputRule(pageType);
+
+		std::string requirement;
+		if (!ShowAITextInputDialog(
+			g_hwnd,
+			"AI按当前页类型添加代码",
+			"请输入添加需求（例如：数量、命名风格、用途、限制）：",
+			requirement)) {
+			OutputStringToELog("[AI]已取消输入添加需求");
+			EndAiTask();
+			return;
+		}
+		requirement = TrimAsciiCopy(requirement);
+		if (requirement.empty()) {
+			OutputStringToELog("[AI]添加需求为空，已取消");
+			EndAiTask();
+			return;
+		}
+
+		AISettings settings = {};
+		if (!EnsureAISettingsReady(settings)) {
+			EndAiTask();
+			return;
+		}
+
+		const std::string input =
+			"当前页类型：" + pageTypeText + "\n"
+			"按页类型输出规则：" + outputRule + "\n"
+			"输出硬性要求：仅返回新增信息，不要返回整页、不解释。\n"
+			"用户添加需求：\n" + requirement + "\n\n"
+			"当前页完整代码：\n```e\n" + currentPageCode + "\n```";
+
+		std::unique_ptr<AIAsyncRequest> request(new (std::nothrow) AIAsyncRequest());
+		if (!request) {
+			OutputStringToELog("[AI]内存不足，无法发起任务");
+			EndAiTask();
+			return;
+		}
+		request->action = AIAsyncUiAction::InsertAtPageBottom;
+		request->taskKind = AITaskKind::AddByCurrentPageType;
+		request->settings = settings;
+		request->inputText = input;
+		request->displayName = "AI按当前页类型添加代码";
+		request->pageCodeSnapshot = currentPageCode;
+
+		OutputStringToELog("[AI]正在请求模型（后台）...");
+		uintptr_t threadId = _beginthread(RunAiTaskWorker, 0, request.get());
+		if (threadId == static_cast<uintptr_t>(-1L)) {
+			OutputStringToELog("[AI]启动后台任务失败");
+			EndAiTask();
+			return;
+		}
+		request.release();
+	}
+	catch (const std::exception& ex) {
+		OutputStringToELog(std::string("[AI]发生异常：") + ex.what());
+		EndAiTask();
+	}
+	catch (...) {
+		OutputStringToELog("[AI]发生未知异常");
+		EndAiTask();
+	}
+}
+
 void TryCopyCurrentFunctionCode()
 {
 	if (IDEFacade::Instance().CopyCurrentFunctionCodeToClipboard()) {
@@ -888,6 +1045,9 @@ void RegisterIDEContextMenu()
 	});
 	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_COMPLETE_DECL, "AI为当前函数补全API声明", []() {
 		RunAiCompleteDeclarationsTask();
+	});
+	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_ADD_BY_PAGE, "AI按当前页类型添加代码", []() {
+		RunAiAddByCurrentPageTypeTask();
 	});
 
 	g_isContextMenuRegistered = true;
@@ -1141,7 +1301,8 @@ void HandleInitMenuPopup(HMENU hMenu)
 		IDM_AUTOLINKER_CTX_AI_COMMENT_FUNC,
 		IDM_AUTOLINKER_CTX_AI_TRANSLATE_FUNC,
 		IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT,
-		IDM_AUTOLINKER_CTX_AI_COMPLETE_DECL
+		IDM_AUTOLINKER_CTX_AI_COMPLETE_DECL,
+		IDM_AUTOLINKER_CTX_AI_ADD_BY_PAGE
 	};
 	const bool hasSelectedText = IDEFacade::Instance().IsFunctionEnabled(FN_EDIT_CUT);
 	for (UINT cmdId : aiCmdIds) {

@@ -9,7 +9,8 @@ enum class AITaskKind {
 	AddCommentsToFunction,
 	TranslateFunctionAndVariables,
 	TranslateText,
-	CompleteApiDeclarations
+	CompleteApiDeclarations,
+	AddByCurrentPageType
 };
 
 struct AISettings {

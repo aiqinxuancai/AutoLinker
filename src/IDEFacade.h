@@ -185,6 +185,8 @@ public:
 	bool InsertDllDeclaration(const std::string& dllDeclarationCode, bool preCompile = true) const;
 	// 在当前页页首插入代码（优先插入到“版本”下一行）。
 	bool InsertCodeAtPageTop(const std::string& codeToInsert, bool preCompile = true) const;
+	// 在当前页页末插入代码。
+	bool InsertCodeAtPageBottom(const std::string& codeToInsert, bool preCompile = true) const;
 	// 按模板构建并插入 DLL 声明代码块。
 	bool InsertDllDeclarationByTemplate(const std::string& dllName, const std::string& commandName, const std::string& returnType, const std::string& argList, bool preCompile = true) const;
 	// 按函数名定位并跳转到函数头（只在当前页查找）。
