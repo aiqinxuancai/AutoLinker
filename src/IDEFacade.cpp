@@ -131,6 +131,8 @@ bool SetClipboardAnsiText(const std::string& text)
 	return true;
 }
 
+std::string WideToUtf8(const std::wstring& text);
+
 std::wstring MultiByteSmartToWide(const std::string& text)
 {
 	if (text.empty()) {
@@ -224,6 +226,77 @@ bool SetClipboardTextForPaste(const std::string& text)
 	CloseClipboard();
 	return ok;
 }
+
+struct ClipboardTextSnapshot {
+	bool captured = false;
+	bool hasText = false;
+	std::string textUtf8;
+};
+
+bool CaptureClipboardTextSnapshot(ClipboardTextSnapshot& outSnapshot)
+{
+	outSnapshot = {};
+	if (!OpenClipboard(nullptr)) {
+		return false;
+	}
+
+	outSnapshot.captured = true;
+	if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+		HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+		if (hData != nullptr) {
+			const wchar_t* textPtr = static_cast<const wchar_t*>(GlobalLock(hData));
+			if (textPtr != nullptr) {
+				outSnapshot.textUtf8 = WideToUtf8(std::wstring(textPtr));
+				outSnapshot.hasText = true;
+				GlobalUnlock(hData);
+			}
+		}
+	}
+	else if (IsClipboardFormatAvailable(CF_TEXT)) {
+		HANDLE hData = GetClipboardData(CF_TEXT);
+		if (hData != nullptr) {
+			const char* textPtr = static_cast<const char*>(GlobalLock(hData));
+			if (textPtr != nullptr) {
+				outSnapshot.textUtf8.assign(textPtr);
+				outSnapshot.hasText = true;
+				GlobalUnlock(hData);
+			}
+		}
+	}
+
+	CloseClipboard();
+	return true;
+}
+
+void RestoreClipboardTextSnapshot(const ClipboardTextSnapshot& snapshot)
+{
+	if (!snapshot.captured || !snapshot.hasText) {
+		return;
+	}
+	SetClipboardTextForPaste(snapshot.textUtf8);
+}
+
+class ClipboardTextRestoreGuard {
+public:
+	ClipboardTextRestoreGuard()
+	{
+		m_enabled = CaptureClipboardTextSnapshot(m_snapshot);
+	}
+
+	~ClipboardTextRestoreGuard()
+	{
+		if (m_enabled) {
+			RestoreClipboardTextSnapshot(m_snapshot);
+		}
+	}
+
+	ClipboardTextRestoreGuard(const ClipboardTextRestoreGuard&) = delete;
+	ClipboardTextRestoreGuard& operator=(const ClipboardTextRestoreGuard&) = delete;
+
+private:
+	ClipboardTextSnapshot m_snapshot = {};
+	bool m_enabled = false;
+};
 
 std::string WideToUtf8(const std::wstring& text)
 {
@@ -846,6 +919,8 @@ bool IDEFacade::SelectRowRange(int startRow, int endRow) const
 
 bool IDEFacade::ReplaceSelectedRowsText(const std::string& text, bool preCompile) const
 {
+	ClipboardTextRestoreGuard clipboardGuard;
+
 	const std::string finalText = EnsureTrailingLineBreak(text);
 	bool replaced = false;
 
@@ -997,6 +1072,7 @@ bool IDEFacade::GetCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const
 bool IDEFacade::GetCurrentPageCode(std::string& outCode) const
 {
 	outCode.clear();
+	ClipboardTextRestoreGuard clipboardGuard;
 
 	int caretRow = -1;
 	int caretCol = -1;
@@ -1508,6 +1584,7 @@ bool IDEFacade::CopySelection() const
 bool IDEFacade::GetSelectedText(std::string& outText) const
 {
 	outText.clear();
+	ClipboardTextRestoreGuard clipboardGuard;
 	const DWORD beforeSeq = GetClipboardSequenceNumber();
 	if (!CopySelection()) {
 		return false;
