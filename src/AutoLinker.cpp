@@ -4,6 +4,7 @@
 #include <CommCtrl.h>
 #include <format>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include "ConfigManager.h"
 #include <regex>
@@ -24,6 +25,9 @@
 #include "IDEFacade.h"
 #include "AIService.h"
 #include "AIConfigDialog.h"
+#include <memory>
+#include <new>
+#include <process.h>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -72,6 +76,51 @@ constexpr UINT IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT = 31104;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_COMPLETE_DECL = 31105;
 constexpr UINT IDM_AUTOLINKER_LINKER_BASE = 34000;
 constexpr UINT IDM_AUTOLINKER_LINKER_MAX = 34999;
+constexpr UINT WM_AUTOLINKER_AI_TASK_DONE = WM_USER + 1001;
+constexpr UINT WM_AUTOLINKER_AI_APPLY_RESULT = WM_USER + 1002;
+
+std::atomic_bool g_aiTaskInProgress = false;
+
+enum class AIAsyncUiAction {
+	ReplaceCurrentFunction,
+	OutputTranslation,
+	InsertDeclarations
+};
+
+struct AIAsyncRequest {
+	AIAsyncUiAction action = AIAsyncUiAction::ReplaceCurrentFunction;
+	AITaskKind taskKind = AITaskKind::OptimizeFunction;
+	AISettings settings = {};
+	std::string inputText;
+	std::string displayName;
+	std::string pageCodeSnapshot;
+	std::string sourceFunctionCode;
+	int targetCaretRow = -1;
+	int targetCaretCol = -1;
+};
+
+struct AIAsyncResult {
+	AIAsyncUiAction action = AIAsyncUiAction::ReplaceCurrentFunction;
+	std::string displayName;
+	std::string pageCodeSnapshot;
+	std::string sourceFunctionCode;
+	AIResult taskResult = {};
+	int targetCaretRow = -1;
+	int targetCaretCol = -1;
+};
+
+struct AIApplyRequest {
+	AIAsyncUiAction action = AIAsyncUiAction::ReplaceCurrentFunction;
+	std::string text;
+	std::string sourceFunctionCode;
+	int addedCount = 0;
+	int skippedCount = 0;
+	int targetCaretRow = -1;
+	int targetCaretCol = -1;
+};
+
+void HandleAiTaskCompletionMessage(LPARAM lParam);
+void HandleAiApplyMessage(LPARAM lParam);
 
 std::string TrimAsciiCopy(const std::string& text)
 {
@@ -116,6 +165,63 @@ std::string JoinLinesCrLf(const std::vector<std::string>& lines)
 		output += "\r\n";
 	}
 	return output;
+}
+
+std::string NormalizeCodeForEIDE(const std::string& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+
+	std::string expanded = text;
+	const bool hasRealLineBreak = expanded.find('\n') != std::string::npos || expanded.find('\r') != std::string::npos;
+	if (!hasRealLineBreak && (expanded.find("\\n") != std::string::npos || expanded.find("\\r\\n") != std::string::npos)) {
+		std::string unescaped;
+		unescaped.reserve(expanded.size());
+		for (size_t i = 0; i < expanded.size(); ++i) {
+			if (expanded[i] == '\\' && i + 1 < expanded.size()) {
+				if (expanded[i + 1] == 'n') {
+					unescaped.push_back('\n');
+					++i;
+					continue;
+				}
+				if (expanded[i + 1] == 'r') {
+					if (i + 3 < expanded.size() && expanded[i + 2] == '\\' && expanded[i + 3] == 'n') {
+						unescaped.push_back('\n');
+						i += 3;
+						continue;
+					}
+					unescaped.push_back('\n');
+					++i;
+					continue;
+				}
+			}
+			unescaped.push_back(expanded[i]);
+		}
+		expanded.swap(unescaped);
+	}
+
+	std::string normalized;
+	normalized.reserve(expanded.size() + 16);
+	for (size_t i = 0; i < expanded.size(); ++i) {
+		const char ch = expanded[i];
+		if (ch == '\0') {
+			continue;
+		}
+		if (ch == '\r') {
+			if (i + 1 < expanded.size() && expanded[i + 1] == '\n') {
+				++i;
+			}
+			normalized += "\r\n";
+			continue;
+		}
+		if (ch == '\n') {
+			normalized += "\r\n";
+			continue;
+		}
+		normalized.push_back(ch);
+	}
+	return normalized;
 }
 
 std::string ToLowerAsciiCopy(const std::string& text)
@@ -189,99 +295,221 @@ bool EnsureAISettingsReady(AISettings& settings)
 	return true;
 }
 
+bool TryBeginAiTask()
+{
+	bool expected = false;
+	if (!g_aiTaskInProgress.compare_exchange_strong(expected, true)) {
+		OutputStringToELog("[AI]已有任务在执行，请稍候");
+		return false;
+	}
+	return true;
+}
+
+void EndAiTask()
+{
+	g_aiTaskInProgress.store(false);
+}
+
+void PostAiTaskResult(AIAsyncResult* result)
+{
+	if (result == nullptr) {
+		EndAiTask();
+		return;
+	}
+
+	if (g_hwnd == NULL || !IsWindow(g_hwnd) || PostMessage(g_hwnd, WM_AUTOLINKER_AI_TASK_DONE, 0, reinterpret_cast<LPARAM>(result)) == FALSE) {
+		if (!result->taskResult.ok) {
+			OutputStringToELog("[AI]请求失败：" + result->taskResult.error);
+		}
+		else {
+			OutputStringToELog("[AI]任务完成，但回调消息投递失败");
+		}
+		delete result;
+		EndAiTask();
+	}
+}
+
+void PostAiApplyRequest(AIApplyRequest* request)
+{
+	if (request == nullptr) {
+		return;
+	}
+	if (g_hwnd == NULL || !IsWindow(g_hwnd) || PostMessage(g_hwnd, WM_AUTOLINKER_AI_APPLY_RESULT, 0, reinterpret_cast<LPARAM>(request)) == FALSE) {
+		HandleAiApplyMessage(reinterpret_cast<LPARAM>(request));
+	}
+}
+
+void RunAiTaskWorker(void* pParams)
+{
+	std::unique_ptr<AIAsyncRequest> request(reinterpret_cast<AIAsyncRequest*>(pParams));
+	if (!request) {
+		EndAiTask();
+		return;
+	}
+
+	std::unique_ptr<AIAsyncResult> result(new (std::nothrow) AIAsyncResult());
+	if (!result) {
+		OutputStringToELog("[AI]内存不足，无法执行请求");
+		EndAiTask();
+		return;
+	}
+
+	result->action = request->action;
+	result->displayName = request->displayName;
+	result->pageCodeSnapshot = request->pageCodeSnapshot;
+	result->sourceFunctionCode = request->sourceFunctionCode;
+	result->targetCaretRow = request->targetCaretRow;
+	result->targetCaretCol = request->targetCaretCol;
+
+	try {
+		result->taskResult = AIService::ExecuteTask(request->taskKind, request->inputText, request->settings);
+	}
+	catch (const std::exception& ex) {
+		result->taskResult.ok = false;
+		result->taskResult.error = std::string("后台任务异常：") + ex.what();
+	}
+	catch (...) {
+		result->taskResult.ok = false;
+		result->taskResult.error = "后台任务发生未知异常";
+	}
+
+	PostAiTaskResult(result.release());
+}
+
 void RunAiFunctionReplaceTask(AITaskKind kind)
 {
-	const std::string displayName = AIService::BuildTaskDisplayName(kind);
-	OutputStringToELog("[AI]开始执行：" + displayName);
-
-	IDEFacade& ide = IDEFacade::Instance();
-	std::string functionCode;
-	if (!ide.GetCurrentFunctionCode(functionCode)) {
-		OutputStringToELog("[AI]无法获取当前函数代码");
-		return;
-	}
-
-	AISettings settings = {};
-	if (!EnsureAISettingsReady(settings)) {
-		return;
-	}
-
-	const std::string userInput =
-		"请处理以下易语言函数代码，并严格返回完整可替换代码：\n```e\n" +
-		functionCode + "\n```";
-	std::string finalInput = userInput;
-	if (kind == AITaskKind::OptimizeFunction) {
-		std::string extraRequirement;
-		if (!ShowAITextInputDialog(g_hwnd, "AI优化函数 - 输入优化要求", "请输入你希望优化的方向（可为空）：", extraRequirement)) {
-			OutputStringToELog("[AI]已取消输入优化要求");
+	try {
+		const std::string displayName = AIService::BuildTaskDisplayName(kind);
+		OutputStringToELog("[AI]开始执行：" + displayName);
+		if (!TryBeginAiTask()) {
 			return;
 		}
-		extraRequirement = TrimAsciiCopy(extraRequirement);
-		if (!extraRequirement.empty()) {
-			finalInput = std::string("额外优化要求：\n") + extraRequirement + "\n\n" + userInput;
+
+		IDEFacade& ide = IDEFacade::Instance();
+		std::string functionCode;
+		std::string functionDiag;
+		if (!ide.GetCurrentFunctionCode(functionCode, &functionDiag)) {
+			OutputStringToELog("[AI]无法获取当前函数代码");
+			if (!functionDiag.empty()) {
+				OutputStringToELog("[AI]函数代码获取诊断：" + functionDiag);
+			}
+			EndAiTask();
+			return;
 		}
-	}
+		int caretRow = -1;
+		int caretCol = -1;
+		ide.GetCaretPosition(caretRow, caretCol);
 
-	OutputStringToELog("[AI]正在请求模型...");
-	AIResult result = AIService::ExecuteTask(kind, finalInput, settings);
-	if (!result.ok) {
-		OutputStringToELog("[AI]请求失败：" + result.error);
-		return;
-	}
+		AISettings settings = {};
+		if (!EnsureAISettingsReady(settings)) {
+			EndAiTask();
+			return;
+		}
 
-	std::string generatedCode = AIService::NormalizeModelOutputToCode(result.content);
-	generatedCode = AIService::Trim(generatedCode);
-	if (generatedCode.empty()) {
-		OutputStringToELog("[AI]模型返回为空");
-		return;
-	}
+		const std::string userInput =
+			"请处理以下易语言函数代码，并严格返回完整可替换代码：\n```e\n" +
+			functionCode + "\n```";
+		std::string finalInput = userInput;
+		if (kind == AITaskKind::OptimizeFunction) {
+			std::string extraRequirement;
+			if (!ShowAITextInputDialog(g_hwnd, "AI优化函数 - 输入优化要求", "请输入你希望优化的方向（可为空）：", extraRequirement)) {
+				OutputStringToELog("[AI]已取消输入优化要求");
+				EndAiTask();
+				return;
+			}
+			extraRequirement = TrimAsciiCopy(extraRequirement);
+			if (!extraRequirement.empty()) {
+				finalInput = std::string("额外优化要求：\n") + extraRequirement + "\n\n" + userInput;
+			}
+		}
 
-	if (!ShowAIPreviewDialog(g_hwnd, displayName + " - 结果预览", generatedCode, "替换")) {
-		OutputStringToELog("[AI]用户取消替换");
-		return;
-	}
+		std::unique_ptr<AIAsyncRequest> request(new (std::nothrow) AIAsyncRequest());
+		if (!request) {
+			OutputStringToELog("[AI]内存不足，无法发起任务");
+			EndAiTask();
+			return;
+		}
+		request->action = AIAsyncUiAction::ReplaceCurrentFunction;
+		request->taskKind = kind;
+		request->settings = settings;
+		request->inputText = finalInput;
+		request->displayName = displayName;
+		request->sourceFunctionCode = functionCode;
+		request->targetCaretRow = caretRow;
+		request->targetCaretCol = caretCol;
 
-	if (!ide.ReplaceCurrentFunctionCode(generatedCode, true)) {
-		OutputStringToELog("[AI]替换当前函数失败");
-		return;
+		OutputStringToELog("[AI]正在请求模型（后台）...");
+		uintptr_t threadId = _beginthread(RunAiTaskWorker, 0, request.get());
+		if (threadId == static_cast<uintptr_t>(-1L)) {
+			OutputStringToELog("[AI]启动后台任务失败");
+			EndAiTask();
+			return;
+		}
+		request.release();
 	}
-	OutputStringToELog("[AI]替换完成");
+	catch (const std::exception& ex) {
+		OutputStringToELog(std::string("[AI]发生异常：") + ex.what());
+		EndAiTask();
+	}
+	catch (...) {
+		OutputStringToELog("[AI]发生未知异常");
+		EndAiTask();
+	}
 }
 
 void RunAiTranslateSelectedTextTask()
 {
-	OutputStringToELog("[AI]开始执行：AI翻译文本");
-	IDEFacade& ide = IDEFacade::Instance();
-	std::string selectedText;
-	if (!ide.GetSelectedText(selectedText)) {
-		OutputStringToELog("[AI]未检测到有效选中文本");
-		return;
+	try {
+		OutputStringToELog("[AI]开始执行：AI翻译文本");
+		if (!TryBeginAiTask()) {
+			return;
+		}
+		IDEFacade& ide = IDEFacade::Instance();
+		std::string selectedText;
+		if (!ide.GetSelectedText(selectedText)) {
+			OutputStringToELog("[AI]未检测到有效选中文本");
+			EndAiTask();
+			return;
+		}
+
+		AISettings settings = {};
+		if (!EnsureAISettingsReady(settings)) {
+			EndAiTask();
+			return;
+		}
+
+		const bool sourceIsChinese = IsLikelyChineseText(selectedText);
+		const std::string direction = sourceIsChinese ? "请把以下中文翻译为英文，仅输出翻译结果：" : "请把以下英文翻译为中文，仅输出翻译结果：";
+		const std::string input = direction + "\n" + selectedText;
+		std::unique_ptr<AIAsyncRequest> request(new (std::nothrow) AIAsyncRequest());
+		if (!request) {
+			OutputStringToELog("[AI]内存不足，无法发起任务");
+			EndAiTask();
+			return;
+		}
+		request->action = AIAsyncUiAction::OutputTranslation;
+		request->taskKind = AITaskKind::TranslateText;
+		request->settings = settings;
+		request->inputText = input;
+		request->displayName = "AI翻译文本";
+
+		OutputStringToELog("[AI]正在请求模型（后台）...");
+		uintptr_t threadId = _beginthread(RunAiTaskWorker, 0, request.get());
+		if (threadId == static_cast<uintptr_t>(-1L)) {
+			OutputStringToELog("[AI]启动后台任务失败");
+			EndAiTask();
+			return;
+		}
+		request.release();
 	}
-
-	AISettings settings = {};
-	if (!EnsureAISettingsReady(settings)) {
-		return;
+	catch (const std::exception& ex) {
+		OutputStringToELog(std::string("[AI]发生异常：") + ex.what());
+		EndAiTask();
 	}
-
-	const bool sourceIsChinese = IsLikelyChineseText(selectedText);
-	const std::string direction = sourceIsChinese ? "请把以下中文翻译为英文，仅输出翻译结果：" : "请把以下英文翻译为中文，仅输出翻译结果：";
-	const std::string input = direction + "\n" + selectedText;
-
-	OutputStringToELog("[AI]正在请求模型...");
-	AIResult result = AIService::ExecuteTask(AITaskKind::TranslateText, input, settings);
-	if (!result.ok) {
-		OutputStringToELog("[AI]请求失败：" + result.error);
-		return;
+	catch (...) {
+		OutputStringToELog("[AI]发生未知异常");
+		EndAiTask();
 	}
-
-	std::string translated = AIService::NormalizeModelOutputToCode(result.content);
-	translated = AIService::Trim(translated);
-	if (translated.empty()) {
-		OutputStringToELog("[AI]翻译结果为空");
-		return;
-	}
-
-	OutputMultiline("[AI]翻译结果：", translated);
 }
 
 struct DeclarationBlock {
@@ -406,67 +634,224 @@ std::string BuildUniqueDeclarationInsertText(const std::string& currentPageCode,
 	return JoinLinesCrLf(outputLines);
 }
 
+void HandleAiTaskCompletionMessage(LPARAM lParam)
+{
+	struct AiTaskEndGuard {
+		~AiTaskEndGuard() { EndAiTask(); }
+	} endGuard;
+
+	std::unique_ptr<AIAsyncResult> result(reinterpret_cast<AIAsyncResult*>(lParam));
+	if (!result) {
+		return;
+	}
+
+	try {
+		if (!result->taskResult.ok) {
+			OutputStringToELog("[AI]请求失败：" + result->taskResult.error);
+			return;
+		}
+
+		switch (result->action)
+		{
+		case AIAsyncUiAction::ReplaceCurrentFunction: {
+			std::string generatedCode = AIService::NormalizeModelOutputToCode(result->taskResult.content);
+			generatedCode = AIService::Trim(generatedCode);
+			if (generatedCode.empty()) {
+				OutputStringToELog("[AI]模型返回为空");
+				return;
+			}
+			generatedCode = NormalizeCodeForEIDE(generatedCode);
+
+			const std::string title = result->displayName.empty() ? "AI结果预览" : (result->displayName + " - 结果预览");
+			if (!ShowAIPreviewDialog(g_hwnd, title, generatedCode, "替换")) {
+				OutputStringToELog("[AI]用户取消替换");
+				return;
+			}
+			std::unique_ptr<AIApplyRequest> request(new (std::nothrow) AIApplyRequest());
+			if (!request) {
+				OutputStringToELog("[AI]内存不足，无法执行替换");
+				return;
+			}
+			request->action = AIAsyncUiAction::ReplaceCurrentFunction;
+			request->text = generatedCode;
+			request->sourceFunctionCode = result->sourceFunctionCode;
+			request->targetCaretRow = result->targetCaretRow;
+			request->targetCaretCol = result->targetCaretCol;
+			PostAiApplyRequest(request.release());
+			return;
+		}
+		case AIAsyncUiAction::OutputTranslation: {
+			std::string translated = AIService::NormalizeModelOutputToCode(result->taskResult.content);
+			translated = AIService::Trim(translated);
+			if (translated.empty()) {
+				OutputStringToELog("[AI]翻译结果为空");
+				return;
+			}
+			OutputMultiline("[AI]翻译结果：", translated);
+			return;
+		}
+		case AIAsyncUiAction::InsertDeclarations: {
+			std::string generatedDecl = AIService::NormalizeModelOutputToCode(result->taskResult.content);
+			generatedDecl = AIService::Trim(generatedDecl);
+			if (generatedDecl.empty()) {
+				OutputStringToELog("[AI]模型未返回声明代码");
+				return;
+			}
+
+			int addedCount = 0;
+			int skippedCount = 0;
+			std::string insertText = BuildUniqueDeclarationInsertText(result->pageCodeSnapshot, generatedDecl, addedCount, skippedCount);
+			insertText = AIService::Trim(insertText);
+			if (insertText.empty() || addedCount <= 0) {
+				OutputStringToELog("[AI]未发现可新增声明（可能均已存在）");
+				return;
+			}
+			insertText = NormalizeCodeForEIDE(insertText);
+
+			if (!ShowAIPreviewDialog(g_hwnd, "AI补全API声明 - 结果预览", insertText, "插入")) {
+				OutputStringToELog("[AI]用户取消插入");
+				return;
+			}
+			std::unique_ptr<AIApplyRequest> request(new (std::nothrow) AIApplyRequest());
+			if (!request) {
+				OutputStringToELog("[AI]内存不足，无法执行插入");
+				return;
+			}
+			request->action = AIAsyncUiAction::InsertDeclarations;
+			request->text = insertText;
+			request->addedCount = addedCount;
+			request->skippedCount = skippedCount;
+			PostAiApplyRequest(request.release());
+			return;
+		}
+		default:
+			OutputStringToELog("[AI]未知任务结果类型");
+			return;
+		}
+	}
+	catch (const std::exception& ex) {
+		OutputStringToELog(std::string("[AI]处理结果异常：") + ex.what());
+	}
+	catch (...) {
+		OutputStringToELog("[AI]处理结果发生未知异常");
+	}
+}
+
+void HandleAiApplyMessage(LPARAM lParam)
+{
+	std::unique_ptr<AIApplyRequest> request(reinterpret_cast<AIApplyRequest*>(lParam));
+	if (!request) {
+		return;
+	}
+
+	try {
+		IDEFacade& ide = IDEFacade::Instance();
+		constexpr bool kAiApplyPreCompile = false;
+		switch (request->action)
+		{
+		case AIAsyncUiAction::ReplaceCurrentFunction: {
+			if (g_hwnd != NULL && IsWindow(g_hwnd)) {
+				SetForegroundWindow(g_hwnd);
+			}
+			if (request->targetCaretRow >= 0 && request->targetCaretCol >= 0) {
+				ide.MoveCaret(request->targetCaretRow, request->targetCaretCol);
+			}
+			const std::string newFunctionCode = NormalizeCodeForEIDE(request->text);
+			if (ide.ReplaceCurrentFunctionCode(newFunctionCode, kAiApplyPreCompile)) {
+				OutputStringToELog("[AI]替换完成");
+				return;
+			}
+			OutputStringToELog("[AI]替换当前函数失败（当前坐标未定位到可替换子程序）");
+			return;
+		}
+
+		case AIAsyncUiAction::InsertDeclarations:
+			if (!ide.InsertCodeAtPageTop(request->text, kAiApplyPreCompile)) {
+				OutputStringToELog("[AI]插入声明失败");
+				return;
+			}
+			OutputStringToELog(std::format("[AI]插入完成：新增 {} 项，跳过 {} 项", request->addedCount, request->skippedCount));
+			return;
+
+		default:
+			return;
+		}
+	}
+	catch (const std::exception& ex) {
+		OutputStringToELog(std::string("[AI]执行结果异常：") + ex.what());
+	}
+	catch (...) {
+		OutputStringToELog("[AI]执行结果发生未知异常");
+	}
+}
+
 void RunAiCompleteDeclarationsTask()
 {
-	OutputStringToELog("[AI]开始执行：AI补全API声明");
-	IDEFacade& ide = IDEFacade::Instance();
+	try {
+		OutputStringToELog("[AI]开始执行：AI补全API声明");
+		if (!TryBeginAiTask()) {
+			return;
+		}
+		IDEFacade& ide = IDEFacade::Instance();
 
-	std::string functionCode;
-	if (!ide.GetCurrentFunctionCode(functionCode)) {
-		OutputStringToELog("[AI]无法获取当前函数代码");
-		return;
+		std::string functionCode;
+		std::string functionDiag;
+		if (!ide.GetCurrentFunctionCode(functionCode, &functionDiag)) {
+			OutputStringToELog("[AI]无法获取当前函数代码");
+			if (!functionDiag.empty()) {
+				OutputStringToELog("[AI]函数代码获取诊断：" + functionDiag);
+			}
+			EndAiTask();
+			return;
+		}
+
+		std::string currentPageCode;
+		if (!ide.GetCurrentPageCode(currentPageCode)) {
+			OutputStringToELog("[AI]无法获取当前页代码");
+			EndAiTask();
+			return;
+		}
+
+		AISettings settings = {};
+		if (!EnsureAISettingsReady(settings)) {
+			EndAiTask();
+			return;
+		}
+
+		const std::string userInput =
+			"请根据以下易语言函数，补全缺失的 Windows API 声明和必要结构体声明。\n"
+			"只返回 .DLL命令/.参数/.数据类型/.成员 声明代码，不返回函数实现。\n"
+			"函数代码：\n```e\n" + functionCode + "\n```";
+		std::unique_ptr<AIAsyncRequest> request(new (std::nothrow) AIAsyncRequest());
+		if (!request) {
+			OutputStringToELog("[AI]内存不足，无法发起任务");
+			EndAiTask();
+			return;
+		}
+		request->action = AIAsyncUiAction::InsertDeclarations;
+		request->taskKind = AITaskKind::CompleteApiDeclarations;
+		request->settings = settings;
+		request->inputText = userInput;
+		request->displayName = "AI补全API声明";
+		request->pageCodeSnapshot = currentPageCode;
+
+		OutputStringToELog("[AI]正在请求模型（后台）...");
+		uintptr_t threadId = _beginthread(RunAiTaskWorker, 0, request.get());
+		if (threadId == static_cast<uintptr_t>(-1L)) {
+			OutputStringToELog("[AI]启动后台任务失败");
+			EndAiTask();
+			return;
+		}
+		request.release();
 	}
-
-	std::string currentPageCode;
-	if (!ide.GetCurrentPageCode(currentPageCode)) {
-		OutputStringToELog("[AI]无法获取当前页代码");
-		return;
+	catch (const std::exception& ex) {
+		OutputStringToELog(std::string("[AI]发生异常：") + ex.what());
+		EndAiTask();
 	}
-
-	AISettings settings = {};
-	if (!EnsureAISettingsReady(settings)) {
-		return;
+	catch (...) {
+		OutputStringToELog("[AI]发生未知异常");
+		EndAiTask();
 	}
-
-	const std::string userInput =
-		"请根据以下易语言函数，补全缺失的 Windows API 声明和必要结构体声明。\n"
-		"只返回 .DLL命令/.参数/.数据类型/.成员 声明代码，不返回函数实现。\n"
-		"函数代码：\n```e\n" + functionCode + "\n```";
-
-	OutputStringToELog("[AI]正在请求模型...");
-	AIResult result = AIService::ExecuteTask(AITaskKind::CompleteApiDeclarations, userInput, settings);
-	if (!result.ok) {
-		OutputStringToELog("[AI]请求失败：" + result.error);
-		return;
-	}
-
-	std::string generatedDecl = AIService::NormalizeModelOutputToCode(result.content);
-	generatedDecl = AIService::Trim(generatedDecl);
-	if (generatedDecl.empty()) {
-		OutputStringToELog("[AI]模型未返回声明代码");
-		return;
-	}
-
-	int addedCount = 0;
-	int skippedCount = 0;
-	std::string insertText = BuildUniqueDeclarationInsertText(currentPageCode, generatedDecl, addedCount, skippedCount);
-	insertText = AIService::Trim(insertText);
-	if (insertText.empty() || addedCount <= 0) {
-		OutputStringToELog("[AI]未发现可新增声明（可能均已存在）");
-		return;
-	}
-
-	if (!ShowAIPreviewDialog(g_hwnd, "AI补全API声明 - 结果预览", insertText, "插入")) {
-		OutputStringToELog("[AI]用户取消插入");
-		return;
-	}
-
-	if (!ide.InsertCodeAtPageTop(insertText, true)) {
-		OutputStringToELog("[AI]插入声明失败");
-		return;
-	}
-
-	OutputStringToELog(std::format("[AI]插入完成：新增 {} 项，跳过 {} 项", addedCount, skippedCount));
 }
 
 void TryCopyCurrentFunctionCode()
@@ -1114,6 +1499,15 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	//	return 0;
 	//}
 
+	if (uMsg == WM_AUTOLINKER_AI_TASK_DONE) {
+		HandleAiTaskCompletionMessage(lParam);
+		return 0;
+	}
+	if (uMsg == WM_AUTOLINKER_AI_APPLY_RESULT) {
+		HandleAiApplyMessage(lParam);
+		return 0;
+	}
+
 	if (uMsg == WM_COMMAND) {
 		UINT cmd = LOWORD(wParam);
 		if (HandleTopLinkerMenuCommand(cmd)) {
@@ -1171,6 +1565,17 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 		}
 		case 3: { // 复制当前函数代码
 			TryCopyCurrentFunctionCode();
+			break;
+		}
+		case 4: { // AutoLinker AI接口设置
+			AISettings settings = {};
+			AIService::LoadSettings(g_configManager, settings);
+			if (!ShowAIConfigDialog(g_hwnd, settings)) {
+				OutputStringToELog("AI配置已取消");
+				break;
+			}
+			AIService::SaveSettings(g_configManager, settings);
+			OutputStringToELog("AI配置已保存");
 			break;
 		}
 		//case 4: { //切换到VMPSDK静态（自用）
@@ -1398,7 +1803,7 @@ static LIB_INFOX LibInfo =
 	NULL,
 	NULL,
 	fnAddInFunc,
-	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0\0") ,
+	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0AutoLinker AI接口设置\0编辑AI接口地址、API Key、模型和提示词等配置。\0\0") ,
 	AutoLinker_MessageNotify,
 	NULL,
 	NULL,

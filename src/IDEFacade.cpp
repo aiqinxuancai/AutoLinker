@@ -1,4 +1,4 @@
-#include "IDEFacade.h"
+﻿#include "IDEFacade.h"
 
 #include <fnshare.h>
 #include <lib2.h>
@@ -129,6 +129,100 @@ bool SetClipboardAnsiText(const std::string& text)
 		return false;
 	}
 	return true;
+}
+
+std::wstring MultiByteSmartToWide(const std::string& text)
+{
+	if (text.empty()) {
+		return std::wstring();
+	}
+
+	int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.c_str(), -1, nullptr, 0);
+	UINT codePage = CP_UTF8;
+	DWORD flags = MB_ERR_INVALID_CHARS;
+	if (size <= 0) {
+		size = MultiByteToWideChar(CP_ACP, 0, text.c_str(), -1, nullptr, 0);
+		codePage = CP_ACP;
+		flags = 0;
+		if (size <= 0) {
+			return std::wstring();
+		}
+	}
+
+	std::wstring out(static_cast<size_t>(size), L'\0');
+	if (MultiByteToWideChar(codePage, flags, text.c_str(), -1, out.data(), size) <= 0) {
+		return std::wstring();
+	}
+	if (!out.empty() && out.back() == L'\0') {
+		out.pop_back();
+	}
+	return out;
+}
+
+std::string ConvertUtf8ToCodePage(const std::string& text, UINT toCodePage)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+
+	// Only convert when input is strict UTF-8. Otherwise keep original bytes unchanged.
+	int wideLen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.c_str(), -1, nullptr, 0);
+	if (wideLen <= 0) {
+		return text;
+	}
+
+	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+	if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.c_str(), -1, wide.data(), wideLen) <= 0) {
+		return text;
+	}
+
+	int outLen = WideCharToMultiByte(toCodePage, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	if (outLen <= 0) {
+		return text;
+	}
+
+	std::string out(static_cast<size_t>(outLen), '\0');
+	if (WideCharToMultiByte(toCodePage, 0, wide.c_str(), -1, out.data(), outLen, nullptr, nullptr) <= 0) {
+		return text;
+	}
+	if (!out.empty() && out.back() == '\0') {
+		out.pop_back();
+	}
+	return out;
+}
+
+std::string EnsureGbkText(const std::string& text)
+{
+	// Keep non-UTF8 input untouched to avoid corrupting existing GBK/ANSI source bytes.
+	return ConvertUtf8ToCodePage(text, 936);
+}
+
+bool SetClipboardTextForPaste(const std::string& text)
+{
+	if (!OpenClipboard(nullptr)) {
+		return false;
+	}
+
+	bool ok = false;
+	if (EmptyClipboard()) {
+		const std::wstring wide = MultiByteSmartToWide(text);
+		const std::string ansiText = EnsureGbkText(text);
+		bool hasAnyFormat = false;
+		if (!wide.empty()) {
+			hasAnyFormat = SetClipboardUnicodeText(wide) || hasAnyFormat;
+		}
+		// Always provide ANSI(CF_TEXT) as GBK payload for hosts preferring ANSI paste.
+		if (!ansiText.empty()) {
+			hasAnyFormat = SetClipboardAnsiText(ansiText) || hasAnyFormat;
+		}
+		else {
+			hasAnyFormat = SetClipboardAnsiText(text) || hasAnyFormat;
+		}
+		ok = hasAnyFormat;
+	}
+
+	CloseClipboard();
+	return ok;
 }
 
 std::string WideToUtf8(const std::wstring& text)
@@ -276,7 +370,7 @@ std::string ParseSubNameFromHeader(const std::string& headerLine)
 		return std::string();
 	}
 
-	// 兼容“.子程序 名称, 返回类型”以及直接传入“名称, 返回类型”的情况。
+	// 鍏煎鈥?瀛愮▼搴?鍚嶇О, 杩斿洖绫诲瀷鈥濅互鍙婄洿鎺ヤ紶鍏モ€滃悕绉? 杩斿洖绫诲瀷鈥濈殑鎯呭喌銆?
 	std::string remain = line;
 	if (remain.front() == '.') {
 		size_t pos = 1;
@@ -301,6 +395,93 @@ std::string ParseSubNameFromHeader(const std::string& headerLine)
 		remain = remain.substr(0, cutPos);
 	}
 	return TrimAsciiSpaceCopy(remain);
+}
+
+bool IsSubHeaderTextLine(const std::string& rawText)
+{
+	const std::string line = TrimAsciiSpaceCopy(rawText);
+	if (line.empty() || line[0] != '.') {
+		return false;
+	}
+
+	// UTF-8 / GBK bytes for "子程序"
+	if (line.find("\xE5\xAD\x90\xE7\xA8\x8B\xE5\xBA\x8F") != std::string::npos ||
+		line.find("\xD7\xD3\xB3\xCC\xD0\xF2") != std::string::npos) {
+		return true;
+	}
+
+	std::string lower = line;
+	std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
+		return static_cast<char>(std::tolower(ch));
+	});
+	return lower.rfind(".subroutine", 0) == 0 || lower.rfind(".sub", 0) == 0;
+}
+
+std::vector<std::string> SplitLinesNormalizedLf(const std::string& text)
+{
+	std::string normalized;
+	normalized.reserve(text.size() + 8);
+	for (size_t i = 0; i < text.size(); ++i) {
+		const char ch = text[i];
+		if (ch == '\r') {
+			if (i + 1 < text.size() && text[i + 1] == '\n') {
+				++i;
+			}
+			normalized.push_back('\n');
+			continue;
+		}
+		normalized.push_back(ch);
+	}
+
+	std::vector<std::string> lines;
+	size_t begin = 0;
+	while (begin <= normalized.size()) {
+		size_t end = normalized.find('\n', begin);
+		if (end == std::string::npos) {
+			lines.push_back(normalized.substr(begin));
+			break;
+		}
+		lines.push_back(normalized.substr(begin, end - begin));
+		begin = end + 1;
+	}
+	return lines;
+}
+
+bool LocateCurrentFunctionRowRangeByCaret(
+	const std::vector<std::string>& lines,
+	int caretRow,
+	int& outStartRow,
+	int& outEndRow)
+{
+	outStartRow = -1;
+	outEndRow = -1;
+	if (lines.empty()) {
+		return false;
+	}
+
+	const int clampedRow = (std::max)(0, (std::min)(caretRow, static_cast<int>(lines.size()) - 1));
+	int start = -1;
+	for (int row = clampedRow; row >= 0; --row) {
+		if (IsSubHeaderTextLine(lines[static_cast<size_t>(row)])) {
+			start = row;
+			break;
+		}
+	}
+	if (start < 0) {
+		return false;
+	}
+
+	int end = static_cast<int>(lines.size()) - 1;
+	for (int row = start + 1; row < static_cast<int>(lines.size()); ++row) {
+		if (IsSubHeaderTextLine(lines[static_cast<size_t>(row)])) {
+			end = row - 1;
+			break;
+		}
+	}
+
+	outStartRow = start;
+	outEndRow = (std::max)(start, end);
+	return true;
 }
 
 void AppendLineWithCrLf(std::string& target, const std::string& line)
@@ -620,13 +801,38 @@ std::string IDEFacade::EnsureTrailingLineBreak(const std::string& text)
 	if (text.empty()) {
 		return "\r\n";
 	}
-	if (text.back() == '\n') {
-		return text;
+
+	// Normalize all line breaks to CRLF for EIDE before replacement.
+	std::string normalized;
+	normalized.reserve(text.size() + 16);
+	for (size_t i = 0; i < text.size(); ++i) {
+		const char ch = text[i];
+		if (ch == '\r') {
+			if (i + 1 < text.size() && text[i + 1] == '\n') {
+				++i;
+			}
+			normalized += "\r\n";
+			continue;
+		}
+		if (ch == '\n') {
+			normalized += "\r\n";
+			continue;
+		}
+		normalized.push_back(ch);
 	}
-	if (text.back() == '\r') {
-		return text + "\n";
+
+	if (normalized.empty()) {
+		return "\r\n";
 	}
-	return text + "\r\n";
+	if (normalized.size() >= 2 && normalized[normalized.size() - 2] == '\r' && normalized.back() == '\n') {
+		return normalized;
+	}
+	if (normalized.back() == '\r') {
+		normalized.push_back('\n');
+		return normalized;
+	}
+	normalized += "\r\n";
+	return normalized;
 }
 
 bool IDEFacade::SelectRowRange(int startRow, int endRow) const
@@ -640,12 +846,23 @@ bool IDEFacade::SelectRowRange(int startRow, int endRow) const
 
 bool IDEFacade::ReplaceSelectedRowsText(const std::string& text, bool preCompile) const
 {
-	if (!RunRemove()) {
-		return false;
+	const std::string finalText = EnsureTrailingLineBreak(text);
+	bool replaced = false;
+
+	// Prefer paste-path since it matches manual replacement behavior in IDE.
+	if (SetClipboardTextForPaste(finalText) && RunEditPaste()) {
+		replaced = true;
 	}
-	if (!RunInsertText(EnsureTrailingLineBreak(text), false)) {
-		return false;
+	if (!replaced) {
+		if (!RunRemove()) {
+			return false;
+		}
+		const std::string insertPayload = EnsureGbkText(finalText);
+		if (!RunInsertText(insertPayload, false)) {
+			return false;
+		}
 	}
+
 	if (!preCompile) {
 		return true;
 	}
@@ -833,6 +1050,35 @@ bool IDEFacade::ReplaceCurrentPageCode(const std::string& newPageCode, bool preC
 	return ok;
 }
 
+bool IDEFacade::ReplaceRowRangeText(int startRow, int endRow, const std::string& newText, bool preCompile) const
+{
+	if (startRow < 0 || endRow < startRow) {
+		return false;
+	}
+	if (TrimAsciiSpace(newText).empty()) {
+		return false;
+	}
+
+	int caretRow = -1;
+	int caretCol = -1;
+	GetCaretPosition(caretRow, caretCol);
+
+	if (!MoveCaret(startRow, 0)) {
+		return false;
+	}
+	if (!SelectRowRange(startRow, endRow)) {
+		return false;
+	}
+
+	const bool ok = ReplaceSelectedRowsText(newText, preCompile);
+	RunBlkClearAllDef();
+
+	if (caretRow >= 0 && caretCol >= 0) {
+		MoveCaret(caretRow, caretCol);
+	}
+	return ok;
+}
+
 bool IDEFacade::GetFunctionCodeByName(const std::string& functionName, std::string& outCode) const
 {
 	PageCodeSnapshot snapshot = {};
@@ -848,19 +1094,54 @@ bool IDEFacade::GetFunctionCodeByName(const std::string& functionName, std::stri
 	return true;
 }
 
-bool IDEFacade::GetCurrentFunctionCode(std::string& outCode) const
+bool IDEFacade::GetCurrentFunctionCode(std::string& outCode, std::string* outDiagnostics) const
 {
 	outCode.clear();
-	const DWORD beforeSeq = GetClipboardSequenceNumber();
-	if (!CopyCurrentFunctionCodeToClipboard()) {
-		return false;
+	if (outDiagnostics != nullptr) {
+		outDiagnostics->clear();
 	}
-	if (GetClipboardSequenceNumber() == beforeSeq) {
-		return false;
-	}
-	return ReadClipboardText(outCode) && !outCode.empty();
-}
+	auto setDiag = [&](const std::string& message) {
+		if (outDiagnostics != nullptr) {
+			*outDiagnostics = message;
+		}
+	};
 
+	int caretRow = -1;
+	int caretCol = -1;
+	if (!GetCaretPosition(caretRow, caretCol)) {
+		setDiag("GetCaretPosition failed");
+		return false;
+	}
+
+	std::string pageCode;
+	if (!GetCurrentPageCode(pageCode)) {
+		setDiag("GetCurrentPageCode failed");
+		return false;
+	}
+
+	const std::vector<std::string> lines = SplitLinesNormalizedLf(pageCode);
+	int startRow = -1;
+	int endRow = -1;
+	if (!LocateCurrentFunctionRowRangeByCaret(lines, caretRow, startRow, endRow)) {
+		setDiag("cannot locate sub header from current context, caretRow=" + std::to_string(caretRow));
+		return false;
+	}
+
+	std::string code;
+	for (int row = startRow; row <= endRow; ++row) {
+		code += lines[static_cast<size_t>(row)];
+		code += "\r\n";
+	}
+	TrimTrailingLineBreaks(code);
+	if (TrimAsciiSpace(code).empty()) {
+		setDiag("located function range but code is empty after trim");
+		return false;
+	}
+
+	outCode = std::move(code);
+	setDiag("ok: page-text caret-range path row=" + std::to_string(startRow) + "-" + std::to_string(endRow));
+	return true;
+}
 bool IDEFacade::ReplaceFunctionCodeByName(const std::string& functionName, const std::string& newFunctionCode, bool preCompile) const
 {
 	PageCodeSnapshot snapshot = {};
@@ -899,107 +1180,25 @@ bool IDEFacade::ReplaceCurrentFunctionCode(const std::string& newFunctionCode, b
 		return false;
 	}
 
-	int initialRow = -1;
-	int initialCol = -1;
-	if (!GetCaretPosition(initialRow, initialCol)) {
+	int caretRow = -1;
+	int caretCol = -1;
+	if (!GetCaretPosition(caretRow, caretCol)) {
 		return false;
 	}
 
-	int workRow = initialRow;
-	int workCol = initialCol;
-	ProgramText currentText = {};
-	if (!GetProgramText(workRow, workCol, currentText)) {
+	std::string pageCode;
+	if (!GetCurrentPageCode(pageCode)) {
 		return false;
 	}
 
-	bool movedIntoSub = false;
-	if (!IsSubRelatedType(currentText.type)) {
-		movedIntoSub = OpenCurrentSub();
-		if (!movedIntoSub) {
-			return false;
-		}
-		if (!GetCaretPosition(workRow, workCol) || !GetProgramText(workRow, workCol, currentText)) {
-			MoveBackSub();
-			MoveCaret(initialRow, initialCol);
-			return false;
-		}
-	}
-
+	const std::vector<std::string> lines = SplitLinesNormalizedLf(pageCode);
 	int startRow = -1;
-	for (int i = 0, row = workRow; i < kMaxFunctionScan && row >= 0; ++i, --row) {
-		ProgramText rowText = {};
-		if (!GetProgramText(row, -1, rowText)) {
-			continue;
-		}
-		if (rowText.isTitle) {
-			continue;
-		}
-		if (rowText.type == VT_SUB_NAME) {
-			startRow = row;
-			break;
-		}
-	}
-
-	if (startRow < 0) {
-		if (movedIntoSub) {
-			MoveBackSub();
-		}
-		MoveCaret(initialRow, initialCol);
+	int endRow = -1;
+	if (!LocateCurrentFunctionRowRangeByCaret(lines, caretRow, startRow, endRow)) {
 		return false;
 	}
 
-	int endRow = startRow;
-	ProgramText prevRowText = {};
-	bool hasPrevRowText = false;
-	int repeatedRowCount = 0;
-	for (int i = 0, row = startRow + 1; i < kMaxFunctionScan; ++i, ++row) {
-		ProgramText rowText = {};
-		if (!GetProgramText(row, -1, rowText)) {
-			endRow = row - 1;
-			break;
-		}
-		if (rowText.isTitle) {
-			continue;
-		}
-		if (rowText.type == VT_SUB_NAME || !IsSubRelatedType(rowText.type)) {
-			endRow = row - 1;
-			break;
-		}
-
-		if (hasPrevRowText &&
-			rowText.type == prevRowText.type &&
-			rowText.isTitle == prevRowText.isTitle &&
-			rowText.text == prevRowText.text) {
-			++repeatedRowCount;
-			if (repeatedRowCount >= 32) {
-				endRow = row - 1;
-				break;
-			}
-		}
-		else {
-			repeatedRowCount = 0;
-		}
-		prevRowText = rowText;
-		hasPrevRowText = true;
-
-		endRow = row;
-	}
-
-	if (endRow < startRow) {
-		endRow = startRow;
-	}
-
-	bool ok = false;
-	if (MoveCaret(startRow, 0) && SelectRowRange(startRow, endRow)) {
-		ok = ReplaceSelectedRowsText(newFunctionCode, preCompile);
-	}
-
-	RunBlkClearAllDef();
-	if (movedIntoSub) {
-		MoveBackSub();
-	}
-	MoveCaret(initialRow, initialCol);
-	return ok;
+	return ReplaceRowRangeText(startRow, endRow, newFunctionCode, preCompile);
 }
 
 bool IDEFacade::InsertCodeBelowFunction(const std::string& functionName, const std::string& codeToInsert, bool appendIfNotFound, bool preCompile) const
@@ -1176,7 +1375,7 @@ bool IDEFacade::InsertDllDeclarationByTemplate(const std::string& dllName, const
 		return false;
 	}
 
-	std::string decl = ".DLL命令 " + cmdName;
+	std::string decl = ".DLL鍛戒护 " + cmdName;
 	if (!TrimAsciiSpace(returnType).empty()) {
 		decl += ", " + TrimAsciiSpace(returnType);
 	}
@@ -1325,93 +1524,14 @@ bool IDEFacade::GetSelectedText(std::string& outText) const
 
 bool IDEFacade::CopyCurrentFunctionCodeToClipboard() const
 {
-	int originalRow = -1;
-	int originalCol = -1;
-	if (!GetCaretPosition(originalRow, originalCol)) {
+	std::string functionCode;
+	if (!GetCurrentFunctionCode(functionCode, nullptr)) {
 		return false;
 	}
-	const int initialRow = originalRow;
-	const int initialCol = originalCol;
-
-	int workRow = originalRow;
-	int workCol = originalCol;
-	ProgramText currentText = {};
-	if (!GetProgramText(workRow, workCol, currentText)) {
+	if (TrimAsciiSpace(functionCode).empty()) {
 		return false;
 	}
-
-	bool movedIntoSub = false;
-	if (!IsSubRelatedType(currentText.type)) {
-		movedIntoSub = OpenCurrentSub();
-		if (!movedIntoSub) {
-			return false;
-		}
-		if (!GetCaretPosition(workRow, workCol) || !GetProgramText(workRow, workCol, currentText)) {
-			MoveBackSub();
-			return false;
-		}
-	}
-
-	int startRow = -1;
-	for (int row = workRow; row >= 0; --row) {
-		ProgramText rowText = {};
-		if (!GetProgramText(row, workCol, rowText)) {
-			continue;
-		}
-		if (rowText.isTitle) {
-			continue;
-		}
-		if (rowText.type == VT_SUB_NAME) {
-			startRow = row;
-			break;
-		}
-	}
-
-	if (startRow < 0) {
-		if (movedIntoSub) {
-			MoveBackSub();
-		}
-		return false;
-	}
-
-	int endRow = startRow;
-	for (int row = startRow + 1;; ++row) {
-		ProgramText rowText = {};
-		if (!GetProgramText(row, workCol, rowText)) {
-			endRow = row - 1;
-			break;
-		}
-		if (rowText.isTitle) {
-			continue;
-		}
-		if (rowText.type == VT_SUB_NAME) {
-			endRow = row - 1;
-			break;
-		}
-		if (!IsSubRelatedType(rowText.type)) {
-			endRow = row - 1;
-			break;
-		}
-	}
-
-	if (endRow < startRow) {
-		endRow = startRow;
-	}
-
-	RunBlkClearAllDef();
-	bool selected = RunBlkAddDef(startRow, endRow);
-	bool copied = selected && CopySelection();
-	RunBlkClearAllDef();
-
-	if (copied) {
-		TrimClipboardLastLine();
-	}
-
-	if (movedIntoSub) {
-		MoveBackSub();
-	}
-	MoveCaret(initialRow, initialCol);
-	return copied;
+	return SetClipboardTextForPaste(functionCode);
 }
 
 bool IDEFacade::MovePrevUnit() const

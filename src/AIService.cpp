@@ -1,8 +1,9 @@
-#include "AIService.h"
+﻿#include "AIService.h"
 
 #include <algorithm>
 #include <cctype>
 #include <format>
+#include <Windows.h>
 
 #include "..\\thirdparty\\json.hpp"
 
@@ -34,6 +35,94 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 		return text;
 	}
 	return text.substr(0, maxLen) + "...";
+}
+
+bool IsValidUtf8(const std::string& text)
+{
+	if (text.empty()) {
+		return true;
+	}
+	return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0) > 0;
+}
+
+std::string ConvertCodePage(const std::string& text, UINT fromCodePage, UINT toCodePage, DWORD fromFlags = 0)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+
+	const int wideLen = MultiByteToWideChar(
+		fromCodePage,
+		fromFlags,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0);
+	if (wideLen <= 0) {
+		return text;
+	}
+
+	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+	if (MultiByteToWideChar(
+		fromCodePage,
+		fromFlags,
+		text.data(),
+		static_cast<int>(text.size()),
+		&wide[0],
+		wideLen) <= 0) {
+		return text;
+	}
+
+	const int outLen = WideCharToMultiByte(
+		toCodePage,
+		0,
+		wide.data(),
+		wideLen,
+		nullptr,
+		0,
+		nullptr,
+		nullptr);
+	if (outLen <= 0) {
+		return text;
+	}
+
+	std::string out(static_cast<size_t>(outLen), '\0');
+	if (WideCharToMultiByte(
+		toCodePage,
+		0,
+		wide.data(),
+		wideLen,
+		&out[0],
+		outLen,
+		nullptr,
+		nullptr) <= 0) {
+		return text;
+	}
+	return out;
+}
+
+std::string LocalToUtf8(const std::string& text)
+{
+	// AutoLinker/IDE strings are typically local ANSI (GBK on zh-CN Windows).
+	// Convert before feeding nlohmann::json, which requires UTF-8.
+	if (text.empty()) {
+		return std::string();
+	}
+	if (IsValidUtf8(text)) {
+		return text;
+	}
+	return ConvertCodePage(text, CP_ACP, CP_UTF8, 0);
+}
+
+std::string Utf8ToLocal(const std::string& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+	if (!IsValidUtf8(text)) {
+		return text;
+	}
+	return ConvertCodePage(text, CP_UTF8, CP_ACP, MB_ERR_INVALID_CHARS);
 }
 
 std::string RemoveCodeFence(const std::string& text)
@@ -145,18 +234,22 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 		return result;
 	}
 
+	const std::string modelUtf8 = LocalToUtf8(settings.model);
+	const std::string systemPromptUtf8 = LocalToUtf8(BuildSystemPrompt(kind, settings));
+	const std::string inputTextUtf8 = LocalToUtf8(inputText);
+
 	nlohmann::json requestBody;
-	requestBody["model"] = settings.model;
+	requestBody["model"] = modelUtf8;
 	requestBody["temperature"] = settings.temperature;
 	requestBody["stream"] = false;
 	requestBody["messages"] = nlohmann::json::array({
 		{
 			{"role", "system"},
-			{"content", BuildSystemPrompt(kind, settings)}
+			{"content", systemPromptUtf8}
 		},
 		{
 			{"role", "user"},
-			{"content", inputText}
+			{"content", inputTextUtf8}
 		}
 	});
 
@@ -165,8 +258,17 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 		"Content-Type: application/json\r\n"
 		"Authorization: Bearer " + settings.apiKey + "\r\n";
 
+	std::string requestBodyText;
+	try {
+		requestBodyText = requestBody.dump();
+	}
+	catch (const std::exception& ex) {
+		result.error = std::string("Failed to build AI request JSON: ") + ex.what();
+		return result;
+	}
+
 	const auto [responseBody, statusCode] =
-		PerformPostRequest(endpoint, requestBody.dump(), headers, settings.timeoutMs, false, false);
+		PerformPostRequest(endpoint, requestBodyText, headers, settings.timeoutMs, false, false);
 	result.httpStatus = statusCode;
 
 	if (statusCode < 200 || statusCode >= 300) {
@@ -181,7 +283,7 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 			if (choice.contains("message") && choice["message"].contains("content")) {
 				if (choice["message"]["content"].is_string()) {
 					result.ok = true;
-					result.content = choice["message"]["content"].get<std::string>();
+					result.content = Utf8ToLocal(choice["message"]["content"].get<std::string>());
 					return result;
 				}
 				if (choice["message"]["content"].is_array()) {
@@ -197,7 +299,7 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 					}
 					if (!merged.empty()) {
 						result.ok = true;
-						result.content = merged;
+						result.content = Utf8ToLocal(merged);
 						return result;
 					}
 				}
@@ -205,7 +307,7 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 		}
 
 		if (parsed.contains("error") && parsed["error"].contains("message") && parsed["error"]["message"].is_string()) {
-			result.error = parsed["error"]["message"].get<std::string>();
+			result.error = Utf8ToLocal(parsed["error"]["message"].get<std::string>());
 			return result;
 		}
 
@@ -254,40 +356,134 @@ std::string AIService::BuildEndpoint(const std::string& baseUrl)
 std::string AIService::BuildSystemPrompt(AITaskKind kind, const AISettings& settings)
 {
 	std::string prompt =
-		"You are a coding assistant for E-language (Yi language), a Chinese programming language.\n"
-		"Rules:\n"
-		"1) Use single quote (') for inline comments in code.\n"
-		"2) Follow E-language syntax and keep '.version 2' style layout.\n"
-		"3) Unless explicitly requested, output only final code/text, no extra explanation.\n"
-		"4) Do not output markdown headings or extra wrappers.\n\n"
-		"E-language layout example:\n"
-		".version 2\n"
-		".subroutine demo, integer\n"
-		"return (0)\n\n";
+		"你是一个易语言代码助手。\n"
+		"规则：\n"
+		"1) 代码注释使用单引号（'）。\n"
+		"2) 必须遵循易语言语法与排版（如 .版本 2、.子程序 等）。\n"
+		"3) 除非用户明确要求，否则只输出最终代码或文本，不要附加解释。\n"
+		"4) 不要输出 Markdown 标题或其他包装。\n\n"
+		"易语言格式示例：\n"
+		".版本 2\n"
+		".子程序 demo, 整数型\n"
+		"返回 (0)\n\n";
+
+	prompt += R"AL_REF(参考函数（完整示例，仅用于格式与风格参考，不要照抄无关变量）：
+.版本 2
+
+.子程序 FindWindowWithContainReturnMainList, 整数型, 公开, 函数注释：寻找所有符合条件的顶级窗口句柄，返回找到的数量
+.参数 mainTitle, 文本型, , 参数；主窗口标题包含的文本
+.参数 mainClass, 文本型, , 参数；主窗口类名包含的文本
+.参数 childTitle, 文本型, , 参数；子窗口标题包含的文本
+.参数 childClass, 文本型, , 参数；子窗口类名包含的文本
+.参数 childHasChild, 逻辑型, 可空, 参数；可空；找到的子窗口需要包含子窗口(真)还是不包含(假)
+.参数 mainHwndArray, 整数型, 参考 数组, 参数；参考（传址）；数组；用于存放找到的所有主窗口句柄的数组变量
+.局部变量 i, 整数型, , , 这些都是变量
+.局部变量 class, 文本型
+.局部变量 text, 文本型
+.局部变量 mid, 整数型, , "0", 这是个数组
+.局部变量 x, 整数型
+.局部变量 mainOK, 逻辑型
+.局部变量 mainTitleOK, 逻辑型
+.局部变量 mainClassOK, 逻辑型
+.局部变量 childTitleOK, 逻辑型
+.局部变量 childClassOK, 逻辑型
+.局部变量 childOK, 逻辑型
+.局部变量 hasChild, 逻辑型
+
+' 1. 初始化结果数组
+清除数组 (mainHwndArray)
+
+' 2. 获取当前所有顶级窗口
+清除数组 (m_hwnd_list)
+EnumWindows (到整数 (&枚举窗口过程), 0)
+
+' 3. 遍历顶级窗口
+.计次循环首 (取数组成员数 (m_hwnd_list), i)
+    text ＝ 窗口_取标题 (m_hwnd_list [i])
+    class ＝ 窗口_取类名 (m_hwnd_list [i])
+
+    ' 匹配主窗口条件 (空字符串视为匹配成功)
+    mainTitleOK ＝ 选择 (mainTitle ＝ "", 真, IsContains (text, mainTitle))
+    mainClassOK ＝ 选择 (mainClass ＝ "", 真, IsContains (class, mainClass))
+
+    mainOK ＝ mainTitleOK 且 mainClassOK
+
+    .如果真 (mainOK)
+        ' 4. 如果主窗口匹配，枚举其所有子窗口进行深度检查
+        清除数组 (mid)
+        窗口_枚举所有子窗口 (m_hwnd_list [i], mid, )
+
+        .计次循环首 (取数组成员数 (mid), x)
+            text ＝ 窗口_取标题 (mid [x])
+            class ＝ 窗口_取类名 (mid [x])
+
+            ' 匹配子窗口条件
+            childTitleOK ＝ 选择 (childTitle ＝ "", 真, IsContains (text, childTitle))
+            childClassOK ＝ 选择 (childClass ＝ "", 真, IsContains (class, childClass))
+            childOK ＝ childTitleOK 且 childClassOK
+
+            ' 检查子窗口是否含有孙窗口
+            hasChild ＝ hasChildWindow (mid [x])
+
+            ' 综合判断子窗口是否符合要求
+            .如果 (childHasChild)
+                .如果真 (childOK 且 hasChild)
+                    加入成员 (mainHwndArray, m_hwnd_list [i])
+                    跳出循环 ()  ' 只要找到一个符合条件的子窗口，该主窗口就合格，跳出子窗口循环
+                .如果真结束
+
+            .否则
+                .如果真 (childOK 且 hasChild ＝ 假)
+                    加入成员 (mainHwndArray, m_hwnd_list [i])
+                    跳出循环 ()
+                .如果真结束
+
+            .如果结束
+
+        .计次循环尾 ()
+    .如果真结束
+
+.计次循环尾 ()
+
+' 5. 返回找到的总数
+返回 (取数组成员数 (mainHwndArray))
+
+)AL_REF";
 
 	switch (kind)
 	{
 	case AITaskKind::OptimizeFunction:
-		prompt += "Task: optimize the provided current function code for readability and robustness while keeping behavior equivalent. Return only complete function code.";
+		prompt += "任务：优化给定函数代码，在保持行为等价的前提下提升可读性与健壮性。只返回完整可替换的函数代码。";
 		break;
 	case AITaskKind::AddCommentsToFunction:
-		prompt += "Task: add appropriate comments to the provided function (function comment and key-line comments) without changing logic. Return only complete function code.";
+		prompt += "任务：为给定函数添加合适注释（函数说明与关键行注释），不得改变原逻辑。只返回完整可替换的函数代码。";
 		break;
 	case AITaskKind::TranslateFunctionAndVariables:
-		prompt += "Task: rename function name, parameter names, and local variable names to English using lowerCamelCase (first letter lowercase) while preserving logic. Return only complete function code.";
+		prompt +=
+			"任务：将函数名、参数名、局部变量名翻译或重命名为英文 lowerCamelCase（首字母小写），并保持逻辑不变。\n"
+			"禁止翻译或修改任何以 '.' 开头的易语言系统指令/关键字（例如：.版本/.子程序/.参数/.局部变量/.如果/.否则/.返回 等）。\n"
+			"只允许修改标识符（函数名/参数名/局部变量名），系统指令与语句结构必须保持不变。\n"
+			"只返回完整可替换的函数代码。";
 		break;
 	case AITaskKind::TranslateText:
-		prompt += "Task: translate user-provided text. Return only translated plain text with no extra explanation.";
+		prompt += "任务：翻译用户提供的文本。只返回翻译后的纯文本，不要附加解释。";
 		break;
 	case AITaskKind::CompleteApiDeclarations:
 		prompt +=
-			"Task: based on the provided function, complete potentially missing .DLL command / .parameter / .data type / .member declarations.\n"
-			"Return declarations only, do not return function implementation.\n"
-			"Declaration example:\n"
-			".DLL command GetDC, integer, \"user32\", \"GetDC\", public\n"
-			".parameter hwnd, integer\n"
-			".data type BITMAPFILEHEADER\n"
-			".member bfType, short integer";
+			"任务：根据给定函数，补全可能缺失的 .DLL命令 / .参数 / .数据类型 / .成员 声明。\n"
+			"只返回声明，不要返回函数实现。\n"
+			"声明示例（DLL结构声明）：\n"
+			".版本 2\n"
+			".DLL命令 GetDC, 整数型, \"user32\", \"GetDC\", 公开\n"
+			".参数 hwnd, 整数型\n\n"
+			"声明示例（结构体声明）：\n"
+			".版本 2\n"
+			".数据类型 BITMAPFILEHEADER\n"
+			".成员 bfType, 短整数型\n"
+			".成员 bfSize, 整数型\n"
+			".成员 bfReserved1, 短整数型\n"
+			".成员 bfReserved2, 短整数型\n"
+			".成员 bfOffBits, 整数型";
 		break;
 	default:
 		break;
@@ -295,9 +491,10 @@ std::string AIService::BuildSystemPrompt(AITaskKind kind, const AISettings& sett
 
 	const std::string extraPrompt = Trim(settings.extraSystemPrompt);
 	if (!extraPrompt.empty()) {
-		prompt += "\n\nUser extra system prompt:\n";
+		prompt += "\n\n用户额外系统提示：\n";
 		prompt += extraPrompt;
 	}
 
 	return prompt;
 }
+

@@ -28,6 +28,24 @@ constexpr int IDC_INPUT_EDIT = 1201;
 constexpr int IDC_INPUT_OK = 1;
 constexpr int IDC_INPUT_CANCEL = 2;
 
+HFONT GetDialogFont()
+{
+	static HFONT s_dialogFont = nullptr;
+	if (s_dialogFont != nullptr) {
+		return s_dialogFont;
+	}
+
+	NONCLIENTMETRICSA ncm = {};
+	ncm.cbSize = sizeof(ncm);
+	if (SystemParametersInfoA(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0) != FALSE) {
+		s_dialogFont = CreateFontIndirectA(&ncm.lfMessageFont);
+	}
+	if (s_dialogFont == nullptr) {
+		s_dialogFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+	}
+	return s_dialogFont;
+}
+
 std::string GetEditTextA(HWND hEdit)
 {
 	if (hEdit == nullptr) {
@@ -40,9 +58,63 @@ std::string GetEditTextA(HWND hEdit)
 	}
 
 	std::string text(static_cast<size_t>(len + 1), '\0');
-	GetWindowTextA(hEdit, text.data(), len + 1);
+	GetWindowTextA(hEdit, &text[0], len + 1);
 	text.resize(static_cast<size_t>(len));
 	return text;
+}
+
+std::string NormalizeMultilineForEdit(const std::string& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+
+	std::string expanded = text;
+	const bool hasRealLineBreak = expanded.find('\n') != std::string::npos || expanded.find('\r') != std::string::npos;
+	if (!hasRealLineBreak) {
+		std::string unescaped;
+		unescaped.reserve(expanded.size());
+		for (size_t i = 0; i < expanded.size(); ++i) {
+			if (expanded[i] == '\\' && i + 1 < expanded.size()) {
+				if (expanded[i + 1] == 'n') {
+					unescaped.push_back('\n');
+					++i;
+					continue;
+				}
+				if (expanded[i + 1] == 'r') {
+					if (i + 3 < expanded.size() && expanded[i + 2] == '\\' && expanded[i + 3] == 'n') {
+						unescaped.push_back('\n');
+						i += 3;
+						continue;
+					}
+					unescaped.push_back('\n');
+					++i;
+					continue;
+				}
+			}
+			unescaped.push_back(expanded[i]);
+		}
+		expanded.swap(unescaped);
+	}
+
+	std::string normalized;
+	normalized.reserve(expanded.size() + 16);
+	for (size_t i = 0; i < expanded.size(); ++i) {
+		const char ch = expanded[i];
+		if (ch == '\r') {
+			if (i + 1 < expanded.size() && expanded[i + 1] == '\n') {
+				++i;
+			}
+			normalized += "\r\n";
+			continue;
+		}
+		if (ch == '\n') {
+			normalized += "\r\n";
+			continue;
+		}
+		normalized.push_back(ch);
+	}
+	return normalized;
 }
 
 void SetDefaultFont(HWND hWnd)
@@ -50,7 +122,7 @@ void SetDefaultFont(HWND hWnd)
 	if (hWnd == nullptr) {
 		return;
 	}
-	SendMessageA(hWnd, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+	SendMessageA(hWnd, WM_SETFONT, reinterpret_cast<WPARAM>(GetDialogFont()), TRUE);
 }
 
 struct AIConfigDialogContext {
@@ -78,36 +150,47 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			return -1;
 		}
 
-		CreateWindowA("STATIC", "Base URL:", WS_CHILD | WS_VISIBLE,
+		HWND hBaseUrlLabel = CreateWindowA("STATIC", "Base URL:", WS_CHILD | WS_VISIBLE,
 			16, 16, 100, 20, hWnd, nullptr, nullptr, nullptr);
-		ctx->hBaseUrl = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", ctx->settings->baseUrl.c_str(),
+		ctx->hBaseUrl = CreateWindowExA(0, "EDIT", ctx->settings->baseUrl.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
 			120, 14, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_BASE_URL), nullptr, nullptr);
 
-		CreateWindowA("STATIC", "API Key:", WS_CHILD | WS_VISIBLE,
+		HWND hApiKeyLabel = CreateWindowA("STATIC", "API Key:", WS_CHILD | WS_VISIBLE,
 			16, 50, 100, 20, hWnd, nullptr, nullptr, nullptr);
-		ctx->hApiKey = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", ctx->settings->apiKey.c_str(),
+		ctx->hApiKey = CreateWindowExA(0, "EDIT", ctx->settings->apiKey.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD,
 			120, 48, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_API_KEY), nullptr, nullptr);
 
-		CreateWindowA("STATIC", "Model:", WS_CHILD | WS_VISIBLE,
+		HWND hModelLabel = CreateWindowA("STATIC", "Model:", WS_CHILD | WS_VISIBLE,
 			16, 84, 100, 20, hWnd, nullptr, nullptr, nullptr);
-		ctx->hModel = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", ctx->settings->model.c_str(),
+		ctx->hModel = CreateWindowExA(0, "EDIT", ctx->settings->model.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
 			120, 82, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_MODEL), nullptr, nullptr);
 
-		CreateWindowA("STATIC", "System Prompt Extra:", WS_CHILD | WS_VISIBLE,
+		HWND hExtraPromptLabel = CreateWindowA("STATIC", "System Prompt Extra:", WS_CHILD | WS_VISIBLE,
 			16, 118, 140, 20, hWnd, nullptr, nullptr, nullptr);
-		ctx->hExtraPrompt = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", ctx->settings->extraSystemPrompt.c_str(),
+		ctx->hExtraPrompt = CreateWindowExA(0, "EDIT", ctx->settings->extraSystemPrompt.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
 			120, 118, 500, 180, hWnd, reinterpret_cast<HMENU>(IDC_CFG_EXTRA_PROMPT), nullptr, nullptr);
 
-		HWND hSave = CreateWindowA("BUTTON", "Save and Continue", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+		HWND hSave = CreateWindowA("BUTTON", "Save and Continue", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
 			420, 314, 100, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_SAVE), nullptr, nullptr);
 		HWND hCancel = CreateWindowA("BUTTON", "Cancel", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
 			530, 314, 90, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_CANCEL), nullptr, nullptr);
 
-		std::array<HWND, 6> controls = { ctx->hBaseUrl, ctx->hApiKey, ctx->hModel, ctx->hExtraPrompt, hSave, hCancel };
+		std::array<HWND, 10> controls = {
+			hBaseUrlLabel,
+			hApiKeyLabel,
+			hModelLabel,
+			hExtraPromptLabel,
+			ctx->hBaseUrl,
+			ctx->hApiKey,
+			ctx->hModel,
+			ctx->hExtraPrompt,
+			hSave,
+			hCancel
+		};
 		for (HWND hControl : controls) {
 			SetDefaultFont(hControl);
 		}
@@ -189,9 +272,11 @@ LRESULT CALLBACK AIPreviewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 			return -1;
 		}
 
-		ctx->hEdit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", ctx->content.c_str(),
-			WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL | WS_HSCROLL,
+		ctx->hEdit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
+			WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
 			14, 14, 752, 450, hWnd, reinterpret_cast<HMENU>(IDC_PREVIEW_EDIT), nullptr, nullptr);
+		const std::string displayText = NormalizeMultilineForEdit(ctx->content);
+		SetWindowTextA(ctx->hEdit, displayText.c_str());
 
 		HWND hOk = CreateWindowA("BUTTON", ctx->confirmText.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 590, 474, 84, 30, hWnd,
@@ -346,14 +431,14 @@ bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 	wc.hInstance = GetModuleHandleA(nullptr);
 	wc.lpszClassName = "AutoLinkerAIConfigDialogWindow";
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
 	RegisterClassExA(&wc);
 
 	AIConfigDialogContext ctx = {};
 	ctx.settings = &ioSettings;
 
 	HWND hDialog = CreateWindowExA(
-		WS_EX_DLGMODALFRAME,
+		WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
 		wc.lpszClassName,
 		"AutoLinker AI Config",
 		WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
@@ -384,7 +469,7 @@ bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string
 	wc.hInstance = GetModuleHandleA(nullptr);
 	wc.lpszClassName = "AutoLinkerAIPreviewDialogWindow";
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
 	RegisterClassExA(&wc);
 
 	AIPreviewDialogContext ctx = {};
@@ -393,7 +478,7 @@ bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string
 	ctx.confirmText = confirmText.empty() ? "OK" : confirmText;
 
 	HWND hDialog = CreateWindowExA(
-		WS_EX_DLGMODALFRAME,
+		WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
 		wc.lpszClassName,
 		ctx.title.c_str(),
 		WS_CAPTION | WS_SYSMENU | WS_VISIBLE | WS_SIZEBOX,
@@ -424,7 +509,7 @@ bool ShowAITextInputDialog(HWND owner, const std::string& title, const std::stri
 	wc.hInstance = GetModuleHandleA(nullptr);
 	wc.lpszClassName = "AutoLinkerAIInputDialogWindow";
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
 	RegisterClassExA(&wc);
 
 	AIInputDialogContext ctx = {};
@@ -433,7 +518,7 @@ bool ShowAITextInputDialog(HWND owner, const std::string& title, const std::stri
 	ctx.text = ioText;
 
 	HWND hDialog = CreateWindowExA(
-		WS_EX_DLGMODALFRAME,
+		WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
 		wc.lpszClassName,
 		ctx.title.c_str(),
 		WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
