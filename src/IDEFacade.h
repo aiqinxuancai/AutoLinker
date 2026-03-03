@@ -14,7 +14,7 @@
 
 class IDEFacade {
 public:
-	// IDE 褰撳墠婵€娲婚〉闈㈢被鍨嬶紙瀵瑰簲 FN_GET_ACTIVE_WND_TYPE锛夈€?
+	// IDE 当前激活页面类型（对应 FN_GET_ACTIVE_WND_TYPE）。
 	enum class ActiveWindowType : int {
 		None = 0,
 		Module = 1,
@@ -27,7 +27,7 @@ public:
 		SoundResource = 8
 	};
 
-	// 甯哥敤瑙嗗浘椤电锛堢敤浜?OpenViewTab锛夈€?
+	// 常用视图页签（用于 OpenViewTab）。
 	enum class ViewTab {
 		DataType,
 		GlobalVar,
@@ -37,14 +37,14 @@ public:
 		SoundResource
 	};
 
-	// 浠ｇ爜鏂囨湰鏌ヨ缁撴灉锛堝搴?FN_GET_PRG_TEXT / FN_GET_PRG_HELP锛夈€?
+	// 代码文本查询结果（对应 FN_GET_PRG_TEXT / FN_GET_PRG_HELP）。
 	struct ProgramText {
 		std::string text;
 		int type = 0;
 		bool isTitle = false;
 	};
 
-	// 瀛愮▼搴忎唬鐮佸潡淇℃伅锛堟寜褰撳墠椤垫壂鎻忓緱鍒帮級銆?
+	// 子程序代码块信息（按当前页扫描得到）。
 	struct FunctionBlock {
 		std::string name;
 		int startRow = -1;
@@ -53,7 +53,7 @@ public:
 		std::string code;
 	};
 
-	// 褰撳墠椤典唬鐮佸揩鐓э細鏁撮〉鏂囨湰 + 瀛愮▼搴忓垪琛ㄣ€?
+	// 当前页代码快照：整页文本 + 子程序列表。
 	struct PageCodeSnapshot {
 		std::string code;
 		int firstRow = -1;
@@ -65,22 +65,22 @@ public:
 
 	static IDEFacade& Instance();
 
-	// 鐩存帴璋冪敤 IDE 鍔熻兘鍙凤紙FN_*锛夛紝杩斿洖鍘熷缁撴灉/甯冨皵缁撴灉銆?
+	// 直接调用 IDE 功能号（FN_*），返回原始结果/布尔结果。
 	INT RunFunctionRaw(INT code, DWORD p1 = 0, DWORD p2 = 0) const;
 	bool RunFunction(INT code, DWORD p1 = 0, DWORD p2 = 0) const;
 
-	// 閫氱敤璋冪敤涓庣粨鏋滆緟鍔┿€?
+	// 通用调用与结果辅助。
 	bool Invoke(INT fnCode, DWORD p1 = 0, DWORD p2 = 0) const;
 	bool IsFnEnabled(INT fnCode) const;
 	bool TryGetInt(INT fnCode, int& outValue) const;
 	bool TryGetBool(INT fnCode, bool& outValue) const;
 
-	// 鏃犲弬 FN_* 鐨勪竴閿皝瑁咃紙鐢卞畯鍒楄〃灞曞紑锛夈€?
+	// 无参 FN_* 的一键封装（由宏列表展开）。
 #define IDEFACADE_DECLARE_NOARG_METHOD(methodName, fnCode) bool methodName() const;
 	IDEFACADE_NOARG_FN_LIST(IDEFACADE_DECLARE_NOARG_METHOD)
 #undef IDEFACADE_DECLARE_NOARG_METHOD
 
-	// 甯哥敤甯﹀弬 FN_* 灏佽銆?
+	// 常用带参 FN_* 封装。
 	bool RunMoveOpenSpecRowArg(int rowIndex) const;
 	bool RunMoveCloseSpecRowArg(int rowIndex) const;
 	bool RunMoveCaret(int rowIndex, int colIndex) const;
@@ -112,7 +112,7 @@ public:
 	bool RunGetNumLib(int& count) const;
 	bool RunGetLibInfoText(int index, std::string& text) const;
 
-	// IDE 鐘舵€?鍏夋爣/鏂囨湰璇诲彇銆?
+	// IDE 状态：光标/文本读取。
 	HWND GetMainWindow() const;
 	bool IsFunctionEnabled(INT code) const;
 	ActiveWindowType GetActiveWindowType() const;
@@ -120,17 +120,17 @@ public:
 	bool GetProgramText(int rowIndex, int colIndex, ProgramText& outText) const;
 	bool GetProgramHelp(int rowIndex, int colIndex, ProgramText& outText) const;
 
-	// 缂栬緫鎿嶄綔灏佽銆?
+	// 编辑操作封装。
 	bool InsertText(const std::string& text, bool asKeyboardInput = false) const;
 	bool SetAndCompileCurrentItemText(const std::string& text, bool preCompile = true) const;
 	bool ReplaceAll(const std::string& findText, const std::string& replaceText, bool caseSensitive = false) const;
 	bool SelectAll() const;
 	bool CopySelection() const;
-	// 鑾峰彇褰撳墠閫変腑鏂囨湰锛堥€氳繃 IDE 澶嶅埗鍚庤鍙栧壀璐存澘锛夈€?
+	// 获取当前选中文本（通过 IDE 复制后读取剪贴板）。
 	bool GetSelectedText(std::string& outText) const;
 	bool CopyCurrentFunctionCodeToClipboard() const;
 
-	// 浠ｇ爜瀵艰埅銆?
+	// 代码导航。
 	bool MovePrevUnit() const;
 	bool MoveNextUnit() const;
 	bool MoveToParentCommand() const;
@@ -140,18 +140,18 @@ public:
 	bool CloseCurrentSub() const;
 	bool MoveBackSub() const;
 
-	// 椤甸潰鍒囨崲涓庣紪璇戜繚瀛樸€?
+	// 页面切换与编译保存。
 	bool OpenViewTab(ViewTab tab) const;
 	bool SaveFile() const;
 	bool OpenFile(const std::string& filePath) const;
 	bool Compile() const;
 	bool CompileAndRun() const;
 	bool AddOutputTab(HWND hWnd, const std::string& caption, const std::string& toolTip, HICON hIcon = nullptr) const;
-	// 鍚?IDE 杈撳嚭绐楀彛杩藉姞鏂囨湰/琛屾枃鏈紙琛屾枃鏈細鑷姩杩藉姞 CRLF锛夈€?
+	// 向 IDE 输出窗口追加文本/行文本（行文本会自动追加 CRLF）。
 	bool AppendOutputWindowText(const std::string& text) const;
 	bool AppendOutputWindowLine(const std::string& text) const;
 
-	// ECOM 绠＄悊銆?
+	// ECOM 管理。
 	bool AddECOM(const std::string& filePath) const;
 	bool AddECOM2(const std::string& filePath) const;
 	bool GetImportedECOMCount(int& count) const;
@@ -162,8 +162,8 @@ public:
 	int FindECOMIndex(const std::string& filePath) const;
 	int FindECOMNameIndex(const std::string& ecomName) const;
 
-	// ===== 寮哄寲婧愮爜鎿嶄綔鎺ュ彛锛堝綋鍓嶇紪杈戦〉鑼冨洿锛?====
-	// 鑾峰彇褰撳墠椤靛畬鏁翠唬鐮佹枃鏈€?
+	// ===== 强化源码操作接口（当前编辑页范围）====
+	// 获取当前页完整代码文本。
 	bool GetCurrentPageCode(std::string& outCode) const;
 	// 替换当前页全部代码文本。
 	bool ReplaceCurrentPageCode(const std::string& newPageCode, bool preCompile = true) const;
@@ -171,26 +171,26 @@ public:
 	bool ReplaceRowRangeText(int startRow, int endRow, const std::string& newText, bool preCompile = true) const;
 	// 获取当前页快照（含函数分块信息）。
 	bool GetCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const;
-	// 鎸夊嚱鏁板悕鑾峰彇浠ｇ爜锛堝彧鍦ㄥ綋鍓嶉〉鏌ユ壘锛夈€?
+	// 按函数名获取代码（只在当前页查找）。
 	bool GetFunctionCodeByName(const std::string& functionName, std::string& outCode) const;
-	// 鑾峰彇鍏夋爣鎵€鍦ㄥ嚱鏁颁唬鐮併€?
+	// 获取光标所在函数代码。
 	bool GetCurrentFunctionCode(std::string& outCode, std::string* outDiagnostics = nullptr) const;
-	// 鎸夊嚱鏁板悕鏇挎崲鍑芥暟浠ｇ爜锛涙壘涓嶅埌杩斿洖 false銆?
+	// 按函数名替换函数代码；找不到返回 false。
 	bool ReplaceFunctionCodeByName(const std::string& functionName, const std::string& newFunctionCode, bool preCompile = true) const;
-	// 鏇挎崲鍏夋爣鎵€鍦ㄥ嚱鏁颁唬鐮併€?
+	// 替换光标所在函数代码。
 	bool ReplaceCurrentFunctionCode(const std::string& newFunctionCode, bool preCompile = true) const;
-	// 鍦ㄦ寚瀹氬嚱鏁颁笅鏂规彃鍏ヤ唬鐮侊紱鎵句笉鍒版椂鍙拷鍔犲埌椤垫湯銆?
+	// 在指定函数下方插入代码；找不到时可追加到页末。
 	bool InsertCodeBelowFunction(const std::string& functionName, const std::string& codeToInsert, bool appendIfNotFound = true, bool preCompile = true) const;
-	// 鍦ㄥ綋鍓嶉〉杩藉姞 DLL 澹版槑浠ｇ爜鍧椼€?
+	// 在当前页追加 DLL 声明代码块。
 	bool InsertDllDeclaration(const std::string& dllDeclarationCode, bool preCompile = true) const;
-	// 鍦ㄥ綋鍓嶉〉椤甸鎻掑叆浠ｇ爜锛堜紭鍏堟彃鍏ュ埌鈥?鐗堟湰鈥濅笅涓€琛岋級銆?
+	// 在当前页页首插入代码（优先插入到“版本”下一行）。
 	bool InsertCodeAtPageTop(const std::string& codeToInsert, bool preCompile = true) const;
-	// 鎸夋ā鏉挎瀯寤哄苟鎻掑叆 DLL 澹版槑浠ｇ爜鍧椼€?
+	// 按模板构建并插入 DLL 声明代码块。
 	bool InsertDllDeclarationByTemplate(const std::string& dllName, const std::string& commandName, const std::string& returnType, const std::string& argList, bool preCompile = true) const;
-	// 鎸夊嚱鏁板悕瀹氫綅骞惰烦杞埌鍑芥暟澶达紙鍙湪褰撳墠椤垫煡鎵撅級銆?
+	// 按函数名定位并跳转到函数头（只在当前页查找）。
 	bool JumpToFunctionHeaderByName(const std::string& functionName) const;
 
-	// 鍙抽敭鑿滃崟鎵╁睍锛堟敞鍐屻€佹竻鐞嗐€佹秷鎭垎鍙戯級銆?
+	// 右键菜单扩展（注册、清理、消息分发）。
 	void RegisterContextMenuItem(UINT commandId, const std::string& text, MenuHandler handler);
 	void ClearContextMenuItems();
 	bool HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2);
@@ -198,22 +198,22 @@ public:
 
 private:
 	IDEFacade() = default;
-	// 鍐呴儴宸ュ叿锛氳鍙栦唬鐮侀」鏂囨湰銆?
+	// 内部工具：读取代码项文本。
 	bool ReadProgramLikeText(INT functionCode, int rowIndex, int colIndex, ProgramText& outText) const;
-	// 鍐呴儴宸ュ叿锛氭瀯寤哄綋鍓嶉〉蹇収骞舵媶鍒嗗嚱鏁板潡銆?
+	// 内部工具：构建当前页快照并拆分函数块。
 	bool BuildCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const;
-	// 鍐呴儴宸ュ叿锛氭寜鍚嶇О鏌ユ壘鍑芥暟鍧椼€?
+	// 内部工具：按名称查找函数块。
 	bool FindFunctionBlockByName(const PageCodeSnapshot& snapshot, const std::string& name, FunctionBlock& outBlock) const;
-	// 鍐呴儴宸ュ叿锛氭寜鍏夋爣浣嶇疆鏌ユ壘褰撳墠鍑芥暟鍧椼€?
+	// 内部工具：按光标位置查找当前函数块。
 	bool FindCurrentFunctionBlock(const PageCodeSnapshot& snapshot, FunctionBlock& outBlock) const;
-	// 鍐呴儴宸ュ叿锛氶€夋嫨琛岃寖鍥村苟鏇挎崲閫変腑浠ｇ爜銆?
+	// 内部工具：选择行范围并替换选中代码。
 	bool SelectRowRange(int startRow, int endRow) const;
 	bool ReplaceSelectedRowsText(const std::string& text, bool preCompile) const;
-	// 鍐呴儴宸ュ叿锛氬嚱鏁板悕瑙勮寖鍖栦笌鏂囨湰鏁寸悊銆?
+	// 内部工具：函数名规范化与文本整理。
 	static std::string NormalizeFunctionName(const std::string& name);
 	static std::string EnsureTrailingLineBreak(const std::string& text);
 	static std::string TrimAsciiSpace(const std::string& s);
-	// 鍐呴儴宸ュ叿锛氭煡鎵?IDE 杈撳嚭绐楀彛鍙ユ焺锛堥潪鍏紑鎺т欢锛夈€?
+	// 内部工具：查找 IDE 输出窗口句柄（非公开控件）。
 	HWND FindOutputWindowHandle() const;
 
 	struct ContextMenuItem {

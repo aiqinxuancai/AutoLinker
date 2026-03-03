@@ -1850,11 +1850,63 @@ bool IDEFacade::HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 		return false;
 	}
 
-	AppendMenuA(popupMenu, MF_SEPARATOR, 0, nullptr);
-	for (const auto& item : m_contextMenuItems) {
-		AppendMenuA(popupMenu, MF_STRING | MF_ENABLED, item.commandId, item.text.c_str());
-		EnableMenuItem(popupMenu, item.commandId, MF_BYCOMMAND | MF_ENABLED);
+	HMENU autoLinkerMenu = CreatePopupMenu();
+	if (autoLinkerMenu == nullptr) {
+		return false;
 	}
+
+	constexpr UINT kAiTranslateTextCommandId = 31104;
+	const bool hasSelectedText = IsFnEnabled(FN_EDIT_CUT);
+	for (const auto& item : m_contextMenuItems) {
+		UINT flags = MF_STRING | MF_ENABLED;
+		if (item.commandId == kAiTranslateTextCommandId && !hasSelectedText) {
+			flags = MF_STRING | MF_GRAYED;
+		}
+		AppendMenuA(autoLinkerMenu, flags, item.commandId, item.text.c_str());
+	}
+
+	const int menuCount = GetMenuItemCount(popupMenu);
+	int insertPos = menuCount >= 0 ? menuCount : 0;
+	for (int i = 0; i < menuCount; ++i) {
+		wchar_t title[256] = {};
+		const int len = GetMenuStringW(
+			popupMenu,
+			static_cast<UINT>(i),
+			title,
+			static_cast<int>(sizeof(title) / sizeof(title[0])),
+			MF_BYPOSITION);
+		if (len <= 0) {
+			continue;
+		}
+		const std::wstring itemTitle(title, static_cast<size_t>(len));
+		if (itemTitle.find(L"撤销") != std::wstring::npos ||
+			itemTitle.find(L"Undo") != std::wstring::npos ||
+			itemTitle.find(L"undo") != std::wstring::npos) {
+			insertPos = i;
+			break;
+		}
+	}
+
+	if (!InsertMenuA(
+		popupMenu,
+		static_cast<UINT>(insertPos),
+		MF_BYPOSITION | MF_SEPARATOR,
+		0,
+		nullptr)) {
+		DestroyMenu(autoLinkerMenu);
+		return false;
+	}
+
+	if (!InsertMenuA(
+		popupMenu,
+		static_cast<UINT>(insertPos + 1),
+		MF_BYPOSITION | MF_POPUP | MF_STRING,
+		reinterpret_cast<UINT_PTR>(autoLinkerMenu),
+		"AutoLinker")) {
+		DestroyMenu(autoLinkerMenu);
+		return false;
+	}
+
 	return true;
 }
 

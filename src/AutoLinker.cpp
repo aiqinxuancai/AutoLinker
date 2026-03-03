@@ -1143,9 +1143,14 @@ void HandleInitMenuPopup(HMENU hMenu)
 		IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT,
 		IDM_AUTOLINKER_CTX_AI_COMPLETE_DECL
 	};
+	const bool hasSelectedText = IDEFacade::Instance().IsFunctionEnabled(FN_EDIT_CUT);
 	for (UINT cmdId : aiCmdIds) {
 		UINT aiState = GetMenuState(hMenu, cmdId, MF_BYCOMMAND);
 		if (aiState != 0xFFFFFFFF) {
+			if (cmdId == IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT) {
+				EnableMenuItem(hMenu, cmdId, MF_BYCOMMAND | (hasSelectedText ? MF_ENABLED : MF_GRAYED));
+				continue;
+			}
 			EnableMenuItem(hMenu, cmdId, MF_BYCOMMAND | MF_ENABLED);
 		}
 	}
