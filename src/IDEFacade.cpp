@@ -2616,20 +2616,84 @@ bool IDEFacade::HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 	}
 
 	constexpr const char* kAiTranslateTextLabel = "AI翻译选中文本";
+	constexpr const char* kCopyCurrentFunctionLabel = "复制当前函数代码";
+	constexpr const char* kAiOptimizeFunctionLabel = "AI优化函数";
+	constexpr const char* kAiCommentFunctionLabel = "AI为当前函数添加注释";
+	constexpr const char* kAiTranslateFunctionLabel = "AI翻译当前函数+变量名";
 	const bool hasSelectedText = IsFnEnabled(FN_EDIT_CUT);
+	const auto isFunctionActionItem = [&](const ContextMenuItem& item) {
+		return item.text == kCopyCurrentFunctionLabel ||
+			item.text == kAiOptimizeFunctionLabel ||
+			item.text == kAiCommentFunctionLabel ||
+			item.text == kAiTranslateFunctionLabel;
+	};
+
+	std::vector<const ContextMenuItem*> functionItems;
+	std::vector<const ContextMenuItem*> normalItems;
+	functionItems.reserve(m_contextMenuItems.size());
+	normalItems.reserve(m_contextMenuItems.size());
 	for (const auto& item : m_contextMenuItems) {
-		const bool disableTranslateText = (item.text == kAiTranslateTextLabel) && !hasSelectedText;
-		UINT flags = MF_STRING | (disableTranslateText ? MF_GRAYED : MF_ENABLED);
-		if (disableTranslateText) {
-			flags = MF_STRING | MF_GRAYED;
+		if (isFunctionActionItem(item)) {
+			functionItems.push_back(&item);
 		}
+		else {
+			normalItems.push_back(&item);
+		}
+	}
+
+	const auto appendActionItem = [&](const ContextMenuItem& item) {
+		const bool disableTranslateText = (item.text == kAiTranslateTextLabel) && !hasSelectedText;
+		const UINT flags = MF_STRING | (disableTranslateText ? MF_GRAYED : MF_ENABLED);
 		AppendMenuA(autoLinkerMenu, flags, item.commandId, item.text.c_str());
 		EnableMenuItem(
 			autoLinkerMenu,
 			item.commandId,
 			MF_BYCOMMAND | (disableTranslateText ? MF_GRAYED : MF_ENABLED));
-		if (item.text == kAiTranslateTextLabel) {
+	};
+
+	for (const auto* item : normalItems) {
+		if (item != nullptr) {
+			appendActionItem(*item);
+		}
+	}
+
+	if (!functionItems.empty()) {
+		if (!normalItems.empty()) {
 			AppendMenuA(autoLinkerMenu, MF_SEPARATOR, 0, nullptr);
+		}
+
+		std::string functionName = "未知";
+		int caretRow = -1;
+		int caretCol = -1;
+		if (GetCaretPosition(caretRow, caretCol)) {
+			const int kMenuNameScanUpLimit = 512;
+			int failCount = 0;
+			for (int row = caretRow, scan = 0; row >= 0 && scan < kMenuNameScanUpLimit; --row, ++scan) {
+				ProgramText rowText = {};
+				if (!RunGetPrgText(row, -1, rowText)) {
+					++failCount;
+					if (failCount >= 8) {
+						break;
+					}
+					continue;
+				}
+				failCount = 0;
+				if (!rowText.isTitle && rowText.type == VT_SUB_NAME) {
+					std::string normalized = NormalizeFunctionName(rowText.text);
+					if (!normalized.empty()) {
+						functionName = normalized;
+					}
+					break;
+				}
+			}
+		}
+
+		const std::string currentFunctionItem = "函数[" + functionName + "]↓↓↓";
+		AppendMenuA(autoLinkerMenu, MF_STRING | MF_GRAYED, 0, currentFunctionItem.c_str());
+		for (const auto* item : functionItems) {
+			if (item != nullptr) {
+				appendActionItem(*item);
+			}
 		}
 	}
 

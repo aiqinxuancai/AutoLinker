@@ -163,6 +163,21 @@ void ApplyWindowIcon(HWND hWnd)
 	SendMessageA(hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(GetAppIconSmall()));
 }
 
+void EnsureWindowTitle(HWND hWnd, const std::string& fallbackTitle)
+{
+	if (hWnd == nullptr) {
+		return;
+	}
+	if (GetWindowTextLengthA(hWnd) > 0) {
+		return;
+	}
+	if (fallbackTitle.empty()) {
+		SetWindowTextA(hWnd, "AutoLinker");
+		return;
+	}
+	SetWindowTextA(hWnd, fallbackTitle.c_str());
+}
+
 class ComCtl6ActivationScope {
 public:
 	ComCtl6ActivationScope()
@@ -1316,6 +1331,7 @@ bool ShowAICodeEditDialog(HWND owner, const std::string& title, const std::strin
 	}
 
 	ApplyWindowIcon(hDialog);
+	EnsureWindowTitle(hDialog, ctx.title);
 	RunModalWindow(owner, hDialog);
 	if (ctx.accepted) {
 		ioCode = ctx.text;
@@ -1381,6 +1397,7 @@ void OpenDialog()
 		wc.hInstance,
 		nullptr);
 	ApplyWindowIcon(g_chatDialog);
+	EnsureWindowTitle(g_chatDialog, LocalFromWide(L"AutoLinker AI \u5bf9\u8bdd"));
 }
 
 bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
