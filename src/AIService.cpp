@@ -145,6 +145,60 @@ std::string RemoveCodeFence(const std::string& text)
 
 	return AIService::Trim(content.substr(firstLineEnd + 1, fenceEnd - (firstLineEnd + 1)));
 }
+
+nlohmann::json BuildChatToolDefinitions()
+{
+	nlohmann::json tools = nlohmann::json::array();
+	tools.push_back({
+		{"type", "function"},
+		{"function", {
+			{"name", "get_current_page_code"},
+			{"description", "Get complete source code of the current IDE page."},
+			{"parameters", {
+				{"type", "object"},
+				{"properties", nlohmann::json::object()},
+				{"additionalProperties", false}
+			}}
+		}}
+	});
+	tools.push_back({
+		{"type", "function"},
+		{"function", {
+			{"name", "request_code_edit"},
+			{"description", "Open local editable code dialog and return user confirmed code."},
+			{"parameters", {
+				{"type", "object"},
+				{"properties", {
+					{"title", {{"type", "string"}}},
+					{"initial_code", {{"type", "string"}}},
+					{"hint", {{"type", "string"}}}
+				}},
+				{"required", nlohmann::json::array({"title", "initial_code"})},
+				{"additionalProperties", false}
+			}}
+		}}
+	});
+	return tools;
+}
+
+std::string BuildChatSystemPrompt(const AISettings& settings)
+{
+	std::string prompt =
+		"你是 AutoLinker 的易语言开发助手。\n"
+		"你可以通过工具获取当前页代码，或者请求用户在本地可编辑对话框中提供代码。\n"
+		"规则：\n"
+		"1) 需要源码时优先调用 get_current_page_code，不要臆造现有代码。\n"
+		"2) 需要用户确认/修订代码时调用 request_code_edit。\n"
+		"3) 工具返回失败或取消时，给出下一步建议，不要编造工具结果。\n"
+		"4) 除非用户要求解释，否则尽量给直接可执行结论。\n";
+
+	const std::string extraPrompt = AIService::Trim(settings.extraSystemPrompt);
+	if (!extraPrompt.empty()) {
+		prompt += "\n附加系统提示：\n";
+		prompt += extraPrompt;
+	}
+	return prompt;
+}
 } // namespace
 
 bool AIService::LoadSettings(ConfigManager& config, AISettings& outSettings)
@@ -317,6 +371,166 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 		result.error = std::string("Failed to parse AI response: ") + ex.what();
 	}
 
+	return result;
+}
+
+AIChatResult AIService::ExecuteChatWithTools(
+	const std::vector<AIChatMessage>& contextMessages,
+	const AISettings& settings,
+	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback)
+{
+	AIChatResult result = {};
+	std::string missingField;
+	if (!HasRequiredSettings(settings, missingField)) {
+		result.error = "AI settings missing: " + missingField;
+		return result;
+	}
+
+	const std::string endpoint = BuildEndpoint(settings.baseUrl);
+	const std::string headers =
+		"Content-Type: application/json\r\n"
+		"Authorization: Bearer " + settings.apiKey + "\r\n";
+
+	nlohmann::json requestMessages = nlohmann::json::array();
+	requestMessages.push_back({
+		{"role", "system"},
+		{"content", LocalToUtf8(BuildChatSystemPrompt(settings))}
+	});
+	for (const AIChatMessage& msg : contextMessages) {
+		const std::string role = ToLowerAsciiCopy(Trim(msg.role));
+		if (role != "system" && role != "user" && role != "assistant") {
+			continue;
+		}
+		requestMessages.push_back({
+			{"role", role},
+			{"content", LocalToUtf8(msg.content)}
+		});
+	}
+
+	const nlohmann::json tools = BuildChatToolDefinitions();
+	constexpr int kMaxToolRounds = 8;
+
+	for (int round = 0; round < kMaxToolRounds; ++round) {
+		nlohmann::json requestBody;
+		requestBody["model"] = LocalToUtf8(settings.model);
+		requestBody["temperature"] = settings.temperature;
+		requestBody["stream"] = false;
+		requestBody["messages"] = requestMessages;
+		requestBody["tools"] = tools;
+		requestBody["tool_choice"] = "auto";
+
+		std::string requestBodyText;
+		try {
+			requestBodyText = requestBody.dump();
+		}
+		catch (const std::exception& ex) {
+			result.error = std::string("Failed to build AI chat request JSON: ") + ex.what();
+			return result;
+		}
+
+		const auto [responseBody, statusCode] =
+			PerformPostRequest(endpoint, requestBodyText, headers, settings.timeoutMs, false, false);
+		result.httpStatus = statusCode;
+		if (statusCode < 200 || statusCode >= 300) {
+			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+			return result;
+		}
+
+		nlohmann::json parsed;
+		try {
+			parsed = nlohmann::json::parse(responseBody);
+		}
+		catch (const std::exception& ex) {
+			result.error = std::string("Failed to parse AI response: ") + ex.what();
+			return result;
+		}
+
+		if (!parsed.contains("choices") || !parsed["choices"].is_array() || parsed["choices"].empty()) {
+			result.error = "AI response choices is empty";
+			return result;
+		}
+
+		const nlohmann::json& choice = parsed["choices"][0];
+		if (!choice.contains("message") || !choice["message"].is_object()) {
+			result.error = "AI response message missing";
+			return result;
+		}
+		const nlohmann::json& message = choice["message"];
+
+		// Tool-call path.
+		if (message.contains("tool_calls") && message["tool_calls"].is_array() && !message["tool_calls"].empty()) {
+			requestMessages.push_back(message);
+
+			for (const auto& toolCall : message["tool_calls"]) {
+				std::string callId;
+				std::string toolName;
+				std::string argsUtf8;
+				if (toolCall.contains("id") && toolCall["id"].is_string()) {
+					callId = toolCall["id"].get<std::string>();
+				}
+				if (toolCall.contains("function") && toolCall["function"].is_object()) {
+					const auto& fn = toolCall["function"];
+					if (fn.contains("name") && fn["name"].is_string()) {
+						toolName = fn["name"].get<std::string>();
+					}
+					if (fn.contains("arguments") && fn["arguments"].is_string()) {
+						argsUtf8 = fn["arguments"].get<std::string>();
+					}
+				}
+
+				bool toolOk = false;
+				std::string toolResultLocal;
+				if (toolCallback) {
+					toolResultLocal = toolCallback(toolName, argsUtf8, toolOk);
+				}
+				else {
+					toolResultLocal = R"({"ok":false,"error":"tool callback not set"})";
+					toolOk = false;
+				}
+
+				AIChatToolEvent evt = {};
+				evt.name = toolName;
+				evt.argumentsJson = Utf8ToLocal(argsUtf8);
+				evt.resultJson = toolResultLocal;
+				evt.ok = toolOk;
+				result.toolEvents.push_back(std::move(evt));
+
+				requestMessages.push_back({
+					{"role", "tool"},
+					{"tool_call_id", callId},
+					{"name", toolName},
+					{"content", LocalToUtf8(toolResultLocal)}
+				});
+			}
+			continue;
+		}
+
+		// Final assistant content path.
+		std::string mergedUtf8;
+		if (message.contains("content") && message["content"].is_string()) {
+			mergedUtf8 = message["content"].get<std::string>();
+		}
+		else if (message.contains("content") && message["content"].is_array()) {
+			for (const auto& item : message["content"]) {
+				if (item.is_string()) {
+					mergedUtf8 += item.get<std::string>();
+				}
+				else if (item.is_object() && item.contains("text") && item["text"].is_string()) {
+					mergedUtf8 += item["text"].get<std::string>();
+				}
+			}
+		}
+		if (mergedUtf8.empty()) {
+			result.error = "AI response content is empty";
+			return result;
+		}
+
+		result.ok = true;
+		result.content = Utf8ToLocal(mergedUtf8);
+		return result;
+	}
+
+	result.error = "tool call rounds exceeded limit";
 	return result;
 }
 

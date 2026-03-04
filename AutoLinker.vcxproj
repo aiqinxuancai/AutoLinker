@@ -446,6 +446,7 @@
     <ClCompile Include="src\ModelManager.cpp" />
     <ClCompile Include="src\MouseBack.cpp" />
     <ClCompile Include="src\AIConfigDialog.cpp" />
+    <ClCompile Include="src\AIChatFeature.cpp" />
     <ClCompile Include="src\AIService.cpp" />
     <ClCompile Include="src\PathHelper.cpp" />
     <ClCompile Include="src\StringHelper.cpp" />
@@ -465,6 +466,7 @@
     <ClInclude Include="elib\untshare.h" />
     <ClInclude Include="src\AutoLinker.h" />
     <ClInclude Include="src\AIConfigDialog.h" />
+    <ClInclude Include="src\AIChatFeature.h" />
     <ClInclude Include="src\AIService.h" />
     <ClInclude Include="src\ConfigManager.h" />
     <ClInclude Include="src\ECOMEx.h" />

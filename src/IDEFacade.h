@@ -197,6 +197,7 @@ public:
 	// 右键菜单扩展（注册、清理、消息分发）。
 	void RegisterContextMenuItem(UINT commandId, const std::string& text, MenuHandler handler);
 	void ClearContextMenuItems();
+	void RefreshContextMenuEnabledState(HMENU popupMenu);
 	bool HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2);
 	bool HandleMainWindowCommand(WPARAM wParam);
 

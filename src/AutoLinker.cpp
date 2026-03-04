@@ -25,6 +25,7 @@
 #include "IDEFacade.h"
 #include "AIService.h"
 #include "AIConfigDialog.h"
+#include "AIChatFeature.h"
 #include <memory>
 #include <new>
 #include <process.h>
@@ -72,6 +73,8 @@ constexpr UINT IDM_AUTOLINKER_CTX_AI_OPTIMIZE_FUNC = 31101;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_COMMENT_FUNC = 31102;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_TRANSLATE_FUNC = 31103;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT = 31104;
+// Use a high (<0x8000) command id to avoid collisions with host builtin command states.
+constexpr UINT IDM_AUTOLINKER_CTX_AI_CHAT = 32750;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_ADD_BY_PAGE = 31106;
 constexpr UINT IDM_AUTOLINKER_LINKER_BASE = 34000;
 constexpr UINT IDM_AUTOLINKER_LINKER_MAX = 34999;
@@ -792,6 +795,9 @@ void RegisterIDEContextMenu()
 	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT, "AI翻译选中文本", []() {
 		RunAiTranslateSelectedTextTask();
 	});
+	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_CHAT, "AI对话", []() {
+		AIChatFeature::OpenDialog();
+	});
 	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_OPTIMIZE_FUNC, "AI优化函数", []() {
 		RunAiFunctionReplaceTask(AITaskKind::OptimizeFunction);
 	});
@@ -1427,6 +1433,9 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 		HandleAiApplyMessage(lParam);
 		return 0;
 	}
+	if (AIChatFeature::HandleMainWindowMessage(uMsg, wParam, lParam)) {
+		return 0;
+	}
 
 	if (uMsg == WM_COMMAND) {
 		UINT cmd = LOWORD(wParam);
@@ -1454,6 +1463,7 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 
 	if (uMsg == WM_INITMENUPOPUP) {
 		LRESULT result = DefSubclassProc(hWnd, uMsg, wParam, lParam);
+		IDEFacade::Instance().RefreshContextMenuEnabledState(reinterpret_cast<HMENU>(wParam));
 		HandleInitMenuPopup(reinterpret_cast<HMENU>(wParam));
 		return result;
 	}
@@ -1667,6 +1677,7 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 				if (g_hwnd) {
 					g_initStarted = true;
 					SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0);
+					AIChatFeature::Initialize(g_hwnd, &g_configManager);
 					RegisterIDEContextMenu();
 					OutputStringToELog("主窗口子类化完成，启动初始化线程");
 					uintptr_t threadID = _beginthread(InitRetryThread, 0, NULL);

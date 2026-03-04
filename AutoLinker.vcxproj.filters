@@ -53,6 +53,9 @@
     <ClCompile Include="src\AIConfigDialog.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\AIChatFeature.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\AIService.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -103,6 +106,9 @@
     </ClInclude>
     <ClInclude Include="src\AutoLinker.h" />
     <ClInclude Include="src\AIConfigDialog.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AIChatFeature.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\AIService.h">

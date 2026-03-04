@@ -443,7 +443,7 @@ std::string ParseSubNameFromHeader(const std::string& headerLine)
 		return std::string();
 	}
 
-	// 鍏煎鈥?瀛愮▼搴?鍚嶇О, 杩斿洖绫诲瀷鈥濅互鍙婄洿鎺ヤ紶鍏モ€滃悕绉? 杩斿洖绫诲瀷鈥濈殑鎯呭喌銆?
+	// 兼容“.子程序 名称, 返回类型”以及直接传入“名称 返回类型”的情况。
 	std::string remain = line;
 	if (remain.front() == '.') {
 		size_t pos = 1;
@@ -1995,6 +1995,44 @@ void IDEFacade::ClearContextMenuItems()
 	m_contextMenuItems.clear();
 }
 
+void IDEFacade::RefreshContextMenuEnabledState(HMENU popupMenu)
+{
+	if (popupMenu == nullptr || m_contextMenuItems.empty()) {
+		return;
+	}
+
+	constexpr const char* kAiTranslateTextLabel = "AI翻译选中文本";
+	const bool hasSelectedText = IsFnEnabled(FN_EDIT_CUT);
+
+	for (const auto& item : m_contextMenuItems) {
+		// Only touch items that are truly our own menu entries (same command id + same caption).
+		if (GetMenuState(popupMenu, item.commandId, MF_BYCOMMAND) == 0xFFFFFFFF) {
+			continue;
+		}
+
+		char title[256] = {};
+		const int titleLen = GetMenuStringA(
+			popupMenu,
+			item.commandId,
+			title,
+			static_cast<int>(sizeof(title)),
+			MF_BYCOMMAND);
+		if (titleLen <= 0) {
+			continue;
+		}
+		const std::string currentTitle(title, static_cast<size_t>(titleLen));
+		if (currentTitle != item.text) {
+			continue;
+		}
+
+		const bool disableTranslateText = (item.text == kAiTranslateTextLabel) && !hasSelectedText;
+		EnableMenuItem(
+			popupMenu,
+			item.commandId,
+			MF_BYCOMMAND | (disableTranslateText ? MF_GRAYED : MF_ENABLED));
+	}
+}
+
 bool IDEFacade::HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 {
 	(void)dwParam2;
@@ -2012,15 +2050,20 @@ bool IDEFacade::HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 		return false;
 	}
 
-	constexpr UINT kAiTranslateTextCommandId = 31104;
+	constexpr const char* kAiTranslateTextLabel = "AI翻译选中文本";
 	const bool hasSelectedText = IsFnEnabled(FN_EDIT_CUT);
 	for (const auto& item : m_contextMenuItems) {
-		UINT flags = MF_STRING | MF_ENABLED;
-		if (item.commandId == kAiTranslateTextCommandId && !hasSelectedText) {
+		const bool disableTranslateText = (item.text == kAiTranslateTextLabel) && !hasSelectedText;
+		UINT flags = MF_STRING | (disableTranslateText ? MF_GRAYED : MF_ENABLED);
+		if (disableTranslateText) {
 			flags = MF_STRING | MF_GRAYED;
 		}
 		AppendMenuA(autoLinkerMenu, flags, item.commandId, item.text.c_str());
-		if (item.commandId == kAiTranslateTextCommandId) {
+		EnableMenuItem(
+			autoLinkerMenu,
+			item.commandId,
+			MF_BYCOMMAND | (disableTranslateText ? MF_GRAYED : MF_ENABLED));
+		if (item.text == kAiTranslateTextLabel) {
 			AppendMenuA(autoLinkerMenu, MF_SEPARATOR, 0, nullptr);
 		}
 	}
