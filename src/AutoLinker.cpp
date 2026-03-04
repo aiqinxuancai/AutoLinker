@@ -15,6 +15,7 @@
 #include "Global.h"
 #include "StringHelper.h"
 #include <thread>
+#include <chrono>
 #include "MouseBack.h"
 #include <PublicIDEFunctions.h>
 #include "ECOMEx.h"
@@ -29,6 +30,7 @@
 #include <memory>
 #include <new>
 #include <process.h>
+#include <cstdint>
 #include <unordered_map>
 
 #pragma comment(lib, "comctl32.lib")
@@ -82,6 +84,8 @@ constexpr UINT WM_AUTOLINKER_AI_TASK_DONE = WM_USER + 1001;
 constexpr UINT WM_AUTOLINKER_AI_APPLY_RESULT = WM_USER + 1002;
 
 std::atomic_bool g_aiTaskInProgress = false;
+std::atomic_uint64_t g_aiPerfTraceSeed = 1;
+thread_local uint64_t g_aiPerfTraceIdTLS = 0;
 
 enum class AIAsyncUiAction {
 	ReplaceCurrentFunction,
@@ -90,6 +94,7 @@ enum class AIAsyncUiAction {
 };
 
 struct AIAsyncRequest {
+	uint64_t traceId = 0;
 	AIAsyncUiAction action = AIAsyncUiAction::ReplaceCurrentFunction;
 	AITaskKind taskKind = AITaskKind::OptimizeFunction;
 	AISettings settings = {};
@@ -102,6 +107,7 @@ struct AIAsyncRequest {
 };
 
 struct AIAsyncResult {
+	uint64_t traceId = 0;
 	AIAsyncUiAction action = AIAsyncUiAction::ReplaceCurrentFunction;
 	std::string displayName;
 	std::string pageCodeSnapshot;
@@ -136,6 +142,42 @@ std::string TrimAsciiCopy(const std::string& text)
 	}
 	return text.substr(begin, end - begin);
 }
+
+std::string TruncateForPerfLog(const std::string& text, size_t maxLen = 120)
+{
+	if (text.size() <= maxLen) {
+		return text;
+	}
+	return text.substr(0, maxLen) + "...";
+}
+
+using PerfClock = std::chrono::steady_clock;
+
+long long ElapsedMs(const PerfClock::time_point& start)
+{
+	return static_cast<long long>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(PerfClock::now() - start).count());
+}
+
+class ScopedAIPerfTrace {
+public:
+	explicit ScopedAIPerfTrace(uint64_t traceId)
+		: m_prev(GetCurrentAIPerfTraceId())
+	{
+		SetCurrentAIPerfTraceId(traceId);
+	}
+
+	~ScopedAIPerfTrace()
+	{
+		SetCurrentAIPerfTraceId(m_prev);
+	}
+
+	ScopedAIPerfTrace(const ScopedAIPerfTrace&) = delete;
+	ScopedAIPerfTrace& operator=(const ScopedAIPerfTrace&) = delete;
+
+private:
+	uint64_t m_prev = 0;
+};
 
 std::vector<std::string> SplitLinesNormalized(const std::string& text)
 {
@@ -386,6 +428,7 @@ void RunAiTaskWorker(void* pParams)
 		EndAiTask();
 		return;
 	}
+	ScopedAIPerfTrace traceScope(request->traceId);
 
 	std::unique_ptr<AIAsyncResult> result(new (std::nothrow) AIAsyncResult());
 	if (!result) {
@@ -400,9 +443,16 @@ void RunAiTaskWorker(void* pParams)
 	result->sourceFunctionCode = request->sourceFunctionCode;
 	result->targetCaretRow = request->targetCaretRow;
 	result->targetCaretCol = request->targetCaretCol;
+	result->traceId = request->traceId;
 
 	try {
+		const auto networkStart = PerfClock::now();
 		result->taskResult = AIService::ExecuteTask(request->taskKind, request->inputText, request->settings);
+		LogAIPerfCost(
+			request->traceId,
+			"RunAiTaskWorker.execute_task_total",
+			ElapsedMs(networkStart),
+			"ok=" + std::to_string(result->taskResult.ok ? 1 : 0) + " http=" + std::to_string(result->taskResult.httpStatus));
 	}
 	catch (const std::exception& ex) {
 		result->taskResult.ok = false;
@@ -418,22 +468,50 @@ void RunAiTaskWorker(void* pParams)
 
 void RunAiFunctionReplaceTask(AITaskKind kind)
 {
+	const uint64_t traceId = AllocateAIPerfTraceId();
+	ScopedAIPerfTrace traceScope(traceId);
+	const auto totalStart = PerfClock::now();
+	auto logTotal = [&](const std::string& status) {
+		LogAIPerfCost(
+			traceId,
+			"RunAiFunctionReplaceTask.total",
+			ElapsedMs(totalStart),
+			"status=" + status + " kind=" + std::to_string(static_cast<int>(kind)));
+	};
+
 	try {
 		const std::string displayName = AIService::BuildTaskDisplayName(kind);
 		OutputStringToELog("[AI]开始执行：" + displayName);
 		if (!TryBeginAiTask()) {
+			logTotal("busy");
 			return;
 		}
 
 		IDEFacade& ide = IDEFacade::Instance();
 		std::string functionCode;
 		std::string functionDiag;
-		if (!ide.GetCurrentFunctionCode(functionCode, &functionDiag)) {
-			OutputStringToELog("[AI]无法获取当前函数代码");
-			if (!functionDiag.empty()) {
-				OutputStringToELog("[AI]函数代码获取诊断：" + functionDiag);
+		{
+			const auto t0 = PerfClock::now();
+			const bool ok = ide.GetCurrentFunctionCode(functionCode, &functionDiag);
+			LogAIPerfCost(
+				traceId,
+				"GetCurrentFunctionCode.total",
+				ElapsedMs(t0),
+				"ok=" + std::to_string(ok ? 1 : 0) + " diag=" + TruncateForPerfLog(functionDiag));
+			if (!ok) {
+				OutputStringToELog("[AI]无法获取当前函数代码");
+				if (!functionDiag.empty()) {
+					OutputStringToELog("[AI]函数代码获取诊断：" + functionDiag);
+				}
+				EndAiTask();
+				logTotal("get_function_failed");
+				return;
 			}
+		}
+		if (functionCode.empty()) {
+			OutputStringToELog("[AI]无法获取当前函数代码");
 			EndAiTask();
+			logTotal("empty_function");
 			return;
 		}
 		int caretRow = -1;
@@ -441,9 +519,19 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 		ide.GetCaretPosition(caretRow, caretCol);
 
 		AISettings settings = {};
-		if (!EnsureAISettingsReady(settings)) {
-			EndAiTask();
-			return;
+		{
+			const auto t0 = PerfClock::now();
+			const bool ok = EnsureAISettingsReady(settings);
+			LogAIPerfCost(
+				traceId,
+				"EnsureAISettingsReady.total",
+				ElapsedMs(t0),
+				"ok=" + std::to_string(ok ? 1 : 0));
+			if (!ok) {
+				EndAiTask();
+				logTotal("settings_not_ready");
+				return;
+			}
 		}
 
 		const std::string userInput =
@@ -452,9 +540,21 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 		std::string finalInput = userInput;
 		if (kind == AITaskKind::OptimizeFunction) {
 			std::string extraRequirement;
-			if (!ShowAITextInputDialog(g_hwnd, "AI优化函数 - 输入优化要求", "请输入你希望优化的方向（可为空）：", extraRequirement)) {
+			const auto inputStart = PerfClock::now();
+			const bool accepted = ShowAITextInputDialog(
+				g_hwnd,
+				"AI优化函数 - 输入优化要求",
+				"请输入你希望优化的方向（可为空）：",
+				extraRequirement);
+			LogAIPerfCost(
+				traceId,
+				"ShowAITextInputDialog.modal",
+				ElapsedMs(inputStart),
+				"ok=" + std::to_string(accepted ? 1 : 0) + " scene=optimize");
+			if (!accepted) {
 				OutputStringToELog("[AI]已取消输入优化要求");
 				EndAiTask();
+				logTotal("user_cancel_optimize_requirement");
 				return;
 			}
 			extraRequirement = TrimAsciiCopy(extraRequirement);
@@ -467,8 +567,10 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 		if (!request) {
 			OutputStringToELog("[AI]内存不足，无法发起任务");
 			EndAiTask();
+			logTotal("alloc_request_failed");
 			return;
 		}
+		request->traceId = traceId;
 		request->action = AIAsyncUiAction::ReplaceCurrentFunction;
 		request->taskKind = kind;
 		request->settings = settings;
@@ -483,25 +585,41 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 		if (threadId == static_cast<uintptr_t>(-1L)) {
 			OutputStringToELog("[AI]启动后台任务失败");
 			EndAiTask();
+			logTotal("start_worker_failed");
 			return;
 		}
 		request.release();
+		logTotal("queued");
 	}
 	catch (const std::exception& ex) {
 		OutputStringToELog(std::string("[AI]发生异常：") + ex.what());
 		EndAiTask();
+		logTotal("exception_std");
 	}
 	catch (...) {
 		OutputStringToELog("[AI]发生未知异常");
 		EndAiTask();
+		logTotal("exception_unknown");
 	}
 }
 
 void RunAiTranslateSelectedTextTask()
 {
+	const uint64_t traceId = AllocateAIPerfTraceId();
+	ScopedAIPerfTrace traceScope(traceId);
+	const auto totalStart = PerfClock::now();
+	auto logTotal = [&](const std::string& status) {
+		LogAIPerfCost(
+			traceId,
+			"RunAiTranslateSelectedTextTask.total",
+			ElapsedMs(totalStart),
+			"status=" + status);
+	};
+
 	try {
 		OutputStringToELog("[AI]开始执行：AI翻译选中文本");
 		if (!TryBeginAiTask()) {
+			logTotal("busy");
 			return;
 		}
 		IDEFacade& ide = IDEFacade::Instance();
@@ -509,13 +627,24 @@ void RunAiTranslateSelectedTextTask()
 		if (!ide.GetSelectedText(selectedText)) {
 			OutputStringToELog("[AI]未检测到有效选中文本");
 			EndAiTask();
+			logTotal("no_selection");
 			return;
 		}
 
 		AISettings settings = {};
-		if (!EnsureAISettingsReady(settings)) {
-			EndAiTask();
-			return;
+		{
+			const auto t0 = PerfClock::now();
+			const bool ok = EnsureAISettingsReady(settings);
+			LogAIPerfCost(
+				traceId,
+				"EnsureAISettingsReady.total",
+				ElapsedMs(t0),
+				"ok=" + std::to_string(ok ? 1 : 0) + " scene=translate_selected");
+			if (!ok) {
+				EndAiTask();
+				logTotal("settings_not_ready");
+				return;
+			}
 		}
 
 		const bool sourceIsChinese = IsLikelyChineseText(selectedText);
@@ -525,8 +654,10 @@ void RunAiTranslateSelectedTextTask()
 		if (!request) {
 			OutputStringToELog("[AI]内存不足，无法发起任务");
 			EndAiTask();
+			logTotal("alloc_request_failed");
 			return;
 		}
+		request->traceId = traceId;
 		request->action = AIAsyncUiAction::OutputTranslation;
 		request->taskKind = AITaskKind::TranslateText;
 		request->settings = settings;
@@ -538,17 +669,21 @@ void RunAiTranslateSelectedTextTask()
 		if (threadId == static_cast<uintptr_t>(-1L)) {
 			OutputStringToELog("[AI]启动后台任务失败");
 			EndAiTask();
+			logTotal("start_worker_failed");
 			return;
 		}
 		request.release();
+		logTotal("queued");
 	}
 	catch (const std::exception& ex) {
 		OutputStringToELog(std::string("[AI]发生异常：") + ex.what());
 		EndAiTask();
+		logTotal("exception_std");
 	}
 	catch (...) {
 		OutputStringToELog("[AI]发生未知异常");
 		EndAiTask();
+		logTotal("exception_unknown");
 	}
 }
 
@@ -692,17 +827,45 @@ void HandleAiApplyMessage(LPARAM lParam)
 
 void RunAiAddByCurrentPageTypeTask()
 {
+	const uint64_t traceId = AllocateAIPerfTraceId();
+	ScopedAIPerfTrace traceScope(traceId);
+	const auto totalStart = PerfClock::now();
+	auto logTotal = [&](const std::string& status) {
+		LogAIPerfCost(
+			traceId,
+			"RunAiAddByCurrentPageTypeTask.total",
+			ElapsedMs(totalStart),
+			"status=" + status);
+	};
+
 	try {
 		OutputStringToELog("[AI]开始执行：AI按当前页类型添加代码");
 		if (!TryBeginAiTask()) {
+			logTotal("busy");
 			return;
 		}
 
 		IDEFacade& ide = IDEFacade::Instance();
 		std::string currentPageCode;
-		if (!ide.GetCurrentPageCode(currentPageCode)) {
+		{
+			const auto t0 = PerfClock::now();
+			const bool ok = ide.GetCurrentPageCode(currentPageCode);
+			LogAIPerfCost(
+				traceId,
+				"GetCurrentPageCode.total",
+				ElapsedMs(t0),
+				"ok=" + std::to_string(ok ? 1 : 0) + " scene=add_by_page");
+			if (!ok) {
+				OutputStringToELog("[AI]无法获取当前页代码");
+				EndAiTask();
+				logTotal("get_page_failed");
+				return;
+			}
+		}
+		if (currentPageCode.empty()) {
 			OutputStringToELog("[AI]无法获取当前页代码");
 			EndAiTask();
+			logTotal("empty_page_code");
 			return;
 		}
 
@@ -711,26 +874,45 @@ void RunAiAddByCurrentPageTypeTask()
 		const std::string outputRule = BuildAddByPageTypeOutputRule(pageType);
 
 		std::string requirement;
-		if (!ShowAITextInputDialog(
+		const auto inputStart = PerfClock::now();
+		const bool accepted = ShowAITextInputDialog(
 			g_hwnd,
 			"AI按当前页类型添加代码",
 			"请输入添加需求（例如：数量、命名风格、用途、限制）：",
-			requirement)) {
+			requirement);
+		LogAIPerfCost(
+			traceId,
+			"ShowAITextInputDialog.modal",
+			ElapsedMs(inputStart),
+			"ok=" + std::to_string(accepted ? 1 : 0) + " scene=add_by_page");
+		if (!accepted) {
 			OutputStringToELog("[AI]已取消输入添加需求");
 			EndAiTask();
+			logTotal("user_cancel_requirement");
 			return;
 		}
 		requirement = TrimAsciiCopy(requirement);
 		if (requirement.empty()) {
 			OutputStringToELog("[AI]添加需求为空，已取消");
 			EndAiTask();
+			logTotal("empty_requirement");
 			return;
 		}
 
 		AISettings settings = {};
-		if (!EnsureAISettingsReady(settings)) {
-			EndAiTask();
-			return;
+		{
+			const auto t0 = PerfClock::now();
+			const bool ok = EnsureAISettingsReady(settings);
+			LogAIPerfCost(
+				traceId,
+				"EnsureAISettingsReady.total",
+				ElapsedMs(t0),
+				"ok=" + std::to_string(ok ? 1 : 0) + " scene=add_by_page");
+			if (!ok) {
+				EndAiTask();
+				logTotal("settings_not_ready");
+				return;
+			}
 		}
 
 		const std::string input =
@@ -744,8 +926,10 @@ void RunAiAddByCurrentPageTypeTask()
 		if (!request) {
 			OutputStringToELog("[AI]内存不足，无法发起任务");
 			EndAiTask();
+			logTotal("alloc_request_failed");
 			return;
 		}
+		request->traceId = traceId;
 		request->action = AIAsyncUiAction::InsertAtPageBottom;
 		request->taskKind = AITaskKind::AddByCurrentPageType;
 		request->settings = settings;
@@ -758,23 +942,37 @@ void RunAiAddByCurrentPageTypeTask()
 		if (threadId == static_cast<uintptr_t>(-1L)) {
 			OutputStringToELog("[AI]启动后台任务失败");
 			EndAiTask();
+			logTotal("start_worker_failed");
 			return;
 		}
 		request.release();
+		logTotal("queued");
 	}
 	catch (const std::exception& ex) {
 		OutputStringToELog(std::string("[AI]发生异常：") + ex.what());
 		EndAiTask();
+		logTotal("exception_std");
 	}
 	catch (...) {
 		OutputStringToELog("[AI]发生未知异常");
 		EndAiTask();
+		logTotal("exception_unknown");
 	}
 }
 
 void TryCopyCurrentFunctionCode()
 {
-	if (IDEFacade::Instance().CopyCurrentFunctionCodeToClipboard()) {
+	const uint64_t traceId = AllocateAIPerfTraceId();
+	ScopedAIPerfTrace traceScope(traceId);
+	const auto totalStart = PerfClock::now();
+	const bool ok = IDEFacade::Instance().CopyCurrentFunctionCodeToClipboard();
+	LogAIPerfCost(
+		traceId,
+		"TryCopyCurrentFunctionCode.total",
+		ElapsedMs(totalStart),
+		"ok=" + std::to_string(ok ? 1 : 0));
+
+	if (ok) {
 		OutputStringToELog("已复制当前函数代码到剪贴板");
 	}
 	else {
@@ -1318,6 +1516,77 @@ void OutputStringToELog(const std::string& szbuf) {
 	const std::string line = "[AutoLinker]" + szbuf;
 	OutputDebugStringA((line + "\n").c_str());
 	IDEFacade::Instance().AppendOutputWindowLine(line);
+}
+
+uint64_t AllocateAIPerfTraceId()
+{
+	return g_aiPerfTraceSeed.fetch_add(1);
+}
+
+void SetCurrentAIPerfTraceId(uint64_t traceId)
+{
+	g_aiPerfTraceIdTLS = traceId;
+}
+
+uint64_t GetCurrentAIPerfTraceId()
+{
+	return g_aiPerfTraceIdTLS;
+}
+
+bool IsAIPerfLogEnabled()
+{
+	const std::string raw = ToLowerAsciiCopy(TrimAsciiCopy(g_configManager.getValue("ai.perf_log_enabled")));
+	if (raw.empty()) {
+		return false;
+	}
+	return raw == "1" || raw == "true" || raw == "on" || raw == "yes";
+}
+
+int GetAIPerfLogThresholdMs()
+{
+	const std::string raw = TrimAsciiCopy(g_configManager.getValue("ai.perf_log_threshold_ms"));
+	if (raw.empty()) {
+		return 30;
+	}
+	try {
+		const int parsed = std::stoi(raw);
+		return (std::max)(0, (std::min)(parsed, 600000));
+	}
+	catch (...) {
+		return 30;
+	}
+}
+
+bool IsAICodeFetchDebugEnabled()
+{
+	const std::string raw = ToLowerAsciiCopy(TrimAsciiCopy(g_configManager.getValue("ai.code_fetch_debug_log_enabled")));
+	if (raw.empty()) {
+		return IsAIPerfLogEnabled();
+	}
+	return raw == "1" || raw == "true" || raw == "on" || raw == "yes";
+}
+
+void LogAIPerfCost(uint64_t traceId, const std::string& step, long long costMs, const std::string& extra, bool force)
+{
+	if (!IsAIPerfLogEnabled()) {
+		return;
+	}
+	if (traceId == 0) {
+		traceId = GetCurrentAIPerfTraceId();
+	}
+	if (traceId == 0) {
+		return;
+	}
+	if (!force && costMs < static_cast<long long>(GetAIPerfLogThresholdMs())) {
+		return;
+	}
+
+	std::string line = std::format("[AI-PERF] trace={} step={} cost={}ms", traceId, step, costMs);
+	if (!extra.empty()) {
+		line += " ";
+		line += extra;
+	}
+	OutputStringToELog(line);
 }
 
 

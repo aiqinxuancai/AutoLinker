@@ -8,9 +8,19 @@
 #include "..\\thirdparty\\json.hpp"
 
 #include "ConfigManager.h"
+#include "Global.h"
 #include "WinINetUtil.h"
+#include <chrono>
 
 namespace {
+using PerfClock = std::chrono::steady_clock;
+
+long long ElapsedMs(const PerfClock::time_point& start)
+{
+	return static_cast<long long>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(PerfClock::now() - start).count());
+}
+
 std::string ToLowerAsciiCopy(const std::string& text)
 {
 	std::string lowered = text;
@@ -390,6 +400,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 	const std::string headers =
 		"Content-Type: application/json\r\n"
 		"Authorization: Bearer " + settings.apiKey + "\r\n";
+	const uint64_t traceId = GetCurrentAIPerfTraceId();
 
 	nlohmann::json requestMessages = nlohmann::json::array();
 	requestMessages.push_back({
@@ -428,9 +439,15 @@ AIChatResult AIService::ExecuteChatWithTools(
 			return result;
 		}
 
-		const auto [responseBody, statusCode] =
-			PerformPostRequest(endpoint, requestBodyText, headers, settings.timeoutMs, false, false);
-		result.httpStatus = statusCode;
+	const auto networkStart = PerfClock::now();
+	const auto [responseBody, statusCode] =
+		PerformPostRequest(endpoint, requestBodyText, headers, settings.timeoutMs, false, false);
+	LogAIPerfCost(
+		traceId,
+		"AIService.ExecuteTask.network_total",
+		ElapsedMs(networkStart),
+		"http=" + std::to_string(statusCode) + " endpoint=" + endpoint);
+	result.httpStatus = statusCode;
 		if (statusCode < 200 || statusCode >= 300) {
 			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
 			return result;

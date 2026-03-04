@@ -1,16 +1,105 @@
 ﻿#include "IDEFacade.h"
+#include "Global.h"
+#include "PathHelper.h"
 
 #include <fnshare.h>
 #include <lib2.h>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <limits>
+#include <mutex>
 #include <utility>
 #include <vector>
 
 namespace {
+using PerfClock = std::chrono::steady_clock;
+
+long long ElapsedMs(const PerfClock::time_point& start)
+{
+	return static_cast<long long>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(PerfClock::now() - start).count());
+}
+
+std::string TruncateForPerfLog(const std::string& text, size_t maxLen = 120)
+{
+	if (text.size() <= maxLen) {
+		return text;
+	}
+	return text.substr(0, maxLen) + "...";
+}
+
+std::mutex g_codeFetchLogMutex;
+
+std::filesystem::path GetCodeFetchLogPath()
+{
+	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	return dir / "ai_code_fetch_last.log";
+}
+
+std::string EscapeOneLine(std::string text)
+{
+	for (size_t i = 0; i < text.size(); ++i) {
+		if (text[i] == '\r') {
+			text.replace(i, 1, "\\r");
+			++i;
+			continue;
+		}
+		if (text[i] == '\n') {
+			text.replace(i, 1, "\\n");
+			++i;
+			continue;
+		}
+	}
+	return text;
+}
+
+void AppendCodeFetchLogLine(const std::string& line)
+{
+	if (!IsAICodeFetchDebugEnabled()) {
+		return;
+	}
+	const auto path = GetCodeFetchLogPath();
+	std::lock_guard<std::mutex> guard(g_codeFetchLogMutex);
+	std::ofstream out(path, std::ios::app | std::ios::binary);
+	if (!out.is_open()) {
+		return;
+	}
+	out << line << "\r\n";
+}
+
+void BeginCodeFetchLogSession(const char* scene)
+{
+	if (!IsAICodeFetchDebugEnabled()) {
+		return;
+	}
+	const auto path = GetCodeFetchLogPath();
+	const uint64_t traceId = GetCurrentAIPerfTraceId();
+	SYSTEMTIME st = {};
+	GetLocalTime(&st);
+	std::lock_guard<std::mutex> guard(g_codeFetchLogMutex);
+	std::ofstream out(path, std::ios::trunc | std::ios::binary);
+	if (!out.is_open()) {
+		return;
+	}
+	out << "[AI-CODE-FETCH] session-start"
+		<< " scene=" << (scene == nullptr ? "" : scene)
+		<< " trace=" << traceId
+		<< " time="
+		<< st.wYear << "-"
+		<< st.wMonth << "-"
+		<< st.wDay << " "
+		<< st.wHour << ":"
+		<< st.wMinute << ":"
+		<< st.wSecond
+		<< "." << st.wMilliseconds
+		<< "\r\n";
+}
 DWORD PtrToDWORD(const void* ptr)
 {
 	return static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(ptr));
@@ -420,8 +509,9 @@ std::wstring ToWide(const std::string& text)
 }
 #endif
 
-constexpr int kMaxRowScan = 200000;
+constexpr int kMaxRowScan = 20000;
 constexpr int kMaxFunctionScan = 4096;
+constexpr int kMaxConsecutiveGetTextFail = 8;
 
 std::string TrimAsciiSpaceCopy(const std::string& value)
 {
@@ -917,18 +1007,56 @@ std::string IDEFacade::EnsureTrailingLineBreak(const std::string& text)
 
 bool IDEFacade::SelectRowRange(int startRow, int endRow) const
 {
+	const uint64_t traceId = GetCurrentAIPerfTraceId();
+	const auto totalStart = PerfClock::now();
 	if (startRow < 0 || endRow < startRow) {
+		AppendCodeFetchLogLine(
+			"[STEP] SelectRowRange invalid range startRow=" + std::to_string(startRow) +
+			" endRow=" + std::to_string(endRow));
+		LogAIPerfCost(
+			traceId,
+			"SelectRowRange.total",
+			ElapsedMs(totalStart),
+			"ok=0 reason=invalid_range startRow=" + std::to_string(startRow) +
+			" endRow=" + std::to_string(endRow));
 		return false;
 	}
+	AppendCodeFetchLogLine(
+		"[STEP] SelectRowRange startRow=" + std::to_string(startRow) +
+		" endRow=" + std::to_string(endRow));
 	RunBlkClearAllDef();
-	return RunBlkAddDef(startRow, endRow);
+	const bool ok = RunBlkAddDef(startRow, endRow);
+	AppendCodeFetchLogLine(
+		"[STEP] SelectRowRange result ok=" + std::to_string(ok ? 1 : 0) +
+		" startRow=" + std::to_string(startRow) +
+		" endRow=" + std::to_string(endRow));
+	LogAIPerfCost(
+		traceId,
+		"SelectRowRange.total",
+		ElapsedMs(totalStart),
+		"ok=" + std::to_string(ok ? 1 : 0) +
+		" startRow=" + std::to_string(startRow) +
+		" endRow=" + std::to_string(endRow));
+	return ok;
 }
 
 bool IDEFacade::TranslateProgramRowRangeToBlockRange(int startProgramRow, int endProgramRow, int& outStartBlockRow, int& outEndBlockRow) const
 {
 	outStartBlockRow = -1;
 	outEndBlockRow = -1;
+	const uint64_t traceId = GetCurrentAIPerfTraceId();
+	const auto totalStart = PerfClock::now();
+	AppendCodeFetchLogLine(
+		"[STEP] enter TranslateProgramRowRangeToBlockRange startProgramRow=" + std::to_string(startProgramRow) +
+		" endProgramRow=" + std::to_string(endProgramRow));
 	if (startProgramRow < 0 || endProgramRow < startProgramRow) {
+		AppendCodeFetchLogLine("[STEP] TranslateProgramRowRangeToBlockRange invalid range");
+		LogAIPerfCost(
+			traceId,
+			"TranslateProgramRowRangeToBlockRange.total",
+			ElapsedMs(totalStart),
+			"ok=0 reason=invalid_range startProgramRow=" + std::to_string(startProgramRow) +
+			" endProgramRow=" + std::to_string(endProgramRow));
 		return false;
 	}
 
@@ -936,6 +1064,13 @@ bool IDEFacade::TranslateProgramRowRangeToBlockRange(int startProgramRow, int en
 	for (int row = 0; row <= endProgramRow; ++row) {
 		ProgramText rowText = {};
 		if (!RunGetPrgText(row, -1, rowText)) {
+			AppendCodeFetchLogLine("[STEP] TranslateProgramRowRangeToBlockRange read row failed row=" + std::to_string(row));
+			LogAIPerfCost(
+				traceId,
+				"TranslateProgramRowRangeToBlockRange.total",
+				ElapsedMs(totalStart),
+				"ok=0 reason=read_row_failed row=" + std::to_string(row) +
+				" endProgramRow=" + std::to_string(endProgramRow));
 			return false;
 		}
 
@@ -964,55 +1099,138 @@ bool IDEFacade::TranslateProgramRowRangeToBlockRange(int startProgramRow, int en
 	}
 
 	if (outStartBlockRow < 0 || outEndBlockRow < outStartBlockRow) {
+		AppendCodeFetchLogLine(
+			"[STEP] TranslateProgramRowRangeToBlockRange mapped invalid startBlockRow=" + std::to_string(outStartBlockRow) +
+			" endBlockRow=" + std::to_string(outEndBlockRow));
+		LogAIPerfCost(
+			traceId,
+			"TranslateProgramRowRangeToBlockRange.total",
+			ElapsedMs(totalStart),
+			"ok=0 reason=mapped_invalid startBlockRow=" + std::to_string(outStartBlockRow) +
+			" endBlockRow=" + std::to_string(outEndBlockRow));
 		return false;
 	}
+	AppendCodeFetchLogLine(
+		"[STEP] TranslateProgramRowRangeToBlockRange mapped startBlockRow=" + std::to_string(outStartBlockRow) +
+		" endBlockRow=" + std::to_string(outEndBlockRow));
+	LogAIPerfCost(
+		traceId,
+		"TranslateProgramRowRangeToBlockRange.total",
+		ElapsedMs(totalStart),
+		"ok=1 startProgramRow=" + std::to_string(startProgramRow) +
+		" endProgramRow=" + std::to_string(endProgramRow) +
+		" startBlockRow=" + std::to_string(outStartBlockRow) +
+		" endBlockRow=" + std::to_string(outEndBlockRow));
 	return true;
 }
 
 bool IDEFacade::ReplaceSelectedRowsText(const std::string& text, bool preCompile) const
 {
 	ClipboardTextRestoreGuard clipboardGuard;
+	const uint64_t traceId = GetCurrentAIPerfTraceId();
+	const auto totalStart = PerfClock::now();
+	AppendCodeFetchLogLine(
+		"[STEP] enter ReplaceSelectedRowsText inputLen=" + std::to_string(text.size()) +
+		" preCompile=" + std::to_string(preCompile ? 1 : 0));
 
 	const std::string finalText = EnsureTrailingLineBreak(text);
 	bool replaced = false;
+	bool usedPastePath = false;
+	bool usedFallbackPath = false;
+	bool preCompileInvoked = false;
+	bool preCompileOk = false;
 
 	// Prefer paste-path since it matches manual replacement behavior in IDE.
 	if (SetClipboardTextForPaste(finalText) && RunEditPaste()) {
 		replaced = true;
+		usedPastePath = true;
+		AppendCodeFetchLogLine("[STEP] ReplaceSelectedRowsText paste path success");
 	}
 	if (!replaced) {
+		usedFallbackPath = true;
+		AppendCodeFetchLogLine("[STEP] ReplaceSelectedRowsText paste path failed, fallback remove+insert");
 		if (!RunRemove()) {
+			AppendCodeFetchLogLine("[STEP] ReplaceSelectedRowsText fallback RunRemove failed");
+			LogAIPerfCost(
+				traceId,
+				"ReplaceSelectedRowsText.total",
+				ElapsedMs(totalStart),
+				"ok=0 reason=run_remove_failed preCompile=" + std::to_string(preCompile ? 1 : 0));
 			return false;
 		}
 		const std::string insertPayload = EnsureGbkText(finalText);
 		if (!RunInsertText(insertPayload, false)) {
+			AppendCodeFetchLogLine("[STEP] ReplaceSelectedRowsText fallback RunInsertText failed");
+			LogAIPerfCost(
+				traceId,
+				"ReplaceSelectedRowsText.total",
+				ElapsedMs(totalStart),
+				"ok=0 reason=run_insert_failed preCompile=" + std::to_string(preCompile ? 1 : 0));
 			return false;
 		}
 	}
 
 	if (!preCompile) {
+		AppendCodeFetchLogLine(
+			"[STEP] ReplaceSelectedRowsText done replaced=1 preCompile=0 usedPastePath=" + std::to_string(usedPastePath ? 1 : 0) +
+			" usedFallbackPath=" + std::to_string(usedFallbackPath ? 1 : 0));
+		LogAIPerfCost(
+			traceId,
+			"ReplaceSelectedRowsText.total",
+			ElapsedMs(totalStart),
+			"ok=1 preCompile=0 usedPastePath=" + std::to_string(usedPastePath ? 1 : 0) +
+			" usedFallbackPath=" + std::to_string(usedFallbackPath ? 1 : 0) +
+			" outputLen=" + std::to_string(finalText.size()));
 		return true;
 	}
 
 	bool compileOk = false;
+	preCompileInvoked = true;
 	if (!RunPreCompile(compileOk)) {
+		AppendCodeFetchLogLine("[STEP] ReplaceSelectedRowsText RunPreCompile invoke failed");
+		LogAIPerfCost(
+			traceId,
+			"ReplaceSelectedRowsText.total",
+			ElapsedMs(totalStart),
+			"ok=0 reason=run_precompile_failed usedPastePath=" + std::to_string(usedPastePath ? 1 : 0) +
+			" usedFallbackPath=" + std::to_string(usedFallbackPath ? 1 : 0));
 		return false;
 	}
-	return compileOk;
+	preCompileOk = compileOk;
+	AppendCodeFetchLogLine(
+		"[STEP] ReplaceSelectedRowsText done replaced=1 preCompile=1 compileOk=" + std::to_string(preCompileOk ? 1 : 0) +
+		" usedPastePath=" + std::to_string(usedPastePath ? 1 : 0) +
+		" usedFallbackPath=" + std::to_string(usedFallbackPath ? 1 : 0));
+	LogAIPerfCost(
+		traceId,
+		"ReplaceSelectedRowsText.total",
+		ElapsedMs(totalStart),
+		"ok=" + std::to_string(preCompileOk ? 1 : 0) +
+		" preCompileInvoked=" + std::to_string(preCompileInvoked ? 1 : 0) +
+		" compileOk=" + std::to_string(preCompileOk ? 1 : 0) +
+		" usedPastePath=" + std::to_string(usedPastePath ? 1 : 0) +
+		" usedFallbackPath=" + std::to_string(usedFallbackPath ? 1 : 0) +
+		" outputLen=" + std::to_string(finalText.size()));
+	return preCompileOk;
 }
 
 bool IDEFacade::BuildCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const
 {
 	outSnapshot = {};
+	BeginCodeFetchLogSession("BuildCurrentPageSnapshot");
+	AppendCodeFetchLogLine("[STEP] enter BuildCurrentPageSnapshot");
 
 	int caretRow = -1;
 	int caretCol = -1;
 	if (!GetCaretPosition(caretRow, caretCol)) {
+		AppendCodeFetchLogLine("[STEP] GetCaretPosition failed");
 		return false;
 	}
+	AppendCodeFetchLogLine("[STEP] caret row=" + std::to_string(caretRow) + " col=" + std::to_string(caretCol));
 
 	ProgramText currentRowText = {};
 	if (!RunGetPrgText(caretRow, -1, currentRowText)) {
+		AppendCodeFetchLogLine("[STEP] RunGetPrgText(caretRow) failed");
 		return false;
 	}
 
@@ -1035,8 +1253,10 @@ bool IDEFacade::BuildCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const
 	}
 
 	if (firstRow < 0 || lastRow < firstRow) {
+		AppendCodeFetchLogLine("[STEP] invalid page range first=" + std::to_string(firstRow) + " last=" + std::to_string(lastRow));
 		return false;
 	}
+	AppendCodeFetchLogLine("[STEP] page range first=" + std::to_string(firstRow) + " last=" + std::to_string(lastRow));
 
 	outSnapshot.firstRow = firstRow;
 	outSnapshot.lastRow = lastRow;
@@ -1046,6 +1266,7 @@ bool IDEFacade::BuildCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const
 	for (int row = firstRow; row <= lastRow; ++row) {
 		ProgramText rowText = {};
 		if (!RunGetPrgText(row, -1, rowText)) {
+			AppendCodeFetchLogLine("[STEP] row read failed row=" + std::to_string(row));
 			return false;
 		}
 		rows.push_back(rowText);
@@ -1079,6 +1300,7 @@ bool IDEFacade::BuildCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const
 		}
 		outSnapshot.functions.push_back(std::move(block));
 	}
+	AppendCodeFetchLogLine("[STEP] BuildCurrentPageSnapshot done functions=" + std::to_string(outSnapshot.functions.size()));
 
 	return true;
 }
@@ -1120,6 +1342,9 @@ bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, 
 {
 	outStartRow = -1;
 	outEndRow = -1;
+	if (IsAICodeFetchDebugEnabled()) {
+		AppendCodeFetchLogLine("[STEP] enter LocateCurrentFunctionRowRange");
+	}
 	if (outDiagnostics != nullptr) {
 		outDiagnostics->clear();
 	}
@@ -1129,9 +1354,15 @@ bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, 
 		}
 	};
 
+	const uint64_t traceId = GetCurrentAIPerfTraceId();
+	const int scanLimit = (std::min)(kMaxRowScan, 20000);
+
 	int caretRow = -1;
 	int caretCol = -1;
 	if (!GetCaretPosition(caretRow, caretCol)) {
+		if (IsAICodeFetchDebugEnabled()) {
+			AppendCodeFetchLogLine("[STEP] GetCaretPosition failed in LocateCurrentFunctionRowRange");
+		}
 		setDiag("GetCaretPosition failed");
 		return false;
 	}
@@ -1142,18 +1373,43 @@ bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, 
 
 	int startRow = -1;
 	ProgramText startRowText = {};
-	for (int probeRow = caretRow, scan = 0; probeRow >= 0 && scan < kMaxRowScan; --probeRow, ++scan) {
+	int scanCountUp = 0;
+	int failCountUp = 0;
+	int consecutiveFailUp = 0;
+	const auto scanUpStart = PerfClock::now();
+	for (int probeRow = caretRow; probeRow >= 0 && scanCountUp < scanLimit; --probeRow, ++scanCountUp) {
 		ProgramText rowText = {};
 		if (!RunGetPrgText(probeRow, -1, rowText)) {
+			++failCountUp;
+			++consecutiveFailUp;
+			if (consecutiveFailUp >= kMaxConsecutiveGetTextFail) {
+				break;
+			}
 			continue;
 		}
+		consecutiveFailUp = 0;
 		if (!rowText.isTitle && rowText.type == VT_SUB_NAME) {
 			startRow = probeRow;
 			startRowText = rowText;
 			break;
 		}
 	}
+	LogAIPerfCost(
+		traceId,
+		"LocateCurrentFunctionRowRange.scan_up",
+		ElapsedMs(scanUpStart),
+		"caretRow=" + std::to_string(caretRow) +
+		" scans=" + std::to_string(scanCountUp) +
+		" fails=" + std::to_string(failCountUp) +
+		" startRow=" + std::to_string(startRow));
+
 	if (startRow < 0) {
+		if (IsAICodeFetchDebugEnabled()) {
+			AppendCodeFetchLogLine(
+				"[STEP] locate startRow failed caretRow=" + std::to_string(caretRow) +
+				" scanUp=" + std::to_string(scanCountUp) +
+				" failUp=" + std::to_string(failCountUp));
+		}
 		setDiag("cannot locate VT_SUB_NAME above caretRow=" + std::to_string(caretRow));
 		return false;
 	}
@@ -1167,19 +1423,74 @@ bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, 
 	}
 
 	int endRow = startRow;
-	for (int scan = 0; scan < kMaxRowScan; ++scan) {
+	int scanCountDown = 0;
+	int failCountDown = 0;
+	int repeatedRowCount = 0;
+	std::string scanDownStopReason = "max_scan_limit";
+	const int functionScanLimit = (std::min)(scanLimit, kMaxFunctionScan);
+	ProgramText prevRow = startRowText;
+	const auto scanDownStart = PerfClock::now();
+	for (int scan = 0; scan < functionScanLimit; ++scan) {
+		++scanCountDown;
 		ProgramText nextRow = {};
 		if (!RunGetPrgText(endRow + 1, -1, nextRow)) {
+			++failCountDown;
+			scanDownStopReason = "next_row_read_failed";
 			break;
 		}
 		if (!nextRow.isTitle && nextRow.type == VT_SUB_NAME) {
+			scanDownStopReason = "next_sub_header";
 			break;
 		}
+		if (!nextRow.isTitle && !IsSubRelatedType(nextRow.type)) {
+			scanDownStopReason = "non_sub_related_type_" + std::to_string(nextRow.type);
+			break;
+		}
+
+		if (nextRow.type == prevRow.type &&
+			nextRow.isTitle == prevRow.isTitle &&
+			nextRow.text == prevRow.text) {
+			++repeatedRowCount;
+			if (repeatedRowCount >= 64) {
+				scanDownStopReason = "repeated_same_row";
+				break;
+			}
+		}
+		else {
+			repeatedRowCount = 0;
+		}
+
+		if (!nextRow.isTitle &&
+			TrimAsciiSpaceCopy(nextRow.text).empty() &&
+			nextRow.type == 0) {
+			scanDownStopReason = "empty_non_title_row";
+			break;
+		}
+
 		++endRow;
+		prevRow = nextRow;
 	}
+	LogAIPerfCost(
+		traceId,
+		"LocateCurrentFunctionRowRange.scan_down",
+		ElapsedMs(scanDownStart),
+		"startRow=" + std::to_string(startRow) +
+		" scans=" + std::to_string(scanCountDown) +
+		" fails=" + std::to_string(failCountDown) +
+		" endRow=" + std::to_string(endRow) +
+		" reason=" + scanDownStopReason);
 
 	outStartRow = startRow;
 	outEndRow = (std::max)(startRow, endRow);
+	if (IsAICodeFetchDebugEnabled()) {
+		AppendCodeFetchLogLine(
+			"[STEP] locate done startRow=" + std::to_string(outStartRow) +
+			" endRow=" + std::to_string(outEndRow) +
+			" scanUp=" + std::to_string(scanCountUp) +
+			" failUp=" + std::to_string(failCountUp) +
+			" scanDown=" + std::to_string(scanCountDown) +
+			" failDown=" + std::to_string(failCountDown));
+	}
 	setDiag("ok: caret-range row=" + std::to_string(outStartRow) + "-" + std::to_string(outEndRow));
 	return true;
 }
@@ -1193,19 +1504,42 @@ bool IDEFacade::GetCurrentPageCode(std::string& outCode) const
 {
 	outCode.clear();
 	ClipboardTextRestoreGuard clipboardGuard;
+	BeginCodeFetchLogSession("GetCurrentPageCode");
+	AppendCodeFetchLogLine("[STEP] enter GetCurrentPageCode");
+
+	const uint64_t traceId = GetCurrentAIPerfTraceId();
+	const auto copyStart = PerfClock::now();
+	bool movedSelectAll = false;
+	bool copied = false;
+	bool clipboardChanged = false;
+	auto logCopy = [&](bool ok, const std::string& reason) {
+		LogAIPerfCost(
+			traceId,
+			"GetCurrentPageCode.select_all_copy",
+			ElapsedMs(copyStart),
+			"ok=" + std::to_string(ok ? 1 : 0) +
+			" reason=" + reason +
+			" movedAll=" + std::to_string(movedSelectAll ? 1 : 0) +
+			" copied=" + std::to_string(copied ? 1 : 0) +
+			" clipboardChanged=" + std::to_string(clipboardChanged ? 1 : 0));
+	};
 
 	int caretRow = -1;
 	int caretCol = -1;
 	GetCaretPosition(caretRow, caretCol);
+	AppendCodeFetchLogLine("[STEP] caret row=" + std::to_string(caretRow) + " col=" + std::to_string(caretCol));
 
 	const DWORD beforeSeq = GetClipboardSequenceNumber();
 	RunBlkClearAllDef();
 	if (!RunMoveBlkSelAll()) {
 		RunBlkClearAllDef();
+		AppendCodeFetchLogLine("[STEP] RunMoveBlkSelAll failed");
+		logCopy(false, "move_select_all_failed");
 		return false;
 	}
+	movedSelectAll = true;
 
-	const bool copied = CopySelection();
+	copied = CopySelection();
 	RunBlkClearAllDef();
 
 	if (caretRow >= 0 && caretCol >= 0) {
@@ -1213,12 +1547,24 @@ bool IDEFacade::GetCurrentPageCode(std::string& outCode) const
 	}
 
 	if (!copied) {
+		AppendCodeFetchLogLine("[STEP] CopySelection failed");
+		logCopy(false, "copy_selection_failed");
 		return false;
 	}
-	if (GetClipboardSequenceNumber() == beforeSeq) {
+	clipboardChanged = (GetClipboardSequenceNumber() != beforeSeq);
+	if (!clipboardChanged) {
+		AppendCodeFetchLogLine("[STEP] clipboard sequence unchanged");
+		logCopy(false, "clipboard_not_changed");
 		return false;
 	}
-	return ReadClipboardText(outCode) && !outCode.empty();
+
+	const bool readOk = ReadClipboardText(outCode) && !outCode.empty();
+	AppendCodeFetchLogLine(
+		"[STEP] ReadClipboardText ok=" + std::to_string(readOk ? 1 : 0) +
+		" len=" + std::to_string(outCode.size()) +
+		" head=\"" + EscapeOneLine(outCode) + "\"");
+	logCopy(readOk, readOk ? "ok" : "read_clipboard_failed");
+	return readOk;
 }
 
 bool IDEFacade::ReplaceCurrentPageCode(const std::string& newPageCode, bool preCompile) const
@@ -1248,36 +1594,77 @@ bool IDEFacade::ReplaceCurrentPageCode(const std::string& newPageCode, bool preC
 
 bool IDEFacade::ReplaceRowRangeText(int startRow, int endRow, const std::string& newText, bool preCompile) const
 {
+	const uint64_t traceId = GetCurrentAIPerfTraceId();
+	const auto totalStart = PerfClock::now();
+	AppendCodeFetchLogLine(
+		"[STEP] enter ReplaceRowRangeText startRow=" + std::to_string(startRow) +
+		" endRow=" + std::to_string(endRow) +
+		" inputLen=" + std::to_string(newText.size()) +
+		" preCompile=" + std::to_string(preCompile ? 1 : 0));
+	auto logTotal = [&](bool ok, const std::string& reason) {
+		LogAIPerfCost(
+			traceId,
+			"ReplaceRowRangeText.total",
+			ElapsedMs(totalStart),
+			"ok=" + std::to_string(ok ? 1 : 0) +
+			" reason=" + TruncateForPerfLog(reason) +
+			" startRow=" + std::to_string(startRow) +
+			" endRow=" + std::to_string(endRow));
+	};
+
 	if (startRow < 0 || endRow < startRow) {
+		AppendCodeFetchLogLine("[STEP] ReplaceRowRangeText invalid range");
+		logTotal(false, "invalid_range");
 		return false;
 	}
 	if (TrimAsciiSpace(newText).empty()) {
+		AppendCodeFetchLogLine("[STEP] ReplaceRowRangeText input empty after trim");
+		logTotal(false, "empty_input");
 		return false;
 	}
 
 	int caretRow = -1;
 	int caretCol = -1;
-	GetCaretPosition(caretRow, caretCol);
+	const bool hasCaret = GetCaretPosition(caretRow, caretCol);
+	auto restoreCaret = [&]() {
+		if (hasCaret && caretRow >= 0 && caretCol >= 0) {
+			MoveCaret(caretRow, caretCol);
+		}
+	};
+	auto failAndRestore = [&](const std::string& reason) {
+		RunBlkClearAllDef();
+		restoreCaret();
+		AppendCodeFetchLogLine("[STEP] ReplaceRowRangeText failed reason=" + EscapeOneLine(reason));
+		logTotal(false, reason);
+		return false;
+	};
 
 	if (!MoveCaret(startRow, 0)) {
-		return false;
+		return failAndRestore("move_caret_to_start_failed");
 	}
 	int blockStartRow = -1;
 	int blockEndRow = -1;
 	if (!TranslateProgramRowRangeToBlockRange(startRow, endRow, blockStartRow, blockEndRow)) {
-		return false;
+		return failAndRestore("translate_program_row_range_failed");
 	}
+	AppendCodeFetchLogLine(
+		"[STEP] ReplaceRowRangeText mapped blockStartRow=" + std::to_string(blockStartRow) +
+		" blockEndRow=" + std::to_string(blockEndRow));
 	if (!SelectRowRange(blockStartRow, blockEndRow)) {
-		return false;
+		return failAndRestore("select_row_range_failed");
 	}
 
 	const bool ok = ReplaceSelectedRowsText(newText, preCompile);
 	RunBlkClearAllDef();
-
-	if (caretRow >= 0 && caretCol >= 0) {
-		MoveCaret(caretRow, caretCol);
+	restoreCaret();
+	if (!ok) {
+		AppendCodeFetchLogLine("[STEP] ReplaceRowRangeText failed in ReplaceSelectedRowsText");
+		logTotal(false, "replace_selected_rows_failed");
+		return false;
 	}
-	return ok;
+	AppendCodeFetchLogLine("[STEP] ReplaceRowRangeText done");
+	logTotal(true, "ok");
+	return true;
 }
 
 bool IDEFacade::GetFunctionCodeByName(const std::string& functionName, std::string& outCode) const
@@ -1298,6 +1685,8 @@ bool IDEFacade::GetFunctionCodeByName(const std::string& functionName, std::stri
 bool IDEFacade::GetCurrentFunctionCode(std::string& outCode, std::string* outDiagnostics) const
 {
 	outCode.clear();
+	BeginCodeFetchLogSession("GetCurrentFunctionCode");
+	AppendCodeFetchLogLine("[STEP] enter GetCurrentFunctionCode");
 	if (outDiagnostics != nullptr) {
 		outDiagnostics->clear();
 	}
@@ -1307,31 +1696,75 @@ bool IDEFacade::GetCurrentFunctionCode(std::string& outCode, std::string* outDia
 		}
 	};
 
+	const uint64_t traceId = GetCurrentAIPerfTraceId();
+	const auto totalStart = PerfClock::now();
+	auto logTotal = [&](bool ok, int rowsRead, const std::string& reason) {
+		LogAIPerfCost(
+			traceId,
+			"GetCurrentFunctionCode.total",
+			ElapsedMs(totalStart),
+			"ok=" + std::to_string(ok ? 1 : 0) +
+			" rowsRead=" + std::to_string(rowsRead) +
+			" reason=" + TruncateForPerfLog(reason));
+	};
+
 	int startRow = -1;
 	int endRow = -1;
 	std::string locateDiag;
 	if (!LocateCurrentFunctionRowRange(startRow, endRow, &locateDiag)) {
+		AppendCodeFetchLogLine("[STEP] LocateCurrentFunctionRowRange failed diag=\"" + EscapeOneLine(locateDiag) + "\"");
 		setDiag(locateDiag.empty() ? "LocateCurrentFunctionRowRange failed" : locateDiag);
+		logTotal(false, 0, locateDiag.empty() ? "locate_failed" : locateDiag);
 		return false;
 	}
+	AppendCodeFetchLogLine("[STEP] function range start=" + std::to_string(startRow) + " end=" + std::to_string(endRow));
 
 	std::string code;
+	int rowsRead = 0;
+	const auto readStart = PerfClock::now();
 	for (int row = startRow; row <= endRow; ++row) {
 		ProgramText rowText = {};
 		if (!RunGetPrgText(row, -1, rowText)) {
+			AppendCodeFetchLogLine("[STEP] RunGetPrgText failed row=" + std::to_string(row));
 			setDiag("RunGetPrgText failed at row=" + std::to_string(row));
+			LogAIPerfCost(
+				traceId,
+				"GetCurrentFunctionCode.read_rows",
+				ElapsedMs(readStart),
+				"ok=0 rowsRead=" + std::to_string(rowsRead) + " failRow=" + std::to_string(row));
+			logTotal(false, rowsRead, "read_row_failed at row=" + std::to_string(row));
 			return false;
 		}
+		++rowsRead;
 		AppendLineWithCrLf(code, rowText.text);
 	}
 	TrimTrailingLineBreaks(code);
 	if (TrimAsciiSpace(code).empty()) {
+		AppendCodeFetchLogLine("[STEP] code empty after trim");
 		setDiag("located function block but code is empty after trim");
+		LogAIPerfCost(
+			traceId,
+			"GetCurrentFunctionCode.read_rows",
+			ElapsedMs(readStart),
+			"ok=0 rowsRead=" + std::to_string(rowsRead) + " reason=empty_after_trim");
+		logTotal(false, rowsRead, "empty_after_trim");
 		return false;
 	}
 
+	LogAIPerfCost(
+		traceId,
+		"GetCurrentFunctionCode.read_rows",
+		ElapsedMs(readStart),
+		"ok=1 rowsRead=" + std::to_string(rowsRead) +
+		" startRow=" + std::to_string(startRow) +
+		" endRow=" + std::to_string(endRow));
+
 	outCode = std::move(code);
+	AppendCodeFetchLogLine(
+		"[STEP] GetCurrentFunctionCode done len=" + std::to_string(outCode.size()) +
+		" head=\"" + EscapeOneLine(outCode) + "\"");
 	setDiag("ok: row=" + std::to_string(startRow) + "-" + std::to_string(endRow));
+	logTotal(true, rowsRead, "ok");
 	return true;
 }
 bool IDEFacade::ReplaceFunctionCodeByName(const std::string& functionName, const std::string& newFunctionCode, bool preCompile) const
@@ -1350,17 +1783,44 @@ bool IDEFacade::ReplaceFunctionCodeByName(const std::string& functionName, const
 
 bool IDEFacade::ReplaceCurrentFunctionCode(const std::string& newFunctionCode, bool preCompile) const
 {
+	const uint64_t traceId = GetCurrentAIPerfTraceId();
+	const auto totalStart = PerfClock::now();
+	AppendCodeFetchLogLine(
+		"[STEP] enter ReplaceCurrentFunctionCode inputLen=" + std::to_string(newFunctionCode.size()) +
+		" preCompile=" + std::to_string(preCompile ? 1 : 0));
+	auto logTotal = [&](bool ok, const std::string& reason, int startRow, int endRow) {
+		LogAIPerfCost(
+			traceId,
+			"ReplaceCurrentFunctionCode.total",
+			ElapsedMs(totalStart),
+			"ok=" + std::to_string(ok ? 1 : 0) +
+			" reason=" + TruncateForPerfLog(reason) +
+			" startRow=" + std::to_string(startRow) +
+			" endRow=" + std::to_string(endRow));
+	};
+
 	if (TrimAsciiSpace(newFunctionCode).empty()) {
+		AppendCodeFetchLogLine("[STEP] ReplaceCurrentFunctionCode empty input after trim");
+		logTotal(false, "empty_input", -1, -1);
 		return false;
 	}
 
 	int startRow = -1;
 	int endRow = -1;
-	if (!LocateCurrentFunctionRowRange(startRow, endRow, nullptr)) {
+	std::string locateDiag;
+	if (!LocateCurrentFunctionRowRange(startRow, endRow, &locateDiag)) {
+		AppendCodeFetchLogLine(
+			"[STEP] ReplaceCurrentFunctionCode locate failed diag=\"" + EscapeOneLine(locateDiag) + "\"");
+		logTotal(false, locateDiag.empty() ? "locate_failed" : locateDiag, startRow, endRow);
 		return false;
 	}
+	AppendCodeFetchLogLine(
+		"[STEP] ReplaceCurrentFunctionCode range startRow=" + std::to_string(startRow) +
+		" endRow=" + std::to_string(endRow));
 
-	return ReplaceRowRangeText(startRow, endRow, newFunctionCode, preCompile);
+	const bool ok = ReplaceRowRangeText(startRow, endRow, newFunctionCode, preCompile);
+	logTotal(ok, ok ? "ok" : "replace_row_range_failed", startRow, endRow);
+	return ok;
 }
 
 bool IDEFacade::InsertCodeBelowFunction(const std::string& functionName, const std::string& codeToInsert, bool appendIfNotFound, bool preCompile) const
@@ -1631,12 +2091,32 @@ bool IDEFacade::JumpToFunctionHeaderByName(const std::string& functionName) cons
 
 bool IDEFacade::RunGetPrgText(int rowIndex, int colIndex, ProgramText& outText) const
 {
-	return ReadProgramLikeText(FN_GET_PRG_TEXT, rowIndex, colIndex, outText);
+	const bool ok = ReadProgramLikeText(FN_GET_PRG_TEXT, rowIndex, colIndex, outText);
+	if (IsAICodeFetchDebugEnabled()) {
+		AppendCodeFetchLogLine(
+			"[CALL] fn=FN_GET_PRG_TEXT row=" + std::to_string(rowIndex) +
+			" col=" + std::to_string(colIndex) +
+			" ok=" + std::to_string(ok ? 1 : 0) +
+			" type=" + std::to_string(outText.type) +
+			" isTitle=" + std::to_string(outText.isTitle ? 1 : 0) +
+			" text=\"" + EscapeOneLine(outText.text) + "\"");
+	}
+	return ok;
 }
 
 bool IDEFacade::RunGetPrgHelp(int rowIndex, int colIndex, ProgramText& outText) const
 {
-	return ReadProgramLikeText(FN_GET_PRG_HELP, rowIndex, colIndex, outText);
+	const bool ok = ReadProgramLikeText(FN_GET_PRG_HELP, rowIndex, colIndex, outText);
+	if (IsAICodeFetchDebugEnabled()) {
+		AppendCodeFetchLogLine(
+			"[CALL] fn=FN_GET_PRG_HELP row=" + std::to_string(rowIndex) +
+			" col=" + std::to_string(colIndex) +
+			" ok=" + std::to_string(ok ? 1 : 0) +
+			" type=" + std::to_string(outText.type) +
+			" isTitle=" + std::to_string(outText.isTitle ? 1 : 0) +
+			" text=\"" + EscapeOneLine(outText.text) + "\"");
+	}
+	return ok;
 }
 
 bool IDEFacade::RunGetNumEcom(int& count) const
