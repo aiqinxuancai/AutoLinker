@@ -427,6 +427,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ResourceCompile Include="src\AutoLinker.rc" />
+  </ItemGroup>
+  <ItemGroup>
     <ClCompile Include="detours\creatwth.cpp" />
     <ClCompile Include="detours\detours.cpp" />
     <ClCompile Include="detours\disasm.cpp" />
@@ -478,6 +481,7 @@
     <ClInclude Include="src\ModelManager.h" />
     <ClInclude Include="src\MouseBack.h" />
     <ClInclude Include="src\PathHelper.h" />
+    <ClInclude Include="src\resource.h" />
     <ClInclude Include="src\StringHelper.h" />
     <ClInclude Include="src\TimeManager.h" />
     <ClInclude Include="src\Version.h" />

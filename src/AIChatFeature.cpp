@@ -22,6 +22,7 @@
 #include "ConfigManager.h"
 #include "Global.h"
 #include "IDEFacade.h"
+#include "resource.h"
 
 #pragma comment(lib, "comctl32.lib")
 #if defined _M_IX86
@@ -38,6 +39,7 @@ constexpr UINT WM_AUTOLINKER_AI_CHAT_REFRESH = WM_APP + 203;
 constexpr int IDC_AI_CHAT_HISTORY = 2101;
 constexpr int IDC_AI_CHAT_INPUT = 2102;
 constexpr int IDC_AI_CHAT_SEND = 2103;
+constexpr int IDC_AI_CHAT_CLEAR_HISTORY = 2104;
 
 constexpr int IDC_CODE_EDIT = 2201;
 constexpr int IDC_CODE_OK = 1;
@@ -73,6 +75,7 @@ struct ChatDialogContext {
 	HWND hHistory = nullptr;
 	HWND hInput = nullptr;
 	HWND hSend = nullptr;
+	HWND hClearHistory = nullptr;
 };
 
 struct CodeEditDialogContext {
@@ -80,6 +83,9 @@ struct CodeEditDialogContext {
 	std::string text;
 	bool accepted = false;
 	HWND hEdit = nullptr;
+	HWND hCopy = nullptr;
+	HWND hOk = nullptr;
+	HWND hCancel = nullptr;
 };
 
 struct CodeEditToolRequest {
@@ -119,6 +125,42 @@ HMODULE GetCurrentModuleHandle()
 		reinterpret_cast<LPCWSTR>(&GetCurrentModuleHandle),
 		&module);
 	return module;
+}
+
+HICON LoadAppIconHandle(int cx, int cy)
+{
+	const HMODULE module = GetCurrentModuleHandle();
+	if (module == nullptr) {
+		return nullptr;
+	}
+	return reinterpret_cast<HICON>(LoadImageA(
+		module,
+		MAKEINTRESOURCEA(IDI_APP_ICON),
+		IMAGE_ICON,
+		cx,
+		cy,
+		LR_DEFAULTCOLOR));
+}
+
+HICON GetAppIconLarge()
+{
+	static HICON s_largeIcon = LoadAppIconHandle(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+	return s_largeIcon;
+}
+
+HICON GetAppIconSmall()
+{
+	static HICON s_smallIcon = LoadAppIconHandle(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+	return s_smallIcon;
+}
+
+void ApplyWindowIcon(HWND hWnd)
+{
+	if (hWnd == nullptr) {
+		return;
+	}
+	SendMessageA(hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(GetAppIconLarge()));
+	SendMessageA(hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(GetAppIconSmall()));
 }
 
 class ComCtl6ActivationScope {
@@ -401,6 +443,102 @@ void InstallEditHotkeys(HWND hEdit, DWORD_PTR flags)
 {
 	if (hEdit != nullptr) {
 		SetWindowSubclass(hEdit, EditControlSubclassProc, kEditSubclassId, flags);
+	}
+}
+
+void ApplyMinTrackSize(HWND hWnd, MINMAXINFO* mmi, int minClientWidth, int minClientHeight)
+{
+	if (hWnd == nullptr || mmi == nullptr) {
+		return;
+	}
+
+	RECT rc = { 0, 0, minClientWidth, minClientHeight };
+	const DWORD style = static_cast<DWORD>(GetWindowLongPtrA(hWnd, GWL_STYLE));
+	const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrA(hWnd, GWL_EXSTYLE));
+	AdjustWindowRectEx(&rc, style, FALSE, exStyle);
+	mmi->ptMinTrackSize.x = rc.right - rc.left;
+	mmi->ptMinTrackSize.y = rc.bottom - rc.top;
+}
+
+void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (hWnd == nullptr || ctx == nullptr) {
+		return;
+	}
+
+	RECT rc = {};
+	GetClientRect(hWnd, &rc);
+	const int clientWidth = rc.right - rc.left;
+	const int clientHeight = rc.bottom - rc.top;
+
+	const int margin = 14;
+	const int gap = 8;
+	const int actionRowHeight = 26;
+	const int inputHeight = 84;
+	const int sendWidth = 92;
+	const int clearHistoryWidth = 116;
+
+	const int contentWidth = (std::max)(120, clientWidth - margin * 2);
+	const int inputWidth = (std::max)(80, contentWidth - sendWidth - gap);
+	const int sendX = margin + inputWidth + gap;
+	const int inputY = clientHeight - margin - inputHeight;
+	const int actionRowY = inputY - gap - actionRowHeight;
+	const int historyY = margin;
+	const int historyHeight = (std::max)(80, actionRowY - gap - historyY);
+
+	if (ctx->hHistory != nullptr) {
+		MoveWindow(ctx->hHistory, margin, historyY, contentWidth, historyHeight, TRUE);
+	}
+	if (ctx->hClearHistory != nullptr) {
+		MoveWindow(ctx->hClearHistory, margin, actionRowY, clearHistoryWidth, actionRowHeight, TRUE);
+	}
+	if (ctx->hInput != nullptr) {
+		MoveWindow(ctx->hInput, margin, inputY, inputWidth, inputHeight, TRUE);
+	}
+	if (ctx->hSend != nullptr) {
+		MoveWindow(ctx->hSend, sendX, inputY, sendWidth, inputHeight, TRUE);
+	}
+}
+
+void LayoutCodeEditDialog(HWND hWnd, CodeEditDialogContext* ctx)
+{
+	if (hWnd == nullptr || ctx == nullptr) {
+		return;
+	}
+
+	RECT rc = {};
+	GetClientRect(hWnd, &rc);
+	const int clientWidth = rc.right - rc.left;
+	const int clientHeight = rc.bottom - rc.top;
+
+	const int margin = 14;
+	const int gap = 8;
+	const int buttonHeight = 30;
+	const int copyWidth = 116;
+	const int okWidth = 84;
+	const int cancelWidth = 56;
+
+	const int buttonY = clientHeight - margin - buttonHeight;
+	const int cancelX = clientWidth - margin - cancelWidth;
+	const int okX = cancelX - gap - okWidth;
+	const int copyX = okX - gap - copyWidth;
+
+	const int editX = margin;
+	const int editY = margin;
+	const int editWidth = (std::max)(120, clientWidth - margin * 2);
+	const int editHeight = (std::max)(100, buttonY - gap - editY);
+
+	if (ctx->hEdit != nullptr) {
+		MoveWindow(ctx->hEdit, editX, editY, editWidth, editHeight, TRUE);
+	}
+	if (ctx->hCopy != nullptr) {
+		MoveWindow(ctx->hCopy, copyX, buttonY, copyWidth, buttonHeight, TRUE);
+	}
+	if (ctx->hOk != nullptr) {
+		MoveWindow(ctx->hOk, okX, buttonY, okWidth, buttonHeight, TRUE);
+	}
+	if (ctx->hCancel != nullptr) {
+		MoveWindow(ctx->hCancel, cancelX, buttonY, cancelWidth, buttonHeight, TRUE);
 	}
 }
 
@@ -836,6 +974,13 @@ bool StartChatRequest(const std::string& userInput)
 	return true;
 }
 
+void ClearChatHistory()
+{
+	std::lock_guard<std::mutex> guard(g_session.mutex);
+	g_session.messages.clear();
+	g_session.rollingSummary.clear();
+}
+
 void HandleChatTaskDone(LPARAM lParam)
 {
 	std::unique_ptr<AIChatAsyncResult> result(reinterpret_cast<AIChatAsyncResult*>(lParam));
@@ -926,23 +1071,41 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hHistory = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
 			WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
 			14, 14, 752, 420, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_HISTORY), nullptr, nullptr);
+		ctx->hClearHistory = CreateWindowW(L"BUTTON", L"\u6e05\u7a7a\u5386\u53f2\u5bf9\u8bdd",
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+			14, 442, 106, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_HISTORY), nullptr, nullptr);
 		ctx->hInput = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
-			14, 442, 652, 72, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_INPUT), nullptr, nullptr);
+			14, 476, 652, 72, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_INPUT), nullptr, nullptr);
 		ctx->hSend = CreateWindowW(L"BUTTON", L"\u53D1\u9001",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-			674, 442, 92, 72, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_SEND), nullptr, nullptr);
+			674, 476, 92, 72, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_SEND), nullptr, nullptr);
 
 		SetDefaultFont(ctx->hHistory);
+		SetDefaultFont(ctx->hClearHistory);
 		SetDefaultFont(ctx->hInput);
 		SetDefaultFont(ctx->hSend);
 		InstallEditHotkeys(ctx->hHistory, kEditFlagNone);
 		InstallEditHotkeys(ctx->hInput, kEditFlagSubmitOnEnter);
+		LayoutAIChatDialog(hWnd, ctx);
 
 		RefreshChatDialog(hWnd);
 		SetFocus(ctx->hInput);
 		return 0;
 	}
+
+	case WM_GETMINMAXINFO: {
+		auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+		ApplyMinTrackSize(hWnd, mmi, 560, 420);
+		return 0;
+	}
+
+	case WM_SIZE:
+		if (ctx != nullptr) {
+			LayoutAIChatDialog(hWnd, ctx);
+			ScrollEditToBottom(ctx->hHistory);
+		}
+		return 0;
 
 	case WM_COMMAND: {
 		if (ctx == nullptr) {
@@ -958,6 +1121,18 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 			SetWindowTextA(ctx->hInput, "");
 			EnableWindow(ctx->hSend, FALSE);
 			if (!StartChatRequest(text)) {
+				RefreshChatDialog(hWnd);
+			}
+			return 0;
+		}
+		if (id == IDC_AI_CHAT_CLEAR_HISTORY) {
+			const int answer = MessageBoxW(
+				hWnd,
+				L"\u786e\u5b9a\u6e05\u7a7a\u6240\u6709 AI \u5386\u53f2\u5bf9\u8bdd\u5417\uff1f",
+				L"AutoLinker AI \u5bf9\u8bdd",
+				MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
+			if (answer == IDYES) {
+				ClearChatHistory();
 				RefreshChatDialog(hWnd);
 			}
 			return 0;
@@ -1009,24 +1184,37 @@ LRESULT CALLBACK CodeEditDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		const std::string normalized = NormalizeCodeForEIDE(ctx->text);
 		SetWindowTextA(ctx->hEdit, normalized.c_str());
 
-		HWND hCopy = CreateWindowW(L"BUTTON", L"\u590D\u5236\u5230\u526A\u8D34\u677F",
+		ctx->hCopy = CreateWindowW(L"BUTTON", L"\u590D\u5236\u5230\u526A\u8D34\u677F",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 494, 474, 116, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_CODE_COPY), nullptr, nullptr);
-		HWND hOk = CreateWindowW(L"BUTTON", L"\u63D0\u4F9B\u7ED9AI",
+		ctx->hOk = CreateWindowW(L"BUTTON", L"\u63D0\u4F9B\u7ED9AI",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 618, 474, 84, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_CODE_OK), nullptr, nullptr);
-		HWND hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88",
+		ctx->hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 710, 474, 56, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_CODE_CANCEL), nullptr, nullptr);
 
 		SetDefaultFont(ctx->hEdit);
-		SetDefaultFont(hCopy);
-		SetDefaultFont(hOk);
-		SetDefaultFont(hCancel);
+		SetDefaultFont(ctx->hCopy);
+		SetDefaultFont(ctx->hOk);
+		SetDefaultFont(ctx->hCancel);
 		InstallEditHotkeys(ctx->hEdit, kEditFlagNone);
+		LayoutCodeEditDialog(hWnd, ctx);
 		SetFocus(ctx->hEdit);
 		return 0;
 	}
+
+	case WM_GETMINMAXINFO: {
+		auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+		ApplyMinTrackSize(hWnd, mmi, 560, 360);
+		return 0;
+	}
+
+	case WM_SIZE:
+		if (ctx != nullptr) {
+			LayoutCodeEditDialog(hWnd, ctx);
+		}
+		return 0;
 
 	case WM_COMMAND: {
 		if (ctx == nullptr) {
@@ -1103,12 +1291,14 @@ bool ShowAICodeEditDialog(HWND owner, const std::string& title, const std::strin
 	wc.lpfnWndProc = CodeEditDialogProc;
 	wc.hInstance = GetModuleHandleA(nullptr);
 	wc.lpszClassName = "AutoLinkerAICodeEditDialogWindow";
+	wc.hIcon = GetAppIconLarge();
+	wc.hIconSm = GetAppIconSmall();
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
 	RegisterClassExA(&wc);
 
 	CodeEditDialogContext ctx = {};
-	ctx.title = title;
+	ctx.title = title.empty() ? "AutoLinker AI Code Edit" : title;
 	ctx.text = initialCode;
 
 	HWND hDialog = CreateWindowExA(
@@ -1125,6 +1315,7 @@ bool ShowAICodeEditDialog(HWND owner, const std::string& title, const std::strin
 		return false;
 	}
 
+	ApplyWindowIcon(hDialog);
 	RunModalWindow(owner, hDialog);
 	if (ctx.accepted) {
 		ioCode = ctx.text;
@@ -1173,6 +1364,8 @@ void OpenDialog()
 	wc.lpfnWndProc = AIChatDialogProc;
 	wc.hInstance = GetModuleHandleA(nullptr);
 	wc.lpszClassName = "AutoLinkerAIChatDialogWindow";
+	wc.hIcon = GetAppIconLarge();
+	wc.hIconSm = GetAppIconSmall();
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
 	RegisterClassExA(&wc);
@@ -1182,11 +1375,12 @@ void OpenDialog()
 		wc.lpszClassName,
 		LocalFromWide(L"AutoLinker AI \u5bf9\u8bdd").c_str(),
 		WS_CAPTION | WS_SYSMENU | WS_SIZEBOX | WS_MINIMIZEBOX | WS_VISIBLE,
-		CW_USEDEFAULT, CW_USEDEFAULT, 800, 560,
+		CW_USEDEFAULT, CW_USEDEFAULT, 860, 680,
 		g_mainWindow,
 		nullptr,
 		wc.hInstance,
 		nullptr);
+	ApplyWindowIcon(g_chatDialog);
 }
 
 bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)

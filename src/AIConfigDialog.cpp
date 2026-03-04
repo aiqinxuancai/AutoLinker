@@ -1,4 +1,5 @@
 #include "AIConfigDialog.h"
+#include "resource.h"
 
 #include <array>
 #include <CommCtrl.h>
@@ -39,6 +40,41 @@ HMODULE GetCurrentModuleHandle()
 		reinterpret_cast<LPCWSTR>(&GetCurrentModuleHandle),
 		&module);
 	return module;
+}
+HICON LoadAppIconHandle(int cx, int cy)
+{
+	const HMODULE module = GetCurrentModuleHandle();
+	if (module == nullptr) {
+		return nullptr;
+	}
+	return reinterpret_cast<HICON>(LoadImageA(
+		module,
+		MAKEINTRESOURCEA(IDI_APP_ICON),
+		IMAGE_ICON,
+		cx,
+		cy,
+		LR_DEFAULTCOLOR));
+}
+
+HICON GetAppIconLarge()
+{
+	static HICON s_largeIcon = LoadAppIconHandle(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+	return s_largeIcon;
+}
+
+HICON GetAppIconSmall()
+{
+	static HICON s_smallIcon = LoadAppIconHandle(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+	return s_smallIcon;
+}
+
+void ApplyWindowIcon(HWND hWnd)
+{
+	if (hWnd == nullptr) {
+		return;
+	}
+	SendMessageA(hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(GetAppIconLarge()));
+	SendMessageA(hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(GetAppIconSmall()));
 }
 
 class ComCtl6ActivationScope {
@@ -572,6 +608,8 @@ bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 	wc.lpfnWndProc = AIConfigDialogProc;
 	wc.hInstance = GetModuleHandleA(nullptr);
 	wc.lpszClassName = "AutoLinkerAIConfigDialogWindow";
+	wc.hIcon = GetAppIconLarge();
+	wc.hIconSm = GetAppIconSmall();
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
 	RegisterClassExA(&wc);
@@ -594,6 +632,7 @@ bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 		return false;
 	}
 
+	ApplyWindowIcon(hDialog);
 	RunModalWindow(owner, hDialog);
 	return ctx.accepted;
 }
@@ -611,12 +650,14 @@ bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string
 	wc.lpfnWndProc = AIPreviewDialogProc;
 	wc.hInstance = GetModuleHandleA(nullptr);
 	wc.lpszClassName = "AutoLinkerAIPreviewDialogWindow";
+	wc.hIcon = GetAppIconLarge();
+	wc.hIconSm = GetAppIconSmall();
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
 	RegisterClassExA(&wc);
 
 	AIPreviewDialogContext ctx = {};
-	ctx.title = title;
+	ctx.title = title.empty() ? "AutoLinker AI Preview" : title;
 	ctx.content = content;
 	ctx.confirmText = confirmText.empty() ? "\u786E\u5B9A" : confirmText;
 
@@ -635,6 +676,7 @@ bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string
 		return false;
 	}
 
+	ApplyWindowIcon(hDialog);
 	RunModalWindow(owner, hDialog);
 	return ctx.accepted;
 }
@@ -652,12 +694,14 @@ bool ShowAITextInputDialog(HWND owner, const std::string& title, const std::stri
 	wc.lpfnWndProc = AIInputDialogProc;
 	wc.hInstance = GetModuleHandleA(nullptr);
 	wc.lpszClassName = "AutoLinkerAIInputDialogWindow";
+	wc.hIcon = GetAppIconLarge();
+	wc.hIconSm = GetAppIconSmall();
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
 	RegisterClassExA(&wc);
 
 	AIInputDialogContext ctx = {};
-	ctx.title = title;
+	ctx.title = title.empty() ? "AutoLinker AI Input" : title;
 	ctx.hint = hint;
 	ctx.text = ioText;
 
@@ -676,6 +720,7 @@ bool ShowAITextInputDialog(HWND owner, const std::string& title, const std::stri
 		return false;
 	}
 
+	ApplyWindowIcon(hDialog);
 	RunModalWindow(owner, hDialog);
 	if (ctx.accepted) {
 		ioText = ctx.text;

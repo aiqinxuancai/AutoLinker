@@ -144,6 +144,9 @@
     <ClInclude Include="src\PathHelper.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="src\resource.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
     <ClInclude Include="src\StringHelper.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -173,5 +176,10 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="src\AutoLinker.def" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="src\AutoLinker.rc">
+      <Filter>Utils</Filter>
+    </ResourceCompile>
   </ItemGroup>
 </Project>
