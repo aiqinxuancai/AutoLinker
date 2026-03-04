@@ -78,8 +78,6 @@ constexpr UINT IDM_AUTOLINKER_CTX_AI_OPTIMIZE_FUNC = 31101;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_COMMENT_FUNC = 31102;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_TRANSLATE_FUNC = 31103;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT = 31104;
-// Use a high (<0x8000) command id to avoid collisions with host builtin command states.
-constexpr UINT IDM_AUTOLINKER_CTX_AI_CHAT = 32750;
 constexpr UINT IDM_AUTOLINKER_CTX_AI_ADD_BY_PAGE = 31106;
 constexpr UINT IDM_AUTOLINKER_LINKER_BASE = 34000;
 constexpr UINT IDM_AUTOLINKER_LINKER_MAX = 34999;
@@ -163,6 +161,7 @@ long long ElapsedMs(const PerfClock::time_point& start)
 }
 
 std::mutex g_aiRoundtripLogMutex;
+std::mutex g_addTabTestLogMutex;
 
 std::filesystem::path GetAIRoundtripLogPath()
 {
@@ -170,6 +169,14 @@ std::filesystem::path GetAIRoundtripLogPath()
 	std::error_code ec;
 	std::filesystem::create_directories(dir, ec);
 	return dir / "ai_roundtrip_last.log";
+}
+
+std::filesystem::path GetAddTabTestLogPath()
+{
+	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	return dir / "add_tab_test_last.log";
 }
 
 std::string EscapeOneLineForLog(std::string text)
@@ -258,6 +265,149 @@ void AppendAIRoundtripLogLine(const std::string& line)
 		return;
 	}
 	AppendAIRoundtripLogLineUnlocked(out, line);
+}
+
+std::string PtrToHexText(UINT_PTR ptr)
+{
+	return std::format("0x{:X}", static_cast<unsigned long long>(ptr));
+}
+
+std::string DescribeWindowForAddTabLog(HWND hWnd)
+{
+	if (hWnd == nullptr) {
+		return "hWnd=NULL";
+	}
+
+	const BOOL isValid = IsWindow(hWnd);
+	char className[128] = {};
+	char windowText[256] = {};
+	HWND parent = nullptr;
+	if (isValid) {
+		GetClassNameA(hWnd, className, static_cast<int>(sizeof(className)));
+		GetWindowTextA(hWnd, windowText, static_cast<int>(sizeof(windowText)));
+		parent = GetParent(hWnd);
+	}
+
+	return std::format(
+		"hWnd={} valid={} class=\"{}\" text=\"{}\" parent={}",
+		PtrToHexText(reinterpret_cast<UINT_PTR>(hWnd)),
+		isValid ? 1 : 0,
+		EscapeOneLineForLog(className),
+		EscapeOneLineForLog(windowText),
+		PtrToHexText(reinterpret_cast<UINT_PTR>(parent)));
+}
+
+void WriteAddTabTestLog(const std::vector<std::string>& lines)
+{
+	const auto path = GetAddTabTestLogPath();
+	std::lock_guard<std::mutex> guard(g_addTabTestLogMutex);
+	std::ofstream out(path, std::ios::trunc | std::ios::binary);
+	if (!out.is_open()) {
+		OutputStringToELog("[AutoLinker][ADD_TAB_TEST] 写日志文件失败");
+		return;
+	}
+	for (const auto& line : lines) {
+		out << line << "\r\n";
+	}
+}
+
+HWND EnsureAddTabTestWindow()
+{
+	static HWND s_testWnd = nullptr;
+	if (s_testWnd != nullptr && IsWindow(s_testWnd)) {
+		return s_testWnd;
+	}
+
+	HWND parent = g_hwnd;
+	HINSTANCE module = GetModuleHandleA(nullptr);
+	s_testWnd = CreateWindowExA(
+		WS_EX_CLIENTEDGE,
+		"EDIT",
+		"AutoLinker FN_ADD_TAB Test Content",
+		WS_CHILD | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL | ES_READONLY,
+		0, 0, 540, 320,
+		parent,
+		nullptr,
+		module,
+		nullptr);
+	return s_testWnd;
+}
+
+void RunFnAddTabStructPassThroughTest()
+{
+	std::vector<std::string> logs;
+	const auto appendLog = [&logs](const std::string& line) {
+		logs.push_back(line);
+		OutputStringToELog(line);
+	};
+
+	appendLog("[AutoLinker][ADD_TAB_TEST] 开始测试 FN_ADD_TAB（传 ADD_TAB_INF*）");
+	HWND testWnd = EnsureAddTabTestWindow();
+	appendLog("[AutoLinker][ADD_TAB_TEST] " + DescribeWindowForAddTabLog(testWnd));
+	if (testWnd == nullptr || !IsWindow(testWnd)) {
+		appendLog("[AutoLinker][ADD_TAB_TEST] 中止：测试窗口创建失败");
+		WriteAddTabTestLog(logs);
+		return;
+	}
+
+	const uint32_t seed = static_cast<uint32_t>(GetTickCount());
+	const std::string captionUtf8 = std::format("AutoLinker AddTab Test {}", seed);
+	const std::string tooltipUtf8 = std::format("trace-{}", seed);
+
+	ADD_TAB_INF tabInf = {};
+	tabInf.m_hWnd = testWnd;
+	tabInf.m_hIcon = nullptr;
+#ifdef UNICODE
+	std::wstring captionW = std::wstring(captionUtf8.begin(), captionUtf8.end());
+	std::wstring tooltipW = std::wstring(tooltipUtf8.begin(), tooltipUtf8.end());
+	tabInf.m_szCaption = const_cast<LPWSTR>(captionW.c_str());
+	tabInf.m_szToolTip = const_cast<LPWSTR>(tooltipW.c_str());
+#else
+	tabInf.m_szCaption = const_cast<LPSTR>(captionUtf8.c_str());
+	tabInf.m_szToolTip = const_cast<LPSTR>(tooltipUtf8.c_str());
+#endif
+
+	const HWND beforeWnd = tabInf.m_hWnd;
+	const HICON beforeIcon = tabInf.m_hIcon;
+	const LPTSTR beforeCaptionPtr = tabInf.m_szCaption;
+	const LPTSTR beforeTooltipPtr = tabInf.m_szToolTip;
+
+	appendLog(std::format(
+		"[AutoLinker][ADD_TAB_TEST] before struct={} m_hWnd={} m_hIcon={} m_szCaption={} m_szToolTip={} caption=\"{}\" tooltip=\"{}\"",
+		PtrToHexText(reinterpret_cast<UINT_PTR>(&tabInf)),
+		PtrToHexText(reinterpret_cast<UINT_PTR>(tabInf.m_hWnd)),
+		PtrToHexText(reinterpret_cast<UINT_PTR>(tabInf.m_hIcon)),
+		PtrToHexText(reinterpret_cast<UINT_PTR>(tabInf.m_szCaption)),
+		PtrToHexText(reinterpret_cast<UINT_PTR>(tabInf.m_szToolTip)),
+		EscapeOneLineForLog(captionUtf8),
+		EscapeOneLineForLog(tooltipUtf8)));
+
+	const INT rawRet = IDEFacade::Instance().RunFunctionRaw(
+		FN_ADD_TAB,
+		static_cast<DWORD>(reinterpret_cast<UINT_PTR>(&tabInf)),
+		0);
+	const bool ok = (rawRet != FALSE);
+
+	appendLog(std::format(
+		"[AutoLinker][ADD_TAB_TEST] after rawRet={} ok={} struct={} m_hWnd={} m_hIcon={} m_szCaption={} m_szToolTip={}",
+		rawRet,
+		ok ? 1 : 0,
+		PtrToHexText(reinterpret_cast<UINT_PTR>(&tabInf)),
+		PtrToHexText(reinterpret_cast<UINT_PTR>(tabInf.m_hWnd)),
+		PtrToHexText(reinterpret_cast<UINT_PTR>(tabInf.m_hIcon)),
+		PtrToHexText(reinterpret_cast<UINT_PTR>(tabInf.m_szCaption)),
+		PtrToHexText(reinterpret_cast<UINT_PTR>(tabInf.m_szToolTip))));
+
+	appendLog(std::format(
+		"[AutoLinker][ADD_TAB_TEST] delta hWndChanged={} hIconChanged={} captionPtrChanged={} tooltipPtrChanged={}",
+		(tabInf.m_hWnd != beforeWnd) ? 1 : 0,
+		(tabInf.m_hIcon != beforeIcon) ? 1 : 0,
+		(tabInf.m_szCaption != beforeCaptionPtr) ? 1 : 0,
+		(tabInf.m_szToolTip != beforeTooltipPtr) ? 1 : 0));
+	appendLog("[AutoLinker][ADD_TAB_TEST] after-window " + DescribeWindowForAddTabLog(tabInf.m_hWnd));
+
+	WriteAddTabTestLog(logs);
+	appendLog("[AutoLinker][ADD_TAB_TEST] 详细日志已写入 add_tab_test_last.log");
 }
 
 void AppendAIRoundtripLogBlock(const std::string& title, const std::string& text)
@@ -1200,9 +1350,6 @@ void RegisterIDEContextMenu()
 	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT, "AI翻译选中文本", []() {
 		RunAiTranslateSelectedTextTask();
 	});
-	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_CHAT, "AI对话", []() {
-		AIChatFeature::OpenDialog();
-	});
 	ide.RegisterContextMenuItem(IDM_AUTOLINKER_CTX_AI_OPTIMIZE_FUNC, "AI优化函数", []() {
 		RunAiFunctionReplaceTask(AITaskKind::OptimizeFunction);
 	});
@@ -1984,6 +2131,10 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 			OutputStringToELog("AI配置已保存");
 			break;
 		}
+		case 5: { // FN_ADD_TAB 结构传递测试
+			RunFnAddTabStructPassThroughTest();
+			break;
+		}
 		//case 4: { //切换到VMPSDK静态（自用）
 		//	ChangeVMProtectModel(true);
 		//	break;
@@ -2080,6 +2231,7 @@ bool FneInit() {
 		StartEditViewSubclassTask();
 		RebuildTopLinkerSubMenu();
 		OutputCurrentSourceLinker();
+		AIChatFeature::EnsureTabCreated();
 
 		OutputStringToELog("找到工具条");
 		SetWindowSubclass(g_toolBarHwnd, ToolbarSubclassProc, 0, 0);
@@ -2210,7 +2362,7 @@ static LIB_INFOX LibInfo =
 	NULL,
 	NULL,
 	fnAddInFunc,
-	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0AutoLinker AI接口设置\0编辑AI接口地址、API Key、模型和提示词等配置。\0\0") ,
+	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0AutoLinker AI接口设置\0编辑AI接口地址、API Key、模型和提示词等配置。\0FN_ADD_TAB结构传递测试\0构造ADD_TAB_INF调用FN_ADD_TAB，并打印调用前后结构体字段。\0\0") ,
 	AutoLinker_MessageNotify,
 	NULL,
 	NULL,

@@ -511,7 +511,10 @@ std::wstring ToWide(const std::string& text)
 
 constexpr int kMaxRowScan = 20000;
 constexpr int kMaxFunctionScan = 4096;
-constexpr int kMaxConsecutiveGetTextFail = 8;
+constexpr int kMaxConsecutiveGetTextFail = 256;
+constexpr int kMenuNameScanUpLimit = 1024;
+constexpr int kMenuNameConsecutiveFailLimit = 256;
+constexpr int kParentWalkLocateMaxHop = 128;
 
 std::string TrimAsciiSpaceCopy(const std::string& value)
 {
@@ -658,6 +661,113 @@ void AppendLineWithCrLf(std::string& target, const std::string& line)
 {
 	target += line;
 	target += "\r\n";
+}
+
+std::vector<std::string> SplitLinesPreserveEmpty(const std::string& text)
+{
+	std::vector<std::string> lines;
+	if (text.empty()) {
+		return lines;
+	}
+
+	size_t start = 0;
+	while (start <= text.size()) {
+		size_t end = text.find_first_of("\r\n", start);
+		if (end == std::string::npos) {
+			lines.push_back(text.substr(start));
+			break;
+		}
+
+		lines.push_back(text.substr(start, end - start));
+		if (text[end] == '\r' && (end + 1) < text.size() && text[end + 1] == '\n') {
+			start = end + 2;
+		}
+		else {
+			start = end + 1;
+		}
+		if (start == text.size()) {
+			lines.emplace_back();
+			break;
+		}
+	}
+	return lines;
+}
+
+bool LocateFunctionRangeFromPageTextByCaretRow(
+	const std::string& pageCode,
+	int caretRow,
+	int& outStartRow,
+	int& outEndRow,
+	std::string* outFunctionName,
+	std::string* outReason)
+{
+	outStartRow = -1;
+	outEndRow = -1;
+	if (outFunctionName != nullptr) {
+		outFunctionName->clear();
+	}
+	if (outReason != nullptr) {
+		outReason->clear();
+	}
+
+	const std::vector<std::string> lines = SplitLinesPreserveEmpty(pageCode);
+	if (lines.empty()) {
+		if (outReason != nullptr) {
+			*outReason = "page_lines_empty";
+		}
+		return false;
+	}
+
+	const int maxRow = static_cast<int>(lines.size()) - 1;
+	int row = caretRow;
+	if (row < 0) {
+		row = 0;
+	}
+	if (row > maxRow) {
+		row = maxRow;
+	}
+
+	int startRow = -1;
+	for (int i = row; i >= 0; --i) {
+		if (IsSubHeaderTextLine(lines[static_cast<size_t>(i)])) {
+			startRow = i;
+			break;
+		}
+	}
+	if (startRow < 0) {
+		if (outReason != nullptr) {
+			*outReason = "sub_header_not_found_above_row_" + std::to_string(row);
+		}
+		return false;
+	}
+
+	int endRow = maxRow;
+	for (int i = startRow + 1; i <= maxRow; ++i) {
+		if (IsSubHeaderTextLine(lines[static_cast<size_t>(i)])) {
+			endRow = i - 1;
+			break;
+		}
+	}
+	while (endRow > startRow && TrimAsciiSpaceCopy(lines[static_cast<size_t>(endRow)]).empty()) {
+		--endRow;
+	}
+
+	outStartRow = startRow;
+	outEndRow = (std::max)(startRow, endRow);
+	if (outFunctionName != nullptr) {
+		std::string parsed = ParseSubNameFromHeader(lines[static_cast<size_t>(startRow)]);
+		if (parsed.empty()) {
+			parsed = TrimAsciiSpaceCopy(lines[static_cast<size_t>(startRow)]);
+		}
+		*outFunctionName = parsed;
+	}
+	if (outReason != nullptr) {
+		*outReason =
+			"ok row=" + std::to_string(outStartRow) + "-" + std::to_string(outEndRow) +
+			" caretRow=" + std::to_string(caretRow) +
+			" mappedRow=" + std::to_string(row);
+	}
+	return true;
 }
 
 BOOL CALLBACK EnumChildProcFindOutputWindow(HWND hwnd, LPARAM lParam)
@@ -818,8 +928,10 @@ bool IDEFacade::RunAddTab(HWND hWnd, const std::string& caption, const std::stri
 	tabInf.m_hWnd = hWnd;
 	tabInf.m_hIcon = hIcon;
 #ifdef UNICODE
-	std::wstring captionW = ToWide(caption);
-	std::wstring toolTipW = ToWide(toolTip);
+	thread_local std::wstring captionW;
+	thread_local std::wstring toolTipW;
+	captionW = ToWide(caption);
+	toolTipW = ToWide(toolTip);
 	tabInf.m_szCaption = const_cast<LPWSTR>(captionW.c_str());
 	tabInf.m_szToolTip = const_cast<LPWSTR>(toolTipW.c_str());
 #else
@@ -1360,6 +1472,8 @@ bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, 
 
 	int startRow = -1;
 	ProgramText startRowText = {};
+	int pageCopyEndRow = -1;
+	bool hasPageCopyRange = false;
 	int scanCountUp = 0;
 	int failCountUp = 0;
 	int consecutiveFailUp = 0;
@@ -1370,6 +1484,12 @@ bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, 
 			++failCountUp;
 			++consecutiveFailUp;
 			if (consecutiveFailUp >= kMaxConsecutiveGetTextFail) {
+				if (IsAICodeFetchDebugEnabled()) {
+					AppendCodeFetchLogLine(
+						"[STEP] locate scan_up break on consecutive failures probeRow=" + std::to_string(probeRow) +
+						" consecutiveFailUp=" + std::to_string(consecutiveFailUp) +
+						" failLimit=" + std::to_string(kMaxConsecutiveGetTextFail));
+				}
 				break;
 			}
 			continue;
@@ -1378,6 +1498,19 @@ bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, 
 		if (!rowText.isTitle && rowText.type == VT_SUB_NAME) {
 			startRow = probeRow;
 			startRowText = rowText;
+			break;
+		}
+		ProgramText helpText = {};
+		if (RunGetPrgHelp(probeRow, -1, helpText) &&
+			!helpText.isTitle &&
+			helpText.type == VT_SUB_NAME) {
+			startRow = probeRow;
+			startRowText = helpText;
+			if (IsAICodeFetchDebugEnabled()) {
+				AppendCodeFetchLogLine(
+					"[STEP] locate scan_up found by FN_GET_PRG_HELP row=" + std::to_string(probeRow) +
+					" text=\"" + EscapeOneLine(TruncateForPerfLog(helpText.text, 80)) + "\"");
+			}
 			break;
 		}
 	}
@@ -1391,6 +1524,228 @@ bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, 
 		" startRow=" + std::to_string(startRow));
 
 	if (startRow < 0) {
+		const int originalRow = caretRow;
+		const int originalCol = caretCol;
+		int walkRow = caretRow;
+		int walkCol = caretCol;
+		const auto walkStart = PerfClock::now();
+		std::string walkStopReason = "max_hop";
+		int walkFailRead = 0;
+		int walkHops = 0;
+		if (IsAICodeFetchDebugEnabled()) {
+			AppendCodeFetchLogLine(
+				"[STEP] locate fallback parent-walk begin row=" + std::to_string(walkRow) +
+				" col=" + std::to_string(walkCol) +
+				" maxHop=" + std::to_string(kParentWalkLocateMaxHop));
+		}
+		for (; walkHops < kParentWalkLocateMaxHop; ++walkHops) {
+			ProgramText currentRowText = {};
+			if (RunGetPrgText(walkRow, -1, currentRowText)) {
+				if (!currentRowText.isTitle && currentRowText.type == VT_SUB_NAME) {
+					startRow = walkRow;
+					startRowText = currentRowText;
+					walkStopReason = "found_sub_name";
+					if (IsAICodeFetchDebugEnabled()) {
+						AppendCodeFetchLogLine(
+							"[STEP] locate fallback parent-walk found row=" + std::to_string(startRow) +
+							" name=\"" + EscapeOneLine(NormalizeFunctionName(startRowText.text)) + "\"");
+					}
+					break;
+				}
+				if (IsAICodeFetchDebugEnabled()) {
+					AppendCodeFetchLogLine(
+						"[STEP] locate fallback parent-walk hop=" + std::to_string(walkHops) +
+						" row=" + std::to_string(walkRow) +
+						" type=" + std::to_string(currentRowText.type) +
+						" isTitle=" + std::to_string(currentRowText.isTitle ? 1 : 0) +
+						" text=\"" + EscapeOneLine(TruncateForPerfLog(currentRowText.text, 80)) + "\"");
+				}
+			}
+			else {
+				++walkFailRead;
+				if (IsAICodeFetchDebugEnabled()) {
+					AppendCodeFetchLogLine(
+						"[STEP] locate fallback parent-walk read failed row=" + std::to_string(walkRow) +
+						" failRead=" + std::to_string(walkFailRead));
+				}
+			}
+
+			if (!MoveToParentCommand()) {
+				walkStopReason = "move_parent_failed";
+				break;
+			}
+			int nextRow = -1;
+			int nextCol = -1;
+			if (!GetCaretPosition(nextRow, nextCol)) {
+				walkStopReason = "get_caret_failed";
+				break;
+			}
+			if (nextRow == walkRow && nextCol == walkCol) {
+				walkStopReason = "caret_not_moved";
+				break;
+			}
+			walkRow = nextRow;
+			walkCol = nextCol;
+		}
+		if (originalRow >= 0 && originalCol >= 0) {
+			MoveCaret(originalRow, originalCol);
+		}
+		LogAIPerfCost(
+			traceId,
+			"LocateCurrentFunctionRowRange.parent_walk",
+			ElapsedMs(walkStart),
+			"hops=" + std::to_string(walkHops) +
+			" failRead=" + std::to_string(walkFailRead) +
+			" startRow=" + std::to_string(startRow) +
+			" reason=" + walkStopReason);
+		if (IsAICodeFetchDebugEnabled()) {
+			AppendCodeFetchLogLine(
+				"[STEP] locate fallback parent-walk done hops=" + std::to_string(walkHops) +
+				" failRead=" + std::to_string(walkFailRead) +
+				" startRow=" + std::to_string(startRow) +
+				" reason=" + walkStopReason);
+		}
+	}
+
+	if (startRow < 0) {
+		const auto moveBackStart = PerfClock::now();
+		const int originalRow = caretRow;
+		const int originalCol = caretCol;
+		int backRow = -1;
+		int backCol = -1;
+		std::string moveBackReason = "not_attempted";
+		bool movedBack = false;
+		bool gotBackCaret = false;
+		if (IsAICodeFetchDebugEnabled()) {
+			AppendCodeFetchLogLine("[STEP] locate fallback move_back_sub begin");
+		}
+		movedBack = MoveBackSub();
+		if (!movedBack) {
+			moveBackReason = "move_back_sub_failed";
+		}
+		else if (!GetCaretPosition(backRow, backCol)) {
+			moveBackReason = "get_caret_after_move_back_failed";
+		}
+		else {
+			gotBackCaret = true;
+			moveBackReason = "caret_ready";
+			ProgramText backText = {};
+			if (RunGetPrgText(backRow, -1, backText)) {
+				if (!backText.isTitle && backText.type == VT_SUB_NAME) {
+					startRow = backRow;
+					startRowText = backText;
+					moveBackReason = "found_sub_name_at_back_row";
+				}
+				else if (IsSubHeaderTextLine(backText.text)) {
+					startRow = backRow;
+					startRowText = backText;
+					moveBackReason = "found_sub_header_at_back_row";
+				}
+			}
+
+			if (startRow < 0) {
+				for (int delta = -4; delta <= 4; ++delta) {
+					const int probeRow = backRow + delta;
+					if (probeRow < 0) {
+						continue;
+					}
+					ProgramText probeText = {};
+					if (RunGetPrgText(probeRow, -1, probeText) &&
+						(!probeText.isTitle && probeText.type == VT_SUB_NAME)) {
+						startRow = probeRow;
+						startRowText = probeText;
+						moveBackReason = "found_sub_name_near_back_row";
+						break;
+					}
+					ProgramText probeHelp = {};
+					if (RunGetPrgHelp(probeRow, -1, probeHelp) &&
+						(!probeHelp.isTitle && probeHelp.type == VT_SUB_NAME)) {
+						startRow = probeRow;
+						startRowText = probeHelp;
+						moveBackReason = "found_sub_name_by_help_near_back_row";
+						break;
+					}
+				}
+			}
+		}
+
+		if (originalRow >= 0 && originalCol >= 0) {
+			MoveCaret(originalRow, originalCol);
+		}
+
+		LogAIPerfCost(
+			traceId,
+			"LocateCurrentFunctionRowRange.move_back_sub",
+			ElapsedMs(moveBackStart),
+			"movedBack=" + std::to_string(movedBack ? 1 : 0) +
+			" gotBackCaret=" + std::to_string(gotBackCaret ? 1 : 0) +
+			" backRow=" + std::to_string(backRow) +
+			" backCol=" + std::to_string(backCol) +
+			" startRow=" + std::to_string(startRow) +
+			" reason=" + moveBackReason);
+		if (IsAICodeFetchDebugEnabled()) {
+			AppendCodeFetchLogLine(
+				"[STEP] locate fallback move_back_sub done movedBack=" + std::to_string(movedBack ? 1 : 0) +
+				" gotBackCaret=" + std::to_string(gotBackCaret ? 1 : 0) +
+				" backRow=" + std::to_string(backRow) +
+				" backCol=" + std::to_string(backCol) +
+				" startRow=" + std::to_string(startRow) +
+				" reason=" + moveBackReason);
+		}
+	}
+
+	if (startRow < 0) {
+		const auto pageCopyStart = PerfClock::now();
+		std::string pageCode;
+		std::string pageReason = "not_run";
+		const bool pageCopied = GetCurrentPageCode(pageCode);
+		if (!pageCopied) {
+			pageReason = "GetCurrentPageCode_failed";
+		}
+		else {
+			std::string mappedFunctionName;
+			int mappedStartRow = -1;
+			int mappedEndRow = -1;
+			if (!LocateFunctionRangeFromPageTextByCaretRow(
+				pageCode,
+				caretRow,
+				mappedStartRow,
+				mappedEndRow,
+				&mappedFunctionName,
+				&pageReason)) {
+				pageReason = "LocateByPageCopy_failed:" + pageReason;
+			}
+			else {
+				startRow = mappedStartRow;
+				pageCopyEndRow = mappedEndRow;
+				hasPageCopyRange = true;
+				ProgramText mappedStartText = {};
+				if (RunGetPrgText(startRow, -1, mappedStartText)) {
+					startRowText = mappedStartText;
+				}
+				else {
+					startRowText.text = ".子程序 " + mappedFunctionName;
+					startRowText.type = VT_SUB_NAME;
+					startRowText.isTitle = false;
+				}
+			}
+		}
+		LogAIPerfCost(
+			traceId,
+			"LocateCurrentFunctionRowRange.page_copy_fallback",
+			ElapsedMs(pageCopyStart),
+			"ok=" + std::to_string(startRow >= 0 ? 1 : 0) +
+			" startRow=" + std::to_string(startRow) +
+			" reason=" + TruncateForPerfLog(pageReason));
+		if (IsAICodeFetchDebugEnabled()) {
+			AppendCodeFetchLogLine(
+				"[STEP] locate fallback page-copy done ok=" + std::to_string(startRow >= 0 ? 1 : 0) +
+				" startRow=" + std::to_string(startRow) +
+				" reason=\"" + EscapeOneLine(pageReason) + "\"");
+		}
+	}
+
+	if (startRow < 0) {
 		if (IsAICodeFetchDebugEnabled()) {
 			AppendCodeFetchLogLine(
 				"[STEP] locate startRow failed caretRow=" + std::to_string(caretRow) +
@@ -1402,11 +1757,23 @@ bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, 
 	}
 
 	// Compatibility fix: some hosts expose the visual ".子程序" header one row above VT_SUB_NAME.
-	if (!IsSubHeaderTextLine(startRowText.text) && startRow > 0) {
+	if (!hasPageCopyRange && !IsSubHeaderTextLine(startRowText.text) && startRow > 0) {
 		ProgramText prevRow = {};
 		if (RunGetPrgText(startRow - 1, -1, prevRow) && IsSubHeaderTextLine(prevRow.text)) {
 			--startRow;
 		}
+	}
+
+	if (hasPageCopyRange) {
+		outStartRow = startRow;
+		outEndRow = (std::max)(startRow, pageCopyEndRow);
+		if (IsAICodeFetchDebugEnabled()) {
+			AppendCodeFetchLogLine(
+				"[STEP] locate done (page-copy range) startRow=" + std::to_string(outStartRow) +
+				" endRow=" + std::to_string(outEndRow));
+		}
+		setDiag("ok(page-copy): caret-range row=" + std::to_string(outStartRow) + "-" + std::to_string(outEndRow));
+		return true;
 	}
 
 	int endRow = startRow;
@@ -2665,31 +3032,237 @@ bool IDEFacade::HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 		std::string functionName = "未知";
 		int caretRow = -1;
 		int caretCol = -1;
+		if (IsAICodeFetchDebugEnabled()) {
+			BeginCodeFetchLogSession("ContextMenuFunctionNameScan");
+			AppendCodeFetchLogLine("[STEP] enter ContextMenuFunctionNameScan");
+		}
 		if (GetCaretPosition(caretRow, caretCol)) {
-			const int kMenuNameScanUpLimit = 512;
+			if (IsAICodeFetchDebugEnabled()) {
+				AppendCodeFetchLogLine(
+					"[STEP] menu scan caret row=" + std::to_string(caretRow) +
+					" col=" + std::to_string(caretCol) +
+					" upLimit=" + std::to_string(kMenuNameScanUpLimit) +
+					" failLimit=" + std::to_string(kMenuNameConsecutiveFailLimit));
+			}
 			int failCount = 0;
 			for (int row = caretRow, scan = 0; row >= 0 && scan < kMenuNameScanUpLimit; --row, ++scan) {
 				ProgramText rowText = {};
 				if (!RunGetPrgText(row, -1, rowText)) {
 					++failCount;
-					if (failCount >= 8) {
+					if (IsAICodeFetchDebugEnabled()) {
+						AppendCodeFetchLogLine(
+							"[STEP] menu scan read failed row=" + std::to_string(row) +
+							" scan=" + std::to_string(scan) +
+							" failCount=" + std::to_string(failCount));
+					}
+					if (failCount >= kMenuNameConsecutiveFailLimit) {
+						if (IsAICodeFetchDebugEnabled()) {
+							AppendCodeFetchLogLine(
+								"[STEP] menu scan break on consecutive failures row=" + std::to_string(row) +
+								" scan=" + std::to_string(scan) +
+								" failCount=" + std::to_string(failCount));
+						}
 						break;
 					}
 					continue;
 				}
 				failCount = 0;
+				if (IsAICodeFetchDebugEnabled()) {
+					AppendCodeFetchLogLine(
+						"[STEP] menu scan row ok row=" + std::to_string(row) +
+						" scan=" + std::to_string(scan) +
+						" type=" + std::to_string(rowText.type) +
+						" isTitle=" + std::to_string(rowText.isTitle ? 1 : 0) +
+						" text=\"" + EscapeOneLine(TruncateForPerfLog(rowText.text, 80)) + "\"");
+				}
 				if (!rowText.isTitle && rowText.type == VT_SUB_NAME) {
 					std::string normalized = NormalizeFunctionName(rowText.text);
 					if (!normalized.empty()) {
 						functionName = normalized;
+						if (IsAICodeFetchDebugEnabled()) {
+							AppendCodeFetchLogLine(
+								"[STEP] menu scan found by upward scan row=" + std::to_string(row) +
+								" function=\"" + EscapeOneLine(functionName) + "\"");
+						}
+					}
+					break;
+				}
+				ProgramText helpText = {};
+				if (RunGetPrgHelp(row, -1, helpText) &&
+					!helpText.isTitle &&
+					helpText.type == VT_SUB_NAME) {
+					std::string normalized = NormalizeFunctionName(helpText.text);
+					if (!normalized.empty()) {
+						functionName = normalized;
+						if (IsAICodeFetchDebugEnabled()) {
+							AppendCodeFetchLogLine(
+								"[STEP] menu scan found by FN_GET_PRG_HELP row=" + std::to_string(row) +
+								" function=\"" + EscapeOneLine(functionName) + "\"");
+						}
 					}
 					break;
 				}
 			}
 		}
+		else if (IsAICodeFetchDebugEnabled()) {
+			AppendCodeFetchLogLine("[STEP] menu scan GetCaretPosition failed");
+		}
 
-		const std::string currentFunctionItem = "函数[" + functionName + "]↓↓↓";
+		if (functionName == "未知" && caretRow >= 0) {
+			std::string pageCode;
+			std::string pageReason = "not_run";
+			if (!GetCurrentPageCode(pageCode)) {
+				pageReason = "GetCurrentPageCode_failed";
+			}
+			else {
+				int mappedStartRow = -1;
+				int mappedEndRow = -1;
+				std::string mappedFunctionName;
+				if (!LocateFunctionRangeFromPageTextByCaretRow(
+					pageCode,
+					caretRow,
+					mappedStartRow,
+					mappedEndRow,
+					&mappedFunctionName,
+					&pageReason)) {
+					pageReason = "LocateByPageCopy_failed:" + pageReason;
+				}
+				else if (!TrimAsciiSpace(mappedFunctionName).empty()) {
+					functionName = EnsureGbkText(mappedFunctionName);
+					pageReason =
+						"ok mappedStartRow=" + std::to_string(mappedStartRow) +
+						" mappedEndRow=" + std::to_string(mappedEndRow);
+				}
+				else {
+					pageReason = "mapped_function_name_empty";
+				}
+			}
+			if (IsAICodeFetchDebugEnabled()) {
+				AppendCodeFetchLogLine(
+					"[STEP] menu scan page-copy fallback done function=\"" + EscapeOneLine(functionName) +
+					"\" reason=\"" + EscapeOneLine(pageReason) + "\"");
+			}
+		}
+
+		if (functionName == "未知" && caretRow >= 0 && caretCol >= 0) {
+			const int originalRow = caretRow;
+			const int originalCol = caretCol;
+			int walkRow = caretRow;
+			int walkCol = caretCol;
+			int hop = 0;
+			std::string stopReason = "max_hop";
+			if (IsAICodeFetchDebugEnabled()) {
+				AppendCodeFetchLogLine(
+					"[STEP] menu scan parent-walk begin row=" + std::to_string(walkRow) +
+					" col=" + std::to_string(walkCol));
+			}
+			for (; hop < kParentWalkLocateMaxHop; ++hop) {
+				ProgramText rowText = {};
+				if (RunGetPrgText(walkRow, -1, rowText)) {
+					if (!rowText.isTitle && rowText.type == VT_SUB_NAME) {
+						const std::string normalized = NormalizeFunctionName(rowText.text);
+						if (!normalized.empty()) {
+							functionName = normalized;
+							stopReason = "found_sub_name";
+							if (IsAICodeFetchDebugEnabled()) {
+								AppendCodeFetchLogLine(
+									"[STEP] menu scan parent-walk found row=" + std::to_string(walkRow) +
+									" function=\"" + EscapeOneLine(functionName) + "\"");
+							}
+							break;
+						}
+					}
+				}
+
+				if (!MoveToParentCommand()) {
+					stopReason = "move_parent_failed";
+					break;
+				}
+				int nextRow = -1;
+				int nextCol = -1;
+				if (!GetCaretPosition(nextRow, nextCol)) {
+					stopReason = "get_caret_failed";
+					break;
+				}
+				if (nextRow == walkRow && nextCol == walkCol) {
+					stopReason = "caret_not_moved";
+					break;
+				}
+				walkRow = nextRow;
+				walkCol = nextCol;
+			}
+			MoveCaret(originalRow, originalCol);
+			if (IsAICodeFetchDebugEnabled()) {
+				AppendCodeFetchLogLine(
+					"[STEP] menu scan parent-walk done hop=" + std::to_string(hop) +
+					" reason=" + stopReason +
+					" function=\"" + EscapeOneLine(functionName) + "\"");
+			}
+		}
+
+		if (functionName == "未知" && caretRow >= 0 && caretCol >= 0) {
+			const int originalRow = caretRow;
+			const int originalCol = caretCol;
+			int backRow = -1;
+			int backCol = -1;
+			std::string moveBackReason = "not_attempted";
+			bool movedBack = false;
+			bool gotBackCaret = false;
+			if (IsAICodeFetchDebugEnabled()) {
+				AppendCodeFetchLogLine("[STEP] menu scan move_back_sub begin");
+			}
+			movedBack = MoveBackSub();
+			if (!movedBack) {
+				moveBackReason = "move_back_sub_failed";
+			}
+			else if (!GetCaretPosition(backRow, backCol)) {
+				moveBackReason = "get_caret_after_move_back_failed";
+			}
+			else {
+				gotBackCaret = true;
+				moveBackReason = "caret_ready";
+				ProgramText backText = {};
+				if (RunGetPrgText(backRow, -1, backText) &&
+					!backText.isTitle &&
+					backText.type == VT_SUB_NAME) {
+					const std::string normalized = NormalizeFunctionName(backText.text);
+					if (!normalized.empty()) {
+						functionName = normalized;
+						moveBackReason = "found_by_prg_text";
+					}
+				}
+				if (functionName == "未知") {
+					ProgramText backHelp = {};
+					if (RunGetPrgHelp(backRow, -1, backHelp) &&
+						!backHelp.isTitle &&
+						backHelp.type == VT_SUB_NAME) {
+						const std::string normalized = NormalizeFunctionName(backHelp.text);
+						if (!normalized.empty()) {
+							functionName = normalized;
+							moveBackReason = "found_by_prg_help";
+						}
+					}
+				}
+			}
+			MoveCaret(originalRow, originalCol);
+			if (IsAICodeFetchDebugEnabled()) {
+				AppendCodeFetchLogLine(
+					"[STEP] menu scan move_back_sub done movedBack=" + std::to_string(movedBack ? 1 : 0) +
+					" gotBackCaret=" + std::to_string(gotBackCaret ? 1 : 0) +
+					" backRow=" + std::to_string(backRow) +
+					" backCol=" + std::to_string(backCol) +
+					" reason=" + moveBackReason +
+					" function=\"" + EscapeOneLine(functionName) + "\"");
+			}
+		}
+
+		const std::string currentFunctionItem =
+			EnsureGbkText("函数[" + functionName + "]↓↓↓");
 		AppendMenuA(autoLinkerMenu, MF_STRING | MF_GRAYED, 0, currentFunctionItem.c_str());
+		if (IsAICodeFetchDebugEnabled()) {
+			AppendCodeFetchLogLine(
+				"[STEP] menu scan result function=\"" + EscapeOneLine(functionName) + "\"");
+		}
 		for (const auto* item : functionItems) {
 			if (item != nullptr) {
 				appendActionItem(*item);

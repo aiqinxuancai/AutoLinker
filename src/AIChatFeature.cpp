@@ -35,19 +35,25 @@
 
 namespace {
 constexpr UINT WM_AUTOLINKER_AI_CHAT_REFRESH = WM_APP + 203;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT = WM_APP + 204;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_SUBMIT = WM_APP + 205;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_CLEAR = WM_APP + 206;
 
 constexpr int IDC_AI_CHAT_HISTORY = 2101;
 constexpr int IDC_AI_CHAT_INPUT = 2102;
-constexpr int IDC_AI_CHAT_SEND = 2103;
-constexpr int IDC_AI_CHAT_CLEAR_HISTORY = 2104;
+constexpr int IDC_AI_CHAT_SEND = 32553;
+constexpr int IDC_AI_CHAT_CLEAR_HISTORY = 32554;
 
 constexpr int IDC_CODE_EDIT = 2201;
 constexpr int IDC_CODE_OK = 1;
 constexpr int IDC_CODE_CANCEL = 2;
 constexpr int IDC_CODE_COPY = 2204;
 constexpr UINT_PTR kEditSubclassId = 1;
+constexpr UINT_PTR kActionControlSubclassId = 2;
 constexpr DWORD_PTR kEditFlagNone = 0;
 constexpr DWORD_PTR kEditFlagSubmitOnEnter = 1;
+constexpr UINT_PTR kActionSubmit = 1;
+constexpr UINT_PTR kActionClear = 2;
 
 enum class SessionRole {
 	System,
@@ -76,6 +82,7 @@ struct ChatDialogContext {
 	HWND hInput = nullptr;
 	HWND hSend = nullptr;
 	HWND hClearHistory = nullptr;
+	int inputRowsVisible = 1;
 };
 
 struct CodeEditDialogContext {
@@ -110,12 +117,19 @@ struct AIChatAsyncResult {
 	AIChatResult chatResult = {};
 };
 
+struct ChatHistoryGarbage {
+	std::vector<SessionMessage> messages;
+	std::string rollingSummary;
+};
+
 HWND g_mainWindow = nullptr;
 ConfigManager* g_configManager = nullptr;
 HWND g_chatDialog = nullptr;
+bool g_chatTabAdded = false;
 AIChatSessionState g_session;
 UINT g_msgAIChatDone = 0;
 UINT g_msgAIChatToolDialog = 0;
+std::atomic_bool g_clearHistoryInProgress = false;
 
 HMODULE GetCurrentModuleHandle()
 {
@@ -427,18 +441,15 @@ LRESULT CALLBACK EditControlSubclassProc(
 		if ((dwRefData & kEditFlagSubmitOnEnter) != 0 && wParam == VK_RETURN) {
 			if (ctrlDown) {
 				SendMessageA(hWnd, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>("\r\n"));
+				HWND hParent = GetParent(hWnd);
+				if (hParent != nullptr) {
+					PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT, 0, 0);
+				}
 			}
 			else {
 				HWND hParent = GetParent(hWnd);
 				if (hParent != nullptr) {
-					HWND hSend = GetDlgItem(hParent, IDC_AI_CHAT_SEND);
-					if (hSend != nullptr && IsWindowEnabled(hSend)) {
-						PostMessageA(
-							hParent,
-							WM_COMMAND,
-							MAKEWPARAM(IDC_AI_CHAT_SEND, BN_CLICKED),
-							reinterpret_cast<LPARAM>(hSend));
-					}
+					PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_SUBMIT, 0, 0);
 				}
 			}
 			return 0;
@@ -458,6 +469,90 @@ void InstallEditHotkeys(HWND hEdit, DWORD_PTR flags)
 {
 	if (hEdit != nullptr) {
 		SetWindowSubclass(hEdit, EditControlSubclassProc, kEditSubclassId, flags);
+	}
+}
+
+void PostChatAction(HWND hWnd, UINT_PTR action)
+{
+	if (hWnd == nullptr) {
+		return;
+	}
+	HWND hParent = GetParent(hWnd);
+	if (hParent == nullptr) {
+		return;
+	}
+	if (action == kActionClear) {
+		OutputStringToELog("[AI Chat][UI] click action: clear");
+		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_CLEAR, 0, 0);
+	}
+	else {
+		OutputStringToELog("[AI Chat][UI] click action: submit");
+		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_SUBMIT, 0, 0);
+	}
+}
+
+LRESULT CALLBACK ActionControlSubclassProc(
+	HWND hWnd,
+	UINT uMsg,
+	WPARAM wParam,
+	LPARAM lParam,
+	UINT_PTR uIdSubclass,
+	DWORD_PTR dwRefData)
+{
+	constexpr const char* kPropPressed = "AutoLinker.AIChat.ClickPressed";
+	switch (uMsg)
+	{
+	case WM_LBUTTONDOWN:
+		SetCapture(hWnd);
+		SetPropA(hWnd, kPropPressed, reinterpret_cast<HANDLE>(1));
+		return 0;
+	case WM_LBUTTONUP: {
+		const bool wasPressed = GetPropA(hWnd, kPropPressed) != nullptr;
+		RemovePropA(hWnd, kPropPressed);
+		if (GetCapture() == hWnd) {
+			ReleaseCapture();
+		}
+		if (wasPressed) {
+			RECT rc = {};
+			GetClientRect(hWnd, &rc);
+			const POINT pt = {
+				static_cast<short>(LOWORD(lParam)),
+				static_cast<short>(HIWORD(lParam))
+			};
+			if (PtInRect(&rc, pt) != FALSE && IsWindowEnabled(hWnd)) {
+				PostChatAction(hWnd, static_cast<UINT_PTR>(dwRefData));
+			}
+		}
+		return 0;
+	}
+	case WM_CANCELMODE:
+	case WM_CAPTURECHANGED:
+		RemovePropA(hWnd, kPropPressed);
+		if (GetCapture() == hWnd) {
+			ReleaseCapture();
+		}
+		return 0;
+	case WM_SETCURSOR:
+		SetCursor(LoadCursor(nullptr, IDC_HAND));
+		return TRUE;
+	case WM_NCDESTROY:
+		RemovePropA(hWnd, kPropPressed);
+		RemoveWindowSubclass(hWnd, ActionControlSubclassProc, uIdSubclass);
+		break;
+	default:
+		break;
+	}
+	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+void InstallChatActionControl(HWND hControl, UINT_PTR action)
+{
+	if (hControl != nullptr) {
+		SetWindowSubclass(
+			hControl,
+			ActionControlSubclassProc,
+			kActionControlSubclassId,
+			static_cast<DWORD_PTR>(action));
 	}
 }
 
@@ -486,12 +581,15 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int clientWidth = rc.right - rc.left;
 	const int clientHeight = rc.bottom - rc.top;
 
-	const int margin = 14;
-	const int gap = 8;
-	const int actionRowHeight = 26;
-	const int inputHeight = 84;
+	const int margin = 0;
+	const int gap = 6;
+	const int actionRowHeight = 22;
+	const int inputHeightSingle = 30;
+	const int inputHeightDouble = 54;
 	const int sendWidth = 92;
-	const int clearHistoryWidth = 116;
+	const int clearHistoryWidth = 98;
+	const int inputRowsVisible = ctx->inputRowsVisible >= 2 ? 2 : 1;
+	const int inputHeight = inputRowsVisible >= 2 ? inputHeightDouble : inputHeightSingle;
 
 	const int contentWidth = (std::max)(120, clientWidth - margin * 2);
 	const int inputWidth = (std::max)(80, contentWidth - sendWidth - gap);
@@ -571,6 +669,38 @@ std::string GetEditTextA(HWND hEdit)
 	GetWindowTextA(hEdit, &text[0], len + 1);
 	text.resize(static_cast<size_t>(len));
 	return text;
+}
+
+int CountInputTextLines(const std::string& text)
+{
+	if (text.empty()) {
+		return 1;
+	}
+
+	int lines = 1;
+	for (char ch : text) {
+		if (ch == '\n') {
+			++lines;
+		}
+	}
+	return lines;
+}
+
+void UpdateInputRowsAndLayout(HWND hWnd, ChatDialogContext* ctx, bool forceLayout)
+{
+	if (hWnd == nullptr || ctx == nullptr || ctx->hInput == nullptr) {
+		return;
+	}
+
+	const std::string text = GetEditTextA(ctx->hInput);
+	const int lineCount = CountInputTextLines(text);
+	const int targetRows = lineCount > 1 ? 2 : 1;
+	if (!forceLayout && targetRows == ctx->inputRowsVisible) {
+		return;
+	}
+
+	ctx->inputRowsVisible = targetRows;
+	LayoutAIChatDialog(hWnd, ctx);
 }
 
 bool SetClipboardTextSimple(const std::string& text)
@@ -991,9 +1121,35 @@ bool StartChatRequest(const std::string& userInput)
 
 void ClearChatHistory()
 {
-	std::lock_guard<std::mutex> guard(g_session.mutex);
-	g_session.messages.clear();
-	g_session.rollingSummary.clear();
+	std::vector<SessionMessage> oldMessages;
+	std::string oldSummary;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		oldMessages.swap(g_session.messages);
+		oldSummary.swap(g_session.rollingSummary);
+	}
+}
+
+void RequestClearChatHistoryAsync()
+{
+	if (g_clearHistoryInProgress.exchange(true)) {
+		return;
+	}
+
+	const uintptr_t tid = _beginthread(
+		[](void*) {
+			ClearChatHistory();
+			g_clearHistoryInProgress = false;
+			PostRefreshDialog();
+		},
+		0,
+		nullptr);
+	if (tid == static_cast<uintptr_t>(-1L)) {
+		// Thread creation failed: fall back to synchronous clear.
+		ClearChatHistory();
+		g_clearHistoryInProgress = false;
+		PostRefreshDialog();
+	}
 }
 
 void HandleChatTaskDone(LPARAM lParam)
@@ -1086,15 +1242,15 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hHistory = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
 			WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
 			14, 14, 752, 420, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_HISTORY), nullptr, nullptr);
-		ctx->hClearHistory = CreateWindowW(L"BUTTON", L"\u6e05\u7a7a\u5386\u53f2\u5bf9\u8bdd",
-			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+		ctx->hClearHistory = CreateWindowW(L"STATIC", L"\u6e05\u7a7a\u5386\u53f2\u4f1a\u8bdd",
+			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			14, 442, 106, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_HISTORY), nullptr, nullptr);
 		ctx->hInput = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
-			14, 476, 652, 72, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_INPUT), nullptr, nullptr);
-		ctx->hSend = CreateWindowW(L"BUTTON", L"\u53D1\u9001",
-			WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-			674, 476, 92, 72, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_SEND), nullptr, nullptr);
+			14, 476, 652, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_INPUT), nullptr, nullptr);
+		ctx->hSend = CreateWindowW(L"STATIC", L"\u53d1\u9001",
+			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
+			674, 476, 92, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_SEND), nullptr, nullptr);
 
 		SetDefaultFont(ctx->hHistory);
 		SetDefaultFont(ctx->hClearHistory);
@@ -1102,7 +1258,11 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		SetDefaultFont(ctx->hSend);
 		InstallEditHotkeys(ctx->hHistory, kEditFlagNone);
 		InstallEditHotkeys(ctx->hInput, kEditFlagSubmitOnEnter);
+		InstallChatActionControl(ctx->hSend, kActionSubmit);
+		InstallChatActionControl(ctx->hClearHistory, kActionClear);
+		ctx->inputRowsVisible = 1;
 		LayoutAIChatDialog(hWnd, ctx);
+		PostMessageA(hWnd, WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT, 0, 0);
 
 		RefreshChatDialog(hWnd);
 		SetFocus(ctx->hInput);
@@ -1117,43 +1277,77 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 
 	case WM_SIZE:
 		if (ctx != nullptr) {
-			LayoutAIChatDialog(hWnd, ctx);
+			UpdateInputRowsAndLayout(hWnd, ctx, true);
 			ScrollEditToBottom(ctx->hHistory);
 		}
 		return 0;
+
+	case WM_WINDOWPOSCHANGED:
+		if (ctx != nullptr) {
+			const auto* pos = reinterpret_cast<WINDOWPOS*>(lParam);
+			if (pos != nullptr && (pos->flags & SWP_NOSIZE) == 0) {
+				UpdateInputRowsAndLayout(hWnd, ctx, true);
+				ScrollEditToBottom(ctx->hHistory);
+			}
+		}
+		break;
+
+	case WM_CTLCOLORSTATIC:
+		if (ctx != nullptr) {
+			HWND hStatic = reinterpret_cast<HWND>(lParam);
+			if (hStatic != ctx->hClearHistory && hStatic != ctx->hSend) {
+				break;
+			}
+			HDC hdc = reinterpret_cast<HDC>(wParam);
+			SetTextColor(hdc, RGB(0, 102, 204));
+			SetBkMode(hdc, TRANSPARENT);
+			return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
+		}
+		break;
 
 	case WM_COMMAND: {
 		if (ctx == nullptr) {
 			return 0;
 		}
 		const int id = LOWORD(wParam);
-		if (id == IDC_AI_CHAT_SEND) {
-			const std::string text = GetEditTextA(ctx->hInput);
-			if (TrimAsciiCopy(text).empty()) {
-				return 0;
-			}
-
-			SetWindowTextA(ctx->hInput, "");
-			EnableWindow(ctx->hSend, FALSE);
-			if (!StartChatRequest(text)) {
-				RefreshChatDialog(hWnd);
-			}
-			return 0;
-		}
-		if (id == IDC_AI_CHAT_CLEAR_HISTORY) {
-			const int answer = MessageBoxW(
-				hWnd,
-				L"\u786e\u5b9a\u6e05\u7a7a\u6240\u6709 AI \u5386\u53f2\u5bf9\u8bdd\u5417\uff1f",
-				L"AutoLinker AI \u5bf9\u8bdd",
-				MB_ICONQUESTION | MB_YESNO | MB_DEFBUTTON2);
-			if (answer == IDYES) {
-				ClearChatHistory();
-				RefreshChatDialog(hWnd);
-			}
+		const int notifyCode = HIWORD(wParam);
+		if (id == IDC_AI_CHAT_INPUT && notifyCode == EN_CHANGE) {
+			UpdateInputRowsAndLayout(hWnd, ctx, false);
 			return 0;
 		}
 		return 0;
 	}
+
+	case WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT:
+		if (ctx != nullptr) {
+			UpdateInputRowsAndLayout(hWnd, ctx, true);
+			ScrollEditToBottom(ctx->hHistory);
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_SUBMIT:
+		if (ctx != nullptr) {
+			OutputStringToELog("[AI Chat][UI] submit begin");
+			const std::string text = GetEditTextA(ctx->hInput);
+			if (!TrimAsciiCopy(text).empty()) {
+				SetWindowTextA(ctx->hInput, "");
+				ctx->inputRowsVisible = 1;
+				LayoutAIChatDialog(hWnd, ctx);
+				EnableWindow(ctx->hSend, FALSE);
+				if (!StartChatRequest(text)) {
+					RefreshChatDialog(hWnd);
+				}
+			}
+			OutputStringToELog("[AI Chat][UI] submit end");
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_CLEAR:
+		if (ctx != nullptr && ctx->hHistory != nullptr) {
+			SetWindowTextA(ctx->hHistory, "");
+		}
+		RequestClearChatHistoryAsync();
+		return 0;
 
 	case WM_AUTOLINKER_AI_CHAT_REFRESH:
 		RefreshChatDialog(hWnd);
@@ -1166,6 +1360,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 	case WM_DESTROY:
 		if (g_chatDialog == hWnd) {
 			g_chatDialog = nullptr;
+			g_chatTabAdded = false;
 		}
 		delete ctx;
 		SetWindowLongPtrA(hWnd, GWLP_USERDATA, 0);
@@ -1339,34 +1534,23 @@ bool ShowAICodeEditDialog(HWND owner, const std::string& title, const std::strin
 	return ctx.accepted;
 }
 
-namespace AIChatFeature {
-void Initialize(HWND mainWindow, ConfigManager* configManager)
+std::string GetChatTabCaption()
 {
-	g_mainWindow = mainWindow;
-	g_configManager = configManager;
-	g_msgAIChatDone = RegisterWindowMessageA("AutoLinker.AIChat.Done");
-	g_msgAIChatToolDialog = RegisterWindowMessageA("AutoLinker.AIChat.ToolDialog");
+	return LocalFromWide(L"AutoLinker AI 对话");
 }
 
-void Shutdown()
+void LogChatTab(const std::string& text)
 {
-	if (g_chatDialog != nullptr && IsWindow(g_chatDialog)) {
-		DestroyWindow(g_chatDialog);
-		g_chatDialog = nullptr;
-	}
+	OutputStringToELog("[AI Chat][Tab] " + text);
 }
 
-void OpenDialog()
+bool EnsureChatHostWindowCreated()
 {
-	if (g_mainWindow == nullptr || !IsWindow(g_mainWindow) || g_configManager == nullptr) {
-		OutputStringToELog("[AI Chat] Not initialized yet, please retry.");
-		return;
+	if (g_mainWindow == nullptr || !IsWindow(g_mainWindow)) {
+		return false;
 	}
-
 	if (g_chatDialog != nullptr && IsWindow(g_chatDialog)) {
-		ShowWindow(g_chatDialog, SW_SHOW);
-		SetForegroundWindow(g_chatDialog);
-		return;
+		return true;
 	}
 
 	ComCtl6ActivationScope themeScope;
@@ -1389,15 +1573,103 @@ void OpenDialog()
 	g_chatDialog = CreateWindowExA(
 		WS_EX_CONTROLPARENT,
 		wc.lpszClassName,
-		LocalFromWide(L"AutoLinker AI \u5bf9\u8bdd").c_str(),
-		WS_CAPTION | WS_SYSMENU | WS_SIZEBOX | WS_MINIMIZEBOX | WS_VISIBLE,
-		CW_USEDEFAULT, CW_USEDEFAULT, 860, 680,
+		"",
+		WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+		0, 0, 860, 680,
 		g_mainWindow,
 		nullptr,
 		wc.hInstance,
 		nullptr);
-	ApplyWindowIcon(g_chatDialog);
-	EnsureWindowTitle(g_chatDialog, LocalFromWide(L"AutoLinker AI \u5bf9\u8bdd"));
+	if (g_chatDialog == nullptr) {
+		LogChatTab("create host failed");
+		return false;
+	}
+
+	LogChatTab("create host ok");
+	PostMessageA(g_chatDialog, WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT, 0, 0);
+	return true;
+}
+
+bool EnsureChatTabAddedInternal()
+{
+	if (!EnsureChatHostWindowCreated()) {
+		return false;
+	}
+	if (g_chatTabAdded) {
+		return true;
+	}
+
+	const std::string caption = GetChatTabCaption();
+	const bool ok = IDEFacade::Instance().AddOutputTab(g_chatDialog, caption, "AutoLinker AI Chat", GetAppIconSmall());
+	if (!ok) {
+		LogChatTab("add tab failed");
+		return false;
+	}
+
+	g_chatTabAdded = true;
+	LogChatTab("add tab ok");
+	PostMessageA(g_chatDialog, WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT, 0, 0);
+	return true;
+}
+
+void FocusChatInputControl()
+{
+	if (g_chatDialog == nullptr || !IsWindow(g_chatDialog)) {
+		return;
+	}
+	auto* ctx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(g_chatDialog, GWLP_USERDATA));
+	if (ctx != nullptr && ctx->hInput != nullptr) {
+		SetFocus(ctx->hInput);
+	}
+}
+
+namespace AIChatFeature {
+void Initialize(HWND mainWindow, ConfigManager* configManager)
+{
+	g_mainWindow = mainWindow;
+	g_configManager = configManager;
+	g_msgAIChatDone = RegisterWindowMessageA("AutoLinker.AIChat.Done");
+	g_msgAIChatToolDialog = RegisterWindowMessageA("AutoLinker.AIChat.ToolDialog");
+	EnsureTabCreated();
+}
+
+void Shutdown()
+{
+	if (g_chatDialog != nullptr && IsWindow(g_chatDialog)) {
+		DestroyWindow(g_chatDialog);
+		g_chatDialog = nullptr;
+	}
+	g_chatTabAdded = false;
+}
+
+void EnsureTabCreated()
+{
+	if (g_mainWindow == nullptr || !IsWindow(g_mainWindow) || g_configManager == nullptr) {
+		OutputStringToELog("[AI Chat] Not initialized yet, please retry.");
+		return;
+	}
+
+	if (!EnsureChatTabAddedInternal()) {
+		return;
+	}
+}
+
+void ActivateTab()
+{
+	EnsureTabCreated();
+	if (g_chatDialog == nullptr || !IsWindow(g_chatDialog)) {
+		return;
+	}
+
+	ShowWindow(g_chatDialog, SW_SHOW);
+	PostMessageA(g_chatDialog, WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT, 0, 0);
+	FocusChatInputControl();
+	LogChatTab("activate");
+}
+
+void OpenDialog()
+{
+	ActivateTab();
 }
 
 bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
