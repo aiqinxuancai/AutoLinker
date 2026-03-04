@@ -1134,52 +1134,39 @@ bool IDEFacade::ReplaceSelectedRowsText(const std::string& text, bool preCompile
 		" preCompile=" + std::to_string(preCompile ? 1 : 0));
 
 	const std::string finalText = EnsureTrailingLineBreak(text);
-	bool replaced = false;
 	bool usedPastePath = false;
-	bool usedFallbackPath = false;
 	bool preCompileInvoked = false;
 	bool preCompileOk = false;
 
-	// Prefer paste-path since it matches manual replacement behavior in IDE.
-	if (SetClipboardTextForPaste(finalText) && RunEditPaste()) {
-		replaced = true;
-		usedPastePath = true;
-		AppendCodeFetchLogLine("[STEP] ReplaceSelectedRowsText paste path success");
+	// Force paste-path to match manual copy/paste behavior in IDE.
+	const bool setClipboardOk = SetClipboardTextForPaste(finalText);
+	const bool pasteOk = setClipboardOk && RunEditPaste();
+	if (!pasteOk) {
+		AppendCodeFetchLogLine(
+			"[STEP] ReplaceSelectedRowsText paste path failed setClipboardOk=" + std::to_string(setClipboardOk ? 1 : 0) +
+			" pasteOk=" + std::to_string(pasteOk ? 1 : 0));
+		LogAIPerfCost(
+			traceId,
+			"ReplaceSelectedRowsText.total",
+			ElapsedMs(totalStart),
+			"ok=0 reason=paste_path_failed setClipboardOk=" + std::to_string(setClipboardOk ? 1 : 0) +
+			" pasteOk=" + std::to_string(pasteOk ? 1 : 0) +
+			" preCompile=" + std::to_string(preCompile ? 1 : 0));
+		return false;
 	}
-	if (!replaced) {
-		usedFallbackPath = true;
-		AppendCodeFetchLogLine("[STEP] ReplaceSelectedRowsText paste path failed, fallback remove+insert");
-		if (!RunRemove()) {
-			AppendCodeFetchLogLine("[STEP] ReplaceSelectedRowsText fallback RunRemove failed");
-			LogAIPerfCost(
-				traceId,
-				"ReplaceSelectedRowsText.total",
-				ElapsedMs(totalStart),
-				"ok=0 reason=run_remove_failed preCompile=" + std::to_string(preCompile ? 1 : 0));
-			return false;
-		}
-		const std::string insertPayload = EnsureGbkText(finalText);
-		if (!RunInsertText(insertPayload, false)) {
-			AppendCodeFetchLogLine("[STEP] ReplaceSelectedRowsText fallback RunInsertText failed");
-			LogAIPerfCost(
-				traceId,
-				"ReplaceSelectedRowsText.total",
-				ElapsedMs(totalStart),
-				"ok=0 reason=run_insert_failed preCompile=" + std::to_string(preCompile ? 1 : 0));
-			return false;
-		}
-	}
+	usedPastePath = true;
+	AppendCodeFetchLogLine("[STEP] ReplaceSelectedRowsText paste path success");
 
 	if (!preCompile) {
 		AppendCodeFetchLogLine(
 			"[STEP] ReplaceSelectedRowsText done replaced=1 preCompile=0 usedPastePath=" + std::to_string(usedPastePath ? 1 : 0) +
-			" usedFallbackPath=" + std::to_string(usedFallbackPath ? 1 : 0));
+			" usedFallbackPath=0");
 		LogAIPerfCost(
 			traceId,
 			"ReplaceSelectedRowsText.total",
 			ElapsedMs(totalStart),
 			"ok=1 preCompile=0 usedPastePath=" + std::to_string(usedPastePath ? 1 : 0) +
-			" usedFallbackPath=" + std::to_string(usedFallbackPath ? 1 : 0) +
+			" usedFallbackPath=0" +
 			" outputLen=" + std::to_string(finalText.size()));
 		return true;
 	}
@@ -1193,14 +1180,14 @@ bool IDEFacade::ReplaceSelectedRowsText(const std::string& text, bool preCompile
 			"ReplaceSelectedRowsText.total",
 			ElapsedMs(totalStart),
 			"ok=0 reason=run_precompile_failed usedPastePath=" + std::to_string(usedPastePath ? 1 : 0) +
-			" usedFallbackPath=" + std::to_string(usedFallbackPath ? 1 : 0));
+			" usedFallbackPath=0");
 		return false;
 	}
 	preCompileOk = compileOk;
 	AppendCodeFetchLogLine(
 		"[STEP] ReplaceSelectedRowsText done replaced=1 preCompile=1 compileOk=" + std::to_string(preCompileOk ? 1 : 0) +
 		" usedPastePath=" + std::to_string(usedPastePath ? 1 : 0) +
-		" usedFallbackPath=" + std::to_string(usedFallbackPath ? 1 : 0));
+		" usedFallbackPath=0");
 	LogAIPerfCost(
 		traceId,
 		"ReplaceSelectedRowsText.total",
@@ -1209,7 +1196,7 @@ bool IDEFacade::ReplaceSelectedRowsText(const std::string& text, bool preCompile
 		" preCompileInvoked=" + std::to_string(preCompileInvoked ? 1 : 0) +
 		" compileOk=" + std::to_string(preCompileOk ? 1 : 0) +
 		" usedPastePath=" + std::to_string(usedPastePath ? 1 : 0) +
-		" usedFallbackPath=" + std::to_string(usedFallbackPath ? 1 : 0) +
+		" usedFallbackPath=0" +
 		" outputLen=" + std::to_string(finalText.size()));
 	return preCompileOk;
 }
@@ -1438,6 +1425,12 @@ bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, 
 			scanDownStopReason = "next_row_read_failed";
 			break;
 		}
+		// Some hosts expose the next function boundary as a title row first (empty text + VT_SUB_NAME).
+		// Stop before including it, otherwise range may eat into the next function.
+		if (nextRow.isTitle && nextRow.type == VT_SUB_NAME) {
+			scanDownStopReason = "next_sub_title_row";
+			break;
+		}
 		if (!nextRow.isTitle && nextRow.type == VT_SUB_NAME) {
 			scanDownStopReason = "next_sub_header";
 			break;
@@ -1470,6 +1463,20 @@ bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, 
 		++endRow;
 		prevRow = nextRow;
 	}
+
+	int trimmedTailSubTitleRows = 0;
+	while (endRow > startRow) {
+		ProgramText tailRow = {};
+		if (!RunGetPrgText(endRow, -1, tailRow)) {
+			break;
+		}
+		if (!(tailRow.isTitle && tailRow.type == VT_SUB_NAME)) {
+			break;
+		}
+		--endRow;
+		++trimmedTailSubTitleRows;
+	}
+
 	LogAIPerfCost(
 		traceId,
 		"LocateCurrentFunctionRowRange.scan_down",
@@ -1478,7 +1485,8 @@ bool IDEFacade::LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, 
 		" scans=" + std::to_string(scanCountDown) +
 		" fails=" + std::to_string(failCountDown) +
 		" endRow=" + std::to_string(endRow) +
-		" reason=" + scanDownStopReason);
+		" reason=" + scanDownStopReason +
+		" trimmedTailSubTitleRows=" + std::to_string(trimmedTailSubTitleRows));
 
 	outStartRow = startRow;
 	outEndRow = (std::max)(startRow, endRow);
@@ -1642,17 +1650,29 @@ bool IDEFacade::ReplaceRowRangeText(int startRow, int endRow, const std::string&
 	if (!MoveCaret(startRow, 0)) {
 		return failAndRestore("move_caret_to_start_failed");
 	}
-	int blockStartRow = -1;
-	int blockEndRow = -1;
-	if (!TranslateProgramRowRangeToBlockRange(startRow, endRow, blockStartRow, blockEndRow)) {
-		return failAndRestore("translate_program_row_range_failed");
+	int selectedStartRow = startRow;
+	int selectedEndRow = endRow;
+	std::string selectStrategy = "program_rows";
+	if (!SelectRowRange(selectedStartRow, selectedEndRow)) {
+		int blockStartRow = -1;
+		int blockEndRow = -1;
+		if (!TranslateProgramRowRangeToBlockRange(startRow, endRow, blockStartRow, blockEndRow)) {
+			return failAndRestore("select_row_range_failed_direct_and_translate");
+		}
+		selectedStartRow = blockStartRow;
+		selectedEndRow = blockEndRow;
+		selectStrategy = "translated_block_rows";
+		AppendCodeFetchLogLine(
+			"[STEP] ReplaceRowRangeText fallback translated blockStartRow=" + std::to_string(blockStartRow) +
+			" blockEndRow=" + std::to_string(blockEndRow));
+		if (!SelectRowRange(selectedStartRow, selectedEndRow)) {
+			return failAndRestore("select_row_range_failed_after_translate");
+		}
 	}
 	AppendCodeFetchLogLine(
-		"[STEP] ReplaceRowRangeText mapped blockStartRow=" + std::to_string(blockStartRow) +
-		" blockEndRow=" + std::to_string(blockEndRow));
-	if (!SelectRowRange(blockStartRow, blockEndRow)) {
-		return failAndRestore("select_row_range_failed");
-	}
+		"[STEP] ReplaceRowRangeText select strategy=" + selectStrategy +
+		" selectedStartRow=" + std::to_string(selectedStartRow) +
+		" selectedEndRow=" + std::to_string(selectedEndRow));
 
 	const bool ok = ReplaceSelectedRowsText(newText, preCompile);
 	RunBlkClearAllDef();
@@ -1719,45 +1739,110 @@ bool IDEFacade::GetCurrentFunctionCode(std::string& outCode, std::string* outDia
 	}
 	AppendCodeFetchLogLine("[STEP] function range start=" + std::to_string(startRow) + " end=" + std::to_string(endRow));
 
-	std::string code;
-	int rowsRead = 0;
-	const auto readStart = PerfClock::now();
-	for (int row = startRow; row <= endRow; ++row) {
-		ProgramText rowText = {};
-		if (!RunGetPrgText(row, -1, rowText)) {
-			AppendCodeFetchLogLine("[STEP] RunGetPrgText failed row=" + std::to_string(row));
-			setDiag("RunGetPrgText failed at row=" + std::to_string(row));
+	int caretRow = -1;
+	int caretCol = -1;
+	const bool hasCaret = GetCaretPosition(caretRow, caretCol);
+	const auto restoreCaret = [this, hasCaret, caretRow, caretCol]() {
+		if (hasCaret && caretRow >= 0 && caretCol >= 0) {
+			MoveCaret(caretRow, caretCol);
+		}
+	};
+
+	const auto copyStart = PerfClock::now();
+	int selectedStartRow = startRow;
+	int selectedEndRow = endRow;
+	std::string selectStrategy = "program_rows";
+
+	const DWORD beforeSeq = GetClipboardSequenceNumber();
+	RunBlkClearAllDef();
+	if (!SelectRowRange(selectedStartRow, selectedEndRow)) {
+		int blockStartRow = -1;
+		int blockEndRow = -1;
+		if (!TranslateProgramRowRangeToBlockRange(startRow, endRow, blockStartRow, blockEndRow)) {
+			RunBlkClearAllDef();
+			restoreCaret();
+			AppendCodeFetchLogLine("[STEP] TranslateProgramRowRangeToBlockRange failed");
+			setDiag("TranslateProgramRowRangeToBlockRange failed");
 			LogAIPerfCost(
 				traceId,
-				"GetCurrentFunctionCode.read_rows",
-				ElapsedMs(readStart),
-				"ok=0 rowsRead=" + std::to_string(rowsRead) + " failRow=" + std::to_string(row));
-			logTotal(false, rowsRead, "read_row_failed at row=" + std::to_string(row));
+				"GetCurrentFunctionCode.copy_selection",
+				ElapsedMs(copyStart),
+				"ok=0 reason=select_row_range_failed_direct_and_translate startRow=" + std::to_string(startRow) +
+				" endRow=" + std::to_string(endRow));
+			logTotal(false, 0, "select_row_range_failed_direct_and_translate");
 			return false;
 		}
-		++rowsRead;
-		AppendLineWithCrLf(code, rowText.text);
+		selectedStartRow = blockStartRow;
+		selectedEndRow = blockEndRow;
+		selectStrategy = "translated_block_rows";
+		AppendCodeFetchLogLine(
+			"[STEP] GetCurrentFunctionCode fallback translated blockStartRow=" + std::to_string(blockStartRow) +
+			" blockEndRow=" + std::to_string(blockEndRow));
+		if (!SelectRowRange(selectedStartRow, selectedEndRow)) {
+			RunBlkClearAllDef();
+			restoreCaret();
+			AppendCodeFetchLogLine("[STEP] SelectRowRange failed in GetCurrentFunctionCode after translate");
+			setDiag("SelectRowRange failed after translate");
+			LogAIPerfCost(
+				traceId,
+				"GetCurrentFunctionCode.copy_selection",
+				ElapsedMs(copyStart),
+				"ok=0 reason=select_row_range_failed_after_translate selectedStartRow=" + std::to_string(selectedStartRow) +
+				" selectedEndRow=" + std::to_string(selectedEndRow));
+			logTotal(false, 0, "select_row_range_failed_after_translate");
+			return false;
+		}
 	}
-	TrimTrailingLineBreaks(code);
-	if (TrimAsciiSpace(code).empty()) {
-		AppendCodeFetchLogLine("[STEP] code empty after trim");
-		setDiag("located function block but code is empty after trim");
+	AppendCodeFetchLogLine(
+		"[STEP] GetCurrentFunctionCode select strategy=" + selectStrategy +
+		" selectedStartRow=" + std::to_string(selectedStartRow) +
+		" selectedEndRow=" + std::to_string(selectedEndRow));
+
+	const bool copied = CopySelection();
+	RunBlkClearAllDef();
+	restoreCaret();
+	if (!copied) {
+		AppendCodeFetchLogLine("[STEP] CopySelection failed in GetCurrentFunctionCode");
+		setDiag("CopySelection failed");
 		LogAIPerfCost(
 			traceId,
-			"GetCurrentFunctionCode.read_rows",
-			ElapsedMs(readStart),
-			"ok=0 rowsRead=" + std::to_string(rowsRead) + " reason=empty_after_trim");
-		logTotal(false, rowsRead, "empty_after_trim");
+			"GetCurrentFunctionCode.copy_selection",
+			ElapsedMs(copyStart),
+			"ok=0 reason=copy_selection_failed");
+		logTotal(false, 0, "copy_selection_failed");
 		return false;
 	}
 
+	const bool clipboardChanged = (GetClipboardSequenceNumber() != beforeSeq);
+	std::string code;
+	const bool readOk = ReadClipboardText(code);
+	TrimTrailingLineBreaks(code);
+	if (!readOk || TrimAsciiSpace(code).empty()) {
+		AppendCodeFetchLogLine(
+			"[STEP] ReadClipboardText failed/empty in GetCurrentFunctionCode readOk=" + std::to_string(readOk ? 1 : 0) +
+			" clipboardChanged=" + std::to_string(clipboardChanged ? 1 : 0));
+		setDiag("ReadClipboardText failed or empty");
+		LogAIPerfCost(
+			traceId,
+			"GetCurrentFunctionCode.copy_selection",
+			ElapsedMs(copyStart),
+			"ok=0 reason=read_clipboard_failed_or_empty clipboardChanged=" + std::to_string(clipboardChanged ? 1 : 0));
+		logTotal(false, 0, "read_clipboard_failed_or_empty");
+		return false;
+	}
+
+	const int rowsRead = (std::max)(0, endRow - startRow + 1);
 	LogAIPerfCost(
 		traceId,
-		"GetCurrentFunctionCode.read_rows",
-		ElapsedMs(readStart),
+		"GetCurrentFunctionCode.copy_selection",
+		ElapsedMs(copyStart),
 		"ok=1 rowsRead=" + std::to_string(rowsRead) +
 		" startRow=" + std::to_string(startRow) +
-		" endRow=" + std::to_string(endRow));
+		" endRow=" + std::to_string(endRow) +
+		" selectedStartRow=" + std::to_string(selectedStartRow) +
+		" selectedEndRow=" + std::to_string(selectedEndRow) +
+		" strategy=" + selectStrategy +
+		" clipboardChanged=" + std::to_string(clipboardChanged ? 1 : 0));
 
 	outCode = std::move(code);
 	AppendCodeFetchLogLine(

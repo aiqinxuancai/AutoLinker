@@ -1,6 +1,7 @@
 #include "AIConfigDialog.h"
 #include "resource.h"
 
+#include <algorithm>
 #include <array>
 #include <CommCtrl.h>
 #include <Shellapi.h>
@@ -26,6 +27,7 @@ constexpr int IDC_CFG_CANCEL = 2;
 
 constexpr int IDC_PREVIEW_EDIT = 1101;
 constexpr int IDC_PREVIEW_OK = 1;
+constexpr int IDC_PREVIEW_SECONDARY = 1102;
 constexpr int IDC_PREVIEW_CANCEL = 2;
 
 constexpr int IDC_INPUT_EDIT = 1201;
@@ -420,9 +422,13 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 struct AIPreviewDialogContext {
 	std::string title;
 	std::string content;
-	std::string confirmText;
-	bool accepted = false;
+	std::string primaryText;
+	std::string secondaryText;
+	AIPreviewAction action = AIPreviewAction::Cancel;
 	HWND hEdit = nullptr;
+	HWND hPrimary = nullptr;
+	HWND hSecondary = nullptr;
+	HWND hCancel = nullptr;
 };
 
 struct AIInputDialogContext {
@@ -432,6 +438,43 @@ struct AIInputDialogContext {
 	bool accepted = false;
 	HWND hEdit = nullptr;
 };
+
+void LayoutAIPreviewDialog(HWND hWnd, AIPreviewDialogContext* ctx)
+{
+	if (hWnd == nullptr || ctx == nullptr) {
+		return;
+	}
+
+	RECT rc = {};
+	GetClientRect(hWnd, &rc);
+	const int margin = 14;
+	const int gap = 8;
+	const int buttonW = 120;
+	const int buttonH = 30;
+
+	int right = static_cast<int>(rc.right) - margin;
+	const int buttonTop = (std::max)(margin, static_cast<int>(rc.bottom) - margin - buttonH);
+
+	if (ctx->hCancel != nullptr) {
+		MoveWindow(ctx->hCancel, right - buttonW, buttonTop, buttonW, buttonH, TRUE);
+		right -= (buttonW + gap);
+	}
+	if (ctx->hSecondary != nullptr) {
+		MoveWindow(ctx->hSecondary, right - buttonW, buttonTop, buttonW, buttonH, TRUE);
+		right -= (buttonW + gap);
+	}
+	if (ctx->hPrimary != nullptr) {
+		MoveWindow(ctx->hPrimary, right - buttonW, buttonTop, buttonW, buttonH, TRUE);
+	}
+
+	const int editLeft = margin;
+	const int editTop = margin;
+	const int editWidth = (std::max)(120, static_cast<int>(rc.right) - margin * 2);
+	const int editHeight = (std::max)(120, buttonTop - margin - editTop);
+	if (ctx->hEdit != nullptr) {
+		MoveWindow(ctx->hEdit, editLeft, editTop, editWidth, editHeight, TRUE);
+	}
+}
 
 LRESULT CALLBACK AIPreviewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
@@ -455,17 +498,44 @@ LRESULT CALLBACK AIPreviewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 		const std::string displayText = NormalizeMultilineForEdit(ctx->content);
 		SetWindowTextA(ctx->hEdit, displayText.c_str());
 
-		HWND hOk = CreateWindowA("BUTTON", ctx->confirmText.c_str(),
-			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 590, 474, 84, 30, hWnd,
+		ctx->hPrimary = CreateWindowA("BUTTON", ctx->primaryText.c_str(),
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+			590, 474, 120, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_PREVIEW_OK), nullptr, nullptr);
 
-		HWND hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88",
-			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 682, 474, 84, 30, hWnd,
+		if (!ctx->secondaryText.empty()) {
+			ctx->hSecondary = CreateWindowA("BUTTON", ctx->secondaryText.c_str(),
+				WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+				460, 474, 120, 30, hWnd,
+				reinterpret_cast<HMENU>(IDC_PREVIEW_SECONDARY), nullptr, nullptr);
+		}
+
+		ctx->hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88",
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+			682, 474, 120, 30, hWnd,
 			reinterpret_cast<HMENU>(IDC_PREVIEW_CANCEL), nullptr, nullptr);
 
 		SetDefaultFont(ctx->hEdit);
-		SetDefaultFont(hOk);
-		SetDefaultFont(hCancel);
+		SetDefaultFont(ctx->hPrimary);
+		SetDefaultFont(ctx->hSecondary);
+		SetDefaultFont(ctx->hCancel);
+		LayoutAIPreviewDialog(hWnd, ctx);
+		SetFocus(ctx->hPrimary != nullptr ? ctx->hPrimary : ctx->hEdit);
+		return 0;
+	}
+
+	case WM_SIZE:
+		if (ctx != nullptr) {
+			LayoutAIPreviewDialog(hWnd, ctx);
+		}
+		return 0;
+
+	case WM_GETMINMAXINFO: {
+		auto* mm = reinterpret_cast<MINMAXINFO*>(lParam);
+		if (mm != nullptr) {
+			mm->ptMinTrackSize.x = 680;
+			mm->ptMinTrackSize.y = 420;
+		}
 		return 0;
 	}
 
@@ -475,12 +545,17 @@ LRESULT CALLBACK AIPreviewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 			return 0;
 		}
 		if (id == IDC_PREVIEW_OK) {
-			ctx->accepted = true;
+			ctx->action = AIPreviewAction::PrimaryConfirm;
+			DestroyWindow(hWnd);
+			return 0;
+		}
+		if (id == IDC_PREVIEW_SECONDARY) {
+			ctx->action = AIPreviewAction::SecondaryConfirm;
 			DestroyWindow(hWnd);
 			return 0;
 		}
 		if (id == IDC_PREVIEW_CANCEL) {
-			ctx->accepted = false;
+			ctx->action = AIPreviewAction::Cancel;
 			DestroyWindow(hWnd);
 			return 0;
 		}
@@ -488,6 +563,9 @@ LRESULT CALLBACK AIPreviewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 	}
 
 	case WM_CLOSE:
+		if (ctx != nullptr) {
+			ctx->action = AIPreviewAction::Cancel;
+		}
 		DestroyWindow(hWnd);
 		return 0;
 	default:
@@ -637,7 +715,12 @@ bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 	return ctx.accepted;
 }
 
-bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string& content, const std::string& confirmText)
+AIPreviewAction ShowAIPreviewDialogEx(
+	HWND owner,
+	const std::string& title,
+	const std::string& content,
+	const std::string& primaryText,
+	const std::string& secondaryText)
 {
 	ComCtl6ActivationScope themeScope;
 	INITCOMMONCONTROLSEX icex = {};
@@ -659,7 +742,9 @@ bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string
 	AIPreviewDialogContext ctx = {};
 	ctx.title = title.empty() ? "AutoLinker AI Preview" : title;
 	ctx.content = content;
-	ctx.confirmText = confirmText.empty() ? "\u786E\u5B9A" : confirmText;
+	ctx.primaryText = primaryText.empty() ? "\u786E\u5B9A" : primaryText;
+	ctx.secondaryText = secondaryText;
+	ctx.action = AIPreviewAction::Cancel;
 
 	HWND hDialog = CreateWindowExA(
 		WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
@@ -673,12 +758,17 @@ bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string
 		&ctx);
 
 	if (hDialog == nullptr) {
-		return false;
+		return AIPreviewAction::Cancel;
 	}
 
 	ApplyWindowIcon(hDialog);
 	RunModalWindow(owner, hDialog);
-	return ctx.accepted;
+	return ctx.action;
+}
+
+bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string& content, const std::string& confirmText)
+{
+	return ShowAIPreviewDialogEx(owner, title, content, confirmText, "") == AIPreviewAction::PrimaryConfirm;
 }
 
 bool ShowAITextInputDialog(HWND owner, const std::string& title, const std::string& hint, std::string& ioText)

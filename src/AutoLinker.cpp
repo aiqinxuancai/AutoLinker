@@ -32,6 +32,9 @@
 #include <process.h>
 #include <cstdint>
 #include <unordered_map>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -157,6 +160,123 @@ long long ElapsedMs(const PerfClock::time_point& start)
 {
 	return static_cast<long long>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(PerfClock::now() - start).count());
+}
+
+std::mutex g_aiRoundtripLogMutex;
+
+std::filesystem::path GetAIRoundtripLogPath()
+{
+	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	return dir / "ai_roundtrip_last.log";
+}
+
+std::string EscapeOneLineForLog(std::string text)
+{
+	for (size_t i = 0; i < text.size(); ++i) {
+		if (text[i] == '\r') {
+			text.replace(i, 1, "\\r");
+			++i;
+			continue;
+		}
+		if (text[i] == '\n') {
+			text.replace(i, 1, "\\n");
+			++i;
+			continue;
+		}
+	}
+	return text;
+}
+
+bool IsValidUtf8ForLog(const std::string& text)
+{
+	if (text.empty()) {
+		return true;
+	}
+	return MultiByteToWideChar(
+		CP_UTF8,
+		MB_ERR_INVALID_CHARS,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0) > 0;
+}
+
+std::string BuildHexHead(const std::string& text, size_t maxBytes = 64)
+{
+	const size_t n = (std::min)(text.size(), maxBytes);
+	std::string out;
+	out.reserve(n * 3 + 16);
+	constexpr char kHex[] = "0123456789ABCDEF";
+	for (size_t i = 0; i < n; ++i) {
+		const unsigned char ch = static_cast<unsigned char>(text[i]);
+		out.push_back(kHex[(ch >> 4) & 0x0F]);
+		out.push_back(kHex[ch & 0x0F]);
+		if (i + 1 < n) {
+			out.push_back(' ');
+		}
+	}
+	if (text.size() > n) {
+		out += " ...";
+	}
+	return out;
+}
+
+void AppendAIRoundtripLogLineUnlocked(std::ofstream& out, const std::string& line)
+{
+	out << line << "\r\n";
+}
+
+void BeginAIRoundtripLogSession(uint64_t traceId, const std::string& scene, const std::string& taskName)
+{
+	const auto path = GetAIRoundtripLogPath();
+	SYSTEMTIME st = {};
+	GetLocalTime(&st);
+	std::lock_guard<std::mutex> guard(g_aiRoundtripLogMutex);
+	std::ofstream out(path, std::ios::trunc | std::ios::binary);
+	if (!out.is_open()) {
+		return;
+	}
+
+	AppendAIRoundtripLogLineUnlocked(
+		out,
+		"[AI-ROUNDTRIP] session-start trace=" + std::to_string(traceId) +
+		" scene=" + scene +
+		" task=\"" + EscapeOneLineForLog(taskName) + "\"" +
+		" time=" + std::to_string(st.wYear) + "-" + std::to_string(st.wMonth) + "-" + std::to_string(st.wDay) +
+		" " + std::to_string(st.wHour) + ":" + std::to_string(st.wMinute) + ":" + std::to_string(st.wSecond) +
+		"." + std::to_string(st.wMilliseconds));
+}
+
+void AppendAIRoundtripLogLine(const std::string& line)
+{
+	const auto path = GetAIRoundtripLogPath();
+	std::lock_guard<std::mutex> guard(g_aiRoundtripLogMutex);
+	std::ofstream out(path, std::ios::app | std::ios::binary);
+	if (!out.is_open()) {
+		return;
+	}
+	AppendAIRoundtripLogLineUnlocked(out, line);
+}
+
+void AppendAIRoundtripLogBlock(const std::string& title, const std::string& text)
+{
+	const auto path = GetAIRoundtripLogPath();
+	std::lock_guard<std::mutex> guard(g_aiRoundtripLogMutex);
+	std::ofstream out(path, std::ios::app | std::ios::binary);
+	if (!out.is_open()) {
+		return;
+	}
+
+	AppendAIRoundtripLogLineUnlocked(
+		out,
+		"[BLOCK-BEGIN] title=" + title +
+		" bytes=" + std::to_string(text.size()) +
+		" utf8Valid=" + std::to_string(IsValidUtf8ForLog(text) ? 1 : 0) +
+		" hexHead=" + BuildHexHead(text));
+	out << text << "\r\n";
+	AppendAIRoundtripLogLineUnlocked(out, "[BLOCK-END] title=" + title);
 }
 
 class ScopedAIPerfTrace {
@@ -448,6 +568,12 @@ void RunAiTaskWorker(void* pParams)
 	try {
 		const auto networkStart = PerfClock::now();
 		result->taskResult = AIService::ExecuteTask(request->taskKind, request->inputText, request->settings);
+		AppendAIRoundtripLogLine(
+			"[RESPONSE] ok=" + std::to_string(result->taskResult.ok ? 1 : 0) +
+			" httpStatus=" + std::to_string(result->taskResult.httpStatus) +
+			" contentBytes=" + std::to_string(result->taskResult.content.size()) +
+			" error=\"" + EscapeOneLineForLog(result->taskResult.error) + "\"");
+		AppendAIRoundtripLogBlock("ai_raw_response_content", result->taskResult.content);
 		LogAIPerfCost(
 			request->traceId,
 			"RunAiTaskWorker.execute_task_total",
@@ -457,10 +583,13 @@ void RunAiTaskWorker(void* pParams)
 	catch (const std::exception& ex) {
 		result->taskResult.ok = false;
 		result->taskResult.error = std::string("后台任务异常：") + ex.what();
+		AppendAIRoundtripLogLine(
+			"[RESPONSE] exception_std what=\"" + EscapeOneLineForLog(ex.what()) + "\"");
 	}
 	catch (...) {
 		result->taskResult.ok = false;
 		result->taskResult.error = "后台任务发生未知异常";
+		AppendAIRoundtripLogLine("[RESPONSE] exception_unknown");
 	}
 
 	PostAiTaskResult(result.release());
@@ -482,7 +611,12 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 	try {
 		const std::string displayName = AIService::BuildTaskDisplayName(kind);
 		OutputStringToELog("[AI]开始执行：" + displayName);
+		BeginAIRoundtripLogSession(traceId, "function_replace", displayName);
+		AppendAIRoundtripLogLine(
+			"[STATE] begin kind=" + std::to_string(static_cast<int>(kind)) +
+			" displayName=\"" + EscapeOneLineForLog(displayName) + "\"");
 		if (!TryBeginAiTask()) {
+			AppendAIRoundtripLogLine("[STATE] abort reason=busy");
 			logTotal("busy");
 			return;
 		}
@@ -503,6 +637,8 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 				if (!functionDiag.empty()) {
 					OutputStringToELog("[AI]函数代码获取诊断：" + functionDiag);
 				}
+				AppendAIRoundtripLogLine(
+					"[STATE] get_function_failed diag=\"" + EscapeOneLineForLog(functionDiag) + "\"");
 				EndAiTask();
 				logTotal("get_function_failed");
 				return;
@@ -510,6 +646,7 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 		}
 		if (functionCode.empty()) {
 			OutputStringToELog("[AI]无法获取当前函数代码");
+			AppendAIRoundtripLogLine("[STATE] get_function_failed reason=empty_function_code");
 			EndAiTask();
 			logTotal("empty_function");
 			return;
@@ -517,6 +654,11 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 		int caretRow = -1;
 		int caretCol = -1;
 		ide.GetCaretPosition(caretRow, caretCol);
+		AppendAIRoundtripLogLine(
+			"[STATE] caret row=" + std::to_string(caretRow) +
+			" col=" + std::to_string(caretCol) +
+			" functionDiag=\"" + EscapeOneLineForLog(functionDiag) + "\"");
+		AppendAIRoundtripLogBlock("source_function_code", functionCode);
 
 		AISettings settings = {};
 		{
@@ -528,11 +670,17 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 				ElapsedMs(t0),
 				"ok=" + std::to_string(ok ? 1 : 0));
 			if (!ok) {
+				AppendAIRoundtripLogLine("[STATE] abort reason=settings_not_ready");
 				EndAiTask();
 				logTotal("settings_not_ready");
 				return;
 			}
 		}
+		AppendAIRoundtripLogLine(
+			"[SETTINGS] baseUrl=\"" + EscapeOneLineForLog(settings.baseUrl) +
+			"\" model=\"" + EscapeOneLineForLog(settings.model) +
+			"\" timeoutMs=" + std::to_string(settings.timeoutMs) +
+			" temperature=" + std::format("{:.3f}", settings.temperature));
 
 		const std::string userInput =
 			"请处理以下易语言函数代码，并严格返回完整可替换代码：\n```e\n" +
@@ -553,19 +701,25 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 				"ok=" + std::to_string(accepted ? 1 : 0) + " scene=optimize");
 			if (!accepted) {
 				OutputStringToELog("[AI]已取消输入优化要求");
+				AppendAIRoundtripLogLine("[STATE] user_cancel_optimize_requirement");
 				EndAiTask();
 				logTotal("user_cancel_optimize_requirement");
 				return;
 			}
 			extraRequirement = TrimAsciiCopy(extraRequirement);
+			AppendAIRoundtripLogLine(
+				"[INPUT] optimize_requirement bytes=" + std::to_string(extraRequirement.size()) +
+				" text=\"" + EscapeOneLineForLog(extraRequirement) + "\"");
 			if (!extraRequirement.empty()) {
 				finalInput = std::string("额外优化要求：\n") + extraRequirement + "\n\n" + userInput;
 			}
 		}
+		AppendAIRoundtripLogBlock("ai_input_prompt", finalInput);
 
 		std::unique_ptr<AIAsyncRequest> request(new (std::nothrow) AIAsyncRequest());
 		if (!request) {
 			OutputStringToELog("[AI]内存不足，无法发起任务");
+			AppendAIRoundtripLogLine("[STATE] abort reason=alloc_request_failed");
 			EndAiTask();
 			logTotal("alloc_request_failed");
 			return;
@@ -579,25 +733,34 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 		request->sourceFunctionCode = functionCode;
 		request->targetCaretRow = caretRow;
 		request->targetCaretCol = caretCol;
+		AppendAIRoundtripLogLine(
+			"[REQUEST] queued action=ReplaceCurrentFunction trace=" + std::to_string(traceId) +
+			" inputBytes=" + std::to_string(request->inputText.size()) +
+			" sourceBytes=" + std::to_string(request->sourceFunctionCode.size()));
 
 		OutputStringToELog("[AI]正在请求模型（后台）...");
 		uintptr_t threadId = _beginthread(RunAiTaskWorker, 0, request.get());
 		if (threadId == static_cast<uintptr_t>(-1L)) {
 			OutputStringToELog("[AI]启动后台任务失败");
+			AppendAIRoundtripLogLine("[STATE] abort reason=start_worker_failed");
 			EndAiTask();
 			logTotal("start_worker_failed");
 			return;
 		}
 		request.release();
+		AppendAIRoundtripLogLine("[STATE] worker_started");
 		logTotal("queued");
 	}
 	catch (const std::exception& ex) {
 		OutputStringToELog(std::string("[AI]发生异常：") + ex.what());
+		AppendAIRoundtripLogLine(
+			"[STATE] exception_std what=\"" + EscapeOneLineForLog(ex.what()) + "\"");
 		EndAiTask();
 		logTotal("exception_std");
 	}
 	catch (...) {
 		OutputStringToELog("[AI]发生未知异常");
+		AppendAIRoundtripLogLine("[STATE] exception_unknown");
 		EndAiTask();
 		logTotal("exception_unknown");
 	}
@@ -701,6 +864,8 @@ void HandleAiTaskCompletionMessage(LPARAM lParam)
 	try {
 		if (!result->taskResult.ok) {
 			OutputStringToELog("[AI]请求失败：" + result->taskResult.error);
+			AppendAIRoundtripLogLine(
+				"[STATE] request_failed error=\"" + EscapeOneLineForLog(result->taskResult.error) + "\"");
 			return;
 		}
 
@@ -711,20 +876,55 @@ void HandleAiTaskCompletionMessage(LPARAM lParam)
 			generatedCode = AIService::Trim(generatedCode);
 			if (generatedCode.empty()) {
 				OutputStringToELog("[AI]模型返回为空");
+				AppendAIRoundtripLogLine("[STATE] empty_generated_code_after_normalize");
 				return;
 			}
 			generatedCode = NormalizeCodeForEIDE(generatedCode);
+			AppendAIRoundtripLogBlock("ai_output_normalized_code", generatedCode);
 
 			const std::string title = result->displayName.empty() ? "AI结果预览" : (result->displayName + " - 结果预览");
-			if (!ShowAIPreviewDialog(g_hwnd, title, generatedCode, "复制到剪贴板")) {
-				OutputStringToELog("[AI]用户取消复制");
+			const AIPreviewAction previewAction = ShowAIPreviewDialogEx(
+				g_hwnd,
+				title,
+				generatedCode,
+				"复制到剪贴板",
+				"替换（不稳定）");
+			if (previewAction == AIPreviewAction::Cancel) {
+				OutputStringToELog("[AI]用户取消应用结果");
+				AppendAIRoundtripLogLine("[PREVIEW] action=cancel");
 				return;
 			}
+			if (previewAction == AIPreviewAction::SecondaryConfirm) {
+				std::unique_ptr<AIApplyRequest> request(new (std::nothrow) AIApplyRequest());
+				if (!request) {
+					OutputStringToELog("[AI]内存不足，无法执行替换");
+					AppendAIRoundtripLogLine("[PREVIEW] action=replace_unstable alloc_request_failed");
+					return;
+				}
+				request->action = AIAsyncUiAction::ReplaceCurrentFunction;
+				request->text = generatedCode;
+				request->sourceFunctionCode = result->sourceFunctionCode;
+				request->targetCaretRow = result->targetCaretRow;
+				request->targetCaretCol = result->targetCaretCol;
+				OutputStringToELog("[AI]用户选择：替换（不稳定）");
+				AppendAIRoundtripLogLine(
+					"[PREVIEW] action=replace_unstable targetCaretRow=" + std::to_string(request->targetCaretRow) +
+					" targetCaretCol=" + std::to_string(request->targetCaretCol));
+				AppendAIRoundtripLogBlock("replace_request_payload", request->text);
+				PostAiApplyRequest(request.release());
+				return;
+			}
+
+			OutputStringToELog("[AI]用户选择：复制到剪贴板");
+			AppendAIRoundtripLogLine("[PREVIEW] action=copy_to_clipboard");
+			AppendAIRoundtripLogBlock("clipboard_payload", generatedCode);
 			if (!IDEFacade::Instance().SetClipboardText(generatedCode)) {
 				OutputStringToELog("[AI]复制到剪贴板失败");
+				AppendAIRoundtripLogLine("[STATE] copy_to_clipboard_failed");
 				return;
 			}
 			OutputStringToELog("[AI]已复制到剪贴板，请手动替换");
+			AppendAIRoundtripLogLine("[STATE] copy_to_clipboard_done");
 			return;
 		}
 		case AIAsyncUiAction::OutputTranslation: {
@@ -793,12 +993,19 @@ void HandleAiApplyMessage(LPARAM lParam)
 			if (request->targetCaretRow >= 0 && request->targetCaretCol >= 0) {
 				ide.MoveCaret(request->targetCaretRow, request->targetCaretCol);
 			}
+			AppendAIRoundtripLogLine(
+				"[APPLY] begin action=ReplaceCurrentFunction targetCaretRow=" + std::to_string(request->targetCaretRow) +
+				" targetCaretCol=" + std::to_string(request->targetCaretCol));
+			AppendAIRoundtripLogBlock("apply_request_text_raw", request->text);
 			const std::string newFunctionCode = NormalizeCodeForEIDE(request->text);
+			AppendAIRoundtripLogBlock("apply_request_text_normalized", newFunctionCode);
 			if (ide.ReplaceCurrentFunctionCode(newFunctionCode, kAiApplyPreCompile)) {
 				OutputStringToELog("[AI]替换完成");
+				AppendAIRoundtripLogLine("[APPLY] result=ok");
 				return;
 			}
 			OutputStringToELog("[AI]替换当前函数失败（当前坐标未定位到可替换子程序）");
+			AppendAIRoundtripLogLine("[APPLY] result=failed reason=replace_current_function_failed");
 			return;
 		}
 
