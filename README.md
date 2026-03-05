@@ -17,7 +17,7 @@ AutoLinker支持库，通过各种方法实现以下功能：
   * 在`e\AutoLinker\Config`中，存放`link.ini`的各种版本，命名如：`vc6.ini`、`vc2017.ini`、`vc2022.ini`等。
     ![image](https://github.com/aiqinxuancai/AutoLinker/assets/4475018/f73e8188-2011-469a-aee2-f9d5f4e2af01)
 
-  * 启动e后可在顶部菜单栏看到`当前源文件所对应的链接器`。<br>
+  * `当前源文件所对应的链接器`。**！！！此位置新版本已改到编译菜单下！！！**<br>
     ![image](https://github.com/aiqinxuancai/AutoLinker/assets/4475018/a4ab4cea-2b1d-4532-9c43-5175f298e2b9)
 
 ### ⭐调试、编译时动静态ec自动切换
