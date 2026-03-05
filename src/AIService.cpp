@@ -156,6 +156,244 @@ std::string RemoveCodeFence(const std::string& text)
 	return AIService::Trim(content.substr(firstLineEnd + 1, fenceEnd - (firstLineEnd + 1)));
 }
 
+std::string MergeMessageContentUtf8(const nlohmann::json& message)
+{
+	std::string merged;
+	if (!message.contains("content")) {
+		return merged;
+	}
+
+	const nlohmann::json& content = message["content"];
+	if (content.is_string()) {
+		return content.get<std::string>();
+	}
+	if (!content.is_array()) {
+		return merged;
+	}
+
+	for (const auto& item : content) {
+		if (item.is_string()) {
+			merged += item.get<std::string>();
+			continue;
+		}
+		if (item.is_object() && item.contains("text") && item["text"].is_string()) {
+			merged += item["text"].get<std::string>();
+		}
+	}
+	return merged;
+}
+
+bool ExtractChatResponseMessage(const nlohmann::json& parsed, nlohmann::json& outMessage, std::string& outError)
+{
+	if (!parsed.contains("choices") || !parsed["choices"].is_array() || parsed["choices"].empty()) {
+		outError = "AI response choices is empty";
+		return false;
+	}
+	const nlohmann::json& choice = parsed["choices"][0];
+	if (!choice.contains("message") || !choice["message"].is_object()) {
+		outError = "AI response message missing";
+		return false;
+	}
+	outMessage = choice["message"];
+	return true;
+}
+
+struct StreamToolCallState {
+	std::string id;
+	std::string name;
+	std::string arguments;
+};
+
+struct ChatStreamParseState {
+	bool sawDataEvent = false;
+	std::string pendingLine;
+	std::string mergedUtf8;
+	std::vector<StreamToolCallState> toolCalls;
+	std::string parseError;
+};
+
+StreamToolCallState& EnsureToolCallSlot(std::vector<StreamToolCallState>& toolCalls, size_t index)
+{
+	if (toolCalls.size() <= index) {
+		toolCalls.resize(index + 1);
+	}
+	return toolCalls[index];
+}
+
+bool ProcessStreamDataPayload(
+	const std::string& payload,
+	ChatStreamParseState& state,
+	const std::function<void(const std::string& deltaText)>& streamCallback)
+{
+	if (payload.empty()) {
+		return true;
+	}
+	if (payload == "[DONE]") {
+		state.sawDataEvent = true;
+		return true;
+	}
+
+	state.sawDataEvent = true;
+	nlohmann::json packet;
+	try {
+		packet = nlohmann::json::parse(payload);
+	}
+	catch (const std::exception& ex) {
+		state.parseError = std::string("Failed to parse streaming chunk JSON: ") + ex.what();
+		return false;
+	}
+
+	if (packet.contains("error") && packet["error"].is_object()) {
+		const auto& err = packet["error"];
+		if (err.contains("message") && err["message"].is_string()) {
+			state.parseError = Utf8ToLocal(err["message"].get<std::string>());
+		}
+		else {
+			state.parseError = "AI streaming response contains error";
+		}
+		return false;
+	}
+
+	if (!packet.contains("choices") || !packet["choices"].is_array() || packet["choices"].empty()) {
+		return true;
+	}
+
+	const auto& choice = packet["choices"][0];
+	if (!choice.contains("delta") || !choice["delta"].is_object()) {
+		return true;
+	}
+	const auto& delta = choice["delta"];
+
+	const std::string deltaContentUtf8 = MergeMessageContentUtf8(delta);
+	if (!deltaContentUtf8.empty()) {
+		state.mergedUtf8 += deltaContentUtf8;
+		if (streamCallback) {
+			streamCallback(Utf8ToLocal(deltaContentUtf8));
+		}
+	}
+
+	if (!delta.contains("tool_calls") || !delta["tool_calls"].is_array()) {
+		return true;
+	}
+
+	for (const auto& toolCallDelta : delta["tool_calls"]) {
+		if (!toolCallDelta.is_object()) {
+			continue;
+		}
+
+		size_t index = state.toolCalls.size();
+		if (toolCallDelta.contains("index") && toolCallDelta["index"].is_number_integer()) {
+			const int idx = toolCallDelta["index"].get<int>();
+			if (idx >= 0) {
+				index = static_cast<size_t>(idx);
+			}
+		}
+
+		auto& slot = EnsureToolCallSlot(state.toolCalls, index);
+		if (toolCallDelta.contains("id") && toolCallDelta["id"].is_string()) {
+			const std::string deltaId = toolCallDelta["id"].get<std::string>();
+			if (!deltaId.empty()) {
+				slot.id = deltaId;
+			}
+		}
+
+		if (!toolCallDelta.contains("function") || !toolCallDelta["function"].is_object()) {
+			continue;
+		}
+
+		const auto& fn = toolCallDelta["function"];
+		if (fn.contains("name") && fn["name"].is_string()) {
+			slot.name += fn["name"].get<std::string>();
+		}
+		if (fn.contains("arguments") && fn["arguments"].is_string()) {
+			slot.arguments += fn["arguments"].get<std::string>();
+		}
+	}
+	return true;
+}
+
+bool ProcessStreamLine(
+	const std::string& rawLine,
+	ChatStreamParseState& state,
+	const std::function<void(const std::string& deltaText)>& streamCallback)
+{
+	std::string line = rawLine;
+	if (!line.empty() && line.back() == '\r') {
+		line.pop_back();
+	}
+	if (line.empty()) {
+		return true;
+	}
+	if (line.rfind("data:", 0) != 0) {
+		return true;
+	}
+
+	std::string payload = line.substr(5);
+	if (!payload.empty() && payload[0] == ' ') {
+		payload.erase(payload.begin());
+	}
+	return ProcessStreamDataPayload(payload, state, streamCallback);
+}
+
+bool ConsumeStreamChunk(
+	const std::string& chunk,
+	ChatStreamParseState& state,
+	const std::function<void(const std::string& deltaText)>& streamCallback)
+{
+	state.pendingLine += chunk;
+	size_t lineEnd = 0;
+	while ((lineEnd = state.pendingLine.find('\n')) != std::string::npos) {
+		const std::string line = state.pendingLine.substr(0, lineEnd);
+		state.pendingLine.erase(0, lineEnd + 1);
+		if (!ProcessStreamLine(line, state, streamCallback)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool FlushStreamParseState(
+	ChatStreamParseState& state,
+	const std::function<void(const std::string& deltaText)>& streamCallback)
+{
+	if (state.pendingLine.empty()) {
+		return true;
+	}
+	const std::string line = state.pendingLine;
+	state.pendingLine.clear();
+	return ProcessStreamLine(line, state, streamCallback);
+}
+
+nlohmann::json BuildAssistantMessageFromStreamState(const ChatStreamParseState& state)
+{
+	nlohmann::json message;
+	message["role"] = "assistant";
+
+	if (!state.toolCalls.empty()) {
+		message["content"] = state.mergedUtf8;
+		message["tool_calls"] = nlohmann::json::array();
+		for (size_t i = 0; i < state.toolCalls.size(); ++i) {
+			const auto& call = state.toolCalls[i];
+			std::string callId = call.id;
+			if (callId.empty()) {
+				callId = std::format("call_auto_{}", i + 1);
+			}
+			message["tool_calls"].push_back({
+				{"id", callId},
+				{"type", "function"},
+				{"function", {
+					{"name", call.name},
+					{"arguments", call.arguments}
+				}}
+			});
+		}
+		return message;
+	}
+
+	message["content"] = state.mergedUtf8;
+	return message;
+}
+
 nlohmann::json BuildChatToolDefinitions()
 {
 	nlohmann::json tools = nlohmann::json::array();
@@ -209,11 +447,656 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 	}
 	return prompt;
 }
+
+std::string UrlEncode(const std::string& value)
+{
+	static constexpr char kHex[] = "0123456789ABCDEF";
+	std::string encoded;
+	encoded.reserve(value.size() + 16);
+	for (unsigned char c : value) {
+		if ((c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' || c == '~') {
+			encoded.push_back(static_cast<char>(c));
+			continue;
+		}
+		encoded.push_back('%');
+		encoded.push_back(kHex[(c >> 4) & 0x0F]);
+		encoded.push_back(kHex[c & 0x0F]);
+	}
+	return encoded;
+}
+
+std::string AppendQueryParam(std::string url, const std::string& key, const std::string& value)
+{
+	if (key.empty()) {
+		return url;
+	}
+	const char sep = (url.find('?') == std::string::npos) ? '?' : '&';
+	url.push_back(sep);
+	url += UrlEncode(key);
+	url += "=";
+	url += UrlEncode(value);
+	return url;
+}
+
+std::string ReplaceSuffixIfPresent(const std::string& text, const std::string& oldSuffix, const std::string& newSuffix)
+{
+	if (!EndsWithInsensitive(text, oldSuffix)) {
+		return text;
+	}
+	return text.substr(0, text.size() - oldSuffix.size()) + newSuffix;
+}
+
+std::string BuildClaudeEndpoint(const std::string& baseUrl)
+{
+	std::string url = AIService::Trim(baseUrl);
+	while (!url.empty() && url.back() == '/') {
+		url.pop_back();
+	}
+	if (EndsWithInsensitive(url, "/v1/messages")) {
+		return url;
+	}
+	if (EndsWithInsensitive(url, "/v1")) {
+		return url + "/messages";
+	}
+	return url + "/v1/messages";
+}
+
+std::string BuildGeminiEndpoint(const std::string& baseUrl, const std::string& model, bool stream)
+{
+	std::string url = AIService::Trim(baseUrl);
+	while (!url.empty() && url.back() == '/') {
+		url.pop_back();
+	}
+
+	const std::string suffix = stream ? ":streamGenerateContent" : ":generateContent";
+	const std::string otherSuffix = stream ? ":generateContent" : ":streamGenerateContent";
+
+	url = ReplaceSuffixIfPresent(url, otherSuffix, suffix);
+	if (EndsWithInsensitive(url, suffix)) {
+		return stream ? AppendQueryParam(url, "alt", "sse") : url;
+	}
+
+	if (url.find("/models/") != std::string::npos) {
+		url += suffix;
+		return stream ? AppendQueryParam(url, "alt", "sse") : url;
+	}
+
+	if (EndsWithInsensitive(url, "/v1beta") || EndsWithInsensitive(url, "/v1")) {
+		url += "/models/" + UrlEncode(model) + suffix;
+		return stream ? AppendQueryParam(url, "alt", "sse") : url;
+	}
+
+	url += "/v1beta/models/" + UrlEncode(model) + suffix;
+	return stream ? AppendQueryParam(url, "alt", "sse") : url;
+}
+
+std::string BuildOpenAIHeaders(const AISettings& settings)
+{
+	return
+		"Content-Type: application/json\r\n"
+		"Authorization: Bearer " + settings.apiKey + "\r\n";
+}
+
+std::string BuildClaudeHeaders(const AISettings& settings)
+{
+	return
+		"Content-Type: application/json\r\n"
+		"x-api-key: " + settings.apiKey + "\r\n"
+		"anthropic-version: 2023-06-01\r\n";
+}
+
+std::string BuildJsonHeadersOnly()
+{
+	return "Content-Type: application/json\r\n";
+}
+
+nlohmann::json BuildClaudeTools()
+{
+	nlohmann::json out = nlohmann::json::array();
+	const nlohmann::json openAiTools = BuildChatToolDefinitions();
+	for (const auto& tool : openAiTools) {
+		if (!tool.contains("function") || !tool["function"].is_object()) {
+			continue;
+		}
+		const nlohmann::json& fn = tool["function"];
+		out.push_back({
+			{"name", fn.value("name", "")},
+			{"description", fn.value("description", "")},
+			{"input_schema", fn.value("parameters", nlohmann::json::object())}
+		});
+	}
+	return out;
+}
+
+nlohmann::json BuildGeminiTools()
+{
+	nlohmann::json declarations = nlohmann::json::array();
+	const nlohmann::json openAiTools = BuildChatToolDefinitions();
+	for (const auto& tool : openAiTools) {
+		if (!tool.contains("function") || !tool["function"].is_object()) {
+			continue;
+		}
+		const nlohmann::json& fn = tool["function"];
+		declarations.push_back({
+			{"name", fn.value("name", "")},
+			{"description", fn.value("description", "")},
+			{"parameters", fn.value("parameters", nlohmann::json::object())}
+		});
+	}
+	return nlohmann::json::array({ {{"functionDeclarations", declarations}} });
+}
+
+std::string ParseErrorMessageUtf8(const nlohmann::json& parsed)
+{
+	if (!parsed.contains("error")) {
+		return std::string();
+	}
+	const auto& errorNode = parsed["error"];
+	if (errorNode.is_object() && errorNode.contains("message") && errorNode["message"].is_string()) {
+		return errorNode["message"].get<std::string>();
+	}
+	if (errorNode.is_string()) {
+		return errorNode.get<std::string>();
+	}
+	return std::string();
+}
+
+std::string ExtractClaudeTextUtf8(const nlohmann::json& parsed)
+{
+	if (!parsed.contains("content") || !parsed["content"].is_array()) {
+		return std::string();
+	}
+	std::string textUtf8;
+	for (const auto& item : parsed["content"]) {
+		if (!item.is_object()) {
+			continue;
+		}
+		if (item.value("type", std::string()) == "text" && item.contains("text") && item["text"].is_string()) {
+			textUtf8 += item["text"].get<std::string>();
+		}
+	}
+	return textUtf8;
+}
+
+std::string ExtractGeminiTextUtf8(const nlohmann::json& parsed)
+{
+	if (!parsed.contains("candidates") || !parsed["candidates"].is_array() || parsed["candidates"].empty()) {
+		return std::string();
+	}
+	const auto& candidate = parsed["candidates"][0];
+	if (!candidate.contains("content") || !candidate["content"].is_object()) {
+		return std::string();
+	}
+	const auto& content = candidate["content"];
+	if (!content.contains("parts") || !content["parts"].is_array()) {
+		return std::string();
+	}
+	std::string textUtf8;
+	for (const auto& part : content["parts"]) {
+		if (part.is_object() && part.contains("text") && part["text"].is_string()) {
+			textUtf8 += part["text"].get<std::string>();
+		}
+	}
+	return textUtf8;
+}
+
+struct ClaudeToolCall {
+	std::string id;
+	std::string name;
+	std::string argumentsUtf8;
+};
+
+struct GeminiToolCall {
+	std::string name;
+	std::string argumentsUtf8;
+};
+
+std::vector<ClaudeToolCall> ExtractClaudeToolCalls(const nlohmann::json& parsed)
+{
+	std::vector<ClaudeToolCall> calls;
+	if (!parsed.contains("content") || !parsed["content"].is_array()) {
+		return calls;
+	}
+
+	for (const auto& item : parsed["content"]) {
+		if (!item.is_object() || item.value("type", std::string()) != "tool_use") {
+			continue;
+		}
+		ClaudeToolCall call;
+		call.id = item.value("id", "");
+		call.name = item.value("name", "");
+		if (item.contains("input")) {
+			call.argumentsUtf8 = item["input"].dump();
+		}
+		else {
+			call.argumentsUtf8 = "{}";
+		}
+		calls.push_back(std::move(call));
+	}
+	return calls;
+}
+
+std::vector<GeminiToolCall> ExtractGeminiToolCalls(const nlohmann::json& parsed)
+{
+	std::vector<GeminiToolCall> calls;
+	if (!parsed.contains("candidates") || !parsed["candidates"].is_array() || parsed["candidates"].empty()) {
+		return calls;
+	}
+	const auto& candidate = parsed["candidates"][0];
+	if (!candidate.contains("content") || !candidate["content"].is_object()) {
+		return calls;
+	}
+	const auto& content = candidate["content"];
+	if (!content.contains("parts") || !content["parts"].is_array()) {
+		return calls;
+	}
+
+	for (const auto& part : content["parts"]) {
+		if (!part.is_object() || !part.contains("functionCall") || !part["functionCall"].is_object()) {
+			continue;
+		}
+		const auto& fn = part["functionCall"];
+		GeminiToolCall call;
+		call.name = fn.value("name", "");
+		if (fn.contains("args")) {
+			call.argumentsUtf8 = fn["args"].dump();
+		}
+		else {
+			call.argumentsUtf8 = "{}";
+		}
+		calls.push_back(std::move(call));
+	}
+	return calls;
+}
+
+AIResult ExecuteTaskClaude(const std::string& systemPrompt, const std::string& inputText, const AISettings& settings)
+{
+	AIResult result = {};
+	const std::string endpoint = BuildClaudeEndpoint(settings.baseUrl);
+
+	nlohmann::json requestBody;
+	requestBody["model"] = LocalToUtf8(settings.model);
+	requestBody["max_tokens"] = 4096;
+	requestBody["temperature"] = settings.temperature;
+	requestBody["system"] = LocalToUtf8(systemPrompt);
+	requestBody["messages"] = nlohmann::json::array({
+		{
+			{"role", "user"},
+			{"content", nlohmann::json::array({ {{"type", "text"}, {"text", LocalToUtf8(inputText)}} })}
+		}
+	});
+
+	const auto [responseBody, statusCode] = PerformPostRequest(
+		endpoint,
+		requestBody.dump(),
+		BuildClaudeHeaders(settings),
+		settings.timeoutMs,
+		false,
+		false);
+	result.httpStatus = statusCode;
+	if (statusCode < 200 || statusCode >= 300) {
+		result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+		return result;
+	}
+
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(responseBody);
+		const std::string errUtf8 = ParseErrorMessageUtf8(parsed);
+		if (!errUtf8.empty()) {
+			result.error = Utf8ToLocal(errUtf8);
+			return result;
+		}
+		const std::string textUtf8 = ExtractClaudeTextUtf8(parsed);
+		if (textUtf8.empty()) {
+			result.error = "Claude response content is empty";
+			return result;
+		}
+		result.ok = true;
+		result.content = Utf8ToLocal(textUtf8);
+		return result;
+	}
+	catch (const std::exception& ex) {
+		result.error = std::string("Failed to parse Claude response: ") + ex.what();
+		return result;
+	}
+}
+
+AIResult ExecuteTaskGemini(const std::string& systemPrompt, const std::string& inputText, const AISettings& settings)
+{
+	AIResult result = {};
+	std::string endpoint = BuildGeminiEndpoint(settings.baseUrl, LocalToUtf8(settings.model), false);
+	endpoint = AppendQueryParam(endpoint, "key", settings.apiKey);
+
+	nlohmann::json requestBody;
+	requestBody["system_instruction"] = {
+		{"parts", nlohmann::json::array({ {{"text", LocalToUtf8(systemPrompt)}} })}
+	};
+	requestBody["generationConfig"] = { {"temperature", settings.temperature} };
+	requestBody["contents"] = nlohmann::json::array({
+		{
+			{"role", "user"},
+			{"parts", nlohmann::json::array({ {{"text", LocalToUtf8(inputText)}} })}
+		}
+	});
+
+	const auto [responseBody, statusCode] = PerformPostRequest(
+		endpoint,
+		requestBody.dump(),
+		BuildJsonHeadersOnly(),
+		settings.timeoutMs,
+		false,
+		false);
+	result.httpStatus = statusCode;
+	if (statusCode < 200 || statusCode >= 300) {
+		result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+		return result;
+	}
+
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(responseBody);
+		const std::string errUtf8 = ParseErrorMessageUtf8(parsed);
+		if (!errUtf8.empty()) {
+			result.error = Utf8ToLocal(errUtf8);
+			return result;
+		}
+		const std::string textUtf8 = ExtractGeminiTextUtf8(parsed);
+		if (textUtf8.empty()) {
+			result.error = "Gemini response content is empty";
+			return result;
+		}
+		result.ok = true;
+		result.content = Utf8ToLocal(textUtf8);
+		return result;
+	}
+	catch (const std::exception& ex) {
+		result.error = std::string("Failed to parse Gemini response: ") + ex.what();
+		return result;
+	}
+}
+
+AIChatResult ExecuteChatWithToolsClaude(
+	const std::vector<AIChatMessage>& contextMessages,
+	const AISettings& settings,
+	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
+	const std::function<void(const std::string& deltaText)>& streamCallback)
+{
+	AIChatResult result = {};
+	const std::string endpoint = BuildClaudeEndpoint(settings.baseUrl);
+	const nlohmann::json tools = BuildClaudeTools();
+
+	std::string systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings));
+	nlohmann::json messages = nlohmann::json::array();
+	for (const AIChatMessage& msg : contextMessages) {
+		const std::string role = ToLowerAsciiCopy(AIService::Trim(msg.role));
+		if (role == "system") {
+			systemUtf8 += "\n\n";
+			systemUtf8 += LocalToUtf8(msg.content);
+			continue;
+		}
+		if (role != "user" && role != "assistant") {
+			continue;
+		}
+		messages.push_back({
+			{"role", role},
+			{"content", nlohmann::json::array({
+				{{"type", "text"}, {"text", LocalToUtf8(msg.content)}}
+			})}
+		});
+	}
+
+	constexpr int kMaxToolRounds = 8;
+	for (int round = 0; round < kMaxToolRounds; ++round) {
+		nlohmann::json requestBody;
+		requestBody["model"] = LocalToUtf8(settings.model);
+		requestBody["max_tokens"] = 4096;
+		requestBody["temperature"] = settings.temperature;
+		requestBody["system"] = systemUtf8;
+		requestBody["messages"] = messages;
+		requestBody["tools"] = tools;
+		requestBody["tool_choice"] = { {"type", "auto"} };
+		requestBody["stream"] = false;
+
+		const auto [responseBody, statusCode] = PerformPostRequest(
+			endpoint,
+			requestBody.dump(),
+			BuildClaudeHeaders(settings),
+			settings.timeoutMs,
+			false,
+			false);
+		result.httpStatus = statusCode;
+		if (statusCode < 200 || statusCode >= 300) {
+			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+			return result;
+		}
+
+		nlohmann::json parsed;
+		try {
+			parsed = nlohmann::json::parse(responseBody);
+		}
+		catch (const std::exception& ex) {
+			result.error = std::string("Failed to parse Claude response: ") + ex.what();
+			return result;
+		}
+
+		const std::string errUtf8 = ParseErrorMessageUtf8(parsed);
+		if (!errUtf8.empty()) {
+			result.error = Utf8ToLocal(errUtf8);
+			return result;
+		}
+
+		const std::vector<ClaudeToolCall> toolCalls = ExtractClaudeToolCalls(parsed);
+		const std::string textUtf8 = ExtractClaudeTextUtf8(parsed);
+		if (toolCalls.empty()) {
+			if (textUtf8.empty()) {
+				result.error = "Claude response content is empty";
+				return result;
+			}
+			result.ok = true;
+			result.content = Utf8ToLocal(textUtf8);
+			if (streamCallback) {
+				streamCallback(result.content);
+			}
+			return result;
+		}
+
+		if (parsed.contains("content") && parsed["content"].is_array()) {
+			messages.push_back({
+				{"role", "assistant"},
+				{"content", parsed["content"]}
+			});
+		}
+
+		for (size_t i = 0; i < toolCalls.size(); ++i) {
+			const ClaudeToolCall& call = toolCalls[i];
+			const std::string callId = call.id.empty()
+				? std::format("toolu_auto_{}_{}", round + 1, i + 1)
+				: call.id;
+
+			bool toolOk = false;
+			std::string toolResultLocal;
+			if (toolCallback) {
+				toolResultLocal = toolCallback(call.name, call.argumentsUtf8, toolOk);
+			}
+			else {
+				toolResultLocal = R"({"ok":false,"error":"tool callback not set"})";
+			}
+
+			AIChatToolEvent evt = {};
+			evt.name = call.name;
+			evt.argumentsJson = Utf8ToLocal(call.argumentsUtf8);
+			evt.resultJson = toolResultLocal;
+			evt.ok = toolOk;
+			result.toolEvents.push_back(std::move(evt));
+
+			messages.push_back({
+				{"role", "user"},
+				{"content", nlohmann::json::array({
+					{
+						{"type", "tool_result"},
+						{"tool_use_id", callId},
+						{"content", LocalToUtf8(toolResultLocal)}
+					}
+				})}
+			});
+		}
+	}
+
+	result.error = "tool call rounds exceeded limit";
+	return result;
+}
+
+AIChatResult ExecuteChatWithToolsGemini(
+	const std::vector<AIChatMessage>& contextMessages,
+	const AISettings& settings,
+	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
+	const std::function<void(const std::string& deltaText)>& streamCallback)
+{
+	AIChatResult result = {};
+	std::string endpoint = BuildGeminiEndpoint(settings.baseUrl, LocalToUtf8(settings.model), false);
+	endpoint = AppendQueryParam(endpoint, "key", settings.apiKey);
+	const nlohmann::json tools = BuildGeminiTools();
+
+	std::string systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings));
+	nlohmann::json contents = nlohmann::json::array();
+	for (const AIChatMessage& msg : contextMessages) {
+		const std::string role = ToLowerAsciiCopy(AIService::Trim(msg.role));
+		if (role == "system") {
+			systemUtf8 += "\n\n";
+			systemUtf8 += LocalToUtf8(msg.content);
+			continue;
+		}
+		if (role != "user" && role != "assistant") {
+			continue;
+		}
+		contents.push_back({
+			{"role", role == "assistant" ? "model" : "user"},
+			{"parts", nlohmann::json::array({
+				{{"text", LocalToUtf8(msg.content)}}
+			})}
+		});
+	}
+
+	constexpr int kMaxToolRounds = 8;
+	for (int round = 0; round < kMaxToolRounds; ++round) {
+		nlohmann::json requestBody;
+		requestBody["system_instruction"] = {
+			{"parts", nlohmann::json::array({ {{"text", systemUtf8}} })}
+		};
+		requestBody["generationConfig"] = { {"temperature", settings.temperature} };
+		requestBody["contents"] = contents;
+		requestBody["tools"] = tools;
+
+		const auto [responseBody, statusCode] = PerformPostRequest(
+			endpoint,
+			requestBody.dump(),
+			BuildJsonHeadersOnly(),
+			settings.timeoutMs,
+			false,
+			false);
+		result.httpStatus = statusCode;
+		if (statusCode < 200 || statusCode >= 300) {
+			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+			return result;
+		}
+
+		nlohmann::json parsed;
+		try {
+			parsed = nlohmann::json::parse(responseBody);
+		}
+		catch (const std::exception& ex) {
+			result.error = std::string("Failed to parse Gemini response: ") + ex.what();
+			return result;
+		}
+
+		const std::string errUtf8 = ParseErrorMessageUtf8(parsed);
+		if (!errUtf8.empty()) {
+			result.error = Utf8ToLocal(errUtf8);
+			return result;
+		}
+
+		if (!parsed.contains("candidates") || !parsed["candidates"].is_array() || parsed["candidates"].empty()) {
+			result.error = "Gemini response candidates is empty";
+			return result;
+		}
+
+		const auto& candidate = parsed["candidates"][0];
+		if (!candidate.contains("content") || !candidate["content"].is_object()) {
+			result.error = "Gemini response content missing";
+			return result;
+		}
+		const auto& candidateContent = candidate["content"];
+
+		const std::vector<GeminiToolCall> toolCalls = ExtractGeminiToolCalls(parsed);
+		const std::string textUtf8 = ExtractGeminiTextUtf8(parsed);
+		if (toolCalls.empty()) {
+			if (textUtf8.empty()) {
+				result.error = "Gemini response content is empty";
+				return result;
+			}
+			result.ok = true;
+			result.content = Utf8ToLocal(textUtf8);
+			if (streamCallback) {
+				streamCallback(result.content);
+			}
+			return result;
+		}
+
+		contents.push_back(candidateContent);
+
+		for (const GeminiToolCall& call : toolCalls) {
+			bool toolOk = false;
+			std::string toolResultLocal;
+			if (toolCallback) {
+				toolResultLocal = toolCallback(call.name, call.argumentsUtf8, toolOk);
+			}
+			else {
+				toolResultLocal = R"({"ok":false,"error":"tool callback not set"})";
+			}
+
+			AIChatToolEvent evt = {};
+			evt.name = call.name;
+			evt.argumentsJson = Utf8ToLocal(call.argumentsUtf8);
+			evt.resultJson = toolResultLocal;
+			evt.ok = toolOk;
+			result.toolEvents.push_back(std::move(evt));
+
+			nlohmann::json toolResultNode;
+			try {
+				toolResultNode = nlohmann::json::parse(LocalToUtf8(toolResultLocal));
+			}
+			catch (...) {
+				toolResultNode = {
+					{"ok", toolOk},
+					{"text", LocalToUtf8(toolResultLocal)}
+				};
+			}
+
+			contents.push_back({
+				{"role", "user"},
+				{"parts", nlohmann::json::array({
+					{
+						{"functionResponse", {
+							{"name", call.name},
+							{"response", toolResultNode}
+						}}
+					}
+				})}
+			});
+		}
+	}
+
+	result.error = "tool call rounds exceeded limit";
+	return result;
+}
 } // namespace
 
 bool AIService::LoadSettings(ConfigManager& config, AISettings& outSettings)
 {
 	outSettings = {};
+	outSettings.protocolType = ParseProtocolType(config.getValue("ai.protocol_type"));
 	outSettings.baseUrl = config.getValue("ai.base_url");
 	outSettings.apiKey = config.getValue("ai.api_key");
 	outSettings.model = config.getValue("ai.model");
@@ -244,6 +1127,7 @@ bool AIService::LoadSettings(ConfigManager& config, AISettings& outSettings)
 
 void AIService::SaveSettings(ConfigManager& config, const AISettings& settings)
 {
+	config.setValue("ai.protocol_type", ProtocolTypeToString(settings.protocolType));
 	config.setValue("ai.base_url", settings.baseUrl);
 	config.setValue("ai.api_key", settings.apiKey);
 	config.setValue("ai.model", settings.model);
@@ -268,6 +1152,44 @@ bool AIService::HasRequiredSettings(const AISettings& settings, std::string& out
 	}
 	outMissingField.clear();
 	return true;
+}
+
+AIProtocolType AIService::ParseProtocolType(const std::string& text)
+{
+	const std::string v = ToLowerAsciiCopy(Trim(text));
+	if (v == "gemini") {
+		return AIProtocolType::Gemini;
+	}
+	if (v == "claude") {
+		return AIProtocolType::Claude;
+	}
+	return AIProtocolType::OpenAI;
+}
+
+std::string AIService::ProtocolTypeToString(AIProtocolType protocolType)
+{
+	switch (protocolType) {
+	case AIProtocolType::Gemini:
+		return "gemini";
+	case AIProtocolType::Claude:
+		return "claude";
+	case AIProtocolType::OpenAI:
+	default:
+		return "openai";
+	}
+}
+
+std::string AIService::ProtocolTypeDisplayName(AIProtocolType protocolType)
+{
+	switch (protocolType) {
+	case AIProtocolType::Gemini:
+		return "Gemini";
+	case AIProtocolType::Claude:
+		return "Claude";
+	case AIProtocolType::OpenAI:
+	default:
+		return "OpenAI";
+	}
 }
 
 std::string AIService::BuildTaskDisplayName(AITaskKind kind)
@@ -298,8 +1220,16 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 		return result;
 	}
 
+	const std::string systemPrompt = BuildSystemPrompt(kind, settings);
+	if (settings.protocolType == AIProtocolType::Claude) {
+		return ExecuteTaskClaude(systemPrompt, inputText, settings);
+	}
+	if (settings.protocolType == AIProtocolType::Gemini) {
+		return ExecuteTaskGemini(systemPrompt, inputText, settings);
+	}
+
 	const std::string modelUtf8 = LocalToUtf8(settings.model);
-	const std::string systemPromptUtf8 = LocalToUtf8(BuildSystemPrompt(kind, settings));
+	const std::string systemPromptUtf8 = LocalToUtf8(systemPrompt);
 	const std::string inputTextUtf8 = LocalToUtf8(inputText);
 
 	nlohmann::json requestBody;
@@ -318,9 +1248,7 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 	});
 
 	const std::string endpoint = BuildEndpoint(settings.baseUrl);
-	const std::string headers =
-		"Content-Type: application/json\r\n"
-		"Authorization: Bearer " + settings.apiKey + "\r\n";
+	const std::string headers = BuildOpenAIHeaders(settings);
 
 	std::string requestBodyText;
 	try {
@@ -387,7 +1315,8 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 AIChatResult AIService::ExecuteChatWithTools(
 	const std::vector<AIChatMessage>& contextMessages,
 	const AISettings& settings,
-	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback)
+	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
+	const std::function<void(const std::string& deltaText)>& streamCallback)
 {
 	AIChatResult result = {};
 	std::string missingField;
@@ -396,10 +1325,15 @@ AIChatResult AIService::ExecuteChatWithTools(
 		return result;
 	}
 
+	if (settings.protocolType == AIProtocolType::Claude) {
+		return ExecuteChatWithToolsClaude(contextMessages, settings, toolCallback, streamCallback);
+	}
+	if (settings.protocolType == AIProtocolType::Gemini) {
+		return ExecuteChatWithToolsGemini(contextMessages, settings, toolCallback, streamCallback);
+	}
+
 	const std::string endpoint = BuildEndpoint(settings.baseUrl);
-	const std::string headers =
-		"Content-Type: application/json\r\n"
-		"Authorization: Bearer " + settings.apiKey + "\r\n";
+	const std::string headers = BuildOpenAIHeaders(settings);
 	const uint64_t traceId = GetCurrentAIPerfTraceId();
 
 	nlohmann::json requestMessages = nlohmann::json::array();
@@ -425,7 +1359,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 		nlohmann::json requestBody;
 		requestBody["model"] = LocalToUtf8(settings.model);
 		requestBody["temperature"] = settings.temperature;
-		requestBody["stream"] = false;
+		requestBody["stream"] = true;
 		requestBody["messages"] = requestMessages;
 		requestBody["tools"] = tools;
 		requestBody["tool_choice"] = "auto";
@@ -439,40 +1373,64 @@ AIChatResult AIService::ExecuteChatWithTools(
 			return result;
 		}
 
-	const auto networkStart = PerfClock::now();
-	const auto [responseBody, statusCode] =
-		PerformPostRequest(endpoint, requestBodyText, headers, settings.timeoutMs, false, false);
-	LogAIPerfCost(
-		traceId,
-		"AIService.ExecuteTask.network_total",
-		ElapsedMs(networkStart),
-		"http=" + std::to_string(statusCode) + " endpoint=" + endpoint);
-	result.httpStatus = statusCode;
+		ChatStreamParseState streamState;
+		const auto networkStart = PerfClock::now();
+		const auto [responseBody, statusCode] =
+			PerformPostRequestStreaming(
+				endpoint,
+				requestBodyText,
+				[&streamState, &streamCallback](const std::string& chunk) -> bool {
+					return ConsumeStreamChunk(chunk, streamState, streamCallback);
+				},
+				headers,
+				settings.timeoutMs,
+				false,
+				false);
+		LogAIPerfCost(
+			traceId,
+			"AIService.ExecuteTask.network_total",
+			ElapsedMs(networkStart),
+			"http=" + std::to_string(statusCode) + " endpoint=" + endpoint);
+		result.httpStatus = statusCode;
 		if (statusCode < 200 || statusCode >= 300) {
 			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
 			return result;
 		}
 
-		nlohmann::json parsed;
-		try {
-			parsed = nlohmann::json::parse(responseBody);
-		}
-		catch (const std::exception& ex) {
-			result.error = std::string("Failed to parse AI response: ") + ex.what();
+		if (!FlushStreamParseState(streamState, streamCallback)) {
+			result.error = streamState.parseError.empty() ? "Failed to parse AI streaming response" : streamState.parseError;
 			return result;
 		}
 
-		if (!parsed.contains("choices") || !parsed["choices"].is_array() || parsed["choices"].empty()) {
-			result.error = "AI response choices is empty";
-			return result;
+		nlohmann::json message;
+		if (streamState.sawDataEvent) {
+			if (!streamState.parseError.empty()) {
+				result.error = streamState.parseError;
+				return result;
+			}
+			message = BuildAssistantMessageFromStreamState(streamState);
 		}
+		else {
+			nlohmann::json parsed;
+			try {
+				parsed = nlohmann::json::parse(responseBody);
+			}
+			catch (const std::exception& ex) {
+				result.error = std::string("Failed to parse AI response: ") + ex.what();
+				return result;
+			}
 
-		const nlohmann::json& choice = parsed["choices"][0];
-		if (!choice.contains("message") || !choice["message"].is_object()) {
-			result.error = "AI response message missing";
-			return result;
+			std::string parseError;
+			if (!ExtractChatResponseMessage(parsed, message, parseError)) {
+				if (parsed.contains("error") && parsed["error"].contains("message") && parsed["error"]["message"].is_string()) {
+					result.error = Utf8ToLocal(parsed["error"]["message"].get<std::string>());
+				}
+				else {
+					result.error = parseError.empty() ? "AI response parse failed" : parseError;
+				}
+				return result;
+			}
 		}
-		const nlohmann::json& message = choice["message"];
 
 		// Tool-call path.
 		if (message.contains("tool_calls") && message["tool_calls"].is_array() && !message["tool_calls"].empty()) {
@@ -493,6 +1451,10 @@ AIChatResult AIService::ExecuteChatWithTools(
 					if (fn.contains("arguments") && fn["arguments"].is_string()) {
 						argsUtf8 = fn["arguments"].get<std::string>();
 					}
+				}
+
+				if (callId.empty()) {
+					callId = std::format("call_auto_round{}_{}", round + 1, result.toolEvents.size() + 1);
 				}
 
 				bool toolOk = false;
@@ -523,19 +1485,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 		}
 
 		// Final assistant content path.
-		std::string mergedUtf8;
-		if (message.contains("content") && message["content"].is_string()) {
-			mergedUtf8 = message["content"].get<std::string>();
-		}
-		else if (message.contains("content") && message["content"].is_array()) {
-			for (const auto& item : message["content"]) {
-				if (item.is_string()) {
-					mergedUtf8 += item.get<std::string>();
-				}
-				else if (item.is_object() && item.contains("text") && item["text"].is_string()) {
-					mergedUtf8 += item["text"].get<std::string>();
-				}
-			}
+		std::string mergedUtf8 = MergeMessageContentUtf8(message);
+		if (!streamState.sawDataEvent && streamCallback && !mergedUtf8.empty()) {
+			streamCallback(Utf8ToLocal(mergedUtf8));
 		}
 		if (mergedUtf8.empty()) {
 			result.error = "AI response content is empty";

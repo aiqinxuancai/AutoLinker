@@ -16,6 +16,7 @@
 #endif
 
 namespace {
+constexpr int IDC_CFG_PROTOCOL = 1000;
 constexpr int IDC_CFG_BASE_URL = 1001;
 constexpr int IDC_CFG_API_KEY = 1002;
 constexpr int IDC_CFG_MODEL = 1003;
@@ -242,6 +243,7 @@ struct AIConfigDialogContext {
 	AISettings* settings = nullptr;
 	bool accepted = false;
 	bool useNativeLink = false;
+	HWND hProtocol = nullptr;
 	HWND hBaseUrl = nullptr;
 	HWND hApiKey = nullptr;
 	HWND hModel = nullptr;
@@ -249,6 +251,52 @@ struct AIConfigDialogContext {
 	HWND hGetKeyLink = nullptr;
 };
 
+void PopulateProtocolCombo(HWND hCombo, AIProtocolType selected)
+{
+	if (hCombo == nullptr) {
+		return;
+	}
+
+	SendMessageA(hCombo, CB_RESETCONTENT, 0, 0);
+	const int idxOpenAI = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("OpenAI")));
+	const int idxGemini = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Gemini")));
+	const int idxClaude = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Claude")));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxOpenAI, static_cast<LPARAM>(AIProtocolType::OpenAI));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxGemini, static_cast<LPARAM>(AIProtocolType::Gemini));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxClaude, static_cast<LPARAM>(AIProtocolType::Claude));
+
+	int selectedIndex = idxOpenAI;
+	if (selected == AIProtocolType::Gemini) {
+		selectedIndex = idxGemini;
+	}
+	else if (selected == AIProtocolType::Claude) {
+		selectedIndex = idxClaude;
+	}
+	SendMessageA(hCombo, CB_SETCURSEL, selectedIndex, 0);
+}
+
+AIProtocolType GetSelectedProtocol(HWND hCombo)
+{
+	if (hCombo == nullptr) {
+		return AIProtocolType::OpenAI;
+	}
+
+	const int selected = static_cast<int>(SendMessageA(hCombo, CB_GETCURSEL, 0, 0));
+	if (selected == CB_ERR) {
+		return AIProtocolType::OpenAI;
+	}
+
+	const LRESULT data = SendMessageA(hCombo, CB_GETITEMDATA, selected, 0);
+	switch (static_cast<AIProtocolType>(data)) {
+	case AIProtocolType::Gemini:
+		return AIProtocolType::Gemini;
+	case AIProtocolType::Claude:
+		return AIProtocolType::Claude;
+	case AIProtocolType::OpenAI:
+	default:
+		return AIProtocolType::OpenAI;
+	}
+}
 HFONT GetLinkFont()
 {
 	static HFONT s_linkFont = nullptr;
@@ -284,30 +332,37 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			return -1;
 		}
 
-		HWND hBaseUrlLabel = CreateWindowA("STATIC", "Base URL:", WS_CHILD | WS_VISIBLE,
+		HWND hProtocolLabel = CreateWindowA("STATIC", "Protocol:", WS_CHILD | WS_VISIBLE,
 			16, 16, 100, 20, hWnd, nullptr, nullptr, nullptr);
+		ctx->hProtocol = CreateWindowExA(0, "COMBOBOX", "",
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+			120, 14, 180, 220, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PROTOCOL), nullptr, nullptr);
+		PopulateProtocolCombo(ctx->hProtocol, ctx->settings->protocolType);
+
+		HWND hBaseUrlLabel = CreateWindowA("STATIC", "Base URL:", WS_CHILD | WS_VISIBLE,
+			16, 50, 100, 20, hWnd, nullptr, nullptr, nullptr);
 		ctx->hBaseUrl = CreateWindowExA(0, "EDIT", ctx->settings->baseUrl.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-			120, 14, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_BASE_URL), nullptr, nullptr);
+			120, 48, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_BASE_URL), nullptr, nullptr);
 
 		HWND hApiKeyLabel = CreateWindowA("STATIC", "API Key:", WS_CHILD | WS_VISIBLE,
-			16, 50, 100, 20, hWnd, nullptr, nullptr, nullptr);
+			16, 84, 100, 20, hWnd, nullptr, nullptr, nullptr);
 		ctx->hApiKey = CreateWindowExA(0, "EDIT", ctx->settings->apiKey.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD,
-			120, 48, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_API_KEY), nullptr, nullptr);
+			120, 82, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_API_KEY), nullptr, nullptr);
 
 		HWND hModelLabel = CreateWindowA("STATIC", "Model:", WS_CHILD | WS_VISIBLE,
-			16, 84, 100, 20, hWnd, nullptr, nullptr, nullptr);
+			16, 118, 100, 20, hWnd, nullptr, nullptr, nullptr);
 		ctx->hModel = CreateWindowExA(0, "EDIT", ctx->settings->model.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-			120, 82, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_MODEL), nullptr, nullptr);
+			120, 116, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_MODEL), nullptr, nullptr);
 
 		const std::wstring getKeyLinkText =
 			L"<a href=\"https://right.codes/register?aff=3dc87885\">从转发平台获取Key</a>";
 		HWND hGetKeyLink = CreateWindowExW(0, L"SysLink",
 			getKeyLinkText.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-			120, 112, 240, 22, hWnd, reinterpret_cast<HMENU>(IDC_CFG_GET_KEY_LINK), nullptr, nullptr);
+			120, 146, 240, 22, hWnd, reinterpret_cast<HMENU>(IDC_CFG_GET_KEY_LINK), nullptr, nullptr);
 		if (hGetKeyLink != nullptr) {
 			ctx->useNativeLink = true;
 			ctx->hGetKeyLink = hGetKeyLink;
@@ -318,26 +373,28 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 				L"STATIC",
 				L"\u4ECE\u8F6C\u53D1\u5E73\u53F0\u83B7\u53D6Key",
 				WS_CHILD | WS_VISIBLE | WS_TABSTOP | SS_NOTIFY,
-				120, 112, 240, 22, hWnd, reinterpret_cast<HMENU>(IDC_CFG_GET_KEY_LINK), nullptr, nullptr);
+				120, 146, 240, 22, hWnd, reinterpret_cast<HMENU>(IDC_CFG_GET_KEY_LINK), nullptr, nullptr);
 			hGetKeyLink = ctx->hGetKeyLink;
 		}
 
 		HWND hFillRightCodes = CreateWindowW(L"BUTTON", L"\u4E00\u952E\u586B\u5165 right.codes",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-			430, 108, 190, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_FILL_RIGHT_CODES), nullptr, nullptr);
+			430, 142, 190, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_FILL_RIGHT_CODES), nullptr, nullptr);
 
 		HWND hExtraPromptLabel = CreateWindowA("STATIC", "System Prompt:", WS_CHILD | WS_VISIBLE,
-			16, 148, 140, 20, hWnd, nullptr, nullptr, nullptr);
+			16, 182, 140, 20, hWnd, nullptr, nullptr, nullptr);
 		ctx->hExtraPrompt = CreateWindowExA(0, "EDIT", ctx->settings->extraSystemPrompt.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
-			120, 148, 500, 150, hWnd, reinterpret_cast<HMENU>(IDC_CFG_EXTRA_PROMPT), nullptr, nullptr);
+			120, 182, 500, 150, hWnd, reinterpret_cast<HMENU>(IDC_CFG_EXTRA_PROMPT), nullptr, nullptr);
 
 		HWND hSave = CreateWindowW(L"BUTTON", L"\u4FDD\u5B58\u5E76\u7EE7\u7EED", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-			420, 314, 100, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_SAVE), nullptr, nullptr);
+			420, 348, 100, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_SAVE), nullptr, nullptr);
 		HWND hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-			530, 314, 90, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_CANCEL), nullptr, nullptr);
+			530, 348, 90, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_CANCEL), nullptr, nullptr);
 
-		std::array<HWND, 12> controls = {
+		std::array<HWND, 14> controls = {
+			hProtocolLabel,
+			ctx->hProtocol,
 			hBaseUrlLabel,
 			hApiKeyLabel,
 			hModelLabel,
@@ -369,6 +426,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 
 		if (id == IDC_CFG_SAVE) {
 			AISettings next = *ctx->settings;
+			next.protocolType = GetSelectedProtocol(ctx->hProtocol);
 			next.baseUrl = GetEditTextA(ctx->hBaseUrl);
 			next.apiKey = GetEditTextA(ctx->hApiKey);
 			next.model = GetEditTextA(ctx->hModel);
@@ -386,6 +444,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		}
 
 		if (id == IDC_CFG_FILL_RIGHT_CODES) {
+			PopulateProtocolCombo(ctx->hProtocol, AIProtocolType::OpenAI);
 			SetWindowTextA(ctx->hBaseUrl, "https://right.codes/codex");
 			SetWindowTextA(ctx->hModel, "gpt-5.2-medium");
 			SetFocus(ctx->hApiKey);
@@ -715,7 +774,7 @@ bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 		wc.lpszClassName,
 		"AutoLinker AI Config",
 		WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-		CW_USEDEFAULT, CW_USEDEFAULT, 650, 390,
+		CW_USEDEFAULT, CW_USEDEFAULT, 650, 430,
 		owner,
 		nullptr,
 		wc.hInstance,

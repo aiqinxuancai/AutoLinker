@@ -1,28 +1,37 @@
-#include "WinINetUtil.h"
+Ôªø#include "WinINetUtil.h"
+
+#include <cstring>
 
 #pragma comment(lib, "wininet.lib")
 
-std::pair<std::string, int> PerformPostRequest(const std::string& url, const std::string& postData,
-    const std::string& customHeaders, int timeout, bool AutoCookies, bool NeverRedirect) {
-    HINTERNET hInternet, hConnect, hRequest;
+namespace {
+std::pair<std::string, int> PerformPostRequestCore(
+    const std::string& url,
+    const std::string& postData,
+    const std::string& customHeaders,
+    int timeout,
+    bool autoCookies,
+    bool neverRedirect,
+    const std::function<bool(const std::string& chunk)>* onChunk)
+{
+    HINTERNET hInternet = nullptr;
+    HINTERNET hConnect = nullptr;
+    HINTERNET hRequest = nullptr;
+
     std::string response;
     DWORD statusCode = 0;
-    DWORD length = sizeof(statusCode);
-    char statusCodeStr[32] = { 0 };  // Buffer for the status code string
 
+    DWORD dwFlags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE |
+        INTERNET_FLAG_IGNORE_CERT_CN_INVALID | INTERNET_FLAG_IGNORE_CERT_DATE_INVALID;
 
-    DWORD dwFlags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID | INTERNET_FLAG_IGNORE_CERT_DATE_INVALID;
-
-    // ∏˘æ›…Ë÷√¥¶¿Ì÷ÿ∂®œÚ∫Õ Cookies
-    if (AutoCookies == 1 || NeverRedirect) {
+    if (autoCookies || neverRedirect) {
         dwFlags |= INTERNET_FLAG_NO_AUTO_REDIRECT;
     }
-    if (AutoCookies == 1) {
+    if (autoCookies) {
         dwFlags |= INTERNET_FLAG_NO_COOKIES;
     }
 
-    hInternet = InternetOpen("HttpPostApp", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
-
+    hInternet = InternetOpenA("HttpPostApp", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
     if (!hInternet) {
         return std::make_pair("Error in InternetOpen", 0);
     }
@@ -31,30 +40,22 @@ std::pair<std::string, int> PerformPostRequest(const std::string& url, const std
     InternetSetOption(hInternet, INTERNET_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
     InternetSetOption(hInternet, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
 
-    URL_COMPONENTS urlComp;
-    memset(&urlComp, 0, sizeof(urlComp));
+    URL_COMPONENTSA urlComp = {};
     urlComp.dwStructSize = sizeof(urlComp);
 
-    char hostName[256], urlPath[256];
-
-    //Œ™¡À≤ª»√IDEæØ∏Ê∂¯‘ˆº”µƒ¥˙¬Î
-    hostName[sizeof(hostName) - 1] = '\0';
-    urlPath[sizeof(urlPath) - 1] = '\0';
+    char hostName[256] = {};
+    char urlPath[2048] = {};
 
     urlComp.lpszHostName = hostName;
-    urlComp.dwHostNameLength = 256;
+    urlComp.dwHostNameLength = static_cast<DWORD>(sizeof(hostName));
     urlComp.lpszUrlPath = urlPath;
-    urlComp.dwUrlPathLength = 256;
+    urlComp.dwUrlPathLength = static_cast<DWORD>(sizeof(urlPath));
 
-   
-
-    // Ω‚Œˆ URL
-    if (!InternetCrackUrl(url.c_str(), url.length(), 0, &urlComp)) {
+    if (!InternetCrackUrlA(url.c_str(), static_cast<DWORD>(url.length()), 0, &urlComp)) {
         InternetCloseHandle(hInternet);
         return std::make_pair("Error in InternetCrackUrl", 0);
     }
 
-    // ∏˘æ› URL  « HTTP ªπ « HTTPS …Ë÷√±Í÷æ
     if (urlComp.nScheme == INTERNET_SCHEME_HTTPS) {
         dwFlags |= INTERNET_FLAG_SECURE;
     }
@@ -62,54 +63,105 @@ std::pair<std::string, int> PerformPostRequest(const std::string& url, const std
         dwFlags |= INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS;
     }
 
-    // ¡¨Ω”µΩ HTTP ∑˛ŒÒ∆˜
-    hConnect = InternetConnect(hInternet, urlComp.lpszHostName, urlComp.nPort, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
+    hConnect = InternetConnectA(
+        hInternet,
+        urlComp.lpszHostName,
+        urlComp.nPort,
+        nullptr,
+        nullptr,
+        INTERNET_SERVICE_HTTP,
+        0,
+        0);
     if (!hConnect) {
         InternetCloseHandle(hInternet);
         return std::make_pair("Error in InternetConnect", 0);
     }
 
-    //std::string headers =  "Content-Type: application/json\r\n" ; ?
-
-    // ¥¥Ω® HTTP «Î«Ûæ‰±˙
-    hRequest = HttpOpenRequest(hConnect, "POST", urlComp.lpszUrlPath, NULL, NULL, NULL, dwFlags, 0);
+    hRequest = HttpOpenRequestA(hConnect, "POST", urlComp.lpszUrlPath, nullptr, nullptr, nullptr, dwFlags, 0);
     if (!hRequest) {
         InternetCloseHandle(hConnect);
         InternetCloseHandle(hInternet);
         return std::make_pair("Error in HttpOpenRequest", 0);
     }
 
-    // ◊º±∏◊‘∂®“ÂÕ∑≤ø∫Õ∑¢ÀÕ«Î«Û
-    //std::string headers = "Content-Type: application/x-www-form-urlencoded\r\n" + customHeaders;
-    std::string headers = customHeaders;
-    if (!HttpSendRequest(hRequest, headers.c_str(), headers.length(), const_cast<char*>(postData.c_str()), postData.size())) {
+    if (!HttpSendRequestA(
+        hRequest,
+        customHeaders.c_str(),
+        static_cast<DWORD>(customHeaders.length()),
+        const_cast<char*>(postData.data()),
+        static_cast<DWORD>(postData.size()))) {
         InternetCloseHandle(hRequest);
         InternetCloseHandle(hConnect);
         InternetCloseHandle(hInternet);
         return std::make_pair("Error in HttpSendRequest", 0);
     }
 
-    if (HttpQueryInfo(hRequest, HTTP_QUERY_STATUS_CODE, &statusCodeStr, &length, NULL)) {
-        statusCode = std::stoi(statusCodeStr); 
-    }
-    else {
-        statusCode = 0; 
+    char statusCodeStr[32] = {};
+    DWORD length = static_cast<DWORD>(sizeof(statusCodeStr));
+    if (HttpQueryInfoA(hRequest, HTTP_QUERY_STATUS_CODE, &statusCodeStr, &length, nullptr)) {
+        try {
+            statusCode = static_cast<DWORD>(std::stoi(statusCodeStr));
+        }
+        catch (...) {
+            statusCode = 0;
+        }
     }
 
-    char buffer[1024];
-    DWORD bytesRead;
-    while (InternetReadFile(hRequest, buffer, 1024, &bytesRead) && bytesRead > 0) {
+    char buffer[4096] = {};
+    DWORD bytesRead = 0;
+    while (InternetReadFile(hRequest, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
         response.append(buffer, bytesRead);
+        if (onChunk != nullptr && *onChunk) {
+            if (!(*onChunk)(std::string(buffer, bytesRead))) {
+                break;
+            }
+        }
     }
 
     InternetCloseHandle(hRequest);
     InternetCloseHandle(hConnect);
     InternetCloseHandle(hInternet);
 
-    // ∑µªÿœÏ”¶∫Õ◊¥Ã¨¬Î
     return std::make_pair(response, static_cast<int>(statusCode));
 }
+} // namespace
 
+std::pair<std::string, int> PerformPostRequest(
+    const std::string& url,
+    const std::string& postData,
+    const std::string& customHeaders,
+    int timeout,
+    bool AutoCookies,
+    bool NeverRedirect)
+{
+    return PerformPostRequestCore(
+        url,
+        postData,
+        customHeaders,
+        timeout,
+        AutoCookies,
+        NeverRedirect,
+        nullptr);
+}
+
+std::pair<std::string, int> PerformPostRequestStreaming(
+    const std::string& url,
+    const std::string& postData,
+    const std::function<bool(const std::string& chunk)>& onChunk,
+    const std::string& customHeaders,
+    int timeout,
+    bool AutoCookies,
+    bool NeverRedirect)
+{
+    return PerformPostRequestCore(
+        url,
+        postData,
+        customHeaders,
+        timeout,
+        AutoCookies,
+        NeverRedirect,
+        &onChunk);
+}
 
 std::pair<std::string, int> PerformGetRequest(const std::string& url, const std::string& customHeaders, int timeout, bool AutoCookies, bool NeverRedirect) {
     HINTERNET hInternet, hConnect, hRequest;
@@ -120,7 +172,7 @@ std::pair<std::string, int> PerformGetRequest(const std::string& url, const std:
 
     DWORD dwFlags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE | INTERNET_FLAG_IGNORE_CERT_CN_INVALID | INTERNET_FLAG_IGNORE_CERT_DATE_INVALID;
 
-    // ∏˘æ›…Ë÷√¥¶¿Ì÷ÿ∂®œÚ∫Õ Cookies
+    // Ê†πÊçÆËÆæÁΩÆÂ§ÑÁêÜÈáçÂÆöÂêëÂíå Cookies
     if (AutoCookies) {
         dwFlags |= INTERNET_FLAG_NO_AUTO_REDIRECT | INTERNET_FLAG_NO_COOKIES;
     }
@@ -128,7 +180,7 @@ std::pair<std::string, int> PerformGetRequest(const std::string& url, const std:
         dwFlags |= INTERNET_FLAG_NO_AUTO_REDIRECT;
     }
 
-    hInternet = InternetOpen("HttpGetApp", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
+    hInternet = InternetOpenA("HttpGetApp", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
 
     if (!hInternet) {
         return std::make_pair("Error in InternetOpen", 0);
@@ -138,23 +190,24 @@ std::pair<std::string, int> PerformGetRequest(const std::string& url, const std:
     InternetSetOption(hInternet, INTERNET_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
     InternetSetOption(hInternet, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
 
-    URL_COMPONENTS urlComp;
+    URL_COMPONENTSA urlComp;
     memset(&urlComp, 0, sizeof(urlComp));
     urlComp.dwStructSize = sizeof(urlComp);
 
-    char hostName[256], urlPath[256];
+    char hostName[256] = {};
+    char urlPath[2048] = {};
     urlComp.lpszHostName = hostName;
-    urlComp.dwHostNameLength = sizeof(hostName);
+    urlComp.dwHostNameLength = static_cast<DWORD>(sizeof(hostName));
     urlComp.lpszUrlPath = urlPath;
-    urlComp.dwUrlPathLength = sizeof(urlPath);
+    urlComp.dwUrlPathLength = static_cast<DWORD>(sizeof(urlPath));
 
-    // Ω‚Œˆ URL
-    if (!InternetCrackUrl(url.c_str(), url.length(), 0, &urlComp)) {
+    // Ëß£Êûê URL
+    if (!InternetCrackUrlA(url.c_str(), static_cast<DWORD>(url.length()), 0, &urlComp)) {
         InternetCloseHandle(hInternet);
         return std::make_pair("Error in InternetCrackUrl", 0);
     }
 
-    // ∏˘æ› URL  « HTTP ªπ « HTTPS …Ë÷√±Í÷æ
+    // Ê†πÊçÆ URL ÊòØ HTTP ËøòÊòØ HTTPS ËÆæÁΩÆÊ†áÂøó
     if (urlComp.nScheme == INTERNET_SCHEME_HTTPS) {
         dwFlags |= INTERNET_FLAG_SECURE;
     }
@@ -162,31 +215,32 @@ std::pair<std::string, int> PerformGetRequest(const std::string& url, const std:
         dwFlags |= INTERNET_FLAG_IGNORE_REDIRECT_TO_HTTPS;
     }
 
-    // ¡¨Ω”µΩ HTTP ∑˛ŒÒ∆˜
-    hConnect = InternetConnect(hInternet, urlComp.lpszHostName, urlComp.nPort, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
+    // ËøûÊé•Âà∞ HTTP ÊúçÂä°Âô®
+    hConnect = InternetConnectA(hInternet, urlComp.lpszHostName, urlComp.nPort, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
     if (!hConnect) {
         InternetCloseHandle(hInternet);
         return std::make_pair("Error in InternetConnect", 0);
     }
 
-    // ¥¥Ω® HTTP «Î«Ûæ‰±˙
-    hRequest = HttpOpenRequest(hConnect, "GET", urlComp.lpszUrlPath, NULL, NULL, NULL, dwFlags, 0);
+    // ÂàõÂª∫ HTTP ËØ∑Ê±ÇÂè•ÊüÑ
+    hRequest = HttpOpenRequestA(hConnect, "GET", urlComp.lpszUrlPath, NULL, NULL, NULL, dwFlags, 0);
     if (!hRequest) {
         InternetCloseHandle(hConnect);
         InternetCloseHandle(hInternet);
         return std::make_pair("Error in HttpOpenRequest", 0);
     }
 
-    // ◊º±∏◊‘∂®“ÂÕ∑≤ø∫Õ∑¢ÀÕ«Î«Û
+    // ÂáÜÂ§áËá™ÂÆö‰πâÂ§¥ÈÉ®ÂíåÂèëÈÄÅËØ∑Ê±Ç
     std::string headers = customHeaders;
-    if (!HttpSendRequest(hRequest, headers.c_str(), headers.length(), NULL, 0)) {
+    if (!HttpSendRequestA(hRequest, headers.c_str(), static_cast<DWORD>(headers.length()), NULL, 0)) {
         InternetCloseHandle(hRequest);
         InternetCloseHandle(hConnect);
         InternetCloseHandle(hInternet);
         return std::make_pair("Error in HttpSendRequest", 0);
     }
 
-    if (HttpQueryInfo(hRequest, HTTP_QUERY_STATUS_CODE, &statusCodeStr, &length, NULL)) {
+    length = static_cast<DWORD>(sizeof(statusCodeStr));
+    if (HttpQueryInfoA(hRequest, HTTP_QUERY_STATUS_CODE, &statusCodeStr, &length, NULL)) {
         statusCode = std::stoi(statusCodeStr);
     }
     else {
@@ -203,6 +257,6 @@ std::pair<std::string, int> PerformGetRequest(const std::string& url, const std:
     InternetCloseHandle(hConnect);
     InternetCloseHandle(hInternet);
 
-    // ∑µªÿœÏ”¶∫Õ◊¥Ã¨¬Î
+    // ËøîÂõûÂìçÂ∫îÂíåÁä∂ÊÄÅÁ†Å
     return std::make_pair(response, static_cast<int>(statusCode));
 }

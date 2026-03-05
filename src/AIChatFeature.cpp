@@ -72,6 +72,7 @@ struct AIChatSessionState {
 	std::mutex mutex;
 	std::vector<SessionMessage> messages;
 	std::string rollingSummary;
+	std::string streamingAssistantPreview;
 	bool requestInFlight = false;
 	unsigned long long activeRequestId = 0;
 	unsigned long long nextRequestId = 1;
@@ -879,8 +880,18 @@ std::string BuildHistoryTextLocked(const AIChatSessionState& state)
 		text += "\r\n\r\n";
 	}
 	if (state.requestInFlight) {
-		text += "[" + LocalFromWide(L"\u7cfb\u7edf") + "]\r\n"
-			+ LocalFromWide(L"\u7b49\u5f85 AI \u8fd4\u56de...") + "\r\n";
+		const std::string preview = TrimAsciiCopy(state.streamingAssistantPreview);
+		if (!preview.empty()) {
+			text += "[AI]\r\n";
+			text += state.streamingAssistantPreview;
+			text += "\r\n\r\n";
+			text += "[" + LocalFromWide(L"\u7cfb\u7edf") + "]\r\n"
+				+ LocalFromWide(L"AI \u6b63\u5728\u751f\u6210\uff08\u6d41\u5f0f\uff09...") + "\r\n";
+		}
+		else {
+			text += "[" + LocalFromWide(L"\u7cfb\u7edf") + "]\r\n"
+				+ LocalFromWide(L"\u7b49\u5f85 AI \u8fd4\u56de...") + "\r\n";
+		}
 	}
 	return text;
 }
@@ -900,11 +911,29 @@ void RecoverInFlightIfNeeded(const std::string& reason)
 	}
 	g_session.requestInFlight = false;
 	g_session.activeRequestId = 0;
+	g_session.streamingAssistantPreview.clear();
 	g_session.messages.push_back(SessionMessage{
 		SessionRole::System,
 		"Chat request auto-recovered: " + reason,
 		false
 	});
+}
+
+void AppendStreamingAssistantDelta(unsigned long long requestId, const std::string& deltaLocalText)
+{
+	const std::string normalized = NormalizeCodeForEIDE(deltaLocalText);
+	if (normalized.empty()) {
+		return;
+	}
+
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight || g_session.activeRequestId != requestId) {
+			return;
+		}
+		g_session.streamingAssistantPreview += normalized;
+	}
+	PostRefreshDialog();
 }
 
 bool EnsureChatSettingsReady(AISettings& settings)
@@ -1056,6 +1085,9 @@ void RunAIChatWorker(void* pParams)
 			request->settings,
 			[](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
 				return ExecuteToolCall(toolName, argumentsJson, outOk);
+			},
+			[requestId = request->requestId](const std::string& deltaText) {
+				AppendStreamingAssistantDelta(requestId, deltaText);
 			});
 	}
 	catch (const std::exception& ex) {
@@ -1100,6 +1132,7 @@ bool StartChatRequest(const std::string& userInput)
 		request->requestId = g_session.nextRequestId++;
 		request->settings = settings;
 		request->contextMessages = BuildContextMessagesLocked(g_session);
+		g_session.streamingAssistantPreview.clear();
 		g_session.requestInFlight = true;
 		g_session.activeRequestId = request->requestId;
 	}
@@ -1109,6 +1142,7 @@ bool StartChatRequest(const std::string& userInput)
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		g_session.requestInFlight = false;
 		g_session.activeRequestId = 0;
+		g_session.streamingAssistantPreview.clear();
         g_session.messages.push_back(SessionMessage{ SessionRole::System, "Failed to start background chat task.", false });
 		PostRefreshDialog();
 		return false;
@@ -1127,6 +1161,7 @@ void ClearChatHistory()
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		oldMessages.swap(g_session.messages);
 		oldSummary.swap(g_session.rollingSummary);
+		g_session.streamingAssistantPreview.clear();
 	}
 }
 
@@ -1166,6 +1201,7 @@ void HandleChatTaskDone(LPARAM lParam)
 
 	g_session.requestInFlight = false;
 	g_session.activeRequestId = 0;
+	g_session.streamingAssistantPreview.clear();
 
 	for (const auto& evt : result->chatResult.toolEvents) {
 		std::string line =
@@ -1210,6 +1246,7 @@ void RefreshChatDialog(HWND hWnd)
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		if (g_session.requestInFlight && g_session.activeRequestId == 0) {
 			g_session.requestInFlight = false;
+			g_session.streamingAssistantPreview.clear();
 		}
 		history = BuildHistoryTextLocked(g_session);
 		inFlight = g_session.requestInFlight;
