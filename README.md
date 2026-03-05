@@ -17,7 +17,7 @@ AutoLinker支持库，通过各种方法实现以下功能：
   * 在`e\AutoLinker\Config`中，存放`link.ini`的各种版本，命名如：`vc6.ini`、`vc2017.ini`、`vc2022.ini`等。
     ![image](https://github.com/aiqinxuancai/AutoLinker/assets/4475018/f73e8188-2011-469a-aee2-f9d5f4e2af01)
 
-  * 启动e后可在顶部菜单栏看到`当前源文件所对应的链接器`。<br>
+  * `当前源文件所对应的链接器`。**！！！此位置新版本已改到编译菜单下！！！**<br>
     ![image](https://github.com/aiqinxuancai/AutoLinker/assets/4475018/a4ab4cea-2b1d-4532-9c43-5175f298e2b9)
 
 ### ⭐调试、编译时动静态ec自动切换
@@ -119,15 +119,6 @@ AutoLinker支持库，通过各种方法实现以下功能：
 - 工具菜单：`AutoLinker AI接口设置`（配置接口地址、Key、模型等）。
 - 输出区页签：`AutoLinker AI 会话`（常驻会话面板，支持异步返回）。
 
-### ⭐首次使用配置
-在 `AutoLinker AI接口设置` 中填写：
-- `Base URL`：兼容 OpenAI Chat Completions 的接口地址。
-- `API Key`
-- `Model`
-- `Timeout(ms)`：默认 `120000`。
-- `Temperature`：默认 `0.2`。
-- `额外系统提示词`（可选）。
-
 未配置完整时，调用 AI 功能会自动弹出配置窗口。
 
 ### ⭐右键菜单 AI 功能
@@ -151,21 +142,7 @@ AutoLinker支持库，通过各种方法实现以下功能：
 - 仅返回新增内容，不返回整页；确认后追加到当前页。
 
 ### ⭐AI 会话页签（内置 TAB）
-- 启动后自动插入一次，不重复创建。
-- 支持连续上下文对话，关闭后重新打开可继续查看历史。
+<img width="701" height="268" alt="image" src="https://github.com/user-attachments/assets/9933305f-ad8d-4c47-bb85-316a25efea0d" />
+
 - 支持本地 MCP 工具调用（如读取当前页代码、弹出代码修改对话框）。
-- 输入体验：`Enter` 发送，`Ctrl+Enter` 换行，编辑框支持 `Ctrl+A` 全选。
 
-### ⭐统一执行流程
-1. 读取上下文（当前函数 / 选中文本 / 当前页代码）。
-2. 后台异步请求模型（不阻塞 UI 主线程）。
-3. 弹出结果预览。
-4. 你确认后再执行复制、替换或插入；取消则不改动代码。
-
-### ⭐使用建议与排查
-- 函数类操作时，先把光标放在目标函数体内。
-- 若函数定位异常，优先使用“复制当前函数代码”确认范围。
-- `替换（不稳定）` 依赖 IDE 选区能力，建议先预览再替换。
-- 排查日志：
-  - 输出窗口日志前缀：`[AutoLinker][AI]`
-  - 本地抓取日志：`e\AutoLinker\ai_code_fetch_last.log`
