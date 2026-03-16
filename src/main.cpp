@@ -1,4 +1,4 @@
-#include <windows.h>
+ï»¿#include <windows.h>
 #include "PathHelper.h"
 #include <filesystem>
 #include <psapi.h>
@@ -12,20 +12,20 @@ int g_debugStartAddress;
 int g_compileStartAddress;
 
 
-BOOL APIENTRY DllMain(HMODULE hModule,
-	DWORD  ul_reason_for_call,
-	LPVOID lpReserved
-)
+extern "C" BOOL WINAPI DllMain(
+	HMODULE hModule,
+	DWORD ul_reason_for_call,
+	LPVOID lpReserved)
 {
 	switch (ul_reason_for_call)
 	{
 	case DLL_PROCESS_ATTACH: {
 
-		//Ñ°ÕÒ±àÒë¼°µ÷ÊÔ¿ªÊ¼µÄÎ»ÖÃ
+		//Ñ°ï¿½Ò±ï¿½ï¿½ë¼°ï¿½ï¿½ï¿½Ô¿ï¿½Ê¼ï¿½ï¿½Î»ï¿½ï¿½
 		g_debugStartAddress = FindSelfModelMemory("55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 81 EC ?? ?? 00 00 56 89 8D ?? FB FF FF 8B 8D ?? FB FF FF 81 C1 C0 00 00 00 E8 ?? ?? ?? ?? 85 C0 74 05 E9 ?? 08 00 00");
 		g_compileStartAddress = FindSelfModelMemory("55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 81 EC C4 00");
 
-		//std::string s = std::format("ÕÒµ½ÄÚ´æµØÖ· {:X} {:X}", g_debugStartAddress, g_compileStartAddress);
+		//std::string s = std::format("ï¿½Òµï¿½ï¿½Ú´ï¿½ï¿½Ö· {:X} {:X}", g_debugStartAddress, g_compileStartAddress);
 		//OutputDebugString(s.c_str());
 
 		break;

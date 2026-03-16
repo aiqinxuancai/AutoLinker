@@ -27,6 +27,9 @@
 #include "AIService.h"
 #include "AIConfigDialog.h"
 #include "AIChatFeature.h"
+#if defined(_M_IX86)
+#include "direct_global_search_debug.hpp"
+#endif
 #include <memory>
 #include <new>
 #include <process.h>
@@ -162,6 +165,10 @@ long long ElapsedMs(const PerfClock::time_point& start)
 
 std::mutex g_aiRoundtripLogMutex;
 std::mutex g_addTabTestLogMutex;
+std::mutex g_directGlobalSearchPageDumpLogMutex;
+std::mutex g_programTreeListLogMutex;
+constexpr const char* kDirectGlobalSearchTestKeyword = "subWinHwnd";
+constexpr const char* kTreeDirectPageDumpTestName = "Class_HWND";
 
 std::filesystem::path GetAIRoundtripLogPath()
 {
@@ -177,6 +184,22 @@ std::filesystem::path GetAddTabTestLogPath()
 	std::error_code ec;
 	std::filesystem::create_directories(dir, ec);
 	return dir / "add_tab_test_last.log";
+}
+
+std::filesystem::path GetDirectGlobalSearchPageDumpLogPath()
+{
+	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	return dir / "direct_global_search_page_last.txt";
+}
+
+std::filesystem::path GetProgramTreeListLogPath()
+{
+	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	return dir / "program_tree_items_last.txt";
 }
 
 std::string EscapeOneLineForLog(std::string text)
@@ -228,6 +251,48 @@ std::string BuildHexHead(const std::string& text, size_t maxBytes = 64)
 		out += " ...";
 	}
 	return out;
+}
+
+std::string ConvertUtf8ToLocalForEOutput(const std::string& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+
+	const int wideLen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.c_str(), -1, nullptr, 0);
+	if (wideLen <= 0) {
+		return text;
+	}
+
+	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+	if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.c_str(), -1, wide.data(), wideLen) <= 0) {
+		return text;
+	}
+
+	const int localLen = WideCharToMultiByte(CP_ACP, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	if (localLen <= 0) {
+		return text;
+	}
+
+	std::string local(static_cast<size_t>(localLen), '\0');
+	if (WideCharToMultiByte(CP_ACP, 0, wide.c_str(), -1, local.data(), localLen, nullptr, nullptr) <= 0) {
+		return text;
+	}
+	if (!local.empty() && local.back() == '\0') {
+		local.pop_back();
+	}
+	return local;
+}
+
+std::string ConvertPossiblyUtf8ToLocalForEOutput(const std::string& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+	if (!IsValidUtf8ForLog(text)) {
+		return text;
+	}
+	return ConvertUtf8ToLocalForEOutput(text);
 }
 
 void AppendAIRoundtripLogLineUnlocked(std::ofstream& out, const std::string& line)
@@ -296,6 +361,519 @@ std::string DescribeWindowForAddTabLog(HWND hWnd)
 		EscapeOneLineForLog(windowText),
 		PtrToHexText(reinterpret_cast<UINT_PTR>(parent)));
 }
+
+std::string GetWindowTextCopyA(HWND hWnd)
+{
+	char windowText[256] = {};
+	if (hWnd != nullptr && IsWindow(hWnd)) {
+		GetWindowTextA(hWnd, windowText, static_cast<int>(sizeof(windowText)));
+	}
+	return windowText;
+}
+
+std::string GetWindowClassCopyA(HWND hWnd)
+{
+	char className[128] = {};
+	if (hWnd != nullptr && IsWindow(hWnd)) {
+		GetClassNameA(hWnd, className, static_cast<int>(sizeof(className)));
+	}
+	return className;
+}
+
+std::string DescribeWindowChain(HWND hWnd, int maxDepth = 8)
+{
+	std::string out;
+	HWND current = hWnd;
+	for (int depth = 0; current != nullptr && depth < maxDepth; ++depth) {
+		if (!out.empty()) {
+			out += " <- ";
+		}
+		out += std::format(
+			"[{} {} \"{}\"]",
+			PtrToHexText(reinterpret_cast<UINT_PTR>(current)),
+			EscapeOneLineForLog(GetWindowClassCopyA(current)),
+			EscapeOneLineForLog(GetWindowTextCopyA(current)));
+		current = GetParent(current);
+	}
+	return out;
+}
+
+BOOL CALLBACK EnumChildProcCollectTreeView(HWND hWnd, LPARAM lParam)
+{
+	auto* windows = reinterpret_cast<std::vector<HWND>*>(lParam);
+	if (windows == nullptr) {
+		return TRUE;
+	}
+
+	if (_stricmp(GetWindowClassCopyA(hWnd).c_str(), WC_TREEVIEWA) == 0 ||
+		_stricmp(GetWindowClassCopyA(hWnd).c_str(), "SysTreeView32") == 0) {
+		windows->push_back(hWnd);
+	}
+	return TRUE;
+}
+
+std::vector<HWND> CollectTreeViewWindows(HWND root)
+{
+	std::vector<HWND> windows;
+	if (root != nullptr && IsWindow(root)) {
+		EnumChildWindows(root, EnumChildProcCollectTreeView, reinterpret_cast<LPARAM>(&windows));
+	}
+	return windows;
+}
+
+HTREEITEM GetTreeNextItem(HWND treeHwnd, HTREEITEM item, UINT code)
+{
+	return reinterpret_cast<HTREEITEM>(SendMessageA(treeHwnd, TVM_GETNEXTITEM, code, reinterpret_cast<LPARAM>(item)));
+}
+
+bool QueryTreeItemInfo(
+	HWND treeHwnd,
+	HTREEITEM item,
+	std::string& outText,
+	LPARAM& outParam,
+	UINT& outState,
+	int& outChildren,
+	int& outImage,
+	int& outSelectedImage)
+{
+	outText.clear();
+	outParam = 0;
+	outState = 0;
+	outChildren = 0;
+	outImage = -1;
+	outSelectedImage = -1;
+	if (treeHwnd == nullptr || item == nullptr) {
+		return false;
+	}
+
+	char textBuf[512] = {};
+	TVITEMA tvItem = {};
+	tvItem.mask = TVIF_HANDLE | TVIF_TEXT | TVIF_PARAM | TVIF_STATE | TVIF_CHILDREN | TVIF_IMAGE | TVIF_SELECTEDIMAGE;
+	tvItem.hItem = item;
+	tvItem.pszText = textBuf;
+	tvItem.cchTextMax = static_cast<int>(sizeof(textBuf));
+	tvItem.stateMask = 0xFFFFFFFFu;
+	if (SendMessageA(treeHwnd, TVM_GETITEMA, 0, reinterpret_cast<LPARAM>(&tvItem)) == FALSE) {
+		return false;
+	}
+
+	outText = textBuf;
+	outParam = tvItem.lParam;
+	outState = tvItem.state;
+	outChildren = tvItem.cChildren;
+	outImage = tvItem.iImage;
+	outSelectedImage = tvItem.iSelectedImage;
+	return true;
+}
+
+void DumpTreeItemsRecursive(HWND treeHwnd, HTREEITEM firstItem, int depth, int maxDepth, int& remainingBudget)
+{
+	if (treeHwnd == nullptr || firstItem == nullptr || remainingBudget <= 0 || depth > maxDepth) {
+		return;
+	}
+
+	for (HTREEITEM item = firstItem; item != nullptr && remainingBudget > 0; item = GetTreeNextItem(treeHwnd, item, TVGN_NEXT)) {
+		std::string text;
+		LPARAM itemData = 0;
+		UINT state = 0;
+		int childCount = 0;
+		int image = -1;
+		int selectedImage = -1;
+		if (!QueryTreeItemInfo(treeHwnd, item, text, itemData, state, childCount, image, selectedImage)) {
+			OutputStringToELog(std::format(
+				"[TreeProbe] depth={} item={} query_failed",
+				depth,
+				PtrToHexText(reinterpret_cast<UINT_PTR>(item))));
+			--remainingBudget;
+			continue;
+		}
+
+		const unsigned int itemDataU = static_cast<unsigned int>(itemData);
+		const unsigned int itemType = itemDataU >> 28;
+		OutputStringToELog(std::format(
+			"[TreeProbe] depth={} item={} text={} data=0x{:08X} typeNibble={} image={} selImage={} state=0x{:08X} children={}",
+			depth,
+			PtrToHexText(reinterpret_cast<UINT_PTR>(item)),
+			EscapeOneLineForLog(text),
+			itemDataU,
+			itemType,
+			image,
+			selectedImage,
+			state,
+			childCount));
+		--remainingBudget;
+
+		if (depth < maxDepth) {
+			HTREEITEM child = GetTreeNextItem(treeHwnd, item, TVGN_CHILD);
+			if (child != nullptr) {
+				DumpTreeItemsRecursive(treeHwnd, child, depth + 1, maxDepth, remainingBudget);
+			}
+		}
+	}
+}
+
+void RunTreeViewProbeTest()
+{
+	OutputStringToELog("[TreeProbe] 开始枚举主窗口下的 SysTreeView32");
+	if (g_hwnd == nullptr || !IsWindow(g_hwnd)) {
+		OutputStringToELog("[TreeProbe] 中止：主窗口句柄无效");
+		return;
+	}
+
+	const auto treeWindows = CollectTreeViewWindows(g_hwnd);
+	OutputStringToELog(std::format("[TreeProbe] treeCount={}", treeWindows.size()));
+	for (size_t index = 0; index < treeWindows.size(); ++index) {
+		const HWND treeHwnd = treeWindows[index];
+		const BOOL visible = IsWindowVisible(treeHwnd);
+		const HTREEITEM rootItem = GetTreeNextItem(treeHwnd, nullptr, TVGN_ROOT);
+		const HTREEITEM caretItem = GetTreeNextItem(treeHwnd, nullptr, TVGN_CARET);
+		OutputStringToELog(std::format(
+			"[TreeProbe] tree#{} hwnd={} visible={} enabled={} root={} caret={} chain={}",
+			index,
+			PtrToHexText(reinterpret_cast<UINT_PTR>(treeHwnd)),
+			visible ? 1 : 0,
+			IsWindowEnabled(treeHwnd) ? 1 : 0,
+			PtrToHexText(reinterpret_cast<UINT_PTR>(rootItem)),
+			PtrToHexText(reinterpret_cast<UINT_PTR>(caretItem)),
+			DescribeWindowChain(treeHwnd)));
+
+		int remainingBudget = 24;
+		DumpTreeItemsRecursive(treeHwnd, rootItem, 0, 1, remainingBudget);
+	}
+}
+
+HWND FindProgramDataTreeView()
+{
+	const auto treeWindows = CollectTreeViewWindows(g_hwnd);
+	for (HWND treeHwnd : treeWindows) {
+		const HTREEITEM rootItem = GetTreeNextItem(treeHwnd, nullptr, TVGN_ROOT);
+		std::string text;
+		LPARAM itemData = 0;
+		UINT state = 0;
+		int childCount = 0;
+		int image = -1;
+		int selectedImage = -1;
+		if (!QueryTreeItemInfo(treeHwnd, rootItem, text, itemData, state, childCount, image, selectedImage)) {
+			continue;
+		}
+		if (text == "程序数据") {
+			return treeHwnd;
+		}
+	}
+	return nullptr;
+}
+
+#if defined(_M_IX86)
+std::uintptr_t GetCurrentProcessImageBase();
+void WriteDirectGlobalSearchPageDump(const std::string& text);
+void LogCurrentPageCodePreview(const std::string& pageCode, size_t maxLines);
+
+HTREEITEM FindTreeItemByExactTextRecursive(HWND treeHwnd, HTREEITEM firstItem, const std::string& targetText, int maxDepth, int depth)
+{
+	if (treeHwnd == nullptr || firstItem == nullptr || depth > maxDepth) {
+		return nullptr;
+	}
+
+	for (HTREEITEM item = firstItem; item != nullptr; item = GetTreeNextItem(treeHwnd, item, TVGN_NEXT)) {
+		std::string text;
+		LPARAM itemData = 0;
+		UINT state = 0;
+		int childCount = 0;
+		int image = -1;
+		int selectedImage = -1;
+		if (QueryTreeItemInfo(treeHwnd, item, text, itemData, state, childCount, image, selectedImage) && text == targetText) {
+			return item;
+		}
+
+		if (depth < maxDepth) {
+			if (HTREEITEM foundChild = FindTreeItemByExactTextRecursive(
+					treeHwnd,
+					GetTreeNextItem(treeHwnd, item, TVGN_CHILD),
+					targetText,
+					maxDepth,
+					depth + 1)) {
+				return foundChild;
+			}
+		}
+	}
+	return nullptr;
+}
+
+struct ProgramTreePageItemInfo
+{
+	int depth = 0;
+	std::string text;
+	unsigned int itemData = 0;
+	int image = -1;
+	int selectedImage = -1;
+	std::string typeName;
+};
+
+struct ProgramTreeVisualHints
+{
+	int classImage = -1;
+	int windowAssemblyImage = -1;
+};
+
+bool IsProgramTreeType1Item(const ProgramTreePageItemInfo& item)
+{
+	return (item.itemData >> 28) == 1u;
+}
+
+ProgramTreeVisualHints BuildProgramTreeVisualHints(const std::vector<ProgramTreePageItemInfo>& items)
+{
+	ProgramTreeVisualHints hints;
+	for (const auto& item : items) {
+		if (!IsProgramTreeType1Item(item) || item.image < 0) {
+			continue;
+		}
+		if (hints.classImage < 0 && item.text.rfind("Class_", 0) == 0) {
+			hints.classImage = item.image;
+		}
+		if (hints.windowAssemblyImage < 0 && item.text.rfind("窗口程序集_", 0) == 0) {
+			hints.windowAssemblyImage = item.image;
+		}
+		if (hints.classImage >= 0 && hints.windowAssemblyImage >= 0) {
+			break;
+		}
+	}
+	return hints;
+}
+
+std::string DescribeProgramTreeItemType(
+	unsigned int itemData,
+	const std::string& text,
+	int image,
+	const ProgramTreeVisualHints& hints)
+{
+	const unsigned int typeNibble = itemData >> 28;
+	switch (typeNibble) {
+	case 1:
+		if (text.rfind("Class_", 0) == 0) {
+			return "类模块";
+		}
+		if (image >= 0) {
+			if (hints.classImage >= 0 && image == hints.classImage) {
+				return "类模块";
+			}
+		}
+		return "程序集";
+	case 2:
+		return "全局变量";
+	case 3:
+		return "自定义数据类型";
+	case 4:
+		return "DLL命令";
+	case 5:
+		return "窗口/表单";
+	case 6:
+		return "常量资源";
+	case 7:
+		return ((itemData & 0x0FFFFFFFu) == 1u) ? "图片资源" : "声音资源";
+	case 15:
+		return "分组";
+	default:
+		return "未知";
+	}
+}
+
+void CollectProgramTreePageItemsRecursive(
+	HWND treeHwnd,
+	HTREEITEM firstItem,
+	int depth,
+	int maxDepth,
+	std::vector<ProgramTreePageItemInfo>& outItems)
+{
+	if (treeHwnd == nullptr || firstItem == nullptr || depth > maxDepth) {
+		return;
+	}
+
+	for (HTREEITEM item = firstItem; item != nullptr; item = GetTreeNextItem(treeHwnd, item, TVGN_NEXT)) {
+		std::string text;
+		LPARAM itemData = 0;
+		UINT state = 0;
+		int childCount = 0;
+		int image = -1;
+		int selectedImage = -1;
+		if (!QueryTreeItemInfo(treeHwnd, item, text, itemData, state, childCount, image, selectedImage)) {
+			continue;
+		}
+
+		const unsigned int itemDataU = static_cast<unsigned int>(itemData);
+		const unsigned int typeNibble = itemDataU >> 28;
+		if (typeNibble != 0 && typeNibble != 15) {
+			ProgramTreePageItemInfo info;
+			info.depth = depth;
+			info.text = text;
+			info.itemData = itemDataU;
+			info.image = image;
+			info.selectedImage = selectedImage;
+			outItems.push_back(std::move(info));
+			continue;
+		}
+
+		if (depth < maxDepth) {
+			CollectProgramTreePageItemsRecursive(
+				treeHwnd,
+				GetTreeNextItem(treeHwnd, item, TVGN_CHILD),
+				depth + 1,
+				maxDepth,
+				outItems);
+		}
+	}
+}
+
+void WriteProgramTreeListLog(const std::vector<ProgramTreePageItemInfo>& items)
+{
+	const auto path = GetProgramTreeListLogPath();
+	std::lock_guard<std::mutex> guard(g_programTreeListLogMutex);
+	std::ofstream out(path, std::ios::trunc | std::ios::binary);
+	if (!out.is_open()) {
+		OutputStringToELog("[ProgramTreeListTest] 写程序树清单文件失败");
+		return;
+	}
+
+	for (size_t i = 0; i < items.size(); ++i) {
+		out << std::format(
+			"#{} depth={} type={} data=0x{:08X} image={} selImage={} text={}\r\n",
+			i,
+			items[i].depth,
+			items[i].typeName,
+			items[i].itemData,
+			items[i].image,
+			items[i].selectedImage,
+			items[i].text);
+	}
+}
+
+void RunProgramTreeListTest()
+{
+	OutputStringToELog("[ProgramTreeListTest] 开始枚举程序树中的页面节点");
+
+	const HWND treeHwnd = FindProgramDataTreeView();
+	if (treeHwnd == nullptr) {
+		OutputStringToELog("[ProgramTreeListTest] 未找到程序树 TreeView");
+		return;
+	}
+
+	const HTREEITEM rootItem = GetTreeNextItem(treeHwnd, nullptr, TVGN_ROOT);
+	const HTREEITEM firstChild = GetTreeNextItem(treeHwnd, rootItem, TVGN_CHILD);
+	std::vector<ProgramTreePageItemInfo> items;
+	CollectProgramTreePageItemsRecursive(treeHwnd, firstChild, 0, 8, items);
+	const ProgramTreeVisualHints hints = BuildProgramTreeVisualHints(items);
+	for (auto& item : items) {
+		item.typeName = DescribeProgramTreeItemType(item.itemData, item.text, item.image, hints);
+	}
+	WriteProgramTreeListLog(items);
+
+	OutputStringToELog(std::format(
+		"[ProgramTreeListTest] 枚举完成 count={} classImage={} windowAssemblyImage={} path={}",
+		items.size(),
+		hints.classImage,
+		hints.windowAssemblyImage,
+		GetProgramTreeListLogPath().string()));
+
+	const size_t previewCount = (std::min)(items.size(), static_cast<size_t>(20));
+	for (size_t i = 0; i < previewCount; ++i) {
+		OutputStringToELog(std::format(
+			"[ProgramTreeListTest] #{} depth={} type={} data=0x{:08X} image={} selImage={} text={}",
+			i,
+			items[i].depth,
+			items[i].typeName,
+			items[i].itemData,
+			items[i].image,
+			items[i].selectedImage,
+			EscapeOneLineForLog(items[i].text)));
+	}
+	if (items.size() > previewCount) {
+		OutputStringToELog(std::format(
+			"[ProgramTreeListTest] 仅展示前 {} 条，剩余 {} 条请查看文件",
+			previewCount,
+			items.size() - previewCount));
+	}
+}
+
+void RunProgramTreeDirectPageDumpTest()
+{
+	OutputStringToELog(std::format(
+		"[TreeDirectPageDumpTest] 开始在程序树中查找并抓取 name={}",
+		kTreeDirectPageDumpTestName));
+
+	const HWND treeHwnd = FindProgramDataTreeView();
+	if (treeHwnd == nullptr) {
+		OutputStringToELog("[TreeDirectPageDumpTest] 未找到程序树 TreeView");
+		return;
+	}
+
+	const HTREEITEM rootItem = GetTreeNextItem(treeHwnd, nullptr, TVGN_ROOT);
+	const HTREEITEM item = FindTreeItemByExactTextRecursive(treeHwnd, rootItem, kTreeDirectPageDumpTestName, 4, 0);
+	if (item == nullptr) {
+		OutputStringToELog(std::format(
+			"[TreeDirectPageDumpTest] 未在程序树中找到目标 name={} tree={}",
+			kTreeDirectPageDumpTestName,
+			PtrToHexText(reinterpret_cast<UINT_PTR>(treeHwnd))));
+		return;
+	}
+
+	std::string itemText;
+	LPARAM itemData = 0;
+	UINT state = 0;
+	int childCount = 0;
+	int image = -1;
+	int selectedImage = -1;
+	if (!QueryTreeItemInfo(treeHwnd, item, itemText, itemData, state, childCount, image, selectedImage)) {
+		OutputStringToELog("[TreeDirectPageDumpTest] 读取目标节点信息失败");
+		return;
+	}
+
+	std::string currentPageCode;
+	e571::RawSearchContextPageDumpDebugResult dumpResult;
+	if (!e571::DebugDumpCodePageByProgramTreeItemData(
+			static_cast<unsigned int>(itemData),
+			GetCurrentProcessImageBase(),
+			&currentPageCode,
+			&dumpResult)) {
+		OutputStringToELog(std::format(
+			"[TreeDirectPageDumpTest] 抓取失败 text={} data=0x{:08X} image={} selImage={} type={} resolvedIndex={} bucketData={} outerCount={} lineCount={} fetchFailures={} trace={}",
+			EscapeOneLineForLog(itemText),
+			static_cast<unsigned int>(itemData),
+			image,
+			selectedImage,
+			dumpResult.type,
+			dumpResult.resolvedIndex,
+			dumpResult.bucketData,
+			dumpResult.outerCount,
+			dumpResult.lineCount,
+			dumpResult.fetchFailures,
+			EscapeOneLineForLog(dumpResult.trace)));
+		return;
+	}
+
+	WriteDirectGlobalSearchPageDump(currentPageCode);
+	const size_t lineCount = static_cast<size_t>(std::count(currentPageCode.begin(), currentPageCode.end(), '\n')) +
+		(currentPageCode.empty() ? 0u : 1u);
+	OutputStringToELog(std::format(
+		"[TreeDirectPageDumpTest] 抓取成功 text={} data=0x{:08X} image={} selImage={} type={} resolvedIndex={} bucketData={} outerCount={} lines={} fetchFailures={} trace={} path={}",
+		EscapeOneLineForLog(itemText),
+		static_cast<unsigned int>(itemData),
+		image,
+		selectedImage,
+		dumpResult.type,
+		dumpResult.resolvedIndex,
+		dumpResult.bucketData,
+		dumpResult.outerCount,
+		lineCount,
+		dumpResult.fetchFailures,
+		EscapeOneLineForLog(dumpResult.trace),
+		GetDirectGlobalSearchPageDumpLogPath().string()));
+	LogCurrentPageCodePreview(currentPageCode, 10);
+}
+#else
+void RunProgramTreeDirectPageDumpTest()
+{
+	OutputStringToELog("[TreeDirectPageDumpTest] 当前仅支持 x86 配置");
+}
+#endif
 
 void WriteAddTabTestLog(const std::vector<std::string>& lines)
 {
@@ -409,6 +987,222 @@ void RunFnAddTabStructPassThroughTest()
 	WriteAddTabTestLog(logs);
 	appendLog("[AutoLinker][ADD_TAB_TEST] 详细日志已写入 add_tab_test_last.log");
 }
+
+#if defined(_M_IX86)
+std::uintptr_t GetCurrentProcessImageBase()
+{
+	HMODULE module = GetModuleHandleW(nullptr);
+	return reinterpret_cast<std::uintptr_t>(module);
+}
+
+void LogDirectGlobalSearchResults(
+	const e571::HiddenBuiltinSearchDebugResult& result,
+	size_t maxCount)
+{
+	const size_t count = (std::min)(result.previewLines.size(), maxCount);
+	for (size_t i = 0; i < count; ++i) {
+		OutputStringToELog(std::format(
+			"[DirectGlobalSearchTest] #{} text={}",
+			i,
+			EscapeOneLineForLog(result.previewLines[i])));
+	}
+
+	if (result.hits > count) {
+		OutputStringToELog(std::format(
+			"[DirectGlobalSearchTest] 仅展示前 {} 条，剩余 {} 条未输出",
+			count,
+			result.hits - count));
+	}
+}
+
+void RunDirectGlobalSearchKeywordTest()
+{
+	OutputStringToELog(std::format(
+		"[DirectGlobalSearchTest] 开始固定搜索 keyword={}",
+		kDirectGlobalSearchTestKeyword));
+
+	const auto result = e571::DebugSearchDirectGlobalKeywordHidden(
+		kDirectGlobalSearchTestKeyword,
+		GetCurrentProcessImageBase());
+	OutputStringToELog(std::format(
+		"[DirectGlobalSearchTest] 搜索完成 keyword={} hits={} dialogHandled={} first={}",
+		kDirectGlobalSearchTestKeyword,
+		result.hits,
+		result.dialogHandled ? 1 : 0,
+		EscapeOneLineForLog(result.firstResultText)));
+	LogDirectGlobalSearchResults(result, 10);
+}
+
+void RunDirectGlobalSearchLocateKeywordTest()
+{
+	OutputStringToELog(std::format(
+		"[DirectGlobalSearchLocateTest] 开始固定搜索并定位 keyword={}",
+		kDirectGlobalSearchTestKeyword));
+
+	e571::HiddenBuiltinSearchDebugResult result;
+	const bool ok = e571::DebugLocateFirstDirectGlobalKeywordHidden(
+		kDirectGlobalSearchTestKeyword,
+		GetCurrentProcessImageBase(),
+		&result);
+	OutputStringToELog(std::format(
+		"[DirectGlobalSearchLocateTest] 搜索完成 keyword={} hits={} dialogHandled={}",
+		kDirectGlobalSearchTestKeyword,
+		result.hits,
+		result.dialogHandled ? 1 : 0));
+	if (result.hasRawFirstHit) {
+		OutputStringToELog(std::format(
+			"[DirectGlobalSearchLocateTest] rawFirst type={} extra={} outer={} inner={} offset={} rawHits={} resolveOk={} resolvedIndex={} bucketData={}",
+			result.rawFirstHit.type,
+			result.rawFirstHit.extra,
+			result.rawFirstHit.outerIndex,
+			result.rawFirstHit.innerIndex,
+			result.rawFirstHit.matchOffset,
+			result.rawHitCount,
+			result.rawResolveOk ? 1 : 0,
+			result.rawResolvedIndex,
+			result.rawBucketData));
+	}
+	if (result.hasDirectFirstHit) {
+		OutputStringToELog(std::format(
+			"[DirectGlobalSearchLocateTest] directFirst type={} extra={} outer={} inner={} offset={} directHits={} text={}",
+			result.directFirstHit.type,
+			result.directFirstHit.extra,
+			result.directFirstHit.outerIndex,
+			result.directFirstHit.innerIndex,
+			result.directFirstHit.matchOffset,
+			result.directHitCount,
+			EscapeOneLineForLog(result.directFirstHit.displayText)));
+	}
+	if (result.hits == 0) {
+		OutputStringToELog("[DirectGlobalSearchLocateTest] 未找到可定位结果");
+		return;
+	}
+
+	OutputStringToELog(std::format(
+		"[DirectGlobalSearchLocateTest] jump={} first={} trace={}",
+		ok ? 1 : 0,
+		EscapeOneLineForLog(result.firstResultText),
+		EscapeOneLineForLog(result.jumpTrace)));
+}
+
+void WriteDirectGlobalSearchPageDump(const std::string& text)
+{
+	const auto path = GetDirectGlobalSearchPageDumpLogPath();
+	std::lock_guard<std::mutex> guard(g_directGlobalSearchPageDumpLogMutex);
+	std::ofstream out(path, std::ios::trunc | std::ios::binary);
+	if (!out.is_open()) {
+		OutputStringToELog("[DirectGlobalSearchPageDumpTest] 写页面代码文件失败");
+		return;
+	}
+	out.write(text.data(), static_cast<std::streamsize>(text.size()));
+}
+
+void LogCurrentPageCodePreview(const std::string& pageCode, size_t maxLines)
+{
+	size_t lineBegin = 0;
+	size_t lineIndex = 0;
+	while (lineBegin <= pageCode.size() && lineIndex < maxLines) {
+		size_t lineEnd = pageCode.find('\n', lineBegin);
+		std::string line = pageCode.substr(
+			lineBegin,
+			lineEnd == std::string::npos ? std::string::npos : lineEnd - lineBegin);
+		if (!line.empty() && line.back() == '\r') {
+			line.pop_back();
+		}
+		OutputStringToELog(std::format(
+			"[DirectGlobalSearchPageDumpTest] pageLine#{} {}",
+			lineIndex,
+			EscapeOneLineForLog(ConvertPossiblyUtf8ToLocalForEOutput(line))));
+		++lineIndex;
+		if (lineEnd == std::string::npos) {
+			break;
+		}
+		lineBegin = lineEnd + 1;
+	}
+}
+
+void RunDirectGlobalSearchLocateAndDumpCurrentPageTest()
+{
+	OutputStringToELog(std::format(
+		"[DirectGlobalSearchPageDumpTest] 开始固定搜索、定位并抓取当前页代码 keyword={}",
+		kDirectGlobalSearchTestKeyword));
+
+	e571::HiddenBuiltinSearchDebugResult result;
+	const bool located = e571::DebugLocateFirstDirectGlobalKeywordHidden(
+		kDirectGlobalSearchTestKeyword,
+		GetCurrentProcessImageBase(),
+		&result);
+	OutputStringToELog(std::format(
+		"[DirectGlobalSearchPageDumpTest] 定位完成 keyword={} hits={} dialogHandled={} jump={} trace={}",
+		kDirectGlobalSearchTestKeyword,
+		result.hits,
+		result.dialogHandled ? 1 : 0,
+		located ? 1 : 0,
+		EscapeOneLineForLog(result.jumpTrace)));
+	if (!located) {
+		OutputStringToELog("[DirectGlobalSearchPageDumpTest] 中止：定位失败，未抓取当前页代码");
+		return;
+	}
+
+	std::string currentPageCode;
+	e571::DirectGlobalSearchDebugHit dumpHit = {};
+	if (result.hasRawFirstHit) {
+		dumpHit = result.rawFirstHit;
+	}
+	else if (result.hasDirectFirstHit) {
+		dumpHit = result.directFirstHit;
+	}
+	else {
+		OutputStringToELog("[DirectGlobalSearchPageDumpTest] 中止：没有可用的命中记录用于抓取页面");
+		return;
+	}
+
+	e571::NativeEditorPageDumpDebugResult dumpResult;
+	if (!e571::DebugDumpCodePageForSearchHit(
+			dumpHit,
+			GetCurrentProcessImageBase(),
+			&currentPageCode,
+			&dumpResult)) {
+		OutputStringToELog(std::format(
+			"[DirectGlobalSearchPageDumpTest] DebugDumpCodePageForSearchHit failed editor=0x{:X} outerCount={} lineCount={} fetchFailures={} trace={}",
+			static_cast<unsigned long long>(dumpResult.editorObject),
+			dumpResult.outerCount,
+			dumpResult.lineCount,
+			dumpResult.fetchFailures,
+			EscapeOneLineForLog(dumpResult.trace)));
+		return;
+	}
+
+	WriteDirectGlobalSearchPageDump(currentPageCode);
+	const size_t lineCount = static_cast<size_t>(std::count(currentPageCode.begin(), currentPageCode.end(), '\n')) +
+		(currentPageCode.empty() ? 0u : 1u);
+	OutputStringToELog(std::format(
+		"[DirectGlobalSearchPageDumpTest] 当前页代码抓取成功 bytes={} lines={} editor=0x{:X} outerCount={} fetchFailures={} trace={} path={}",
+		currentPageCode.size(),
+		lineCount,
+		static_cast<unsigned long long>(dumpResult.editorObject),
+		dumpResult.outerCount,
+		dumpResult.fetchFailures,
+		EscapeOneLineForLog(dumpResult.trace),
+		GetDirectGlobalSearchPageDumpLogPath().string()));
+	LogCurrentPageCodePreview(currentPageCode, 10);
+}
+#else
+void RunDirectGlobalSearchKeywordTest()
+{
+	OutputStringToELog("[DirectGlobalSearchTest] 当前仅支持 x86 配置");
+}
+
+void RunDirectGlobalSearchLocateKeywordTest()
+{
+	OutputStringToELog("[DirectGlobalSearchLocateTest] 当前仅支持 x86 配置");
+}
+
+void RunDirectGlobalSearchLocateAndDumpCurrentPageTest()
+{
+	OutputStringToELog("[DirectGlobalSearchPageDumpTest] 当前仅支持 x86 配置");
+}
+#endif
 
 void AppendAIRoundtripLogBlock(const std::string& title, const std::string& text)
 {
@@ -2135,6 +2929,30 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 			RunFnAddTabStructPassThroughTest();
 			break;
 		}
+		case 6: { // 测试整体搜索 subWinHwnd
+			RunDirectGlobalSearchKeywordTest();
+			break;
+		}
+		case 7: { // 测试定位 subWinHwnd 首个结果
+			RunDirectGlobalSearchLocateKeywordTest();
+			break;
+		}
+		case 8: { // 测试定位后抓取当前页代码
+			RunDirectGlobalSearchLocateAndDumpCurrentPageTest();
+			break;
+		}
+		case 9: { // 测试枚举左侧 TreeView
+			RunTreeViewProbeTest();
+			break;
+		}
+		case 10: { // 测试程序树按名称直接抓页面代码
+			RunProgramTreeDirectPageDumpTest();
+			break;
+		}
+		case 11: { // 测试枚举程序树全部页面
+			RunProgramTreeListTest();
+			break;
+		}
 		//case 4: { //切换到VMPSDK静态（自用）
 		//	ChangeVMProtectModel(true);
 		//	break;
@@ -2362,7 +3180,7 @@ static LIB_INFOX LibInfo =
 	NULL,
 	NULL,
 	fnAddInFunc,
-	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0AutoLinker AI接口设置\0编辑AI接口地址、API Key、模型和提示词等配置。\0FN_ADD_TAB结构传递测试\0构造ADD_TAB_INF调用FN_ADD_TAB，并打印调用前后结构体字段。\0\0") ,
+	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0AutoLinker AI接口设置\0编辑AI接口地址、API Key、模型和提示词等配置。\0FN_ADD_TAB结构传递测试\0构造ADD_TAB_INF调用FN_ADD_TAB，并打印调用前后结构体字段。\0测试整体搜索subWinHwnd\0调用direct_global_search固定搜索subWinHwnd，并输出命中结果到E输出窗口。\0测试定位subWinHwnd首个结果\0调用direct_global_search固定搜索subWinHwnd，并跳转到首个命中位置。\0测试定位后抓取当前页代码\0先定位到subWinHwnd首个命中，再抓取当前代码页完整代码并写入AutoLinker目录。\0测试枚举左侧TreeView\0枚举主窗口下所有SysTreeView32，并输出前几层节点文本与item data特征。\0测试程序树按名称抓代码\0在程序树中固定查找Class_HWND，并根据tree item data直接抓取整页代码。\0测试枚举程序树页面\0枚举程序树中所有页面节点，输出名称、类型和item data，并写入文件。\0\0") ,
 	AutoLinker_MessageNotify,
 	NULL,
 	NULL,

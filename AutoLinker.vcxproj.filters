@@ -75,6 +75,9 @@
       <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\direct_global_search.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="detours\detours.h">
@@ -160,6 +163,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\WinINetUtil.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\direct_global_search.hpp">
       <Filter>Utils</Filter>
     </ClInclude>
   </ItemGroup>
