@@ -2229,6 +2229,62 @@ e571::HiddenBuiltinSearchDebugResult e571::DebugSearchDirectGlobalKeywordHidden(
     return result;
 }
 
+std::vector<e571::DirectGlobalSearchDebugHit> e571::DebugSearchDirectGlobalKeywordHiddenDetailed(
+    const char* keyword,
+    std::uintptr_t moduleBase,
+    bool* outDialogHandled) {
+    std::vector<DirectGlobalSearchDebugHit> hits;
+    if (outDialogHandled != nullptr) {
+        *outDialogHandled = false;
+    }
+    if (keyword == nullptr || keyword[0] == '\0') {
+        return hits;
+    }
+
+    bool dialogHandled = false;
+    HiddenBuiltinSearchDebugResult captured;
+    if (!RunBuiltinSearchDialogHiddenSafe(keyword, moduleBase, &dialogHandled, &captured)) {
+        return hits;
+    }
+    if (outDialogHandled != nullptr) {
+        *outDialogHandled = dialogHandled;
+    }
+
+    HWND listHwnd = GetBuiltinResultListHwnd(moduleBase);
+    size_t rawCount = 0;
+    for (size_t index = 0;; ++index) {
+        DirectGlobalSearch::GlobalSearchHit rawHit{};
+        size_t totalCount = 0;
+        if (!TryReadBuiltinResultHit(moduleBase, index, &rawHit, &totalCount)) {
+            rawCount = totalCount;
+            break;
+        }
+        rawCount = totalCount;
+
+        DirectGlobalSearchDebugHit hit{};
+        hit.type = rawHit.type;
+        hit.extra = rawHit.extra;
+        hit.outerIndex = rawHit.outerIndex;
+        hit.innerIndex = rawHit.innerIndex;
+        hit.matchOffset = rawHit.matchOffset;
+        if (!TryFormatRawSearchHit(moduleBase, rawHit, &hit.displayText) || hit.displayText.empty()) {
+            if (::IsWindow(listHwnd)) {
+                const int listIndex = static_cast<int>(index);
+                const LRESULT count = ::SendMessageA(listHwnd, LB_GETCOUNT, 0, 0);
+                if (count != LB_ERR && listIndex >= 0 && listIndex < count) {
+                    hit.displayText = ReadListBoxText(listHwnd, listIndex);
+                }
+            }
+        }
+        hits.push_back(std::move(hit));
+    }
+
+    if (hits.empty() && rawCount == 0) {
+        return DebugSearchDirectGlobalKeyword(keyword, moduleBase);
+    }
+    return hits;
+}
+
 bool e571::DebugLocateFirstDirectGlobalKeywordHidden(
     const char* keyword,
     std::uintptr_t moduleBase,

@@ -67,6 +67,11 @@ HiddenBuiltinSearchDebugResult DebugSearchDirectGlobalKeywordHidden(
     const char* keyword,
     std::uintptr_t moduleBase = 0x400000);
 
+std::vector<DirectGlobalSearchDebugHit> DebugSearchDirectGlobalKeywordHiddenDetailed(
+    const char* keyword,
+    std::uintptr_t moduleBase = 0x400000,
+    bool* outDialogHandled = nullptr);
+
 bool DebugLocateFirstDirectGlobalKeywordHidden(
     const char* keyword,
     std::uintptr_t moduleBase,

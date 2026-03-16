@@ -23,6 +23,9 @@
 #include "Global.h"
 #include "IDEFacade.h"
 #include "resource.h"
+#if defined(_M_IX86)
+#include "direct_global_search_debug.hpp"
+#endif
 
 #pragma comment(lib, "comctl32.lib")
 #if defined _M_IX86
@@ -130,7 +133,36 @@ bool g_chatTabAdded = false;
 AIChatSessionState g_session;
 UINT g_msgAIChatDone = 0;
 UINT g_msgAIChatToolDialog = 0;
+UINT g_msgAIChatToolExec = 0;
 std::atomic_bool g_clearHistoryInProgress = false;
+
+struct ToolExecutionRequest {
+	std::string toolName;
+	std::string argumentsJson;
+	std::string resultJson;
+	bool ok = false;
+	bool done = false;
+	std::mutex mutex;
+	std::condition_variable cv;
+};
+
+struct ProgramTreeItemInfo {
+	int depth = 0;
+	std::string name;
+	unsigned int itemData = 0;
+	int image = -1;
+	int selectedImage = -1;
+	std::string typeKey;
+	std::string typeName;
+};
+
+struct KeywordSearchResultInfo {
+	std::string pageName;
+	std::string pageTypeKey;
+	std::string pageTypeName;
+	int lineNumber = -1;
+	std::string text;
+};
 
 HMODULE GetCurrentModuleHandle()
 {
@@ -992,9 +1024,408 @@ bool RequestCodeEditFromMainThread(
 	return true;
 }
 
-std::string ExecuteToolCall(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
+std::string ToLowerAsciiCopyLocal(std::string text)
+{
+	for (char& ch : text) {
+		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+	}
+	return text;
+}
+
+std::uintptr_t GetCurrentProcessImageBaseForAI()
+{
+	HMODULE module = GetModuleHandleW(nullptr);
+	return reinterpret_cast<std::uintptr_t>(module);
+}
+
+#if defined(_M_IX86)
+std::vector<HWND> CollectTreeViewWindowsForAI(HWND root)
+{
+	std::vector<HWND> windows;
+	if (root == nullptr || !IsWindow(root)) {
+		return windows;
+	}
+
+	EnumChildWindows(
+		root,
+		[](HWND hWnd, LPARAM lParam) -> BOOL {
+			auto* out = reinterpret_cast<std::vector<HWND>*>(lParam);
+			if (out == nullptr) {
+				return TRUE;
+			}
+			char className[64] = {};
+			if (GetClassNameA(hWnd, className, static_cast<int>(sizeof(className))) > 0 &&
+				std::strcmp(className, WC_TREEVIEWA) == 0) {
+				out->push_back(hWnd);
+			}
+			return TRUE;
+		},
+		reinterpret_cast<LPARAM>(&windows));
+	return windows;
+}
+
+HTREEITEM GetTreeNextItemForAI(HWND treeHwnd, HTREEITEM item, UINT code)
+{
+	return reinterpret_cast<HTREEITEM>(SendMessageA(treeHwnd, TVM_GETNEXTITEM, code, reinterpret_cast<LPARAM>(item)));
+}
+
+bool QueryTreeItemInfoForAI(
+	HWND treeHwnd,
+	HTREEITEM item,
+	std::string& outText,
+	LPARAM& outParam,
+	int& outImage,
+	int& outSelectedImage,
+	int& outChildren)
+{
+	outText.clear();
+	outParam = 0;
+	outImage = -1;
+	outSelectedImage = -1;
+	outChildren = 0;
+	if (treeHwnd == nullptr || item == nullptr) {
+		return false;
+	}
+
+	char textBuf[512] = {};
+	TVITEMA tvItem = {};
+	tvItem.mask = TVIF_HANDLE | TVIF_TEXT | TVIF_PARAM | TVIF_CHILDREN | TVIF_IMAGE | TVIF_SELECTEDIMAGE;
+	tvItem.hItem = item;
+	tvItem.pszText = textBuf;
+	tvItem.cchTextMax = static_cast<int>(sizeof(textBuf));
+	if (SendMessageA(treeHwnd, TVM_GETITEMA, 0, reinterpret_cast<LPARAM>(&tvItem)) == FALSE) {
+		return false;
+	}
+
+	outText = textBuf;
+	outParam = tvItem.lParam;
+	outImage = tvItem.iImage;
+	outSelectedImage = tvItem.iSelectedImage;
+	outChildren = tvItem.cChildren;
+	return true;
+}
+
+HWND FindProgramDataTreeViewForAI()
+{
+	for (HWND treeHwnd : CollectTreeViewWindowsForAI(g_mainWindow)) {
+		const HTREEITEM rootItem = GetTreeNextItemForAI(treeHwnd, nullptr, TVGN_ROOT);
+		std::string text;
+		LPARAM itemData = 0;
+		int image = -1;
+		int selectedImage = -1;
+		int childCount = 0;
+		if (!QueryTreeItemInfoForAI(treeHwnd, rootItem, text, itemData, image, selectedImage, childCount)) {
+			continue;
+		}
+		if (text == "程序数据") {
+			return treeHwnd;
+		}
+	}
+	return nullptr;
+}
+
+std::string GetProgramTreeTypeKey(
+	unsigned int itemData,
+	const std::string& text,
+	int image,
+	int classImage)
+{
+	const unsigned int typeNibble = itemData >> 28;
+	switch (typeNibble) {
+	case 1:
+		if (text.rfind("Class_", 0) == 0) {
+			return "class_module";
+		}
+		if (classImage >= 0 && image == classImage) {
+			return "class_module";
+		}
+		return "assembly";
+	case 2:
+		return "global_var";
+	case 3:
+		return "user_data_type";
+	case 4:
+		return "dll_command";
+	case 5:
+		return "form";
+	case 6:
+		return "const_resource";
+	case 7:
+		return ((itemData & 0x0FFFFFFFu) == 1u) ? "picture_resource" : "sound_resource";
+	default:
+		return "unknown";
+	}
+}
+
+std::string GetProgramTreeTypeName(const std::string& typeKey)
+{
+	if (typeKey == "assembly") {
+		return "程序集";
+	}
+	if (typeKey == "class_module") {
+		return "类模块";
+	}
+	if (typeKey == "global_var") {
+		return "全局变量";
+	}
+	if (typeKey == "user_data_type") {
+		return "自定义数据类型";
+	}
+	if (typeKey == "dll_command") {
+		return "DLL命令";
+	}
+	if (typeKey == "form") {
+		return "窗口/表单";
+	}
+	if (typeKey == "const_resource") {
+		return "常量资源";
+	}
+	if (typeKey == "picture_resource") {
+		return "图片资源";
+	}
+	if (typeKey == "sound_resource") {
+		return "声音资源";
+	}
+	return "未知";
+}
+
+void CollectProgramTreeItemsRecursiveForAI(
+	HWND treeHwnd,
+	HTREEITEM firstItem,
+	int depth,
+	int maxDepth,
+	std::vector<ProgramTreeItemInfo>& outItems)
+{
+	if (treeHwnd == nullptr || firstItem == nullptr || depth > maxDepth) {
+		return;
+	}
+
+	for (HTREEITEM item = firstItem; item != nullptr; item = GetTreeNextItemForAI(treeHwnd, item, TVGN_NEXT)) {
+		std::string text;
+		LPARAM itemData = 0;
+		int image = -1;
+		int selectedImage = -1;
+		int childCount = 0;
+		if (!QueryTreeItemInfoForAI(treeHwnd, item, text, itemData, image, selectedImage, childCount)) {
+			continue;
+		}
+
+		const unsigned int itemDataU = static_cast<unsigned int>(itemData);
+		const unsigned int typeNibble = itemDataU >> 28;
+		if (typeNibble != 0 && typeNibble != 15) {
+			ProgramTreeItemInfo info;
+			info.depth = depth;
+			info.name = text;
+			info.itemData = itemDataU;
+			info.image = image;
+			info.selectedImage = selectedImage;
+			outItems.push_back(std::move(info));
+			continue;
+		}
+
+		if (depth < maxDepth) {
+			CollectProgramTreeItemsRecursiveForAI(
+				treeHwnd,
+				GetTreeNextItemForAI(treeHwnd, item, TVGN_CHILD),
+				depth + 1,
+				maxDepth,
+				outItems);
+		}
+	}
+}
+
+bool TryListProgramTreeItemsForAI(std::vector<ProgramTreeItemInfo>& outItems, std::string* outError)
+{
+	outItems.clear();
+	if (outError != nullptr) {
+		outError->clear();
+	}
+	if (g_mainWindow == nullptr || !IsWindow(g_mainWindow)) {
+		if (outError != nullptr) {
+			*outError = "main window invalid";
+		}
+		return false;
+	}
+
+	const HWND treeHwnd = FindProgramDataTreeViewForAI();
+	if (treeHwnd == nullptr) {
+		if (outError != nullptr) {
+			*outError = "program tree not found";
+		}
+		return false;
+	}
+
+	const HTREEITEM rootItem = GetTreeNextItemForAI(treeHwnd, nullptr, TVGN_ROOT);
+	const HTREEITEM firstChild = GetTreeNextItemForAI(treeHwnd, rootItem, TVGN_CHILD);
+	CollectProgramTreeItemsRecursiveForAI(treeHwnd, firstChild, 0, 8, outItems);
+
+	int classImage = -1;
+	for (const auto& item : outItems) {
+		if (item.name.rfind("Class_", 0) == 0 && item.image >= 0) {
+			classImage = item.image;
+			break;
+		}
+	}
+	for (auto& item : outItems) {
+		item.typeKey = GetProgramTreeTypeKey(item.itemData, item.name, item.image, classImage);
+		item.typeName = GetProgramTreeTypeName(item.typeKey);
+	}
+	return true;
+}
+
+bool MatchProgramItemKind(const ProgramTreeItemInfo& item, const std::string& kindFilter)
+{
+	const std::string kind = ToLowerAsciiCopyLocal(TrimAsciiCopy(kindFilter));
+	if (kind.empty() || kind == "all") {
+		return true;
+	}
+	return item.typeKey == kind;
+}
+
+bool TryGetProgramItemCodeByNameForAI(
+	const std::string& name,
+	const std::string& kindFilter,
+	ProgramTreeItemInfo& outItem,
+	std::string& outCode,
+	std::string& outTrace,
+	std::string& outError)
+{
+	outCode.clear();
+	outTrace.clear();
+	outError.clear();
+
+	std::vector<ProgramTreeItemInfo> items;
+	if (!TryListProgramTreeItemsForAI(items, &outError)) {
+		return false;
+	}
+
+	std::vector<ProgramTreeItemInfo> matched;
+	for (const auto& item : items) {
+		if (item.name == name && MatchProgramItemKind(item, kindFilter)) {
+			matched.push_back(item);
+		}
+	}
+	if (matched.empty()) {
+		outError = "program item not found";
+		return false;
+	}
+	if (matched.size() > 1) {
+		outError = "program item name is ambiguous";
+		return false;
+	}
+
+	outItem = matched.front();
+	e571::RawSearchContextPageDumpDebugResult dumpResult;
+	if (!e571::DebugDumpCodePageByProgramTreeItemData(
+			outItem.itemData,
+			GetCurrentProcessImageBaseForAI(),
+			&outCode,
+			&dumpResult)) {
+		outTrace = dumpResult.trace;
+		outError = "get page code failed";
+		return false;
+	}
+	outTrace = dumpResult.trace;
+	return true;
+}
+
+bool ParsePageNameFromSearchDisplayText(const std::string& displayText, std::string& outPageName)
+{
+	outPageName.clear();
+	const size_t arrowPos = displayText.find(" -> ");
+	if (arrowPos != std::string::npos && arrowPos > 0) {
+		outPageName = TrimAsciiCopy(displayText.substr(0, arrowPos));
+		return !outPageName.empty();
+	}
+
+	const size_t parenPos = displayText.find(" (");
+	if (parenPos != std::string::npos && parenPos > 0) {
+		outPageName = TrimAsciiCopy(displayText.substr(0, parenPos));
+		return !outPageName.empty();
+	}
+
+	return false;
+}
+
+std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	std::string keyword;
+	int limit = 50;
+	if (args.contains("keyword") && args["keyword"].is_string()) {
+		keyword = Utf8ToLocalText(args["keyword"].get<std::string>());
+	}
+	if (args.contains("limit") && args["limit"].is_number_integer()) {
+		limit = (std::clamp)(args["limit"].get<int>(), 1, 200);
+	}
+	keyword = TrimAsciiCopy(keyword);
+	if (keyword.empty()) {
+		return R"({"ok":false,"error":"keyword is required"})";
+	}
+
+	bool dialogHandled = false;
+	const auto hits = e571::DebugSearchDirectGlobalKeywordHiddenDetailed(
+		keyword.c_str(),
+		GetCurrentProcessImageBaseForAI(),
+		&dialogHandled);
+
+	std::vector<ProgramTreeItemInfo> items;
+	std::string listError;
+	TryListProgramTreeItemsForAI(items, &listError);
+
+	nlohmann::json results = nlohmann::json::array();
+	for (size_t i = 0; i < hits.size() && static_cast<int>(results.size()) < limit; ++i) {
+		KeywordSearchResultInfo info;
+		info.text = hits[i].displayText;
+		info.lineNumber = hits[i].outerIndex + 1;
+		ParsePageNameFromSearchDisplayText(hits[i].displayText, info.pageName);
+		for (const auto& item : items) {
+			if (!info.pageName.empty() && item.name == info.pageName) {
+				info.pageTypeKey = item.typeKey;
+				info.pageTypeName = item.typeName;
+				break;
+			}
+		}
+
+		nlohmann::json row;
+		row["index"] = static_cast<int>(i);
+		row["page_name"] = LocalToUtf8Text(info.pageName);
+		row["page_type_key"] = info.pageTypeKey;
+		row["page_type_name"] = LocalToUtf8Text(info.pageTypeName);
+		row["line_number"] = info.lineNumber;
+		row["text"] = LocalToUtf8Text(info.text);
+		results.push_back(std::move(row));
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["keyword"] = LocalToUtf8Text(keyword);
+	r["count"] = hits.size();
+	r["dialog_handled"] = dialogHandled;
+	r["code_kind"] = "pseudo_reference";
+	r["warning"] = LocalToUtf8Text("搜索结果文本以及后续按页面名抓取到的代码，与IDE正常编辑页结构可能不同，仅可作为伪代码参考。");
+	r["results"] = std::move(results);
+	if (!listError.empty()) {
+		r["page_type_lookup_error"] = listError;
+	}
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
 {
 	outOk = false;
+
 	if (toolName == "get_current_page_code") {
 		std::string pageCode;
 		if (!IDEFacade::Instance().GetCurrentPageCode(pageCode)) {
@@ -1006,6 +1437,200 @@ std::string ExecuteToolCall(const std::string& toolName, const std::string& argu
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
 	}
+
+	if (toolName == "list_program_items") {
+		nlohmann::json args;
+		try {
+			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const std::string kind = args.contains("kind") && args["kind"].is_string()
+			? ToLowerAsciiCopyLocal(TrimAsciiCopy(Utf8ToLocalText(args["kind"].get<std::string>())))
+			: std::string();
+		const std::string nameContains = args.contains("name_contains") && args["name_contains"].is_string()
+			? Utf8ToLocalText(args["name_contains"].get<std::string>())
+			: std::string();
+		const std::string exactName = args.contains("exact_name") && args["exact_name"].is_string()
+			? Utf8ToLocalText(args["exact_name"].get<std::string>())
+			: std::string();
+		const bool includeCode = args.contains("include_code") && args["include_code"].is_boolean()
+			? args["include_code"].get<bool>()
+			: false;
+		const int limit = args.contains("limit") && args["limit"].is_number_integer()
+			? (std::clamp)(args["limit"].get<int>(), 1, 200)
+			: 50;
+
+		std::vector<ProgramTreeItemInfo> items;
+		std::string error;
+		if (!TryListProgramTreeItemsForAI(items, &error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "list program items failed" : error;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		nlohmann::json rows = nlohmann::json::array();
+		for (const auto& item : items) {
+			if (!MatchProgramItemKind(item, kind)) {
+				continue;
+			}
+			if (!exactName.empty() && item.name != exactName) {
+				continue;
+			}
+			if (!nameContains.empty() && item.name.find(nameContains) == std::string::npos) {
+				continue;
+			}
+			if (static_cast<int>(rows.size()) >= limit) {
+				break;
+			}
+
+			nlohmann::json row;
+			row["name"] = LocalToUtf8Text(item.name);
+			row["type_key"] = item.typeKey;
+			row["type_name"] = LocalToUtf8Text(item.typeName);
+			row["item_data"] = item.itemData;
+			row["depth"] = item.depth;
+			row["image"] = item.image;
+			row["selected_image"] = item.selectedImage;
+
+			if (includeCode) {
+				std::string code;
+				e571::RawSearchContextPageDumpDebugResult dumpResult;
+				if (e571::DebugDumpCodePageByProgramTreeItemData(
+						item.itemData,
+						GetCurrentProcessImageBaseForAI(),
+						&code,
+						&dumpResult)) {
+					row["code"] = LocalToUtf8Text(code);
+					row["code_trace"] = dumpResult.trace;
+					row["code_kind"] = "pseudo_reference";
+					row["warning"] = LocalToUtf8Text("该代码来自程序树/逆向抓取，与IDE正常编辑页结构可能不同，仅可作为伪代码参考。");
+				}
+				else {
+					row["code_error"] = dumpResult.trace.empty() ? "get page code failed" : dumpResult.trace;
+				}
+			}
+
+			rows.push_back(std::move(row));
+		}
+
+		nlohmann::json r;
+		r["ok"] = true;
+		r["count"] = rows.size();
+		r["code_kind"] = "pseudo_reference";
+		r["warning"] = LocalToUtf8Text("程序树按名称抓取到的代码与IDE正常编辑页结构可能不同，仅可作为伪代码参考。");
+		r["items"] = std::move(rows);
+		outOk = true;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "get_program_item_code") {
+		nlohmann::json args;
+		try {
+			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const std::string name = args.contains("name") && args["name"].is_string()
+			? Utf8ToLocalText(args["name"].get<std::string>())
+			: std::string();
+		const std::string kind = args.contains("kind") && args["kind"].is_string()
+			? Utf8ToLocalText(args["kind"].get<std::string>())
+			: std::string();
+		if (TrimAsciiCopy(name).empty()) {
+			return R"({"ok":false,"error":"name is required"})";
+		}
+
+		ProgramTreeItemInfo item;
+		std::string code;
+		std::string trace;
+		std::string error;
+		if (!TryGetProgramItemCodeByNameForAI(name, kind, item, code, trace, error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "get program item code failed" : error;
+			if (!trace.empty()) {
+				r["trace"] = trace;
+			}
+			return Utf8ToLocalText(r.dump());
+		}
+
+		nlohmann::json r;
+		r["ok"] = true;
+		r["name"] = LocalToUtf8Text(item.name);
+		r["type_key"] = item.typeKey;
+		r["type_name"] = LocalToUtf8Text(item.typeName);
+		r["item_data"] = item.itemData;
+		r["trace"] = trace;
+		r["code_kind"] = "pseudo_reference";
+		r["warning"] = LocalToUtf8Text("该代码来自程序树按名称抓取，与IDE正常编辑页结构可能不同，仅可作为伪代码参考。");
+		r["code"] = LocalToUtf8Text(code);
+		outOk = true;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "search_project_keyword") {
+		return BuildProgramSearchResultJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	nlohmann::json r;
+	r["ok"] = false;
+	r["error"] = "unknown tool: " + toolName;
+	return Utf8ToLocalText(r.dump());
+}
+#else
+std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
+{
+	(void)toolName;
+	(void)argumentsJson;
+	outOk = false;
+	return R"({"ok":false,"error":"x86 only"})";
+}
+#endif
+
+bool RequestToolExecutionFromMainThread(
+	const std::string& toolName,
+	const std::string& argumentsJson,
+	std::string& outResultJson,
+	bool& outOk)
+{
+	outResultJson.clear();
+	outOk = false;
+	if (g_mainWindow == nullptr || !IsWindow(g_mainWindow) || g_msgAIChatToolExec == 0) {
+		return false;
+	}
+
+	ToolExecutionRequest request;
+	request.toolName = toolName;
+	request.argumentsJson = argumentsJson;
+	if (PostMessage(g_mainWindow, g_msgAIChatToolExec, 0, reinterpret_cast<LPARAM>(&request)) == FALSE) {
+		return false;
+	}
+
+	std::unique_lock<std::mutex> lock(request.mutex);
+	if (!request.cv.wait_for(lock, std::chrono::minutes(20), [&request]() { return request.done; })) {
+		return false;
+	}
+
+	outResultJson = request.resultJson;
+	outOk = request.ok;
+	return true;
+}
+
+std::string ExecuteToolCall(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
+{
+	outOk = false;
 
 	if (toolName == "request_code_edit") {
 		std::string title = LocalFromWide(L"AI\u4ee3\u7801\u7f16\u8f91");
@@ -1040,6 +1665,17 @@ std::string ExecuteToolCall(const std::string& toolName, const std::string& argu
 		r["code"] = LocalToUtf8Text(editedCode);
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "get_current_page_code" ||
+		toolName == "list_program_items" ||
+		toolName == "get_program_item_code" ||
+		toolName == "search_project_keyword") {
+		std::string resultJson;
+		if (!RequestToolExecutionFromMainThread(toolName, argumentsJson, resultJson, outOk)) {
+			return R"({"ok":false,"error":"main thread tool execution failed"})";
+		}
+		return resultJson;
 	}
 
 	nlohmann::json r;
@@ -1523,6 +2159,25 @@ bool HandleToolDialogRequest(LPARAM lParam)
 	request->cv.notify_one();
 	return true;
 }
+
+bool HandleToolExecRequest(LPARAM lParam)
+{
+	auto* request = reinterpret_cast<ToolExecutionRequest*>(lParam);
+	if (request == nullptr) {
+		return true;
+	}
+
+	bool ok = false;
+	const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, request->argumentsJson, ok);
+	{
+		std::lock_guard<std::mutex> guard(request->mutex);
+		request->ok = ok;
+		request->resultJson = resultJson;
+		request->done = true;
+	}
+	request->cv.notify_one();
+	return true;
+}
 } // namespace
 
 bool ShowAICodeEditDialog(HWND owner, const std::string& title, const std::string& initialCode, std::string& ioCode)
@@ -1667,6 +2322,7 @@ void Initialize(HWND mainWindow, ConfigManager* configManager)
 	g_configManager = configManager;
 	g_msgAIChatDone = RegisterWindowMessageA("AutoLinker.AIChat.Done");
 	g_msgAIChatToolDialog = RegisterWindowMessageA("AutoLinker.AIChat.ToolDialog");
+	g_msgAIChatToolExec = RegisterWindowMessageA("AutoLinker.AIChat.ToolExec");
 	EnsureTabCreated();
 }
 
@@ -1718,6 +2374,9 @@ bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 	}
 	if (g_msgAIChatToolDialog != 0 && uMsg == g_msgAIChatToolDialog) {
 		return HandleToolDialogRequest(lParam);
+	}
+	if (g_msgAIChatToolExec != 0 && uMsg == g_msgAIChatToolExec) {
+		return HandleToolExecRequest(lParam);
 	}
 	return false;
 }

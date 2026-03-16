@@ -412,6 +412,56 @@ nlohmann::json BuildChatToolDefinitions()
 	tools.push_back({
 		{"type", "function"},
 		{"function", {
+			{"name", "list_program_items"},
+			{"description", "List program tree items such as assemblies, class modules, global variables, user-defined types, DLL commands, forms and resources. Can optionally include code for each item. Important: code returned by program-tree lookup is only pseudo-code reference and may differ from the normal IDE page structure."},
+			{"parameters", {
+				{"type", "object"},
+				{"properties", {
+					{"kind", {{"type", "string"}, {"description", "Filter by item kind. Supported: all, assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+					{"name_contains", {{"type", "string"}}},
+					{"exact_name", {{"type", "string"}}},
+					{"include_code", {{"type", "boolean"}}},
+					{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}
+				}},
+				{"additionalProperties", false}
+			}}
+		}}
+	});
+	tools.push_back({
+		{"type", "function"},
+		{"function", {
+			{"name", "get_program_item_code"},
+			{"description", "Get code of a program tree item by exact name, optionally constrained by kind. Important: returned code is only pseudo-code reference and may differ from the normal IDE page structure."},
+			{"parameters", {
+				{"type", "object"},
+				{"properties", {
+					{"name", {{"type", "string"}}},
+					{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}}
+				}},
+				{"required", nlohmann::json::array({"name"})},
+				{"additionalProperties", false}
+			}}
+		}}
+	});
+	tools.push_back({
+		{"type", "function"},
+		{"function", {
+			{"name", "search_project_keyword"},
+			{"description", "Search a keyword across the project using IDE global search and return matched page names and line numbers. Search-based line text and follow-up code lookup should be treated as pseudo-code reference, not exact normal IDE page structure."},
+			{"parameters", {
+				{"type", "object"},
+				{"properties", {
+					{"keyword", {{"type", "string"}}},
+					{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}
+				}},
+				{"required", nlohmann::json::array({"keyword"})},
+				{"additionalProperties", false}
+			}}
+		}}
+	});
+	tools.push_back({
+		{"type", "function"},
+		{"function", {
 			{"name", "request_code_edit"},
 			{"description", "Open local editable code dialog and return user confirmed code."},
 			{"parameters", {
@@ -433,12 +483,15 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 {
 	std::string prompt =
 		"你是 AutoLinker 的易语言开发助手。\n"
-		"你可以通过工具获取当前页代码，或者请求用户在本地可编辑对话框中提供代码。\n"
+		"你可以通过工具获取当前页代码、枚举程序树中的程序集/类/全局变量等、按名称抓整页代码，以及执行项目级关键词搜索。\n"
 		"规则：\n"
 		"1) 需要源码时优先调用 get_current_page_code，不要臆造现有代码。\n"
-		"2) 需要用户确认/修订代码时调用 request_code_edit。\n"
-		"3) 工具返回失败或取消时，给出下一步建议，不要编造工具结果。\n"
-		"4) 除非用户要求解释，否则尽量给直接可执行结论。\n";
+		"2) 需要枚举项目结构时优先调用 list_program_items；需要某个程序集/类整页代码时调用 get_program_item_code。\n"
+		"3) 需要项目内关键词定位时调用 search_project_keyword，并根据返回的 page_name 再决定是否抓该页代码。\n"
+		"4) 通过搜索结果或程序树按名称拿到的代码，不保证与 IDE 正常编辑页结构一致，只能作为伪代码参考；分析和修改建议时必须明确这一点。\n"
+		"5) 需要用户确认/修订代码时调用 request_code_edit。\n"
+		"6) 工具返回失败或取消时，给出下一步建议，不要编造工具结果。\n"
+		"7) 除非用户要求解释，否则尽量给直接可执行结论。\n";
 
 	const std::string extraPrompt = AIService::Trim(settings.extraSystemPrompt);
 	if (!extraPrompt.empty()) {
