@@ -443,7 +443,23 @@ nlohmann::json BuildChatToolDefinitions()
 		{"type", "function"},
 		{"function", {
 			{"name", "get_program_item_code"},
-			{"description", "Get code of a program tree item by exact name, optionally constrained by kind. Important: returned code is only pseudo-code reference and may differ from the normal IDE page structure."},
+			{"description", "Get code of a program tree item by exact name, optionally constrained by kind. Important: this may switch the IDE current page as part of native retrieval, and returned code is only pseudo-code reference and may differ from the normal IDE page structure."},
+			{"parameters", {
+				{"type", "object"},
+				{"properties", {
+					{"name", {{"type", "string"}}},
+					{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}}
+				}},
+				{"required", nlohmann::json::array({"name"})},
+				{"additionalProperties", false}
+			}}
+		}}
+	});
+	tools.push_back({
+		{"type", "function"},
+		{"function", {
+			{"name", "switch_to_program_item_page"},
+			{"description", "Switch/open a program tree page by exact name, optionally constrained by kind. This will change the IDE current page and only activates that page; it does not fetch code."},
 			{"parameters", {
 				{"type", "object"},
 				{"properties", {
@@ -459,7 +475,7 @@ nlohmann::json BuildChatToolDefinitions()
 		{"type", "function"},
 		{"function", {
 			{"name", "search_project_keyword"},
-			{"description", "Search a keyword across the project using IDE global search and return matched page names and line numbers. Search-based line text and follow-up code lookup should be treated as pseudo-code reference, not exact normal IDE page structure."},
+			{"description", "Search a keyword across the project using IDE global search and return matched page names, line numbers and a jump_token for each result. Search-based line text and follow-up code lookup should be treated as pseudo-code reference, not exact normal IDE page structure."},
 			{"parameters", {
 				{"type", "object"},
 				{"properties", {
@@ -467,6 +483,21 @@ nlohmann::json BuildChatToolDefinitions()
 					{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}
 				}},
 				{"required", nlohmann::json::array({"keyword"})},
+				{"additionalProperties", false}
+			}}
+		}}
+	});
+	tools.push_back({
+		{"type", "function"},
+		{"function", {
+			{"name", "jump_to_search_result"},
+			{"description", "Jump to one specific search result returned by search_project_keyword using that row's jump_token. This will change the IDE current page and caret position."},
+			{"parameters", {
+				{"type", "object"},
+				{"properties", {
+					{"jump_token", {{"type", "string"}}}
+				}},
+				{"required", nlohmann::json::array({"jump_token"})},
 				{"additionalProperties", false}
 			}}
 		}}
@@ -499,12 +530,13 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"规则：\n"
 		"1) 需要源码时优先调用 get_current_page_code，不要臆造现有代码；该工具会同时返回当前页名称和页类型。\n"
 		"2) 只需要知道当前页是谁而不需要全文代码时，调用 get_current_page_info。\n"
-		"3) 需要枚举项目结构时优先调用 list_program_items；需要某个程序集/类整页代码时调用 get_program_item_code。\n"
-		"4) 需要项目内关键词定位时调用 search_project_keyword，并根据返回的 page_name 再决定是否抓该页代码。\n"
-		"5) 通过搜索结果或程序树按名称拿到的代码，不保证与 IDE 正常编辑页结构一致，只能作为伪代码参考；分析和修改建议时必须明确这一点。\n"
-		"6) 需要用户确认/修订代码时调用 request_code_edit。\n"
-		"7) 工具返回失败或取消时，给出下一步建议，不要编造工具结果。\n"
-		"8) 除非用户要求解释，否则尽量给直接可执行结论。\n";
+		"3) 需要枚举项目结构时优先调用 list_program_items；需要某个程序集/类整页代码时调用 get_program_item_code；只需要切换页面时调用 switch_to_program_item_page。\n"
+		"4) 需要项目内关键词定位时先调用 search_project_keyword 查看结果；若要精确跳到其中某一条，使用该条结果返回的 jump_token 调用 jump_to_search_result。\n"
+		"5) get_program_item_code、switch_to_program_item_page、jump_to_search_result 都可能触发 IDE 当前页面变更；调用前要意识到这是有副作用的，不要把调用前后的当前页混为一谈。\n"
+		"6) 通过搜索结果或程序树按名称拿到的代码，不保证与 IDE 正常编辑页结构一致，只能作为伪代码参考；分析和修改建议时必须明确这一点。\n"
+		"7) 需要用户确认/修订代码时调用 request_code_edit。\n"
+		"8) 工具返回失败或取消时，给出下一步建议，不要编造工具结果。\n"
+		"9) 除非用户要求解释，否则尽量给直接可执行结论。\n";
 
 	const std::string extraPrompt = AIService::Trim(settings.extraSystemPrompt);
 	if (!extraPrompt.empty()) {

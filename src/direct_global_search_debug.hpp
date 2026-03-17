@@ -89,4 +89,14 @@ bool DebugDumpCodePageByProgramTreeItemData(
     std::string* outCode,
     RawSearchContextPageDumpDebugResult* outResult = nullptr);
 
+bool DebugOpenProgramTreeItemByData(
+    unsigned int itemData,
+    std::uintptr_t moduleBase,
+    std::string* outTrace = nullptr);
+
+bool DebugJumpToSearchHit(
+    const DirectGlobalSearchDebugHit& hit,
+    std::uintptr_t moduleBase,
+    std::string* outTrace = nullptr);
+
 }  // namespace e571

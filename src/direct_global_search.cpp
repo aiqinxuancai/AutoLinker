@@ -2545,3 +2545,53 @@ bool e571::DebugDumpCodePageByProgramTreeItemData(
     }
     return dumpResult.ok;
 }
+
+bool e571::DebugOpenProgramTreeItemByData(
+    unsigned int itemData,
+    std::uintptr_t moduleBase,
+    std::string* outTrace) {
+    if (outTrace != nullptr) {
+        outTrace->clear();
+    }
+
+    void* editorObject = nullptr;
+    int resolvedType = 0;
+    int resolvedIndex = -1;
+    int bucketData = 0;
+    std::string trace;
+    const bool ok = TryResolveEditorObjectForProgramTreeItemData(
+        itemData,
+        moduleBase,
+        &editorObject,
+        &resolvedType,
+        &resolvedIndex,
+        &bucketData,
+        &trace);
+    if (outTrace != nullptr) {
+        *outTrace = trace;
+    }
+    return ok && editorObject != nullptr;
+}
+
+bool e571::DebugJumpToSearchHit(
+    const DirectGlobalSearchDebugHit& hit,
+    std::uintptr_t moduleBase,
+    std::string* outTrace) {
+    if (outTrace != nullptr) {
+        outTrace->clear();
+    }
+
+    DirectGlobalSearch search(moduleBase);
+    DirectGlobalSearch::GlobalSearchHit rawHit{};
+    rawHit.type = hit.type;
+    rawHit.extra = hit.extra;
+    rawHit.outerIndex = hit.outerIndex;
+    rawHit.innerIndex = hit.innerIndex;
+    rawHit.matchOffset = hit.matchOffset;
+
+    const bool ok = SafeJumpToResult(search, rawHit);
+    if (outTrace != nullptr) {
+        *outTrace = ok ? "jump_ok" : "jump_failed";
+    }
+    return ok;
+}

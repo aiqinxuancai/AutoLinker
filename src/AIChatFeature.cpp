@@ -1347,6 +1347,60 @@ bool ParsePageNameFromSearchDisplayText(const std::string& displayText, std::str
 	return false;
 }
 
+std::string BuildSearchJumpToken(const e571::DirectGlobalSearchDebugHit& hit)
+{
+	return std::format(
+		"v1:{}:{}:{}:{}:{}",
+		hit.type,
+		hit.extra,
+		hit.outerIndex,
+		hit.innerIndex,
+		hit.matchOffset);
+}
+
+bool ParseSearchJumpToken(const std::string& token, e571::DirectGlobalSearchDebugHit& outHit)
+{
+	outHit = {};
+	const std::string text = TrimAsciiCopy(token);
+	static constexpr char kPrefix[] = "v1:";
+	if (text.empty() || text.rfind(kPrefix, 0) != 0) {
+		return false;
+	}
+
+	std::vector<int> values;
+	size_t begin = sizeof(kPrefix) - 1;
+	while (begin < text.size()) {
+		const size_t end = text.find(':', begin);
+		const std::string part = (end == std::string::npos)
+			? text.substr(begin)
+			: text.substr(begin, end - begin);
+		if (part.empty()) {
+			return false;
+		}
+		try {
+			values.push_back(std::stoi(part));
+		}
+		catch (...) {
+			return false;
+		}
+		if (end == std::string::npos) {
+			break;
+		}
+		begin = end + 1;
+	}
+
+	if (values.size() != 5) {
+		return false;
+	}
+
+	outHit.type = values[0];
+	outHit.extra = values[1];
+	outHit.outerIndex = values[2];
+	outHit.innerIndex = values[3];
+	outHit.matchOffset = values[4];
+	return true;
+}
+
 std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
 {
 	nlohmann::json args;
@@ -1404,6 +1458,7 @@ std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argument
 		row["page_type_name"] = LocalToUtf8Text(info.pageTypeName);
 		row["line_number"] = info.lineNumber;
 		row["text"] = LocalToUtf8Text(info.text);
+		row["jump_token"] = BuildSearchJumpToken(hits[i]);
 		results.push_back(std::move(row));
 	}
 
@@ -1610,8 +1665,145 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		return Utf8ToLocalText(r.dump());
 	}
 
+	if (toolName == "switch_to_program_item_page") {
+		nlohmann::json args;
+		try {
+			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const std::string name = args.contains("name") && args["name"].is_string()
+			? Utf8ToLocalText(args["name"].get<std::string>())
+			: std::string();
+		const std::string kind = args.contains("kind") && args["kind"].is_string()
+			? Utf8ToLocalText(args["kind"].get<std::string>())
+			: std::string();
+		if (TrimAsciiCopy(name).empty()) {
+			return R"({"ok":false,"error":"name is required"})";
+		}
+
+		std::vector<ProgramTreeItemInfo> items;
+		std::string error;
+		if (!TryListProgramTreeItemsForAI(items, &error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "list program items failed" : error;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		std::vector<ProgramTreeItemInfo> matched;
+		for (const auto& item : items) {
+			if (item.name == name && MatchProgramItemKind(item, kind)) {
+				matched.push_back(item);
+			}
+		}
+		if (matched.empty()) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "program item not found";
+			return Utf8ToLocalText(r.dump());
+		}
+		if (matched.size() > 1) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "program item name is ambiguous";
+			return Utf8ToLocalText(r.dump());
+		}
+
+		std::string openTrace;
+		if (!e571::DebugOpenProgramTreeItemByData(
+				matched.front().itemData,
+				GetCurrentProcessImageBaseForAI(),
+				&openTrace)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "open program item page failed";
+			r["trace"] = openTrace;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		std::string currentPageName;
+		std::string currentPageType;
+		std::string currentPageTrace;
+		const bool currentPageOk = IDEFacade::Instance().GetCurrentPageName(
+			currentPageName,
+			&currentPageType,
+			&currentPageTrace);
+
+		nlohmann::json r;
+		r["ok"] = true;
+		r["requested_name"] = LocalToUtf8Text(name);
+		r["type_key"] = matched.front().typeKey;
+		r["type_name"] = LocalToUtf8Text(matched.front().typeName);
+		r["item_data"] = matched.front().itemData;
+		r["trace"] = openTrace;
+		r["current_page_ok"] = currentPageOk;
+		r["current_page_name"] = LocalToUtf8Text(currentPageName);
+		r["current_page_type"] = LocalToUtf8Text(currentPageType);
+		r["current_page_trace"] = currentPageTrace;
+		outOk = true;
+		return Utf8ToLocalText(r.dump());
+	}
+
 	if (toolName == "search_project_keyword") {
 		return BuildProgramSearchResultJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "jump_to_search_result") {
+		nlohmann::json args;
+		try {
+			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const std::string jumpToken = args.contains("jump_token") && args["jump_token"].is_string()
+			? args["jump_token"].get<std::string>()
+			: std::string();
+		if (TrimAsciiCopy(jumpToken).empty()) {
+			return R"({"ok":false,"error":"jump_token is required"})";
+		}
+
+		e571::DirectGlobalSearchDebugHit hit{};
+		if (!ParseSearchJumpToken(jumpToken, hit)) {
+			return R"({"ok":false,"error":"invalid jump_token"})";
+		}
+
+		std::string jumpTrace;
+		if (!e571::DebugJumpToSearchHit(hit, GetCurrentProcessImageBaseForAI(), &jumpTrace)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "jump to search result failed";
+			r["trace"] = jumpTrace;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		std::string currentPageName;
+		std::string currentPageType;
+		std::string currentPageTrace;
+		const bool currentPageOk = IDEFacade::Instance().GetCurrentPageName(
+			currentPageName,
+			&currentPageType,
+			&currentPageTrace);
+
+		nlohmann::json r;
+		r["ok"] = true;
+		r["trace"] = jumpTrace;
+		r["current_page_ok"] = currentPageOk;
+		r["current_page_name"] = LocalToUtf8Text(currentPageName);
+		r["current_page_type"] = LocalToUtf8Text(currentPageType);
+		r["current_page_trace"] = currentPageTrace;
+		outOk = true;
+		return Utf8ToLocalText(r.dump());
 	}
 
 	nlohmann::json r;
@@ -1701,7 +1893,9 @@ std::string ExecuteToolCall(const std::string& toolName, const std::string& argu
 		toolName == "get_current_page_info" ||
 		toolName == "list_program_items" ||
 		toolName == "get_program_item_code" ||
-		toolName == "search_project_keyword") {
+		toolName == "switch_to_program_item_page" ||
+		toolName == "search_project_keyword" ||
+		toolName == "jump_to_search_result") {
 		std::string resultJson;
 		if (!RequestToolExecutionFromMainThread(toolName, argumentsJson, resultJson, outOk)) {
 			return R"({"ok":false,"error":"main thread tool execution failed"})";
