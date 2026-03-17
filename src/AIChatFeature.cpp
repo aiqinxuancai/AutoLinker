@@ -53,6 +53,7 @@ constexpr int IDC_CODE_CANCEL = 2;
 constexpr int IDC_CODE_COPY = 2204;
 constexpr UINT_PTR kEditSubclassId = 1;
 constexpr UINT_PTR kActionControlSubclassId = 2;
+constexpr UINT_PTR kLeftWorkAreaHostSubclassId = 3;
 constexpr DWORD_PTR kEditFlagNone = 0;
 constexpr DWORD_PTR kEditFlagSubmitOnEnter = 1;
 constexpr UINT_PTR kActionSubmit = 1;
@@ -130,6 +131,22 @@ HWND g_mainWindow = nullptr;
 ConfigManager* g_configManager = nullptr;
 HWND g_chatDialog = nullptr;
 bool g_chatTabAdded = false;
+enum class ChatHostMode {
+	None,
+	LeftWorkArea,
+	OutputTab
+};
+struct LeftWorkAreaHostState {
+	HWND tabHwnd = nullptr;
+	HWND hostHwnd = nullptr;
+	int tabIndex = -1;
+	int imageIndex = -1;
+	bool pageVisible = false;
+	bool subclassInstalled = false;
+	std::vector<HWND> hiddenNativeChildren;
+};
+ChatHostMode g_chatHostMode = ChatHostMode::None;
+LeftWorkAreaHostState g_leftWorkAreaHost;
 AIChatSessionState g_session;
 UINT g_msgAIChatDone = 0;
 UINT g_msgAIChatToolDialog = 0;
@@ -163,6 +180,67 @@ struct KeywordSearchResultInfo {
 	int lineNumber = -1;
 	std::string text;
 };
+
+std::string GetWindowTextCopyLocalA(HWND hWnd)
+{
+	char buffer[512] = {};
+	if (hWnd != nullptr && IsWindow(hWnd)) {
+		GetWindowTextA(hWnd, buffer, static_cast<int>(sizeof(buffer)));
+	}
+	return buffer;
+}
+
+std::string GetWindowClassCopyLocalA(HWND hWnd)
+{
+	char buffer[128] = {};
+	if (hWnd != nullptr && IsWindow(hWnd)) {
+		GetClassNameA(hWnd, buffer, static_cast<int>(sizeof(buffer)));
+	}
+	return buffer;
+}
+
+BOOL CALLBACK EnumChildProcCollectClass(HWND hWnd, LPARAM lParam)
+{
+	auto* pair = reinterpret_cast<std::pair<const char*, std::vector<HWND>*>*>(lParam);
+	if (pair == nullptr || pair->first == nullptr || pair->second == nullptr) {
+		return TRUE;
+	}
+
+	const std::string className = GetWindowClassCopyLocalA(hWnd);
+	if (_stricmp(className.c_str(), pair->first) == 0) {
+		pair->second->push_back(hWnd);
+	}
+	return TRUE;
+}
+
+std::vector<HWND> CollectChildWindowsByClass(HWND root, const char* className)
+{
+	std::vector<HWND> windows;
+	if (root == nullptr || !IsWindow(root) || className == nullptr || className[0] == '\0') {
+		return windows;
+	}
+
+	std::pair<const char*, std::vector<HWND>*> ctx{ className, &windows };
+	EnumChildWindows(root, EnumChildProcCollectClass, reinterpret_cast<LPARAM>(&ctx));
+	return windows;
+}
+
+std::string ReadTabItemTextA(HWND tabHwnd, int index)
+{
+	if (tabHwnd == nullptr || !IsWindow(tabHwnd) || index < 0) {
+		return std::string();
+	}
+
+	char textBuf[256] = {};
+	TCITEMA item = {};
+	item.mask = TCIF_TEXT;
+	item.pszText = textBuf;
+	item.cchTextMax = static_cast<int>(sizeof(textBuf));
+	if (SendMessageA(tabHwnd, TCM_GETITEMA, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(&item)) == FALSE) {
+		return std::string();
+	}
+	return textBuf;
+}
 
 HMODULE GetCurrentModuleHandle()
 {
@@ -615,6 +693,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int clientHeight = rc.bottom - rc.top;
 
 	const int margin = 0;
+	const int bottomMargin = 4;
 	const int gap = 6;
 	const int actionRowHeight = 22;
 	const int inputHeightSingle = 30;
@@ -627,7 +706,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int contentWidth = (std::max)(120, clientWidth - margin * 2);
 	const int inputWidth = (std::max)(80, contentWidth - sendWidth - gap);
 	const int sendX = margin + inputWidth + gap;
-	const int inputY = clientHeight - margin - inputHeight;
+	const int inputY = clientHeight - bottomMargin - inputHeight;
 	const int actionRowY = inputY - gap - actionRowHeight;
 	const int historyY = margin;
 	const int historyHeight = (std::max)(80, actionRowY - gap - historyY);
@@ -2405,6 +2484,9 @@ bool HandleToolExecRequest(LPARAM lParam)
 }
 } // namespace
 
+bool EnsureChatHostWindowCreated();
+void FocusChatInputControl();
+
 bool ShowAICodeEditDialog(HWND owner, const std::string& title, const std::string& initialCode, std::string& ioCode)
 {
 	ComCtl6ActivationScope themeScope;
@@ -2456,9 +2538,294 @@ std::string GetChatTabCaption()
 	return LocalFromWide(L"AutoLinker AI 对话");
 }
 
+void LogChatTab(const std::string& text);
+
+std::string GetLeftWorkAreaTabCaption()
+{
+	return "AI";
+}
+
+int EnsureLeftWorkAreaTabImageIndex(HWND tabHwnd)
+{
+	if (tabHwnd == nullptr || !IsWindow(tabHwnd)) {
+		return -1;
+	}
+
+	HIMAGELIST imageList = TabCtrl_GetImageList(tabHwnd);
+	if (imageList == nullptr) {
+		return -1;
+	}
+
+	if (g_leftWorkAreaHost.imageIndex >= 0) {
+		return g_leftWorkAreaHost.imageIndex;
+	}
+
+	const int addedIndex = ImageList_AddIcon(imageList, GetAppIconSmall());
+	if (addedIndex < 0) {
+		LogChatTab("add left work area tab icon failed");
+		return -1;
+	}
+
+	g_leftWorkAreaHost.imageIndex = addedIndex;
+	LogChatTab("add left work area tab icon ok");
+	return addedIndex;
+}
+
 void LogChatTab(const std::string& text)
 {
 	OutputStringToELog("[AI Chat][Tab] " + text);
+}
+
+bool IsLeftWorkAreaTabControl(HWND tabHwnd)
+{
+	if (tabHwnd == nullptr || !IsWindow(tabHwnd)) {
+		return false;
+	}
+
+	const int itemCount = static_cast<int>(SendMessageA(tabHwnd, TCM_GETITEMCOUNT, 0, 0));
+	if (itemCount < 3) {
+		return false;
+	}
+
+	return ReadTabItemTextA(tabHwnd, 0) == LocalFromWide(L"支持库") &&
+		ReadTabItemTextA(tabHwnd, 1) == LocalFromWide(L"程序") &&
+		ReadTabItemTextA(tabHwnd, 2) == LocalFromWide(L"属性");
+}
+
+HWND FindLeftWorkAreaTabControl()
+{
+	const auto tabs = CollectChildWindowsByClass(g_mainWindow, WC_TABCONTROLA);
+	for (HWND tabHwnd : tabs) {
+		if (IsLeftWorkAreaTabControl(tabHwnd)) {
+			return tabHwnd;
+		}
+	}
+	return nullptr;
+}
+
+void RestoreLeftWorkAreaNativeChildren()
+{
+	for (HWND childHwnd : g_leftWorkAreaHost.hiddenNativeChildren) {
+		if (childHwnd != nullptr && IsWindow(childHwnd)) {
+			ShowWindow(childHwnd, SW_SHOW);
+		}
+	}
+	g_leftWorkAreaHost.hiddenNativeChildren.clear();
+}
+
+RECT GetLeftWorkAreaPageRectInHost()
+{
+	RECT rc = {};
+	if (g_leftWorkAreaHost.tabHwnd == nullptr || g_leftWorkAreaHost.hostHwnd == nullptr) {
+		return rc;
+	}
+
+	GetClientRect(g_leftWorkAreaHost.tabHwnd, &rc);
+	TabCtrl_AdjustRect(g_leftWorkAreaHost.tabHwnd, FALSE, &rc);
+	MapWindowPoints(g_leftWorkAreaHost.tabHwnd, g_leftWorkAreaHost.hostHwnd, reinterpret_cast<LPPOINT>(&rc), 2);
+	return rc;
+}
+
+void LayoutLeftWorkAreaChatPage()
+{
+	if (g_chatDialog == nullptr || !IsWindow(g_chatDialog) ||
+		g_leftWorkAreaHost.hostHwnd == nullptr || !IsWindow(g_leftWorkAreaHost.hostHwnd) ||
+		g_leftWorkAreaHost.tabHwnd == nullptr || !IsWindow(g_leftWorkAreaHost.tabHwnd)) {
+		return;
+	}
+
+	RECT rc = GetLeftWorkAreaPageRectInHost();
+	const int width = (std::max)(120, static_cast<int>(rc.right - rc.left));
+	const int height = (std::max)(120, static_cast<int>(rc.bottom - rc.top));
+	SetWindowPos(
+		g_chatDialog,
+		HWND_TOP,
+		rc.left,
+		rc.top,
+		width,
+		height,
+		SWP_NOACTIVATE);
+	PostMessageA(g_chatDialog, WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT, 0, 0);
+}
+
+void ShowLeftWorkAreaChatPage(bool focusInput)
+{
+	if (g_leftWorkAreaHost.hostHwnd == nullptr || !IsWindow(g_leftWorkAreaHost.hostHwnd) ||
+		g_leftWorkAreaHost.tabHwnd == nullptr || !IsWindow(g_leftWorkAreaHost.tabHwnd) ||
+		g_chatDialog == nullptr || !IsWindow(g_chatDialog)) {
+		return;
+	}
+
+	if (GetParent(g_chatDialog) != g_leftWorkAreaHost.hostHwnd) {
+		SetParent(g_chatDialog, g_leftWorkAreaHost.hostHwnd);
+	}
+
+	if (!g_leftWorkAreaHost.pageVisible) {
+		for (HWND childHwnd = GetWindow(g_leftWorkAreaHost.hostHwnd, GW_CHILD);
+			childHwnd != nullptr;
+			childHwnd = GetWindow(childHwnd, GW_HWNDNEXT)) {
+			if (childHwnd == g_leftWorkAreaHost.tabHwnd || childHwnd == g_chatDialog) {
+				continue;
+			}
+			if (!IsWindowVisible(childHwnd)) {
+				continue;
+			}
+			g_leftWorkAreaHost.hiddenNativeChildren.push_back(childHwnd);
+			ShowWindow(childHwnd, SW_HIDE);
+		}
+	}
+
+	g_leftWorkAreaHost.pageVisible = true;
+	LayoutLeftWorkAreaChatPage();
+	ShowWindow(g_chatDialog, SW_SHOW);
+	if (focusInput) {
+		FocusChatInputControl();
+	}
+}
+
+void HideLeftWorkAreaChatPage(bool restoreNativeChildren)
+{
+	if (g_chatDialog != nullptr && IsWindow(g_chatDialog)) {
+		ShowWindow(g_chatDialog, SW_HIDE);
+	}
+	g_leftWorkAreaHost.pageVisible = false;
+	if (restoreNativeChildren) {
+		RestoreLeftWorkAreaNativeChildren();
+	}
+}
+
+LRESULT CALLBACK LeftWorkAreaHostSubclassProc(
+	HWND hWnd,
+	UINT uMsg,
+	WPARAM wParam,
+	LPARAM lParam,
+	UINT_PTR uIdSubclass,
+	DWORD_PTR dwRefData)
+{
+	(void)dwRefData;
+	switch (uMsg)
+	{
+	case WM_NOTIFY: {
+		const auto* hdr = reinterpret_cast<NMHDR*>(lParam);
+		if (hdr != nullptr &&
+			hdr->hwndFrom == g_leftWorkAreaHost.tabHwnd &&
+			hdr->code == TCN_SELCHANGE) {
+			const int curSel = static_cast<int>(SendMessageA(g_leftWorkAreaHost.tabHwnd, TCM_GETCURSEL, 0, 0));
+			if (curSel == g_leftWorkAreaHost.tabIndex) {
+				ShowLeftWorkAreaChatPage(true);
+				return 0;
+			}
+
+			const bool leavingChatPage = g_leftWorkAreaHost.pageVisible;
+			if (leavingChatPage) {
+				HideLeftWorkAreaChatPage(true);
+			}
+			return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+		}
+		break;
+	}
+
+	case WM_SIZE:
+	case WM_WINDOWPOSCHANGED:
+		if (g_leftWorkAreaHost.pageVisible) {
+			LayoutLeftWorkAreaChatPage();
+		}
+		break;
+
+	case WM_NCDESTROY:
+		g_leftWorkAreaHost.tabHwnd = nullptr;
+		g_leftWorkAreaHost.hostHwnd = nullptr;
+		g_leftWorkAreaHost.tabIndex = -1;
+		g_leftWorkAreaHost.imageIndex = -1;
+		g_leftWorkAreaHost.pageVisible = false;
+		g_leftWorkAreaHost.hiddenNativeChildren.clear();
+		g_leftWorkAreaHost.subclassInstalled = false;
+		RemoveWindowSubclass(hWnd, LeftWorkAreaHostSubclassProc, uIdSubclass);
+		break;
+
+	default:
+		break;
+	}
+	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+bool EnsureLeftWorkAreaChatTabAdded()
+{
+	if (!EnsureChatHostWindowCreated()) {
+		return false;
+	}
+
+	HWND tabHwnd = g_leftWorkAreaHost.tabHwnd;
+	if (tabHwnd == nullptr || !IsWindow(tabHwnd) || !IsLeftWorkAreaTabControl(tabHwnd)) {
+		tabHwnd = FindLeftWorkAreaTabControl();
+	}
+	if (tabHwnd == nullptr || !IsWindow(tabHwnd)) {
+		LogChatTab("left work area tab not found");
+		return false;
+	}
+
+	HWND hostHwnd = GetParent(tabHwnd);
+	if (hostHwnd == nullptr || !IsWindow(hostHwnd)) {
+		LogChatTab("left work area host invalid");
+		return false;
+	}
+
+	const std::string caption = GetLeftWorkAreaTabCaption();
+	int tabIndex = -1;
+	const int itemCount = static_cast<int>(SendMessageA(tabHwnd, TCM_GETITEMCOUNT, 0, 0));
+	for (int index = 0; index < itemCount; ++index) {
+		if (ReadTabItemTextA(tabHwnd, index) == caption) {
+			tabIndex = index;
+			break;
+		}
+	}
+
+	if (tabIndex < 0) {
+		TCITEMA item = {};
+		item.mask = TCIF_TEXT;
+		item.pszText = const_cast<LPSTR>(caption.c_str());
+		const int imageIndex = EnsureLeftWorkAreaTabImageIndex(tabHwnd);
+		if (imageIndex >= 0) {
+			item.mask |= TCIF_IMAGE;
+			item.iImage = imageIndex;
+		}
+		const LRESULT insertIndex = SendMessageA(tabHwnd, TCM_INSERTITEMA, static_cast<WPARAM>(itemCount), reinterpret_cast<LPARAM>(&item));
+		if (insertIndex < 0) {
+			LogChatTab("insert left work area tab failed");
+			return false;
+		}
+		tabIndex = static_cast<int>(insertIndex);
+		LogChatTab("insert left work area tab ok");
+	}
+
+	g_leftWorkAreaHost.tabHwnd = tabHwnd;
+	g_leftWorkAreaHost.hostHwnd = hostHwnd;
+	g_leftWorkAreaHost.tabIndex = tabIndex;
+	if (g_leftWorkAreaHost.imageIndex < 0) {
+		g_leftWorkAreaHost.imageIndex = EnsureLeftWorkAreaTabImageIndex(tabHwnd);
+	}
+	if (g_leftWorkAreaHost.imageIndex >= 0) {
+		TCITEMA item = {};
+		item.mask = TCIF_IMAGE;
+		item.iImage = g_leftWorkAreaHost.imageIndex;
+		SendMessageA(tabHwnd, TCM_SETITEMA, static_cast<WPARAM>(tabIndex), reinterpret_cast<LPARAM>(&item));
+	}
+	if (!g_leftWorkAreaHost.subclassInstalled) {
+		if (SetWindowSubclass(hostHwnd, LeftWorkAreaHostSubclassProc, kLeftWorkAreaHostSubclassId, 0) == FALSE) {
+			LogChatTab("subclass left work area host failed");
+			return false;
+		}
+		g_leftWorkAreaHost.subclassInstalled = true;
+	}
+
+	if (GetParent(g_chatDialog) != hostHwnd) {
+		SetParent(g_chatDialog, hostHwnd);
+	}
+	ShowWindow(g_chatDialog, SW_HIDE);
+	g_chatHostMode = ChatHostMode::LeftWorkArea;
+	g_chatTabAdded = true;
+	LogChatTab("left work area host ok");
+	return true;
 }
 
 bool EnsureChatHostWindowCreated()
@@ -2491,7 +2858,7 @@ bool EnsureChatHostWindowCreated()
 		WS_EX_CONTROLPARENT,
 		wc.lpszClassName,
 		"",
-		WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+		WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
 		0, 0, 860, 680,
 		g_mainWindow,
 		nullptr,
@@ -2516,6 +2883,10 @@ bool EnsureChatTabAddedInternal()
 		return true;
 	}
 
+	if (EnsureLeftWorkAreaChatTabAdded()) {
+		return true;
+	}
+
 	const std::string caption = GetChatTabCaption();
 	const bool ok = IDEFacade::Instance().AddOutputTab(g_chatDialog, caption, "AutoLinker AI Chat", GetAppIconSmall());
 	if (!ok) {
@@ -2523,6 +2894,7 @@ bool EnsureChatTabAddedInternal()
 		return false;
 	}
 
+	g_chatHostMode = ChatHostMode::OutputTab;
 	g_chatTabAdded = true;
 	LogChatTab("add tab ok");
 	PostMessageA(g_chatDialog, WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT, 0, 0);
@@ -2553,6 +2925,18 @@ void Initialize(HWND mainWindow, ConfigManager* configManager)
 
 void Shutdown()
 {
+	if (g_leftWorkAreaHost.hostHwnd != nullptr && g_leftWorkAreaHost.subclassInstalled && IsWindow(g_leftWorkAreaHost.hostHwnd)) {
+		RemoveWindowSubclass(g_leftWorkAreaHost.hostHwnd, LeftWorkAreaHostSubclassProc, kLeftWorkAreaHostSubclassId);
+	}
+	HideLeftWorkAreaChatPage(true);
+	if (g_leftWorkAreaHost.tabHwnd != nullptr &&
+		IsWindow(g_leftWorkAreaHost.tabHwnd) &&
+		g_leftWorkAreaHost.tabIndex >= 0 &&
+		ReadTabItemTextA(g_leftWorkAreaHost.tabHwnd, g_leftWorkAreaHost.tabIndex) == GetLeftWorkAreaTabCaption()) {
+		SendMessageA(g_leftWorkAreaHost.tabHwnd, TCM_DELETEITEM, static_cast<WPARAM>(g_leftWorkAreaHost.tabIndex), 0);
+	}
+	g_leftWorkAreaHost = {};
+	g_chatHostMode = ChatHostMode::None;
 	if (g_chatDialog != nullptr && IsWindow(g_chatDialog)) {
 		DestroyWindow(g_chatDialog);
 		g_chatDialog = nullptr;
@@ -2579,9 +2963,17 @@ void ActivateTab()
 		return;
 	}
 
-	ShowWindow(g_chatDialog, SW_SHOW);
-	PostMessageA(g_chatDialog, WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT, 0, 0);
-	FocusChatInputControl();
+	if (g_chatHostMode == ChatHostMode::LeftWorkArea &&
+		g_leftWorkAreaHost.tabHwnd != nullptr &&
+		IsWindow(g_leftWorkAreaHost.tabHwnd) &&
+		g_leftWorkAreaHost.tabIndex >= 0) {
+		SendMessageA(g_leftWorkAreaHost.tabHwnd, TCM_SETCURSEL, static_cast<WPARAM>(g_leftWorkAreaHost.tabIndex), 0);
+		ShowLeftWorkAreaChatPage(true);
+	} else {
+		ShowWindow(g_chatDialog, SW_SHOW);
+		PostMessageA(g_chatDialog, WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT, 0, 0);
+		FocusChatInputControl();
+	}
 	LogChatTab("activate");
 }
 
