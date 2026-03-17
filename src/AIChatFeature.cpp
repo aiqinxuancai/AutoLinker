@@ -1431,9 +1431,39 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		if (!IDEFacade::Instance().GetCurrentPageCode(pageCode)) {
 			return R"({"ok":false,"error":"GetCurrentPageCode failed"})";
 		}
+
+		std::string pageName;
+		std::string pageType;
+		std::string pageNameTrace;
+		const bool nameOk = IDEFacade::Instance().GetCurrentPageName(pageName, &pageType, &pageNameTrace);
 		nlohmann::json r;
 		r["ok"] = true;
 		r["code"] = LocalToUtf8Text(pageCode);
+		r["page_name_ok"] = nameOk;
+		r["page_name"] = LocalToUtf8Text(pageName);
+		r["page_type"] = LocalToUtf8Text(pageType);
+		r["page_name_trace"] = pageNameTrace;
+		outOk = true;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "get_current_page_info") {
+		std::string pageName;
+		std::string pageType;
+		std::string pageNameTrace;
+		if (!IDEFacade::Instance().GetCurrentPageName(pageName, &pageType, &pageNameTrace)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "GetCurrentPageName failed";
+			r["page_name_trace"] = pageNameTrace;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		nlohmann::json r;
+		r["ok"] = true;
+		r["page_name"] = LocalToUtf8Text(pageName);
+		r["page_type"] = LocalToUtf8Text(pageType);
+		r["page_name_trace"] = pageNameTrace;
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
 	}
@@ -1668,6 +1698,7 @@ std::string ExecuteToolCall(const std::string& toolName, const std::string& argu
 	}
 
 	if (toolName == "get_current_page_code" ||
+		toolName == "get_current_page_info" ||
 		toolName == "list_program_items" ||
 		toolName == "get_program_item_code" ||
 		toolName == "search_project_keyword") {

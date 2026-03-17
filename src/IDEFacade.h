@@ -167,6 +167,8 @@ public:
 	// ===== 强化源码操作接口（当前编辑页范围）====
 	// 获取当前页完整代码文本。
 	bool GetCurrentPageCode(std::string& outCode) const;
+	// 获取当前打开页面名称。优先使用 MDI 当前活动子页标题，必要时回退主窗口标题。
+	bool GetCurrentPageName(std::string& outName, std::string* outTypeText = nullptr, std::string* outDiagnostics = nullptr) const;
 	// 替换当前页全部代码文本。
 	bool ReplaceCurrentPageCode(const std::string& newPageCode, bool preCompile = true) const;
 	// 替换指定行范围代码（含首尾行）。

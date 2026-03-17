@@ -412,6 +412,124 @@ BOOL CALLBACK EnumChildProcCollectTreeView(HWND hWnd, LPARAM lParam)
 	return TRUE;
 }
 
+BOOL CALLBACK EnumChildProcCollectWindowsByClass(HWND hWnd, LPARAM lParam)
+{
+	auto* pair = reinterpret_cast<std::pair<const char*, std::vector<HWND>*>*>(lParam);
+	if (pair == nullptr || pair->first == nullptr || pair->second == nullptr) {
+		return TRUE;
+	}
+
+	const std::string className = GetWindowClassCopyA(hWnd);
+	if (_stricmp(className.c_str(), pair->first) == 0) {
+		pair->second->push_back(hWnd);
+	}
+	return TRUE;
+}
+
+std::vector<HWND> CollectChildWindowsByClass(HWND root, const char* className)
+{
+	std::vector<HWND> windows;
+	if (root == nullptr || !IsWindow(root) || className == nullptr || className[0] == '\0') {
+		return windows;
+	}
+
+	std::pair<const char*, std::vector<HWND>*> ctx{ className, &windows };
+	EnumChildWindows(root, EnumChildProcCollectWindowsByClass, reinterpret_cast<LPARAM>(&ctx));
+	return windows;
+}
+
+std::string ReadTabItemText(HWND tabHwnd, int index)
+{
+	if (tabHwnd == nullptr || !IsWindow(tabHwnd) || index < 0) {
+		return std::string();
+	}
+
+	char textBuf[512] = {};
+	TCITEMA item = {};
+	item.mask = TCIF_TEXT;
+	item.pszText = textBuf;
+	item.cchTextMax = static_cast<int>(sizeof(textBuf));
+	if (SendMessageA(tabHwnd, TCM_GETITEMA, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(&item)) == FALSE) {
+		return std::string();
+	}
+	return textBuf;
+}
+
+void RunCurrentPageWindowProbeTest()
+{
+	OutputStringToELog("[CurrentPageProbe] 开始探测当前页窗口与页签");
+	if (g_hwnd == nullptr || !IsWindow(g_hwnd)) {
+		OutputStringToELog("[CurrentPageProbe] 中止：主窗口句柄无效");
+		return;
+	}
+
+	const auto mdiClients = CollectChildWindowsByClass(g_hwnd, "MDIClient");
+	OutputStringToELog(std::format("[CurrentPageProbe] mdiClientCount={}", mdiClients.size()));
+	for (size_t i = 0; i < mdiClients.size(); ++i) {
+		const HWND mdiHwnd = mdiClients[i];
+		const BOOL activeMaximized = FALSE;
+		HWND activeChild = reinterpret_cast<HWND>(SendMessageA(mdiHwnd, WM_MDIGETACTIVE, 0, 0));
+		OutputStringToELog(std::format(
+			"[CurrentPageProbe] mdi#{} hwnd={} text={} chain={} activeChild={} activeClass={} activeText={} activeChain={}",
+			i,
+			PtrToHexText(reinterpret_cast<UINT_PTR>(mdiHwnd)),
+			EscapeOneLineForLog(GetWindowTextCopyA(mdiHwnd)),
+			DescribeWindowChain(mdiHwnd),
+			PtrToHexText(reinterpret_cast<UINT_PTR>(activeChild)),
+			EscapeOneLineForLog(GetWindowClassCopyA(activeChild)),
+			EscapeOneLineForLog(GetWindowTextCopyA(activeChild)),
+			DescribeWindowChain(activeChild)));
+		(void)activeMaximized;
+	}
+
+	const auto customTabs = CollectChildWindowsByClass(g_hwnd, "CCustomTabCtrl");
+	OutputStringToELog(std::format("[CurrentPageProbe] customTabCount={}", customTabs.size()));
+	for (size_t i = 0; i < customTabs.size(); ++i) {
+		const HWND tabHwnd = customTabs[i];
+		const int curSel = static_cast<int>(SendMessageA(tabHwnd, TCM_GETCURSEL, 0, 0));
+		const int itemCount = static_cast<int>(SendMessageA(tabHwnd, TCM_GETITEMCOUNT, 0, 0));
+		OutputStringToELog(std::format(
+			"[CurrentPageProbe] tab#{} hwnd={} class={} text={} chain={} curSel={} itemCount={}",
+			i,
+			PtrToHexText(reinterpret_cast<UINT_PTR>(tabHwnd)),
+			EscapeOneLineForLog(GetWindowClassCopyA(tabHwnd)),
+			EscapeOneLineForLog(GetWindowTextCopyA(tabHwnd)),
+			DescribeWindowChain(tabHwnd),
+			curSel,
+			itemCount));
+
+		const int previewCount = (std::min)(itemCount, 12);
+		for (int index = 0; index < previewCount; ++index) {
+			OutputStringToELog(std::format(
+				"[CurrentPageProbe] tab#{} item#{} selected={} text={}",
+				i,
+				index,
+				(index == curSel) ? 1 : 0,
+				EscapeOneLineForLog(ReadTabItemText(tabHwnd, index))));
+		}
+	}
+
+	OutputStringToELog(std::format(
+		"[CurrentPageProbe] mainWindowText={}",
+		EscapeOneLineForLog(GetWindowTextCopyA(g_hwnd))));
+}
+
+void RunCurrentPageNameTest()
+{
+	OutputStringToELog("[CurrentPageNameTest] 开始获取当前页名称");
+
+	std::string pageName;
+	std::string typeText;
+	std::string diagnostics;
+	const bool ok = IDEFacade::Instance().GetCurrentPageName(pageName, &typeText, &diagnostics);
+	OutputStringToELog(std::format(
+		"[CurrentPageNameTest] ok={} name={} type={} trace={}",
+		ok ? 1 : 0,
+		EscapeOneLineForLog(pageName),
+		EscapeOneLineForLog(typeText),
+		EscapeOneLineForLog(diagnostics)));
+}
+
 std::vector<HWND> CollectTreeViewWindows(HWND root)
 {
 	std::vector<HWND> windows;
@@ -2953,6 +3071,14 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 			RunProgramTreeListTest();
 			break;
 		}
+		case 12: { // 测试当前页窗口与页签
+			RunCurrentPageWindowProbeTest();
+			break;
+		}
+		case 13: { // 测试获取当前页名称
+			RunCurrentPageNameTest();
+			break;
+		}
 		//case 4: { //切换到VMPSDK静态（自用）
 		//	ChangeVMProtectModel(true);
 		//	break;
@@ -3180,7 +3306,7 @@ static LIB_INFOX LibInfo =
 	NULL,
 	NULL,
 	fnAddInFunc,
-	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0AutoLinker AI接口设置\0编辑AI接口地址、API Key、模型和提示词等配置。\0FN_ADD_TAB结构传递测试\0构造ADD_TAB_INF调用FN_ADD_TAB，并打印调用前后结构体字段。\0测试整体搜索subWinHwnd\0调用direct_global_search固定搜索subWinHwnd，并输出命中结果到E输出窗口。\0测试定位subWinHwnd首个结果\0调用direct_global_search固定搜索subWinHwnd，并跳转到首个命中位置。\0测试定位后抓取当前页代码\0先定位到subWinHwnd首个命中，再抓取当前代码页完整代码并写入AutoLinker目录。\0测试枚举左侧TreeView\0枚举主窗口下所有SysTreeView32，并输出前几层节点文本与item data特征。\0测试程序树按名称抓代码\0在程序树中固定查找Class_HWND，并根据tree item data直接抓取整页代码。\0测试枚举程序树页面\0枚举程序树中所有页面节点，输出名称、类型和item data，并写入文件。\0\0") ,
+	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0AutoLinker AI接口设置\0编辑AI接口地址、API Key、模型和提示词等配置。\0FN_ADD_TAB结构传递测试\0构造ADD_TAB_INF调用FN_ADD_TAB，并打印调用前后结构体字段。\0测试整体搜索subWinHwnd\0调用direct_global_search固定搜索subWinHwnd，并输出命中结果到E输出窗口。\0测试定位subWinHwnd首个结果\0调用direct_global_search固定搜索subWinHwnd，并跳转到首个命中位置。\0测试定位后抓取当前页代码\0先定位到subWinHwnd首个命中，再抓取当前代码页完整代码并写入AutoLinker目录。\0测试枚举左侧TreeView\0枚举主窗口下所有SysTreeView32，并输出前几层节点文本与item data特征。\0测试程序树按名称抓代码\0在程序树中固定查找Class_HWND，并根据tree item data直接抓取整页代码。\0测试枚举程序树页面\0枚举程序树中所有页面节点，输出名称、类型和item data，并写入文件。\0测试当前页窗口与页签\0探测MDIClient当前活动子页与CCustomTabCtrl当前选中项文本，用于定位当前页名称来源。\0测试获取当前页名称\0调用IDEFacade当前页名称接口，输出当前页名称、类型和来源链路。\0\0") ,
 	AutoLinker_MessageNotify,
 	NULL,
 	NULL,

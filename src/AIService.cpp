@@ -401,7 +401,19 @@ nlohmann::json BuildChatToolDefinitions()
 		{"type", "function"},
 		{"function", {
 			{"name", "get_current_page_code"},
-			{"description", "Get complete source code of the current IDE page."},
+			{"description", "Get complete source code of the current IDE page, together with current page name and page type."},
+			{"parameters", {
+				{"type", "object"},
+				{"properties", nlohmann::json::object()},
+				{"additionalProperties", false}
+			}}
+		}}
+	});
+	tools.push_back({
+		{"type", "function"},
+		{"function", {
+			{"name", "get_current_page_info"},
+			{"description", "Get current IDE page name, page type and the trace/source used to resolve that page name."},
 			{"parameters", {
 				{"type", "object"},
 				{"properties", nlohmann::json::object()},
@@ -485,13 +497,14 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"你是 AutoLinker 的易语言开发助手。\n"
 		"你可以通过工具获取当前页代码、枚举程序树中的程序集/类/全局变量等、按名称抓整页代码，以及执行项目级关键词搜索。\n"
 		"规则：\n"
-		"1) 需要源码时优先调用 get_current_page_code，不要臆造现有代码。\n"
-		"2) 需要枚举项目结构时优先调用 list_program_items；需要某个程序集/类整页代码时调用 get_program_item_code。\n"
-		"3) 需要项目内关键词定位时调用 search_project_keyword，并根据返回的 page_name 再决定是否抓该页代码。\n"
-		"4) 通过搜索结果或程序树按名称拿到的代码，不保证与 IDE 正常编辑页结构一致，只能作为伪代码参考；分析和修改建议时必须明确这一点。\n"
-		"5) 需要用户确认/修订代码时调用 request_code_edit。\n"
-		"6) 工具返回失败或取消时，给出下一步建议，不要编造工具结果。\n"
-		"7) 除非用户要求解释，否则尽量给直接可执行结论。\n";
+		"1) 需要源码时优先调用 get_current_page_code，不要臆造现有代码；该工具会同时返回当前页名称和页类型。\n"
+		"2) 只需要知道当前页是谁而不需要全文代码时，调用 get_current_page_info。\n"
+		"3) 需要枚举项目结构时优先调用 list_program_items；需要某个程序集/类整页代码时调用 get_program_item_code。\n"
+		"4) 需要项目内关键词定位时调用 search_project_keyword，并根据返回的 page_name 再决定是否抓该页代码。\n"
+		"5) 通过搜索结果或程序树按名称拿到的代码，不保证与 IDE 正常编辑页结构一致，只能作为伪代码参考；分析和修改建议时必须明确这一点。\n"
+		"6) 需要用户确认/修订代码时调用 request_code_edit。\n"
+		"7) 工具返回失败或取消时，给出下一步建议，不要编造工具结果。\n"
+		"8) 除非用户要求解释，否则尽量给直接可执行结论。\n";
 
 	const std::string extraPrompt = AIService::Trim(settings.extraSystemPrompt);
 	if (!extraPrompt.empty()) {

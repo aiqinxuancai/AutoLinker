@@ -32,6 +32,133 @@ std::string TruncateForPerfLog(const std::string& text, size_t maxLen = 120)
 	return text.substr(0, maxLen) + "...";
 }
 
+std::string TrimAsciiCopyLocal(const std::string& text)
+{
+	size_t begin = 0;
+	size_t end = text.size();
+	while (begin < end && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
+		++begin;
+	}
+	while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])) != 0) {
+		--end;
+	}
+	return text.substr(begin, end - begin);
+}
+
+std::string GetWindowTextCopyLocalA(HWND hWnd)
+{
+	char buffer[512] = {};
+	if (hWnd != nullptr && IsWindow(hWnd)) {
+		GetWindowTextA(hWnd, buffer, static_cast<int>(sizeof(buffer)));
+	}
+	return buffer;
+}
+
+BOOL CALLBACK EnumChildProcCollectClass(HWND hWnd, LPARAM lParam)
+{
+	auto* pair = reinterpret_cast<std::pair<const char*, std::vector<HWND>*>*>(lParam);
+	if (pair == nullptr || pair->first == nullptr || pair->second == nullptr) {
+		return TRUE;
+	}
+
+	char className[128] = {};
+	if (GetClassNameA(hWnd, className, static_cast<int>(sizeof(className))) > 0 &&
+		_stricmp(className, pair->first) == 0) {
+		pair->second->push_back(hWnd);
+	}
+	return TRUE;
+}
+
+std::vector<HWND> CollectChildWindowsByClassLocal(HWND root, const char* className)
+{
+	std::vector<HWND> windows;
+	if (root == nullptr || !IsWindow(root) || className == nullptr || className[0] == '\0') {
+		return windows;
+	}
+
+	std::pair<const char*, std::vector<HWND>*> ctx{ className, &windows };
+	EnumChildWindows(root, EnumChildProcCollectClass, reinterpret_cast<LPARAM>(&ctx));
+	return windows;
+}
+
+std::string DescribeActiveWindowTypeShort(IDEFacade::ActiveWindowType type)
+{
+	switch (type)
+	{
+	case IDEFacade::ActiveWindowType::Module:
+		return "程序集/类";
+	case IDEFacade::ActiveWindowType::UserDataType:
+		return "自定义数据类型";
+	case IDEFacade::ActiveWindowType::GlobalVar:
+		return "全局变量";
+	case IDEFacade::ActiveWindowType::DllCommand:
+		return "DLL命令";
+	case IDEFacade::ActiveWindowType::FormDesigner:
+		return "窗口/表单";
+	case IDEFacade::ActiveWindowType::ConstResource:
+		return "常量资源";
+	case IDEFacade::ActiveWindowType::PictureResource:
+		return "图片资源";
+	case IDEFacade::ActiveWindowType::SoundResource:
+		return "声音资源";
+	default:
+		return std::string();
+	}
+}
+
+bool TrySplitPageIdentityText(
+	const std::string& rawText,
+	std::string& outTypeText,
+	std::string& outName)
+{
+	outTypeText.clear();
+	outName.clear();
+
+	const std::string text = TrimAsciiCopyLocal(rawText);
+	if (text.empty()) {
+		return false;
+	}
+
+	size_t colonPos = text.find(":");
+	size_t colonWidth = 1;
+	if (colonPos == std::string::npos) {
+		colonPos = text.find("：");
+		colonWidth = 3;
+	}
+
+	if (colonPos != std::string::npos) {
+		std::string left = TrimAsciiCopyLocal(text.substr(0, colonPos));
+		std::string right = TrimAsciiCopyLocal(text.substr(colonPos + colonWidth));
+		if (!left.empty() && !right.empty()) {
+			outTypeText = std::move(left);
+			outName = std::move(right);
+			return true;
+		}
+	}
+
+	outName = text;
+	return true;
+}
+
+bool TryExtractBracketPageIdentity(
+	const std::string& mainTitle,
+	std::string& outTypeText,
+	std::string& outName)
+{
+	outTypeText.clear();
+	outName.clear();
+
+	const size_t closePos = mainTitle.rfind(']');
+	if (closePos == std::string::npos) {
+		return false;
+	}
+	const size_t openPos = mainTitle.rfind('[', closePos);
+	if (openPos == std::string::npos || closePos <= openPos + 1) {
+		return false;
+	}
+	return TrySplitPageIdentityText(mainTitle.substr(openPos + 1, closePos - openPos - 1), outTypeText, outName);
+}
+
 std::mutex g_codeFetchLogMutex;
 
 std::filesystem::path GetCodeFetchLogPath()
@@ -1940,6 +2067,69 @@ bool IDEFacade::GetCurrentPageCode(std::string& outCode) const
 		" head=\"" + EscapeOneLine(outCode) + "\"");
 	logCopy(readOk, readOk ? "ok" : "read_clipboard_failed");
 	return readOk;
+}
+
+bool IDEFacade::GetCurrentPageName(std::string& outName, std::string* outTypeText, std::string* outDiagnostics) const
+{
+	outName.clear();
+	if (outTypeText != nullptr) {
+		outTypeText->clear();
+	}
+	if (outDiagnostics != nullptr) {
+		outDiagnostics->clear();
+	}
+
+	const HWND mainHwnd = GetMainWindow();
+	if (mainHwnd == nullptr || !IsWindow(mainHwnd)) {
+		if (outDiagnostics != nullptr) {
+			*outDiagnostics = "main_window_invalid";
+		}
+		return false;
+	}
+
+	const ActiveWindowType activeType = GetActiveWindowType();
+	const std::string activeTypeText = DescribeActiveWindowTypeShort(activeType);
+
+	const auto mdiClients = CollectChildWindowsByClassLocal(mainHwnd, "MDIClient");
+	for (HWND mdiHwnd : mdiClients) {
+		HWND activeChild = reinterpret_cast<HWND>(SendMessageA(mdiHwnd, WM_MDIGETACTIVE, 0, 0));
+		if (activeChild == nullptr || !IsWindow(activeChild)) {
+			continue;
+		}
+
+		const std::string childTitle = GetWindowTextCopyLocalA(activeChild);
+		std::string typeText;
+		std::string name;
+		if (TrySplitPageIdentityText(childTitle, typeText, name) && !name.empty()) {
+			outName = name;
+			if (outTypeText != nullptr) {
+				*outTypeText = !typeText.empty() ? typeText : activeTypeText;
+			}
+			if (outDiagnostics != nullptr) {
+				*outDiagnostics = "mdi_active_child_title";
+			}
+			return true;
+		}
+	}
+
+	const std::string mainTitle = GetWindowTextCopyLocalA(mainHwnd);
+	std::string typeText;
+	std::string name;
+	if (TryExtractBracketPageIdentity(mainTitle, typeText, name) && !name.empty()) {
+		outName = name;
+		if (outTypeText != nullptr) {
+			*outTypeText = !typeText.empty() ? typeText : activeTypeText;
+		}
+		if (outDiagnostics != nullptr) {
+			*outDiagnostics = "main_window_bracket";
+		}
+		return true;
+	}
+
+	if (outDiagnostics != nullptr) {
+		*outDiagnostics = "page_name_not_found";
+	}
+	return false;
 }
 
 bool IDEFacade::ReplaceCurrentPageCode(const std::string& newPageCode, bool preCompile) const
