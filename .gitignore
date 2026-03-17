@@ -338,3 +338,9 @@ ASALocalRun/
 
 # BeatPulse healthcheck temp database
 healthchecksdb
+
+!thirdparty/webview2/
+!thirdparty/webview2/x86/
+!thirdparty/webview2/x64/
+!thirdparty/webview2/x86/WebView2LoaderStatic.lib
+!thirdparty/webview2/x64/WebView2LoaderStatic.lib

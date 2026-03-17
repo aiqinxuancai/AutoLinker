@@ -14,8 +14,10 @@
 #include <process.h>
 #include <string>
 #include <vector>
+#include <wrl.h>
 
 #include "..\\thirdparty\\json.hpp"
+#include "..\\thirdparty\\WebView2.h"
 
 #include "AIConfigDialog.h"
 #include "AIService.h"
@@ -41,6 +43,7 @@ constexpr UINT WM_AUTOLINKER_AI_CHAT_REFRESH = WM_APP + 203;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT = WM_APP + 204;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_SUBMIT = WM_APP + 205;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_CLEAR = WM_APP + 206;
+constexpr UINT_PTR kHistoryWebViewFlushTimerId = 0xA17;
 
 constexpr int IDC_AI_CHAT_HISTORY = 2101;
 constexpr int IDC_AI_CHAT_INPUT = 2102;
@@ -84,10 +87,19 @@ struct AIChatSessionState {
 
 struct ChatDialogContext {
 	HWND hHistory = nullptr;
+	HWND hHistoryHost = nullptr;
 	HWND hInput = nullptr;
 	HWND hSend = nullptr;
 	HWND hClearHistory = nullptr;
 	int inputRowsVisible = 1;
+	bool webViewDesired = false;
+	bool webViewReady = false;
+	bool webViewContentReady = false;
+	bool webViewFlushScheduled = false;
+	std::string pendingHistoryHtml;
+	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
+	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
+	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
 };
 
 struct CodeEditDialogContext {
@@ -152,6 +164,8 @@ UINT g_msgAIChatDone = 0;
 UINT g_msgAIChatToolDialog = 0;
 UINT g_msgAIChatToolExec = 0;
 std::atomic_bool g_clearHistoryInProgress = false;
+bool g_webView2RuntimeChecked = false;
+bool g_webView2RuntimeAvailable = false;
 
 struct ToolExecutionRequest {
 	std::string toolName;
@@ -180,6 +194,11 @@ struct KeywordSearchResultInfo {
 	int lineNumber = -1;
 	std::string text;
 };
+
+void RefreshChatDialog(HWND hWnd);
+void RequestClearChatHistoryAsync();
+void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text);
+void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx);
 
 std::string GetWindowTextCopyLocalA(HWND hWnd)
 {
@@ -402,6 +421,132 @@ std::string LocalFromWide(const wchar_t* text)
 		out.pop_back();
 	}
 	return out;
+}
+
+std::string Utf8FromWide(const wchar_t* text)
+{
+	if (text == nullptr || *text == L'\0') {
+		return std::string();
+	}
+	const int size = WideCharToMultiByte(CP_UTF8, 0, text, -1, nullptr, 0, nullptr, nullptr);
+	if (size <= 0) {
+		return std::string();
+	}
+	std::string out(static_cast<size_t>(size), '\0');
+	if (WideCharToMultiByte(CP_UTF8, 0, text, -1, out.data(), size, nullptr, nullptr) <= 0) {
+		return std::string();
+	}
+	if (!out.empty() && out.back() == '\0') {
+		out.pop_back();
+	}
+	return out;
+}
+
+std::wstring WideFromLocal(const std::string& text)
+{
+	if (text.empty()) {
+		return std::wstring();
+	}
+	const int size = MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+	if (size <= 0) {
+		return std::wstring();
+	}
+	std::wstring out(static_cast<size_t>(size), L'\0');
+	if (MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), out.data(), size) <= 0) {
+		return std::wstring();
+	}
+	return out;
+}
+
+std::wstring EscapeJsSingleQuotedWide(const std::wstring& text)
+{
+	std::wstring out;
+	out.reserve(text.size() + 32);
+	for (wchar_t ch : text) {
+		switch (ch)
+		{
+		case L'\\': out += L"\\\\"; break;
+		case L'\'': out += L"\\'"; break;
+		case L'\r': out += L"\\r"; break;
+		case L'\n': out += L"\\n"; break;
+		case 0x2028: out += L"\\u2028"; break;
+		case 0x2029: out += L"\\u2029"; break;
+		default: out.push_back(ch); break;
+		}
+	}
+	return out;
+}
+
+std::string NormalizeNewlinesLf(const std::string& text)
+{
+	std::string normalized;
+	normalized.reserve(text.size());
+	for (size_t i = 0; i < text.size(); ++i) {
+		const char ch = text[i];
+		if (ch == '\r') {
+			if (i + 1 < text.size() && text[i + 1] == '\n') {
+				++i;
+			}
+			normalized.push_back('\n');
+			continue;
+		}
+		normalized.push_back(ch);
+	}
+	return normalized;
+}
+
+std::string EscapeHtml(const std::string& text)
+{
+	std::string out;
+	out.reserve(text.size() + 32);
+	for (char ch : text) {
+		switch (ch)
+		{
+		case '&': out += "&amp;"; break;
+		case '<': out += "&lt;"; break;
+		case '>': out += "&gt;"; break;
+		case '"': out += "&quot;"; break;
+		default: out.push_back(ch); break;
+		}
+	}
+	return out;
+}
+
+std::string EscapeHtmlAttribute(const std::string& text)
+{
+	std::string out;
+	out.reserve(text.size() + 32);
+	for (char ch : text) {
+		switch (ch)
+		{
+		case '&': out += "&amp;"; break;
+		case '<': out += "&lt;"; break;
+		case '>': out += "&gt;"; break;
+		case '"': out += "&quot;"; break;
+		case '\'': out += "&#39;"; break;
+		default: out.push_back(ch); break;
+		}
+	}
+	return out;
+}
+
+bool IsWebView2RuntimeAvailable()
+{
+	if (g_webView2RuntimeChecked) {
+		return g_webView2RuntimeAvailable;
+	}
+	g_webView2RuntimeChecked = true;
+
+	LPWSTR version = nullptr;
+	const HRESULT hr = GetAvailableCoreWebView2BrowserVersionString(nullptr, &version);
+	g_webView2RuntimeAvailable = SUCCEEDED(hr) && version != nullptr && version[0] != L'\0';
+	if (version != nullptr) {
+		CoTaskMemFree(version);
+	}
+	OutputStringToELog(std::format(
+		"[AI Chat][WebView2] runtime available={}",
+		g_webView2RuntimeAvailable ? 1 : 0));
+	return g_webView2RuntimeAvailable;
 }
 
 bool IsValidUtf8Text(const std::string& text)
@@ -692,6 +837,27 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int clientWidth = rc.right - rc.left;
 	const int clientHeight = rc.bottom - rc.top;
 
+	if (ctx->webViewContentReady && ctx->hHistoryHost != nullptr) {
+		if (ctx->hHistory != nullptr) {
+			MoveWindow(ctx->hHistory, 0, 0, (std::max)(120, clientWidth), (std::max)(80, clientHeight), TRUE);
+		}
+		MoveWindow(ctx->hHistoryHost, 0, 0, (std::max)(120, clientWidth), (std::max)(80, clientHeight), TRUE);
+		if (ctx->webViewController != nullptr) {
+			RECT webRc = { 0, 0, (std::max)(120, clientWidth), (std::max)(80, clientHeight) };
+			ctx->webViewController->put_Bounds(webRc);
+		}
+		if (ctx->hClearHistory != nullptr) {
+			ShowWindow(ctx->hClearHistory, SW_HIDE);
+		}
+		if (ctx->hInput != nullptr) {
+			ShowWindow(ctx->hInput, SW_HIDE);
+		}
+		if (ctx->hSend != nullptr) {
+			ShowWindow(ctx->hSend, SW_HIDE);
+		}
+		return;
+	}
+
 	const int margin = 0;
 	const int bottomMargin = 4;
 	const int gap = 6;
@@ -714,13 +880,23 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	if (ctx->hHistory != nullptr) {
 		MoveWindow(ctx->hHistory, margin, historyY, contentWidth, historyHeight, TRUE);
 	}
+	if (ctx->hHistoryHost != nullptr) {
+		MoveWindow(ctx->hHistoryHost, margin, historyY, contentWidth, historyHeight, TRUE);
+		if (ctx->webViewController != nullptr) {
+			RECT rc = { 0, 0, contentWidth, historyHeight };
+			ctx->webViewController->put_Bounds(rc);
+		}
+	}
 	if (ctx->hClearHistory != nullptr) {
+		ShowWindow(ctx->hClearHistory, SW_SHOW);
 		MoveWindow(ctx->hClearHistory, margin, actionRowY, clearHistoryWidth, actionRowHeight, TRUE);
 	}
 	if (ctx->hInput != nullptr) {
+		ShowWindow(ctx->hInput, SW_SHOW);
 		MoveWindow(ctx->hInput, margin, inputY, inputWidth, inputHeight, TRUE);
 	}
 	if (ctx->hSend != nullptr) {
+		ShowWindow(ctx->hSend, SW_SHOW);
 		MoveWindow(ctx->hSend, sendX, inputY, sendWidth, inputHeight, TRUE);
 	}
 }
@@ -764,6 +940,253 @@ void LayoutCodeEditDialog(HWND hWnd, CodeEditDialogContext* ctx)
 	}
 	if (ctx->hCancel != nullptr) {
 		MoveWindow(ctx->hCancel, cancelX, buttonY, cancelWidth, buttonHeight, TRUE);
+	}
+}
+
+void SyncHistoryPresentation(ChatDialogContext* ctx)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+
+	const bool showWebView = ctx->webViewReady && ctx->webViewContentReady && ctx->hHistoryHost != nullptr && IsWindow(ctx->hHistoryHost);
+	if (ctx->webViewController != nullptr) {
+		ctx->webViewController->put_IsVisible(showWebView ? TRUE : FALSE);
+	}
+	if (ctx->hHistory != nullptr && IsWindow(ctx->hHistory)) {
+		ShowWindow(ctx->hHistory, showWebView ? SW_HIDE : SW_SHOW);
+	}
+	if (ctx->hHistoryHost != nullptr && IsWindow(ctx->hHistoryHost)) {
+		ShowWindow(ctx->hHistoryHost, showWebView ? SW_SHOW : SW_HIDE);
+	}
+}
+
+std::string BuildHistoryWebViewShellHtml();
+
+void ExecuteWebViewScript(ChatDialogContext* ctx, const std::wstring& script)
+{
+	if (ctx == nullptr || !ctx->webViewReady || !ctx->webViewContentReady || ctx->webView == nullptr || script.empty()) {
+		return;
+	}
+	ctx->webView->ExecuteScript(script.c_str(), nullptr);
+}
+
+void UpdateWebViewComposerState(ChatDialogContext* ctx, bool busy)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	std::wstring script = L"window.autolinkerSetBusy(";
+	script += busy ? L"true" : L"false";
+	script += L");";
+	ExecuteWebViewScript(ctx, script);
+}
+
+void ClearWebViewInput(ChatDialogContext* ctx)
+{
+	ExecuteWebViewScript(ctx, L"window.autolinkerClearInput();");
+}
+
+void FocusWebViewInput(ChatDialogContext* ctx)
+{
+	ExecuteWebViewScript(ctx, L"window.autolinkerFocusInput();");
+}
+
+void UpdateHistoryWebViewHtml(ChatDialogContext* ctx, const std::string& htmlLocal)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	ctx->pendingHistoryHtml = htmlLocal;
+	if (!ctx->webViewReady || ctx->webView == nullptr) {
+		return;
+	}
+	ctx->webViewFlushScheduled = true;
+	if (g_chatDialog != nullptr && IsWindow(g_chatDialog)) {
+		SetTimer(g_chatDialog, kHistoryWebViewFlushTimerId, 80, nullptr);
+	}
+}
+
+void FlushHistoryWebViewHtml(ChatDialogContext* ctx)
+{
+	if (ctx == nullptr || !ctx->webViewReady || ctx->webView == nullptr || !ctx->webViewContentReady) {
+		return;
+	}
+
+	ctx->webViewFlushScheduled = false;
+	const std::wstring htmlWide = WideFromLocal(ctx->pendingHistoryHtml);
+	if (htmlWide.empty()) {
+		return;
+	}
+	std::wstring script = L"window.autolinkerSetChatHtml('";
+	script += EscapeJsSingleQuotedWide(htmlWide);
+	script += L"');";
+	ExecuteWebViewScript(ctx, script);
+}
+
+void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (hWnd == nullptr || ctx == nullptr || ctx->hHistoryHost == nullptr || !IsWindow(ctx->hHistoryHost) || !ctx->webViewDesired) {
+		return;
+	}
+
+	using Microsoft::WRL::Callback;
+	const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
+		nullptr,
+		nullptr,
+		nullptr,
+		Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+			[hWnd](HRESULT envResult, ICoreWebView2Environment* environment) -> HRESULT {
+				auto* currentCtx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+				if (currentCtx == nullptr || !IsWindow(hWnd)) {
+					return S_OK;
+				}
+								if (FAILED(envResult) || environment == nullptr) {
+									currentCtx->webViewDesired = false;
+									SyncHistoryPresentation(currentCtx);
+									LayoutAIChatDialog(hWnd, currentCtx);
+									OutputStringToELog(std::format("[AI Chat][WebView2] create environment failed hr=0x{:08X}", static_cast<unsigned int>(envResult)));
+									return S_OK;
+								}
+
+				currentCtx->webViewEnvironment = environment;
+				return environment->CreateCoreWebView2Controller(
+					currentCtx->hHistoryHost,
+					Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+						[hWnd](HRESULT controllerResult, ICoreWebView2Controller* controller) -> HRESULT {
+							auto* innerCtx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+							if (innerCtx == nullptr || !IsWindow(hWnd)) {
+								return S_OK;
+							}
+							if (FAILED(controllerResult) || controller == nullptr) {
+								innerCtx->webViewDesired = false;
+								SyncHistoryPresentation(innerCtx);
+								LayoutAIChatDialog(hWnd, innerCtx);
+								OutputStringToELog(std::format("[AI Chat][WebView2] create controller failed hr=0x{:08X}", static_cast<unsigned int>(controllerResult)));
+								return S_OK;
+							}
+
+							innerCtx->webViewController = controller;
+							innerCtx->webViewController->get_CoreWebView2(&innerCtx->webView);
+							if (innerCtx->webView != nullptr) {
+								Microsoft::WRL::ComPtr<ICoreWebView2Settings> settings;
+								if (SUCCEEDED(innerCtx->webView->get_Settings(&settings)) && settings != nullptr) {
+									settings->put_IsStatusBarEnabled(FALSE);
+									settings->put_AreDevToolsEnabled(FALSE);
+									settings->put_IsZoomControlEnabled(FALSE);
+								}
+								innerCtx->webView->add_WebMessageReceived(
+									Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+										[hWnd](ICoreWebView2* sender, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+											(void)sender;
+											auto* msgCtx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+											if (msgCtx == nullptr || !IsWindow(hWnd) || args == nullptr) {
+												return S_OK;
+											}
+
+											LPWSTR rawMessage = nullptr;
+											if (FAILED(args->TryGetWebMessageAsString(&rawMessage)) || rawMessage == nullptr) {
+												return S_OK;
+											}
+
+											const std::string utf8Message = Utf8FromWide(rawMessage);
+											CoTaskMemFree(rawMessage);
+											try {
+												const auto payload = nlohmann::json::parse(utf8Message);
+												const std::string action = payload.contains("action") && payload["action"].is_string()
+													? payload["action"].get<std::string>()
+													: std::string();
+												if (action == "submit") {
+													const std::string text = payload.contains("text") && payload["text"].is_string()
+														? Utf8ToLocalText(payload["text"].get<std::string>())
+														: std::string();
+													HandleChatSubmitUi(hWnd, msgCtx, text);
+												}
+												else if (action == "clear") {
+													HandleChatClearUi(hWnd, msgCtx);
+												}
+											}
+											catch (...) {
+											}
+											return S_OK;
+										}).Get(),
+									nullptr);
+								innerCtx->webView->add_NavigationCompleted(
+									Callback<ICoreWebView2NavigationCompletedEventHandler>(
+										[hWnd](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+											(void)sender;
+											auto* navCtx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+											if (navCtx == nullptr || !IsWindow(hWnd) || args == nullptr) {
+												return S_OK;
+											}
+
+											BOOL isSuccess = FALSE;
+											args->get_IsSuccess(&isSuccess);
+											COREWEBVIEW2_WEB_ERROR_STATUS webErrorStatus = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+											args->get_WebErrorStatus(&webErrorStatus);
+											if (isSuccess == TRUE) {
+												navCtx->webViewContentReady = true;
+												SyncHistoryPresentation(navCtx);
+												LayoutAIChatDialog(hWnd, navCtx);
+												if (!navCtx->pendingHistoryHtml.empty()) {
+													UpdateHistoryWebViewHtml(navCtx, navCtx->pendingHistoryHtml);
+													FlushHistoryWebViewHtml(navCtx);
+												}
+												bool inFlight = false;
+												{
+													std::lock_guard<std::mutex> guard(g_session.mutex);
+													inFlight = g_session.requestInFlight;
+												}
+												UpdateWebViewComposerState(navCtx, inFlight);
+												FocusWebViewInput(navCtx);
+												return S_OK;
+											}
+
+											if (webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED ||
+												webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED ||
+												webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET) {
+												OutputStringToELog(std::format(
+													"[AI Chat][WebView2] navigation superseded errorStatus={}",
+													static_cast<int>(webErrorStatus)));
+												return S_OK;
+											}
+
+											navCtx->webViewContentReady = false;
+											navCtx->webViewDesired = false;
+											SyncHistoryPresentation(navCtx);
+											LayoutAIChatDialog(hWnd, navCtx);
+											OutputStringToELog(std::format(
+												"[AI Chat][WebView2] navigation failed, fallback to edit errorStatus={}",
+												static_cast<int>(webErrorStatus)));
+											if (navCtx->hHistory != nullptr && IsWindow(navCtx->hHistory)) {
+												SetWindowTextA(navCtx->hHistory, "WebView2 navigation failed, fallback to edit.\r\n");
+											}
+											return S_OK;
+										}).Get(),
+									nullptr);
+							}
+
+							RECT rc = {};
+							GetClientRect(innerCtx->hHistoryHost, &rc);
+							innerCtx->webViewController->put_Bounds(rc);
+							innerCtx->webViewReady = innerCtx->webView != nullptr;
+							innerCtx->webViewContentReady = false;
+							SyncHistoryPresentation(innerCtx);
+							if (innerCtx->webViewReady) {
+								const std::wstring shellHtml = WideFromLocal(BuildHistoryWebViewShellHtml());
+								if (!shellHtml.empty()) {
+									innerCtx->webView->NavigateToString(shellHtml.c_str());
+								}
+							}
+							OutputStringToELog(std::format("[AI Chat][WebView2] controller ready={}", innerCtx->webViewReady ? 1 : 0));
+							return S_OK;
+						}).Get());
+			}).Get());
+
+	if (FAILED(hr)) {
+		ctx->webViewDesired = false;
+		SyncHistoryPresentation(ctx);
+		OutputStringToELog(std::format("[AI Chat][WebView2] bootstrap failed hr=0x{:08X}", static_cast<unsigned int>(hr)));
 	}
 }
 
@@ -890,6 +1313,191 @@ std::string RoleLabel(SessionRole role)
 	}
 }
 
+std::string RenderInlineMarkdownToHtml(const std::string& text)
+{
+	std::string out;
+	out.reserve(text.size() + 32);
+	for (size_t i = 0; i < text.size();) {
+		if (text.compare(i, 2, "**") == 0) {
+			const size_t end = text.find("**", i + 2);
+			if (end != std::string::npos) {
+				out += "<strong>";
+				out += EscapeHtml(text.substr(i + 2, end - (i + 2)));
+				out += "</strong>";
+				i = end + 2;
+				continue;
+			}
+		}
+		if (text[i] == '`') {
+			const size_t end = text.find('`', i + 1);
+			if (end != std::string::npos) {
+				out += "<code>";
+				out += EscapeHtml(text.substr(i + 1, end - (i + 1)));
+				out += "</code>";
+				i = end + 1;
+				continue;
+			}
+		}
+		if (text[i] == '[') {
+			const size_t mid = text.find("](", i + 1);
+			const size_t end = mid == std::string::npos ? std::string::npos : text.find(')', mid + 2);
+			if (mid != std::string::npos && end != std::string::npos) {
+				out += "<a href=\"";
+				out += EscapeHtmlAttribute(text.substr(mid + 2, end - (mid + 2)));
+				out += "\">";
+				out += EscapeHtml(text.substr(i + 1, mid - (i + 1)));
+				out += "</a>";
+				i = end + 1;
+				continue;
+			}
+		}
+
+		switch (text[i])
+		{
+		case '&': out += "&amp;"; break;
+		case '<': out += "&lt;"; break;
+		case '>': out += "&gt;"; break;
+		case '"': out += "&quot;"; break;
+		default: out.push_back(text[i]); break;
+		}
+		++i;
+	}
+	return out;
+}
+
+std::string RenderPlainTextToHtml(const std::string& text)
+{
+	const std::string normalized = NormalizeNewlinesLf(text);
+	std::string out;
+	out.reserve(normalized.size() + 32);
+	for (char ch : normalized) {
+		if (ch == '\n') {
+			out += "<br/>";
+			continue;
+		}
+		switch (ch)
+		{
+		case '&': out += "&amp;"; break;
+		case '<': out += "&lt;"; break;
+		case '>': out += "&gt;"; break;
+		case '"': out += "&quot;"; break;
+		default: out.push_back(ch); break;
+		}
+	}
+	return out;
+}
+
+std::string RenderMarkdownToHtml(const std::string& markdown)
+{
+	const std::string normalized = NormalizeNewlinesLf(markdown);
+	std::vector<std::string> lines;
+	lines.reserve(64);
+	size_t begin = 0;
+	while (begin <= normalized.size()) {
+		const size_t end = normalized.find('\n', begin);
+		if (end == std::string::npos) {
+			lines.push_back(normalized.substr(begin));
+			break;
+		}
+		lines.push_back(normalized.substr(begin, end - begin));
+		begin = end + 1;
+	}
+
+	std::string html;
+	bool inCodeBlock = false;
+	bool inList = false;
+	bool inParagraph = false;
+	bool firstParagraphLine = true;
+
+	auto closeParagraph = [&]() {
+		if (inParagraph) {
+			html += "</p>";
+			inParagraph = false;
+			firstParagraphLine = true;
+		}
+	};
+	auto closeList = [&]() {
+		if (inList) {
+			html += "</ul>";
+			inList = false;
+		}
+	};
+
+	for (const std::string& line : lines) {
+		const std::string trimmed = TrimAsciiCopy(line);
+		if (line.rfind("```", 0) == 0) {
+			closeParagraph();
+			closeList();
+			if (!inCodeBlock) {
+				html += "<pre><code>";
+				inCodeBlock = true;
+			}
+			else {
+				html += "</code></pre>";
+				inCodeBlock = false;
+			}
+			continue;
+		}
+
+		if (inCodeBlock) {
+			html += EscapeHtml(line);
+			html += "\n";
+			continue;
+		}
+
+		if (trimmed.empty()) {
+			closeParagraph();
+			closeList();
+			continue;
+		}
+
+		size_t headingLevel = 0;
+		while (headingLevel < line.size() && line[headingLevel] == '#') {
+			++headingLevel;
+		}
+		if (headingLevel > 0 && headingLevel <= 6 &&
+			headingLevel < line.size() && line[headingLevel] == ' ') {
+			closeParagraph();
+			closeList();
+			html += "<h" + std::to_string(headingLevel) + ">";
+			html += RenderInlineMarkdownToHtml(TrimAsciiCopy(line.substr(headingLevel + 1)));
+			html += "</h" + std::to_string(headingLevel) + ">";
+			continue;
+		}
+
+		if (line.rfind("- ", 0) == 0 || line.rfind("* ", 0) == 0) {
+			closeParagraph();
+			if (!inList) {
+				html += "<ul>";
+				inList = true;
+			}
+			html += "<li>";
+			html += RenderInlineMarkdownToHtml(line.substr(2));
+			html += "</li>";
+			continue;
+		}
+
+		closeList();
+		if (!inParagraph) {
+			html += "<p>";
+			inParagraph = true;
+			firstParagraphLine = true;
+		}
+		if (!firstParagraphLine) {
+			html += "<br/>";
+		}
+		html += RenderInlineMarkdownToHtml(line);
+		firstParagraphLine = false;
+	}
+
+	closeParagraph();
+	closeList();
+	if (inCodeBlock) {
+		html += "</code></pre>";
+	}
+	return html;
+}
+
 void CompactHistoryLocked(AIChatSessionState& state)
 {
 	size_t contextChars = 0;
@@ -978,6 +1586,106 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 		out.push_back(AIChatMessage{ role, msg.content });
 	}
 	return out;
+}
+
+std::string BuildHistoryHtmlLocked(const AIChatSessionState& state)
+{
+	auto appendMessageCard = [](std::string& html, SessionRole role, const std::string& roleText, const std::string& content, bool renderMarkdown) {
+		std::string roleClass = "system";
+		switch (role)
+		{
+		case SessionRole::User: roleClass = "user"; break;
+		case SessionRole::Assistant: roleClass = "assistant"; break;
+		case SessionRole::Tool: roleClass = "tool"; break;
+		default: break;
+		}
+
+		html += "<section class=\"msg ";
+		html += roleClass;
+		html += "\"><div class=\"role\">";
+		html += EscapeHtml(roleText);
+		html += "</div><div class=\"body\">";
+		html += renderMarkdown ? RenderMarkdownToHtml(content) : RenderPlainTextToHtml(content);
+		html += "</div></section>";
+	};
+
+	std::string body;
+	body.reserve(4096);
+	for (const auto& msg : state.messages) {
+		appendMessageCard(
+			body,
+			msg.role,
+			RoleLabel(msg.role),
+			msg.content,
+			msg.role == SessionRole::Assistant);
+	}
+
+	if (state.requestInFlight) {
+		const std::string preview = TrimAsciiCopy(state.streamingAssistantPreview);
+		if (!preview.empty()) {
+			appendMessageCard(body, SessionRole::Assistant, "AI", state.streamingAssistantPreview, true);
+			appendMessageCard(body, SessionRole::System, LocalFromWide(L"系统"), LocalFromWide(L"AI 正在生成（流式）..."), false);
+		}
+		else {
+			appendMessageCard(body, SessionRole::System, LocalFromWide(L"系统"), LocalFromWide(L"等待 AI 返回..."), false);
+		}
+	}
+
+	if (TrimAsciiCopy(body).empty()) {
+		appendMessageCard(body, SessionRole::System, LocalFromWide(L"系统"), LocalFromWide(L"等待开始对话..."), false);
+	}
+
+	std::string html;
+	return body;
+}
+
+std::string BuildHistoryWebViewShellHtml()
+{
+	std::string html;
+	html.reserve(2600);
+	html += "<!doctype html><html><head><meta charset=\"utf-8\"><style>";
+	html += "html,body{margin:0;padding:0;background:#ffffff;color:#222;font:13px/1.6 'Microsoft YaHei UI','Segoe UI',sans-serif;}";
+	html += "body{padding:0;}";
+	html += ".layout{display:flex;flex-direction:column;height:100vh;box-sizing:border-box;}";
+	html += ".history{flex:1 1 auto;overflow:auto;padding:10px 10px 8px 10px;box-sizing:border-box;}";
+	html += "#chat-root{min-height:100%;}";
+	html += ".composer{flex:0 0 auto;border-top:1px solid #d9d9d9;background:#fbfbfb;padding:8px 10px 10px 10px;box-sizing:border-box;}";
+	html += ".actions{display:flex;justify-content:space-between;align-items:flex-end;gap:8px;}";
+	html += ".left-actions,.right-actions{display:flex;align-items:center;gap:8px;}";
+	html += ".right-actions{margin-left:auto;}";
+	html += ".input-wrap{display:flex;flex-direction:column;gap:8px;}";
+	html += "#chat-input{width:100%;min-height:58px;max-height:160px;resize:vertical;box-sizing:border-box;border:1px solid #cfcfcf;border-radius:6px;padding:8px 10px;font:13px/1.5 'Microsoft YaHei UI','Segoe UI',sans-serif;outline:none;background:#fff;}";
+	html += "#chat-input:focus{border-color:#7aa7e0;box-shadow:0 0 0 2px rgba(64,127,214,.12);}";
+	html += ".btn{border:1px solid #c8c8c8;background:#fff;border-radius:6px;padding:6px 12px;font:12px 'Microsoft YaHei UI','Segoe UI',sans-serif;cursor:pointer;}";
+	html += ".btn.primary{background:#0b63c9;border-color:#0b63c9;color:#fff;}";
+	html += ".btn:disabled{opacity:.55;cursor:default;}";
+	html += ".hint{font-size:12px;color:#6b6b6b;}";
+	html += ".msg{border:1px solid #d8d8d8;border-radius:6px;padding:8px 10px;margin:0 0 10px 0;box-sizing:border-box;overflow:hidden;}";
+	html += ".msg.user{background:#f7fbff;border-color:#c8ddf5;}";
+	html += ".msg.assistant{background:#ffffff;border-color:#d8d8d8;}";
+	html += ".msg.tool{background:#fbfbfb;border-color:#dddddd;}";
+	html += ".msg.system{background:#fff9e8;border-color:#ecd9a1;}";
+	html += ".role{font-size:12px;font-weight:700;color:#5a5a5a;margin-bottom:6px;}";
+	html += ".body{overflow-wrap:anywhere;word-break:break-word;}";
+	html += ".body p,.body ul,.body pre,.body h1,.body h2,.body h3,.body h4,.body h5,.body h6{margin:0 0 8px 0;}";
+	html += ".body ul{padding-left:20px;}";
+	html += ".body code{font-family:Consolas,'Courier New',monospace;background:#f2f2f2;border-radius:4px;padding:1px 4px;overflow-wrap:anywhere;word-break:break-word;}";
+	html += ".body pre{overflow:auto;background:#f6f8fa;border-radius:6px;padding:10px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;}";
+	html += ".body pre code{background:transparent;padding:0;border-radius:0;}";
+	html += ".body a{color:#0b63c9;text-decoration:none;}";
+	html += ".body a:hover{text-decoration:underline;}";
+	html += "</style></head><body><div class=\"layout\"><div id=\"history-scroll\" class=\"history\"><div id=\"chat-root\"></div></div><div class=\"composer\"><div class=\"input-wrap\"><textarea id=\"chat-input\" placeholder=\"输入消息，Enter 发送，Ctrl+Enter 换行\"></textarea><div class=\"actions\"><div class=\"left-actions\"><button id=\"clear-btn\" class=\"btn\" type=\"button\">清空历史会话</button><span class=\"hint\">Enter 发送，Ctrl+Enter 换行</span></div><div class=\"right-actions\"><button id=\"send-btn\" class=\"btn primary\" type=\"button\">发送</button></div></div></div></div></div><script>";
+	html += "window.autolinkerSetChatHtml=function(html){var root=document.getElementById('chat-root');var scroll=document.getElementById('history-scroll');if(root){root.innerHTML=html||'';if(scroll){scroll.scrollTop=scroll.scrollHeight;}}};";
+	html += "window.autolinkerSetBusy=function(busy){var send=document.getElementById('send-btn');var clear=document.getElementById('clear-btn');var input=document.getElementById('chat-input');if(send){send.disabled=!!busy;}if(clear){clear.disabled=!!busy;}if(input){input.disabled=!!busy;}};";
+	html += "window.autolinkerClearInput=function(){var input=document.getElementById('chat-input');if(input){input.value='';input.focus();}};";
+	html += "window.autolinkerFocusInput=function(){var input=document.getElementById('chat-input');if(input){input.focus();}};";
+	html += "(function(){var input=document.getElementById('chat-input');var send=document.getElementById('send-btn');var clear=document.getElementById('clear-btn');";
+	html += "function post(obj){if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify(obj));}}";
+	html += "function doSend(){if(!input||input.disabled){return;} post({action:'submit',text:input.value||''});}";
+	html += "if(send){send.addEventListener('click',doSend);} if(clear){clear.addEventListener('click',function(){post({action:'clear'});});}";
+	html += "if(input){input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.ctrlKey){e.preventDefault();doSend();}}); setTimeout(function(){input.focus();},0);}})();";
+	html += "</script></body></html>";
+	return html;
 }
 
 std::string BuildHistoryTextLocked(const AIChatSessionState& state)
@@ -2093,6 +2801,59 @@ bool StartChatRequest(const std::string& userInput)
 	return true;
 }
 
+void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+
+	const std::string trimmed = TrimAsciiCopy(text);
+	if (trimmed.empty()) {
+		if (ctx->webViewDesired) {
+			FocusWebViewInput(ctx);
+		}
+		else if (ctx->hInput != nullptr) {
+			SetFocus(ctx->hInput);
+		}
+		return;
+	}
+
+	if (!ctx->webViewDesired && ctx->hInput != nullptr) {
+		SetWindowTextA(ctx->hInput, "");
+		ctx->inputRowsVisible = 1;
+		LayoutAIChatDialog(hWnd, ctx);
+	}
+
+	if (ctx->webViewDesired) {
+		ClearWebViewInput(ctx);
+	}
+
+	EnableWindow(ctx->hSend, FALSE);
+	UpdateWebViewComposerState(ctx, true);
+	if (!StartChatRequest(trimmed)) {
+		RefreshChatDialog(hWnd);
+	}
+}
+
+void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	if (!ctx->webViewDesired && ctx->hHistory != nullptr) {
+		SetWindowTextA(ctx->hHistory, "");
+	}
+	RequestClearChatHistoryAsync();
+	UpdateWebViewComposerState(ctx, false);
+	if (ctx->webViewDesired) {
+		FocusWebViewInput(ctx);
+	}
+	else if (ctx->hInput != nullptr) {
+		SetFocus(ctx->hInput);
+	}
+	(void)hWnd;
+}
+
 void ClearChatHistory()
 {
 	std::vector<SessionMessage> oldMessages;
@@ -2181,6 +2942,7 @@ void RefreshChatDialog(HWND hWnd)
 	}
 
 	std::string history;
+	std::string historyHtml;
 	bool inFlight = false;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
@@ -2189,12 +2951,19 @@ void RefreshChatDialog(HWND hWnd)
 			g_session.streamingAssistantPreview.clear();
 		}
 		history = BuildHistoryTextLocked(g_session);
+		if (ctx->webViewDesired) {
+			historyHtml = BuildHistoryHtmlLocked(g_session);
+		}
 		inFlight = g_session.requestInFlight;
 	}
 
 	SetWindowTextA(ctx->hHistory, history.c_str());
 	ScrollEditToBottom(ctx->hHistory);
+	if (ctx->webViewDesired) {
+		UpdateHistoryWebViewHtml(ctx, historyHtml);
+	}
 	EnableWindow(ctx->hSend, inFlight ? FALSE : TRUE);
+	UpdateWebViewComposerState(ctx, inFlight);
 }
 
 LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -2219,6 +2988,19 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hHistory = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
 			WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY | WS_VSCROLL,
 			14, 14, 752, 420, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_HISTORY), nullptr, nullptr);
+		ctx->webViewDesired = IsWebView2RuntimeAvailable();
+		if (ctx->webViewDesired) {
+			ctx->hHistoryHost = CreateWindowExA(
+				WS_EX_CLIENTEDGE,
+				"STATIC",
+				"",
+				WS_CHILD,
+				14, 14, 752, 420,
+				hWnd,
+				nullptr,
+				nullptr,
+				nullptr);
+		}
 		ctx->hClearHistory = CreateWindowW(L"STATIC", L"\u6e05\u7a7a\u5386\u53f2\u4f1a\u8bdd",
 			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			14, 442, 106, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_HISTORY), nullptr, nullptr);
@@ -2239,9 +3021,11 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		InstallChatActionControl(ctx->hClearHistory, kActionClear);
 		ctx->inputRowsVisible = 1;
 		LayoutAIChatDialog(hWnd, ctx);
+		SyncHistoryPresentation(ctx);
 		PostMessageA(hWnd, WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT, 0, 0);
 
 		RefreshChatDialog(hWnd);
+		TryInitializeHistoryWebView(hWnd, ctx);
 		SetFocus(ctx->hInput);
 		return 0;
 	}
@@ -2302,28 +3086,28 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		}
 		return 0;
 
+	case WM_TIMER:
+		if (ctx != nullptr && wParam == kHistoryWebViewFlushTimerId) {
+			KillTimer(hWnd, kHistoryWebViewFlushTimerId);
+			if (ctx->webViewFlushScheduled) {
+				FlushHistoryWebViewHtml(ctx);
+			}
+			return 0;
+		}
+		break;
+
 	case WM_AUTOLINKER_AI_CHAT_SUBMIT:
 		if (ctx != nullptr) {
 			OutputStringToELog("[AI Chat][UI] submit begin");
-			const std::string text = GetEditTextA(ctx->hInput);
-			if (!TrimAsciiCopy(text).empty()) {
-				SetWindowTextA(ctx->hInput, "");
-				ctx->inputRowsVisible = 1;
-				LayoutAIChatDialog(hWnd, ctx);
-				EnableWindow(ctx->hSend, FALSE);
-				if (!StartChatRequest(text)) {
-					RefreshChatDialog(hWnd);
-				}
-			}
+			HandleChatSubmitUi(hWnd, ctx, GetEditTextA(ctx->hInput));
 			OutputStringToELog("[AI Chat][UI] submit end");
 		}
 		return 0;
 
 	case WM_AUTOLINKER_AI_CHAT_CLEAR:
-		if (ctx != nullptr && ctx->hHistory != nullptr) {
-			SetWindowTextA(ctx->hHistory, "");
+		if (ctx != nullptr) {
+			HandleChatClearUi(hWnd, ctx);
 		}
-		RequestClearChatHistoryAsync();
 		return 0;
 
 	case WM_AUTOLINKER_AI_CHAT_REFRESH:
@@ -2339,6 +3123,10 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 			g_chatDialog = nullptr;
 			g_chatTabAdded = false;
 		}
+		KillTimer(hWnd, kHistoryWebViewFlushTimerId);
+		ctx->webView = nullptr;
+		ctx->webViewController = nullptr;
+		ctx->webViewEnvironment = nullptr;
 		delete ctx;
 		SetWindowLongPtrA(hWnd, GWLP_USERDATA, 0);
 		return 0;
@@ -2539,6 +3327,10 @@ std::string GetChatTabCaption()
 }
 
 void LogChatTab(const std::string& text);
+void RefreshChatDialog(HWND hWnd);
+void RequestClearChatHistoryAsync();
+void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text);
+void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx);
 
 std::string GetLeftWorkAreaTabCaption()
 {
@@ -2922,6 +3714,10 @@ void FocusChatInputControl()
 		return;
 	}
 	auto* ctx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(g_chatDialog, GWLP_USERDATA));
+	if (ctx != nullptr && ctx->webViewDesired) {
+		FocusWebViewInput(ctx);
+		return;
+	}
 	if (ctx != nullptr && ctx->hInput != nullptr) {
 		SetFocus(ctx->hInput);
 	}
