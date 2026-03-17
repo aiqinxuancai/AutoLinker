@@ -4,9 +4,16 @@
 #include <detours.h>
 
 #include <array>
+#include <format>
 #include <mbstring.h>
 
 #include <cstring>
+#include <mutex>
+
+#include "MemFind.h"
+
+extern HWND g_hwnd;
+void OutputStringToELog(const std::string& szbuf);
 
 namespace e571 {
 
@@ -50,39 +57,47 @@ using FnEditorFetchLineTextRaw = int(__thiscall*)(void*, int, int, ExeCStringA*,
 
 constexpr std::uintptr_t kImageBase = 0x400000;
 
-constexpr std::uintptr_t kAddr_InitContext = 0x4C74E0;
-constexpr std::uintptr_t kAddr_GetOuterCount = 0x48E7B0;
-constexpr std::uintptr_t kAddr_GetInnerCount = 0x492E80;
-constexpr std::uintptr_t kAddr_FetchSearchText = 0x4C7590;
-constexpr std::uintptr_t kAddr_ContainerGetAt = 0x4E7EA0;
-constexpr std::uintptr_t kAddr_ContainerGetId = 0x4E7EE0;
-constexpr std::uintptr_t kAddr_ResolveBucketIndex = 0x4E7F40;
-constexpr std::uintptr_t kAddr_OpenCodeTarget = 0x403A80;
-constexpr std::uintptr_t kAddr_MoveToLine = 0x4BA580;
-constexpr std::uintptr_t kAddr_EnsureVisible = 0x4BAFB0;
-constexpr std::uintptr_t kAddr_MoveCaretToOffset = 0x4AAC10;
-constexpr std::uintptr_t kAddr_ActivateWindow = 0x53CF5B;
-constexpr std::uintptr_t kAddr_NotifyOpenFailure = 0x47B3C0;
-constexpr std::uintptr_t kAddr_CStringDestroy = 0x53BB23;
-constexpr std::uintptr_t kAddr_EmptyCStringData = 0x5C72A4;
+struct NativeSearchAddresses {
+    bool initialized = false;
+    bool ok = false;
+    std::uintptr_t moduleBase = 0;
 
-constexpr std::uintptr_t kAddr_Type1Container = 0x5CB184;
-constexpr std::uintptr_t kAddr_Type2Data = 0x5CB12C;
-constexpr std::uintptr_t kAddr_Type3Data = 0x5CB148;
-constexpr std::uintptr_t kAddr_Type4Data = 0x5CB1A0;
-constexpr std::uintptr_t kAddr_Type678Data = 0x5CB1D8;
-constexpr std::uintptr_t kAddr_MainEditorHost = 0x5CAE70;
-constexpr std::uintptr_t kAddr_OwnerObject = 0x5CAF30;
-constexpr std::uintptr_t kAddr_BuiltinSearchDialogCtor = 0x445C00;
-constexpr std::uintptr_t kAddr_BuiltinSearchDialogDtor = 0x445CE0;
-constexpr std::uintptr_t kAddr_DialogDoModal = 0x53C618;
-constexpr std::uintptr_t kAddr_MainWindowObject = 0x5CB790;
-constexpr std::uintptr_t kAddr_SearchMode = 0x5CAD6C;
-constexpr std::uintptr_t kAddr_ConsumeSearchResultRecord = 0x4A9170;
-constexpr std::uintptr_t kAddr_FromHandle = 0x53D57E;
-constexpr std::uintptr_t kAddr_EditorGetOuterCount = 0x4C05B0;
-constexpr std::uintptr_t kAddr_EditorGetInnerCount = 0x4C5440;
-constexpr std::uintptr_t kAddr_EditorFetchLineText = 0x4C53F0;
+    std::uintptr_t initContext = 0;
+    std::uintptr_t getOuterCount = 0;
+    std::uintptr_t getInnerCount = 0;
+    std::uintptr_t fetchSearchText = 0;
+    std::uintptr_t containerGetAt = 0;
+    std::uintptr_t containerGetId = 0;
+    std::uintptr_t resolveBucketIndex = 0;
+    std::uintptr_t openCodeTarget = 0;
+    std::uintptr_t moveToLine = 0;
+    std::uintptr_t ensureVisible = 0;
+    std::uintptr_t moveCaretToOffset = 0;
+    std::uintptr_t activateWindow = 0;
+    std::uintptr_t notifyOpenFailure = 0;
+    std::uintptr_t cstringDestroy = 0;
+    std::uintptr_t emptyCStringData = 0;
+
+    std::uintptr_t type1Container = 0;
+    std::uintptr_t type2Data = 0;
+    std::uintptr_t type3Data = 0;
+    std::uintptr_t type4Data = 0;
+    std::uintptr_t type678Data = 0;
+    std::uintptr_t mainEditorHost = 0;
+    std::uintptr_t ownerObject = 0;
+    std::uintptr_t builtinSearchDialogCtor = 0;
+    std::uintptr_t builtinSearchDialogDtor = 0;
+    std::uintptr_t dialogDoModal = 0;
+    std::uintptr_t searchMode = 0;
+    std::uintptr_t consumeSearchResultRecord = 0;
+    std::uintptr_t fromHandle = 0;
+    std::uintptr_t editorGetOuterCount = 0;
+    std::uintptr_t editorGetInnerCount = 0;
+    std::uintptr_t editorFetchLineText = 0;
+    std::uintptr_t appendBytes = 0;
+    std::uintptr_t prepareSearchResults = 0;
+    std::uintptr_t selectSearchResultTab = 0;
+};
 
 constexpr int kSearchTypes[] = {1, 2, 3, 4, 6, 7, 8};
 constexpr size_t kBuiltinSearchDialogStorageSize = 0x200;
@@ -141,7 +156,9 @@ struct HiddenBuiltinSearchContext {
     void* resultPageObject = nullptr;
     bool dialogHandled = false;
     bool searchFinished = false;
-    std::vector<std::string> capturedLines;
+    size_t fallbackHitCount = 0;
+    std::string fallbackFirstResultText;
+    std::vector<std::string> fallbackPreviewLines;
     std::vector<e571::DirectGlobalSearch::GlobalSearchHit> rawHits;
 };
 
@@ -152,6 +169,285 @@ FnPrepareSearchResults g_originalPrepareSearchResults = nullptr;
 FnSelectSearchResultTab g_originalSelectSearchResultTab = nullptr;
 FnActivateWindowObject g_originalActivateWindowObject = nullptr;
 FnSendMessageA g_originalSendMessageA = ::SendMessageA;
+
+std::mutex g_nativeSearchAddressMutex;
+NativeSearchAddresses g_nativeSearchAddresses;
+
+std::uintptr_t NormalizeRuntimeAddress(std::uintptr_t runtimeAddress, std::uintptr_t moduleBase) {
+    if (runtimeAddress == 0 || moduleBase == 0 || runtimeAddress < moduleBase) {
+        return 0;
+    }
+    return runtimeAddress - moduleBase + kImageBase;
+}
+
+std::uintptr_t ReadNormalizedImm32(std::uintptr_t instructionAddress, size_t immOffset, std::uintptr_t moduleBase) {
+    if (instructionAddress == 0) {
+        return 0;
+    }
+    const auto runtimeValue = static_cast<std::uintptr_t>(
+        *reinterpret_cast<const std::uint32_t*>(instructionAddress + immOffset));
+    return NormalizeRuntimeAddress(runtimeValue, moduleBase);
+}
+
+std::uintptr_t ReadNormalizedAbs32(std::uintptr_t absoluteAddress, std::uintptr_t moduleBase) {
+    if (absoluteAddress == 0 || moduleBase == 0 || absoluteAddress < kImageBase) {
+        return 0;
+    }
+    const auto runtimeAddress = absoluteAddress - kImageBase + moduleBase;
+    const auto runtimeValue = static_cast<std::uintptr_t>(*reinterpret_cast<const std::uint32_t*>(runtimeAddress));
+    return NormalizeRuntimeAddress(runtimeValue, moduleBase);
+}
+
+std::uintptr_t ResolveUniqueCodeAddress(
+    const char* label,
+    const char* pattern,
+    std::uintptr_t moduleBase) {
+    const auto matches = FindSelfModelMemoryAll(pattern);
+    if (matches.size() != 1) {
+        OutputStringToELog(std::format(
+            "[DirectGlobalSearch] resolve {} failed, matchCount={}",
+            label,
+            matches.size()));
+        return 0;
+    }
+    return NormalizeRuntimeAddress(static_cast<std::uintptr_t>(matches.front()), moduleBase);
+}
+
+std::uintptr_t ResolveUniqueImmAddress(
+    const char* label,
+    const char* pattern,
+    size_t immOffset,
+    std::uintptr_t moduleBase) {
+    const auto matches = FindSelfModelMemoryAll(pattern);
+    if (matches.size() != 1) {
+        OutputStringToELog(std::format(
+            "[DirectGlobalSearch] resolve {} failed, matchCount={}",
+            label,
+            matches.size()));
+        return 0;
+    }
+    return ReadNormalizedImm32(static_cast<std::uintptr_t>(matches.front()), immOffset, moduleBase);
+}
+
+bool PopulateNativeSearchAddresses(NativeSearchAddresses& addrs, std::uintptr_t moduleBase) {
+    addrs = {};
+    addrs.moduleBase = moduleBase;
+
+    addrs.initContext = ResolveUniqueCodeAddress(
+        "init_context",
+        "8B C1 33 C9 89 08 89 48 0C 89 48 04 89 48 08 C3",
+        moduleBase);
+    addrs.getOuterCount = ResolveUniqueCodeAddress(
+        "get_outer_count",
+        "83 EC 10 53 55 56 8B F1 33 DB 33 ED 8B 06 57 48 83 F8 07 0F 87 20 01 00 00",
+        moduleBase);
+    addrs.getInnerCount = ResolveUniqueCodeAddress(
+        "get_inner_count",
+        "83 EC 0C 8B 01 53 48 55 56 83 F8 07 57 89 4C 24 10 0F 87 0F 01 00 00",
+        moduleBase);
+    addrs.fetchSearchText = ResolveUniqueCodeAddress(
+        "fetch_search_text",
+        "83 EC 0C 53 55 56 57 8B F9 8B 4C 24 28 E8 ?? ?? ?? ?? 8B 6C 24 40 85 ED 74 07 C7 45 00 00 00 00 00",
+        moduleBase);
+    addrs.containerGetAt = ResolveUniqueCodeAddress(
+        "container_get_at",
+        "8B 41 18 8B 54 24 04 C1 E8 03 3B D0 7D 23 56 8B 71 18 85 F6 5E 75 04 33 C9 EB 03 8B 49 10 03 C2",
+        moduleBase);
+    addrs.containerGetId = ResolveUniqueCodeAddress(
+        "container_get_id",
+        "8B 51 18 8B 44 24 04 C1 EA 03 3B C2 7D 18 8B 51 18 85 D2 75 08 33 C9 8B 04 81 C2 04 00 8B 49 10",
+        moduleBase);
+    addrs.resolveBucketIndex = ResolveUniqueCodeAddress(
+        "resolve_bucket_index",
+        "53 8B 5C 24 08 56 57 8B F1 53 E8 ?? ?? ?? ?? 83 C4 04 85 C0 75 06 5F 5E 5B C2 0C 00 8B 46 18 85 C0 75 04 33 FF EB 03 8B 7E 10",
+        moduleBase);
+    addrs.openCodeTarget = ResolveUniqueCodeAddress(
+        "open_code_target",
+        "83 EC 08 53 56 57 8B F9 8B 87 CC 03 00 00 F7 D0 83 E0 01 3C 01 0F 84 C0 02 00 00 8B 5C 24 18 33 F6 83 FB 01 74 39",
+        moduleBase);
+    addrs.moveToLine = ResolveUniqueCodeAddress(
+        "move_to_line",
+        "6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 81 EC 90 00 00 00 8B 84 24 A0 00 00 00 55 56 57 8B F1 50",
+        moduleBase);
+    addrs.ensureVisible = ResolveUniqueCodeAddress(
+        "ensure_visible",
+        "6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 83 EC 44 8B 44 24 58 53 55 8B 6C 24 5C 56 57 85 C0 8B F1",
+        moduleBase);
+    addrs.moveCaretToOffset = ResolveUniqueCodeAddress(
+        "move_caret_to_offset",
+        "64 A1 00 00 00 00 6A FF 68 ?? ?? ?? ?? 50 64 89 25 00 00 00 00 83 EC 28 55 8B 6C 24 3C 56 83 FD FF 8B F1 75 06",
+        moduleBase);
+    addrs.activateWindow = ResolveUniqueCodeAddress(
+        "activate_window",
+        "8B 41 38 85 C0 75 10 FF 71 1C FF 15 ?? ?? ?? ?? 50 E8 ?? ?? ?? ?? C3 8B 10 8B C8 FF A2 AC 00 00",
+        moduleBase);
+    addrs.notifyOpenFailure = ResolveUniqueCodeAddress(
+        "notify_open_failure",
+        "8B 44 24 04 50 FF 15 ?? ?? ?? ?? C2 04 00 90 90 51 56 8B F1 8B 8E 24 09 00 00 85 C9 74 2B",
+        moduleBase);
+    addrs.cstringDestroy = ResolveUniqueCodeAddress(
+        "cstring_destroy",
+        "56 8B F1 8B 06 8D 48 F4 3B 0D ?? ?? ?? ?? 74 18 83 C0 F4 50 FF 15 ?? ?? ?? ?? 85 C0 7F 0A 8B 0E",
+        moduleBase);
+
+    addrs.emptyCStringData = ResolveUniqueImmAddress(
+        "empty_cstring_data",
+        "A1 ?? ?? ?? ?? 53 56 8B F1 33 DB 57 89 74 24 6C 33 FF 89 5C 24 1C",
+        1,
+        moduleBase);
+    addrs.type1Container = ResolveUniqueImmAddress(
+        "type1_container",
+        "8B C1 41 89 4C 24 48 52 50 B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? 85 C0 0F 84 1B 04 00 00 8B 44 24",
+        10,
+        moduleBase);
+    addrs.type2Data = ResolveUniqueImmAddress(
+        "type2_data",
+        "68 ?? ?? ?? ?? 8D 4C 24 14 C7 44 24 58 ?? ?? ?? ?? E8 ?? ?? ?? ?? EB 54",
+        13,
+        moduleBase);
+    addrs.type3Data = ResolveUniqueImmAddress(
+        "type3_data",
+        "68 ?? ?? ?? ?? 8D 4C 24 14 C7 44 24 58 ?? ?? ?? ?? E8 ?? ?? ?? ?? EB 3C",
+        13,
+        moduleBase);
+    addrs.type4Data = ResolveUniqueImmAddress(
+        "type4_data",
+        "68 ?? ?? ?? ?? 8D 4C 24 14 C7 44 24 58 ?? ?? ?? ?? E8 ?? ?? ?? ?? EB 24",
+        13,
+        moduleBase);
+    addrs.type678Data = ResolveUniqueImmAddress(
+        "type678_data",
+        "E8 ?? ?? ?? ?? C7 44 24 54 ?? ?? ?? ?? A1 ?? ?? ?? ?? 89 44 24 2C 33 F6 33 ED",
+        9,
+        moduleBase);
+    addrs.mainEditorHost = ResolveUniqueImmAddress(
+        "main_editor_host",
+        "A1 ?? ?? ?? ?? 3B C7 74 0A B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? 8D 44 24 14 55 50 B9 ?? ?? ?? ?? E8",
+        10,
+        moduleBase);
+    addrs.ownerObject = ResolveUniqueImmAddress(
+        "owner_object",
+        "8B 3D ?? ?? ?? ?? 83 C9 FF 33 C0 C7 44 24 5C ?? ?? ?? ?? 89 7C 24 6C F2 AE A1 ?? ?? ?? ?? 33 FF F7 D1 49 33 D2 3B C7 8B 86 68 01 00 00",
+        15,
+        moduleBase);
+    addrs.builtinSearchDialogCtor = ResolveUniqueCodeAddress(
+        "builtin_search_dialog_ctor",
+        "6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 51 8B 44 24 14 56 57 8B F1 50 68 35 78 00 00",
+        moduleBase);
+    {
+        const auto builtinSearchDialogVftable = ResolveUniqueImmAddress(
+            "builtin_search_dialog_vftable",
+            "8B 4C 24 0C C7 06 ?? ?? ?? ?? C7 86 8C 01 00 00 00 00 00 00",
+            6,
+            moduleBase);
+        addrs.builtinSearchDialogDtor = ReadNormalizedAbs32(builtinSearchDialogVftable + sizeof(std::uint32_t), moduleBase);
+        if (addrs.builtinSearchDialogDtor == 0) {
+            OutputStringToELog("[DirectGlobalSearch] resolve builtin_search_dialog_dtor failed");
+        }
+    }
+    addrs.dialogDoModal = ResolveUniqueCodeAddress(
+        "dialog_do_modal",
+        "B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 EC 18 53 56 8B F1 57 89 65 F0 89 75 E4 8B 46 48 8B 7E 44 89 45 E8",
+        moduleBase);
+    addrs.searchMode = ResolveUniqueImmAddress(
+        "search_mode",
+        "FF 15 ?? ?? ?? ?? 48 F7 D8 1B C0 83 C0 02 A3 ?? ?? ?? ?? C3",
+        15,
+        moduleBase);
+    addrs.consumeSearchResultRecord = ResolveUniqueCodeAddress(
+        "consume_search_result_record",
+        "8B 4C 24 08 56 83 F9 FF 57 0F 84 07 01 00 00 49 0F 88 F4 00 00 00 8B 7C 24 0C B8 CD CC CC CC 8B 77 10",
+        moduleBase);
+    addrs.fromHandle = ResolveUniqueCodeAddress(
+        "from_handle",
+        "56 57 6A 01 E8 ?? ?? ?? ?? 8B F0 FF 74 24 0C 8B CE E8 ?? ?? ?? ?? 8B F8 56 8B CF E8 ?? ?? ?? ??",
+        moduleBase);
+    addrs.editorGetOuterCount = ResolveUniqueCodeAddress(
+        "editor_get_outer_count",
+        "83 EC 10 51 8D 4C 24 04 E8 33 6F 00 00 8D 4C 24 00 E8 EA E1 FC FF 83 C4 10 C3",
+        moduleBase);
+    addrs.editorGetInnerCount = ResolveUniqueCodeAddress(
+        "editor_get_inner_count",
+        "83 EC 10 51 8D 4C 24 04 E8 A3 20 00 00 8B 44 24 14 8D 4C 24 00 50 E8 25 DA FC FF 83 C4 10 C2 04",
+        moduleBase);
+    addrs.editorFetchLineText = ResolveUniqueCodeAddress(
+        "editor_fetch_line_text",
+        "83 EC 10 51 8D 4C 24 04 E8 F3 20 00 00 8B 44 24 2C 8B 4C 24 28 8B 54 24 24 50 8B 44 24 24 6A 00",
+        moduleBase);
+    addrs.appendBytes = ResolveUniqueCodeAddress(
+        "append_bytes",
+        "56 57 8B 7C 24 10 85 FF 7E 3D 8B 71 10 8D 04 3E 50 E8 ?? ?? ?? ?? 85 C0 75 05 5F 5E C2 08 00",
+        moduleBase);
+    addrs.prepareSearchResults = ResolveUniqueCodeAddress(
+        "prepare_search_results",
+        "53 8B 1D ?? ?? ?? ?? 56 57 8B 7C 24 10 8B F1 85 FF 74 05 83 FF 02 74 1D 8B 86 8C 03 00 00 6A 00",
+        moduleBase);
+    addrs.selectSearchResultTab = ResolveUniqueCodeAddress(
+        "select_search_result_tab",
+        "8B 54 24 04 33 C0 83 FA 02 53 0F 94 C0 56 57 83 C0 05 8B F1 68 E8 03 00 00 8B F8 E8 ?? ?? ?? ??",
+        moduleBase);
+
+    addrs.ok =
+        addrs.initContext != 0 &&
+        addrs.getOuterCount != 0 &&
+        addrs.getInnerCount != 0 &&
+        addrs.fetchSearchText != 0 &&
+        addrs.containerGetAt != 0 &&
+        addrs.containerGetId != 0 &&
+        addrs.resolveBucketIndex != 0 &&
+        addrs.openCodeTarget != 0 &&
+        addrs.moveToLine != 0 &&
+        addrs.ensureVisible != 0 &&
+        addrs.moveCaretToOffset != 0 &&
+        addrs.activateWindow != 0 &&
+        addrs.notifyOpenFailure != 0 &&
+        addrs.cstringDestroy != 0 &&
+        addrs.emptyCStringData != 0 &&
+        addrs.type1Container != 0 &&
+        addrs.type2Data != 0 &&
+        addrs.type3Data != 0 &&
+        addrs.type4Data != 0 &&
+        addrs.type678Data != 0 &&
+        addrs.mainEditorHost != 0 &&
+        addrs.ownerObject != 0 &&
+        addrs.builtinSearchDialogCtor != 0 &&
+        addrs.builtinSearchDialogDtor != 0 &&
+        addrs.dialogDoModal != 0 &&
+        addrs.searchMode != 0 &&
+        addrs.consumeSearchResultRecord != 0 &&
+        addrs.fromHandle != 0 &&
+        addrs.editorGetOuterCount != 0 &&
+        addrs.editorGetInnerCount != 0 &&
+        addrs.editorFetchLineText != 0 &&
+        addrs.appendBytes != 0 &&
+        addrs.prepareSearchResults != 0 &&
+        addrs.selectSearchResultTab != 0;
+    addrs.initialized = true;
+    return addrs.ok;
+}
+
+const NativeSearchAddresses& GetNativeSearchAddresses(std::uintptr_t moduleBase) {
+    std::lock_guard<std::mutex> lock(g_nativeSearchAddressMutex);
+    if (!g_nativeSearchAddresses.initialized || g_nativeSearchAddresses.moduleBase != moduleBase) {
+        PopulateNativeSearchAddresses(g_nativeSearchAddresses, moduleBase);
+    }
+    return g_nativeSearchAddresses;
+}
+
+bool HasNativeSearchAddresses(std::uintptr_t moduleBase) {
+    return GetNativeSearchAddresses(moduleBase).ok;
+}
+
+void* GetMainWindowObject(std::uintptr_t moduleBase) {
+    if (g_hwnd == nullptr || !::IsWindow(g_hwnd)) {
+        return nullptr;
+    }
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (addrs.fromHandle == 0) {
+        return nullptr;
+    }
+    return reinterpret_cast<FnFromHandle>(addrs.fromHandle - kImageBase + moduleBase)(g_hwnd);
+}
 
 bool IsBuiltinSearchDecorativeLine(const std::string& text);
 bool TryReadBuiltinResultHit(
@@ -261,11 +557,19 @@ T* PtrAbsolute(std::uintptr_t moduleBase, std::uintptr_t absoluteAddress) {
 }
 
 void InitExeCString(ExeCStringA& value, std::uintptr_t moduleBase) {
-    value.data = *PtrAbsolute<const char*>(moduleBase, kAddr_EmptyCStringData);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    value.data = addrs.emptyCStringData != 0
+        ? *PtrAbsolute<const char*>(moduleBase, addrs.emptyCStringData)
+        : "";
 }
 
 void DestroyExeCString(ExeCStringA& value, std::uintptr_t moduleBase) {
-    BindAbsolute<FnCStringDestroy>(moduleBase, kAddr_CStringDestroy)(&value);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (addrs.cstringDestroy == 0) {
+        value.data = "";
+        return;
+    }
+    BindAbsolute<FnCStringDestroy>(moduleBase, addrs.cstringDestroy)(&value);
     InitExeCString(value, moduleBase);
 }
 
@@ -356,7 +660,9 @@ LRESULT CALLBACK HiddenBuiltinSearchCallWndProc(int code, WPARAM wParam, LPARAM 
             if (cwp->message == LB_RESETCONTENT) {
                 if (ctx->resultListHwnd == nullptr || ctx->resultListHwnd == cwp->hwnd) {
                     ctx->resultListHwnd = cwp->hwnd;
-                    ctx->capturedLines.clear();
+                    ctx->fallbackHitCount = 0;
+                    ctx->fallbackFirstResultText.clear();
+                    ctx->fallbackPreviewLines.clear();
                     ctx->searchFinished = false;
                 }
             } else if (cwp->message == LB_ADDSTRING && cwp->lParam != 0) {
@@ -367,12 +673,19 @@ LRESULT CALLBACK HiddenBuiltinSearchCallWndProc(int code, WPARAM wParam, LPARAM 
                     IsBuiltinSearchDecorativeLine(text);
                 if (ctx->resultListHwnd == cwp->hwnd || (ctx->resultListHwnd == nullptr && lineLooksRelevant)) {
                     ctx->resultListHwnd = cwp->hwnd;
-                    ctx->capturedLines.push_back(std::move(text));
-                    const std::string& last = ctx->capturedLines.back();
-                    if (IsBuiltinSearchDecorativeLine(last) &&
-                        (ctx->keyword == nullptr || std::strstr(last.c_str(), ctx->keyword) == nullptr) &&
-                        ctx->capturedLines.size() >= 2) {
-                        ctx->searchFinished = true;
+                    if (IsBuiltinSearchDecorativeLine(text)) {
+                        if ((ctx->keyword == nullptr || std::strstr(text.c_str(), ctx->keyword) == nullptr) &&
+                            (ctx->fallbackHitCount > 0 || !ctx->rawHits.empty())) {
+                            ctx->searchFinished = true;
+                        }
+                    } else {
+                        ++ctx->fallbackHitCount;
+                        if (ctx->fallbackFirstResultText.empty()) {
+                            ctx->fallbackFirstResultText = text;
+                        }
+                        if (ctx->fallbackPreviewLines.size() < kBuiltinResultPreviewLimit) {
+                            ctx->fallbackPreviewLines.push_back(std::move(text));
+                        }
                     }
                 }
             }
@@ -412,8 +725,15 @@ private:
 };
 
 HWND GetBuiltinResultListHwnd(std::uintptr_t moduleBase) {
-    const int mode = *PtrAbsolute<int>(moduleBase, kAddr_SearchMode);
-    auto* mainWindowObject = reinterpret_cast<unsigned char*>(PtrAbsolute<void>(moduleBase, kAddr_MainWindowObject));
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (addrs.searchMode == 0) {
+        return nullptr;
+    }
+    const int mode = *PtrAbsolute<int>(moduleBase, addrs.searchMode);
+    auto* mainWindowObject = reinterpret_cast<unsigned char*>(GetMainWindowObject(moduleBase));
+    if (mainWindowObject == nullptr) {
+        return nullptr;
+    }
     const ptrdiff_t resultPageOffset = mode == 2 ? kOffset_ResultPageType2 : kOffset_ResultPageType1;
     const HWND pageHwnd = *reinterpret_cast<HWND*>(mainWindowObject + resultPageOffset + kOffset_CWndHwnd);
     if (!::IsWindow(pageHwnd)) {
@@ -469,8 +789,15 @@ bool TryReadBuiltinResultHit(
     }
 
     __try {
-        const int mode = *PtrAbsolute<int>(moduleBase, kAddr_SearchMode);
-        auto* mainWindowObject = reinterpret_cast<unsigned char*>(PtrAbsolute<void>(moduleBase, kAddr_MainWindowObject));
+        const auto& addrs = GetNativeSearchAddresses(moduleBase);
+        if (addrs.searchMode == 0) {
+            return false;
+        }
+        const int mode = *PtrAbsolute<int>(moduleBase, addrs.searchMode);
+        auto* mainWindowObject = reinterpret_cast<unsigned char*>(GetMainWindowObject(moduleBase));
+        if (mainWindowObject == nullptr) {
+            return false;
+        }
         const ptrdiff_t resultRecordOffset =
             mode == 2 ? kOffset_ResultRecordContainerType2 : kOffset_ResultRecordContainerType1;
         auto* containerObject = mainWindowObject + resultRecordOffset;
@@ -550,20 +877,24 @@ bool TryFormatRawSearchHit(
     }
     outText->clear();
 
-    const auto initContext = BindAbsolute<FnInitContext>(moduleBase, kAddr_InitContext);
-    const auto resolveBucketIndex = BindAbsolute<FnResolveBucketIndex>(moduleBase, kAddr_ResolveBucketIndex);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (!addrs.ok) {
+        return false;
+    }
+    const auto initContext = BindAbsolute<FnInitContext>(moduleBase, addrs.initContext);
+    const auto resolveBucketIndex = BindAbsolute<FnResolveBucketIndex>(moduleBase, addrs.resolveBucketIndex);
 
     e571::DirectGlobalSearch::SearchContext ctx{};
     initContext(&ctx);
     ctx.type = hit.type;
     ctx.flag = 0;
-    ctx.owner = static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, kAddr_OwnerObject)));
+    ctx.owner = static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, addrs.ownerObject)));
 
     if (hit.type == 1) {
         int bucketData = 0;
         if (!SafeResolveBucketIndex(
                 resolveBucketIndex,
-                PtrAbsolute<void>(moduleBase, kAddr_Type1Container),
+                PtrAbsolute<void>(moduleBase, addrs.type1Container),
                 hit.extra,
                 &bucketData,
                 nullptr) ||
@@ -594,7 +925,7 @@ bool TryFormatRawSearchHit(
             int,
             ExeCStringA*,
             int,
-            int*)>(BindAbsolute<void*>(moduleBase, kAddr_FetchSearchText)),
+            int*)>(BindAbsolute<void*>(moduleBase, addrs.fetchSearchText)),
         &ctx,
         hit.outerIndex,
         hit.innerIndex,
@@ -637,8 +968,13 @@ bool InvokeNativeSearchResultRecordConsumer(
     buffer.capacityBytes = static_cast<int>(hitCount * sizeof(e571::DirectGlobalSearch::GlobalSearchHit));
     buffer.usedBytes = buffer.capacityBytes;
 
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (addrs.consumeSearchResultRecord == 0) {
+        return false;
+    }
+
     __try {
-        BindAbsolute<FnConsumeSearchResultRecord>(moduleBase, kAddr_ConsumeSearchResultRecord)(
+        BindAbsolute<FnConsumeSearchResultRecord>(moduleBase, addrs.consumeSearchResultRecord)(
             &buffer,
             static_cast<int>(hitIndex + 1));
         return true;
@@ -659,13 +995,17 @@ bool TryResolveEditorObjectForHit(
         outTrace->clear();
     }
 
-    const auto openCodeTarget = BindAbsolute<FnOpenCodeTarget>(moduleBase, kAddr_OpenCodeTarget);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (!addrs.ok) {
+        return false;
+    }
+    const auto openCodeTarget = BindAbsolute<FnOpenCodeTarget>(moduleBase, addrs.openCodeTarget);
     void* editorObject = nullptr;
 
     if (hit.type == 1) {
         int resolvedIndex = -1;
-        const int ok = BindAbsolute<FnResolveBucketIndex>(moduleBase, kAddr_ResolveBucketIndex)(
-            PtrAbsolute<void>(moduleBase, kAddr_Type1Container),
+        const int ok = BindAbsolute<FnResolveBucketIndex>(moduleBase, addrs.resolveBucketIndex)(
+            PtrAbsolute<void>(moduleBase, addrs.type1Container),
             hit.extra,
             nullptr,
             &resolvedIndex);
@@ -677,7 +1017,7 @@ bool TryResolveEditorObjectForHit(
         }
 
         editorObject = reinterpret_cast<void*>(openCodeTarget(
-            PtrAbsolute<void>(moduleBase, kAddr_MainEditorHost),
+            PtrAbsolute<void>(moduleBase, addrs.mainEditorHost),
             hit.type,
             resolvedIndex,
             0,
@@ -690,7 +1030,7 @@ bool TryResolveEditorObjectForHit(
         }
     } else {
         editorObject = reinterpret_cast<void*>(openCodeTarget(
-            PtrAbsolute<void>(moduleBase, kAddr_MainEditorHost),
+            PtrAbsolute<void>(moduleBase, addrs.mainEditorHost),
             hit.type,
             -1,
             -1,
@@ -735,9 +1075,13 @@ bool TryDumpEditorPageCode(
         outResult->trace.clear();
     }
 
-    const auto getOuterCount = BindAbsolute<FnEditorGetOuterCount>(moduleBase, kAddr_EditorGetOuterCount);
-    const auto getInnerCount = BindAbsolute<FnEditorGetInnerCount>(moduleBase, kAddr_EditorGetInnerCount);
-    const auto fetchLineText = BindAbsolute<FnEditorFetchLineTextRaw>(moduleBase, kAddr_EditorFetchLineText);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (!addrs.ok) {
+        return false;
+    }
+    const auto getOuterCount = BindAbsolute<FnEditorGetOuterCount>(moduleBase, addrs.editorGetOuterCount);
+    const auto getInnerCount = BindAbsolute<FnEditorGetInnerCount>(moduleBase, addrs.editorGetInnerCount);
+    const auto fetchLineText = BindAbsolute<FnEditorFetchLineTextRaw>(moduleBase, addrs.editorFetchLineText);
 
     int outerCount = 0;
     if (!SafeEditorGetOuterCount(getOuterCount, editorObject, &outerCount)) {
@@ -837,8 +1181,12 @@ bool TryDumpSearchContextCode(
     }
     outCode->clear();
 
-    const auto getOuterCount = BindAbsolute<FnGetOuterCount>(moduleBase, kAddr_GetOuterCount);
-    const auto getInnerCount = BindAbsolute<FnGetInnerCount>(moduleBase, kAddr_GetInnerCount);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (!addrs.ok) {
+        return false;
+    }
+    const auto getOuterCount = BindAbsolute<FnGetOuterCount>(moduleBase, addrs.getOuterCount);
+    const auto getInnerCount = BindAbsolute<FnGetInnerCount>(moduleBase, addrs.getInnerCount);
     const auto fetchSearchText = BindAbsolute<int(__thiscall*)(
         e571::DirectGlobalSearch::SearchContext*,
         int,
@@ -848,7 +1196,7 @@ bool TryDumpSearchContextCode(
         int,
         ExeCStringA*,
         int,
-        int*)>(moduleBase, kAddr_FetchSearchText);
+        int*)>(moduleBase, addrs.fetchSearchText);
 
     int outerCount = 0;
     if (!SafeGetOuterCount(getOuterCount, ctx, &outerCount) || outerCount <= 0) {
@@ -934,7 +1282,15 @@ bool TryResolveEditorObjectForProgramTreeItemData(
         return false;
     }
 
-    const auto openCodeTarget = BindAbsolute<FnOpenCodeTarget>(moduleBase, kAddr_OpenCodeTarget);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (!addrs.ok) {
+        if (outTrace != nullptr) {
+            *outTrace = "resolve_native_addresses_failed";
+        }
+        return false;
+    }
+
+    const auto openCodeTarget = BindAbsolute<FnOpenCodeTarget>(moduleBase, addrs.openCodeTarget);
     int openType = 0;
     int arg2 = -1;
     int arg3 = -1;
@@ -951,11 +1307,11 @@ bool TryResolveEditorObjectForProgramTreeItemData(
             return false;
         }
 
-        const auto containerGetAt = BindAbsolute<FnContainerGetAt>(moduleBase, kAddr_ContainerGetAt);
+        const auto containerGetAt = BindAbsolute<FnContainerGetAt>(moduleBase, addrs.containerGetAt);
         int bucketOk = 0;
         if (!SafeContainerGetAt(
                 containerGetAt,
-                PtrAbsolute<void>(moduleBase, kAddr_Type1Container),
+                PtrAbsolute<void>(moduleBase, addrs.type1Container),
                 resolvedIndex,
                 &bucketData,
                 &bucketOk) ||
@@ -1000,7 +1356,7 @@ bool TryResolveEditorObjectForProgramTreeItemData(
     }
 
     void* editorObject = reinterpret_cast<void*>(openCodeTarget(
-        PtrAbsolute<void>(moduleBase, kAddr_MainEditorHost),
+        PtrAbsolute<void>(moduleBase, addrs.mainEditorHost),
         openType,
         arg2,
         arg3,
@@ -1182,7 +1538,6 @@ void WaitForBuiltinSearchResults(HiddenBuiltinSearchContext& ctx, std::uintptr_t
         ::Sleep(20);
     }
 
-    WaitForBuiltinSearchResults(moduleBase, 300);
 }
 
 void FillCapturedBuiltinSearchResult(
@@ -1198,7 +1553,8 @@ void FillCapturedBuiltinSearchResult(
         result.rawFirstHit.innerIndex = ctx.rawHits.front().innerIndex;
         result.rawFirstHit.matchOffset = ctx.rawHits.front().matchOffset;
 
-        for (size_t i = 0; i < ctx.rawHits.size(); ++i) {
+        const size_t formatLimit = (std::min)(ctx.rawHits.size(), static_cast<size_t>(kBuiltinResultPreviewLimit));
+        for (size_t i = 0; i < formatLimit; ++i) {
             std::string text;
             if (!TryFormatRawSearchHit(ctx.moduleBase, ctx.rawHits[i], &text) || text.empty()) {
                 continue;
@@ -1207,29 +1563,14 @@ void FillCapturedBuiltinSearchResult(
             if (result.firstResultText.empty()) {
                 result.firstResultText = text;
             }
-            if (result.previewLines.size() < kBuiltinResultPreviewLimit) {
-                result.previewLines.push_back(std::move(text));
-            }
+            result.previewLines.push_back(std::move(text));
         }
         return;
     }
 
-    for (const std::string& line : ctx.capturedLines) {
-        if (line.empty()) {
-            continue;
-        }
-        if (IsBuiltinSearchDecorativeLine(line)) {
-            continue;
-        }
-
-        if (result.firstResultText.empty()) {
-            result.firstResultText = line;
-        }
-        ++result.hits;
-        if (result.previewLines.size() < kBuiltinResultPreviewLimit) {
-            result.previewLines.push_back(line);
-        }
-    }
+    result.hits = ctx.fallbackHitCount;
+    result.firstResultText = ctx.fallbackFirstResultText;
+    result.previewLines = ctx.fallbackPreviewLines;
 }
 
 int FindFirstBuiltinSearchResultIndex(HWND listHwnd) {
@@ -1329,13 +1670,18 @@ bool RunBuiltinSearchDialogHidden(
     const char* keyword,
     std::uintptr_t moduleBase,
     bool* outDialogHandled,
-    e571::HiddenBuiltinSearchDebugResult* outCapturedResult) {
+    e571::HiddenBuiltinSearchDebugResult* outCapturedResult,
+    std::vector<e571::DirectGlobalSearch::GlobalSearchHit>* outRawHits) {
     std::array<unsigned char, kBuiltinSearchDialogStorageSize> dialogStorage = {};
     void* const dialogObject = dialogStorage.data();
 
-    auto ctor = BindAbsolute<FnBuiltinSearchDialogCtor>(moduleBase, kAddr_BuiltinSearchDialogCtor);
-    auto dtor = BindAbsolute<FnBuiltinSearchDialogDtor>(moduleBase, kAddr_BuiltinSearchDialogDtor);
-    auto doModal = BindAbsolute<FnDialogDoModal>(moduleBase, kAddr_DialogDoModal);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (!addrs.ok) {
+        return false;
+    }
+    auto ctor = BindAbsolute<FnBuiltinSearchDialogCtor>(moduleBase, addrs.builtinSearchDialogCtor);
+    auto dtor = BindAbsolute<FnBuiltinSearchDialogDtor>(moduleBase, addrs.builtinSearchDialogDtor);
+    auto doModal = BindAbsolute<FnDialogDoModal>(moduleBase, addrs.dialogDoModal);
 
     HiddenBuiltinSearchContext hookContext;
     hookContext.keyword = keyword;
@@ -1351,7 +1697,27 @@ bool RunBuiltinSearchDialogHidden(
         }
         ScopedHiddenBuiltinSearchUiGuard uiGuard(hookContext, moduleBase);
         doModal(dialogObject);
-        WaitForBuiltinSearchResults(hookContext, moduleBase, 5000);
+        if (!hookContext.rawHits.empty()) {
+            DWORD deadline = ::GetTickCount() + 120;
+            size_t lastCount = hookContext.rawHits.size();
+            int stableRounds = 0;
+            while (stableRounds < 2) {
+                PumpPendingMessages();
+                const size_t currentCount = hookContext.rawHits.size();
+                if (currentCount == lastCount) {
+                    ++stableRounds;
+                } else {
+                    lastCount = currentCount;
+                    stableRounds = 0;
+                }
+                if (static_cast<DWORD>(::GetTickCount() - deadline) < 0x80000000u) {
+                    break;
+                }
+                ::Sleep(1);
+            }
+        } else if (!hookContext.searchFinished) {
+            WaitForBuiltinSearchResults(hookContext, moduleBase, 500);
+        }
     }
     dtor(dialogObject, 0);
 
@@ -1361,6 +1727,9 @@ bool RunBuiltinSearchDialogHidden(
     if (outCapturedResult != nullptr) {
         FillCapturedBuiltinSearchResult(hookContext, *outCapturedResult);
     }
+    if (outRawHits != nullptr) {
+        *outRawHits = hookContext.rawHits;
+    }
     return true;
 }
 
@@ -1368,9 +1737,10 @@ bool RunBuiltinSearchDialogHiddenSafe(
     const char* keyword,
     std::uintptr_t moduleBase,
     bool* outDialogHandled,
-    e571::HiddenBuiltinSearchDebugResult* outCapturedResult) {
+    e571::HiddenBuiltinSearchDebugResult* outCapturedResult,
+    std::vector<e571::DirectGlobalSearch::GlobalSearchHit>* outRawHits) {
     __try {
-        return RunBuiltinSearchDialogHidden(keyword, moduleBase, outDialogHandled, outCapturedResult);
+        return RunBuiltinSearchDialogHidden(keyword, moduleBase, outDialogHandled, outCapturedResult, outRawHits);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
@@ -1477,8 +1847,15 @@ bool SafeJumpToResult(const e571::DirectGlobalSearch& search, const e571::Direct
 void InitHiddenBuiltinSearchTargets(HiddenBuiltinSearchContext& ctx, std::uintptr_t moduleBase) {
     ctx.moduleBase = moduleBase;
 
-    const int mode = *PtrAbsolute<int>(moduleBase, kAddr_SearchMode);
-    auto* mainWindowObject = reinterpret_cast<unsigned char*>(PtrAbsolute<void>(moduleBase, kAddr_MainWindowObject));
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (!addrs.ok) {
+        return;
+    }
+    const int mode = *PtrAbsolute<int>(moduleBase, addrs.searchMode);
+    auto* mainWindowObject = reinterpret_cast<unsigned char*>(GetMainWindowObject(moduleBase));
+    if (mainWindowObject == nullptr) {
+        return;
+    }
     const ptrdiff_t resultPageOffset = mode == 2 ? kOffset_ResultPageType2 : kOffset_ResultPageType1;
     const ptrdiff_t resultRecordOffset =
         mode == 2 ? kOffset_ResultRecordContainerType2 : kOffset_ResultRecordContainerType1;
@@ -1564,10 +1941,14 @@ ScopedHiddenBuiltinSearchApiHooks::ScopedHiddenBuiltinSearchApiHooks(
     : installed_(false) {
     InitHiddenBuiltinSearchTargets(ctx, moduleBase);
 
-    g_originalAppendBytes = BindAbsolute<FnAppendBytes>(moduleBase, 0x486920);
-    g_originalPrepareSearchResults = BindAbsolute<FnPrepareSearchResults>(moduleBase, 0x4A8C90);
-    g_originalSelectSearchResultTab = BindAbsolute<FnSelectSearchResultTab>(moduleBase, 0x4A8C20);
-    g_originalActivateWindowObject = BindAbsolute<FnActivateWindowObject>(moduleBase, kAddr_ActivateWindow);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (!addrs.ok) {
+        return;
+    }
+    g_originalAppendBytes = BindAbsolute<FnAppendBytes>(moduleBase, addrs.appendBytes);
+    g_originalPrepareSearchResults = BindAbsolute<FnPrepareSearchResults>(moduleBase, addrs.prepareSearchResults);
+    g_originalSelectSearchResultTab = BindAbsolute<FnSelectSearchResultTab>(moduleBase, addrs.selectSearchResultTab);
+    g_originalActivateWindowObject = BindAbsolute<FnActivateWindowObject>(moduleBase, addrs.activateWindow);
 
     DetourTransactionBegin();
     DetourUpdateThread(::GetCurrentThread());
@@ -1604,10 +1985,11 @@ ScopedHiddenBuiltinSearchUiGuard::ScopedHiddenBuiltinSearchUiGuard(
     : ctx_(&ctx),
       moduleBase_(moduleBase),
       redrawDisabled_(false) {
+    const auto& addrs = GetNativeSearchAddresses(moduleBase_);
     ctx.previousFocusHwnd = ::GetFocus();
     ctx.previousFocusObject = nullptr;
-    if (::IsWindow(ctx.previousFocusHwnd)) {
-        ctx.previousFocusObject = BindAbsolute<FnFromHandle>(moduleBase_, kAddr_FromHandle)(ctx.previousFocusHwnd);
+    if (::IsWindow(ctx.previousFocusHwnd) && addrs.fromHandle != 0) {
+        ctx.previousFocusObject = BindAbsolute<FnFromHandle>(moduleBase_, addrs.fromHandle)(ctx.previousFocusHwnd);
     }
 
     if (::IsWindow(ctx.mainFrameHwnd)) {
@@ -1623,7 +2005,7 @@ ScopedHiddenBuiltinSearchUiGuard::~ScopedHiddenBuiltinSearchUiGuard() {
 
     if (ctx_->previousFocusObject != nullptr) {
         __try {
-            BindAbsolute<FnActivateWindowObject>(moduleBase_, kAddr_ActivateWindow)(
+            BindAbsolute<FnActivateWindowObject>(moduleBase_, GetNativeSearchAddresses(moduleBase_).activateWindow)(
                 static_cast<int>(reinterpret_cast<std::uintptr_t>(ctx_->previousFocusObject)));
         } __except (EXCEPTION_EXECUTE_HANDLER) {
         }
@@ -1642,17 +2024,18 @@ ScopedHiddenBuiltinSearchUiGuard::~ScopedHiddenBuiltinSearchUiGuard() {
 }
 
 int ResolveTypeDataRaw(int type, std::uintptr_t moduleBase) {
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
     switch (type) {
     case 2:
-        return static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, kAddr_Type2Data)));
+        return static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, addrs.type2Data)));
     case 3:
-        return static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, kAddr_Type3Data)));
+        return static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, addrs.type3Data)));
     case 4:
-        return static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, kAddr_Type4Data)));
+        return static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, addrs.type4Data)));
     case 6:
     case 7:
     case 8:
-        return static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, kAddr_Type678Data)));
+        return static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, addrs.type678Data)));
     default:
         return 0;
     }
@@ -1704,8 +2087,12 @@ void SearchOneContextRaw(
     int extra,
     std::uintptr_t moduleBase,
     std::vector<e571::DirectGlobalSearchDebugHit>& results) {
-    const auto getOuterCount = BindAbsolute<FnGetOuterCount>(moduleBase, kAddr_GetOuterCount);
-    const auto getInnerCount = BindAbsolute<FnGetInnerCount>(moduleBase, kAddr_GetInnerCount);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (!addrs.ok) {
+        return;
+    }
+    const auto getOuterCount = BindAbsolute<FnGetOuterCount>(moduleBase, addrs.getOuterCount);
+    const auto getInnerCount = BindAbsolute<FnGetInnerCount>(moduleBase, addrs.getInnerCount);
     const auto fetchSearchText = BindAbsolute<int(__thiscall*)(
         e571::DirectGlobalSearch::SearchContext*,
         int,
@@ -1715,7 +2102,7 @@ void SearchOneContextRaw(
         int,
         ExeCStringA*,
         int,
-        int*)>(moduleBase, kAddr_FetchSearchText);
+        int*)>(moduleBase, addrs.fetchSearchText);
 
     int outerCount = 0;
     if (!SafeGetOuterCount(getOuterCount, &ctx, &outerCount)) {
@@ -1783,6 +2170,9 @@ std::vector<DirectGlobalSearch::SearchResult> DirectGlobalSearch::Search(
     if (keywordLen == 0) {
         return results;
     }
+    if (!HasNativeSearchAddresses(moduleBase_)) {
+        return results;
+    }
 
     for (int type : kSearchTypes) {
         if (type == 1) {
@@ -1794,7 +2184,7 @@ std::vector<DirectGlobalSearch::SearchResult> DirectGlobalSearch::Search(
             ctx.type = type;
             ctx.data = ResolveTypeData(type);
             ctx.flag = 0;
-            ctx.owner = static_cast<int>(reinterpret_cast<std::uintptr_t>(Ptr<void>(kAddr_OwnerObject)));
+            ctx.owner = static_cast<int>(reinterpret_cast<std::uintptr_t>(Ptr<void>(GetNativeSearchAddresses(moduleBase_).ownerObject)));
 
             SearchOneContext(ctx, keyword, keywordLen, options, 0, results);
         }
@@ -1811,7 +2201,7 @@ bool DirectGlobalSearch::JumpToResult(const GlobalSearchHit& hit) const {
     if (hit.type == 1) {
         int resolvedIndex = -1;
         const int ok = ResolveBucketIndex(
-            Ptr<DwordContainer>(kAddr_Type1Container),
+            Ptr<DwordContainer>(GetNativeSearchAddresses(moduleBase_).type1Container),
             hit.extra,
             nullptr,
             &resolvedIndex);
@@ -1821,7 +2211,7 @@ bool DirectGlobalSearch::JumpToResult(const GlobalSearchHit& hit) const {
         }
 
         HWND hwnd = OpenCodeTarget(
-            Ptr<void>(kAddr_MainEditorHost),
+            Ptr<void>(GetNativeSearchAddresses(moduleBase_).mainEditorHost),
             hit.type,
             resolvedIndex,
             0,
@@ -1838,7 +2228,7 @@ bool DirectGlobalSearch::JumpToResult(const GlobalSearchHit& hit) const {
     }
 
     HWND hwnd = OpenCodeTarget(
-        Ptr<void>(kAddr_MainEditorHost),
+        Ptr<void>(GetNativeSearchAddresses(moduleBase_).mainEditorHost),
         hit.type,
         -1,
         -1,
@@ -1871,15 +2261,15 @@ T* DirectGlobalSearch::Ptr(std::uintptr_t absoluteAddress) const {
 }
 
 void DirectGlobalSearch::InitContext(SearchContext* ctx) const {
-    Bind<FnInitContext>(kAddr_InitContext)(ctx);
+    Bind<FnInitContext>(GetNativeSearchAddresses(moduleBase_).initContext)(ctx);
 }
 
 int DirectGlobalSearch::GetOuterCount(SearchContext* ctx) const {
-    return Bind<FnGetOuterCount>(kAddr_GetOuterCount)(ctx);
+    return Bind<FnGetOuterCount>(GetNativeSearchAddresses(moduleBase_).getOuterCount)(ctx);
 }
 
 int DirectGlobalSearch::GetInnerCount(SearchContext* ctx, int outerIndex) const {
-    return Bind<FnGetInnerCount>(kAddr_GetInnerCount)(ctx, outerIndex);
+    return Bind<FnGetInnerCount>(GetNativeSearchAddresses(moduleBase_).getInnerCount)(ctx, outerIndex);
 }
 
 int DirectGlobalSearch::FetchSearchText(
@@ -1890,7 +2280,7 @@ int DirectGlobalSearch::FetchSearchText(
     CStringA* outPrefix,
     int filter,
     int* optionalOut) const {
-    return Bind<FnFetchSearchText>(kAddr_FetchSearchText)(
+    return Bind<FnFetchSearchText>(GetNativeSearchAddresses(moduleBase_).fetchSearchText)(
         ctx,
         outerIndex,
         innerIndex,
@@ -1903,15 +2293,15 @@ int DirectGlobalSearch::FetchSearchText(
 }
 
 int DirectGlobalSearch::ContainerGetAt(void* container, int index, int* outPtr) const {
-    return Bind<FnContainerGetAt>(kAddr_ContainerGetAt)(container, index, outPtr);
+    return Bind<FnContainerGetAt>(GetNativeSearchAddresses(moduleBase_).containerGetAt)(container, index, outPtr);
 }
 
 int DirectGlobalSearch::ContainerGetId(void* container, int index) const {
-    return Bind<FnContainerGetId>(kAddr_ContainerGetId)(container, index);
+    return Bind<FnContainerGetId>(GetNativeSearchAddresses(moduleBase_).containerGetId)(container, index);
 }
 
 int DirectGlobalSearch::ResolveBucketIndex(void* container, int bucketId, int* outValue, int* outPos) const {
-    return Bind<FnResolveBucketIndex>(kAddr_ResolveBucketIndex)(container, bucketId, outValue, outPos);
+    return Bind<FnResolveBucketIndex>(GetNativeSearchAddresses(moduleBase_).resolveBucketIndex)(container, bucketId, outValue, outPos);
 }
 
 HWND DirectGlobalSearch::OpenCodeTarget(
@@ -1923,7 +2313,7 @@ HWND DirectGlobalSearch::OpenCodeTarget(
     int innerIndex,
     int activate,
     int arg7) const {
-    return Bind<FnOpenCodeTarget>(kAddr_OpenCodeTarget)(
+    return Bind<FnOpenCodeTarget>(GetNativeSearchAddresses(moduleBase_).openCodeTarget)(
         mainEditorHost,
         type,
         arg2,
@@ -1935,37 +2325,39 @@ HWND DirectGlobalSearch::OpenCodeTarget(
 }
 
 void DirectGlobalSearch::MoveToLine(HWND hwnd, int outerIndex, int innerIndex, int arg3, int arg4, int arg5) const {
-    Bind<FnMoveToLine>(kAddr_MoveToLine)(hwnd, outerIndex, innerIndex, arg3, arg4, arg5);
+    Bind<FnMoveToLine>(GetNativeSearchAddresses(moduleBase_).moveToLine)(hwnd, outerIndex, innerIndex, arg3, arg4, arg5);
 }
 
 void DirectGlobalSearch::EnsureVisible(HWND hwnd, int arg1, int arg2, int arg3) const {
-    Bind<FnEnsureVisible>(kAddr_EnsureVisible)(hwnd, arg1, arg2, arg3);
+    Bind<FnEnsureVisible>(GetNativeSearchAddresses(moduleBase_).ensureVisible)(hwnd, arg1, arg2, arg3);
 }
 
 void DirectGlobalSearch::MoveCaretToOffset(HWND hwnd, int matchOffset, int force, void* maybeNull, int redraw) const {
-    Bind<FnMoveCaretToOffset>(kAddr_MoveCaretToOffset)(hwnd, matchOffset, force, maybeNull, redraw);
+    Bind<FnMoveCaretToOffset>(GetNativeSearchAddresses(moduleBase_).moveCaretToOffset)(hwnd, matchOffset, force, maybeNull, redraw);
 }
 
 void DirectGlobalSearch::ActivateWindow(HWND hwnd) const {
-    Bind<FnActivateWindow>(kAddr_ActivateWindow)(hwnd);
+    Bind<FnActivateWindow>(GetNativeSearchAddresses(moduleBase_).activateWindow)(hwnd);
 }
 
 void DirectGlobalSearch::NotifyOpenFailure(int messageId) const {
-    Bind<FnNotifyOpenFailure>(kAddr_NotifyOpenFailure)(Ptr<void>(kAddr_MainEditorHost), messageId);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase_);
+    Bind<FnNotifyOpenFailure>(addrs.notifyOpenFailure)(Ptr<void>(addrs.mainEditorHost), messageId);
 }
 
 int DirectGlobalSearch::ResolveTypeData(int type) const {
+    const auto& addrs = GetNativeSearchAddresses(moduleBase_);
     switch (type) {
     case 2:
-        return static_cast<int>(reinterpret_cast<std::uintptr_t>(Ptr<void>(kAddr_Type2Data)));
+        return static_cast<int>(reinterpret_cast<std::uintptr_t>(Ptr<void>(addrs.type2Data)));
     case 3:
-        return static_cast<int>(reinterpret_cast<std::uintptr_t>(Ptr<void>(kAddr_Type3Data)));
+        return static_cast<int>(reinterpret_cast<std::uintptr_t>(Ptr<void>(addrs.type3Data)));
     case 4:
-        return static_cast<int>(reinterpret_cast<std::uintptr_t>(Ptr<void>(kAddr_Type4Data)));
+        return static_cast<int>(reinterpret_cast<std::uintptr_t>(Ptr<void>(addrs.type4Data)));
     case 6:
     case 7:
     case 8:
-        return static_cast<int>(reinterpret_cast<std::uintptr_t>(Ptr<void>(kAddr_Type678Data)));
+        return static_cast<int>(reinterpret_cast<std::uintptr_t>(Ptr<void>(addrs.type678Data)));
     default:
         return 0;
     }
@@ -1976,21 +2368,22 @@ void DirectGlobalSearch::EnumerateType1(
     std::size_t keywordLen,
     const SearchOptions& options,
     std::vector<SearchResult>& results) const {
+    const auto& addrs = GetNativeSearchAddresses(moduleBase_);
     for (int bucketIndex = 0;; ++bucketIndex) {
         SearchContext ctx{};
         InitContext(&ctx);
 
         int bucketData = 0;
-        if (ContainerGetAt(Ptr<DwordContainer>(kAddr_Type1Container), bucketIndex, &bucketData) == 0) {
+        if (ContainerGetAt(Ptr<DwordContainer>(addrs.type1Container), bucketIndex, &bucketData) == 0) {
             break;
         }
 
         ctx.type = 1;
         ctx.data = bucketData;
         ctx.flag = 0;
-        ctx.owner = static_cast<int>(reinterpret_cast<std::uintptr_t>(Ptr<void>(kAddr_OwnerObject)));
+        ctx.owner = static_cast<int>(reinterpret_cast<std::uintptr_t>(Ptr<void>(addrs.ownerObject)));
 
-        const int bucketId = ContainerGetId(Ptr<DwordContainer>(kAddr_Type1Container), bucketIndex);
+        const int bucketId = ContainerGetId(Ptr<DwordContainer>(addrs.type1Container), bucketIndex);
         SearchOneContext(ctx, keyword, keywordLen, options, bucketId, results);
     }
 }
@@ -2121,10 +2514,14 @@ std::vector<e571::DirectGlobalSearchDebugHit> e571::DebugSearchDirectGlobalKeywo
     if (keywordLen == 0) {
         return debugHits;
     }
+    if (!HasNativeSearchAddresses(moduleBase)) {
+        return debugHits;
+    }
 
-    const auto initContext = BindAbsolute<FnInitContext>(moduleBase, kAddr_InitContext);
-    const auto containerGetAt = BindAbsolute<FnContainerGetAt>(moduleBase, kAddr_ContainerGetAt);
-    const auto containerGetId = BindAbsolute<FnContainerGetId>(moduleBase, kAddr_ContainerGetId);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    const auto initContext = BindAbsolute<FnInitContext>(moduleBase, addrs.initContext);
+    const auto containerGetAt = BindAbsolute<FnContainerGetAt>(moduleBase, addrs.containerGetAt);
+    const auto containerGetId = BindAbsolute<FnContainerGetId>(moduleBase, addrs.containerGetId);
 
     for (int type : kSearchTypes) {
         if (type == 1) {
@@ -2136,7 +2533,7 @@ std::vector<e571::DirectGlobalSearchDebugHit> e571::DebugSearchDirectGlobalKeywo
                 int bucketOk = 0;
                 if (!SafeContainerGetAt(
                         containerGetAt,
-                        PtrAbsolute<void>(moduleBase, kAddr_Type1Container),
+                        PtrAbsolute<void>(moduleBase, addrs.type1Container),
                         bucketIndex,
                         &bucketData,
                         &bucketOk)) {
@@ -2152,12 +2549,12 @@ std::vector<e571::DirectGlobalSearchDebugHit> e571::DebugSearchDirectGlobalKeywo
                 ctx.type = 1;
                 ctx.data = bucketData;
                 ctx.flag = 0;
-                ctx.owner = static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, kAddr_OwnerObject)));
+                ctx.owner = static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, addrs.ownerObject)));
 
                 int bucketId = 0;
                 if (!SafeContainerGetId(
                         containerGetId,
-                        PtrAbsolute<void>(moduleBase, kAddr_Type1Container),
+                        PtrAbsolute<void>(moduleBase, addrs.type1Container),
                         bucketIndex,
                         &bucketId)) {
                     continue;
@@ -2172,7 +2569,7 @@ std::vector<e571::DirectGlobalSearchDebugHit> e571::DebugSearchDirectGlobalKeywo
         ctx.type = type;
         ctx.data = ResolveTypeDataRaw(type, moduleBase);
         ctx.flag = 0;
-        ctx.owner = static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, kAddr_OwnerObject)));
+        ctx.owner = static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, addrs.ownerObject)));
         SearchOneContextRaw(ctx, keyword, keywordLen, false, 0, moduleBase, debugHits);
     }
 
@@ -2217,7 +2614,7 @@ e571::HiddenBuiltinSearchDebugResult e571::DebugSearchDirectGlobalKeywordHidden(
 
     bool dialogHandled = false;
     result = {};
-    if (!RunBuiltinSearchDialogHiddenSafe(keyword, moduleBase, &dialogHandled, &result)) {
+    if (!RunBuiltinSearchDialogHiddenSafe(keyword, moduleBase, &dialogHandled, &result, nullptr)) {
         return result;
     }
 
@@ -2243,11 +2640,26 @@ std::vector<e571::DirectGlobalSearchDebugHit> e571::DebugSearchDirectGlobalKeywo
 
     bool dialogHandled = false;
     HiddenBuiltinSearchDebugResult captured;
-    if (!RunBuiltinSearchDialogHiddenSafe(keyword, moduleBase, &dialogHandled, &captured)) {
+    std::vector<DirectGlobalSearch::GlobalSearchHit> rawHits;
+    if (!RunBuiltinSearchDialogHiddenSafe(keyword, moduleBase, &dialogHandled, &captured, &rawHits)) {
         return hits;
     }
     if (outDialogHandled != nullptr) {
         *outDialogHandled = dialogHandled;
+    }
+
+    for (const auto& rawHit : rawHits) {
+        DirectGlobalSearchDebugHit hit{};
+        hit.type = rawHit.type;
+        hit.extra = rawHit.extra;
+        hit.outerIndex = rawHit.outerIndex;
+        hit.innerIndex = rawHit.innerIndex;
+        hit.matchOffset = rawHit.matchOffset;
+        TryFormatRawSearchHit(moduleBase, rawHit, &hit.displayText);
+        hits.push_back(std::move(hit));
+    }
+    if (!hits.empty()) {
+        return hits;
     }
 
     HWND listHwnd = GetBuiltinResultListHwnd(moduleBase);
@@ -2320,8 +2732,9 @@ bool e571::DebugLocateFirstDirectGlobalKeywordHidden(
     if (result.hasRawFirstHit && firstHit.type == 1) {
         int bucketData = 0;
         int resolvedIndex = -1;
-        const int ok = BindAbsolute<FnResolveBucketIndex>(moduleBase, kAddr_ResolveBucketIndex)(
-            PtrAbsolute<void>(moduleBase, kAddr_Type1Container),
+        const auto& addrs = GetNativeSearchAddresses(moduleBase);
+        const int ok = BindAbsolute<FnResolveBucketIndex>(moduleBase, addrs.resolveBucketIndex)(
+            PtrAbsolute<void>(moduleBase, addrs.type1Container),
             firstHit.extra,
             &bucketData,
             &resolvedIndex);
@@ -2409,11 +2822,18 @@ bool e571::DebugDumpCodePageByProgramTreeItemData(
         }
         return false;
     }
+    if (!HasNativeSearchAddresses(moduleBase)) {
+        if (outResult != nullptr) {
+            outResult->trace = "resolve_native_addresses_failed";
+        }
+        return false;
+    }
 
     DirectGlobalSearch::SearchContext ctx{};
-    BindAbsolute<FnInitContext>(moduleBase, kAddr_InitContext)(&ctx);
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    BindAbsolute<FnInitContext>(moduleBase, addrs.initContext)(&ctx);
     ctx.flag = 0;
-    ctx.owner = static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, kAddr_OwnerObject)));
+    ctx.owner = static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, addrs.ownerObject)));
 
     RawSearchContextPageDumpDebugResult dumpResult{};
     dumpResult.resolvedIndex = -1;
@@ -2430,12 +2850,12 @@ bool e571::DebugDumpCodePageByProgramTreeItemData(
             return false;
         }
 
-        const auto containerGetAt = BindAbsolute<FnContainerGetAt>(moduleBase, kAddr_ContainerGetAt);
+        const auto containerGetAt = BindAbsolute<FnContainerGetAt>(moduleBase, addrs.containerGetAt);
         int bucketData = 0;
         int bucketOk = 0;
         if (!SafeContainerGetAt(
                 containerGetAt,
-                PtrAbsolute<void>(moduleBase, kAddr_Type1Container),
+                PtrAbsolute<void>(moduleBase, addrs.type1Container),
                 resolvedIndex,
                 &bucketData,
                 &bucketOk) ||

@@ -3,7 +3,6 @@
 #include "Global.h"
 #include <optional>
 
-
 std::vector<byte> GetModuleBytes(HMODULE h) {
     MODULEINFO module_info;
     GetModuleInformation(GetCurrentProcess(), h, &module_info, sizeof(module_info));
@@ -44,26 +43,61 @@ int findPattern(const std::vector<byte>& data, const std::string& patternStr) {
             }
         }
         if (match) {
-            return static_cast<int>(i + 1); // 返回匹配的起始索引
+            return static_cast<int>(i + 1);
         }
     }
-    return -1; // 没有找到匹配项
+    return -1;
 }
 
+std::vector<size_t> FindPatternOffsets(const byte* data, size_t dataSize, const std::string& patternStr) {
+    std::vector<size_t> offsets;
+    if (data == nullptr || dataSize == 0) {
+        return offsets;
+    }
 
-int FindSelfModelMemory(const std::string& pattern_str) {
+    const auto pattern = parsePattern(patternStr);
+    if (pattern.empty() || dataSize < pattern.size()) {
+        return offsets;
+    }
+
+    for (size_t i = 0; i <= dataSize - pattern.size(); ++i) {
+        bool match = true;
+        for (size_t j = 0; j < pattern.size(); ++j) {
+            if (pattern[j].has_value() && data[i + j] != pattern[j].value()) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            offsets.push_back(i);
+        }
+    }
+    return offsets;
+}
+
+std::vector<int> FindSelfModelMemoryAll(const std::string& pattern_str) {
+    std::vector<int> matches;
     HMODULE h = GetModuleHandle(NULL);
     if (h == NULL) {
-        OutputStringToELog(std::format("获取内存失败"));
-        return 0;
+        OutputStringToELog(std::format("get module memory failed"));
+        return matches;
     }
 
-    std::vector<byte> module_bytes = GetModuleBytes(h);
-
-    auto address = findPattern(module_bytes, pattern_str);
-    if (address != -1) {
-        address -= 1;
-        return reinterpret_cast<int>(h) + address;
+    const std::vector<byte> module_bytes = GetModuleBytes(h);
+    const auto offsets = FindPatternOffsets(module_bytes.data(), module_bytes.size(), pattern_str);
+    matches.reserve(offsets.size());
+    for (const size_t offset : offsets) {
+        matches.push_back(reinterpret_cast<int>(h) + static_cast<int>(offset));
     }
-    return 0;
+    return matches;
+}
+
+int FindSelfModelMemoryUnique(const std::string& pattern_str) {
+    const auto matches = FindSelfModelMemoryAll(pattern_str);
+    return matches.size() == 1 ? matches.front() : 0;
+}
+
+int FindSelfModelMemory(const std::string& pattern_str) {
+    const auto matches = FindSelfModelMemoryAll(pattern_str);
+    return matches.empty() ? 0 : matches.front();
 }
