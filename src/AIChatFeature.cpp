@@ -2545,6 +2545,11 @@ std::string GetLeftWorkAreaTabCaption()
 	return "AI";
 }
 
+std::string GetLeftWorkAreaTabToolTip()
+{
+	return "AutoLinker AI 对话";
+}
+
 int EnsureLeftWorkAreaTabImageIndex(HWND tabHwnd)
 {
 	if (tabHwnd == nullptr || !IsWindow(tabHwnd)) {
@@ -2707,6 +2712,16 @@ LRESULT CALLBACK LeftWorkAreaHostSubclassProc(
 	{
 	case WM_NOTIFY: {
 		const auto* hdr = reinterpret_cast<NMHDR*>(lParam);
+		if (hdr != nullptr &&
+			(hdr->code == TTN_GETDISPINFOA || hdr->code == TTN_NEEDTEXTA)) {
+			auto* info = reinterpret_cast<NMTTDISPINFOA*>(lParam);
+			if (info != nullptr && static_cast<int>(info->hdr.idFrom) == g_leftWorkAreaHost.tabIndex) {
+				static thread_local std::string tooltipText;
+				tooltipText = GetLeftWorkAreaTabToolTip();
+				info->lpszText = const_cast<LPSTR>(tooltipText.c_str());
+				return TRUE;
+			}
+		}
 		if (hdr != nullptr &&
 			hdr->hwndFrom == g_leftWorkAreaHost.tabHwnd &&
 			hdr->code == TCN_SELCHANGE) {
