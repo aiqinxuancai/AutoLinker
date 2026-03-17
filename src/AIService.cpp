@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <filesystem>
 #include <format>
 #include <Windows.h>
 
@@ -11,6 +12,8 @@
 #include "Global.h"
 #include "WinINetUtil.h"
 #include <chrono>
+
+extern std::string g_nowOpenSourceFilePath;
 
 namespace {
 using PerfClock = std::chrono::steady_clock;
@@ -517,9 +520,69 @@ nlohmann::json BuildChatToolDefinitions()
 
 std::string BuildChatSystemPrompt(const AISettings& settings)
 {
+	std::string projectName;
+	if (!AIService::Trim(g_nowOpenSourceFilePath).empty()) {
+		try {
+			const std::filesystem::path sourcePath(g_nowOpenSourceFilePath);
+			projectName = sourcePath.stem().string();
+			if (projectName.empty()) {
+				projectName = sourcePath.filename().string();
+			}
+		}
+		catch (...) {
+			projectName.clear();
+		}
+	}
+
 	std::string prompt =
 		"你是 AutoLinker 的易语言开发助手。\n"
 		"你可以通过工具获取当前页代码、枚举程序树中的程序集/类/全局变量等、按名称抓整页代码，以及执行项目级关键词搜索。\n"
+		"当前项目名称：" + (projectName.empty() ? std::string("未知") : projectName) + "。\n"
+		"易语言基本约定：\n"
+		"- 以 # 开头的标识通常表示常量。\n"
+		"- 以 . 开头的是易语言系统指令或关键字，例如 .版本、.子程序、.参数、.局部变量、.如果。\n"
+		"- 单引号（'）开头的是注释。\n"
+		"- 真/假 是布尔值。\n"
+		"- 易语言代码里常见全角符号，例如 ＝、≠、（）、，、＋，分析时不要误判成非法字符。\n"
+		"- 赋值常见写法是 `变量 ＝ 值`，不是 C/C++ 风格的 `=`。\n"
+		"- 自增通常写成 `a ＝ a ＋ 1`，不支持 `a++` 这类语法。\n"
+		"- 返回常见写法是 `返回 (...)`。\n"
+		"- 全角中文标点在代码里较常见，分析时不要误判。\n"
+		"常见流程控制语法示例：\n"
+		"1) 条件成立执行：\n"
+		".如果真 ()\n"
+		"    a ＝ 0\n"
+		".如果真结束\n"
+		"2) if / else：\n"
+		".如果 (a ＝ 0)\n"
+		"    a ＝ 1\n"
+		".否则\n"
+		"    b ＝ 1\n"
+		".如果结束\n"
+		"3) 计次循环：\n"
+		".计次循环首 (count, i)\n"
+		"    a ＝ a ＋ 1\n"
+		".计次循环尾 ()\n"
+		"4) 变量循环：\n"
+		".变量循环首 (1, 100, 1, i)\n"
+		"    输出调试文本 (i)\n"
+		".变量循环尾 ()\n"
+		"5) 循环判断：\n"
+		".循环判断首 ()\n"
+		"    输出调试文本 (“这么写会是死循环”)\n"
+		".循环判断尾 (真)\n"
+		"6) 多分支判断：\n"
+		".判断开始 (b ＝ 1)\n"
+		"    a ＝ 1\n"
+		".判断 (b ＝ 2)\n"
+		"    a ＝ 1\n"
+		".判断 (b ＝ 3)\n"
+		"    a ＝ 1\n"
+		".判断 (b ＝ 4)\n"
+		"    a ＝ 1\n"
+		".默认\n"
+		"    def ＝ 1\n"
+		".判断结束\n"
 		"规则：\n"
 		"1) 需要源码时优先调用 get_current_page_code，不要臆造现有代码；该工具会同时返回当前页名称和页类型。\n"
 		"2) 只需要知道当前页是谁而不需要全文代码时，调用 get_current_page_info。\n"
