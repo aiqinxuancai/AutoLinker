@@ -27,6 +27,7 @@
 #include "AIService.h"
 #include "AIConfigDialog.h"
 #include "AIChatFeature.h"
+#include "LocalMcpServer.h"
 #if defined(_M_IX86)
 #include "direct_global_search_debug.hpp"
 #endif
@@ -2968,6 +2969,12 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 		HandleAiApplyMessage(lParam);
 		return 0;
 	}
+	if (uMsg == WM_NCDESTROY) {
+		LocalMcpServer::Shutdown();
+		AIChatFeature::Shutdown();
+		RemoveWindowSubclass(hWnd, MainWindowSubclassProc, uIdSubclass);
+		return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+	}
 	if (AIChatFeature::HandleMainWindowMessage(uMsg, wParam, lParam)) {
 		return 0;
 	}
@@ -3250,6 +3257,7 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 					g_initStarted = true;
 					SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0);
 					AIChatFeature::Initialize(g_hwnd, &g_configManager);
+					LocalMcpServer::Initialize();
 					RegisterIDEContextMenu();
 					OutputStringToELog("主窗口子类化完成，启动初始化线程");
 					uintptr_t threadID = _beginthread(InitRetryThread, 0, NULL);

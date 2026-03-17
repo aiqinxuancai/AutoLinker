@@ -2605,4 +2605,19 @@ bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 	}
 	return false;
 }
+
+bool ExecutePublicTool(const std::string& toolName, const std::string& argumentsJson, std::string& outResultJsonUtf8, bool& outOk)
+{
+	outResultJsonUtf8.clear();
+	outOk = false;
+	if (TrimAsciiCopy(toolName).empty()) {
+		return false;
+	}
+
+	bool toolOk = false;
+	const std::string resultJsonLocal = ExecuteToolCall(toolName, argumentsJson, toolOk);
+	outResultJsonUtf8 = LocalToUtf8Text(resultJsonLocal);
+	outOk = toolOk;
+	return true;
+}
 } // namespace AIChatFeature

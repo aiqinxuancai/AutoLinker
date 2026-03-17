@@ -72,6 +72,7 @@ public:
 		const AISettings& settings,
 		const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
 		const std::function<void(const std::string& deltaText)>& streamCallback = {});
+	static std::string BuildPublicToolCatalogJson();
 	static std::string NormalizeModelOutputToCode(const std::string& modelText);
 	static std::string Trim(const std::string& text);
 

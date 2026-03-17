@@ -394,131 +394,124 @@ nlohmann::json BuildAssistantMessageFromStreamState(const ChatStreamParseState& 
 	return message;
 }
 
-nlohmann::json BuildChatToolDefinitions()
+nlohmann::json BuildPublicToolCatalog()
 {
 	nlohmann::json tools = nlohmann::json::array();
 	tools.push_back({
-		{"type", "function"},
-		{"function", {
-			{"name", "get_current_page_code"},
-			{"description", "Get complete source code of the current IDE page, together with current page name and page type."},
-			{"parameters", {
-				{"type", "object"},
-				{"properties", nlohmann::json::object()},
-				{"additionalProperties", false}
-			}}
+		{"name", "get_current_page_code"},
+		{"description", "Get complete source code of the current IDE page, together with current page name and page type."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", nlohmann::json::object()},
+			{"additionalProperties", false}
 		}}
 	});
 	tools.push_back({
-		{"type", "function"},
-		{"function", {
-			{"name", "get_current_page_info"},
-			{"description", "Get current IDE page name, page type and the trace/source used to resolve that page name."},
-			{"parameters", {
-				{"type", "object"},
-				{"properties", nlohmann::json::object()},
-				{"additionalProperties", false}
-			}}
+		{"name", "get_current_page_info"},
+		{"description", "Get current IDE page name, page type and the trace/source used to resolve that page name."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", nlohmann::json::object()},
+			{"additionalProperties", false}
 		}}
 	});
 	tools.push_back({
-		{"type", "function"},
-		{"function", {
-			{"name", "list_program_items"},
-			{"description", "List program tree items such as assemblies, class modules, global variables, user-defined types, DLL commands, forms and resources. Can optionally include code for each item. Important: code returned by program-tree lookup is only pseudo-code reference and may differ from the normal IDE page structure."},
-			{"parameters", {
-				{"type", "object"},
-				{"properties", {
-					{"kind", {{"type", "string"}, {"description", "Filter by item kind. Supported: all, assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
-					{"name_contains", {{"type", "string"}}},
-					{"exact_name", {{"type", "string"}}},
-					{"include_code", {{"type", "boolean"}}},
-					{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}
-				}},
-				{"additionalProperties", false}
-			}}
+		{"name", "list_program_items"},
+		{"description", "List program tree items such as assemblies, class modules, global variables, user-defined types, DLL commands, forms and resources. Can optionally include code for each item. Important: code returned by program-tree lookup is only pseudo-code reference and may differ from the normal IDE page structure."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"kind", {{"type", "string"}, {"description", "Filter by item kind. Supported: all, assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"name_contains", {{"type", "string"}}},
+				{"exact_name", {{"type", "string"}}},
+				{"include_code", {{"type", "boolean"}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}
+			}},
+			{"additionalProperties", false}
 		}}
 	});
 	tools.push_back({
-		{"type", "function"},
-		{"function", {
-			{"name", "get_program_item_code"},
-			{"description", "Get code of a program tree item by exact name, optionally constrained by kind. Important: this may switch the IDE current page as part of native retrieval, and returned code is only pseudo-code reference and may differ from the normal IDE page structure."},
-			{"parameters", {
-				{"type", "object"},
-				{"properties", {
-					{"name", {{"type", "string"}}},
-					{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}}
-				}},
-				{"required", nlohmann::json::array({"name"})},
-				{"additionalProperties", false}
-			}}
+		{"name", "get_program_item_code"},
+		{"description", "Get code of a program tree item by exact name, optionally constrained by kind. Important: this may switch the IDE current page as part of native retrieval, and returned code is only pseudo-code reference and may differ from the normal IDE page structure."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}}
+			}},
+			{"required", nlohmann::json::array({"name"})},
+			{"additionalProperties", false}
 		}}
 	});
 	tools.push_back({
-		{"type", "function"},
-		{"function", {
-			{"name", "switch_to_program_item_page"},
-			{"description", "Switch/open a program tree page by exact name, optionally constrained by kind. This will change the IDE current page and only activates that page; it does not fetch code."},
-			{"parameters", {
-				{"type", "object"},
-				{"properties", {
-					{"name", {{"type", "string"}}},
-					{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}}
-				}},
-				{"required", nlohmann::json::array({"name"})},
-				{"additionalProperties", false}
-			}}
+		{"name", "switch_to_program_item_page"},
+		{"description", "Switch/open a program tree page by exact name, optionally constrained by kind. This will change the IDE current page and only activates that page; it does not fetch code."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}}
+			}},
+			{"required", nlohmann::json::array({"name"})},
+			{"additionalProperties", false}
 		}}
 	});
 	tools.push_back({
-		{"type", "function"},
-		{"function", {
-			{"name", "search_project_keyword"},
-			{"description", "Search a keyword across the project using IDE global search and return matched page names, line numbers and a jump_token for each result. Search-based line text and follow-up code lookup should be treated as pseudo-code reference, not exact normal IDE page structure."},
-			{"parameters", {
-				{"type", "object"},
-				{"properties", {
-					{"keyword", {{"type", "string"}}},
-					{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}
-				}},
-				{"required", nlohmann::json::array({"keyword"})},
-				{"additionalProperties", false}
-			}}
+		{"name", "search_project_keyword"},
+		{"description", "Search a keyword across the project using IDE global search and return matched page names, line numbers and a jump_token for each result. Search-based line text and follow-up code lookup should be treated as pseudo-code reference, not exact normal IDE page structure."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"keyword", {{"type", "string"}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}
+			}},
+			{"required", nlohmann::json::array({"keyword"})},
+			{"additionalProperties", false}
 		}}
 	});
 	tools.push_back({
-		{"type", "function"},
-		{"function", {
-			{"name", "jump_to_search_result"},
-			{"description", "Jump to one specific search result returned by search_project_keyword using that row's jump_token. This will change the IDE current page and caret position."},
-			{"parameters", {
-				{"type", "object"},
-				{"properties", {
-					{"jump_token", {{"type", "string"}}}
-				}},
-				{"required", nlohmann::json::array({"jump_token"})},
-				{"additionalProperties", false}
-			}}
+		{"name", "jump_to_search_result"},
+		{"description", "Jump to one specific search result returned by search_project_keyword using that row's jump_token. This will change the IDE current page and caret position."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"jump_token", {{"type", "string"}}}
+			}},
+			{"required", nlohmann::json::array({"jump_token"})},
+			{"additionalProperties", false}
 		}}
 	});
 	tools.push_back({
-		{"type", "function"},
-		{"function", {
-			{"name", "request_code_edit"},
-			{"description", "Open local editable code dialog and return user confirmed code."},
-			{"parameters", {
-				{"type", "object"},
-				{"properties", {
-					{"title", {{"type", "string"}}},
-					{"initial_code", {{"type", "string"}}},
-					{"hint", {{"type", "string"}}}
-				}},
-				{"required", nlohmann::json::array({"title", "initial_code"})},
-				{"additionalProperties", false}
-			}}
+		{"name", "request_code_edit"},
+		{"description", "Open local editable code dialog and return user confirmed code."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"title", {{"type", "string"}}},
+				{"initial_code", {{"type", "string"}}},
+				{"hint", {{"type", "string"}}}
+			}},
+			{"required", nlohmann::json::array({"title", "initial_code"})},
+			{"additionalProperties", false}
 		}}
 	});
+	return tools;
+}
+
+nlohmann::json BuildChatToolDefinitions()
+{
+	const nlohmann::json catalog = BuildPublicToolCatalog();
+	nlohmann::json tools = nlohmann::json::array();
+	for (const auto& item : catalog) {
+		tools.push_back({
+			{"type", "function"},
+			{"function", {
+				{"name", item.value("name", "")},
+				{"description", item.value("description", "")},
+				{"parameters", item.contains("inputSchema") ? item["inputSchema"] : nlohmann::json::object()}
+			}}
+		});
+	}
 	return tools;
 }
 
@@ -1599,6 +1592,11 @@ AIChatResult AIService::ExecuteChatWithTools(
 
 	result.error = "tool call rounds exceeded limit";
 	return result;
+}
+
+std::string AIService::BuildPublicToolCatalogJson()
+{
+	return BuildPublicToolCatalog().dump();
 }
 
 std::string AIService::NormalizeModelOutputToCode(const std::string& modelText)
