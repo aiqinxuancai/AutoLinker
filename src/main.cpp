@@ -8,8 +8,8 @@
 #include "MemFind.h"
 
 
-int g_debugStartAddress;
-int g_compileStartAddress;
+int g_debugStartAddress = 0;
+int g_compileStartAddress = 0;
 
 
 extern "C" BOOL WINAPI DllMain(

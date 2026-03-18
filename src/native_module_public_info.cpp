@@ -35,7 +35,6 @@ using FnLoadModulePublicInfo = int(__thiscall*)(void*, void*, CHAR*, CString*);
 using FnHiddenModuleInfoDialogCtor = int(__thiscall*)(void*, CWnd*);
 using FnCreateDialogIndirect = BOOL(__thiscall*)(void*, LPCDLGTEMPLATEA, void*, HINSTANCE);
 using FnUpdateHiddenModuleInfoSelection = LRESULT(__thiscall*)(void*, int, unsigned int*);
-using FnDialogDoModal = int(__thiscall*)(void*);
 using FnDestroyCString = void(__thiscall*)(void*);
 using FnDestroyTreeCtrl = void(__thiscall*)(void*);
 using FnDestroyEditCtrl = void(__thiscall*)(void*);
@@ -47,19 +46,6 @@ using FnResolveModulePath = int(__stdcall*)(LPCSTR, CHAR*, LPCSTR);
 
 constexpr std::uintptr_t kImageBase = 0x400000;
 constexpr unsigned int kMaxRecordBodySize = 1024 * 1024 * 8;
-constexpr std::uintptr_t kHiddenModuleInfoDialogCtorAddress = 0x44A2C0;
-constexpr std::uintptr_t kCreateDialogIndirectAddress = 0x53C329;
-constexpr std::uintptr_t kUpdateHiddenModuleInfoSelectionAddress = 0x44ADC0;
-constexpr std::uintptr_t kDialogDoModalAddress = 0x53C618;
-constexpr std::uintptr_t kDestroyCStringAddress = 0x53BB23;
-constexpr std::uintptr_t kDestroyTreeCtrlAddress = 0x53957A;
-constexpr std::uintptr_t kDestroyEditCtrlAddress = 0x550D03;
-constexpr std::uintptr_t kDestroyDialogWindowAddress = 0x53DDF5;
-constexpr std::uintptr_t kDestroyImageListAddress = 0x5399CE;
-constexpr std::uintptr_t kDestroyModuleInfoPayloadAddress = 0x401ED0;
-constexpr std::uintptr_t kDestroyDialogBaseAddress = 0x53C24E;
-constexpr std::uintptr_t kResolveModulePathAddress = 0x45E840;
-constexpr std::uintptr_t kImportedModuleArrayAddress = 0x5CB0BC;
 constexpr ptrdiff_t kDialogObjectHwndOffset = 0x1C;
 constexpr ptrdiff_t kDialogTemplateNameOffset = 0x40;
 constexpr ptrdiff_t kDialogTemplateResourceOffset = 0x44;
@@ -88,6 +74,7 @@ static_assert(offsetof(NativeByteContainer, usedBytes) == 16, "NativeByteContain
 struct NativeModulePublicInfoAddresses {
 	bool initialized = false;
 	bool ok = false;
+	bool hiddenDialogOk = false;
 	std::uintptr_t moduleBase = 0;
 
 	std::uintptr_t initByteContainer = 0;
@@ -101,10 +88,24 @@ struct NativeModulePublicInfoAddresses {
 	std::uintptr_t recorderAuxContainer = 0;
 	std::uintptr_t recorderBuffer = 0;
 	std::uintptr_t recorderStateCC = 0;
+
+	std::uintptr_t hiddenDialogCtor = 0;
+	std::uintptr_t createDialogIndirect = 0;
+	std::uintptr_t updateHiddenSelection = 0;
+	std::uintptr_t destroyCString = 0;
+	std::uintptr_t destroyTreeCtrl = 0;
+	std::uintptr_t destroyEditCtrl = 0;
+	std::uintptr_t destroyDialogWindow = 0;
+	std::uintptr_t destroyImageList = 0;
+	std::uintptr_t destroyModuleInfoPayload = 0;
+	std::uintptr_t destroyDialogBase = 0;
+	std::uintptr_t resolveModulePath = 0;
+	std::uintptr_t importedModuleArrayGlobal = 0;
 };
 
 std::mutex g_nativeModuleInfoMutex;
 NativeModulePublicInfoAddresses g_nativeModuleInfoAddresses;
+const NativeModulePublicInfoAddresses& GetNativeModulePublicInfoAddresses(std::uintptr_t moduleBase);
 
 struct OffsetString {
 	size_t offset = 0;
@@ -1097,7 +1098,12 @@ LPCDLGTEMPLATEA ResolveDialogTemplateFromObject(void* dialogObject)
 	return templatePointer;
 }
 
-bool CaptureHiddenModuleInfoTextFromDialog(void* dialogObject, HWND dialogHwnd, std::string& outText, std::string& outError)
+bool CaptureHiddenModuleInfoTextFromDialog(
+	void* dialogObject,
+	HWND dialogHwnd,
+	const NativeModulePublicInfoAddresses& addrs,
+	std::string& outText,
+	std::string& outError)
 {
 	outText.clear();
 	outError.clear();
@@ -1113,7 +1119,7 @@ bool CaptureHiddenModuleInfoTextFromDialog(void* dialogObject, HWND dialogHwnd, 
 		return false;
 	}
 
-	const auto updateSelection = Bind<FnUpdateHiddenModuleInfoSelection>(kUpdateHiddenModuleInfoSelectionAddress);
+	const auto updateSelection = Bind<FnUpdateHiddenModuleInfoSelection>(addrs.updateHiddenSelection);
 	unsigned int updateCookie = 0;
 	updateSelection(dialogObject, 0, &updateCookie);
 
@@ -1768,6 +1774,14 @@ bool LoadModulePublicInfoDumpHiddenDialog(
 		outError->clear();
 	}
 
+	const auto& addrs = GetNativeModulePublicInfoAddresses(moduleBase);
+	if (!addrs.hiddenDialogOk) {
+		if (outError != nullptr) {
+			*outError = "hidden_dialog_resolve_addresses_failed";
+		}
+		return false;
+	}
+
 	const int moduleIndex = ResolveImportedModuleIndex(modulePath);
 	if (moduleIndex < 0) {
 		if (outError != nullptr) {
@@ -1776,7 +1790,7 @@ bool LoadModulePublicInfoDumpHiddenDialog(
 		return false;
 	}
 
-	auto* importedModuleArrayGlobal = PtrAbsolute<std::uintptr_t>(moduleBase, kImportedModuleArrayAddress);
+	auto* importedModuleArrayGlobal = PtrAbsolute<std::uintptr_t>(moduleBase, addrs.importedModuleArrayGlobal);
 	if (importedModuleArrayGlobal == nullptr) {
 		if (outError != nullptr) {
 			*outError = "hidden_dialog_import_array_global_invalid";
@@ -1859,16 +1873,16 @@ bool LoadModulePublicInfoDumpHiddenDialog(
 		return false;
 	}
 
-	const auto viewerCtor = Bind<FnHiddenModuleInfoDialogCtor>(kHiddenModuleInfoDialogCtorAddress);
-	const auto createDialogIndirect = Bind<FnCreateDialogIndirect>(kCreateDialogIndirectAddress);
-	const auto destroyCString = Bind<FnDestroyCString>(kDestroyCStringAddress);
-	const auto destroyTreeCtrl = Bind<FnDestroyTreeCtrl>(kDestroyTreeCtrlAddress);
-	const auto destroyEditCtrl = Bind<FnDestroyEditCtrl>(kDestroyEditCtrlAddress);
-	const auto destroyDialogWindow = Bind<FnDestroyDialogWindow>(kDestroyDialogWindowAddress);
-	const auto destroyImageList = Bind<FnDestroyImageList>(kDestroyImageListAddress);
-	const auto destroyModulePayload = Bind<FnDestroyModuleInfoPayload>(kDestroyModuleInfoPayloadAddress);
-	const auto destroyDialogBase = Bind<FnDestroyDialogBase>(kDestroyDialogBaseAddress);
-	const auto resolveModulePath = Bind<FnResolveModulePath>(kResolveModulePathAddress);
+	const auto viewerCtor = Bind<FnHiddenModuleInfoDialogCtor>(addrs.hiddenDialogCtor);
+	const auto createDialogIndirect = Bind<FnCreateDialogIndirect>(addrs.createDialogIndirect);
+	const auto destroyCString = Bind<FnDestroyCString>(addrs.destroyCString);
+	const auto destroyTreeCtrl = Bind<FnDestroyTreeCtrl>(addrs.destroyTreeCtrl);
+	const auto destroyEditCtrl = Bind<FnDestroyEditCtrl>(addrs.destroyEditCtrl);
+	const auto destroyDialogWindow = Bind<FnDestroyDialogWindow>(addrs.destroyDialogWindow);
+	const auto destroyImageList = Bind<FnDestroyImageList>(addrs.destroyImageList);
+	const auto destroyModulePayload = Bind<FnDestroyModuleInfoPayload>(addrs.destroyModuleInfoPayload);
+	const auto destroyDialogBase = Bind<FnDestroyDialogBase>(addrs.destroyDialogBase);
+	const auto resolveModulePath = Bind<FnResolveModulePath>(addrs.resolveModulePath);
 
 	std::vector<unsigned char> dialogStorage(kHiddenModuleInfoStorageSize, 0);
 	auto* dialogObject = dialogStorage.data();
@@ -1963,7 +1977,7 @@ bool LoadModulePublicInfoDumpHiddenDialog(
 	}
 
 	dialogCreated = true;
-	if (!CaptureHiddenModuleInfoTextFromDialog(dialogObject, ctx.dialogHwnd, ctx.capturedText, ctx.error)) {
+	if (!CaptureHiddenModuleInfoTextFromDialog(dialogObject, ctx.dialogHwnd, addrs, ctx.capturedText, ctx.error)) {
 		cleanupDialog();
 		outDump = {};
 		outDump.modulePath = modulePath;
@@ -2181,6 +2195,31 @@ bool PopulateNativeModulePublicInfoAddresses(NativeModulePublicInfoAddresses& ad
 	addrs = {};
 	addrs.moduleBase = moduleBase;
 
+	static constexpr char kHiddenDialogCtorPattern[] =
+		"6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 51 8B 44 24 14 56 57 8B F1 50 68 5B 02 00 00 89 74 24 10 E8 ?? ?? ?? ?? 8D 7E 5C C7 44 24 14 00 00 00 00 8B CF E8 ?? ?? ?? ?? C7 07 ?? ?? ?? ?? 8D BE 98 00 00 00";
+	static constexpr char kCreateDialogIndirectPattern[] =
+		"B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 EC 34 53 56 33 DB 57 39 5D 10 8B F1 89 65 F0 89 75 DC 75 0B E8 ?? ?? ?? ?? 8B 40 08 89 45 10 E8 ?? ?? ?? ?? 8B B8 38 10 00 00 6A 10";
+	static constexpr char kUpdateHiddenSelectionPattern[] =
+		"64 A1 00 00 00 00 6A FF 68 ?? ?? ?? ?? 50 8B 44 24 14 64 89 25 00 00 00 00 83 EC 14 C7 00 00 00 00 00 56 8B F1 57 6A 00 8B 8E B4 00 00 00 6A 09 68 0A 11 00 00 51 FF 15 ?? ?? ?? ?? 8B F8 85 FF 74 66";
+	static constexpr char kDestroyCStringPattern[] =
+		"56 8B F1 8B 06 8D 48 F4 3B 0D ?? ?? ?? ?? 74 18 83 C0 F4 50 FF 15 ?? ?? ?? ?? 85 C0 7F 0A 8B 0E 83 E9 0C E8 ?? ?? ?? ?? 5E C3";
+	static constexpr char kDestroyTreeCtrlPattern[] =
+		"B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 51 56 8B F1 89 75 F0 C7 06 ?? ?? ?? ?? 83 65 FC 00 E8 ?? ?? ?? ?? 83 4D FC FF 8B CE E8 ?? ?? ?? ?? 8B 4D F4 5E 64 89 0D 00 00 00 00 C9 C3 B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 EC 2C 8B 45 0C 83 65 F0 00 53 56 57 6A 01 89 45 CC A1 ?? ?? ?? ?? 5F 8B D9 89 7D C8";
+	static constexpr char kDestroyEditCtrlPattern[] =
+		"B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 51 56 8B F1 89 75 F0 C7 06 ?? ?? ?? ?? 83 65 FC 00 E8 ?? ?? ?? ?? 83 4D FC FF 8B CE E8 ?? ?? ?? ?? 8B 4D F4 5E 64 89 0D 00 00 00 00 C9 C3 B8 ?? ?? ?? ?? C3 56 8B F1 E8 39 10 00 00 83 A6 BC 00 00 00 00 C7 06 ?? ?? ?? ?? 8B C6 5E C3 53 56 57 8B F9 6A 00 E8 4B";
+	static constexpr char kDestroyDialogWindowPattern[] =
+		"56 8B F1 83 7E 1C 00 75 04 33 C0 5E C3 53 57 6A 00 E8 ?? ?? ?? ?? FF 76 1C 8D 48 04 E8 ?? ?? ?? ?? 8B 4E 38 8B F8 85 C9 75 0B";
+	static constexpr char kDestroyImageListPattern[] =
+		"B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 51 89 4D F0 C7 01 ?? ?? ?? ?? 83 65 FC 00 E8 36 00 00 00 8B 4D F4 64 89 0D 00 00 00 00 C9 C3 56 8B F1 57 8B 7E 04 85 FF 74 16";
+	static constexpr char kDestroyPayloadPattern[] =
+		"6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 83 EC 08 53 56 8B F1 57 89 74 24 0C C7 44 24 1C 1F 00 00 00 E8 ?? ?? ?? ?? 8D 8E 1C 03 00 00";
+	static constexpr char kDestroyDialogBasePattern[] =
+		"B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 51 56 8B F1 89 75 F0 C7 06 ?? ?? ?? ?? 83 65 FC 00 83 7E 1C 00 74 05 E8 ?? ?? ?? ?? 83 4D FC FF 8B CE E8 ?? ?? ?? ??";
+	static constexpr char kResolveModulePathPattern[] =
+		"64 A1 00 00 00 00 6A FF 68 ?? ?? ?? ?? 50 64 89 25 00 00 00 00 8B 44 24 10 83 EC 08 53 56 57 8B 7C 24 28 8B F1 57 50 B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B 07 50 E8 ?? ?? ?? ?? BB 01 00 00 00";
+	static constexpr char kImportedModuleArrayRefPattern[] =
+		"A1 ?? ?? ?? ?? 8B 14 B1 8D 4C 24 10 51 B9 ?? ?? ?? ?? 8B 2C 90 8B 45 08 50 E8 ?? ?? ?? ??";
+
 	addrs.initByteContainer = ResolveUniqueCodeAddress(
 		"init_byte_container",
 		"8B C1 33 C9 C7 00 ?? ?? ?? ?? C7 40 04 ?? ?? ?? ?? 89 48 08 89 48 10 89 48 0C C3",
@@ -2245,6 +2284,56 @@ bool PopulateNativeModulePublicInfoAddresses(NativeModulePublicInfoAddresses& ad
 		44,
 		moduleBase);
 
+	addrs.hiddenDialogCtor = ResolveUniqueCodeAddress(
+		"hidden_dialog_ctor",
+		kHiddenDialogCtorPattern,
+		moduleBase);
+	addrs.createDialogIndirect = ResolveUniqueCodeAddress(
+		"create_dialog_indirect",
+		kCreateDialogIndirectPattern,
+		moduleBase);
+	addrs.updateHiddenSelection = ResolveUniqueCodeAddress(
+		"update_hidden_selection",
+		kUpdateHiddenSelectionPattern,
+		moduleBase);
+	addrs.destroyCString = ResolveUniqueCodeAddress(
+		"destroy_cstring",
+		kDestroyCStringPattern,
+		moduleBase);
+	addrs.destroyTreeCtrl = ResolveUniqueCodeAddress(
+		"destroy_tree_ctrl",
+		kDestroyTreeCtrlPattern,
+		moduleBase);
+	addrs.destroyEditCtrl = ResolveUniqueCodeAddress(
+		"destroy_edit_ctrl",
+		kDestroyEditCtrlPattern,
+		moduleBase);
+	addrs.destroyDialogWindow = ResolveUniqueCodeAddress(
+		"destroy_dialog_window",
+		kDestroyDialogWindowPattern,
+		moduleBase);
+	addrs.destroyImageList = ResolveUniqueCodeAddress(
+		"destroy_image_list",
+		kDestroyImageListPattern,
+		moduleBase);
+	addrs.destroyModuleInfoPayload = ResolveUniqueCodeAddress(
+		"destroy_module_info_payload",
+		kDestroyPayloadPattern,
+		moduleBase);
+	addrs.destroyDialogBase = ResolveUniqueCodeAddress(
+		"destroy_dialog_base",
+		kDestroyDialogBasePattern,
+		moduleBase);
+	addrs.resolveModulePath = ResolveUniqueCodeAddress(
+		"resolve_module_path",
+		kResolveModulePathPattern,
+		moduleBase);
+	addrs.importedModuleArrayGlobal = ResolveUniqueImmAddress(
+		"imported_module_array_global",
+		kImportedModuleArrayRefPattern,
+		1,
+		moduleBase);
+
 	addrs.ok =
 		addrs.initByteContainer != 0 &&
 		addrs.clearByteContainer != 0 &&
@@ -2257,6 +2346,19 @@ bool PopulateNativeModulePublicInfoAddresses(NativeModulePublicInfoAddresses& ad
 		addrs.recorderAuxContainer != 0 &&
 		addrs.recorderBuffer != 0 &&
 		addrs.recorderStateCC != 0;
+	addrs.hiddenDialogOk =
+		addrs.hiddenDialogCtor != 0 &&
+		addrs.createDialogIndirect != 0 &&
+		addrs.updateHiddenSelection != 0 &&
+		addrs.destroyCString != 0 &&
+		addrs.destroyTreeCtrl != 0 &&
+		addrs.destroyEditCtrl != 0 &&
+		addrs.destroyDialogWindow != 0 &&
+		addrs.destroyImageList != 0 &&
+		addrs.destroyModuleInfoPayload != 0 &&
+		addrs.destroyDialogBase != 0 &&
+		addrs.resolveModulePath != 0 &&
+		addrs.importedModuleArrayGlobal != 0;
 	addrs.initialized = true;
 	return addrs.ok;
 }

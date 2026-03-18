@@ -3838,11 +3838,11 @@ static auto originalTrackPopupMenuEx = TrackPopupMenuEx;
 
 //开始调试 5.71-5.95
 typedef int(__thiscall* OriginalEStartDebugFuncType)(DWORD* thisPtr, int a2, int a3);
-OriginalEStartDebugFuncType originalEStartDebugFunc = (OriginalEStartDebugFuncType)0x40A080; //int __thiscall sub_40A080(int this, int a2, int a3)
+OriginalEStartDebugFuncType originalEStartDebugFunc = nullptr;
 
 //开始编译 5.71-5.95
 typedef int(__thiscall* OriginalEStartCompileFuncType)(DWORD* thisPtr, int a2);
-OriginalEStartCompileFuncType originalEStartCompileFunc = (OriginalEStartCompileFuncType)0x40A9F1;  //int __thiscall sub_40A9F1(_DWORD *this, int a2)
+OriginalEStartCompileFuncType originalEStartCompileFunc = nullptr;
 
 int __fastcall MyEStartCompileFunc(DWORD* thisPtr, int dummy, int a2) {
 	OutputStringToELog("编译开始#2");
@@ -4071,7 +4071,7 @@ void StartHookCreateFileA() {
 	DetourAttach(&(PVOID&)originalTrackPopupMenuEx, MyTrackPopupMenuEx);
 
 
-	if (g_debugStartAddress != -1 && g_compileStartAddress != -1) {
+	if (g_debugStartAddress > 0 && g_compileStartAddress > 0) {
 		originalEStartCompileFunc = (OriginalEStartCompileFuncType)g_compileStartAddress;
 		originalEStartDebugFunc = (OriginalEStartDebugFuncType)g_debugStartAddress;
 
@@ -4080,7 +4080,10 @@ void StartHookCreateFileA() {
 		DetourAttach(&(PVOID&)originalEStartDebugFunc, MyEStartDebugFunc);
 	}
 	else {
-		//无法启用
+		OutputStringToELog(std::format(
+			"未找到编译/调试启动地址，跳过对应 Hook debug=0x{:X} compile=0x{:X}",
+			g_debugStartAddress,
+			g_compileStartAddress));
 	}
 	DetourTransactionCommit();
 }
