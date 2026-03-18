@@ -419,6 +419,82 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "list_imported_modules"},
+		{"description", "List imported ECOM/e-module paths from the current project. This only lists modules; actual public declarations must be queried separately."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", nlohmann::json::object()},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "list_support_libraries"},
+		{"description", "List support libraries currently selected by the IDE. Returns basic parsed fields and the raw support-library info text returned by the IDE."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", nlohmann::json::object()},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "get_support_library_info"},
+		{"description", "Get one support library's public info. Prefer file_path when available: the tool will parse GetNewInf/lib2.h structures and return commands, constants and data types. If no file path can be resolved, it falls back to the IDE support-library info text."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"index", {{"type", "integer"}, {"minimum", 0}}},
+				{"name", {{"type", "string"}, {"description", "Support library display name or file name."}}},
+				{"file_path", {{"type", "string"}, {"description", "Full support library file path, preferred when known."}}}
+			}},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "search_support_library_info"},
+		{"description", "Search keyword inside support-library public info. Prefer file_path when known so the tool can parse GetNewInf/lib2.h structures; otherwise it falls back to the IDE support-library info text."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"keyword", {{"type", "string"}}},
+				{"index", {{"type", "integer"}, {"minimum", 0}}},
+				{"name", {{"type", "string"}}},
+				{"file_path", {{"type", "string"}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}
+			}},
+			{"required", nlohmann::json::array({"keyword"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "get_module_public_info"},
+		{"description", "Load one imported module's public interface records by module_name or module_path, primarily from offline .ec module parsing. Important: this is not normal IDE source code and only represents public-interface pseudo-reference."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"module_name", {{"type", "string"}, {"description", "Module file name or stem, for example demo.ecom or demo."}}},
+				{"module_path", {{"type", "string"}}},
+				{"max_records", {{"type", "integer"}, {"minimum", 1}, {"maximum", 500}}},
+				{"max_strings_per_record", {{"type", "integer"}, {"minimum", 1}, {"maximum", 20}}}
+			}},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "search_module_public_info"},
+		{"description", "Search a keyword inside module public interface records parsed primarily from .ec module files. Can target one module by module_name/module_path, or search across all imported modules when omitted. Important: results are public-interface pseudo-reference, not full module source code."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"keyword", {{"type", "string"}}},
+				{"module_name", {{"type", "string"}}},
+				{"module_path", {{"type", "string"}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}
+			}},
+			{"required", nlohmann::json::array({"keyword"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "list_program_items"},
 		{"description", "List program tree items such as assemblies, class modules, global variables, user-defined types, DLL commands, forms and resources. Can optionally include code for each item. Important: code returned by program-tree lookup is only pseudo-code reference and may differ from the normal IDE page structure."},
 		{"inputSchema", {
@@ -586,13 +662,15 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"规则：\n"
 		"1) 需要源码时优先调用 get_current_page_code，不要臆造现有代码；该工具会同时返回当前页名称和页类型。\n"
 		"2) 只需要知道当前页是谁而不需要全文代码时，调用 get_current_page_info。\n"
-		"3) 需要枚举项目结构时优先调用 list_program_items；需要某个程序集/类整页代码时调用 get_program_item_code；只需要切换页面时调用 switch_to_program_item_page。\n"
-		"4) 需要项目内关键词定位时先调用 search_project_keyword 查看结果；若要精确跳到其中某一条，使用该条结果返回的 jump_token 调用 jump_to_search_result。\n"
-		"5) get_program_item_code、switch_to_program_item_page、jump_to_search_result 都可能触发 IDE 当前页面变更；调用前要意识到这是有副作用的，不要把调用前后的当前页混为一谈。\n"
-		"6) 通过搜索结果或程序树按名称拿到的代码，不保证与 IDE 正常编辑页结构一致，只能作为伪代码参考；分析和修改建议时必须明确这一点。\n"
-		"7) 需要用户确认/修订代码时调用 request_code_edit。\n"
-		"8) 工具返回失败或取消时，给出下一步建议，不要编造工具结果。\n"
-		"9) 除非用户要求解释，否则尽量给直接可执行结论。\n";
+		"3) 需要当前项目已选支持库列表时调用 list_support_libraries；需要支持库公开定义时调用 get_support_library_info；需要在支持库公开定义里检索关键词时调用 search_support_library_info。\n"
+		"4) 需要模块/易模块列表时先调用 list_imported_modules；需要模块公开接口时调用 get_module_public_info；需要在模块公开接口里检索关键词时调用 search_module_public_info。\n"
+		"5) 需要枚举项目结构时优先调用 list_program_items；需要某个程序集/类整页代码时调用 get_program_item_code；只需要切换页面时调用 switch_to_program_item_page。\n"
+		"6) 需要项目内关键词定位时先调用 search_project_keyword 查看结果；若要精确跳到其中某一条，使用该条结果返回的 jump_token 调用 jump_to_search_result。\n"
+		"7) get_program_item_code、switch_to_program_item_page、jump_to_search_result 都可能触发 IDE 当前页面变更；调用前要意识到这是有副作用的，不要把调用前后的当前页混为一谈。\n"
+		"8) 通过搜索结果、程序树按名称抓到的代码、模块公开信息工具拿到的内容、以及支持库公开信息工具拿到的内容，都不保证与 IDE 正常编辑页结构一致，只能作为伪代码/公开接口参考；分析和修改建议时必须明确这一点。\n"
+		"9) 需要用户确认/修订代码时调用 request_code_edit。\n"
+		"10) 工具返回失败或取消时，给出下一步建议，不要编造工具结果。\n"
+		"11) 除非用户要求解释，否则尽量给直接可执行结论。\n";
 
 	const std::string extraPrompt = AIService::Trim(settings.extraSystemPrompt);
 	if (!extraPrompt.empty()) {

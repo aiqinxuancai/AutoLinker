@@ -30,15 +30,18 @@
 #include "LocalMcpServer.h"
 #if defined(_M_IX86)
 #include "direct_global_search_debug.hpp"
+#include "native_module_public_info.hpp"
 #endif
 #include <memory>
 #include <new>
 #include <process.h>
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <tlhelp32.h>
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -87,6 +90,7 @@ constexpr UINT IDM_AUTOLINKER_LINKER_BASE = 34000;
 constexpr UINT IDM_AUTOLINKER_LINKER_MAX = 34999;
 constexpr UINT WM_AUTOLINKER_AI_TASK_DONE = WM_USER + 1001;
 constexpr UINT WM_AUTOLINKER_AI_APPLY_RESULT = WM_USER + 1002;
+constexpr UINT WM_AUTOLINKER_RUN_MODULE_INFO_TEST = WM_USER + 1003;
 
 std::atomic_bool g_aiTaskInProgress = false;
 std::atomic_uint64_t g_aiPerfTraceSeed = 1;
@@ -148,6 +152,8 @@ std::string TrimAsciiCopy(const std::string& text)
 	return text.substr(begin, end - begin);
 }
 
+std::string ToLowerAsciiCopy(const std::string& text);
+
 std::string TruncateForPerfLog(const std::string& text, size_t maxLen = 120)
 {
 	if (text.size() <= maxLen) {
@@ -168,6 +174,8 @@ std::mutex g_aiRoundtripLogMutex;
 std::mutex g_addTabTestLogMutex;
 std::mutex g_directGlobalSearchPageDumpLogMutex;
 std::mutex g_programTreeListLogMutex;
+std::mutex g_modulePublicInfoLogMutex;
+std::mutex g_supportLibraryInfoLogMutex;
 constexpr const char* kDirectGlobalSearchTestKeyword = "subWinHwnd";
 constexpr const char* kTreeDirectPageDumpTestName = "Class_HWND";
 
@@ -201,6 +209,30 @@ std::filesystem::path GetProgramTreeListLogPath()
 	std::error_code ec;
 	std::filesystem::create_directories(dir, ec);
 	return dir / "program_tree_items_last.txt";
+}
+
+std::filesystem::path GetModulePublicInfoLogPath()
+{
+	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	return dir / "module_public_info_last.txt";
+}
+
+std::filesystem::path GetSupportLibraryInfoLogPath()
+{
+	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	return dir / "support_library_info_last.txt";
+}
+
+std::filesystem::path GetAutoRunModulePublicInfoTestMarkerPath()
+{
+	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	return dir / "autorun_module_public_info_test.flag";
 }
 
 std::string EscapeOneLineForLog(std::string text)
@@ -686,6 +718,1182 @@ HWND FindProgramDataTreeView()
 std::uintptr_t GetCurrentProcessImageBase();
 void WriteDirectGlobalSearchPageDump(const std::string& text);
 void LogCurrentPageCodePreview(const std::string& pageCode, size_t maxLines);
+
+bool TryListImportedModulePathsForTest(std::vector<std::string>& outPaths, std::string* outError)
+{
+	outPaths.clear();
+	if (outError != nullptr) {
+		outError->clear();
+	}
+
+	int count = 0;
+	if (!IDEFacade::Instance().GetImportedECOMCount(count)) {
+		if (outError != nullptr) {
+			*outError = "GetImportedECOMCount failed";
+		}
+		return false;
+	}
+
+	for (int i = 0; i < count; ++i) {
+		std::string path;
+		if (IDEFacade::Instance().GetImportedECOMPath(i, path) && !TrimAsciiCopy(path).empty()) {
+			outPaths.push_back(path);
+		}
+	}
+	return true;
+}
+
+void WriteModulePublicInfoLog(const std::vector<std::string>& lines)
+{
+	const auto path = GetModulePublicInfoLogPath();
+	std::lock_guard<std::mutex> guard(g_modulePublicInfoLogMutex);
+	std::ofstream out(path, std::ios::trunc | std::ios::binary);
+	if (!out.is_open()) {
+		OutputStringToELog("[ModulePublicInfoTest] 写日志文件失败");
+		return;
+	}
+	for (const auto& line : lines) {
+		out << line << "\r\n";
+	}
+}
+
+void WriteSupportLibraryInfoLog(const std::vector<std::string>& lines)
+{
+	const auto path = GetSupportLibraryInfoLogPath();
+	std::lock_guard<std::mutex> guard(g_supportLibraryInfoLogMutex);
+	std::ofstream out(path, std::ios::trunc | std::ios::binary);
+	if (!out.is_open()) {
+		OutputStringToELog("[SupportLibraryInfoTest] 写日志文件失败");
+		return;
+	}
+	for (const auto& line : lines) {
+		out << line << "\r\n";
+	}
+}
+
+struct SupportLibraryHeaderForTest {
+	int index = -1;
+	std::string rawText;
+	std::string rawName;
+	std::string name;
+	std::string versionText;
+	std::string fileName;
+	std::string fileStem;
+	std::string filePath;
+	std::string resolveTrace;
+};
+
+struct LoadedSupportLibraryModuleForTest {
+	std::string filePath;
+	std::string fileName;
+	std::string fileStem;
+};
+
+std::vector<std::string> SplitLinesForSupportLibraryTest(const std::string& text)
+{
+	std::vector<std::string> lines;
+	size_t begin = 0;
+	while (begin <= text.size()) {
+		const size_t end = text.find('\n', begin);
+		if (end == std::string::npos) {
+			lines.push_back(text.substr(begin));
+			break;
+		}
+		lines.push_back(text.substr(begin, end - begin));
+		begin = end + 1;
+	}
+	return lines;
+}
+
+std::string NormalizeLineBreaksForSupportLibraryTest(std::string text)
+{
+	text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+	return text;
+}
+
+std::string FindPossibleSupportLibraryFileToken(const std::string& text)
+{
+	static const std::array<const char*, 3> exts = { ".fne", ".fnr", ".dll" };
+	const std::string lower = ToLowerAsciiCopy(text);
+	for (const char* ext : exts) {
+		const std::string extLower = ToLowerAsciiCopy(ext);
+		size_t pos = lower.find(extLower);
+		if (pos == std::string::npos) {
+			continue;
+		}
+
+		size_t begin = pos;
+		while (begin > 0) {
+			const char ch = text[begin - 1];
+			if (std::isalnum(static_cast<unsigned char>(ch)) != 0 ||
+				ch == '_' || ch == '-' || ch == '.' || ch == '\\' || ch == '/' || ch == ':') {
+				--begin;
+				continue;
+			}
+			break;
+		}
+
+		size_t end = pos + extLower.size();
+		while (end < text.size()) {
+			const char ch = text[end];
+			if (std::isalnum(static_cast<unsigned char>(ch)) != 0 ||
+				ch == '_' || ch == '-' || ch == '.' || ch == '\\' || ch == '/' || ch == ':') {
+				++end;
+				continue;
+			}
+			break;
+		}
+		return TrimAsciiCopy(text.substr(begin, end - begin));
+	}
+	return std::string();
+}
+
+void ParseSupportLibraryHeaderText(
+	int index,
+	const std::string& rawText,
+	SupportLibraryHeaderForTest& outInfo)
+{
+	outInfo = {};
+	outInfo.index = index;
+	outInfo.rawText = rawText;
+
+	const auto lines = SplitLinesForSupportLibraryTest(NormalizeLineBreaksForSupportLibraryTest(rawText));
+	for (const auto& rawLine : lines) {
+		const std::string line = TrimAsciiCopy(rawLine);
+		if (line.empty()) {
+			continue;
+		}
+
+		if (outInfo.name.empty()) {
+			if (line.find("支持库") != std::string::npos ||
+				line.find("库名") != std::string::npos ||
+				line.find("名称") != std::string::npos) {
+				const size_t sep = line.find_first_of(":：");
+				if (sep != std::string::npos) {
+					outInfo.name = TrimAsciiCopy(line.substr(sep + 1));
+				}
+			}
+			if (outInfo.name.empty()) {
+				outInfo.name = line;
+			}
+			outInfo.rawName = outInfo.name;
+		}
+
+		if (outInfo.versionText.empty() &&
+			(line.find("版本") != std::string::npos || line.find("Version") != std::string::npos)) {
+			outInfo.versionText = line;
+		}
+
+		if (outInfo.fileName.empty()) {
+			std::string token = FindPossibleSupportLibraryFileToken(line);
+			if (!token.empty()) {
+				outInfo.fileName = std::filesystem::path(token).filename().string();
+				outInfo.fileStem = std::filesystem::path(token).stem().string();
+				if (token.find('\\') != std::string::npos || token.find('/') != std::string::npos) {
+					outInfo.filePath = token;
+				}
+			}
+		}
+	}
+
+	if (outInfo.name.empty()) {
+		outInfo.name = std::format("support_library_{}", index);
+		outInfo.rawName = outInfo.name;
+	}
+}
+
+bool TryLoadSupportLibraryBasicInfoForTest(
+	const std::string& filePath,
+	std::string& outName,
+	std::string& outVersionText,
+	std::string* outGuid = nullptr)
+{
+	outName.clear();
+	outVersionText.clear();
+	if (outGuid != nullptr) {
+		outGuid->clear();
+	}
+
+	HMODULE module = LoadLibraryExA(filePath.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
+	if (module == nullptr) {
+		return false;
+	}
+
+	const auto* getInfoProc = reinterpret_cast<PFN_GET_LIB_INFO>(GetProcAddress(module, FUNCNAME_GET_LIB_INFO));
+	if (getInfoProc == nullptr) {
+		FreeLibrary(module);
+		return false;
+	}
+
+	const auto* libInfo = getInfoProc();
+	if (libInfo == nullptr) {
+		FreeLibrary(module);
+		return false;
+	}
+
+	if (libInfo->m_szName != nullptr) {
+		outName = libInfo->m_szName;
+	}
+	outVersionText = std::format(
+		"{}.{}.{}",
+		libInfo->m_nMajorVersion,
+		libInfo->m_nMinorVersion,
+		libInfo->m_nBuildNumber);
+	if (outGuid != nullptr && libInfo->m_szGuid != nullptr) {
+		*outGuid = libInfo->m_szGuid;
+	}
+
+	FreeLibrary(module);
+	return !outName.empty();
+}
+
+std::string ExtractLeadingAsciiStemForSupportLibraryTest(const std::string& text)
+{
+	std::string stem;
+	for (char ch : text) {
+		const unsigned char uch = static_cast<unsigned char>(ch);
+		if (std::isalnum(uch) != 0 || ch == '_' || ch == '-') {
+			stem.push_back(ch);
+			continue;
+		}
+		break;
+	}
+	if (stem.size() < 2) {
+		return std::string();
+	}
+	return stem;
+}
+
+std::vector<LoadedSupportLibraryModuleForTest> EnumerateLoadedSupportLibraryModulesForTest()
+{
+	std::vector<LoadedSupportLibraryModuleForTest> modules;
+	const std::filesystem::path libDir = std::filesystem::path(GetBasePath()) / "lib";
+	std::error_code ec;
+	if (!std::filesystem::exists(libDir, ec)) {
+		return modules;
+	}
+
+	const std::string libDirLower = ToLowerAsciiCopy(libDir.string());
+	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+	if (snapshot == INVALID_HANDLE_VALUE) {
+		return modules;
+	}
+
+	MODULEENTRY32 entry = {};
+	entry.dwSize = sizeof(entry);
+	if (Module32First(snapshot, &entry) == FALSE) {
+		CloseHandle(snapshot);
+		return modules;
+	}
+
+	do {
+		std::filesystem::path modulePath(entry.szExePath);
+		const std::string fullPath = modulePath.string();
+		const std::string fullPathLower = ToLowerAsciiCopy(fullPath);
+		if (fullPathLower.rfind(libDirLower, 0) != 0) {
+			continue;
+		}
+
+		const std::string extLower = ToLowerAsciiCopy(modulePath.extension().string());
+		if (extLower != ".fne" && extLower != ".fnr" && extLower != ".dll") {
+			continue;
+		}
+
+		LoadedSupportLibraryModuleForTest module;
+		module.filePath = fullPath;
+		module.fileName = modulePath.filename().string();
+		module.fileStem = modulePath.stem().string();
+		modules.push_back(std::move(module));
+	} while (Module32Next(snapshot, &entry) != FALSE);
+
+	CloseHandle(snapshot);
+	return modules;
+}
+
+bool TryAssignSupportLibraryPathByLoadedModules(
+	SupportLibraryHeaderForTest& info,
+	const std::vector<LoadedSupportLibraryModuleForTest>& modules,
+	std::unordered_set<size_t>& usedModuleIndexes)
+{
+	auto tryMatch = [&](const std::string& candidate, const char* trace) -> bool {
+		const std::string needle = ToLowerAsciiCopy(TrimAsciiCopy(candidate));
+		if (needle.empty()) {
+			return false;
+		}
+
+		int matchedIndex = -1;
+		for (size_t i = 0; i < modules.size(); ++i) {
+			if (usedModuleIndexes.find(i) != usedModuleIndexes.end()) {
+				continue;
+			}
+			if (ToLowerAsciiCopy(modules[i].fileName) == needle ||
+				ToLowerAsciiCopy(modules[i].fileStem) == needle ||
+				ToLowerAsciiCopy(modules[i].filePath) == needle) {
+				if (matchedIndex >= 0) {
+					return false;
+				}
+				matchedIndex = static_cast<int>(i);
+			}
+		}
+
+		if (matchedIndex < 0) {
+			return false;
+		}
+
+		const auto& module = modules[static_cast<size_t>(matchedIndex)];
+		info.filePath = module.filePath;
+		info.fileName = module.fileName;
+		info.fileStem = module.fileStem;
+		info.resolveTrace = trace;
+		usedModuleIndexes.insert(static_cast<size_t>(matchedIndex));
+		return true;
+	};
+
+	if (tryMatch(info.fileName, "loaded_module_file_name")) {
+		return true;
+	}
+	if (tryMatch(info.fileStem, "loaded_module_file_stem")) {
+		return true;
+	}
+	if (tryMatch(info.name, "loaded_module_name")) {
+		return true;
+	}
+
+	const std::string prefixFromName = ExtractLeadingAsciiStemForSupportLibraryTest(info.name);
+	if (tryMatch(prefixFromName, "loaded_module_ascii_prefix_name")) {
+		return true;
+	}
+
+	const std::string prefixFromRaw = ExtractLeadingAsciiStemForSupportLibraryTest(info.rawText);
+	if (tryMatch(prefixFromRaw, "loaded_module_ascii_prefix_raw")) {
+		return true;
+	}
+
+	return false;
+}
+
+bool TryListSupportLibrariesForTest(std::vector<SupportLibraryHeaderForTest>& outInfos, std::string* outError)
+{
+	outInfos.clear();
+	if (outError != nullptr) {
+		outError->clear();
+	}
+
+	int count = 0;
+	if (!IDEFacade::Instance().RunGetNumLib(count)) {
+		if (outError != nullptr) {
+			*outError = "RunGetNumLib failed";
+		}
+		return false;
+	}
+
+	for (int i = 0; i < count; ++i) {
+		std::string text;
+		if (!IDEFacade::Instance().RunGetLibInfoText(i, text)) {
+			continue;
+		}
+
+		SupportLibraryHeaderForTest info;
+		ParseSupportLibraryHeaderText(i, text, info);
+		outInfos.push_back(std::move(info));
+	}
+
+	const auto loadedModules = EnumerateLoadedSupportLibraryModulesForTest();
+	std::unordered_set<size_t> usedModuleIndexes;
+	for (auto& info : outInfos) {
+		if (!info.filePath.empty()) {
+			info.resolveTrace = "header_text_path";
+		}
+		else {
+			TryAssignSupportLibraryPathByLoadedModules(info, loadedModules, usedModuleIndexes);
+		}
+
+		if (!info.filePath.empty()) {
+			std::string resolvedName;
+			std::string resolvedVersion;
+			if (TryLoadSupportLibraryBasicInfoForTest(info.filePath, resolvedName, resolvedVersion, nullptr)) {
+				info.name = resolvedName;
+				info.versionText = resolvedVersion;
+			}
+		}
+	}
+
+	if (loadedModules.size() == outInfos.size()) {
+		for (size_t i = 0; i < outInfos.size(); ++i) {
+			auto& info = outInfos[i];
+			if (!info.filePath.empty()) {
+				continue;
+			}
+			if (usedModuleIndexes.find(i) != usedModuleIndexes.end()) {
+				continue;
+			}
+			info.filePath = loadedModules[i].filePath;
+			info.fileName = loadedModules[i].fileName;
+			info.fileStem = loadedModules[i].fileStem;
+			info.resolveTrace = "loaded_module_order_fallback";
+			usedModuleIndexes.insert(i);
+			std::string resolvedName;
+			std::string resolvedVersion;
+			if (TryLoadSupportLibraryBasicInfoForTest(info.filePath, resolvedName, resolvedVersion, nullptr)) {
+				info.name = resolvedName;
+				info.versionText = resolvedVersion;
+			}
+		}
+	}
+
+	return true;
+}
+
+bool DumpSupportLibraryInfoFromFile(
+	const std::string& filePath,
+	std::vector<std::string>& outLines,
+	std::string& outError)
+{
+	outLines.clear();
+	outError.clear();
+
+	HMODULE module = LoadLibraryExA(filePath.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
+	if (module == nullptr) {
+		outError = "LoadLibraryEx failed";
+		return false;
+	}
+
+	const auto* getInfoProc = reinterpret_cast<PFN_GET_LIB_INFO>(GetProcAddress(module, FUNCNAME_GET_LIB_INFO));
+	if (getInfoProc == nullptr) {
+		FreeLibrary(module);
+		outError = "GetNewInf not found";
+		return false;
+	}
+
+	const auto* libInfo = getInfoProc();
+	if (libInfo == nullptr) {
+		FreeLibrary(module);
+		outError = "GetNewInf returned null";
+		return false;
+	}
+
+	const auto readPtr = [](LPCSTR ptr) -> std::string {
+		return ptr == nullptr ? std::string() : std::string(ptr);
+	};
+	const auto joinTexts = [](const std::vector<std::string>& values, const char* sep) -> std::string {
+		std::string text;
+		for (size_t i = 0; i < values.size(); ++i) {
+			if (i > 0) {
+				text += sep;
+			}
+			text += values[i];
+		}
+		return text;
+	};
+	const auto decodeDataType = [](DATA_TYPE type) -> std::string {
+		const bool isArray = (type & DT_IS_ARY) != 0;
+		const bool isVar = (type & DT_IS_VAR) != 0;
+		const DATA_TYPE baseType = static_cast<DATA_TYPE>(type & ~DT_IS_ARY);
+
+		std::string text;
+		switch (baseType)
+		{
+		case _SDT_NULL: text = "空类型"; break;
+		case _SDT_ALL: text = "通用型(all)"; break;
+		case SDT_BYTE: text = "字节型(byte)"; break;
+		case SDT_SHORT: text = "短整数型(short)"; break;
+		case SDT_INT: text = "整数型(int)"; break;
+		case SDT_INT64: text = "长整数型(int64)"; break;
+		case SDT_FLOAT: text = "小数型(float)"; break;
+		case SDT_DOUBLE: text = "双精度小数型(double)"; break;
+		case SDT_BOOL: text = "逻辑型(bool)"; break;
+		case SDT_DATE_TIME: text = "日期时间型(datetime)"; break;
+		case SDT_TEXT: text = "文本型(text)"; break;
+		case SDT_BIN: text = "字节集(bin)"; break;
+		case SDT_SUB_PTR: text = "子程序指针(sub_ptr)"; break;
+		case SDT_STATMENT: text = "子语句(statment)"; break;
+		default:
+			if ((baseType & DTM_USER_DATA_TYPE_MASK) != 0) {
+				text = std::format("用户自定义类型(0x{:08X})", static_cast<unsigned int>(baseType));
+			}
+			else if ((baseType & DTM_SYS_DATA_TYPE_MASK) != 0) {
+				text = std::format("系统类型(0x{:08X})", static_cast<unsigned int>(baseType));
+			}
+			else {
+				text = std::format("库类型(0x{:08X})", static_cast<unsigned int>(baseType));
+			}
+			break;
+		}
+
+		if (isArray) {
+			text += "[]";
+		}
+		if (isVar) {
+			text += "&";
+		}
+		return text;
+	};
+	const auto decodeCommandUserLevel = [](SHORT level) -> std::string {
+		switch (level)
+		{
+		case LVL_SIMPLE: return "初级";
+		case LVL_SECONDARY: return "中级";
+		case LVL_HIGH: return "高级";
+		default: return std::format("未知({})", static_cast<int>(level));
+		}
+	};
+	const auto decodeLibOsText = [&](DWORD state) -> std::string {
+		std::vector<std::string> items;
+		if (_TEST_LIB_OS(state, __OS_WIN)) {
+			items.emplace_back("Windows");
+		}
+		if (_TEST_LIB_OS(state, __OS_LINUX)) {
+			items.emplace_back("Linux");
+		}
+		if (_TEST_LIB_OS(state, __OS_UNIX)) {
+			items.emplace_back("Unix");
+		}
+		if (items.empty()) {
+			return std::string("未声明");
+		}
+		return joinTexts(items, "/");
+	};
+	const auto decodeCmdOsText = [&](WORD state) -> std::string {
+		std::vector<std::string> items;
+		if (_TEST_CMD_OS(state, __OS_WIN)) {
+			items.emplace_back("Windows");
+		}
+		if (_TEST_CMD_OS(state, __OS_LINUX)) {
+			items.emplace_back("Linux");
+		}
+		if (_TEST_CMD_OS(state, __OS_UNIX)) {
+			items.emplace_back("Unix");
+		}
+		if (items.empty()) {
+			return std::string("未声明");
+		}
+		return joinTexts(items, "/");
+	};
+	const auto decodeDtOsText = [&](DWORD state) -> std::string {
+		std::vector<std::string> items;
+		if (_TEST_DT_OS(state, __OS_WIN)) {
+			items.emplace_back("Windows");
+		}
+		if (_TEST_DT_OS(state, __OS_LINUX)) {
+			items.emplace_back("Linux");
+		}
+		if (_TEST_DT_OS(state, __OS_UNIX)) {
+			items.emplace_back("Unix");
+		}
+		if (items.empty()) {
+			return std::string("未声明");
+		}
+		return joinTexts(items, "/");
+	};
+	const auto decodeArgFlags = [](DWORD state) -> std::vector<std::string> {
+		std::vector<std::string> flags;
+		if ((state & AS_HAS_DEFAULT_VALUE) != 0 || (state & AS_DEFAULT_VALUE_IS_EMPTY) != 0) {
+			flags.emplace_back("可省略");
+		}
+		if ((state & AS_RECEIVE_VAR) != 0) {
+			flags.emplace_back("仅变量");
+		}
+		if ((state & AS_RECEIVE_VAR_ARRAY) != 0) {
+			flags.emplace_back("仅变量数组");
+		}
+		if ((state & AS_RECEIVE_VAR_OR_ARRAY) != 0) {
+			flags.emplace_back("变量或数组");
+		}
+		if ((state & AS_RECEIVE_ARRAY_DATA) != 0) {
+			flags.emplace_back("仅数组数据");
+		}
+		if ((state & AS_RECEIVE_ALL_TYPE_DATA) != 0) {
+			flags.emplace_back("任意数组或非数组");
+		}
+		if ((state & AS_RECEIVE_VAR_OR_OTHER) != 0) {
+			flags.emplace_back("变量或其它");
+		}
+		return flags;
+	};
+	const auto decodeCmdFlags = [](const CMD_INFO& cmd) -> std::vector<std::string> {
+		std::vector<std::string> flags;
+		if ((cmd.m_wState & CT_IS_HIDED) != 0) {
+			flags.emplace_back("隐含");
+		}
+		if ((cmd.m_wState & CT_IS_ERROR) != 0) {
+			flags.emplace_back("不可用");
+		}
+		if ((cmd.m_wState & CT_DISABLED_IN_RELEASE) != 0) {
+			flags.emplace_back("Release禁用");
+		}
+		if ((cmd.m_wState & CT_ALLOW_APPEND_NEW_ARG) != 0) {
+			flags.emplace_back("允许追加参数");
+		}
+		if ((cmd.m_wState & CT_RETRUN_ARY_TYPE_DATA) != 0) {
+			flags.emplace_back("返回数组");
+		}
+		if ((cmd.m_wState & CT_IS_OBJ_COPY_CMD) != 0) {
+			flags.emplace_back("对象复制");
+		}
+		if ((cmd.m_wState & CT_IS_OBJ_FREE_CMD) != 0) {
+			flags.emplace_back("对象析构");
+		}
+		if ((cmd.m_wState & CT_IS_OBJ_CONSTURCT_CMD) != 0) {
+			flags.emplace_back("对象构造");
+		}
+		if (cmd.m_shtCategory == -1) {
+			flags.emplace_back("对象成员命令");
+		}
+		return flags;
+	};
+	const auto decodeDataTypeFlags = [](DWORD state) -> std::vector<std::string> {
+		std::vector<std::string> flags;
+		if ((state & LDT_IS_HIDED) != 0) {
+			flags.emplace_back("隐含");
+		}
+		if ((state & LDT_IS_ERROR) != 0) {
+			flags.emplace_back("不可用");
+		}
+		if ((state & LDT_WIN_UNIT) != 0) {
+			flags.emplace_back("窗口组件");
+		}
+		if ((state & LDT_IS_CONTAINER) != 0) {
+			flags.emplace_back("容器");
+		}
+		if ((state & LDT_IS_TAB_UNIT) != 0) {
+			flags.emplace_back("Tab组件");
+		}
+		if ((state & LDT_IS_FUNCTION_PROVIDER) != 0) {
+			flags.emplace_back("功能提供者");
+		}
+		if ((state & LDT_CANNOT_GET_FOCUS) != 0) {
+			flags.emplace_back("不可聚焦");
+		}
+		if ((state & LDT_DEFAULT_NO_TABSTOP) != 0) {
+			flags.emplace_back("默认无TabStop");
+		}
+		if ((state & LDT_ENUM) != 0) {
+			flags.emplace_back("枚举");
+		}
+		if ((state & LDT_MSG_FILTER_CONTROL) != 0) {
+			flags.emplace_back("消息过滤");
+		}
+		return flags;
+	};
+	const auto decodeElementFlags = [](DWORD state) -> std::vector<std::string> {
+		std::vector<std::string> flags;
+		if ((state & LES_HAS_DEFAULT_VALUE) != 0) {
+			flags.emplace_back("有默认值");
+		}
+		if ((state & LES_HIDED) != 0) {
+			flags.emplace_back("隐藏");
+		}
+		return flags;
+	};
+	const auto decodeConstType = [](SHORT type) -> std::string {
+		switch (type)
+		{
+		case CT_NULL: return "空";
+		case CT_NUM: return "数值";
+		case CT_BOOL: return "逻辑";
+		case CT_TEXT: return "文本";
+		default: return std::format("未知({})", static_cast<int>(type));
+		}
+	};
+	const auto formatCallSignature = [&](const CMD_INFO& cmd) -> std::string {
+		std::string text;
+		const std::string ret = decodeDataType(cmd.m_dtRetValType);
+		if (cmd.m_dtRetValType == _SDT_NULL) {
+			text += "〈无返回值〉 ";
+		}
+		else {
+			text += "〈" + ret + "〉 ";
+		}
+		text += readPtr(cmd.m_szName);
+		text += "（";
+		for (int i = 0; i < cmd.m_nArgCount; ++i) {
+			if (i > 0) {
+				text += "，";
+			}
+			const ARG_INFO& arg = cmd.m_pBeginArgInfo[i];
+			const bool optional = (arg.m_dwState & AS_HAS_DEFAULT_VALUE) != 0 ||
+				(arg.m_dwState & AS_DEFAULT_VALUE_IS_EMPTY) != 0;
+			if (optional) {
+				text += "［";
+			}
+			text += decodeDataType(arg.m_dtType);
+			text += " ";
+			text += readPtr(arg.m_szName);
+			if (optional) {
+				text += "］";
+			}
+		}
+		text += "）";
+		return text;
+	};
+	std::vector<std::string> categories;
+	if (libInfo->m_nCategoryCount > 0 && libInfo->m_szzCategory != nullptr) {
+		const char* cursor = libInfo->m_szzCategory;
+		for (int i = 0; i < libInfo->m_nCategoryCount; ++i) {
+			const int bitmapIndex = *reinterpret_cast<const int*>(cursor);
+			(void)bitmapIndex;
+			cursor += sizeof(int);
+			const std::string categoryName = readPtr(cursor);
+			categories.push_back(categoryName);
+			cursor += categoryName.size() + 1;
+		}
+	}
+	const auto categoryNameOf = [&](SHORT category) -> std::string {
+		if (category == -1) {
+			return "对象成员";
+		}
+		if (category > 0 && static_cast<size_t>(category) <= categories.size()) {
+			return categories[static_cast<size_t>(category) - 1];
+		}
+		return std::format("未分类({})", static_cast<int>(category));
+	};
+	const auto categoryPathOf = [&](SHORT category) -> std::string {
+		const std::string libName = readPtr(libInfo->m_szName);
+		const std::string categoryName = categoryNameOf(category);
+		if (categoryName.empty()) {
+			return libName;
+		}
+		return libName + "->" + categoryName;
+	};
+	const auto appendReadableCommandHelp = [&](int cmdIndex, const CMD_INFO& cmd) -> void {
+		const std::string levelText = decodeCommandUserLevel(cmd.m_shtUserLevel);
+		std::string explainText = readPtr(cmd.m_szExplain);
+		if (!explainText.empty()) {
+			const char last = explainText.back();
+			if (last != '.' && last != '!' && last != '?') {
+				explainText += "。";
+			}
+		}
+		explainText += std::format("本命令为{}命令。", levelText);
+
+		outLines.push_back(std::format("cmd_help#{}:", cmdIndex));
+		outLines.push_back(std::format(
+			"    调用格式： {} - {}",
+			EscapeOneLineForLog(formatCallSignature(cmd)),
+			EscapeOneLineForLog(categoryPathOf(cmd.m_shtCategory))));
+		outLines.push_back(std::format(
+			"    英文名称：{}",
+			EscapeOneLineForLog(readPtr(cmd.m_szEgName))));
+		outLines.push_back(std::format(
+			"    {}",
+			EscapeOneLineForLog(explainText)));
+
+		for (int argIndex = 0; argIndex < cmd.m_nArgCount; ++argIndex) {
+			const ARG_INFO& arg = cmd.m_pBeginArgInfo[argIndex];
+			const auto argFlags = decodeArgFlags(arg.m_dwState);
+			std::string argText = std::format(
+				"    参数<{}>的名称为“{}”，类型为“{}”",
+				argIndex + 1,
+				EscapeOneLineForLog(readPtr(arg.m_szName)),
+				EscapeOneLineForLog(decodeDataType(arg.m_dtType)));
+			if (!argFlags.empty()) {
+				argText += std::format("，{}", EscapeOneLineForLog(joinTexts(argFlags, "、")));
+			}
+			const std::string argExplain = readPtr(arg.m_szExplain);
+			if (!argExplain.empty()) {
+				argText += std::format("，说明：{}", EscapeOneLineForLog(argExplain));
+			}
+			if ((arg.m_dwState & AS_DEFAULT_VALUE_IS_EMPTY) != 0) {
+				argText += "，默认值为空";
+			}
+			else if ((arg.m_dwState & AS_HAS_DEFAULT_VALUE) != 0) {
+				argText += std::format("，默认值={}", arg.m_nDefault);
+			}
+			argText += "。";
+			outLines.push_back(std::move(argText));
+		}
+
+		outLines.push_back(std::format(
+			"    操作系统需求： {}",
+			EscapeOneLineForLog(decodeCmdOsText(cmd.m_wState))));
+	};
+
+	outLines.push_back(std::format("file_path={}", filePath));
+	outLines.push_back(std::format("support_library_name={}", readPtr(libInfo->m_szName)));
+	outLines.push_back(std::format(
+		"version={}.{}.{}",
+		libInfo->m_nMajorVersion,
+		libInfo->m_nMinorVersion,
+		libInfo->m_nBuildNumber));
+	outLines.push_back(std::format("guid={}", readPtr(libInfo->m_szGuid)));
+	outLines.push_back(std::format("author={}", readPtr(libInfo->m_szAuthor)));
+	outLines.push_back(std::format("explain={}", EscapeOneLineForLog(readPtr(libInfo->m_szExplain))));
+	outLines.push_back(std::format(
+		"required_eide_version={}.{}",
+		libInfo->m_nRqSysMajorVer,
+		libInfo->m_nRqSysMinorVer));
+	outLines.push_back(std::format(
+		"required_krnln_version={}.{}",
+		libInfo->m_nRqSysKrnlLibMajorVer,
+		libInfo->m_nRqSysKrnlLibMinorVer));
+	outLines.push_back(std::format("supported_os={}", decodeLibOsText(libInfo->m_dwState)));
+	outLines.push_back(std::format("category_count={}", libInfo->m_nCategoryCount));
+	outLines.push_back(std::format("command_count={}", libInfo->m_nCmdCount));
+	outLines.push_back(std::format("data_type_count={}", libInfo->m_nDataTypeCount));
+	outLines.push_back(std::format("constant_count={}", libInfo->m_nLibConstCount));
+	if (!categories.empty()) {
+		outLines.push_back("");
+		outLines.push_back("[Categories]");
+		for (size_t i = 0; i < categories.size(); ++i) {
+			outLines.push_back(std::format("category#{} name={}", i + 1, EscapeOneLineForLog(categories[i])));
+		}
+	}
+
+	outLines.push_back("");
+	outLines.push_back("[Commands]");
+	for (int i = 0; i < libInfo->m_nCmdCount; ++i) {
+		const CMD_INFO& cmd = libInfo->m_pBeginCmdInfo[i];
+		const auto cmdFlags = decodeCmdFlags(cmd);
+		outLines.push_back(std::format(
+			"cmd#{} name={} eg={} category={} retType={} level={} argCount={} flags={} supported_os={}",
+			i,
+			EscapeOneLineForLog(readPtr(cmd.m_szName)),
+			EscapeOneLineForLog(readPtr(cmd.m_szEgName)),
+			EscapeOneLineForLog(categoryNameOf(cmd.m_shtCategory)),
+			EscapeOneLineForLog(decodeDataType(cmd.m_dtRetValType)),
+			EscapeOneLineForLog(decodeCommandUserLevel(cmd.m_shtUserLevel)),
+			cmd.m_nArgCount,
+			EscapeOneLineForLog(joinTexts(cmdFlags, ",")),
+			EscapeOneLineForLog(decodeCmdOsText(cmd.m_wState))));
+		outLines.push_back(std::format(
+			"  call_format={}",
+			EscapeOneLineForLog(formatCallSignature(cmd))));
+		outLines.push_back(std::format(
+			"  explain={}",
+			EscapeOneLineForLog(readPtr(cmd.m_szExplain))));
+		for (int argIndex = 0; argIndex < cmd.m_nArgCount; ++argIndex) {
+			const ARG_INFO& arg = cmd.m_pBeginArgInfo[argIndex];
+			const auto argFlags = decodeArgFlags(arg.m_dwState);
+			outLines.push_back(std::format(
+				"  arg#{} name={} type={} flags={} explain={}",
+				argIndex,
+				EscapeOneLineForLog(readPtr(arg.m_szName)),
+				EscapeOneLineForLog(decodeDataType(arg.m_dtType)),
+				EscapeOneLineForLog(joinTexts(argFlags, ",")),
+				EscapeOneLineForLog(readPtr(arg.m_szExplain))));
+		}
+		appendReadableCommandHelp(i, cmd);
+	}
+
+	outLines.push_back("");
+	outLines.push_back("[DataTypes]");
+	for (int i = 0; i < libInfo->m_nDataTypeCount; ++i) {
+		const LIB_DATA_TYPE_INFO& dataType = libInfo->m_pDataType[i];
+		const auto flags = decodeDataTypeFlags(dataType.m_dwState);
+		outLines.push_back(std::format(
+			"type#{} name={} eg={} cmdCount={} elementCount={} flags={} supported_os={} explain={}",
+			i,
+			EscapeOneLineForLog(readPtr(dataType.m_szName)),
+			EscapeOneLineForLog(readPtr(dataType.m_szEgName)),
+			dataType.m_nCmdCount,
+			dataType.m_nElementCount,
+			EscapeOneLineForLog(joinTexts(flags, ",")),
+			EscapeOneLineForLog(decodeDtOsText(dataType.m_dwState)),
+			EscapeOneLineForLog(readPtr(dataType.m_szExplain))));
+		for (int cmdIndex = 0; cmdIndex < dataType.m_nCmdCount; ++cmdIndex) {
+			const int globalCmdIndex = dataType.m_pnCmdsIndex[cmdIndex];
+			if (globalCmdIndex >= 0 && globalCmdIndex < libInfo->m_nCmdCount) {
+				outLines.push_back(std::format(
+					"  method#{} cmdIndex={} name={}",
+					cmdIndex,
+					globalCmdIndex,
+					EscapeOneLineForLog(readPtr(libInfo->m_pBeginCmdInfo[globalCmdIndex].m_szName))));
+			}
+		}
+		for (int elementIndex = 0; elementIndex < dataType.m_nElementCount; ++elementIndex) {
+			const LIB_DATA_TYPE_ELEMENT& element = dataType.m_pElementBegin[elementIndex];
+			const auto elementFlags = decodeElementFlags(element.m_dwState);
+			outLines.push_back(std::format(
+				"  element#{} name={} eg={} type={} flags={} explain={}",
+				elementIndex,
+				EscapeOneLineForLog(readPtr(element.m_szName)),
+				EscapeOneLineForLog(readPtr(element.m_szEgName)),
+				EscapeOneLineForLog(decodeDataType(element.m_dtType)),
+				EscapeOneLineForLog(joinTexts(elementFlags, ",")),
+				EscapeOneLineForLog(readPtr(element.m_szExplain))));
+		}
+	}
+
+	outLines.push_back("");
+	outLines.push_back("[Constants]");
+	for (int i = 0; i < libInfo->m_nLibConstCount; ++i) {
+		const LIB_CONST_INFO& item = libInfo->m_pLibConst[i];
+		outLines.push_back(std::format(
+			"const#{} name={} type={} textValue={} numericValue={} explain={}",
+			i,
+			EscapeOneLineForLog(readPtr(item.m_szName)),
+			EscapeOneLineForLog(decodeConstType(item.m_shtType)),
+			EscapeOneLineForLog(readPtr(item.m_szText)),
+			item.m_dbValue,
+			EscapeOneLineForLog(readPtr(item.m_szExplain))));
+	}
+
+	FreeLibrary(module);
+	return true;
+}
+
+void RunImportedModuleListTest()
+{
+	OutputStringToELog("[ImportedModuleListTest] 开始枚举当前项目导入模块");
+
+	std::vector<std::string> paths;
+	std::string error;
+	if (!TryListImportedModulePathsForTest(paths, &error)) {
+		OutputStringToELog(std::format(
+			"[ImportedModuleListTest] 枚举失败 error={}",
+			EscapeOneLineForLog(error)));
+		return;
+	}
+
+	OutputStringToELog(std::format(
+		"[ImportedModuleListTest] 枚举完成 count={}",
+		paths.size()));
+
+	const size_t previewCount = (std::min)(paths.size(), static_cast<size_t>(20));
+	for (size_t i = 0; i < previewCount; ++i) {
+		OutputStringToELog(std::format(
+			"[ImportedModuleListTest] #{} path={}",
+			i,
+			EscapeOneLineForLog(paths[i])));
+	}
+	if (paths.size() > previewCount) {
+		OutputStringToELog(std::format(
+			"[ImportedModuleListTest] 仅展示前 {} 条，剩余 {} 条未输出",
+			previewCount,
+			paths.size() - previewCount));
+	}
+}
+
+void RunFirstImportedModulePublicInfoTest()
+{
+	OutputStringToELog("[ModulePublicInfoTest] 开始抓取首个导入模块公开信息");
+
+	std::vector<std::string> paths;
+	std::string error;
+	if (!TryListImportedModulePathsForTest(paths, &error)) {
+		OutputStringToELog(std::format(
+			"[ModulePublicInfoTest] 获取模块列表失败 error={}",
+			EscapeOneLineForLog(error)));
+		return;
+	}
+	if (paths.empty()) {
+		OutputStringToELog("[ModulePublicInfoTest] 当前项目没有导入任何模块");
+		return;
+	}
+
+	const std::string modulePath = paths.front();
+	e571::ModulePublicInfoDump dump;
+	std::string loadError;
+	if (!e571::LoadModulePublicInfoDump(
+			modulePath,
+			GetCurrentProcessImageBase(),
+			&dump,
+			&loadError)) {
+		OutputStringToELog(std::format(
+			"[ModulePublicInfoTest] 抓取失败 path={} error={} loaderError={} trace={}",
+			EscapeOneLineForLog(modulePath),
+			EscapeOneLineForLog(loadError),
+			EscapeOneLineForLog(dump.loaderError),
+			EscapeOneLineForLog(dump.trace)));
+		return;
+	}
+
+	std::vector<std::string> lines;
+	lines.push_back(std::format(
+		"[ModulePublicInfoTest] path={} nativeResult={} recordCount={} sourceKind={} trace={}",
+		modulePath,
+		dump.nativeResult,
+		dump.records.size(),
+		dump.sourceKind,
+		dump.trace));
+
+	OutputStringToELog(std::format(
+		"[ModulePublicInfoTest] 抓取成功 path={} nativeResult={} recordCount={} sourceKind={} trace={}",
+		EscapeOneLineForLog(modulePath),
+		dump.nativeResult,
+		dump.records.size(),
+		EscapeOneLineForLog(dump.sourceKind),
+		EscapeOneLineForLog(dump.trace)));
+
+	if (!dump.formattedText.empty()) {
+		lines.push_back("");
+		lines.push_back("[Formatted]");
+		std::string currentLine;
+		for (char ch : dump.formattedText) {
+			if (ch == '\r') {
+				continue;
+			}
+			if (ch == '\n') {
+				lines.push_back(currentLine);
+				currentLine.clear();
+				continue;
+			}
+			currentLine.push_back(ch);
+		}
+		if (!currentLine.empty()) {
+			lines.push_back(currentLine);
+		}
+	}
+
+	const size_t previewCount = (std::min)(dump.records.size(), static_cast<size_t>(20));
+	for (size_t i = 0; i < previewCount; ++i) {
+		const auto& record = dump.records[i];
+		std::string firstString;
+		if (!record.extractedStrings.empty()) {
+			firstString = EscapeOneLineForLog(record.extractedStrings.front());
+		}
+
+		OutputStringToELog(std::format(
+			"[ModulePublicInfoTest] #{} tag={} kind={} name={} bodySize={} headerCount={} stringCount={} first={}",
+			i,
+			record.tag,
+			EscapeOneLineForLog(record.kind),
+			EscapeOneLineForLog(record.name),
+			record.bodySize,
+			record.headerInts.size(),
+			record.extractedStrings.size(),
+			firstString));
+
+		lines.push_back(std::format(
+			"#{} tag={} bodySize={} payloadOffset={} headerInts={} strings={} first={}",
+			i,
+			record.tag,
+			record.bodySize,
+			record.payloadOffset,
+			record.headerInts.size(),
+			record.extractedStrings.size(),
+			firstString));
+		if (!record.headerInts.empty()) {
+			std::string headerIntsText;
+			for (size_t h = 0; h < record.headerInts.size(); ++h) {
+				if (!headerIntsText.empty()) {
+					headerIntsText += ",";
+				}
+				headerIntsText += std::to_string(record.headerInts[h]);
+			}
+			lines.push_back(std::format(
+				"  headerInts={}",
+				headerIntsText));
+		}
+		for (size_t s = 0; s < record.extractedStrings.size() && s < 8; ++s) {
+			lines.push_back(std::format(
+				"  string#{}={}",
+				s,
+				EscapeOneLineForLog(record.extractedStrings[s])));
+		}
+	}
+	if (dump.records.size() > previewCount) {
+		OutputStringToELog(std::format(
+			"[ModulePublicInfoTest] 仅展示前 {} 条，剩余 {} 条请查看文件",
+			previewCount,
+			dump.records.size() - previewCount));
+	}
+
+	WriteModulePublicInfoLog(lines);
+	OutputStringToELog(std::format(
+		"[ModulePublicInfoTest] 日志文件 path={}",
+		GetModulePublicInfoLogPath().string()));
+}
+
+void RunFirstSupportLibraryInfoTest()
+{
+	OutputStringToELog("[SupportLibraryInfoTest] 开始抓取当前已选支持库信息");
+
+	std::vector<SupportLibraryHeaderForTest> libs;
+	std::string error;
+	if (!TryListSupportLibrariesForTest(libs, &error)) {
+		OutputStringToELog(std::format(
+			"[SupportLibraryInfoTest] 获取支持库列表失败 error={}",
+			EscapeOneLineForLog(error)));
+		return;
+	}
+
+	std::vector<std::string> lines;
+	lines.push_back(std::format("support_library_count={}", libs.size()));
+	OutputStringToELog(std::format(
+		"[SupportLibraryInfoTest] 枚举完成 count={}",
+		libs.size()));
+
+	const size_t previewCount = (std::min)(libs.size(), static_cast<size_t>(20));
+	for (size_t i = 0; i < previewCount; ++i) {
+		const auto& lib = libs[i];
+		OutputStringToELog(std::format(
+			"[SupportLibraryInfoTest] #{} index={} name={} version={} fileName={} filePath={} trace={} rawName={}",
+			i,
+			lib.index,
+			EscapeOneLineForLog(lib.name),
+			EscapeOneLineForLog(lib.versionText),
+			EscapeOneLineForLog(lib.fileName),
+			EscapeOneLineForLog(lib.filePath),
+			EscapeOneLineForLog(lib.resolveTrace),
+			EscapeOneLineForLog(lib.rawName)));
+		lines.push_back(std::format(
+			"#{} index={} name={} version={} fileName={} filePath={} trace={} rawName={}",
+			i,
+			lib.index,
+			lib.name,
+			lib.versionText,
+			lib.fileName,
+			lib.filePath,
+			lib.resolveTrace,
+			lib.rawName));
+	}
+
+	if (libs.empty()) {
+		WriteSupportLibraryInfoLog(lines);
+		OutputStringToELog(std::format(
+			"[SupportLibraryInfoTest] 当前没有已选支持库，日志文件 path={}",
+			GetSupportLibraryInfoLogPath().string()));
+		return;
+	}
+
+	const auto it = std::find_if(libs.begin(), libs.end(), [](const SupportLibraryHeaderForTest& item) {
+		return !item.filePath.empty();
+	});
+	if (it == libs.end()) {
+		lines.push_back("");
+		lines.push_back("[HeaderTextOnly]");
+		lines.push_back(libs.front().rawText);
+		WriteSupportLibraryInfoLog(lines);
+		OutputStringToELog(std::format(
+			"[SupportLibraryInfoTest] 未解析到支持库文件路径，仅输出IDE文本 path={}",
+			GetSupportLibraryInfoLogPath().string()));
+		return;
+	}
+
+	std::vector<std::string> detailLines;
+	std::string dumpError;
+	if (!DumpSupportLibraryInfoFromFile(it->filePath, detailLines, dumpError)) {
+		OutputStringToELog(std::format(
+			"[SupportLibraryInfoTest] 抓取失败 filePath={} error={}",
+			EscapeOneLineForLog(it->filePath),
+			EscapeOneLineForLog(dumpError)));
+		lines.push_back("");
+		lines.push_back(std::format("[DumpError] {}", dumpError));
+		WriteSupportLibraryInfoLog(lines);
+		OutputStringToELog(std::format(
+			"[SupportLibraryInfoTest] 日志文件 path={}",
+			GetSupportLibraryInfoLogPath().string()));
+		return;
+	}
+
+	lines.push_back("");
+	lines.push_back("[FirstSupportLibraryDump]");
+	lines.insert(lines.end(), detailLines.begin(), detailLines.end());
+	WriteSupportLibraryInfoLog(lines);
+	OutputStringToELog(std::format(
+		"[SupportLibraryInfoTest] 抓取成功 filePath={} 日志文件 path={}",
+		EscapeOneLineForLog(it->filePath),
+		GetSupportLibraryInfoLogPath().string()));
+}
+
+void AutoRunModulePublicInfoTestThread(void* /*pParams*/)
+{
+	Sleep(10000);
+	if (g_hwnd != nullptr && IsWindow(g_hwnd)) {
+		PostMessageA(g_hwnd, WM_AUTOLINKER_RUN_MODULE_INFO_TEST, 0, 0);
+	}
+}
 
 HTREEITEM FindTreeItemByExactTextRecursive(HWND treeHwnd, HTREEITEM firstItem, const std::string& targetText, int maxDepth, int depth)
 {
@@ -2969,6 +4177,10 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 		HandleAiApplyMessage(lParam);
 		return 0;
 	}
+	if (uMsg == WM_AUTOLINKER_RUN_MODULE_INFO_TEST) {
+		RunFirstImportedModulePublicInfoTest();
+		return 0;
+	}
 	if (uMsg == WM_NCDESTROY) {
 		LocalMcpServer::Shutdown();
 		AIChatFeature::Shutdown();
@@ -3086,6 +4298,18 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 			RunCurrentPageNameTest();
 			break;
 		}
+		case 14: { // 测试枚举导入模块
+			RunImportedModuleListTest();
+			break;
+		}
+		case 15: { // 测试抓取首个导入模块公开信息
+			RunFirstImportedModulePublicInfoTest();
+			break;
+		}
+		case 16: { // 测试抓取首个支持库公开信息
+			RunFirstSupportLibraryInfoTest();
+			break;
+		}
 		//case 4: { //切换到VMPSDK静态（自用）
 		//	ChangeVMProtectModel(true);
 		//	break;
@@ -3189,6 +4413,14 @@ bool FneInit() {
 		StartHookCreateFileA();
 		PostAppMessageA(g_toolBarHwnd, WM_PRINT, 0, 0);
 		OutputStringToELog("初始化完成");
+
+		const auto autoRunMarker = GetAutoRunModulePublicInfoTestMarkerPath();
+		if (std::filesystem::exists(autoRunMarker)) {
+			std::error_code removeEc;
+			std::filesystem::remove(autoRunMarker, removeEc);
+			OutputStringToELog("[ModulePublicInfoTest] 检测到自动测试标记，稍后执行首个导入模块公开信息测试");
+			_beginthread(AutoRunModulePublicInfoTestThread, 0, nullptr);
+		}
 
 		//初始化Lib相关库的状态
 
@@ -3314,7 +4546,7 @@ static LIB_INFOX LibInfo =
 	NULL,
 	NULL,
 	fnAddInFunc,
-	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0AutoLinker AI接口设置\0编辑AI接口地址、API Key、模型和提示词等配置。\0FN_ADD_TAB结构传递测试\0构造ADD_TAB_INF调用FN_ADD_TAB，并打印调用前后结构体字段。\0测试整体搜索subWinHwnd\0调用direct_global_search固定搜索subWinHwnd，并输出命中结果到E输出窗口。\0测试定位subWinHwnd首个结果\0调用direct_global_search固定搜索subWinHwnd，并跳转到首个命中位置。\0测试定位后抓取当前页代码\0先定位到subWinHwnd首个命中，再抓取当前代码页完整代码并写入AutoLinker目录。\0测试枚举左侧TreeView\0枚举主窗口下所有SysTreeView32，并输出前几层节点文本与item data特征。\0测试程序树按名称抓代码\0在程序树中固定查找Class_HWND，并根据tree item data直接抓取整页代码。\0测试枚举程序树页面\0枚举程序树中所有页面节点，输出名称、类型和item data，并写入文件。\0测试当前页窗口与页签\0探测MDIClient当前活动子页与CCustomTabCtrl当前选中项文本，用于定位当前页名称来源。\0测试获取当前页名称\0调用IDEFacade当前页名称接口，输出当前页名称、类型和来源链路。\0\0") ,
+	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0AutoLinker AI接口设置\0编辑AI接口地址、API Key、模型和提示词等配置。\0FN_ADD_TAB结构传递测试\0构造ADD_TAB_INF调用FN_ADD_TAB，并打印调用前后结构体字段。\0测试整体搜索subWinHwnd\0调用direct_global_search固定搜索subWinHwnd，并输出命中结果到E输出窗口。\0测试定位subWinHwnd首个结果\0调用direct_global_search固定搜索subWinHwnd，并跳转到首个命中位置。\0测试定位后抓取当前页代码\0先定位到subWinHwnd首个命中，再抓取当前代码页完整代码并写入AutoLinker目录。\0测试枚举左侧TreeView\0枚举主窗口下所有SysTreeView32，并输出前几层节点文本与item data特征。\0测试程序树按名称抓代码\0在程序树中固定查找Class_HWND，并根据tree item data直接抓取整页代码。\0测试枚举程序树页面\0枚举程序树中所有页面节点，输出名称、类型和item data，并写入文件。\0测试当前页窗口与页签\0探测MDIClient当前活动子页与CCustomTabCtrl当前选中项文本，用于定位当前页名称来源。\0测试获取当前页名称\0调用IDEFacade当前页名称接口，输出当前页名称、类型和来源链路。\0测试枚举导入模块\0枚举当前项目导入的易模块路径。\0测试首个模块公开信息\0对当前项目首个导入模块执行原生公开信息抓取，并输出摘要与日志文件路径。\0测试首个支持库公开信息\0枚举当前已选支持库，并对首个可定位文件的支持库执行GetNewInf公开信息抓取，输出摘要与日志文件路径。\0\0") ,
 	AutoLinker_MessageNotify,
 	NULL,
 	NULL,

@@ -8,12 +8,16 @@
 #include <CommCtrl.h>
 #include <condition_variable>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <process.h>
 #include <string>
+#include <unordered_set>
 #include <vector>
+#include <tlhelp32.h>
+#include <wincrypt.h>
 #include <wrl.h>
 
 #include "..\\thirdparty\\json.hpp"
@@ -24,12 +28,16 @@
 #include "ConfigManager.h"
 #include "Global.h"
 #include "IDEFacade.h"
+#include "PathHelper.h"
 #include "resource.h"
+#include "..\\elib\\lib2.h"
 #if defined(_M_IX86)
 #include "direct_global_search_debug.hpp"
+#include "native_module_public_info.hpp"
 #endif
 
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "advapi32.lib")
 #if defined _M_IX86
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='x86' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #elif defined _M_X64
@@ -2188,6 +2196,1465 @@ bool ParseSearchJumpToken(const std::string& token, e571::DirectGlobalSearchDebu
 	return true;
 }
 
+bool TryListImportedModulePathsForAI(std::vector<std::string>& outPaths, std::string* outError)
+{
+	outPaths.clear();
+	if (outError != nullptr) {
+		outError->clear();
+	}
+
+	int count = 0;
+	if (!IDEFacade::Instance().GetImportedECOMCount(count)) {
+		if (outError != nullptr) {
+			*outError = "GetImportedECOMCount failed";
+		}
+		return false;
+	}
+
+	for (int i = 0; i < count; ++i) {
+		std::string path;
+		if (IDEFacade::Instance().GetImportedECOMPath(i, path) && !TrimAsciiCopy(path).empty()) {
+			outPaths.push_back(path);
+		}
+	}
+	return true;
+}
+
+std::string GetFileNameOnlyForAI(const std::string& path)
+{
+	const size_t pos = path.find_last_of("\\/");
+	return pos == std::string::npos ? path : path.substr(pos + 1);
+}
+
+std::string GetFileStemForAI(const std::string& path)
+{
+	const std::string fileName = GetFileNameOnlyForAI(path);
+	const size_t pos = fileName.find_last_of('.');
+	return pos == std::string::npos ? fileName : fileName.substr(0, pos);
+}
+
+bool EqualsInsensitiveForAI(const std::string& left, const std::string& right)
+{
+	return ToLowerAsciiCopyLocal(left) == ToLowerAsciiCopyLocal(right);
+}
+
+bool ResolveImportedModulePathForAI(
+	const std::string& moduleName,
+	const std::string& modulePath,
+	std::string& outResolvedPath,
+	std::string& outError)
+{
+	outResolvedPath.clear();
+	outError.clear();
+
+	const std::string trimmedPath = TrimAsciiCopy(modulePath);
+	if (!trimmedPath.empty()) {
+		outResolvedPath = trimmedPath;
+		return true;
+	}
+
+	const std::string trimmedName = TrimAsciiCopy(moduleName);
+	if (trimmedName.empty()) {
+		outError = "module_name or module_path is required";
+		return false;
+	}
+
+	std::vector<std::string> paths;
+	if (!TryListImportedModulePathsForAI(paths, &outError)) {
+		return false;
+	}
+
+	std::vector<std::string> matched;
+	for (const auto& path : paths) {
+		const std::string fileName = GetFileNameOnlyForAI(path);
+		const std::string stem = GetFileStemForAI(path);
+		if (EqualsInsensitiveForAI(fileName, trimmedName) ||
+			EqualsInsensitiveForAI(stem, trimmedName) ||
+			EqualsInsensitiveForAI(path, trimmedName)) {
+			matched.push_back(path);
+		}
+	}
+
+	if (matched.empty()) {
+		outError = "module not found";
+		return false;
+	}
+	if (matched.size() > 1) {
+		outError = "module name is ambiguous";
+		return false;
+	}
+
+	outResolvedPath = matched.front();
+	return true;
+}
+
+bool TryGetFileMd5HexForAI(const std::string& path, std::string& outHex)
+{
+	outHex.clear();
+	HANDLE file = CreateFileA(
+		path.c_str(),
+		GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr,
+		OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL,
+		nullptr);
+	if (file == INVALID_HANDLE_VALUE) {
+		return false;
+	}
+
+	HCRYPTPROV provider = 0;
+	HCRYPTHASH hash = 0;
+	bool ok = false;
+	if (CryptAcquireContextA(&provider, nullptr, nullptr, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT) &&
+		CryptCreateHash(provider, CALG_MD5, 0, 0, &hash)) {
+		std::array<BYTE, 8192> buffer{};
+		DWORD readBytes = 0;
+		while (ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &readBytes, nullptr) && readBytes > 0) {
+			if (!CryptHashData(hash, buffer.data(), readBytes, 0)) {
+				break;
+			}
+		}
+
+		BYTE digest[16] = {};
+		DWORD digestSize = sizeof(digest);
+		if (CryptGetHashParam(hash, HP_HASHVAL, digest, &digestSize, 0) != FALSE) {
+			static constexpr char kHex[] = "0123456789abcdef";
+			outHex.reserve(digestSize * 2);
+			for (DWORD i = 0; i < digestSize; ++i) {
+				outHex.push_back(kHex[(digest[i] >> 4) & 0x0F]);
+				outHex.push_back(kHex[digest[i] & 0x0F]);
+			}
+			ok = true;
+		}
+	}
+
+	if (hash != 0) {
+		CryptDestroyHash(hash);
+	}
+	if (provider != 0) {
+		CryptReleaseContext(provider, 0);
+	}
+	CloseHandle(file);
+	return ok;
+}
+
+struct SupportLibraryInfoHeaderForAI {
+	int index = -1;
+	std::string rawName;
+	std::string name;
+	std::string versionText;
+	std::string fileName;
+	std::string fileStem;
+	std::string filePath;
+	std::string rawText;
+	std::string resolveTrace;
+};
+
+struct LoadedSupportLibraryModuleForAI {
+	std::string filePath;
+	std::string fileName;
+	std::string fileStem;
+};
+
+std::vector<std::string> SplitLinesCopyForAI(const std::string& text)
+{
+	std::vector<std::string> lines;
+	size_t begin = 0;
+	while (begin <= text.size()) {
+		const size_t end = text.find('\n', begin);
+		if (end == std::string::npos) {
+			lines.push_back(text.substr(begin));
+			break;
+		}
+		lines.push_back(text.substr(begin, end - begin));
+		begin = end + 1;
+	}
+	return lines;
+}
+
+std::string NormalizeLineBreaksForAI(std::string text)
+{
+	text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+	return text;
+}
+
+bool TryGetAnsiPtrTextLengthForAI(LPCSTR textPtr, size_t& outLength)
+{
+	outLength = 0;
+	if (textPtr == nullptr) {
+		return false;
+	}
+
+	__try {
+		while (outLength < 1024 * 1024) {
+			const unsigned char ch = static_cast<unsigned char>(textPtr[outLength]);
+			if (ch == 0) {
+				return true;
+			}
+			++outLength;
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+
+	return false;
+}
+
+bool TryReadAnsiPtrTextForAI(LPCSTR textPtr, std::string& outText)
+{
+	outText.clear();
+	size_t length = 0;
+	if (!TryGetAnsiPtrTextLengthForAI(textPtr, length)) {
+		return false;
+	}
+	outText.assign(textPtr, length);
+	return true;
+}
+
+std::string ReadAnsiPtrTextOrEmptyForAI(LPCSTR textPtr)
+{
+	std::string text;
+	TryReadAnsiPtrTextForAI(textPtr, text);
+	return text;
+}
+
+std::string FindPossibleFileTokenForAI(const std::string& text)
+{
+	const std::array<const char*, 4> exts = { ".fne", ".fnr", ".dll", ".FNX" };
+	for (const char* ext : exts) {
+		size_t pos = text.find(ext);
+		if (pos == std::string::npos) {
+			pos = ToLowerAsciiCopyLocal(text).find(ToLowerAsciiCopyLocal(ext));
+		}
+		if (pos == std::string::npos) {
+			continue;
+		}
+
+		size_t begin = pos;
+		while (begin > 0) {
+			const char ch = text[begin - 1];
+			if (std::isalnum(static_cast<unsigned char>(ch)) != 0 ||
+				ch == '_' || ch == '-' || ch == '.' || ch == '\\' || ch == '/' || ch == ':') {
+				--begin;
+				continue;
+			}
+			break;
+		}
+
+		size_t end = pos + std::strlen(ext);
+		while (end < text.size()) {
+			const char ch = text[end];
+			if (std::isalnum(static_cast<unsigned char>(ch)) != 0 ||
+				ch == '_' || ch == '-' || ch == '.' || ch == '\\' || ch == '/' || ch == ':') {
+				++end;
+				continue;
+			}
+			break;
+		}
+		return TrimAsciiCopy(text.substr(begin, end - begin));
+	}
+	return std::string();
+}
+
+void ParseSupportLibraryHeaderTextForAI(
+	int index,
+	const std::string& rawText,
+	SupportLibraryInfoHeaderForAI& outInfo)
+{
+	outInfo = {};
+	outInfo.index = index;
+	outInfo.rawText = rawText;
+
+	const auto lines = SplitLinesCopyForAI(NormalizeLineBreaksForAI(rawText));
+	for (const auto& rawLine : lines) {
+		const std::string line = TrimAsciiCopy(rawLine);
+		if (line.empty()) {
+			continue;
+		}
+
+		if (outInfo.name.empty()) {
+			if (line.find("支持库") != std::string::npos ||
+				line.find("库名") != std::string::npos ||
+				line.find("名称") != std::string::npos) {
+				const size_t sep = line.find_first_of(":：");
+				if (sep != std::string::npos) {
+					outInfo.name = TrimAsciiCopy(line.substr(sep + 1));
+				}
+			}
+			if (outInfo.name.empty()) {
+				outInfo.name = line;
+			}
+			outInfo.rawName = outInfo.name;
+		}
+
+		if (outInfo.versionText.empty() &&
+			(line.find("版本") != std::string::npos || line.find("Version") != std::string::npos)) {
+			outInfo.versionText = line;
+		}
+
+		if (outInfo.fileName.empty()) {
+			std::string fileToken = FindPossibleFileTokenForAI(line);
+			if (!fileToken.empty()) {
+				outInfo.fileName = GetFileNameOnlyForAI(fileToken);
+				outInfo.fileStem = GetFileStemForAI(fileToken);
+				if (fileToken.find('\\') != std::string::npos || fileToken.find('/') != std::string::npos) {
+					outInfo.filePath = fileToken;
+				}
+			}
+		}
+	}
+
+	if (outInfo.name.empty()) {
+		outInfo.name = std::format("support_library_{}", index);
+		outInfo.rawName = outInfo.name;
+	}
+}
+
+bool TryLoadSupportLibraryBasicInfoForAI(
+	const std::string& filePath,
+	std::string& outName,
+	std::string& outVersionText,
+	std::string* outGuid = nullptr)
+{
+	outName.clear();
+	outVersionText.clear();
+	if (outGuid != nullptr) {
+		outGuid->clear();
+	}
+
+	HMODULE module = LoadLibraryExA(filePath.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
+	if (module == nullptr) {
+		return false;
+	}
+
+	auto closeModule = [&]() {
+		if (module != nullptr) {
+			FreeLibrary(module);
+			module = nullptr;
+		}
+	};
+
+	auto* getInfoProc = reinterpret_cast<PFN_GET_LIB_INFO>(GetProcAddress(module, FUNCNAME_GET_LIB_INFO));
+	if (getInfoProc == nullptr) {
+		closeModule();
+		return false;
+	}
+
+	const auto* libInfo = getInfoProc();
+	if (libInfo == nullptr) {
+		closeModule();
+		return false;
+	}
+
+	outName = ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szName);
+	outVersionText = std::format(
+		"{}.{}.{}",
+		libInfo->m_nMajorVersion,
+		libInfo->m_nMinorVersion,
+		libInfo->m_nBuildNumber);
+	if (outGuid != nullptr) {
+		*outGuid = ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szGuid);
+	}
+
+	closeModule();
+	return !outName.empty();
+}
+
+std::string GetSupportLibraryDirectoryForAI()
+{
+	try {
+		return (std::filesystem::path(GetBasePath()) / "lib").string();
+	}
+	catch (...) {
+		return std::string();
+	}
+}
+
+std::string ExtractLeadingAsciiStemForSupportLibraryAI(const std::string& text)
+{
+	std::string stem;
+	for (char ch : text) {
+		const unsigned char uch = static_cast<unsigned char>(ch);
+		if (std::isalnum(uch) != 0 || ch == '_' || ch == '-') {
+			stem.push_back(ch);
+			continue;
+		}
+		break;
+	}
+	if (stem.size() < 2) {
+		return std::string();
+	}
+	return stem;
+}
+
+std::vector<LoadedSupportLibraryModuleForAI> EnumerateLoadedSupportLibraryModulesForAI()
+{
+	std::vector<LoadedSupportLibraryModuleForAI> modules;
+	const std::string libDir = GetSupportLibraryDirectoryForAI();
+	if (libDir.empty() || !std::filesystem::exists(std::filesystem::path(libDir))) {
+		return modules;
+	}
+
+	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+	if (snapshot == INVALID_HANDLE_VALUE) {
+		return modules;
+	}
+
+	const std::string libDirLower = ToLowerAsciiCopyLocal(libDir);
+	MODULEENTRY32 entry = {};
+	entry.dwSize = sizeof(entry);
+	if (Module32First(snapshot, &entry) == FALSE) {
+		CloseHandle(snapshot);
+		return modules;
+	}
+
+	do {
+		const std::filesystem::path modulePath(entry.szExePath);
+		const std::string path = modulePath.string();
+		const std::string pathLower = ToLowerAsciiCopyLocal(path);
+		if (pathLower.rfind(libDirLower, 0) != 0) {
+			continue;
+		}
+
+		const std::string ext = ToLowerAsciiCopyLocal(modulePath.extension().string());
+		if (ext != ".fne" && ext != ".fnr" && ext != ".dll") {
+			continue;
+		}
+
+		LoadedSupportLibraryModuleForAI module;
+		module.filePath = path;
+		module.fileName = modulePath.filename().string();
+		module.fileStem = modulePath.stem().string();
+		modules.push_back(std::move(module));
+	} while (Module32Next(snapshot, &entry) != FALSE);
+
+	CloseHandle(snapshot);
+	return modules;
+}
+
+bool TryAssignSupportLibraryPathByLoadedModulesForAI(
+	SupportLibraryInfoHeaderForAI& info,
+	const std::vector<LoadedSupportLibraryModuleForAI>& modules,
+	std::unordered_set<size_t>& usedModuleIndexes)
+{
+	auto tryMatch = [&](const std::string& candidate, const char* trace) -> bool {
+		const std::string needle = ToLowerAsciiCopyLocal(TrimAsciiCopy(candidate));
+		if (needle.empty()) {
+			return false;
+		}
+
+		int matchedIndex = -1;
+		for (size_t i = 0; i < modules.size(); ++i) {
+			if (usedModuleIndexes.find(i) != usedModuleIndexes.end()) {
+				continue;
+			}
+			if (EqualsInsensitiveForAI(modules[i].fileName, needle) ||
+				EqualsInsensitiveForAI(modules[i].fileStem, needle) ||
+				EqualsInsensitiveForAI(modules[i].filePath, needle)) {
+				if (matchedIndex >= 0) {
+					return false;
+				}
+				matchedIndex = static_cast<int>(i);
+			}
+		}
+
+		if (matchedIndex < 0) {
+			return false;
+		}
+
+		const auto& module = modules[static_cast<size_t>(matchedIndex)];
+		info.filePath = module.filePath;
+		info.fileName = module.fileName;
+		info.fileStem = module.fileStem;
+		info.resolveTrace = trace;
+		usedModuleIndexes.insert(static_cast<size_t>(matchedIndex));
+		return true;
+	};
+
+	if (tryMatch(info.fileName, "loaded_module_file_name")) {
+		return true;
+	}
+	if (tryMatch(info.fileStem, "loaded_module_file_stem")) {
+		return true;
+	}
+	if (tryMatch(info.name, "loaded_module_name")) {
+		return true;
+	}
+	if (tryMatch(ExtractLeadingAsciiStemForSupportLibraryAI(info.name), "loaded_module_ascii_prefix_name")) {
+		return true;
+	}
+	if (tryMatch(ExtractLeadingAsciiStemForSupportLibraryAI(info.rawText), "loaded_module_ascii_prefix_raw")) {
+		return true;
+	}
+	return false;
+}
+
+bool TryListSupportLibrariesForAI(std::vector<SupportLibraryInfoHeaderForAI>& outInfos, std::string* outError)
+{
+	outInfos.clear();
+	if (outError != nullptr) {
+		outError->clear();
+	}
+
+	int count = 0;
+	if (!IDEFacade::Instance().RunGetNumLib(count)) {
+		if (outError != nullptr) {
+			*outError = "RunGetNumLib failed";
+		}
+		return false;
+	}
+
+	for (int i = 0; i < count; ++i) {
+		std::string text;
+		if (!IDEFacade::Instance().RunGetLibInfoText(i, text)) {
+			continue;
+		}
+
+		SupportLibraryInfoHeaderForAI info;
+		ParseSupportLibraryHeaderTextForAI(i, text, info);
+		outInfos.push_back(std::move(info));
+	}
+
+	const auto loadedModules = EnumerateLoadedSupportLibraryModulesForAI();
+	std::unordered_set<size_t> usedModuleIndexes;
+	for (auto& info : outInfos) {
+		if (!info.filePath.empty()) {
+			info.resolveTrace = "header_text_path";
+		}
+		else {
+			TryAssignSupportLibraryPathByLoadedModulesForAI(info, loadedModules, usedModuleIndexes);
+		}
+
+		if (!info.filePath.empty()) {
+			std::string resolvedName;
+			std::string resolvedVersion;
+			if (TryLoadSupportLibraryBasicInfoForAI(info.filePath, resolvedName, resolvedVersion, nullptr)) {
+				info.name = resolvedName;
+				info.versionText = resolvedVersion;
+			}
+		}
+	}
+
+	if (loadedModules.size() == outInfos.size()) {
+		for (size_t i = 0; i < outInfos.size(); ++i) {
+			auto& info = outInfos[i];
+			if (!info.filePath.empty()) {
+				continue;
+			}
+			if (usedModuleIndexes.find(i) != usedModuleIndexes.end()) {
+				continue;
+			}
+			info.filePath = loadedModules[i].filePath;
+			info.fileName = loadedModules[i].fileName;
+			info.fileStem = loadedModules[i].fileStem;
+			info.resolveTrace = "loaded_module_order_fallback";
+			usedModuleIndexes.insert(i);
+			std::string resolvedName;
+			std::string resolvedVersion;
+			if (TryLoadSupportLibraryBasicInfoForAI(info.filePath, resolvedName, resolvedVersion, nullptr)) {
+				info.name = resolvedName;
+				info.versionText = resolvedVersion;
+			}
+		}
+	}
+
+	return true;
+}
+
+bool ResolveSupportLibraryHeaderForAI(
+	const nlohmann::json& args,
+	SupportLibraryInfoHeaderForAI& outInfo,
+	std::string& outError)
+{
+	outInfo = {};
+	outError.clear();
+
+	const std::string filePath = args.contains("file_path") && args["file_path"].is_string()
+		? Utf8ToLocalText(args["file_path"].get<std::string>())
+		: std::string();
+	const std::string name = args.contains("name") && args["name"].is_string()
+		? Utf8ToLocalText(args["name"].get<std::string>())
+		: std::string();
+	const int index = args.contains("index") && args["index"].is_number_integer()
+		? args["index"].get<int>()
+		: -1;
+
+	if (!TrimAsciiCopy(filePath).empty()) {
+		outInfo.filePath = TrimAsciiCopy(filePath);
+		outInfo.fileName = GetFileNameOnlyForAI(outInfo.filePath);
+		outInfo.name = GetFileStemForAI(outInfo.filePath);
+		outInfo.index = index;
+		return true;
+	}
+
+	std::vector<SupportLibraryInfoHeaderForAI> libs;
+	if (!TryListSupportLibrariesForAI(libs, &outError)) {
+		return false;
+	}
+
+	std::vector<SupportLibraryInfoHeaderForAI> matched;
+	for (const auto& lib : libs) {
+		if (index >= 0) {
+			if (lib.index == index) {
+				matched.push_back(lib);
+			}
+			continue;
+		}
+
+		const std::string trimmedName = TrimAsciiCopy(name);
+		if (trimmedName.empty()) {
+			continue;
+		}
+
+		if (EqualsInsensitiveForAI(lib.name, trimmedName) ||
+			EqualsInsensitiveForAI(lib.fileName, trimmedName) ||
+			(!lib.filePath.empty() && EqualsInsensitiveForAI(lib.filePath, trimmedName)) ||
+			(!lib.filePath.empty() && EqualsInsensitiveForAI(GetFileStemForAI(lib.filePath), trimmedName))) {
+			matched.push_back(lib);
+		}
+	}
+
+	if (matched.empty()) {
+		outError = index >= 0 ? "support library index not found" : "support library not found";
+		return false;
+	}
+	if (matched.size() > 1) {
+		outError = "support library is ambiguous";
+		return false;
+	}
+
+	outInfo = matched.front();
+	return true;
+}
+
+bool LoadSupportLibraryDumpFromFileForAI(
+	const std::string& filePath,
+	nlohmann::json& outJson,
+	std::string& outError)
+{
+	outJson = nlohmann::json::object();
+	outError.clear();
+
+	HMODULE module = LoadLibraryExA(filePath.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
+	if (module == nullptr) {
+		outError = "LoadLibraryEx failed";
+		return false;
+	}
+
+	const auto closeModule = [&]() {
+		if (module != nullptr) {
+			FreeLibrary(module);
+			module = nullptr;
+		}
+	};
+
+	auto* getInfoProc = reinterpret_cast<PFN_GET_LIB_INFO>(GetProcAddress(module, FUNCNAME_GET_LIB_INFO));
+	if (getInfoProc == nullptr) {
+		closeModule();
+		outError = "GetNewInf not found";
+		return false;
+	}
+
+	const auto* libInfo = getInfoProc();
+	if (libInfo == nullptr) {
+		closeModule();
+		outError = "GetNewInf returned null";
+		return false;
+	}
+
+	nlohmann::json categories = nlohmann::json::array();
+	if (libInfo->m_nCategoryCount > 0 && libInfo->m_szzCategory != nullptr) {
+		const char* cursor = libInfo->m_szzCategory;
+		for (int i = 0; i < libInfo->m_nCategoryCount; ++i) {
+			const int bitmapIndex = *reinterpret_cast<const int*>(cursor);
+			cursor += sizeof(int);
+			std::string nameText = ReadAnsiPtrTextOrEmptyForAI(cursor);
+			cursor += nameText.size() + 1;
+			categories.push_back({
+				{"index", i + 1},
+				{"bitmap_index", bitmapIndex},
+				{"name", LocalToUtf8Text(nameText)}
+			});
+		}
+	}
+
+	nlohmann::json commands = nlohmann::json::array();
+	if (libInfo->m_nCmdCount > 0 && libInfo->m_pBeginCmdInfo != nullptr) {
+		for (int i = 0; i < libInfo->m_nCmdCount; ++i) {
+			const CMD_INFO& cmd = libInfo->m_pBeginCmdInfo[i];
+			nlohmann::json row;
+			row["index"] = i;
+			row["name"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(cmd.m_szName));
+			row["eg_name"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(cmd.m_szEgName));
+			row["explain"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(cmd.m_szExplain));
+			row["category"] = cmd.m_shtCategory;
+			row["state"] = cmd.m_wState;
+			row["return_type"] = cmd.m_dtRetValType;
+			row["user_level"] = cmd.m_shtUserLevel;
+			row["bitmap_index"] = cmd.m_shtBitmapIndex;
+			row["bitmap_count"] = cmd.m_shtBitmapCount;
+			row["arg_count"] = cmd.m_nArgCount;
+			row["is_object_member"] = (cmd.m_shtCategory == -1);
+
+			nlohmann::json args = nlohmann::json::array();
+			if (cmd.m_nArgCount > 0 && cmd.m_pBeginArgInfo != nullptr) {
+				for (int argIndex = 0; argIndex < cmd.m_nArgCount; ++argIndex) {
+					const ARG_INFO& arg = cmd.m_pBeginArgInfo[argIndex];
+					args.push_back({
+						{"index", argIndex},
+						{"name", LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(arg.m_szName))},
+						{"explain", LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(arg.m_szExplain))},
+						{"bitmap_index", arg.m_shtBitmapIndex},
+						{"bitmap_count", arg.m_shtBitmapCount},
+						{"data_type", arg.m_dtType},
+						{"default_value", arg.m_nDefault},
+						{"state", arg.m_dwState}
+					});
+				}
+			}
+			row["args"] = std::move(args);
+			commands.push_back(std::move(row));
+		}
+	}
+
+	nlohmann::json dataTypes = nlohmann::json::array();
+	if (libInfo->m_nDataTypeCount > 0 && libInfo->m_pDataType != nullptr) {
+		for (int i = 0; i < libInfo->m_nDataTypeCount; ++i) {
+			const LIB_DATA_TYPE_INFO& dataType = libInfo->m_pDataType[i];
+			nlohmann::json row;
+			row["index"] = i;
+			row["name"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(dataType.m_szName));
+			row["eg_name"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(dataType.m_szEgName));
+			row["explain"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(dataType.m_szExplain));
+			row["cmd_count"] = dataType.m_nCmdCount;
+			row["state"] = dataType.m_dwState;
+			row["element_count"] = dataType.m_nElementCount;
+			row["event_count"] = dataType.m_nEventCount;
+			row["property_count"] = dataType.m_nPropertyCount;
+
+			nlohmann::json members = nlohmann::json::array();
+			if (dataType.m_nElementCount > 0 && dataType.m_pElementBegin != nullptr) {
+				for (int memberIndex = 0; memberIndex < dataType.m_nElementCount; ++memberIndex) {
+					const auto& member = dataType.m_pElementBegin[memberIndex];
+					members.push_back({
+						{"index", memberIndex},
+						{"name", LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(member.m_szName))},
+						{"eg_name", LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(member.m_szEgName))},
+						{"explain", LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(member.m_szExplain))},
+						{"data_type", member.m_dtType},
+						{"state", member.m_dwState},
+						{"default_value", member.m_nDefault}
+					});
+				}
+			}
+			row["members"] = std::move(members);
+
+			nlohmann::json memberCmds = nlohmann::json::array();
+			if (dataType.m_nCmdCount > 0 && dataType.m_pnCmdsIndex != nullptr) {
+				for (int cmdIndex = 0; cmdIndex < dataType.m_nCmdCount; ++cmdIndex) {
+					const int globalCmdIndex = dataType.m_pnCmdsIndex[cmdIndex];
+					if (globalCmdIndex >= 0 && globalCmdIndex < libInfo->m_nCmdCount) {
+						memberCmds.push_back({
+							{"cmd_index", globalCmdIndex},
+							{"name", LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_pBeginCmdInfo[globalCmdIndex].m_szName))}
+						});
+					}
+				}
+			}
+			row["member_commands"] = std::move(memberCmds);
+			dataTypes.push_back(std::move(row));
+		}
+	}
+
+	nlohmann::json constants = nlohmann::json::array();
+	if (libInfo->m_nLibConstCount > 0 && libInfo->m_pLibConst != nullptr) {
+		for (int i = 0; i < libInfo->m_nLibConstCount; ++i) {
+			const LIB_CONST_INFO& item = libInfo->m_pLibConst[i];
+			const std::string textValue = ReadAnsiPtrTextOrEmptyForAI(item.m_szText);
+			const std::string nameText = ReadAnsiPtrTextOrEmptyForAI(item.m_szName);
+			const std::string explainText = ReadAnsiPtrTextOrEmptyForAI(item.m_szExplain);
+			nlohmann::json row;
+			row["index"] = i;
+			row["name"] = LocalToUtf8Text(nameText);
+			row["eg_name"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(item.m_szEgName));
+			row["explain"] = LocalToUtf8Text(explainText);
+			row["layout"] = item.m_shtLayout;
+			row["type"] = item.m_shtType;
+			row["text_value"] = LocalToUtf8Text(textValue);
+			row["numeric_value"] = item.m_dbValue;
+			constants.push_back(std::move(row));
+		}
+	}
+
+	outJson["ok"] = true;
+	outJson["file_path"] = LocalToUtf8Text(filePath);
+	outJson["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(filePath));
+	outJson["support_library_name"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szName));
+	outJson["version"] = std::format("{}.{}.{}", libInfo->m_nMajorVersion, libInfo->m_nMinorVersion, libInfo->m_nBuildNumber);
+	outJson["major_version"] = libInfo->m_nMajorVersion;
+	outJson["minor_version"] = libInfo->m_nMinorVersion;
+	outJson["build_number"] = libInfo->m_nBuildNumber;
+	outJson["guid"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szGuid));
+	outJson["language"] = libInfo->m_nLanguage;
+	outJson["state"] = libInfo->m_dwState;
+	outJson["explain"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szExplain));
+	outJson["author"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szAuthor));
+	outJson["zip_code"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szZipCode));
+	outJson["address"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szAddress));
+	outJson["phone"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szPhoto));
+	outJson["fax"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szFax));
+	outJson["email"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szEmail));
+	outJson["home_page"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szHomePage));
+	outJson["other"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szOther));
+	outJson["depend_files"] = LocalToUtf8Text(ReadAnsiPtrTextOrEmptyForAI(libInfo->m_szzDependFiles));
+	outJson["category_count"] = libInfo->m_nCategoryCount;
+	outJson["command_count"] = libInfo->m_nCmdCount;
+	outJson["data_type_count"] = libInfo->m_nDataTypeCount;
+	outJson["constant_count"] = libInfo->m_nLibConstCount;
+	outJson["categories"] = std::move(categories);
+	outJson["commands"] = std::move(commands);
+	outJson["data_types"] = std::move(dataTypes);
+	outJson["constants"] = std::move(constants);
+
+	closeModule();
+	return true;
+}
+
+const char* GetModulePublicInfoTagKeyForAI(int tag)
+{
+	switch (tag) {
+	case 250: return "tag_250";
+	case 251: return "tag_251";
+	case 252: return "tag_252";
+	case 253: return "tag_253";
+	case 301: return "tag_301";
+	case 302: return "tag_302";
+	case 303: return "tag_303";
+	case 305: return "tag_305";
+	case 306: return "tag_306";
+	case 307: return "tag_307";
+	case 308: return "tag_308";
+	case 309: return "tag_309";
+	case 311: return "tag_311";
+	default: return "tag_unknown";
+	}
+}
+
+nlohmann::json BuildModulePublicRecordJsonForAI(
+	const e571::ModulePublicInfoRecord& record,
+	int index,
+	int maxStringsPerRecord)
+{
+	nlohmann::json row;
+	row["index"] = index;
+	row["tag"] = record.tag;
+	row["tag_key"] = GetModulePublicInfoTagKeyForAI(record.tag);
+	row["body_size"] = record.bodySize;
+	row["payload_offset"] = record.payloadOffset;
+	row["header_ints"] = record.headerInts;
+	if (!record.kind.empty()) {
+		row["kind"] = record.kind;
+	}
+	if (!record.name.empty()) {
+		row["name"] = LocalToUtf8Text(record.name);
+	}
+	if (!record.typeText.empty()) {
+		row["type_text"] = LocalToUtf8Text(record.typeText);
+	}
+	if (!record.flagsText.empty()) {
+		row["flags_text"] = LocalToUtf8Text(record.flagsText);
+	}
+	if (!record.comment.empty()) {
+		row["comment"] = LocalToUtf8Text(record.comment);
+	}
+	if (!record.signatureText.empty()) {
+		row["signature_text"] = LocalToUtf8Text(record.signatureText);
+	}
+	if (!record.params.empty()) {
+		nlohmann::json params = nlohmann::json::array();
+		for (const auto& param : record.params) {
+			nlohmann::json paramRow;
+			paramRow["name"] = LocalToUtf8Text(param.name);
+			if (!param.typeText.empty()) {
+				paramRow["type_text"] = LocalToUtf8Text(param.typeText);
+			}
+			if (!param.flagsText.empty()) {
+				paramRow["flags_text"] = LocalToUtf8Text(param.flagsText);
+			}
+			if (!param.comment.empty()) {
+				paramRow["comment"] = LocalToUtf8Text(param.comment);
+			}
+			params.push_back(std::move(paramRow));
+		}
+		row["params"] = std::move(params);
+	}
+	if (!record.extractedStrings.empty()) {
+		if (!row.contains("name")) {
+			row["name"] = LocalToUtf8Text(record.extractedStrings.front());
+		}
+		nlohmann::json strings = nlohmann::json::array();
+		for (int i = 0; i < static_cast<int>(record.extractedStrings.size()) && i < maxStringsPerRecord; ++i) {
+			strings.push_back(LocalToUtf8Text(record.extractedStrings[i]));
+		}
+		row["strings"] = std::move(strings);
+		row["string_count"] = record.extractedStrings.size();
+	}
+	return row;
+}
+
+std::string BuildListImportedModulesJsonOnMainThread(bool& outOk)
+{
+	std::vector<std::string> paths;
+	std::string error;
+	if (!TryListImportedModulePathsForAI(paths, &error)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = error.empty() ? "list imported modules failed" : error;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	nlohmann::json modules = nlohmann::json::array();
+	for (size_t i = 0; i < paths.size(); ++i) {
+		nlohmann::json row;
+		row["index"] = static_cast<int>(i);
+		row["path"] = LocalToUtf8Text(paths[i]);
+		row["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(paths[i]));
+		row["module_name"] = LocalToUtf8Text(GetFileStemForAI(paths[i]));
+		std::string md5;
+		if (TryGetFileMd5HexForAI(paths[i], md5)) {
+			row["md5"] = md5;
+		}
+		modules.push_back(std::move(row));
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["count"] = modules.size();
+	r["warning"] = LocalToUtf8Text("这里列出的是项目当前导入的易模块路径；模块公开信息优先来自 IDE 模块公开信息窗口的隐藏抓取，必要时才退回 .ec 离线解析，且仅可作为公开接口/伪代码参考。");
+	r["modules"] = std::move(modules);
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+std::string BuildListSupportLibrariesJsonOnMainThread(bool& outOk)
+{
+	std::vector<SupportLibraryInfoHeaderForAI> libs;
+	std::string error;
+	if (!TryListSupportLibrariesForAI(libs, &error)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = error.empty() ? "list support libraries failed" : error;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	nlohmann::json rows = nlohmann::json::array();
+	for (const auto& lib : libs) {
+		nlohmann::json row;
+		row["index"] = lib.index;
+		row["name"] = LocalToUtf8Text(lib.name);
+		row["raw_name"] = LocalToUtf8Text(lib.rawName);
+		row["version_text"] = LocalToUtf8Text(lib.versionText);
+		row["file_name"] = LocalToUtf8Text(lib.fileName);
+		row["file_path"] = LocalToUtf8Text(lib.filePath);
+		row["resolve_trace"] = lib.resolveTrace;
+		row["info_text"] = LocalToUtf8Text(lib.rawText);
+		rows.push_back(std::move(row));
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["count"] = rows.size();
+	r["warning"] = LocalToUtf8Text("这里列出的是 IDE 当前已选支持库。若能解析到支持库文件路径，则可进一步通过 GetNewInf/lib2.h 读取其命令、常量、数据类型等公开定义。");
+	r["libraries"] = std::move(rows);
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+std::string BuildGetSupportLibraryInfoJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	SupportLibraryInfoHeaderForAI header;
+	std::string resolveError;
+	if (!ResolveSupportLibraryHeaderForAI(args, header, resolveError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = resolveError;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	nlohmann::json r;
+	if (!header.filePath.empty()) {
+		std::string loadError;
+		if (LoadSupportLibraryDumpFromFileForAI(header.filePath, r, loadError)) {
+			r["index"] = header.index;
+			r["resolved_header_name"] = LocalToUtf8Text(header.name);
+			r["raw_name_from_ide_text"] = LocalToUtf8Text(header.rawName);
+			r["resolved_header_version_text"] = LocalToUtf8Text(header.versionText);
+			r["info_text"] = LocalToUtf8Text(header.rawText);
+			r["resolve_trace"] = header.resolveTrace;
+			r["source_kind"] = "getnewinf";
+			r["warning"] = LocalToUtf8Text("支持库公开信息来自支持库文件 GetNewInf/lib2.h 结构解析，可作为公开接口参考。");
+			outOk = true;
+			return Utf8ToLocalText(r.dump());
+		}
+	}
+
+	r["ok"] = true;
+	r["index"] = header.index;
+	r["name"] = LocalToUtf8Text(header.name);
+	r["raw_name"] = LocalToUtf8Text(header.rawName);
+	r["version_text"] = LocalToUtf8Text(header.versionText);
+	r["file_name"] = LocalToUtf8Text(header.fileName);
+	r["file_path"] = LocalToUtf8Text(header.filePath);
+	r["resolve_trace"] = header.resolveTrace;
+	r["info_text"] = LocalToUtf8Text(header.rawText);
+	r["source_kind"] = "ide_text";
+	r["warning"] = LocalToUtf8Text("当前未解析到支持库文件路径或 GetNewInf 失败，以下内容来自 IDE 返回的支持库信息文本。");
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+std::string BuildSearchSupportLibraryInfoJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const std::string keyword = args.contains("keyword") && args["keyword"].is_string()
+		? Utf8ToLocalText(args["keyword"].get<std::string>())
+		: std::string();
+	const int limit = args.contains("limit") && args["limit"].is_number_integer()
+		? (std::clamp)(args["limit"].get<int>(), 1, 200)
+		: 50;
+
+	const std::string keywordLocal = TrimAsciiCopy(keyword);
+	if (keywordLocal.empty()) {
+		return R"({"ok":false,"error":"keyword is required"})";
+	}
+
+	std::vector<SupportLibraryInfoHeaderForAI> libs;
+	std::string error;
+	if (args.contains("index") || args.contains("name") || args.contains("file_path")) {
+		SupportLibraryInfoHeaderForAI header;
+		if (!ResolveSupportLibraryHeaderForAI(args, header, error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error;
+			return Utf8ToLocalText(r.dump());
+		}
+		libs.push_back(std::move(header));
+	}
+	else if (!TryListSupportLibrariesForAI(libs, &error)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = error.empty() ? "list support libraries failed" : error;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const auto matchesKeyword = [&](const std::string& text) {
+		return
+			text.find(keywordLocal) != std::string::npos ||
+			ToLowerAsciiCopyLocal(text).find(ToLowerAsciiCopyLocal(keywordLocal)) != std::string::npos;
+	};
+
+	nlohmann::json matches = nlohmann::json::array();
+	for (const auto& lib : libs) {
+		bool usedStructured = false;
+		if (!lib.filePath.empty()) {
+			nlohmann::json dump;
+			std::string loadError;
+			if (LoadSupportLibraryDumpFromFileForAI(lib.filePath, dump, loadError)) {
+				usedStructured = true;
+
+				if (dump.contains("commands") && dump["commands"].is_array()) {
+					for (const auto& cmd : dump["commands"]) {
+						if (static_cast<int>(matches.size()) >= limit) {
+							break;
+						}
+						std::vector<std::string> hitTexts;
+						const std::string nameText = Utf8ToLocalText(cmd.value("name", ""));
+						const std::string explainText = Utf8ToLocalText(cmd.value("explain", ""));
+						if (matchesKeyword(nameText)) {
+							hitTexts.push_back(nameText);
+						}
+						if (matchesKeyword(explainText)) {
+							hitTexts.push_back(explainText);
+						}
+						if (cmd.contains("args") && cmd["args"].is_array()) {
+							for (const auto& arg : cmd["args"]) {
+								const std::string argName = Utf8ToLocalText(arg.value("name", ""));
+								const std::string argExplain = Utf8ToLocalText(arg.value("explain", ""));
+								if (matchesKeyword(argName)) {
+									hitTexts.push_back(argName);
+								}
+								if (matchesKeyword(argExplain)) {
+									hitTexts.push_back(argExplain);
+								}
+							}
+						}
+						if (hitTexts.empty()) {
+							continue;
+						}
+						nlohmann::json row;
+						row["support_library_name"] = dump.value("support_library_name", "");
+						row["file_path"] = dump.value("file_path", "");
+						row["source"] = "command";
+						row["name"] = cmd.value("name", "");
+						row["index"] = cmd.value("index", -1);
+						row["matched_strings"] = hitTexts;
+						matches.push_back(std::move(row));
+					}
+				}
+
+				if (dump.contains("constants") && dump["constants"].is_array()) {
+					for (const auto& item : dump["constants"]) {
+						if (static_cast<int>(matches.size()) >= limit) {
+							break;
+						}
+						std::vector<std::string> hitTexts;
+						const std::string nameText = Utf8ToLocalText(item.value("name", ""));
+						const std::string explainText = Utf8ToLocalText(item.value("explain", ""));
+						const std::string textValue = Utf8ToLocalText(item.value("text_value", ""));
+						if (matchesKeyword(nameText)) {
+							hitTexts.push_back(nameText);
+						}
+						if (matchesKeyword(explainText)) {
+							hitTexts.push_back(explainText);
+						}
+						if (matchesKeyword(textValue)) {
+							hitTexts.push_back(textValue);
+						}
+						if (hitTexts.empty()) {
+							continue;
+						}
+						nlohmann::json row;
+						row["support_library_name"] = dump.value("support_library_name", "");
+						row["file_path"] = dump.value("file_path", "");
+						row["source"] = "constant";
+						row["name"] = item.value("name", "");
+						row["index"] = item.value("index", -1);
+						row["matched_strings"] = hitTexts;
+						matches.push_back(std::move(row));
+					}
+				}
+
+				if (dump.contains("data_types") && dump["data_types"].is_array()) {
+					for (const auto& item : dump["data_types"]) {
+						if (static_cast<int>(matches.size()) >= limit) {
+							break;
+						}
+						std::vector<std::string> hitTexts;
+						const std::string nameText = Utf8ToLocalText(item.value("name", ""));
+						const std::string explainText = Utf8ToLocalText(item.value("explain", ""));
+						if (matchesKeyword(nameText)) {
+							hitTexts.push_back(nameText);
+						}
+						if (matchesKeyword(explainText)) {
+							hitTexts.push_back(explainText);
+						}
+						if (item.contains("members") && item["members"].is_array()) {
+							for (const auto& member : item["members"]) {
+								const std::string memberName = Utf8ToLocalText(member.value("name", ""));
+								const std::string memberExplain = Utf8ToLocalText(member.value("explain", ""));
+								if (matchesKeyword(memberName)) {
+									hitTexts.push_back(memberName);
+								}
+								if (matchesKeyword(memberExplain)) {
+									hitTexts.push_back(memberExplain);
+								}
+							}
+						}
+						if (hitTexts.empty()) {
+							continue;
+						}
+						nlohmann::json row;
+						row["support_library_name"] = dump.value("support_library_name", "");
+						row["file_path"] = dump.value("file_path", "");
+						row["source"] = "data_type";
+						row["name"] = item.value("name", "");
+						row["index"] = item.value("index", -1);
+						row["matched_strings"] = hitTexts;
+						matches.push_back(std::move(row));
+					}
+				}
+			}
+		}
+
+		if (!usedStructured && !lib.rawText.empty()) {
+			const auto lines = SplitLinesCopyForAI(NormalizeLineBreaksForAI(lib.rawText));
+			for (size_t i = 0; i < lines.size() && static_cast<int>(matches.size()) < limit; ++i) {
+				const std::string line = TrimAsciiCopy(lines[i]);
+				if (line.empty() || !matchesKeyword(line)) {
+					continue;
+				}
+				nlohmann::json row;
+				row["support_library_name"] = LocalToUtf8Text(lib.name);
+				row["file_path"] = LocalToUtf8Text(lib.filePath);
+				row["source"] = "ide_text";
+				row["line_index"] = static_cast<int>(i);
+				row["matched_strings"] = nlohmann::json::array({ LocalToUtf8Text(line) });
+				matches.push_back(std::move(row));
+			}
+		}
+
+		if (static_cast<int>(matches.size()) >= limit) {
+			break;
+		}
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["keyword"] = LocalToUtf8Text(keywordLocal);
+	r["match_count"] = matches.size();
+	r["warning"] = LocalToUtf8Text("支持库检索优先来自支持库文件 GetNewInf/lib2.h 结构解析；无法解析文件时退回 IDE 返回的支持库信息文本。结果属于公开接口参考，不是项目源码页。");
+	r["matches"] = std::move(matches);
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+std::string BuildGetModulePublicInfoJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const std::string moduleName = args.contains("module_name") && args["module_name"].is_string()
+		? Utf8ToLocalText(args["module_name"].get<std::string>())
+		: std::string();
+	const std::string modulePath = args.contains("module_path") && args["module_path"].is_string()
+		? Utf8ToLocalText(args["module_path"].get<std::string>())
+		: std::string();
+	const int maxRecords = args.contains("max_records") && args["max_records"].is_number_integer()
+		? (std::clamp)(args["max_records"].get<int>(), 1, 500)
+		: 120;
+	const int maxStringsPerRecord = args.contains("max_strings_per_record") && args["max_strings_per_record"].is_number_integer()
+		? (std::clamp)(args["max_strings_per_record"].get<int>(), 1, 20)
+		: 8;
+
+	std::string resolvedPath;
+	std::string resolveError;
+	if (!ResolveImportedModulePathForAI(moduleName, modulePath, resolvedPath, resolveError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = resolveError;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	e571::ModulePublicInfoDump dump;
+	std::string loadError;
+	if (!e571::LoadModulePublicInfoDump(
+			resolvedPath,
+			GetCurrentProcessImageBaseForAI(),
+			&dump,
+			&loadError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = loadError.empty() ? "load module public info failed" : loadError;
+		r["module_path"] = LocalToUtf8Text(resolvedPath);
+		r["trace"] = dump.trace;
+		r["loader_error"] = LocalToUtf8Text(dump.loaderError);
+		return Utf8ToLocalText(r.dump());
+	}
+
+	nlohmann::json records = nlohmann::json::array();
+	nlohmann::json tagCounts = nlohmann::json::object();
+	for (size_t i = 0; i < dump.records.size(); ++i) {
+		const auto& record = dump.records[i];
+		const std::string tagKey = GetModulePublicInfoTagKeyForAI(record.tag);
+		tagCounts[tagKey] = tagCounts.value(tagKey, 0) + 1;
+		if (static_cast<int>(records.size()) < maxRecords) {
+			records.push_back(BuildModulePublicRecordJsonForAI(
+				record,
+				static_cast<int>(i),
+				maxStringsPerRecord));
+		}
+	}
+
+	std::string md5;
+	TryGetFileMd5HexForAI(resolvedPath, md5);
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["module_path"] = LocalToUtf8Text(resolvedPath);
+	r["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(resolvedPath));
+	r["module_name"] = LocalToUtf8Text(GetFileStemForAI(resolvedPath));
+	r["md5"] = md5;
+	r["native_result"] = dump.nativeResult;
+	r["source_kind"] = dump.sourceKind;
+	r["version_text"] = LocalToUtf8Text(dump.versionText);
+	r["assembly_name"] = LocalToUtf8Text(dump.assemblyName);
+	r["assembly_comment"] = LocalToUtf8Text(dump.assemblyComment);
+	r["formatted_text"] = LocalToUtf8Text(dump.formattedText);
+	r["record_count"] = dump.records.size();
+	r["records_returned"] = records.size();
+	r["records_truncated"] = dump.records.size() > records.size();
+	r["trace"] = dump.trace;
+	r["loader_error"] = LocalToUtf8Text(dump.loaderError);
+	r["tag_counts"] = std::move(tagCounts);
+	r["warning"] = LocalToUtf8Text("模块公开信息优先来自 IDE 模块公开信息窗口的隐藏抓取；必要时会退回 .ec 离线解析。它仍不是 IDE 正常编辑页，也不是模块完整源码，只能作为公开接口/伪代码参考。");
+	r["records"] = std::move(records);
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+std::string BuildSearchModulePublicInfoJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const std::string keyword = args.contains("keyword") && args["keyword"].is_string()
+		? Utf8ToLocalText(args["keyword"].get<std::string>())
+		: std::string();
+	const std::string moduleName = args.contains("module_name") && args["module_name"].is_string()
+		? Utf8ToLocalText(args["module_name"].get<std::string>())
+		: std::string();
+	const std::string modulePath = args.contains("module_path") && args["module_path"].is_string()
+		? Utf8ToLocalText(args["module_path"].get<std::string>())
+		: std::string();
+	const int limit = args.contains("limit") && args["limit"].is_number_integer()
+		? (std::clamp)(args["limit"].get<int>(), 1, 200)
+		: 50;
+
+	const std::string keywordLocal = TrimAsciiCopy(keyword);
+	if (keywordLocal.empty()) {
+		return R"({"ok":false,"error":"keyword is required"})";
+	}
+
+	std::vector<std::string> paths;
+	std::string resolveError;
+	if (!TrimAsciiCopy(moduleName).empty() || !TrimAsciiCopy(modulePath).empty()) {
+		std::string resolvedPath;
+		if (!ResolveImportedModulePathForAI(moduleName, modulePath, resolvedPath, resolveError)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = resolveError;
+			return Utf8ToLocalText(r.dump());
+		}
+		paths.push_back(resolvedPath);
+	}
+	else if (!TryListImportedModulePathsForAI(paths, &resolveError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = resolveError.empty() ? "list imported modules failed" : resolveError;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	nlohmann::json matches = nlohmann::json::array();
+	for (const auto& path : paths) {
+		e571::ModulePublicInfoDump dump;
+		std::string loadError;
+		if (!e571::LoadModulePublicInfoDump(
+				path,
+				GetCurrentProcessImageBaseForAI(),
+				&dump,
+				&loadError)) {
+			continue;
+		}
+
+		for (size_t i = 0; i < dump.records.size() && static_cast<int>(matches.size()) < limit; ++i) {
+			const auto& record = dump.records[i];
+			std::vector<std::string> matchedStrings;
+			const auto matchesKeyword = [&](const std::string& text) {
+				return
+					text.find(keywordLocal) != std::string::npos ||
+					ToLowerAsciiCopyLocal(text).find(ToLowerAsciiCopyLocal(keywordLocal)) != std::string::npos;
+			};
+			if (!record.name.empty() && matchesKeyword(record.name)) {
+				matchedStrings.push_back(record.name);
+			}
+			if (!record.comment.empty() && matchesKeyword(record.comment)) {
+				matchedStrings.push_back(record.comment);
+			}
+			if (!record.signatureText.empty() && matchesKeyword(record.signatureText)) {
+				matchedStrings.push_back(record.signatureText);
+			}
+			for (const auto& param : record.params) {
+				if (matchesKeyword(param.name)) {
+					matchedStrings.push_back(param.name);
+				}
+				if (!param.comment.empty() && matchesKeyword(param.comment)) {
+					matchedStrings.push_back(param.comment);
+				}
+			}
+			for (const auto& text : record.extractedStrings) {
+				if (matchesKeyword(text)) {
+					matchedStrings.push_back(text);
+				}
+			}
+			if (matchedStrings.empty()) {
+				continue;
+			}
+
+			nlohmann::json row;
+			row["module_path"] = LocalToUtf8Text(path);
+			row["module_name"] = LocalToUtf8Text(GetFileStemForAI(path));
+			row["record_index"] = static_cast<int>(i);
+			row["tag"] = record.tag;
+			row["tag_key"] = GetModulePublicInfoTagKeyForAI(record.tag);
+			row["kind"] = record.kind;
+			row["name"] = !record.name.empty()
+				? LocalToUtf8Text(record.name)
+				: (record.extractedStrings.empty() ? "" : LocalToUtf8Text(record.extractedStrings.front()));
+			if (!record.signatureText.empty()) {
+				row["signature_text"] = LocalToUtf8Text(record.signatureText);
+			}
+			nlohmann::json strings = nlohmann::json::array();
+			for (const auto& matched : matchedStrings) {
+				strings.push_back(LocalToUtf8Text(matched));
+			}
+			row["matched_strings"] = std::move(strings);
+			matches.push_back(std::move(row));
+		}
+
+		if (static_cast<int>(matches.size()) >= limit) {
+			break;
+		}
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["keyword"] = LocalToUtf8Text(keywordLocal);
+	r["match_count"] = matches.size();
+	r["warning"] = LocalToUtf8Text("这里搜索的是模块公开信息窗口抓取到的公开接口文本；必要时会退回 .ec 离线解析。它不是模块完整源码，只能作为公开接口/伪代码参考。");
+	r["matches"] = std::move(matches);
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
 std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
 {
 	nlohmann::json args;
@@ -2308,6 +3775,30 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		r["page_name_trace"] = pageNameTrace;
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "list_imported_modules") {
+		return BuildListImportedModulesJsonOnMainThread(outOk);
+	}
+
+	if (toolName == "list_support_libraries") {
+		return BuildListSupportLibrariesJsonOnMainThread(outOk);
+	}
+
+	if (toolName == "get_support_library_info") {
+		return BuildGetSupportLibraryInfoJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "search_support_library_info") {
+		return BuildSearchSupportLibraryInfoJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "get_module_public_info") {
+		return BuildGetModulePublicInfoJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "search_module_public_info") {
+		return BuildSearchModulePublicInfoJsonOnMainThread(argumentsJson, outOk);
 	}
 
 	if (toolName == "list_program_items") {
@@ -2678,6 +4169,12 @@ std::string ExecuteToolCall(const std::string& toolName, const std::string& argu
 
 	if (toolName == "get_current_page_code" ||
 		toolName == "get_current_page_info" ||
+		toolName == "list_imported_modules" ||
+		toolName == "list_support_libraries" ||
+		toolName == "get_support_library_info" ||
+		toolName == "search_support_library_info" ||
+		toolName == "get_module_public_info" ||
+		toolName == "search_module_public_info" ||
 		toolName == "list_program_items" ||
 		toolName == "get_program_item_code" ||
 		toolName == "switch_to_program_item_page" ||
