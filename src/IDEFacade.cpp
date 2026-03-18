@@ -3124,7 +3124,8 @@ void IDEFacade::RefreshContextMenuEnabledState(HMENU popupMenu)
 	}
 
 	constexpr const char* kAiTranslateTextLabel = "AI翻译选中文本";
-	const bool hasSelectedText = IsFnEnabled(FN_EDIT_CUT);
+	bool hasSelectedTextResolved = false;
+	bool hasSelectedText = false;
 
 	for (const auto& item : m_contextMenuItems) {
 		// Only touch items that are truly our own menu entries (same command id + same caption).
@@ -3147,6 +3148,10 @@ void IDEFacade::RefreshContextMenuEnabledState(HMENU popupMenu)
 			continue;
 		}
 
+		if (item.text == kAiTranslateTextLabel && !hasSelectedTextResolved) {
+			hasSelectedText = IsFnEnabled(FN_EDIT_CUT);
+			hasSelectedTextResolved = true;
+		}
 		const bool disableTranslateText = (item.text == kAiTranslateTextLabel) && !hasSelectedText;
 		EnableMenuItem(
 			popupMenu,
@@ -3155,16 +3160,65 @@ void IDEFacade::RefreshContextMenuEnabledState(HMENU popupMenu)
 	}
 }
 
-bool IDEFacade::HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2)
+bool IDEFacade::InjectContextMenuToPopup(HMENU popupMenu)
 {
-	(void)dwParam2;
-	if (nMsg != NL_RIGHT_POPUP_MENU_SHOW || m_contextMenuItems.empty()) {
+	if (popupMenu == nullptr || m_contextMenuItems.empty()) {
 		return false;
 	}
 
-	HMENU popupMenu = reinterpret_cast<HMENU>(dwParam1);
-	if (popupMenu == nullptr) {
+	bool containsTriggerItem = false;
+	const int popupCount = GetMenuItemCount(popupMenu);
+	for (int i = 0; i < popupCount; ++i) {
+		wchar_t title[256] = {};
+		const int len = GetMenuStringW(
+			popupMenu,
+			static_cast<UINT>(i),
+			title,
+			static_cast<int>(sizeof(title) / sizeof(title[0])),
+			MF_BYPOSITION);
+		if (len <= 0) {
+			continue;
+		}
+		const std::wstring itemTitle(title, static_cast<size_t>(len));
+		if (itemTitle.find(L"新方法") != std::wstring::npos ||
+			itemTitle.find(L"新子程序") != std::wstring::npos) {
+			containsTriggerItem = true;
+			break;
+		}
+	}
+	if (!containsTriggerItem) {
 		return false;
+	}
+
+	for (int i = GetMenuItemCount(popupMenu) - 1; i >= 0; --i) {
+		MENUITEMINFOW mii = {};
+		mii.cbSize = sizeof(mii);
+		mii.fMask = MIIM_SUBMENU;
+		bool removeThis = false;
+		if (GetMenuItemInfoW(popupMenu, static_cast<UINT>(i), TRUE, &mii) && mii.hSubMenu != nullptr) {
+			wchar_t title[256] = {};
+			const int len = GetMenuStringW(
+				popupMenu,
+				static_cast<UINT>(i),
+				title,
+				static_cast<int>(sizeof(title) / sizeof(title[0])),
+				MF_BYPOSITION);
+			if (len > 0) {
+				const std::wstring itemTitle(title, static_cast<size_t>(len));
+				if (itemTitle == L"AutoLinker") {
+					removeThis = true;
+				}
+			}
+		}
+		if (removeThis) {
+			DeleteMenu(popupMenu, static_cast<UINT>(i), MF_BYPOSITION);
+			if (i > 0) {
+				const UINT prevState = GetMenuState(popupMenu, static_cast<UINT>(i - 1), MF_BYPOSITION);
+				if (prevState != 0xFFFFFFFF && (prevState & MF_SEPARATOR) == MF_SEPARATOR) {
+					DeleteMenu(popupMenu, static_cast<UINT>(i - 1), MF_BYPOSITION);
+				}
+			}
+		}
 	}
 
 	HMENU autoLinkerMenu = CreatePopupMenu();
@@ -3461,41 +3515,19 @@ bool IDEFacade::HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 	}
 
 	const int menuCount = GetMenuItemCount(popupMenu);
-	int insertPos = menuCount >= 0 ? menuCount : 0;
-	for (int i = 0; i < menuCount; ++i) {
-		wchar_t title[256] = {};
-		const int len = GetMenuStringW(
-			popupMenu,
-			static_cast<UINT>(i),
-			title,
-			static_cast<int>(sizeof(title) / sizeof(title[0])),
-			MF_BYPOSITION);
-		if (len <= 0) {
-			continue;
-		}
-		const std::wstring itemTitle(title, static_cast<size_t>(len));
-		if (itemTitle.find(L"撤销") != std::wstring::npos ||
-			itemTitle.find(L"Undo") != std::wstring::npos ||
-			itemTitle.find(L"undo") != std::wstring::npos) {
-			insertPos = i;
-			break;
+	if (menuCount > 0) {
+		const UINT lastState = GetMenuState(popupMenu, static_cast<UINT>(menuCount - 1), MF_BYPOSITION);
+		if (lastState != 0xFFFFFFFF && (lastState & MF_SEPARATOR) != MF_SEPARATOR) {
+			if (!AppendMenuA(popupMenu, MF_SEPARATOR, 0, nullptr)) {
+				DestroyMenu(autoLinkerMenu);
+				return false;
+			}
 		}
 	}
 
-	if (!InsertMenuA(
+	if (!AppendMenuA(
 		popupMenu,
-		static_cast<UINT>(insertPos),
-		MF_BYPOSITION | MF_SEPARATOR,
-		0,
-		nullptr)) {
-		DestroyMenu(autoLinkerMenu);
-		return false;
-	}
-
-	if (!InsertMenuA(
-		popupMenu,
-		static_cast<UINT>(insertPos + 1),
-		MF_BYPOSITION | MF_POPUP | MF_STRING,
+		MF_POPUP | MF_STRING,
 		reinterpret_cast<UINT_PTR>(autoLinkerMenu),
 		"AutoLinker")) {
 		DestroyMenu(autoLinkerMenu);
@@ -3503,6 +3535,15 @@ bool IDEFacade::HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 	}
 
 	return true;
+}
+
+bool IDEFacade::HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2)
+{
+	(void)dwParam2;
+	if (nMsg != NL_RIGHT_POPUP_MENU_SHOW || m_contextMenuItems.empty()) {
+		return false;
+	}
+	return InjectContextMenuToPopup(reinterpret_cast<HMENU>(dwParam1));
 }
 
 bool IDEFacade::HandleMainWindowCommand(WPARAM wParam)

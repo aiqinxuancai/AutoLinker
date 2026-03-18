@@ -3562,7 +3562,7 @@ bool IsCompileOrToolsTopPopup(HMENU hPopupMenu)
 	}
 
 	if (popupIndex < 0) {
-		return popupKeywordMatch();
+		return false;
 	}
 
 	int targetIndex = compileIndex >= 0 ? compileIndex : toolsIndex;
@@ -3570,8 +3570,8 @@ bool IsCompileOrToolsTopPopup(HMENU hPopupMenu)
 		return popupIndex == targetIndex;
 	}
 
-	// 顶级标题不可读时，回退到子项关键词判断。
-	return popupKeywordMatch();
+	// 只接受主菜单的直接子菜单，避免把右键菜单误判成顶部菜单。
+	return false;
 }
 
 void ClearMenuItemsByPosition(HMENU hMenu)
@@ -3737,6 +3737,17 @@ void HandleInitMenuPopup(HMENU hMenu)
 		IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT,
 		IDM_AUTOLINKER_CTX_AI_ADD_BY_PAGE
 	};
+	bool hasAnyAiCommand = false;
+	for (UINT cmdId : aiCmdIds) {
+		if (GetMenuState(hMenu, cmdId, MF_BYCOMMAND) != 0xFFFFFFFF) {
+			hasAnyAiCommand = true;
+			break;
+		}
+	}
+	if (!hasAnyAiCommand) {
+		return;
+	}
+
 	const bool hasSelectedText = IDEFacade::Instance().IsFunctionEnabled(FN_EDIT_CUT);
 	for (UINT cmdId : aiCmdIds) {
 		UINT aiState = GetMenuState(hMenu, cmdId, MF_BYCOMMAND);
@@ -3749,6 +3760,72 @@ void HandleInitMenuPopup(HMENU hMenu)
 		}
 	}
 }
+
+void PrepareAutoLinkerPopupMenu(HMENU hMenu)
+{
+	if (hMenu == NULL) {
+		return;
+	}
+
+	auto& ide = IDEFacade::Instance();
+	if (ide.InjectContextMenuToPopup(hMenu)) {
+		ide.RefreshContextMenuEnabledState(hMenu);
+		return;
+	}
+
+	if (hMenu == g_topLinkerSubMenu || IsCompileOrToolsTopPopup(hMenu)) {
+		HandleInitMenuPopup(hMenu);
+		return;
+	}
+
+	const bool hasKnownAutoLinkerCommand =
+		GetMenuState(hMenu, IDM_AUTOLINKER_CTX_COPY_FUNC, MF_BYCOMMAND) != 0xFFFFFFFF ||
+		GetMenuState(hMenu, IDM_AUTOLINKER_CTX_AI_OPTIMIZE_FUNC, MF_BYCOMMAND) != 0xFFFFFFFF ||
+		GetMenuState(hMenu, IDM_AUTOLINKER_CTX_AI_COMMENT_FUNC, MF_BYCOMMAND) != 0xFFFFFFFF ||
+		GetMenuState(hMenu, IDM_AUTOLINKER_CTX_AI_TRANSLATE_FUNC, MF_BYCOMMAND) != 0xFFFFFFFF ||
+		GetMenuState(hMenu, IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT, MF_BYCOMMAND) != 0xFFFFFFFF ||
+		GetMenuState(hMenu, IDM_AUTOLINKER_CTX_AI_ADD_BY_PAGE, MF_BYCOMMAND) != 0xFFFFFFFF;
+	if (!hasKnownAutoLinkerCommand) {
+		return;
+	}
+
+	ide.RefreshContextMenuEnabledState(hMenu);
+}
+
+bool IsKnownAutoLinkerPopup(HMENU hMenu)
+{
+	if (hMenu == NULL) {
+		return false;
+	}
+
+	return
+		GetMenuState(hMenu, IDM_AUTOLINKER_CTX_COPY_FUNC, MF_BYCOMMAND) != 0xFFFFFFFF ||
+		GetMenuState(hMenu, IDM_AUTOLINKER_CTX_AI_OPTIMIZE_FUNC, MF_BYCOMMAND) != 0xFFFFFFFF ||
+		GetMenuState(hMenu, IDM_AUTOLINKER_CTX_AI_COMMENT_FUNC, MF_BYCOMMAND) != 0xFFFFFFFF ||
+		GetMenuState(hMenu, IDM_AUTOLINKER_CTX_AI_TRANSLATE_FUNC, MF_BYCOMMAND) != 0xFFFFFFFF ||
+		GetMenuState(hMenu, IDM_AUTOLINKER_CTX_AI_TRANSLATE_TEXT, MF_BYCOMMAND) != 0xFFFFFFFF ||
+		GetMenuState(hMenu, IDM_AUTOLINKER_CTX_AI_ADD_BY_PAGE, MF_BYCOMMAND) != 0xFFFFFFFF;
+}
+
+void FinalizeAutoLinkerPopupMenu(HMENU hMenu)
+{
+	if (hMenu == NULL) {
+		return;
+	}
+
+	if (hMenu == g_topLinkerSubMenu || IsCompileOrToolsTopPopup(hMenu)) {
+		HandleInitMenuPopup(hMenu);
+		return;
+	}
+
+	if (!IsKnownAutoLinkerPopup(hMenu)) {
+		return;
+	}
+
+	auto& ide = IDEFacade::Instance();
+	ide.RefreshContextMenuEnabledState(hMenu);
+	HandleInitMenuPopup(hMenu);
+}
 }
 
 
@@ -3756,6 +3833,8 @@ static auto originalCreateFileA = CreateFileA;
 static auto originalGetSaveFileNameA = GetSaveFileNameA;
 static auto originalCreateProcessA = CreateProcessA;
 static auto originalMessageBoxA = MessageBoxA;
+static auto originalTrackPopupMenu = TrackPopupMenu;
+static auto originalTrackPopupMenuEx = TrackPopupMenuEx;
 
 //开始调试 5.71-5.95
 typedef int(__thiscall* OriginalEStartDebugFuncType)(DWORD* thisPtr, int a2, int a3);
@@ -3957,6 +4036,29 @@ int WINAPI MyMessageBoxA(
 	return originalMessageBoxA(hWnd, lpText, lpCaption, uType);
 }
 
+BOOL WINAPI MyTrackPopupMenu(
+	HMENU hMenu,
+	UINT uFlags,
+	int x,
+	int y,
+	int nReserved,
+	HWND hWnd,
+	const RECT* prcRect) {
+	PrepareAutoLinkerPopupMenu(hMenu);
+	return originalTrackPopupMenu(hMenu, uFlags, x, y, nReserved, hWnd, prcRect);
+}
+
+BOOL WINAPI MyTrackPopupMenuEx(
+	HMENU hMenu,
+	UINT uFlags,
+	int x,
+	int y,
+	HWND hWnd,
+	LPTPMPARAMS lptpm) {
+	PrepareAutoLinkerPopupMenu(hMenu);
+	return originalTrackPopupMenuEx(hMenu, uFlags, x, y, hWnd, lptpm);
+}
+
 void StartHookCreateFileA() {
 	DetourRestoreAfterWith();
 	DetourTransactionBegin();
@@ -3965,6 +4067,8 @@ void StartHookCreateFileA() {
 	DetourAttach(&(PVOID&)originalGetSaveFileNameA, MyGetSaveFileNameA);
 	DetourAttach(&(PVOID&)originalCreateProcessA, MyCreateProcessA);
 	DetourAttach(&(PVOID&)originalMessageBoxA, MyMessageBoxA);
+	DetourAttach(&(PVOID&)originalTrackPopupMenu, MyTrackPopupMenu);
+	DetourAttach(&(PVOID&)originalTrackPopupMenuEx, MyTrackPopupMenuEx);
 
 
 	if (g_debugStartAddress != -1 && g_compileStartAddress != -1) {
@@ -4095,11 +4199,10 @@ void OutputCurrentSourceLinker()
 
 //工具条子类过程
 LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
-	switch (uMsg)
-	{
-		case WM_INITMENUPOPUP:
-			HandleInitMenuPopup(reinterpret_cast<HMENU>(wParam));
-			break;
+	if (uMsg == WM_INITMENUPOPUP) {
+		LRESULT result = DefSubclassProc(hWnd, uMsg, wParam, lParam);
+		FinalizeAutoLinkerPopupMenu(reinterpret_cast<HMENU>(wParam));
+		return result;
 	}
 
 	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
@@ -4217,8 +4320,7 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 
 	if (uMsg == WM_INITMENUPOPUP) {
 		LRESULT result = DefSubclassProc(hWnd, uMsg, wParam, lParam);
-		IDEFacade::Instance().RefreshContextMenuEnabledState(reinterpret_cast<HMENU>(wParam));
-		HandleInitMenuPopup(reinterpret_cast<HMENU>(wParam));
+		FinalizeAutoLinkerPopupMenu(reinterpret_cast<HMENU>(wParam));
 		return result;
 	}
 
@@ -4500,10 +4602,6 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 
 		}
 	}
-	else if (nMsg == NL_RIGHT_POPUP_MENU_SHOW) {
-		IDEFacade::Instance().HandleNotifyMessage(nMsg, dwParam1, dwParam2);
-	}
-
 #endif
 	return ProcessNotifyLib(nMsg, dwParam1, dwParam2);
 }

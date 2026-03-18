@@ -146,3 +146,229 @@ AutoLinker支持库，通过各种方法实现以下功能：
 
 - 支持本地 MCP 工具调用（如读取当前页代码、弹出代码修改对话框）。
 
+## AutoLinker 本地 MCP 文档
+
+### ⭐服务地址
+- 默认监听：`http://127.0.0.1:19207/mcp`
+- 如果端口 `19207` 被占用，会自动尝试 `19208` 起的后续端口。
+- 启动成功后，E 输出窗口会打印类似日志：
+  ```text
+  [AutoLinker][LocalMCP] listening on http://127.0.0.1:19207/mcp
+  ```
+
+### ⭐协议说明
+- 协议：`JSON-RPC 2.0`
+- MCP `initialize` 返回的 `protocolVersion` 为：`2024-11-05`
+- 当前支持的方法：
+  - `initialize`
+  - `notifications/initialized`
+  - `ping`
+  - `tools/list`
+  - `tools/call`
+
+### ⭐客户端接入 JSON 示例
+
+#### 通用 HTTP MCP 配置
+- 如果你的 MCP 客户端支持基于 HTTP 的 MCP，可直接配置为：
+  ```json
+  {
+    "mcpServers": {
+      "AutoLinker": {
+        "transport": "streamable_http",
+        "url": "http://127.0.0.1:19207/mcp"
+      }
+    }
+  }
+  ```
+
+#### 某些客户端的简化写法
+- 有些客户端不要求显式写 `transport`，可写成：
+  ```json
+  {
+    "mcpServers": {
+      "AutoLinker": {
+        "url": "http://127.0.0.1:19207/mcp"
+      }
+    }
+  }
+  ```
+
+#### 如果端口被自动顺延
+- 当 `19207` 被占用时，AutoLinker 会自动尝试后续端口，所以客户端配置中的 `url` 需要与 E 输出窗口中的实际监听地址保持一致，例如：
+  ```json
+  {
+    "mcpServers": {
+      "AutoLinker": {
+        "transport": "streamable_http",
+        "url": "http://127.0.0.1:19208/mcp"
+      }
+    }
+  }
+  ```
+
+#### 说明
+- AutoLinker 当前提供的是本地 HTTP MCP 服务，不是 `stdio` 型 MCP。
+- 如果某个客户端只支持 `stdio` 方式而不支持 HTTP/Streamable HTTP，则不能直接接入当前版本的 AutoLinker MCP。
+
+### ⭐HTTP 访问说明
+- `GET /` 或 `GET /mcp`
+  - 返回服务健康信息和当前 `mcp_endpoint`
+- `POST /mcp`
+  - 发送 JSON-RPC 请求
+- `OPTIONS /mcp`
+  - CORS 预检
+
+### ⭐tools/list 返回的当前公开工具
+
+#### 1. 当前页相关
+- `get_current_page_info`
+  - 获取当前 IDE 页名称、页类型以及名称解析来源。
+- `get_current_page_code`
+  - 获取当前 IDE 页完整代码，同时返回当前页名称和页类型。
+
+#### 2. 模块相关
+- `list_imported_modules`
+  - 列出当前项目导入的易模块/ECOM 路径。
+- `get_module_public_info`
+  - 获取指定模块的公开接口信息。
+  - 说明：这里返回的是模块公开接口/伪代码参考，不是正常 IDE 源码页。
+- `search_module_public_info`
+  - 在模块公开接口信息中搜索关键词。
+  - 说明：搜索结果同样属于公开接口/伪代码参考。
+
+#### 3. 支持库相关
+- `list_support_libraries`
+  - 列出当前 IDE 已选支持库。
+  - 返回支持库基本信息、文件路径解析结果以及原始信息文本。
+- `get_support_library_info`
+  - 获取单个支持库公开信息。
+  - 优先通过支持库文件 `GetNewInf/lib2.h` 结构解析命令、常量、数据类型等；无法定位文件时退回 IDE 文本。
+- `search_support_library_info`
+  - 在支持库公开信息中搜索关键词。
+
+#### 4. 程序树/项目结构相关
+- `list_program_items`
+  - 列出程序树中的程序集、类模块、全局变量、自定义数据类型、DLL 命令、窗口、资源等项目。
+  - 支持按 `kind`、名称过滤，并可选附带代码。
+  - 说明：这里通过程序树抓到的代码是伪代码参考，结构可能与正常 IDE 页略有差异。
+- `get_program_item_code`
+  - 按精确名称获取某个程序树项目的整页代码。
+  - 说明：返回代码属于伪代码参考。
+- `switch_to_program_item_page`
+  - 按精确名称切换到某个程序集/类/资源页面。
+  - 只负责切页，不返回代码。
+
+#### 5. 项目搜索相关
+- `search_project_keyword`
+  - 调用 IDE 整体搜索，在项目内搜索关键词。
+  - 返回匹配页名、页类型、行号、显示文本和 `jump_token`。
+- `jump_to_search_result`
+  - 使用 `search_project_keyword` 返回的 `jump_token` 精确跳转到某一条结果。
+
+#### 6. 本地交互相关
+- `request_code_edit`
+  - 弹出本地代码编辑确认窗口，返回用户确认后的代码。
+
+### ⭐tools/call 参数说明
+- 调用格式：
+  ```json
+  {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+      "name": "get_current_page_info",
+      "arguments": {}
+    }
+  }
+  ```
+- `params.name`
+  - 工具名称
+- `params.arguments`
+  - 工具参数对象
+
+### ⭐常用调用示例
+
+#### 列出工具
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/list",
+  "params": {}
+}
+```
+
+#### 获取当前页信息
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "tools/call",
+  "params": {
+    "name": "get_current_page_info",
+    "arguments": {}
+  }
+}
+```
+
+#### 获取当前页代码
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "tools/call",
+  "params": {
+    "name": "get_current_page_code",
+    "arguments": {}
+  }
+}
+```
+
+#### 搜索项目关键词
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "tools/call",
+  "params": {
+    "name": "search_project_keyword",
+    "arguments": {
+      "keyword": "subWinHwnd",
+      "limit": 20
+    }
+  }
+}
+```
+
+#### 跳转到某条搜索结果
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "tools/call",
+  "params": {
+    "name": "jump_to_search_result",
+    "arguments": {
+      "jump_token": "v1:1:1224804111:315:0:0"
+    }
+  }
+}
+```
+
+### ⭐会改变 IDE 当前页的工具
+- 以下工具具有副作用，会导致当前 IDE 页面或光标位置发生变化：
+  - `get_program_item_code`
+  - `switch_to_program_item_page`
+  - `jump_to_search_result`
+- 使用这些工具前后，不要假定当前页仍保持不变。
+
+### ⭐关于“伪代码参考”的说明
+- 以下来源拿到的代码/结构，不等同于 IDE 中用户正在编辑的原始页内容：
+  - `get_module_public_info`
+  - `search_module_public_info`
+  - `list_program_items` 中附带的代码
+  - `get_program_item_code`
+  - `search_project_keyword` 的结果文本及其后续关联代码
+- 这些内容适合做定位、检索、接口参考，但不应当当作 100% 原样源码。
+

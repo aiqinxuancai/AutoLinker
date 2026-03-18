@@ -200,6 +200,7 @@ public:
 	void RegisterContextMenuItem(UINT commandId, const std::string& text, MenuHandler handler);
 	void ClearContextMenuItems();
 	void RefreshContextMenuEnabledState(HMENU popupMenu);
+	bool InjectContextMenuToPopup(HMENU popupMenu);
 	bool HandleNotifyMessage(INT nMsg, DWORD dwParam1, DWORD dwParam2);
 	bool HandleMainWindowCommand(WPARAM wParam);
 
