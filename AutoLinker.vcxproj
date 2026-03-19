@@ -488,6 +488,8 @@
     </ClCompile>
     <ClCompile Include="src\AIConfigDialog.cpp" />
     <ClCompile Include="src\AIChatFeature.cpp" />
+    <ClCompile Include="src\AIChatTooling.cpp" />
+    <ClCompile Include="src\AIChatToolingX86.cpp" />
     <ClCompile Include="src\AIService.cpp" />
     <ClCompile Include="src\LocalMcpServer.cpp" />
     <ClCompile Include="src\PathHelper.cpp" />
@@ -509,6 +511,8 @@
     <ClInclude Include="src\AutoLinker.h" />
     <ClInclude Include="src\AIConfigDialog.h" />
     <ClInclude Include="src\AIChatFeature.h" />
+    <ClInclude Include="src\AIChatTooling.h" />
+    <ClInclude Include="src\AIChatToolingInternal.h" />
     <ClInclude Include="src\AIService.h" />
     <ClInclude Include="src\ConfigManager.h" />
     <ClInclude Include="src\direct_global_search.hpp" />

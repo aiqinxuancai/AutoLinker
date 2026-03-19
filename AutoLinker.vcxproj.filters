@@ -51,13 +51,19 @@
       <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="src\AIConfigDialog.cpp">
-      <Filter>Utils</Filter>
+      <Filter>AI</Filter>
     </ClCompile>
     <ClCompile Include="src\AIChatFeature.cpp">
-      <Filter>Utils</Filter>
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AIChatTooling.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AIChatToolingX86.cpp">
+      <Filter>AI</Filter>
     </ClCompile>
     <ClCompile Include="src\AIService.cpp">
-      <Filter>Utils</Filter>
+      <Filter>AI</Filter>
     </ClCompile>
     <ClCompile Include="src\PathHelper.cpp">
       <Filter>Utils</Filter>
@@ -109,13 +115,19 @@
     </ClInclude>
     <ClInclude Include="src\AutoLinker.h" />
     <ClInclude Include="src\AIConfigDialog.h">
-      <Filter>Utils</Filter>
+      <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIChatFeature.h">
-      <Filter>Utils</Filter>
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AIChatTooling.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AIChatToolingInternal.h">
+      <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIService.h">
-      <Filter>Utils</Filter>
+      <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\ConfigManager.h">
       <Filter>Utils</Filter>
@@ -178,6 +190,9 @@
     </Filter>
     <Filter Include="Utils">
       <UniqueIdentifier>{50cb1a3e-5558-4bc2-bed4-ebfa7f5b25bc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="AI">
+      <UniqueIdentifier>{8f66752d-42c3-4fe5-bd47-3a07ff6b07b7}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
