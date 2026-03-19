@@ -21,8 +21,7 @@
 请参考此命令行方法进行编译，不同设备和VS版本的MSBuild.exe的位置可能不同，请注意寻找及确认。
 
 ```powershell
-'C:\Program Files\Microsoft Visual Studio\18\Professional\MSBuild\Current\Bin\MSBuild.exe' ..\AutoLinker.vcxproj /t:Build "/
-  │ p:Configuration=fne_release;Platform=Win32"
+MSBuild.exe ..\\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platform=Win32" /m
 ```
 
 如果编译存在报错，请进行修正，确保功能实现正常的情况下可正常编译。
