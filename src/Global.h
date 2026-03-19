@@ -1,4 +1,4 @@
-// global.h
+﻿// global.h
 #pragma once
 
 #ifndef GLOBAL_H
@@ -13,6 +13,7 @@
 
 extern int g_debugStartAddress;
 extern int g_compileStartAddress;
+extern std::string g_nowOpenSourceFilePath;
 extern HWND g_hwnd;
 extern ModelManager g_modelManager;
 

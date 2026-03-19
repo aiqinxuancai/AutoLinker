@@ -32,6 +32,21 @@
       <Filter>detours</Filter>
     </ClCompile>
     <ClCompile Include="src\AutoLinker.cpp" />
+    <ClCompile Include="src\AutoLinkerAI.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AutoLinkerHooks.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AutoLinkerMenu.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AutoLinkerRuntime.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AutoLinkerSupport.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\ConfigManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -114,6 +129,9 @@
       <Filter>elib</Filter>
     </ClInclude>
     <ClInclude Include="src\AutoLinker.h" />
+    <ClInclude Include="src\AutoLinkerInternal.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
     <ClInclude Include="src\AIConfigDialog.h">
       <Filter>AI</Filter>
     </ClInclude>

@@ -14,8 +14,6 @@
 #include "WinINetUtil.h"
 #include <chrono>
 
-extern std::string g_nowOpenSourceFilePath;
-
 namespace {
 using PerfClock = std::chrono::steady_clock;
 

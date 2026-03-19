@@ -461,6 +461,11 @@
     <ClCompile Include="detours\image.cpp" />
     <ClCompile Include="detours\modules.cpp" />
     <ClCompile Include="src\AutoLinker.cpp" />
+    <ClCompile Include="src\AutoLinkerAI.cpp" />
+    <ClCompile Include="src\AutoLinkerHooks.cpp" />
+    <ClCompile Include="src\AutoLinkerMenu.cpp" />
+    <ClCompile Include="src\AutoLinkerRuntime.cpp" />
+    <ClCompile Include="src\AutoLinkerSupport.cpp" />
     <ClCompile Include="src\ConfigManager.cpp" />
     <ClCompile Include="src\direct_global_search.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -509,6 +514,7 @@
     <ClInclude Include="elib\PublicIDEFunctions.h" />
     <ClInclude Include="elib\untshare.h" />
     <ClInclude Include="src\AutoLinker.h" />
+    <ClInclude Include="src\AutoLinkerInternal.h" />
     <ClInclude Include="src\AIConfigDialog.h" />
     <ClInclude Include="src\AIChatFeature.h" />
     <ClInclude Include="src\AIChatTooling.h" />

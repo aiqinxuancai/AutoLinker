@@ -65,7 +65,7 @@ struct KeywordSearchResultInfo {
 	int lineNumber = -1;
 	std::string text;
 };
-std::string TrimAsciiCopy(const std::string& text)
+static std::string TrimAsciiCopy(const std::string& text)
 {
 	size_t begin = 0;
 	size_t end = text.size();
