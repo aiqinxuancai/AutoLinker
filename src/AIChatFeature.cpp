@@ -9,11 +9,13 @@
 #include <condition_variable>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <process.h>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include <tlhelp32.h>
@@ -184,6 +186,25 @@ struct ToolExecutionRequest {
 	std::mutex mutex;
 	std::condition_variable cv;
 };
+
+struct ModulePublicInfoCacheEntry {
+	std::string md5;
+	e571::ModulePublicInfoDump dump;
+	std::string error;
+	bool ok = false;
+};
+
+struct SupportLibraryDumpCacheEntry {
+	std::string md5;
+	nlohmann::json dumpJson = nlohmann::json::object();
+	std::string error;
+	bool ok = false;
+};
+
+std::mutex g_modulePublicInfoCacheMutex;
+std::unordered_map<std::string, ModulePublicInfoCacheEntry> g_modulePublicInfoCache;
+std::mutex g_supportLibraryDumpCacheMutex;
+std::unordered_map<std::string, SupportLibraryDumpCacheEntry> g_supportLibraryDumpCache;
 
 struct ProgramTreeItemInfo {
 	int depth = 0;
@@ -2339,6 +2360,371 @@ bool TryGetFileMd5HexForAI(const std::string& path, std::string& outHex)
 	return ok;
 }
 
+std::string BuildFileCacheKeyForAI(const std::string& path)
+{
+	return ToLowerAsciiCopyLocal(TrimAsciiCopy(path));
+}
+
+std::filesystem::path GetAICacheDirectoryForAI()
+{
+	try {
+		return std::filesystem::path(GetBasePath()) / "AutoLinker" / "cache";
+	}
+	catch (...) {
+		return std::filesystem::path();
+	}
+}
+
+std::filesystem::path GetModulePublicInfoCachePathForAI(const std::string& md5)
+{
+	if (TrimAsciiCopy(md5).empty()) {
+		return std::filesystem::path();
+	}
+	return GetAICacheDirectoryForAI() / "module_public_info" / (md5 + ".json");
+}
+
+std::filesystem::path GetSupportLibraryInfoCachePathForAI(const std::string& md5)
+{
+	if (TrimAsciiCopy(md5).empty()) {
+		return std::filesystem::path();
+	}
+	return GetAICacheDirectoryForAI() / "support_library_info" / (md5 + ".json");
+}
+
+bool TryReadJsonCacheFileForAI(const std::filesystem::path& path, nlohmann::json& outJson)
+{
+	outJson = nlohmann::json::object();
+	if (path.empty()) {
+		return false;
+	}
+
+	try {
+		std::ifstream in(path, std::ios::in | std::ios::binary);
+		if (!in.is_open()) {
+			return false;
+		}
+		in.seekg(0, std::ios::end);
+		const std::streamoff size = in.tellg();
+		if (size <= 0) {
+			return false;
+		}
+		in.seekg(0, std::ios::beg);
+		std::string text(static_cast<size_t>(size), '\0');
+		in.read(text.data(), size);
+		if (!in.good() && static_cast<std::streamoff>(in.gcount()) != size) {
+			return false;
+		}
+		outJson = nlohmann::json::parse(text);
+		return true;
+	}
+	catch (...) {
+		return false;
+	}
+}
+
+bool TryWriteJsonCacheFileForAI(const std::filesystem::path& path, const nlohmann::json& jsonValue)
+{
+	if (path.empty()) {
+		return false;
+	}
+
+	try {
+		std::filesystem::create_directories(path.parent_path());
+		std::ofstream out(path, std::ios::out | std::ios::binary | std::ios::trunc);
+		if (!out.is_open()) {
+			return false;
+		}
+		const std::string text = jsonValue.dump();
+		out.write(text.data(), static_cast<std::streamsize>(text.size()));
+		return out.good();
+	}
+	catch (...) {
+		return false;
+	}
+}
+
+nlohmann::json SerializeModulePublicInfoParamForAI(const e571::ModulePublicInfoParam& param)
+{
+	nlohmann::json row = nlohmann::json::object();
+	row["name"] = LocalToUtf8Text(param.name);
+	row["type_text"] = LocalToUtf8Text(param.typeText);
+	row["flags_text"] = LocalToUtf8Text(param.flagsText);
+	row["comment"] = LocalToUtf8Text(param.comment);
+	return row;
+}
+
+bool DeserializeModulePublicInfoParamForAI(const nlohmann::json& row, e571::ModulePublicInfoParam& outParam)
+{
+	if (!row.is_object()) {
+		return false;
+	}
+	outParam = {};
+	if (row.contains("name") && row["name"].is_string()) {
+		outParam.name = Utf8ToLocalText(row["name"].get<std::string>());
+	}
+	if (row.contains("type_text") && row["type_text"].is_string()) {
+		outParam.typeText = Utf8ToLocalText(row["type_text"].get<std::string>());
+	}
+	if (row.contains("flags_text") && row["flags_text"].is_string()) {
+		outParam.flagsText = Utf8ToLocalText(row["flags_text"].get<std::string>());
+	}
+	if (row.contains("comment") && row["comment"].is_string()) {
+		outParam.comment = Utf8ToLocalText(row["comment"].get<std::string>());
+	}
+	return true;
+}
+
+nlohmann::json SerializeModulePublicInfoRecordForAI(const e571::ModulePublicInfoRecord& record)
+{
+	nlohmann::json row = nlohmann::json::object();
+	row["tag"] = record.tag;
+	row["body_size"] = record.bodySize;
+	row["header_ints"] = record.headerInts;
+	row["payload_offset"] = record.payloadOffset;
+	row["raw_bytes"] = record.rawBytes;
+	row["extracted_strings"] = nlohmann::json::array();
+	for (const auto& text : record.extractedStrings) {
+		row["extracted_strings"].push_back(LocalToUtf8Text(text));
+	}
+	row["kind"] = LocalToUtf8Text(record.kind);
+	row["name"] = LocalToUtf8Text(record.name);
+	row["type_text"] = LocalToUtf8Text(record.typeText);
+	row["flags_text"] = LocalToUtf8Text(record.flagsText);
+	row["comment"] = LocalToUtf8Text(record.comment);
+	row["signature_text"] = LocalToUtf8Text(record.signatureText);
+	row["params"] = nlohmann::json::array();
+	for (const auto& param : record.params) {
+		row["params"].push_back(SerializeModulePublicInfoParamForAI(param));
+	}
+	return row;
+}
+
+bool DeserializeModulePublicInfoRecordForAI(const nlohmann::json& row, e571::ModulePublicInfoRecord& outRecord)
+{
+	if (!row.is_object()) {
+		return false;
+	}
+	outRecord = {};
+	if (row.contains("tag") && row["tag"].is_number_integer()) {
+		outRecord.tag = row["tag"].get<int>();
+	}
+	if (row.contains("body_size") && row["body_size"].is_number_unsigned()) {
+		outRecord.bodySize = row["body_size"].get<unsigned int>();
+	}
+	if (row.contains("header_ints") && row["header_ints"].is_array()) {
+		for (const auto& item : row["header_ints"]) {
+			if (item.is_number_integer()) {
+				outRecord.headerInts.push_back(item.get<int>());
+			}
+		}
+	}
+	if (row.contains("payload_offset") && row["payload_offset"].is_number_integer()) {
+		outRecord.payloadOffset = row["payload_offset"].get<int>();
+	}
+	if (row.contains("raw_bytes") && row["raw_bytes"].is_array()) {
+		for (const auto& item : row["raw_bytes"]) {
+			if (item.is_number_unsigned()) {
+				outRecord.rawBytes.push_back(static_cast<unsigned char>(item.get<unsigned int>()));
+			}
+		}
+	}
+	if (row.contains("extracted_strings") && row["extracted_strings"].is_array()) {
+		for (const auto& item : row["extracted_strings"]) {
+			if (item.is_string()) {
+				outRecord.extractedStrings.push_back(Utf8ToLocalText(item.get<std::string>()));
+			}
+		}
+	}
+	if (row.contains("kind") && row["kind"].is_string()) {
+		outRecord.kind = Utf8ToLocalText(row["kind"].get<std::string>());
+	}
+	if (row.contains("name") && row["name"].is_string()) {
+		outRecord.name = Utf8ToLocalText(row["name"].get<std::string>());
+	}
+	if (row.contains("type_text") && row["type_text"].is_string()) {
+		outRecord.typeText = Utf8ToLocalText(row["type_text"].get<std::string>());
+	}
+	if (row.contains("flags_text") && row["flags_text"].is_string()) {
+		outRecord.flagsText = Utf8ToLocalText(row["flags_text"].get<std::string>());
+	}
+	if (row.contains("comment") && row["comment"].is_string()) {
+		outRecord.comment = Utf8ToLocalText(row["comment"].get<std::string>());
+	}
+	if (row.contains("signature_text") && row["signature_text"].is_string()) {
+		outRecord.signatureText = Utf8ToLocalText(row["signature_text"].get<std::string>());
+	}
+	if (row.contains("params") && row["params"].is_array()) {
+		for (const auto& item : row["params"]) {
+			e571::ModulePublicInfoParam param;
+			if (DeserializeModulePublicInfoParamForAI(item, param)) {
+				outRecord.params.push_back(std::move(param));
+			}
+		}
+	}
+	return true;
+}
+
+nlohmann::json SerializeModulePublicInfoDumpForAI(const e571::ModulePublicInfoDump& dump)
+{
+	nlohmann::json row = nlohmann::json::object();
+	row["module_path"] = LocalToUtf8Text(dump.modulePath);
+	row["loader_error"] = LocalToUtf8Text(dump.loaderError);
+	row["trace"] = LocalToUtf8Text(dump.trace);
+	row["source_kind"] = dump.sourceKind;
+	row["version_text"] = LocalToUtf8Text(dump.versionText);
+	row["module_name"] = LocalToUtf8Text(dump.moduleName);
+	row["assembly_name"] = LocalToUtf8Text(dump.assemblyName);
+	row["assembly_comment"] = LocalToUtf8Text(dump.assemblyComment);
+	row["formatted_text"] = LocalToUtf8Text(dump.formattedText);
+	row["native_result"] = dump.nativeResult;
+	row["records"] = nlohmann::json::array();
+	for (const auto& record : dump.records) {
+		row["records"].push_back(SerializeModulePublicInfoRecordForAI(record));
+	}
+	return row;
+}
+
+bool DeserializeModulePublicInfoDumpForAI(const nlohmann::json& row, e571::ModulePublicInfoDump& outDump)
+{
+	if (!row.is_object()) {
+		return false;
+	}
+
+	outDump = {};
+	if (row.contains("module_path") && row["module_path"].is_string()) {
+		outDump.modulePath = Utf8ToLocalText(row["module_path"].get<std::string>());
+	}
+	if (row.contains("loader_error") && row["loader_error"].is_string()) {
+		outDump.loaderError = Utf8ToLocalText(row["loader_error"].get<std::string>());
+	}
+	if (row.contains("trace") && row["trace"].is_string()) {
+		outDump.trace = Utf8ToLocalText(row["trace"].get<std::string>());
+	}
+	if (row.contains("source_kind") && row["source_kind"].is_string()) {
+		outDump.sourceKind = row["source_kind"].get<std::string>();
+	}
+	if (row.contains("version_text") && row["version_text"].is_string()) {
+		outDump.versionText = Utf8ToLocalText(row["version_text"].get<std::string>());
+	}
+	if (row.contains("module_name") && row["module_name"].is_string()) {
+		outDump.moduleName = Utf8ToLocalText(row["module_name"].get<std::string>());
+	}
+	if (row.contains("assembly_name") && row["assembly_name"].is_string()) {
+		outDump.assemblyName = Utf8ToLocalText(row["assembly_name"].get<std::string>());
+	}
+	if (row.contains("assembly_comment") && row["assembly_comment"].is_string()) {
+		outDump.assemblyComment = Utf8ToLocalText(row["assembly_comment"].get<std::string>());
+	}
+	if (row.contains("formatted_text") && row["formatted_text"].is_string()) {
+		outDump.formattedText = Utf8ToLocalText(row["formatted_text"].get<std::string>());
+	}
+	if (row.contains("native_result") && row["native_result"].is_number_integer()) {
+		outDump.nativeResult = row["native_result"].get<int>();
+	}
+	if (row.contains("records") && row["records"].is_array()) {
+		for (const auto& item : row["records"]) {
+			e571::ModulePublicInfoRecord record;
+			if (DeserializeModulePublicInfoRecordForAI(item, record)) {
+				outDump.records.push_back(std::move(record));
+			}
+		}
+	}
+	return true;
+}
+
+bool TryLoadModulePublicInfoCachedForAI(
+	const std::string& modulePath,
+	e571::ModulePublicInfoDump& outDump,
+	std::string& outError,
+	bool* outCacheHit = nullptr)
+{
+	outDump = {};
+	outError.clear();
+	if (outCacheHit != nullptr) {
+		*outCacheHit = false;
+	}
+
+	std::string md5;
+	if (!TryGetFileMd5HexForAI(modulePath, md5) || md5.empty()) {
+		return e571::LoadModulePublicInfoDump(
+			modulePath,
+			GetCurrentProcessImageBaseForAI(),
+			&outDump,
+			&outError);
+	}
+
+	const std::string cacheKey = BuildFileCacheKeyForAI(modulePath);
+	{
+		std::lock_guard<std::mutex> guard(g_modulePublicInfoCacheMutex);
+		const auto it = g_modulePublicInfoCache.find(cacheKey);
+		if (it != g_modulePublicInfoCache.end() && it->second.md5 == md5) {
+			outDump = it->second.dump;
+			outError = it->second.error;
+			if (outCacheHit != nullptr) {
+				*outCacheHit = true;
+			}
+			return it->second.ok;
+		}
+	}
+
+	{
+		nlohmann::json cacheJson;
+		if (TryReadJsonCacheFileForAI(GetModulePublicInfoCachePathForAI(md5), cacheJson) &&
+			cacheJson.is_object() &&
+			cacheJson.value("schema", std::string()) == "module_public_info_v1" &&
+			cacheJson.value("md5", std::string()) == md5 &&
+			cacheJson.contains("dump")) {
+			e571::ModulePublicInfoDump cachedDump;
+			if (DeserializeModulePublicInfoDumpForAI(cacheJson["dump"], cachedDump)) {
+				cachedDump.modulePath = modulePath;
+				ModulePublicInfoCacheEntry entry;
+				entry.md5 = md5;
+				entry.dump = cachedDump;
+				entry.ok = true;
+				{
+					std::lock_guard<std::mutex> guard(g_modulePublicInfoCacheMutex);
+					g_modulePublicInfoCache[cacheKey] = entry;
+				}
+				outDump = std::move(cachedDump);
+				if (outCacheHit != nullptr) {
+					*outCacheHit = true;
+				}
+				return true;
+			}
+		}
+	}
+
+	e571::ModulePublicInfoDump loadedDump;
+	std::string loadError;
+	const bool ok = e571::LoadModulePublicInfoDump(
+		modulePath,
+		GetCurrentProcessImageBaseForAI(),
+		&loadedDump,
+		&loadError);
+
+	ModulePublicInfoCacheEntry entry;
+	entry.md5 = md5;
+	entry.dump = loadedDump;
+	entry.error = loadError;
+	entry.ok = ok;
+	{
+		std::lock_guard<std::mutex> guard(g_modulePublicInfoCacheMutex);
+		g_modulePublicInfoCache[cacheKey] = std::move(entry);
+	}
+
+	if (ok) {
+		nlohmann::json cacheJson = nlohmann::json::object();
+		cacheJson["schema"] = "module_public_info_v1";
+		cacheJson["md5"] = md5;
+		cacheJson["dump"] = SerializeModulePublicInfoDumpForAI(loadedDump);
+		TryWriteJsonCacheFileForAI(GetModulePublicInfoCachePathForAI(md5), cacheJson);
+	}
+
+	outDump = std::move(loadedDump);
+	outError = loadError;
+	return ok;
+}
+
 struct SupportLibraryInfoHeaderForAI {
 	int index = -1;
 	std::string rawName;
@@ -3022,6 +3408,95 @@ bool LoadSupportLibraryDumpFromFileForAI(
 	return true;
 }
 
+bool TryLoadSupportLibraryDumpCachedForAI(
+	const std::string& filePath,
+	nlohmann::json& outJson,
+	std::string& outError,
+	bool* outCacheHit = nullptr)
+{
+	outJson = nlohmann::json::object();
+	outError.clear();
+	if (outCacheHit != nullptr) {
+		*outCacheHit = false;
+	}
+
+	std::string md5;
+	if (!TryGetFileMd5HexForAI(filePath, md5) || md5.empty()) {
+		return LoadSupportLibraryDumpFromFileForAI(filePath, outJson, outError);
+	}
+
+	const std::string cacheKey = BuildFileCacheKeyForAI(filePath);
+	const std::filesystem::path cachePath = GetSupportLibraryInfoCachePathForAI(md5);
+	{
+		std::lock_guard<std::mutex> guard(g_supportLibraryDumpCacheMutex);
+		const auto it = g_supportLibraryDumpCache.find(cacheKey);
+		if (it != g_supportLibraryDumpCache.end() && it->second.md5 == md5) {
+			outJson = it->second.dumpJson;
+			outError = it->second.error;
+			if (outCacheHit != nullptr) {
+				*outCacheHit = true;
+			}
+			return it->second.ok;
+		}
+	}
+
+	{
+		nlohmann::json cacheJson = nlohmann::json::object();
+		if (TryReadJsonCacheFileForAI(cachePath, cacheJson) &&
+			cacheJson.is_object() &&
+			cacheJson.value("schema", "") == "support_library_info_v1" &&
+			cacheJson.value("md5", "") == md5 &&
+			cacheJson.contains("dump") &&
+			cacheJson["dump"].is_object()) {
+			nlohmann::json cachedDump = cacheJson["dump"];
+			cachedDump["file_path"] = LocalToUtf8Text(filePath);
+			cachedDump["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(filePath));
+
+			SupportLibraryDumpCacheEntry entry;
+			entry.md5 = md5;
+			entry.dumpJson = cachedDump;
+			entry.error.clear();
+			entry.ok = true;
+			{
+				std::lock_guard<std::mutex> guard(g_supportLibraryDumpCacheMutex);
+				g_supportLibraryDumpCache[cacheKey] = entry;
+			}
+
+			outJson = std::move(cachedDump);
+			if (outCacheHit != nullptr) {
+				*outCacheHit = true;
+			}
+			return true;
+		}
+	}
+
+	nlohmann::json loadedJson = nlohmann::json::object();
+	std::string loadError;
+	const bool ok = LoadSupportLibraryDumpFromFileForAI(filePath, loadedJson, loadError);
+
+	SupportLibraryDumpCacheEntry entry;
+	entry.md5 = md5;
+	entry.dumpJson = loadedJson;
+	entry.error = loadError;
+	entry.ok = ok;
+	{
+		std::lock_guard<std::mutex> guard(g_supportLibraryDumpCacheMutex);
+		g_supportLibraryDumpCache[cacheKey] = std::move(entry);
+	}
+
+	if (ok) {
+		nlohmann::json cacheJson = nlohmann::json::object();
+		cacheJson["schema"] = "support_library_info_v1";
+		cacheJson["md5"] = md5;
+		cacheJson["dump"] = loadedJson;
+		TryWriteJsonCacheFileForAI(cachePath, cacheJson);
+	}
+
+	outJson = std::move(loadedJson);
+	outError = loadError;
+	return ok;
+}
+
 const char* GetModulePublicInfoTagKeyForAI(int tag)
 {
 	switch (tag) {
@@ -3197,7 +3672,7 @@ std::string BuildGetSupportLibraryInfoJsonOnMainThread(const std::string& argume
 	nlohmann::json r;
 	if (!header.filePath.empty()) {
 		std::string loadError;
-		if (LoadSupportLibraryDumpFromFileForAI(header.filePath, r, loadError)) {
+		if (TryLoadSupportLibraryDumpCachedForAI(header.filePath, r, loadError, nullptr)) {
 			r["index"] = header.index;
 			r["resolved_header_name"] = LocalToUtf8Text(header.name);
 			r["raw_name_from_ide_text"] = LocalToUtf8Text(header.rawName);
@@ -3282,7 +3757,7 @@ std::string BuildSearchSupportLibraryInfoJsonOnMainThread(const std::string& arg
 		if (!lib.filePath.empty()) {
 			nlohmann::json dump;
 			std::string loadError;
-			if (LoadSupportLibraryDumpFromFileForAI(lib.filePath, dump, loadError)) {
+			if (TryLoadSupportLibraryDumpCachedForAI(lib.filePath, dump, loadError, nullptr)) {
 				usedStructured = true;
 
 				if (dump.contains("commands") && dump["commands"].is_array()) {
@@ -3468,11 +3943,11 @@ std::string BuildGetModulePublicInfoJsonOnMainThread(const std::string& argument
 
 	e571::ModulePublicInfoDump dump;
 	std::string loadError;
-	if (!e571::LoadModulePublicInfoDump(
+	if (!TryLoadModulePublicInfoCachedForAI(
 			resolvedPath,
-			GetCurrentProcessImageBaseForAI(),
-			&dump,
-			&loadError)) {
+			dump,
+			loadError,
+			nullptr)) {
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = loadError.empty() ? "load module public info failed" : loadError;
@@ -3577,11 +4052,11 @@ std::string BuildSearchModulePublicInfoJsonOnMainThread(const std::string& argum
 	for (const auto& path : paths) {
 		e571::ModulePublicInfoDump dump;
 		std::string loadError;
-		if (!e571::LoadModulePublicInfoDump(
+		if (!TryLoadModulePublicInfoCachedForAI(
 				path,
-				GetCurrentProcessImageBaseForAI(),
-				&dump,
-				&loadError)) {
+				dump,
+				loadError,
+				nullptr)) {
 			continue;
 		}
 
