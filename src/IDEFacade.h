@@ -37,6 +37,13 @@ public:
 		SoundResource
 	};
 
+	enum class CompileOutputKind {
+		WinExe,
+		WinConsoleExe,
+		WinDll,
+		Ecom
+	};
+
 	// 代码文本查询结果（对应 FN_GET_PRG_TEXT / FN_GET_PRG_HELP）。
 	struct ProgramText {
 		std::string text;
@@ -148,6 +155,12 @@ public:
 	bool OpenFile(const std::string& filePath) const;
 	bool Compile() const;
 	bool CompileAndRun() const;
+	bool CompileWithOutputPath(
+		CompileOutputKind kind,
+		const std::string& outputPath,
+		bool staticCompile,
+		std::string* outNormalizedPath = nullptr,
+		std::string* outDiagnostics = nullptr) const;
 	bool AddOutputTab(HWND hWnd, const std::string& caption, const std::string& toolTip, HICON hIcon = nullptr) const;
 	// 向 IDE 输出窗口追加文本/行文本（行文本会自动追加 CRLF）。
 	bool AppendOutputWindowText(const std::string& text) const;

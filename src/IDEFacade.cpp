@@ -45,6 +45,61 @@ std::string TrimAsciiCopyLocal(const std::string& text)
 	return text.substr(begin, end - begin);
 }
 
+std::string NormalizeCompileOutputPathLocal(
+	const std::string& outputPath,
+	IDEFacade::CompileOutputKind kind,
+	std::string* diagnostics)
+{
+	const std::string trimmed = TrimAsciiCopyLocal(outputPath);
+	if (trimmed.empty()) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "output_path_empty";
+		}
+		return std::string();
+	}
+
+	try {
+		std::filesystem::path path(trimmed);
+		if (path.is_relative()) {
+			path = std::filesystem::absolute(path);
+		}
+
+		if (!path.has_extension()) {
+			switch (kind) {
+			case IDEFacade::CompileOutputKind::WinExe:
+			case IDEFacade::CompileOutputKind::WinConsoleExe:
+				path.replace_extension(".exe");
+				break;
+			case IDEFacade::CompileOutputKind::WinDll:
+				path.replace_extension(".dll");
+				break;
+			case IDEFacade::CompileOutputKind::Ecom:
+				path.replace_extension(".ec");
+				break;
+			default:
+				break;
+			}
+		}
+
+		path = path.lexically_normal();
+		const std::filesystem::path parent = path.parent_path();
+		if (!parent.empty() && !std::filesystem::exists(parent)) {
+			std::filesystem::create_directories(parent);
+		}
+
+		if (diagnostics != nullptr) {
+			*diagnostics = "ok";
+		}
+		return path.string();
+	}
+	catch (const std::exception& ex) {
+		if (diagnostics != nullptr) {
+			*diagnostics = std::string("normalize_output_path_failed: ") + ex.what();
+		}
+		return std::string();
+	}
+}
+
 std::string GetWindowTextCopyLocalA(HWND hWnd)
 {
 	char buffer[512] = {};
@@ -2969,6 +3024,75 @@ bool IDEFacade::Compile() const
 bool IDEFacade::CompileAndRun() const
 {
 	return RunCompileAndRun();
+}
+
+bool IDEFacade::CompileWithOutputPath(
+	CompileOutputKind kind,
+	const std::string& outputPath,
+	bool staticCompile,
+	std::string* outNormalizedPath,
+	std::string* outDiagnostics) const
+{
+	if (kind == CompileOutputKind::Ecom && staticCompile) {
+		if (outDiagnostics != nullptr) {
+			*outDiagnostics = "ecom_does_not_support_static_compile";
+		}
+		return false;
+	}
+
+	std::string normalizeDiagnostics;
+	const std::string normalizedPath = NormalizeCompileOutputPathLocal(outputPath, kind, &normalizeDiagnostics);
+	if (normalizedPath.empty()) {
+		if (outDiagnostics != nullptr) {
+			*outDiagnostics = normalizeDiagnostics.empty() ? "normalize_output_path_failed" : normalizeDiagnostics;
+		}
+		return false;
+	}
+	if (outNormalizedPath != nullptr) {
+		*outNormalizedPath = normalizedPath;
+	}
+
+	std::string requestDiagnostics;
+	if (!BeginSilentCompileOutputPathRequest(normalizedPath, GetCurrentThreadId(), &requestDiagnostics)) {
+		if (outDiagnostics != nullptr) {
+			*outDiagnostics = requestDiagnostics.empty() ? "begin_silent_compile_request_failed" : requestDiagnostics;
+		}
+		return false;
+	}
+
+	bool ok = false;
+	switch (kind) {
+	case CompileOutputKind::WinExe:
+		ok = staticCompile ? RunStaticCompileWindowsExe() : RunCompileWindowsExe();
+		break;
+	case CompileOutputKind::WinConsoleExe:
+		ok = staticCompile ? RunStaticCompileWindowsConoleExe() : RunCompileWindowsConoleExe();
+		break;
+	case CompileOutputKind::WinDll:
+		ok = staticCompile ? RunStaticCompileWindowsDll() : RunCompileWindowsDll();
+		break;
+	case CompileOutputKind::Ecom:
+		ok = RunCompileWindowsEcom();
+		break;
+	default:
+		ok = false;
+		break;
+	}
+
+	if (!ok) {
+		CancelSilentCompileOutputPathRequest();
+		if (outDiagnostics != nullptr) {
+			*outDiagnostics = "invoke_compile_command_failed";
+		}
+		return false;
+	}
+
+	if (outDiagnostics != nullptr) {
+		*outDiagnostics = WasSilentCompileOutputPathRequestConsumed()
+			? "compile_invoked_dialog_suppressed"
+			: "compile_invoked_dialog_pending";
+	}
+	return true;
 }
 
 bool IDEFacade::AddOutputTab(HWND hWnd, const std::string& caption, const std::string& toolTip, HICON hIcon) const

@@ -10,6 +10,7 @@
 
 #include "ConfigManager.h"
 #include "Global.h"
+#include "IDEFacade.h"
 #include "WinINetUtil.h"
 #include <chrono>
 
@@ -40,6 +41,35 @@ bool EndsWithInsensitive(const std::string& text, const std::string& suffix)
 	}
 	const std::string tail = text.substr(text.size() - suffix.size());
 	return ToLowerAsciiCopy(tail) == ToLowerAsciiCopy(suffix);
+}
+
+std::string DetectProjectTypeText()
+{
+	struct Candidate {
+		INT fnCode;
+		const char* text;
+	};
+
+	const Candidate candidates[] = {
+		{FN_COMPILE_WINDOWS_DLL, "DLL"},
+		{FN_COMPILE_WINDOWS_EXE, "窗口程序 EXE"},
+		{FN_COMPILE_WINDOWS_CONOLE_EXE, "控制台程序 EXE"},
+		{FN_COMPILE_WINDOWS_ECOM, "易模块"}
+	};
+
+	auto& ide = IDEFacade::Instance();
+	std::string detected;
+	for (const auto& candidate : candidates) {
+		if (!ide.IsFunctionEnabled(candidate.fnCode)) {
+			continue;
+		}
+		if (!detected.empty()) {
+			detected += " / ";
+		}
+		detected += candidate.text;
+	}
+
+	return detected.empty() ? std::string("未知") : detected;
 }
 
 std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
@@ -561,6 +591,20 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "compile_with_output_path"},
+		{"description", "Start compile or static compile with a specified output path and suppress the IDE system save-file dialog. Supported targets: win_exe, win_console_exe, win_dll, ecom. Note: ecom only supports non-static compile, and final compile success still needs IDE output verification."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"target", {{"type", "string"}, {"description", "One of: win_exe, win_console_exe, win_dll, ecom."}}},
+				{"output_path", {{"type", "string"}}},
+				{"static_compile", {{"type", "boolean"}}}
+			}},
+			{"required", nlohmann::json::array({"target", "output_path"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "request_code_edit"},
 		{"description", "Open local editable code dialog and return user confirmed code."},
 		{"inputSchema", {
@@ -610,43 +654,44 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		}
 	}
 
+	const std::string projectType = DetectProjectTypeText();
 	std::string prompt =
-		"你是 AutoLinker 的易语言开发助手。\n"
-		"你可以通过工具获取当前页代码、枚举程序树中的程序集/类/全局变量等、按名称抓整页代码，以及执行项目级关键词搜索。\n"
-		"当前项目名称：" + (projectName.empty() ? std::string("未知") : projectName) + "。\n"
-		"易语言基本约定：\n"
+		"你是 AutoLinker 内置的易语言项目助手。\n"
+		"优先使用工具获取准确上下文，不要臆测当前页面、模块、支持库、搜索结果或代码内容。\n\n"
+		"当前项目名称：" + (projectName.empty() ? std::string("未知") : projectName) + "\n\n"
+		"当前项目类型：" + projectType + "\n\n"
+		"易语言基础约定：\n"
 		"- 以 # 开头的标识通常表示常量。\n"
-		"- 以 . 开头的是易语言系统指令或关键字，例如 .版本、.子程序、.参数、.局部变量、.如果。\n"
-		"- 单引号（'）开头的是注释。\n"
-		"- 真/假 是布尔值。\n"
-		"- 易语言代码里常见全角符号，例如 ＝、≠、（）、，、＋，分析时不要误判成非法字符。\n"
-		"- 赋值常见写法是 `变量 ＝ 值`，不是 C/C++ 风格的 `=`。\n"
-		"- 自增通常写成 `a ＝ a ＋ 1`，不支持 `a++` 这类语法。\n"
+		"- 以 . 开头的是易语言系统指令/关键字，例如 .版本、.程序集、.子程序、.参数、.局部变量、.如果、.否则。\n"
+		"- 单引号 ' 开头表示注释。\n"
+		"- 真 / 假 是布尔值。\n"
+		"- 赋值常写作 `变量 ＝ 值`，不要误写成 C/C++ 风格的 `=`。\n"
+		"- 自增通常写作 `a ＝ a ＋ 1`，不要写 `a++`。\n"
 		"- 返回常见写法是 `返回 (...)`。\n"
-		"- 全角中文标点在代码里较常见，分析时不要误判。\n"
-		"常见流程控制语法示例：\n"
+		"- 全角中文标点和全角运算符在代码里较常见，分析时不要误判。\n\n"
+		"常见流程控制示例：\n"
 		"1) 条件成立执行：\n"
 		".如果真 ()\n"
 		"    a ＝ 0\n"
-		".如果真结束\n"
+		".如果真结束\n\n"
 		"2) if / else：\n"
 		".如果 (a ＝ 0)\n"
 		"    a ＝ 1\n"
 		".否则\n"
 		"    b ＝ 1\n"
-		".如果结束\n"
+		".如果结束\n\n"
 		"3) 计次循环：\n"
 		".计次循环首 (count, i)\n"
 		"    a ＝ a ＋ 1\n"
-		".计次循环尾 ()\n"
+		".计次循环尾 ()\n\n"
 		"4) 变量循环：\n"
 		".变量循环首 (1, 100, 1, i)\n"
 		"    输出调试文本 (i)\n"
-		".变量循环尾 ()\n"
+		".变量循环尾 ()\n\n"
 		"5) 循环判断：\n"
 		".循环判断首 ()\n"
 		"    输出调试文本 (“这么写会是死循环”)\n"
-		".循环判断尾 (真)\n"
+		".循环判断尾 (真)\n\n"
 		"6) 多分支判断：\n"
 		".判断开始 (b ＝ 1)\n"
 		"    a ＝ 1\n"
@@ -658,20 +703,20 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"    a ＝ 1\n"
 		".默认\n"
 		"    def ＝ 1\n"
-		".判断结束\n"
-		"规则：\n"
-		"1) 需要源码时优先调用 get_current_page_code，不要臆造现有代码；该工具会同时返回当前页名称和页类型。\n"
-		"2) 只需要知道当前页是谁而不需要全文代码时，调用 get_current_page_info。\n"
-		"3) 需要当前项目已选支持库列表时调用 list_support_libraries；需要支持库公开定义时调用 get_support_library_info；需要在支持库公开定义里检索关键词时调用 search_support_library_info。\n"
-		"4) 需要模块/易模块列表时先调用 list_imported_modules；需要模块公开接口时调用 get_module_public_info；需要在模块公开接口里检索关键词时调用 search_module_public_info。\n"
-		"5) 需要枚举项目结构时优先调用 list_program_items；需要某个程序集/类整页代码时调用 get_program_item_code；只需要切换页面时调用 switch_to_program_item_page。\n"
-		"6) 需要项目内关键词定位时先调用 search_project_keyword 查看结果；若要精确跳到其中某一条，使用该条结果返回的 jump_token 调用 jump_to_search_result。\n"
-		"7) get_program_item_code、switch_to_program_item_page、jump_to_search_result 都可能触发 IDE 当前页面变更；调用前要意识到这是有副作用的，不要把调用前后的当前页混为一谈。\n"
-		"8) 通过搜索结果、程序树按名称抓到的代码、模块公开信息工具拿到的内容、以及支持库公开信息工具拿到的内容，都不保证与 IDE 正常编辑页结构一致，只能作为伪代码/公开接口参考；分析和修改建议时必须明确这一点。\n"
-		"9) 需要用户确认/修订代码时调用 request_code_edit。\n"
-		"10) 工具返回失败或取消时，给出下一步建议，不要编造工具结果。\n"
-		"11) 除非用户要求解释，否则尽量给直接可执行结论。\n";
-
+		".判断结束\n\n"
+		"工具使用规则：\n"
+		"1) 需要当前页完整代码时调用 get_current_page_code；如果还要页名与类型，调用 get_current_page_info。\n"
+		"2) 只想知道当前打开页是谁，不需要整页代码时，优先调用 get_current_page_info。\n"
+		"3) 支持库相关信息：先用 list_support_libraries，再按需用 get_support_library_info / search_support_library_info。\n"
+		"4) 模块公开信息：先用 list_imported_modules，再按需用 get_module_public_info / search_module_public_info。\n"
+		"5) 程序树页面与伪代码：先用 list_program_items，再按需用 get_program_item_code 或 switch_to_program_item_page。\n"
+		"6) 搜索工程关键字时先用 search_project_keyword，拿到具体 jump_token 后再决定是否调用 jump_to_search_result。\n"
+		"7) jump_to_search_result、switch_to_program_item_page、get_program_item_code 都会改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
+		"8) 通过搜索、程序树、模块公开信息、支持库公开信息拿到的代码或文本，多数只是伪代码 / 公共接口参考，不一定等于 IDE 正常编辑页。\n"
+		"9) 需要无弹窗编译时调用 compile_with_output_path。它会指定输出路径并拦截系统保存对话框，支持模块工程编译为 ec，以及窗口程序 / 控制台程序 / DLL 的编译与静态编译；最终是否编译成功仍要结合 IDE 输出或产物确认。\n"
+		"10) 需要真正修改代码时调用 request_code_edit。\n"
+		"11) 工具失败时先分析失败原因并换更合适的工具，不要机械重试同一个调用。\n"
+		"12) 不要要求用户手动补上下文，优先自己通过工具获取。\n";
 	const std::string extraPrompt = AIService::Trim(settings.extraSystemPrompt);
 	if (!extraPrompt.empty()) {
 		prompt += "\n附加系统提示：\n";
@@ -1775,8 +1820,10 @@ std::string AIService::BuildEndpoint(const std::string& baseUrl)
 
 std::string AIService::BuildSystemPrompt(AITaskKind kind, const AISettings& settings)
 {
+	const std::string projectType = DetectProjectTypeText();
 	std::string prompt =
 		"你是一个易语言代码助手。\n"
+		"当前项目类型：" + projectType + "\n"
 		"规则：\n"
 		"1) 代码注释使用单引号（'）。\n"
 		"2) 必须遵循易语言语法与排版（如 .版本 2、.子程序 等）。\n"
@@ -1890,13 +1937,14 @@ EnumWindows (到整数 (&枚举窗口过程), 0)
 		break;
 	case AITaskKind::AddByCurrentPageType:
 		prompt +=
-			"任务：根据“当前页类型 + 用户需求 + 当前页完整代码”，生成“仅新增”的代码片段。\n"
-			"严格要求：\n"
-			"1) 只返回要新增的代码，禁止返回整页代码。\n"
-			"2) 不要输出解释、不要输出 Markdown。\n"
-			"3) 不要输出 .版本 行。\n"
-			"4) 避免与当前页已有定义重复命名。\n"
-			"5) 输出内容需可直接粘贴到当前页底部。\n";
+			"任务：根据‘当前页类型 + 用户需求 + 当前页伪代码’生成一段可直接追加的代码片段。\n\n"
+			"额外要求：\n"
+			"1) 只输出要追加的代码，禁止重复整个页面。\n"
+			"2) 不要输出解释或 Markdown 包装。\n"
+			"3) 不要重复输出 .版本 行。\n"
+			"4) 必须遵守当前页面已有结构和书写风格。\n"
+			"5) 生成结果必须能直接粘贴到当前页面末尾。\n\n"
+			"输出时保持原有换行与缩进，不要把多行代码压成一行。";
 		break;
 	default:
 		break;

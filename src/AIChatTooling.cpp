@@ -1,4 +1,4 @@
-﻿#include "AIChatTooling.h"
+#include "AIChatTooling.h"
 #include "AIChatToolingInternal.h"
 
 #include <Windows.h>
@@ -225,7 +225,8 @@ std::string ExecuteToolCall(const std::string& toolName, const std::string& argu
 		toolName == "get_program_item_code" ||
 		toolName == "switch_to_program_item_page" ||
 		toolName == "search_project_keyword" ||
-		toolName == "jump_to_search_result") {
+		toolName == "jump_to_search_result" ||
+		toolName == "compile_with_output_path") {
 		std::string resultJson;
 		if (!RequestToolExecutionFromMainThread(toolName, argumentsJson, resultJson, outOk)) {
 			return R"({"ok":false,"error":"main thread tool execution failed"})";

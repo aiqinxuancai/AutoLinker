@@ -2908,6 +2908,82 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		return Utf8ToLocalText(r.dump());
 	}
 
+	if (toolName == "compile_with_output_path") {
+		nlohmann::json args;
+		try {
+			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const std::string target = args.contains("target") && args["target"].is_string()
+			? ToLowerAsciiCopyLocal(args["target"].get<std::string>())
+			: std::string();
+		const std::string outputPath = args.contains("output_path") && args["output_path"].is_string()
+			? Utf8ToLocalText(args["output_path"].get<std::string>())
+			: std::string();
+		const bool staticCompile = args.contains("static_compile") && args["static_compile"].is_boolean()
+			? args["static_compile"].get<bool>()
+			: false;
+
+		if (TrimAsciiCopy(target).empty()) {
+			return R"({"ok":false,"error":"target is required"})";
+		}
+		if (TrimAsciiCopy(outputPath).empty()) {
+			return R"({"ok":false,"error":"output_path is required"})";
+		}
+
+		IDEFacade::CompileOutputKind kind = IDEFacade::CompileOutputKind::WinExe;
+		if (target == "win_exe") {
+			kind = IDEFacade::CompileOutputKind::WinExe;
+		}
+		else if (target == "win_console_exe") {
+			kind = IDEFacade::CompileOutputKind::WinConsoleExe;
+		}
+		else if (target == "win_dll") {
+			kind = IDEFacade::CompileOutputKind::WinDll;
+		}
+		else if (target == "ecom") {
+			kind = IDEFacade::CompileOutputKind::Ecom;
+		}
+		else {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "unsupported target";
+			return Utf8ToLocalText(r.dump());
+		}
+
+		std::string normalizedPath;
+		std::string diagnostics;
+		if (!IDEFacade::Instance().CompileWithOutputPath(
+				kind,
+				outputPath,
+				staticCompile,
+				&normalizedPath,
+				&diagnostics)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = diagnostics.empty() ? "compile_with_output_path_failed" : diagnostics;
+			r["target"] = target;
+			r["static_compile"] = staticCompile;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		nlohmann::json r;
+		r["ok"] = true;
+		r["target"] = target;
+		r["static_compile"] = staticCompile;
+		r["output_path"] = LocalToUtf8Text(normalizedPath);
+		r["trace"] = diagnostics;
+        r["warning"] = LocalToUtf8Text("This only suppresses the system save-file dialog by injecting the requested output path. Final compile success still needs to be confirmed from IDE output or artifacts.");
+		outOk = true;
+		return Utf8ToLocalText(r.dump());
+	}
+
 	nlohmann::json r;
 	r["ok"] = false;
 	r["error"] = "unknown tool: " + toolName;

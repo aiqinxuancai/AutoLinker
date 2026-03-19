@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstring>
 #include "ConfigManager.h"
 #include <regex>
 #include "PathHelper.h"
@@ -74,6 +75,18 @@ bool g_initStarted = false;
 
 HMENU g_topLinkerSubMenu = NULL;
 std::unordered_map<UINT, std::string> g_topLinkerCommandMap;
+std::mutex g_silentCompileOutputPathMutex;
+
+struct SilentCompileOutputPathState {
+	bool active = false;
+	bool consumed = false;
+	DWORD ownerThreadId = 0;
+	std::string outputPath;
+	std::chrono::steady_clock::time_point createdAt = {};
+};
+
+SilentCompileOutputPathState g_silentCompileOutputPathState;
+
 
 void UpdateCurrentOpenSourceFile();
 void OutputCurrentSourceLinker();
@@ -1887,6 +1900,37 @@ void RunFirstSupportLibraryInfoTest()
 		GetSupportLibraryInfoLogPath().string()));
 }
 
+void RunStaticCompileWindowsExeTest()
+{
+	const std::string outputPath = (
+		std::filesystem::path(GetBasePath()) /
+		"AutoLinker" /
+		"StaticCompileTest" /
+		"AutoLinkerStaticTest.exe").string();
+
+	std::string normalizedPath;
+	std::string diagnostics;
+	const bool ok = IDEFacade::Instance().CompileWithOutputPath(
+		IDEFacade::CompileOutputKind::WinExe,
+		outputPath,
+		true,
+		&normalizedPath,
+		&diagnostics);
+
+	if (!ok) {
+		OutputStringToELog(std::format(
+			"[StaticCompileExeTest] 触发失败 output={} diagnostics={}",
+			EscapeOneLineForLog(outputPath),
+			EscapeOneLineForLog(diagnostics)));
+		return;
+	}
+
+	OutputStringToELog(std::format(
+		"[StaticCompileExeTest] 已触发静态编译 output={} diagnostics={}",
+		EscapeOneLineForLog(normalizedPath),
+		EscapeOneLineForLog(diagnostics)));
+}
+
 void AutoRunModulePublicInfoTestThread(void* /*pParams*/)
 {
 	Sleep(10000);
@@ -3517,11 +3561,7 @@ bool IsCompileOrToolsTopPopup(HMENU hPopupMenu)
 		int itemCount = GetMenuItemCount(hPopupMenu);
 		for (int item = 0; item < itemCount; ++item) {
 			std::wstring itemTitle = GetMenuTitleW(hPopupMenu, static_cast<UINT>(item), MF_BYPOSITION);
-			if (itemTitle.find(L"编译") != std::wstring::npos ||
-				itemTitle.find(L"发布") != std::wstring::npos ||
-				itemTitle.find(L"静态") != std::wstring::npos ||
-				itemTitle.find(L"Build") != std::wstring::npos ||
-				itemTitle.find(L"Release") != std::wstring::npos) {
+			if (itemTitle.find(L"静态编译") != std::wstring::npos){
 				++keywordHit;
 			}
 		}
@@ -3829,6 +3869,206 @@ void FinalizeAutoLinkerPopupMenu(HMENU hMenu)
 }
 
 
+namespace {
+
+constexpr auto kSilentCompileOutputPathTimeout = std::chrono::seconds(30);
+
+std::string NormalizeSilentCompileOutputPath(const std::string& outputPath)
+{
+	if (outputPath.empty()) {
+		return std::string();
+	}
+
+	try {
+		std::filesystem::path path(outputPath);
+		path = path.lexically_normal();
+		if (path.is_relative()) {
+			path = std::filesystem::absolute(path);
+		}
+		path = path.lexically_normal();
+		return path.string();
+	}
+	catch (...) {
+		return outputPath;
+	}
+}
+
+bool FillOpenFileNamePathA(LPOPENFILENAMEA item, const std::string& outputPath, std::string* diagnostics)
+{
+	if (item == nullptr) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "item_null";
+		}
+		return false;
+	}
+	if (item->lpstrFile == nullptr || item->nMaxFile <= 1) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "file_buffer_invalid";
+		}
+		return false;
+	}
+	if (outputPath.empty()) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "output_path_empty";
+		}
+		return false;
+	}
+	if (outputPath.size() + 1 > static_cast<size_t>(item->nMaxFile)) {
+		if (diagnostics != nullptr) {
+			*diagnostics = std::format(
+				"file_buffer_too_small pathLen={} maxFile={}",
+				outputPath.size(),
+				item->nMaxFile);
+		}
+		return false;
+	}
+
+	std::memset(item->lpstrFile, 0, static_cast<size_t>(item->nMaxFile));
+	std::memcpy(item->lpstrFile, outputPath.c_str(), outputPath.size());
+
+	try {
+		const std::filesystem::path path(outputPath);
+		const std::string fileName = path.filename().string();
+		if (item->lpstrFileTitle != nullptr && item->nMaxFileTitle > 0) {
+			if (fileName.size() + 1 > static_cast<size_t>(item->nMaxFileTitle)) {
+				if (diagnostics != nullptr) {
+					*diagnostics = std::format(
+						"file_title_buffer_too_small titleLen={} maxFileTitle={}",
+						fileName.size(),
+						item->nMaxFileTitle);
+				}
+				return false;
+			}
+			std::memset(item->lpstrFileTitle, 0, static_cast<size_t>(item->nMaxFileTitle));
+			std::memcpy(item->lpstrFileTitle, fileName.c_str(), fileName.size());
+		}
+
+		const auto nativePath = path.string();
+		const size_t fileOffset = nativePath.size() - fileName.size();
+		item->nFileOffset = static_cast<WORD>(fileOffset);
+
+		const auto extension = path.extension().string();
+		if (!extension.empty()) {
+			item->nFileExtension = static_cast<WORD>(nativePath.size() - extension.size() + 1);
+		}
+		else {
+			item->nFileExtension = 0;
+		}
+	}
+	catch (...) {
+        const char* lastSlash = (std::max)(strrchr(outputPath.c_str(), '\\'), strrchr(outputPath.c_str(), '/'));
+		const char* fileName = lastSlash != nullptr ? (lastSlash + 1) : outputPath.c_str();
+		if (item->lpstrFileTitle != nullptr && item->nMaxFileTitle > 0) {
+			const size_t titleLen = std::strlen(fileName);
+			if (titleLen + 1 <= static_cast<size_t>(item->nMaxFileTitle)) {
+				std::memset(item->lpstrFileTitle, 0, static_cast<size_t>(item->nMaxFileTitle));
+				std::memcpy(item->lpstrFileTitle, fileName, titleLen);
+			}
+		}
+		item->nFileOffset = static_cast<WORD>(fileName - outputPath.c_str());
+		const char* ext = strrchr(fileName, '.');
+		item->nFileExtension = ext != nullptr ? static_cast<WORD>(ext - outputPath.c_str() + 1) : 0;
+	}
+
+	if (item->nFilterIndex == 0) {
+		item->nFilterIndex = 1;
+	}
+	if (diagnostics != nullptr) {
+		*diagnostics = "ok";
+	}
+	return true;
+}
+
+bool TryHandleSilentCompileOutputPathRequest(LPOPENFILENAMEA item, std::string* diagnostics)
+{
+	std::lock_guard<std::mutex> lock(g_silentCompileOutputPathMutex);
+	if (!g_silentCompileOutputPathState.active) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "request_inactive";
+		}
+		return false;
+	}
+
+	const auto now = std::chrono::steady_clock::now();
+	if (now - g_silentCompileOutputPathState.createdAt > kSilentCompileOutputPathTimeout) {
+		g_silentCompileOutputPathState = {};
+		if (diagnostics != nullptr) {
+			*diagnostics = "request_expired";
+		}
+		return false;
+	}
+
+	const DWORD currentThreadId = GetCurrentThreadId();
+	if (g_silentCompileOutputPathState.ownerThreadId != 0 &&
+		g_silentCompileOutputPathState.ownerThreadId != currentThreadId) {
+		if (diagnostics != nullptr) {
+			*diagnostics = std::format(
+				"thread_mismatch owner={} current={}",
+				g_silentCompileOutputPathState.ownerThreadId,
+				currentThreadId);
+		}
+		return false;
+	}
+
+	std::string fillDiagnostics;
+	if (!FillOpenFileNamePathA(item, g_silentCompileOutputPathState.outputPath, &fillDiagnostics)) {
+		g_silentCompileOutputPathState = {};
+		if (diagnostics != nullptr) {
+			*diagnostics = "fill_failed:" + fillDiagnostics;
+		}
+		return false;
+	}
+
+	g_silentCompileOutputPathState.active = false;
+	g_silentCompileOutputPathState.consumed = true;
+	if (diagnostics != nullptr) {
+		*diagnostics = "handled";
+	}
+	return true;
+}
+
+} // namespace
+
+bool BeginSilentCompileOutputPathRequest(
+	const std::string& outputPath,
+	DWORD ownerThreadId,
+	std::string* diagnostics)
+{
+	const std::string normalized = NormalizeSilentCompileOutputPath(outputPath);
+	if (normalized.empty()) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "normalized_output_path_empty";
+		}
+		return false;
+	}
+
+	std::lock_guard<std::mutex> lock(g_silentCompileOutputPathMutex);
+	g_silentCompileOutputPathState = {};
+	g_silentCompileOutputPathState.active = true;
+	g_silentCompileOutputPathState.consumed = false;
+	g_silentCompileOutputPathState.ownerThreadId =
+		ownerThreadId != 0 ? ownerThreadId : GetCurrentThreadId();
+	g_silentCompileOutputPathState.outputPath = normalized;
+	g_silentCompileOutputPathState.createdAt = std::chrono::steady_clock::now();
+	if (diagnostics != nullptr) {
+		*diagnostics = normalized;
+	}
+	return true;
+}
+
+void CancelSilentCompileOutputPathRequest()
+{
+	std::lock_guard<std::mutex> lock(g_silentCompileOutputPathMutex);
+	g_silentCompileOutputPathState = {};
+}
+
+bool WasSilentCompileOutputPathRequestConsumed()
+{
+	std::lock_guard<std::mutex> lock(g_silentCompileOutputPathMutex);
+	return g_silentCompileOutputPathState.consumed;
+}
+
+
 static auto originalCreateFileA = CreateFileA;
 static auto originalGetSaveFileNameA = GetSaveFileNameA;
 static auto originalCreateProcessA = CreateProcessA;
@@ -3913,6 +4153,13 @@ HANDLE WINAPI MyCreateFileA(
 }
 
 BOOL APIENTRY MyGetSaveFileNameA(LPOPENFILENAMEA item) {
+	std::string silentDiagnostics;
+	if (TryHandleSilentCompileOutputPathRequest(item, &silentDiagnostics)) {
+		OutputStringToELog(std::format(
+			"[SilentCompile] suppressed GetSaveFileNameA path={}",
+			item != nullptr && item->lpstrFile != nullptr ? item->lpstrFile : ""));
+		return TRUE;
+	}
 	if (g_preCompiling) {
 		OutputStringToELog("结束预编译代码");
 		g_preCompiling = false;
@@ -4415,6 +4662,10 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex) {
 			RunFirstSupportLibraryInfoTest();
 			break;
 		}
+		case 17: { // 测试编译静态EXE
+			RunStaticCompileWindowsExeTest();
+			break;
+		}
 		//case 4: { //切换到VMPSDK静态（自用）
 		//	ChangeVMProtectModel(true);
 		//	break;
@@ -4647,7 +4898,7 @@ static LIB_INFOX LibInfo =
 	NULL,
 	NULL,
 	fnAddInFunc,
-	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0AutoLinker AI接口设置\0编辑AI接口地址、API Key、模型和提示词等配置。\0FN_ADD_TAB结构传递测试\0构造ADD_TAB_INF调用FN_ADD_TAB，并打印调用前后结构体字段。\0测试整体搜索subWinHwnd\0调用direct_global_search固定搜索subWinHwnd，并输出命中结果到E输出窗口。\0测试定位subWinHwnd首个结果\0调用direct_global_search固定搜索subWinHwnd，并跳转到首个命中位置。\0测试定位后抓取当前页代码\0先定位到subWinHwnd首个命中，再抓取当前代码页完整代码并写入AutoLinker目录。\0测试枚举左侧TreeView\0枚举主窗口下所有SysTreeView32，并输出前几层节点文本与item data特征。\0测试程序树按名称抓代码\0在程序树中固定查找Class_HWND，并根据tree item data直接抓取整页代码。\0测试枚举程序树页面\0枚举程序树中所有页面节点，输出名称、类型和item data，并写入文件。\0测试当前页窗口与页签\0探测MDIClient当前活动子页与CCustomTabCtrl当前选中项文本，用于定位当前页名称来源。\0测试获取当前页名称\0调用IDEFacade当前页名称接口，输出当前页名称、类型和来源链路。\0测试枚举导入模块\0枚举当前项目导入的易模块路径。\0测试首个模块公开信息\0对当前项目首个导入模块执行原生公开信息抓取，并输出摘要与日志文件路径。\0测试首个支持库公开信息\0枚举当前已选支持库，并对首个可定位文件的支持库执行GetNewInf公开信息抓取，输出摘要与日志文件路径。\0\0") ,
+	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0AutoLinker AI接口设置\0编辑AI接口地址、API Key、模型和提示词等配置。\0FN_ADD_TAB结构传递测试\0构造ADD_TAB_INF调用FN_ADD_TAB，并打印调用前后结构体字段。\0测试整体搜索subWinHwnd\0调用direct_global_search固定搜索subWinHwnd，并输出命中结果到E输出窗口。\0测试定位subWinHwnd首个结果\0调用direct_global_search固定搜索subWinHwnd，并跳转到首个命中位置。\0测试定位后抓取当前页代码\0先定位到subWinHwnd首个命中，再抓取当前代码页完整代码并写入AutoLinker目录。\0测试枚举左侧TreeView\0枚举主窗口下所有SysTreeView32，并输出前几层节点文本与item data特征。\0测试程序树按名称抓代码\0在程序树中固定查找Class_HWND，并根据tree item data直接抓取整页代码。\0测试枚举程序树页面\0枚举程序树中所有页面节点，输出名称、类型和item data，并写入文件。\0测试当前页窗口与页签\0探测MDIClient当前活动子页与CCustomTabCtrl当前选中项文本，用于定位当前页名称来源。\0测试获取当前页名称\0调用IDEFacade当前页名称接口，输出当前页名称、类型和来源链路。\0测试枚举导入模块\0枚举当前项目导入的易模块路径。\0测试首个模块公开信息\0对当前项目首个导入模块执行原生公开信息抓取，并输出摘要与日志文件路径。\0测试首个支持库公开信息\0枚举当前已选支持库，并对首个可定位文件的支持库执行GetNewInf公开信息抓取，输出摘要与日志文件路径。\0测试编译静态EXE\0调用静态编译窗口程序EXE测试，并将输出文件写入AutoLinker\\StaticCompileTest目录。\0\0") ,
 	AutoLinker_MessageNotify,
 	NULL,
 	NULL,
