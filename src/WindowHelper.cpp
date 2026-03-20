@@ -5,43 +5,6 @@
 #include <fnshare.h>
 #include <format>
 
-BOOL CALLBACK FindMenuBarEnumChildProc(HWND hwnd, LPARAM lParam) {
-	char buffer[256] = { 0 };
-	GetWindowText(hwnd, buffer, sizeof(buffer));
-	char bufferClassName[256] = { 0 };
-	GetClassName(hwnd, bufferClassName, sizeof(bufferClassName));
-	auto className = std::string(bufferClassName);
-
-	if (std::string(buffer) == "菜单条" && className.starts_with("Afx:400000:b:100") && className.ends_with(":10:0")) {
-		HWND* pResult = reinterpret_cast<HWND*>(lParam);
-		*pResult = hwnd;
-		return FALSE;
-	}
-
-
-	//if (std::string(buffer) == "菜单条" && className.starts_with("AfxControlBar42s")) {
-	//	HWND* pResult = reinterpret_cast<HWND*>(lParam);
-	//	*pResult = hwnd;
-	//	return FALSE;
-	//}
-	//
-
-	// 继续枚举
-	return TRUE;
-}
-
-/// <summary>
-/// 查找菜单条
-/// </summary>
-/// <param name="hParent"></param>
-/// <returns></returns>
-HWND FindMenuBar(HWND hParent) {
-	HWND hResult = NULL;
-	EnumChildWindows(hParent, FindMenuBarEnumChildProc, reinterpret_cast<LPARAM>(&hResult));
-	return hResult;
-}
-
-
 BOOL CALLBACK EnumChildProcOutputWindow(HWND hwnd, LPARAM lParam) {
 	char buffer[256] = { 0 };
 	if (GetDlgCtrlID(hwnd) == 1011) {

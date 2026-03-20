@@ -34,13 +34,15 @@ extern ModelManager g_modelManager;
 
 extern HWND g_hwnd;
 
-extern HWND g_toolBarHwnd;
-
 extern bool g_preDebugging;
 
 extern bool g_preCompiling;
 
+// 已完成基础挂接。
 extern bool g_initStarted;
+
+// 已完成 IDE 就绪后的界面初始化。
+extern bool g_uiInitialized;
 
 
 
@@ -59,8 +61,6 @@ inline constexpr UINT IDM_AUTOLINKER_CTX_AI_ADD_BY_PAGE = 31106;
 inline constexpr UINT IDM_AUTOLINKER_LINKER_BASE = 34000;
 
 inline constexpr UINT IDM_AUTOLINKER_LINKER_MAX = 34999;
-
-inline constexpr UINT WM_AUTOLINKER_INIT = WM_USER + 1000;
 
 inline constexpr UINT WM_AUTOLINKER_AI_TASK_DONE = WM_USER + 1001;
 

@@ -3,9 +3,6 @@
 #include "Windows.h"
 #include <string>
 
-//查找E窗口菜单条
-HWND FindMenuBar(HWND hParent);
-
 //查找输出窗口
 HWND FindOutputWindow(HWND hParent);
 

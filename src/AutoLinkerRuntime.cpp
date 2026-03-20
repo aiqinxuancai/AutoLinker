@@ -17,10 +17,10 @@ ConfigManager g_configManager;
 LinkerManager g_linkerManager;
 ModelManager g_modelManager;
 HWND g_hwnd = NULL;
-HWND g_toolBarHwnd = NULL;
 bool g_preDebugging = false;
 bool g_preCompiling = false;
 bool g_initStarted = false;
+bool g_uiInitialized = false;
 
 namespace {
 std::atomic_uint64_t g_aiPerfTraceSeed = 1;

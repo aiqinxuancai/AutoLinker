@@ -25,17 +25,6 @@
 
 bool FneInit();
 
-LRESULT CALLBACK ToolbarSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
-{
-	if (uMsg == WM_INITMENUPOPUP) {
-		LRESULT result = DefSubclassProc(hWnd, uMsg, wParam, lParam);
-		FinalizeAutoLinkerPopupMenu(reinterpret_cast<HMENU>(wParam));
-		return result;
-	}
-
-	return DefSubclassProc(hWnd, uMsg, wParam, lParam);
-}
-
 void ChangeVMProtectModel(bool isLib)
 {
 	if (isLib) {
@@ -104,15 +93,6 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 		if (IDEFacade::Instance().HandleMainWindowCommand(wParam)) {
 			return 0;
 		}
-	}
-
-	if (uMsg == WM_AUTOLINKER_INIT) {
-		OutputStringToELog("收到初始化消息，尝试初始化");
-		if (FneInit()) {
-			OutputStringToELog("初始化成功");
-			return 1;
-		}
-		return 0;
 	}
 
 	if (uMsg == 20708) {
@@ -251,65 +231,38 @@ void FneCheckNewVersion(void* pParams)
 
 bool FneInit()
 {
-	OutputStringToELog("开始初始化");
-
-	if (g_hwnd == NULL) {
-		OutputStringToELog("g_hwnd 为空");
-		return false;
-	}
-
-	g_toolBarHwnd = FindMenuBar(g_hwnd);
-
-	DWORD processID = GetCurrentProcessId();
-	std::string s = std::format("E进程ID{} 主句柄{} 菜单栏句柄{}", processID, (int)g_hwnd, (int)g_toolBarHwnd);
-	OutputStringToELog(s);
-
-	if (g_toolBarHwnd != NULL) {
-		StartEditViewSubclassTask();
-		RebuildTopLinkerSubMenu();
-		OutputCurrentSourceLinker();
-		AIChatFeature::EnsureTabCreated();
-
-		OutputStringToELog("找到工具条");
-		SetWindowSubclass(g_toolBarHwnd, ToolbarSubclassProc, 0, 0);
-		StartHookCreateFileA();
-		PostAppMessageA(g_toolBarHwnd, WM_PRINT, 0, 0);
-		OutputStringToELog("初始化完成");
-
-		const auto autoRunMarker = GetAutoRunModulePublicInfoTestMarkerPath();
-		if (std::filesystem::exists(autoRunMarker)) {
-			std::error_code removeEc;
-			std::filesystem::remove(autoRunMarker, removeEc);
-			OutputStringToELog("[ModulePublicInfoTest] 检测到自动测试标记，稍后执行首个导入模块公开信息测试");
-			_beginthread(AutoRunModulePublicInfoTestThread, 0, nullptr);
-		}
-
-		_beginthread(FneCheckNewVersion, 0, NULL);
+	if (g_uiInitialized) {
 		return true;
 	}
 
-	OutputStringToELog(std::format("初始化失败，未找到工具条窗口 {}", (int)g_toolBarHwnd));
-	return false;
-}
+	OutputStringToELog("开始初始化");
 
-void InitRetryThread(void* pParams)
-{
-	const int MAX_RETRY_COUNT = 5;
-	int retryCount = 0;
-
-	while (retryCount < MAX_RETRY_COUNT) {
-		Sleep(1000);
-		++retryCount;
-
-		OutputStringToELog(std::format("初始化重试第 {}/{} 次", retryCount, MAX_RETRY_COUNT));
-		LRESULT result = SendMessage(g_hwnd, WM_AUTOLINKER_INIT, 0, 0);
-		if (result == 1) {
-			OutputStringToELog("初始化线程完成");
-			return;
-		}
+	if (g_hwnd == NULL || !IsWindow(g_hwnd)) {
+		OutputStringToELog("主窗口句柄无效");
+		return false;
 	}
 
-	OutputStringToELog(std::format("初始化失败，已重试 {} 次", MAX_RETRY_COUNT));
+	DWORD processID = GetCurrentProcessId();
+	OutputStringToELog(std::format("E进程ID{} 主句柄{}", processID, (int)g_hwnd));
+
+	RegisterIDEContextMenu();
+	StartEditViewSubclassTask();
+	OutputCurrentSourceLinker();
+	AIChatFeature::EnsureTabCreated();
+	StartHookCreateFileA();
+
+	const auto autoRunMarker = GetAutoRunModulePublicInfoTestMarkerPath();
+	if (std::filesystem::exists(autoRunMarker)) {
+		std::error_code removeEc;
+		std::filesystem::remove(autoRunMarker, removeEc);
+		OutputStringToELog("[ModulePublicInfoTest] 检测到自动测试标记，稍后执行首个导入模块公开信息测试");
+		_beginthread(AutoRunModulePublicInfoTestThread, 0, nullptr);
+	}
+
+	_beginthread(FneCheckNewVersion, 0, NULL);
+	g_uiInitialized = true;
+	OutputStringToELog("初始化完成");
+	return true;
 }
 
 EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwParam2)
@@ -328,20 +281,35 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 		return (INT)NULL;
 	}
 	else if (nMsg == NL_SYS_NOTIFY_FUNCTION) {
+		if (dwParam1) {
+			SetUserSysNotify(reinterpret_cast<PFN_NOTIFY_SYS>(dwParam1));
+		}
 		if (dwParam1 && !g_initStarted) {
-			g_hwnd = GetMainWindowByProcessId();
+			g_hwnd = reinterpret_cast<HWND>(NotifySys(NES_GET_MAIN_HWND, 0, 0));
+			if (g_hwnd == nullptr || !IsWindow(g_hwnd)) {
+				g_hwnd = GetMainWindowByProcessId();
+			}
 			if (g_hwnd) {
 				g_initStarted = true;
 				SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0);
 				AIChatFeature::Initialize(g_hwnd, &g_configManager);
 				LocalMcpServer::Initialize();
-				RegisterIDEContextMenu();
-				OutputStringToELog("主窗口子类化完成，启动初始化线程");
-				_beginthread(InitRetryThread, 0, NULL);
+				OutputStringToELog("主窗口子类化完成，等待 IDE 就绪通知");
 			}
 			else {
 				OutputStringToELog("无法获取主窗口句柄");
 			}
+		}
+	}
+	else if (nMsg == NL_IDE_READY) {
+		if (!g_initStarted) {
+			OutputStringToELog("收到 NL_IDE_READY，但基础初始化尚未完成");
+		}
+		else if (FneInit()) {
+			OutputStringToELog("收到 NL_IDE_READY，界面初始化成功");
+		}
+		else {
+			OutputStringToELog("收到 NL_IDE_READY，但界面初始化失败");
 		}
 	}
 #endif
