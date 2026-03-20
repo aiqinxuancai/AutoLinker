@@ -616,6 +616,62 @@ nlohmann::json BuildPublicToolCatalog()
 			{"additionalProperties", false}
 		}}
 	});
+	tools.push_back({
+		{"name", "run_powershell_command"},
+		{"description", "Run one PowerShell command on the local machine after explicit user confirmation. Use it for environment inspection, file discovery or controlled automation. Avoid destructive commands unless clearly necessary."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"command", {{"type", "string"}}},
+				{"working_directory", {{"type", "string"}, {"description", "Optional absolute working directory path."}}},
+				{"timeout_seconds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 600}}}
+			}},
+			{"required", nlohmann::json::array({"command"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "search_web_tavily"},
+		{"description", "Search the public web via Tavily and return normalized result snippets. Prefer this when the answer depends on external up-to-date information."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"query", {{"type", "string"}}},
+				{"max_results", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10}}},
+				{"topic", {{"type", "string"}, {"description", "Optional Tavily topic. Use general unless there is a clear reason to use another topic."}}}
+			}},
+			{"required", nlohmann::json::array({"query"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "fetch_url"},
+		{"description", "Fetch one URL via HTTP GET and return normalized text response plus basic HTTP metadata. Use this when you need the raw response body for debugging or non-HTML text endpoints."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"url", {{"type", "string"}}},
+				{"timeout_seconds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 300}}},
+				{"max_bytes", {{"type", "integer"}, {"minimum", 4096}, {"maximum", 2097152}}}
+			}},
+			{"required", nlohmann::json::array({"url"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "extract_web_document"},
+		{"description", "Fetch one web page or text document and extract readable plain-text content, title and a small set of links. Prefer this over raw fetch_url when reading docs or articles."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"url", {{"type", "string"}}},
+				{"timeout_seconds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 300}}},
+				{"max_bytes", {{"type", "integer"}, {"minimum", 4096}, {"maximum", 2097152}}}
+			}},
+			{"required", nlohmann::json::array({"url"})},
+			{"additionalProperties", false}
+		}}
+	});
 	return tools;
 }
 
@@ -713,8 +769,12 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"8) 通过搜索、程序树、模块公开信息、支持库公开信息拿到的代码或文本，多数只是伪代码 / 公共接口参考，不一定等于 IDE 正常编辑页。\n"
 		"9) 需要无弹窗编译时调用 compile_with_output_path。它会指定输出路径并拦截系统保存对话框，支持模块工程编译为 ec，以及窗口程序 / 控制台程序 / DLL 的编译与静态编译；最终是否编译成功仍要结合 IDE 输出或产物确认。\n"
 		"10) 需要真正修改代码时调用 request_code_edit。\n"
-		"11) 工具失败时先分析失败原因并换更合适的工具，不要机械重试同一个调用。\n"
-		"12) 不要要求用户手动补上下文，优先自己通过工具获取。\n";
+		"11) 需要联网查实时信息、文档、网页摘要时调用 search_web_tavily。\n"
+		"12) 已经拿到具体文档 URL 时，优先调用 extract_web_document 读取正文；只有在需要看原始响应时再调用 fetch_url。\n"
+		"13) 需要在本机查环境、查文件、执行受控自动化时调用 run_powershell_command；它每次都会向用户确认，命令要尽量小、明确、可解释。\n"
+		"14) run_powershell_command 被用户取消后，不要机械重试，应改为解释下一步或换别的工具。\n"
+		"15) 工具失败时先分析失败原因并换更合适的工具，不要机械重试同一个调用。\n"
+		"16) 不要要求用户手动补上下文，优先自己通过工具获取。\n";
 	const std::string extraPrompt = AIService::Trim(settings.extraSystemPrompt);
 	if (!extraPrompt.empty()) {
 		prompt += "\n附加系统提示：\n";
@@ -1376,6 +1436,7 @@ bool AIService::LoadSettings(ConfigManager& config, AISettings& outSettings)
 	outSettings.apiKey = config.getValue("ai.api_key");
 	outSettings.model = config.getValue("ai.model");
 	outSettings.extraSystemPrompt = config.getValue("ai.system_prompt_extra");
+	outSettings.tavilyApiKey = config.getValue("ai.tavily_api_key");
 
 	const std::string timeoutValue = config.getValue("ai.timeout_ms");
 	if (!timeoutValue.empty()) {
@@ -1407,6 +1468,7 @@ void AIService::SaveSettings(ConfigManager& config, const AISettings& settings)
 	config.setValue("ai.api_key", settings.apiKey);
 	config.setValue("ai.model", settings.model);
 	config.setValue("ai.system_prompt_extra", settings.extraSystemPrompt);
+	config.setValue("ai.tavily_api_key", settings.tavilyApiKey);
 	config.setValue("ai.timeout_ms", std::to_string(settings.timeoutMs));
 	config.setValue("ai.temperature", std::format("{:.2f}", settings.temperature));
 }

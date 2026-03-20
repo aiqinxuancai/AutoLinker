@@ -1,8 +1,15 @@
-#include "AIChatTooling.h"
+﻿#include "AIChatTooling.h"
 #include "AIChatToolingInternal.h"
+#include "AIService.h"
+#include "ConfigManager.h"
+#include "PowerShellToolRunner.h"
+#include "TavilyClient.h"
+#include "WebDocumentClient.h"
+#include "WebDocumentExtractor.h"
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <condition_variable>
@@ -210,6 +217,208 @@ std::string ExecuteToolCall(const std::string& toolName, const std::string& argu
 		r["ok"] = true;
 		r["code"] = LocalToUtf8Text(editedCode);
 		outOk = true;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "run_powershell_command") {
+		std::string commandUtf8;
+		std::string workingDirectoryUtf8;
+		int timeoutSeconds = 60;
+		try {
+			const nlohmann::json args = nlohmann::json::parse(argumentsJson);
+			if (args.contains("command") && args["command"].is_string()) {
+				commandUtf8 = args["command"].get<std::string>();
+			}
+			if (args.contains("working_directory") && args["working_directory"].is_string()) {
+				workingDirectoryUtf8 = args["working_directory"].get<std::string>();
+			}
+			if (args.contains("timeout_seconds") && args["timeout_seconds"].is_number_integer()) {
+				timeoutSeconds = (std::clamp)(args["timeout_seconds"].get<int>(), 1, 600);
+			}
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		if (TrimAsciiCopy(commandUtf8).empty()) {
+			return R"({"ok":false,"error":"command is required"})";
+		}
+
+		std::string confirmationText =
+			std::string("即将执行 PowerShell 命令：\r\n\r\n") +
+			Utf8ToLocalText(commandUtf8) +
+			"\r\n\r\n工作目录：\r\n" +
+			(TrimAsciiCopy(workingDirectoryUtf8).empty() ? std::string("(当前进程目录)") : Utf8ToLocalText(workingDirectoryUtf8)) +
+			"\r\n\r\n超时：\r\n" +
+			std::to_string(timeoutSeconds) +
+			" 秒\r\n\r\n请确认该命令不会造成你不希望的本机副作用。";
+		bool accepted = false;
+		if (!RequestConfirmationForTooling(
+				LocalFromWide(L"AI PowerShell 执行确认"),
+				confirmationText,
+				LocalFromWide(L"执行"),
+				LocalFromWide(L"取消"),
+				accepted) ||
+			!accepted) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["cancelled"] = true;
+			r["error"] = "user cancelled powershell execution";
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const PowerShellRunResult runResult = PowerShellToolRunner::Run(commandUtf8, workingDirectoryUtf8, timeoutSeconds);
+		nlohmann::json r;
+		r["ok"] = runResult.ok;
+		r["cancelled"] = false;
+		r["command"] = commandUtf8;
+		r["working_directory"] = runResult.effectiveWorkingDirectory;
+		r["stdout"] = runResult.stdOut;
+		r["stderr"] = runResult.stdErr;
+		r["exit_code"] = runResult.exitCode;
+		r["timed_out"] = runResult.timedOut;
+		if (!runResult.error.empty()) {
+			r["error"] = runResult.error;
+		}
+		outOk = runResult.ok;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "search_web_tavily") {
+		std::string queryUtf8;
+		std::string topicUtf8;
+		int maxResults = 5;
+		try {
+			const nlohmann::json args = nlohmann::json::parse(argumentsJson);
+			if (args.contains("query") && args["query"].is_string()) {
+				queryUtf8 = args["query"].get<std::string>();
+			}
+			if (args.contains("topic") && args["topic"].is_string()) {
+				topicUtf8 = args["topic"].get<std::string>();
+			}
+			if (args.contains("max_results") && args["max_results"].is_number_integer()) {
+				maxResults = (std::clamp)(args["max_results"].get<int>(), 1, 10);
+			}
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		AISettings settings = {};
+		std::string tavilyApiKey;
+		ConfigManager* configManager = GetAIChatConfigManagerForTooling();
+		if (configManager != nullptr && AIService::LoadSettings(*configManager, settings)) {
+			tavilyApiKey = LocalToUtf8Text(settings.tavilyApiKey);
+		}
+
+		const TavilySearchResult searchResult = TavilyClient::Search(tavilyApiKey, queryUtf8, maxResults, topicUtf8);
+		if (!searchResult.ok) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["http_status"] = searchResult.httpStatus;
+			r["error"] = searchResult.error;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		outOk = true;
+		return Utf8ToLocalText(searchResult.normalizedResultJsonUtf8);
+	}
+
+	if (toolName == "fetch_url") {
+		std::string urlUtf8;
+		int timeoutSeconds = 60;
+		size_t maxBytes = 512 * 1024;
+		try {
+			const nlohmann::json args = nlohmann::json::parse(argumentsJson);
+			if (args.contains("url") && args["url"].is_string()) {
+				urlUtf8 = args["url"].get<std::string>();
+			}
+			if (args.contains("timeout_seconds") && args["timeout_seconds"].is_number_integer()) {
+				timeoutSeconds = (std::clamp)(args["timeout_seconds"].get<int>(), 1, 300);
+			}
+			if (args.contains("max_bytes") && args["max_bytes"].is_number_integer()) {
+				const int value = args["max_bytes"].get<int>();
+				maxBytes = (std::clamp)(value, 4096, 2097152);
+			}
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const HttpFetchResult fetchResult = WebDocumentClient::FetchTextUrl(urlUtf8, timeoutSeconds, maxBytes);
+		nlohmann::json r;
+		r["ok"] = fetchResult.ok;
+		r["url"] = fetchResult.url;
+		r["final_url"] = fetchResult.finalUrl;
+		r["http_status"] = fetchResult.httpStatus;
+		r["content_type"] = fetchResult.contentType;
+		r["content_length"] = static_cast<unsigned long long>(fetchResult.contentLength);
+		r["body_text"] = fetchResult.bodyText;
+		r["body_truncated"] = fetchResult.bodyTruncated;
+		if (!fetchResult.error.empty()) {
+			r["error"] = fetchResult.error;
+		}
+		outOk = fetchResult.ok;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "extract_web_document") {
+		std::string urlUtf8;
+		int timeoutSeconds = 60;
+		size_t maxBytes = 512 * 1024;
+		try {
+			const nlohmann::json args = nlohmann::json::parse(argumentsJson);
+			if (args.contains("url") && args["url"].is_string()) {
+				urlUtf8 = args["url"].get<std::string>();
+			}
+			if (args.contains("timeout_seconds") && args["timeout_seconds"].is_number_integer()) {
+				timeoutSeconds = (std::clamp)(args["timeout_seconds"].get<int>(), 1, 300);
+			}
+			if (args.contains("max_bytes") && args["max_bytes"].is_number_integer()) {
+				const int value = args["max_bytes"].get<int>();
+				maxBytes = (std::clamp)(value, 4096, 2097152);
+			}
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const HttpFetchResult fetchResult = WebDocumentClient::FetchTextUrl(urlUtf8, timeoutSeconds, maxBytes);
+		const ExtractedWebDocument document = WebDocumentExtractor::Extract(fetchResult);
+
+		nlohmann::json links = nlohmann::json::array();
+		for (const auto& link : document.links) {
+			links.push_back({
+				{"text", link.text},
+				{"url", link.url}
+			});
+		}
+
+		nlohmann::json r;
+		r["ok"] = document.ok;
+		r["url"] = document.url;
+		r["http_status"] = document.httpStatus;
+		r["content_type"] = document.contentType;
+		r["title"] = document.title;
+		r["plain_text"] = document.plainText;
+		r["excerpt"] = document.excerpt;
+		r["links"] = std::move(links);
+		if (!document.error.empty()) {
+			r["error"] = document.error;
+		}
+		outOk = document.ok;
 		return Utf8ToLocalText(r.dump());
 	}
 

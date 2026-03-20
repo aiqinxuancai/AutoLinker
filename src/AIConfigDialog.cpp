@@ -1,10 +1,17 @@
-#include "AIConfigDialog.h"
+﻿#include "AIConfigDialog.h"
 #include "resource.h"
 
 #include <algorithm>
 #include <array>
 #include <CommCtrl.h>
+#include <format>
 #include <Shellapi.h>
+#include <wrl.h>
+
+#include "..\\thirdparty\\json.hpp"
+#include "..\\thirdparty\\WebView2.h"
+
+#include "Global.h"
 
 #pragma comment(lib, "comctl32.lib")
 #if defined _M_IX86
@@ -23,6 +30,7 @@ constexpr int IDC_CFG_MODEL = 1003;
 constexpr int IDC_CFG_EXTRA_PROMPT = 1004;
 constexpr int IDC_CFG_GET_KEY_LINK = 1005;
 constexpr int IDC_CFG_FILL_RIGHT_CODES = 1006;
+constexpr int IDC_CFG_TAVILY_API_KEY = 1007;
 constexpr int IDC_CFG_SAVE = 1;
 constexpr int IDC_CFG_CANCEL = 2;
 
@@ -239,6 +247,214 @@ void SetDefaultFont(HWND hWnd)
 	SendMessageA(hWnd, WM_SETFONT, reinterpret_cast<WPARAM>(GetDialogFont()), TRUE);
 }
 
+bool IsValidUtf8Text(const std::string& text)
+{
+	if (text.empty()) {
+		return true;
+	}
+	return MultiByteToWideChar(
+		CP_UTF8,
+		MB_ERR_INVALID_CHARS,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0) > 0;
+}
+
+std::string ConvertCodePage(const std::string& text, UINT fromCodePage, UINT toCodePage, DWORD fromFlags = 0)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+
+	const int wideLen = MultiByteToWideChar(
+		fromCodePage,
+		fromFlags,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0);
+	if (wideLen <= 0) {
+		return text;
+	}
+
+	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+	if (MultiByteToWideChar(
+		fromCodePage,
+		fromFlags,
+		text.data(),
+		static_cast<int>(text.size()),
+		wide.data(),
+		wideLen) <= 0) {
+		return text;
+	}
+
+	const int outLen = WideCharToMultiByte(
+		toCodePage,
+		0,
+		wide.data(),
+		wideLen,
+		nullptr,
+		0,
+		nullptr,
+		nullptr);
+	if (outLen <= 0) {
+		return text;
+	}
+
+	std::string out(static_cast<size_t>(outLen), '\0');
+	if (WideCharToMultiByte(
+		toCodePage,
+		0,
+		wide.data(),
+		wideLen,
+		out.data(),
+		outLen,
+		nullptr,
+		nullptr) <= 0) {
+		return text;
+	}
+	return out;
+}
+
+std::string LocalToUtf8Text(const std::string& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+	if (IsValidUtf8Text(text)) {
+		return text;
+	}
+	return ConvertCodePage(text, CP_ACP, CP_UTF8, 0);
+}
+
+std::string Utf8ToLocalText(const std::string& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+	if (!IsValidUtf8Text(text)) {
+		return text;
+	}
+	return ConvertCodePage(text, CP_UTF8, CP_ACP, MB_ERR_INVALID_CHARS);
+}
+
+std::wstring Utf8ToWide(const std::string& text)
+{
+	if (text.empty()) {
+		return std::wstring();
+	}
+
+	const int wideLen = MultiByteToWideChar(
+		CP_UTF8,
+		MB_ERR_INVALID_CHARS,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0);
+	if (wideLen <= 0) {
+		return std::wstring();
+	}
+
+	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+	if (MultiByteToWideChar(
+		CP_UTF8,
+		MB_ERR_INVALID_CHARS,
+		text.data(),
+		static_cast<int>(text.size()),
+		wide.data(),
+		wideLen) <= 0) {
+		return std::wstring();
+	}
+	return wide;
+}
+
+std::wstring WideFromLocal(const std::string& text)
+{
+	if (text.empty()) {
+		return std::wstring();
+	}
+
+	const int wideLen = MultiByteToWideChar(
+		CP_ACP,
+		0,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0);
+	if (wideLen <= 0) {
+		return std::wstring();
+	}
+
+	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+	if (MultiByteToWideChar(
+		CP_ACP,
+		0,
+		text.data(),
+		static_cast<int>(text.size()),
+		wide.data(),
+		wideLen) <= 0) {
+		return std::wstring();
+	}
+	return wide;
+}
+
+std::string WideToUtf8(const std::wstring& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+
+	const int utf8Len = WideCharToMultiByte(
+		CP_UTF8,
+		0,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0,
+		nullptr,
+		nullptr);
+	if (utf8Len <= 0) {
+		return std::string();
+	}
+
+	std::string utf8(static_cast<size_t>(utf8Len), '\0');
+	if (WideCharToMultiByte(
+		CP_UTF8,
+		0,
+		text.data(),
+		static_cast<int>(text.size()),
+		utf8.data(),
+		utf8Len,
+		nullptr,
+		nullptr) <= 0) {
+		return std::string();
+	}
+	return utf8;
+}
+
+std::string JsonStringLiteral(const std::string& utf8Text)
+{
+	return nlohmann::json(utf8Text).dump();
+}
+
+bool IsWebView2RuntimeAvailable()
+{
+	LPWSTR version = nullptr;
+	const HRESULT hr = GetAvailableCoreWebView2BrowserVersionString(nullptr, &version);
+	const bool available = SUCCEEDED(hr);
+	OutputStringToELog(std::format("[AI Config][WebView2] runtime available={}", available ? 1 : 0));
+	if (version != nullptr) {
+		CoTaskMemFree(version);
+	}
+	return available;
+}
+
+struct AIConfigDialogRunResult {
+	bool accepted = false;
+	bool fallbackRequested = false;
+};
+
 struct AIConfigDialogContext {
 	AISettings* settings = nullptr;
 	bool accepted = false;
@@ -247,8 +463,21 @@ struct AIConfigDialogContext {
 	HWND hBaseUrl = nullptr;
 	HWND hApiKey = nullptr;
 	HWND hModel = nullptr;
+	HWND hTavilyApiKey = nullptr;
 	HWND hExtraPrompt = nullptr;
 	HWND hGetKeyLink = nullptr;
+};
+
+struct AIConfigWebViewDialogContext {
+	AISettings* settings = nullptr;
+	bool accepted = false;
+	bool fallbackRequested = false;
+	bool webViewReady = false;
+	HWND hHost = nullptr;
+	HWND hLoading = nullptr;
+	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
+	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
+	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
 };
 
 void PopulateProtocolCombo(HWND hCombo, AIProtocolType selected)
@@ -316,6 +545,69 @@ HFONT GetLinkFont()
 	return s_linkFont;
 }
 
+std::string BuildAIConfigWebViewHtml(const AISettings& settings)
+{
+	nlohmann::json initialSettings;
+	initialSettings["protocolType"] = AIService::ProtocolTypeToString(settings.protocolType);
+	initialSettings["baseUrl"] = LocalToUtf8Text(settings.baseUrl);
+	initialSettings["apiKey"] = LocalToUtf8Text(settings.apiKey);
+	initialSettings["model"] = LocalToUtf8Text(settings.model);
+	initialSettings["extraPrompt"] = LocalToUtf8Text(settings.extraSystemPrompt);
+	initialSettings["tavilyApiKey"] = LocalToUtf8Text(settings.tavilyApiKey);
+
+	std::string html;
+	html.reserve(7000);
+	html += "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light only\">";
+	html += "<style>";
+	html += "html,body{margin:0;padding:0;background:#f4f6f8;color:#1f2937;font:14px/1.5 'Microsoft YaHei UI','Segoe UI',sans-serif;}";
+	html += "*{box-sizing:border-box;} body{padding:16px;} h1{margin:0 0 8px 0;font-size:22px;} h2{margin:0 0 10px 0;font-size:16px;} p{margin:0 0 10px 0;color:#4b5563;} .wrap{max-width:1100px;margin:0 auto;} .panel{background:#fff;border:1px solid #d7dce2;border-radius:10px;padding:16px 18px;margin-bottom:14px;} .row{margin-bottom:12px;} .row label{display:block;margin-bottom:6px;font-weight:700;color:#374151;} .input,.select,.textarea{width:100%;border:1px solid #c7d0da;border-radius:8px;padding:9px 10px;background:#fff;font:14px/1.5 'Microsoft YaHei UI','Segoe UI',sans-serif;color:#111827;} .textarea{min-height:140px;resize:vertical;} .inline{display:flex;gap:8px;align-items:center;} .inline .input{flex:1 1 auto;} .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;} .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;} .btn{border:1px solid #bfc8d4;background:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font:600 13px/1 'Microsoft YaHei UI','Segoe UI',sans-serif;} .btn.primary{background:#1565c0;border-color:#1565c0;color:#fff;} .btn.secondary{background:#eb6c2d;border-color:#eb6c2d;color:#fff;} .tip{font-size:12px;color:#6b7280;} .code{font-family:Consolas,'Courier New',monospace;background:#eef2f7;border-radius:4px;padding:1px 5px;} @media (max-width:900px){.grid{grid-template-columns:1fr;}}";
+	html += "</style></head><body><div class='wrap'><div class='panel'><h1>AutoLinker AI 设置</h1><p>统一配置主模型参数和 Tavily 联网搜索密钥。保存时由宿主程序完成最终校验。</p></div><div class='grid'><div class='panel'><h2>主模型</h2><div class='row'><label for='protocol'>Protocol</label><select id='protocol' class='select'><option value='OpenAI'>OpenAI</option><option value='Gemini'>Gemini</option><option value='Claude'>Claude</option></select></div><div class='row'><label for='baseUrl'>Base URL</label><input id='baseUrl' class='input' placeholder='https://right.codes/codex' /></div><div class='row'><label for='apiKey'>API Key</label><div class='inline'><input id='apiKey' class='input' type='password' placeholder='主模型 API Key' /><button id='toggleApiKey' class='btn' type='button'>显示</button></div></div><div class='row'><label for='model'>Model</label><input id='model' class='input' placeholder='例如 gpt-5.2-medium' /></div><div class='row'><label for='extraPrompt'>System Prompt</label><textarea id='extraPrompt' class='textarea' placeholder='附加系统提示词'></textarea></div><div class='btns'><button id='fillRightCodes' class='btn secondary' type='button'>一键填入 right.codes</button><button id='openRightCodes' class='btn' type='button'>打开 right.codes</button></div><p class='tip'>主模型配置为空时无法开始 AI 对话。</p></div>";
+	html += "<div class='panel'><h2>Tavily 联网搜索</h2><div class='row'><label for='tavilyApiKey'>Tavily API Key</label><div class='inline'><input id='tavilyApiKey' class='input' type='password' placeholder='用于 search_web_tavily' /><button id='toggleTavilyKey' class='btn' type='button'>显示</button></div></div><p>这个 Key 仅供 <span class='code'>search_web_tavily</span> 工具使用，不影响主模型配置。</p><p class='tip'>PowerShell 命令执行工具仍然会逐次弹窗确认。</p><div class='btns'><button id='cancelBtn' class='btn' type='button'>取消</button><button id='saveBtn' class='btn primary' type='button'>保存并继续</button></div></div></div><script>";
+	html += "const initialSettings=" + initialSettings.dump() + ";";
+	html += "function $(id){return document.getElementById(id);} function post(payload){if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify(payload));}}";
+	html += "function setField(id,value){const el=$(id); if(el){el.value=value||'';}}";
+	html += "function toggleSecret(id,btnId){const input=$(id),btn=$(btnId); if(!input||!btn){return;} const next=input.type==='password'?'text':'password'; input.type=next; btn.textContent=next==='password'?'显示':'隐藏';}";
+	html += "function collect(){return {protocol_type:$('protocol').value||'OpenAI',base_url:$('baseUrl').value||'',api_key:$('apiKey').value||'',model:$('model').value||'',extra_system_prompt:$('extraPrompt').value||'',tavily_api_key:$('tavilyApiKey').value||''};}";
+	html += "function validate(data){if(!data.base_url.trim()||!data.api_key.trim()||!data.model.trim()){alert('baseUrl / apiKey / model 不能为空。'); return false;} return true;}";
+	html += "function applyInitial(){var protocol=$('protocol'); if(protocol){protocol.value='OpenAI'; var desired=initialSettings.protocolType||'OpenAI'; protocol.value=desired; if(!protocol.value){protocol.selectedIndex=0;}} setField('baseUrl',initialSettings.baseUrl);setField('apiKey',initialSettings.apiKey);setField('model',initialSettings.model);setField('extraPrompt',initialSettings.extraPrompt);setField('tavilyApiKey',initialSettings.tavilyApiKey);}";
+	html += "$('toggleApiKey').addEventListener('click',function(){toggleSecret('apiKey','toggleApiKey');}); $('toggleTavilyKey').addEventListener('click',function(){toggleSecret('tavilyApiKey','toggleTavilyKey');});";
+	html += "$('fillRightCodes').addEventListener('click',function(){$('protocol').value='OpenAI';$('baseUrl').value='https://right.codes/codex';$('model').value='gpt-5.2-medium';$('apiKey').focus();});";
+	html += "$('openRightCodes').addEventListener('click',function(){post({action:'open_right_codes'});});";
+	html += "$('cancelBtn').addEventListener('click',function(){post({action:'cancel'});});";
+	html += "$('saveBtn').addEventListener('click',function(){const data=collect(); if(!validate(data)){return;} post({action:'save',data:data});});";
+	html += "applyInitial(); setTimeout(function(){if($('baseUrl')){$('baseUrl').focus();}},0);";
+	html += "</script></body></html>";
+	return html;
+}
+
+void LayoutAIConfigWebViewDialog(HWND hWnd, AIConfigWebViewDialogContext* ctx)
+{
+	if (hWnd == nullptr || ctx == nullptr) {
+		return;
+	}
+
+	RECT rc = {};
+	GetClientRect(hWnd, &rc);
+	const int margin = 12;
+	const int hostWidth = static_cast<int>((std::max)(0L, rc.right - margin * 2L));
+	const int hostHeight = static_cast<int>((std::max)(0L, rc.bottom - margin * 2L));
+	const int loadingWidth = static_cast<int>((std::max)(0L, rc.right - margin * 2L - 24L));
+	if (ctx->hHost != nullptr) {
+		MoveWindow(ctx->hHost, margin, margin, hostWidth, hostHeight, TRUE);
+	}
+	if (ctx->hLoading != nullptr) {
+		MoveWindow(ctx->hLoading, margin + 12, margin + 12, loadingWidth, 24, TRUE);
+	}
+	if (ctx->webViewController != nullptr) {
+		RECT bounds = {};
+		bounds.left = margin;
+		bounds.top = margin;
+		bounds.right = static_cast<LONG>(margin + hostWidth);
+		bounds.bottom = static_cast<LONG>(margin + hostHeight);
+		ctx->webViewController->put_Bounds(bounds);
+	}
+}
+
 LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
 	auto* ctx = reinterpret_cast<AIConfigDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
@@ -358,7 +650,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			120, 116, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_MODEL), nullptr, nullptr);
 
 		const std::wstring getKeyLinkText =
-			L"<a href=\"https://right.codes/register?aff=3dc87885\">��ת��ƽ̨��ȡKey</a>";
+			L"<a href=\"https://right.codes/register?aff=3dc87885\">从转发平台获取Key</a>";
 		HWND hGetKeyLink = CreateWindowExW(0, L"SysLink",
 			getKeyLinkText.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
@@ -381,29 +673,37 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
 			430, 142, 190, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_FILL_RIGHT_CODES), nullptr, nullptr);
 
+		HWND hTavilyApiKeyLabel = CreateWindowA("STATIC", "Tavily API Key:", WS_CHILD | WS_VISIBLE,
+			16, 182, 100, 20, hWnd, nullptr, nullptr, nullptr);
+		ctx->hTavilyApiKey = CreateWindowExA(0, "EDIT", ctx->settings->tavilyApiKey.c_str(),
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD,
+			120, 180, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_TAVILY_API_KEY), nullptr, nullptr);
+
 		HWND hExtraPromptLabel = CreateWindowA("STATIC", "System Prompt:", WS_CHILD | WS_VISIBLE,
-			16, 182, 140, 20, hWnd, nullptr, nullptr, nullptr);
+			16, 216, 140, 20, hWnd, nullptr, nullptr, nullptr);
 		ctx->hExtraPrompt = CreateWindowExA(0, "EDIT", ctx->settings->extraSystemPrompt.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
-			120, 182, 500, 150, hWnd, reinterpret_cast<HMENU>(IDC_CFG_EXTRA_PROMPT), nullptr, nullptr);
+			120, 216, 500, 150, hWnd, reinterpret_cast<HMENU>(IDC_CFG_EXTRA_PROMPT), nullptr, nullptr);
 
 		HWND hSave = CreateWindowW(L"BUTTON", L"\u4FDD\u5B58\u5E76\u7EE7\u7EED", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-			420, 348, 100, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_SAVE), nullptr, nullptr);
+			420, 382, 100, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_SAVE), nullptr, nullptr);
 		HWND hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-			530, 348, 90, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_CANCEL), nullptr, nullptr);
+			530, 382, 90, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_CANCEL), nullptr, nullptr);
 
-		std::array<HWND, 14> controls = {
+		std::array<HWND, 16> controls = {
 			hProtocolLabel,
 			ctx->hProtocol,
 			hBaseUrlLabel,
 			hApiKeyLabel,
 			hModelLabel,
+			hTavilyApiKeyLabel,
 			ctx->hGetKeyLink,
 			hFillRightCodes,
 			hExtraPromptLabel,
 			ctx->hBaseUrl,
 			ctx->hApiKey,
 			ctx->hModel,
+			ctx->hTavilyApiKey,
 			ctx->hExtraPrompt,
 			hSave,
 			hCancel
@@ -430,6 +730,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			next.baseUrl = GetEditTextA(ctx->hBaseUrl);
 			next.apiKey = GetEditTextA(ctx->hApiKey);
 			next.model = GetEditTextA(ctx->hModel);
+			next.tavilyApiKey = GetEditTextA(ctx->hTavilyApiKey);
 			next.extraSystemPrompt = GetEditTextA(ctx->hExtraPrompt);
 
 			if (next.baseUrl.empty() || next.apiKey.empty() || next.model.empty()) {
@@ -486,6 +787,264 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 	case WM_CLOSE:
 		DestroyWindow(hWnd);
 		return 0;
+	default:
+		break;
+	}
+
+	return DefWindowProcA(hWnd, uMsg, wParam, lParam);
+}
+
+bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* ctx, const nlohmann::json& data)
+{
+	if (ctx == nullptr || ctx->settings == nullptr) {
+		return false;
+	}
+
+	AISettings next = *ctx->settings;
+	next.protocolType = AIService::ParseProtocolType(data.value("protocol_type", AIService::ProtocolTypeToString(next.protocolType)));
+	next.baseUrl = Utf8ToLocalText(data.value("base_url", ""));
+	next.apiKey = Utf8ToLocalText(data.value("api_key", ""));
+	next.model = Utf8ToLocalText(data.value("model", ""));
+	next.extraSystemPrompt = Utf8ToLocalText(data.value("extra_system_prompt", ""));
+	next.tavilyApiKey = Utf8ToLocalText(data.value("tavily_api_key", ""));
+
+	if (AIService::Trim(next.baseUrl).empty() || AIService::Trim(next.apiKey).empty() || AIService::Trim(next.model).empty()) {
+		MessageBoxA(hWnd, "baseUrl / apiKey / model cannot be empty.", "AI Config", MB_ICONWARNING | MB_OK);
+		return false;
+	}
+
+	*ctx->settings = next;
+	ctx->accepted = true;
+	DestroyWindow(hWnd);
+	return true;
+}
+
+void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
+{
+	if (hWnd == nullptr || ctx == nullptr || ctx->hHost == nullptr) {
+		return;
+	}
+
+	const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
+		nullptr,
+		nullptr,
+		nullptr,
+		Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+			[hWnd](HRESULT envResult, ICoreWebView2Environment* environment) -> HRESULT {
+				auto* innerCtx = reinterpret_cast<AIConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+				if (innerCtx == nullptr || !IsWindow(hWnd)) {
+					return S_OK;
+				}
+				if (FAILED(envResult) || environment == nullptr) {
+					OutputStringToELog(std::format("[AI Config][WebView2] create environment failed hr=0x{:08X}", static_cast<unsigned int>(envResult)));
+					innerCtx->fallbackRequested = true;
+					DestroyWindow(hWnd);
+					return S_OK;
+				}
+
+				innerCtx->webViewEnvironment = environment;
+				return environment->CreateCoreWebView2Controller(
+					hWnd,
+					Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+						[hWnd](HRESULT controllerResult, ICoreWebView2Controller* controller) -> HRESULT {
+							auto* readyCtx = reinterpret_cast<AIConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+							if (readyCtx == nullptr || !IsWindow(hWnd)) {
+								return S_OK;
+							}
+							if (FAILED(controllerResult) || controller == nullptr) {
+								OutputStringToELog(std::format("[AI Config][WebView2] create controller failed hr=0x{:08X}", static_cast<unsigned int>(controllerResult)));
+								readyCtx->fallbackRequested = true;
+								DestroyWindow(hWnd);
+								return S_OK;
+							}
+
+							readyCtx->webViewController = controller;
+							readyCtx->webViewController->get_CoreWebView2(&readyCtx->webView);
+							if (readyCtx->webView == nullptr) {
+								OutputStringToELog("[AI Config][WebView2] get_CoreWebView2 returned null");
+								readyCtx->fallbackRequested = true;
+								DestroyWindow(hWnd);
+								return S_OK;
+							}
+
+							Microsoft::WRL::ComPtr<ICoreWebView2Settings> webSettings;
+							if (SUCCEEDED(readyCtx->webView->get_Settings(&webSettings)) && webSettings != nullptr) {
+								webSettings->put_AreDevToolsEnabled(FALSE);
+								webSettings->put_IsStatusBarEnabled(FALSE);
+								webSettings->put_IsZoomControlEnabled(FALSE);
+							}
+
+							readyCtx->webView->add_WebMessageReceived(
+								Microsoft::WRL::Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+									[hWnd](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+										auto* messageCtx = reinterpret_cast<AIConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+										if (messageCtx == nullptr || args == nullptr || !IsWindow(hWnd)) {
+											return S_OK;
+										}
+
+										LPWSTR rawMessage = nullptr;
+										if (FAILED(args->TryGetWebMessageAsString(&rawMessage)) || rawMessage == nullptr) {
+											return S_OK;
+										}
+
+										const std::string utf8Message = WideToUtf8(rawMessage);
+										CoTaskMemFree(rawMessage);
+										try {
+											const nlohmann::json payload = nlohmann::json::parse(utf8Message);
+											const std::string action = payload.value("action", "");
+											if (action == "save" && payload.contains("data") && payload["data"].is_object()) {
+												TryApplyAISettingsFromWebPayload(hWnd, messageCtx, payload["data"]);
+											}
+											else if (action == "cancel") {
+												DestroyWindow(hWnd);
+											}
+											else if (action == "open_right_codes") {
+												ShellExecuteA(hWnd, "open", "https://right.codes/register?aff=3dc87885", nullptr, nullptr, SW_SHOWNORMAL);
+											}
+										}
+										catch (...) {
+										}
+										return S_OK;
+									}).Get(),
+								nullptr);
+
+							readyCtx->webView->add_NavigationCompleted(
+								Microsoft::WRL::Callback<ICoreWebView2NavigationCompletedEventHandler>(
+									[hWnd](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+										auto* navCtx = reinterpret_cast<AIConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+										if (navCtx == nullptr || args == nullptr || !IsWindow(hWnd)) {
+											return S_OK;
+										}
+
+										BOOL isSuccess = FALSE;
+										args->get_IsSuccess(&isSuccess);
+										if (isSuccess == TRUE) {
+											navCtx->webViewReady = true;
+											if (navCtx->hLoading != nullptr) {
+												ShowWindow(navCtx->hLoading, SW_HIDE);
+											}
+											OutputStringToELog("[AI Config][WebView2] navigation completed successfully");
+											LayoutAIConfigWebViewDialog(hWnd, navCtx);
+											return S_OK;
+										}
+
+										COREWEBVIEW2_WEB_ERROR_STATUS webErrorStatus = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+										args->get_WebErrorStatus(&webErrorStatus);
+										if (webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED ||
+											webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED ||
+											webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET) {
+											OutputStringToELog(std::format(
+												"[AI Config][WebView2] navigation superseded errorStatus={}",
+												static_cast<int>(webErrorStatus)));
+											return S_OK;
+										}
+
+										OutputStringToELog(std::format(
+											"[AI Config][WebView2] navigation failed errorStatus={}",
+											static_cast<int>(webErrorStatus)));
+										navCtx->fallbackRequested = true;
+										DestroyWindow(hWnd);
+										return S_OK;
+									}).Get(),
+								nullptr);
+
+							LayoutAIConfigWebViewDialog(hWnd, readyCtx);
+							const std::wstring html = WideFromLocal(BuildAIConfigWebViewHtml(*readyCtx->settings));
+							if (html.empty()) {
+								OutputStringToELog("[AI Config][WebView2] html conversion failed");
+								readyCtx->fallbackRequested = true;
+								DestroyWindow(hWnd);
+								return S_OK;
+							}
+							OutputStringToELog(std::format("[AI Config][WebView2] controller ready=1 htmlChars={}", html.size()));
+							readyCtx->webView->NavigateToString(html.c_str());
+							return S_OK;
+						}).Get());
+			}).Get());
+
+	if (FAILED(hr)) {
+		OutputStringToELog(std::format("[AI Config][WebView2] bootstrap failed hr=0x{:08X}", static_cast<unsigned int>(hr)));
+		ctx->fallbackRequested = true;
+		DestroyWindow(hWnd);
+	}
+}
+
+LRESULT CALLBACK AIConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+	auto* ctx = reinterpret_cast<AIConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+	switch (uMsg)
+	{
+	case WM_NCCREATE: {
+		const auto* create = reinterpret_cast<CREATESTRUCTA*>(lParam);
+		SetWindowLongPtrA(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+		return TRUE;
+	}
+
+	case WM_CREATE: {
+		if (ctx == nullptr || ctx->settings == nullptr) {
+			return -1;
+		}
+
+		ctx->hHost = CreateWindowExA(
+			WS_EX_CLIENTEDGE,
+			"STATIC",
+			"",
+			WS_CHILD,
+			0,
+			0,
+			0,
+			0,
+			hWnd,
+			nullptr,
+			nullptr,
+			nullptr);
+		ctx->hLoading = CreateWindowExW(
+			0,
+			L"STATIC",
+			L"正在初始化 WebView2 设置页...",
+			WS_CHILD | WS_VISIBLE,
+			0,
+			0,
+			0,
+			0,
+			hWnd,
+			nullptr,
+			nullptr,
+			nullptr);
+		SetDefaultFont(ctx->hLoading);
+		ShowWindow(ctx->hHost, SW_HIDE);
+		LayoutAIConfigWebViewDialog(hWnd, ctx);
+		StartAIConfigWebView(hWnd, ctx);
+		return 0;
+	}
+
+	case WM_GETMINMAXINFO: {
+		auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+		if (mmi != nullptr) {
+			mmi->ptMinTrackSize.x = (std::max)(mmi->ptMinTrackSize.x, 820L);
+			mmi->ptMinTrackSize.y = (std::max)(mmi->ptMinTrackSize.y, 620L);
+		}
+		return 0;
+	}
+
+	case WM_SIZE:
+		if (ctx != nullptr) {
+			LayoutAIConfigWebViewDialog(hWnd, ctx);
+		}
+		return 0;
+
+	case WM_CLOSE:
+		DestroyWindow(hWnd);
+		return 0;
+
+	case WM_DESTROY:
+		if (ctx != nullptr) {
+			ctx->webView = nullptr;
+			ctx->webViewController = nullptr;
+			ctx->webViewEnvironment = nullptr;
+		}
+		return 0;
+
 	default:
 		break;
 	}
@@ -747,7 +1306,7 @@ bool RunModalWindow(HWND owner, HWND hDialog)
 }
 } // namespace
 
-bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
+bool ShowAIConfigDialogNative(HWND owner, AISettings& ioSettings)
 {
 	ComCtl6ActivationScope themeScope;
 	INITCOMMONCONTROLSEX icex = {};
@@ -774,7 +1333,7 @@ bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 		wc.lpszClassName,
 		"AutoLinker AI Config",
 		WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-		CW_USEDEFAULT, CW_USEDEFAULT, 650, 430,
+		CW_USEDEFAULT, CW_USEDEFAULT, 650, 464,
 		owner,
 		nullptr,
 		wc.hInstance,
@@ -788,6 +1347,70 @@ bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 	EnsureWindowTitle(hDialog, "AutoLinker AI Config");
 	RunModalWindow(owner, hDialog);
 	return ctx.accepted;
+}
+
+AIConfigDialogRunResult ShowAIConfigDialogWebView(HWND owner, AISettings& ioSettings)
+{
+	AIConfigDialogRunResult result = {};
+	if (!IsWebView2RuntimeAvailable()) {
+		OutputStringToELog("[AI Config][WebView2] runtime unavailable, fallback to native dialog");
+		result.fallbackRequested = true;
+		return result;
+	}
+
+	ComCtl6ActivationScope themeScope;
+	INITCOMMONCONTROLSEX icex = {};
+	icex.dwSize = sizeof(icex);
+	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES | ICC_LINK_CLASS;
+	InitCommonControlsEx(&icex);
+
+	WNDCLASSEXA wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.lpfnWndProc = AIConfigWebViewDialogProc;
+	wc.hInstance = GetModuleHandleA(nullptr);
+	wc.lpszClassName = "AutoLinkerAIConfigWebViewDialogWindow";
+	wc.hIcon = GetAppIconLarge();
+	wc.hIconSm = GetAppIconSmall();
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+	RegisterClassExA(&wc);
+
+	AIConfigWebViewDialogContext ctx = {};
+	ctx.settings = &ioSettings;
+
+	HWND hDialog = CreateWindowExA(
+		WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+		wc.lpszClassName,
+		"AutoLinker AI Config",
+		WS_CAPTION | WS_SYSMENU | WS_VISIBLE | WS_THICKFRAME,
+		CW_USEDEFAULT, CW_USEDEFAULT, 1060, 760,
+		owner,
+		nullptr,
+		wc.hInstance,
+		&ctx);
+
+	if (hDialog == nullptr) {
+		OutputStringToELog("[AI Config][WebView2] CreateWindowExA failed, fallback to native dialog");
+		result.fallbackRequested = true;
+		return result;
+	}
+
+	ApplyWindowIcon(hDialog);
+	EnsureWindowTitle(hDialog, "AutoLinker AI Config");
+	RunModalWindow(owner, hDialog);
+	result.accepted = ctx.accepted;
+	result.fallbackRequested = ctx.fallbackRequested;
+	return result;
+}
+
+bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
+{
+	const AIConfigDialogRunResult webViewResult = ShowAIConfigDialogWebView(owner, ioSettings);
+	if (webViewResult.fallbackRequested) {
+		OutputStringToELog("[AI Config][WebView2] fallback to native dialog");
+		return ShowAIConfigDialogNative(owner, ioSettings);
+	}
+	return webViewResult.accepted;
 }
 
 AIPreviewAction ShowAIPreviewDialogEx(

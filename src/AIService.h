@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <functional>
 #include <string>
@@ -6,6 +6,7 @@
 
 class ConfigManager;
 
+// AI 任务类型。
 enum class AITaskKind {
 	OptimizeFunction,
 	AddCommentsToFunction,
@@ -14,22 +15,26 @@ enum class AITaskKind {
 	AddByCurrentPageType
 };
 
+// AI 协议类型。
 enum class AIProtocolType {
 	OpenAI = 0,
 	Gemini = 1,
 	Claude = 2
 };
 
+// AI 设置。
 struct AISettings {
 	AIProtocolType protocolType = AIProtocolType::OpenAI;
 	std::string baseUrl;
 	std::string apiKey;
 	std::string model;
 	std::string extraSystemPrompt;
+	std::string tavilyApiKey;
 	int timeoutMs = 120000;
 	double temperature = 0.2;
 };
 
+// AI 单次任务结果。
 struct AIResult {
 	bool ok = false;
 	std::string content;
@@ -37,11 +42,13 @@ struct AIResult {
 	int httpStatus = 0;
 };
 
+// AI 对话消息。
 struct AIChatMessage {
 	std::string role;   // "system" | "user" | "assistant"
 	std::string content;
 };
 
+// AI 工具调用事件。
 struct AIChatToolEvent {
 	std::string name;
 	std::string argumentsJson;
@@ -49,6 +56,7 @@ struct AIChatToolEvent {
 	bool ok = false;
 };
 
+// AI 对话结果。
 struct AIChatResult {
 	bool ok = false;
 	std::string content;

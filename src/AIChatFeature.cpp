@@ -124,17 +124,6 @@ struct CodeEditDialogContext {
 	HWND hCancel = nullptr;
 };
 
-struct CodeEditToolRequest {
-	std::string title;
-	std::string hint;
-	std::string initialCode;
-	std::string resultCode;
-	bool accepted = false;
-	bool done = false;
-	std::mutex mutex;
-	std::condition_variable cv;
-};
-
 struct AIChatAsyncRequest {
 	unsigned long long requestId = 0;
 	AISettings settings = {};
@@ -1809,10 +1798,11 @@ bool RequestCodeEditFromMainThread(
 		return false;
 	}
 
-	CodeEditToolRequest request = {};
+	ToolDialogRequest request = {};
+	request.kind = ToolDialogRequest::Kind::CodeEdit;
 	request.title = title;
 	request.hint = hint;
-	request.initialCode = initialCode;
+	request.content = initialCode;
 	if (g_msgAIChatToolDialog == 0) {
 		return false;
 	}
@@ -1828,7 +1818,41 @@ bool RequestCodeEditFromMainThread(
 		return false;
 	}
 
-	outCode = request.resultCode;
+	outCode = request.resultText;
+	return true;
+}
+
+bool RequestConfirmationFromMainThread(
+	const std::string& title,
+	const std::string& content,
+	const std::string& primaryText,
+	const std::string& secondaryText,
+	bool& outAccepted)
+{
+	outAccepted = false;
+	if (g_mainWindow == nullptr || !IsWindow(g_mainWindow)) {
+		return false;
+	}
+
+	ToolDialogRequest request = {};
+	request.kind = ToolDialogRequest::Kind::Confirmation;
+	request.title = title;
+	request.content = content;
+	request.primaryText = primaryText;
+	request.secondaryText = secondaryText;
+	if (g_msgAIChatToolDialog == 0) {
+		return false;
+	}
+	if (PostMessage(g_mainWindow, g_msgAIChatToolDialog, 0, reinterpret_cast<LPARAM>(&request)) == FALSE) {
+		return false;
+	}
+
+	std::unique_lock<std::mutex> lock(request.mutex);
+	if (!request.cv.wait_for(lock, std::chrono::minutes(20), [&request]() { return request.done; })) {
+		return false;
+	}
+
+	outAccepted = request.accepted;
 	return true;
 }
 
@@ -2373,23 +2397,36 @@ LRESULT CALLBACK CodeEditDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 
 bool HandleToolDialogRequest(LPARAM lParam)
 {
-	auto* request = reinterpret_cast<CodeEditToolRequest*>(lParam);
+	auto* request = reinterpret_cast<ToolDialogRequest*>(lParam);
 	if (request == nullptr) {
 		return true;
 	}
 
-    std::string title = request->title.empty() ? "AI Tool: Code Edit" : request->title;
-	if (!TrimAsciiCopy(request->hint).empty()) {
-		title += " - " + request->hint;
-	}
+	bool accepted = false;
+	std::string resultText;
+	if (request->kind == ToolDialogRequest::Kind::CodeEdit) {
+		std::string title = request->title.empty() ? "AI Tool: Code Edit" : request->title;
+		if (!TrimAsciiCopy(request->hint).empty()) {
+			title += " - " + request->hint;
+		}
 
-	std::string edited = request->initialCode;
-	const bool accepted = ShowAICodeEditDialog(g_mainWindow, title, request->initialCode, edited);
+		resultText = request->content;
+		accepted = ShowAICodeEditDialog(g_mainWindow, title, request->content, resultText);
+	}
+	else if (request->kind == ToolDialogRequest::Kind::Confirmation) {
+		const AIPreviewAction action = ShowAIPreviewDialogEx(
+			g_mainWindow,
+			request->title.empty() ? "AI Tool Confirmation" : request->title,
+			request->content,
+			request->primaryText,
+			request->secondaryText);
+		accepted = action == AIPreviewAction::PrimaryConfirm;
+	}
 
 	{
 		std::lock_guard<std::mutex> guard(request->mutex);
 		request->accepted = accepted;
-		request->resultCode = edited;
+		request->resultText = resultText;
 		request->done = true;
 	}
 	request->cv.notify_one();
@@ -2421,6 +2458,11 @@ HWND GetAIChatMainWindowForTooling()
 	return g_mainWindow;
 }
 
+ConfigManager* GetAIChatConfigManagerForTooling()
+{
+	return g_configManager;
+}
+
 UINT GetAIChatToolExecMessageForTooling()
 {
 	return g_msgAIChatToolExec;
@@ -2433,6 +2475,16 @@ bool RequestCodeEditForTooling(
 	std::string& outCode)
 {
 	return RequestCodeEditFromMainThread(title, hint, initialCode, outCode);
+}
+
+bool RequestConfirmationForTooling(
+	const std::string& title,
+	const std::string& content,
+	const std::string& primaryText,
+	const std::string& secondaryText,
+	bool& outAccepted)
+{
+	return RequestConfirmationFromMainThread(title, content, primaryText, secondaryText, outAccepted);
 }
 
 bool EnsureChatHostWindowCreated();
