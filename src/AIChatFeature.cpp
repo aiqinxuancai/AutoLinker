@@ -254,21 +254,176 @@ std::vector<HWND> CollectChildWindowsByClass(HWND root, const char* className)
 	return windows;
 }
 
-std::string ReadTabItemTextA(HWND tabHwnd, int index)
+std::string LocalFromWide(const wchar_t* text);
+
+std::string ToLowerAsciiCopySimple(std::string text)
+{
+	for (char& ch : text) {
+		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+	}
+	return text;
+}
+
+std::string ReadTabItemTextLocal(HWND tabHwnd, int index)
 {
 	if (tabHwnd == nullptr || !IsWindow(tabHwnd) || index < 0) {
 		return std::string();
 	}
 
+	wchar_t wideBuf[256] = {};
+	TCITEMW wideItem = {};
+	wideItem.mask = TCIF_TEXT;
+	wideItem.pszText = wideBuf;
+	wideItem.cchTextMax = static_cast<int>(sizeof(wideBuf) / sizeof(wideBuf[0]));
+	if (SendMessageW(tabHwnd, TCM_GETITEMW, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(&wideItem)) != FALSE) {
+		return LocalFromWide(wideBuf);
+	}
+
 	char textBuf[256] = {};
-	TCITEMA item = {};
-	item.mask = TCIF_TEXT;
-	item.pszText = textBuf;
-	item.cchTextMax = static_cast<int>(sizeof(textBuf));
-	if (SendMessageA(tabHwnd, TCM_GETITEMA, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(&item)) == FALSE) {
+	TCITEMA ansiItem = {};
+	ansiItem.mask = TCIF_TEXT;
+	ansiItem.pszText = textBuf;
+	ansiItem.cchTextMax = static_cast<int>(sizeof(textBuf));
+	if (SendMessageA(tabHwnd, TCM_GETITEMA, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(&ansiItem)) == FALSE) {
 		return std::string();
 	}
 	return textBuf;
+}
+
+bool IsKnownEideModuleStem(const std::string& stemLower)
+{
+	static constexpr std::array<const char*, 7> kKnownEideModules = {
+		"idraw",
+		"icontrols",
+		"iwindowsize",
+		"iconfig",
+		"ievent",
+		"iresource",
+		"itheme"
+	};
+	return std::find(kKnownEideModules.begin(), kKnownEideModules.end(), stemLower) != kKnownEideModules.end();
+}
+
+bool DetectEideCompatibilityEnvironment()
+{
+	HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+	if (snapshot == INVALID_HANDLE_VALUE) {
+		return false;
+	}
+
+	MODULEENTRY32 entry = {};
+	entry.dwSize = sizeof(entry);
+	if (Module32First(snapshot, &entry) == FALSE) {
+		CloseHandle(snapshot);
+		return false;
+	}
+
+	bool found = false;
+	do {
+		const std::filesystem::path modulePath(entry.szExePath);
+		const std::string fullPathLower = ToLowerAsciiCopySimple(modulePath.string());
+		const std::string stemLower = ToLowerAsciiCopySimple(modulePath.stem().string());
+		if (!IsKnownEideModuleStem(stemLower)) {
+			continue;
+		}
+		if (fullPathLower.find("\\eide\\") == std::string::npos &&
+			fullPathLower.find("/eide/") == std::string::npos) {
+			continue;
+		}
+		found = true;
+		break;
+	} while (Module32Next(snapshot, &entry) != FALSE);
+
+	CloseHandle(snapshot);
+	return found;
+}
+
+bool IsEideCompatibilityEnvironment()
+{
+	static bool s_checked = false;
+	static bool s_detected = false;
+	if (!s_checked) {
+		s_detected = DetectEideCompatibilityEnvironment();
+		s_checked = true;
+		if (s_detected) {
+			OutputStringToELog("[AI Chat][Compat] detected eide modules, left work area host disabled");
+		}
+	}
+	return s_detected;
+}
+
+int GetTabDirectionLocal(HWND tabHwnd)
+{
+	if (tabHwnd == nullptr || !IsWindow(tabHwnd)) {
+		return 1;
+	}
+
+	const DWORD style = static_cast<DWORD>(GetWindowLongPtrW(tabHwnd, GWL_STYLE));
+	const bool isBottom = (style & TCS_BOTTOM) == TCS_BOTTOM;
+	int direction = (style & TCS_VERTICAL) == TCS_VERTICAL ? 1 : 0;
+	if (direction != 0) {
+		direction = isBottom ? 2 : 0;
+	}
+	else {
+		direction = isBottom ? 3 : 1;
+	}
+	return direction;
+}
+
+RECT CalcTabPageRectLocal(HWND tabHwnd)
+{
+	RECT rc = {};
+	if (tabHwnd == nullptr || !IsWindow(tabHwnd)) {
+		return rc;
+	}
+
+	RECT rcTabControl = {};
+	GetClientRect(tabHwnd, &rcTabControl);
+
+	RECT rcItem = {};
+	if (TabCtrl_GetItemRect(tabHwnd, 0, &rcItem) == FALSE) {
+		rc = rcTabControl;
+		TabCtrl_AdjustRect(tabHwnd, FALSE, &rc);
+		return rc;
+	}
+
+	const int cxClient = rcTabControl.right - rcTabControl.left;
+	const int cyClient = rcTabControl.bottom - rcTabControl.top;
+	switch (GetTabDirectionLocal(tabHwnd))
+	{
+	case 0:
+		rc.left = rcItem.right;
+		rc.top = 0;
+		rc.right = cxClient - 1;
+		rc.bottom = cyClient - 1;
+		break;
+	case 1:
+		rc.left = 1;
+		rc.top = rcItem.bottom - 1;
+		rc.right = cxClient - 1;
+		rc.bottom = cyClient - 1;
+		break;
+	case 2:
+		rc.left = 1;
+		rc.top = 0;
+		rc.right = rcItem.left;
+		rc.bottom = cyClient - 1;
+		break;
+	default:
+		rc.left = 1;
+		rc.top = 0;
+		rc.right = cxClient - 1;
+		rc.bottom = rcItem.top;
+		break;
+	}
+
+	if (rc.right < rc.left) {
+		rc.right = rc.left;
+	}
+	if (rc.bottom < rc.top) {
+		rc.bottom = rc.top;
+	}
+	return rc;
 }
 
 HMODULE GetCurrentModuleHandle()
@@ -2552,6 +2707,11 @@ std::string GetLeftWorkAreaTabCaption()
 	return "AI";
 }
 
+std::wstring GetLeftWorkAreaTabCaptionWide()
+{
+	return L"AI";
+}
+
 std::string GetLeftWorkAreaTabToolTip()
 {
 	return "AutoLinker AI 对话";
@@ -2599,9 +2759,9 @@ bool IsLeftWorkAreaTabControl(HWND tabHwnd)
 		return false;
 	}
 
-	return ReadTabItemTextA(tabHwnd, 0) == LocalFromWide(L"支持库") &&
-		ReadTabItemTextA(tabHwnd, 1) == LocalFromWide(L"程序") &&
-		ReadTabItemTextA(tabHwnd, 2) == LocalFromWide(L"属性");
+	return ReadTabItemTextLocal(tabHwnd, 0) == LocalFromWide(L"支持库") &&
+		ReadTabItemTextLocal(tabHwnd, 1) == LocalFromWide(L"程序") &&
+		ReadTabItemTextLocal(tabHwnd, 2) == LocalFromWide(L"属性");
 }
 
 HWND FindLeftWorkAreaTabControl()
@@ -2632,8 +2792,7 @@ RECT GetLeftWorkAreaPageRectInHost()
 		return rc;
 	}
 
-	GetClientRect(g_leftWorkAreaHost.tabHwnd, &rc);
-	TabCtrl_AdjustRect(g_leftWorkAreaHost.tabHwnd, FALSE, &rc);
+	rc = CalcTabPageRectLocal(g_leftWorkAreaHost.tabHwnd);
 	MapWindowPoints(g_leftWorkAreaHost.tabHwnd, g_leftWorkAreaHost.hostHwnd, reinterpret_cast<LPPOINT>(&rc), 2);
 	return rc;
 }
@@ -2796,22 +2955,23 @@ bool EnsureLeftWorkAreaChatTabAdded()
 	int tabIndex = -1;
 	const int itemCount = static_cast<int>(SendMessageA(tabHwnd, TCM_GETITEMCOUNT, 0, 0));
 	for (int index = 0; index < itemCount; ++index) {
-		if (ReadTabItemTextA(tabHwnd, index) == caption) {
+		if (ReadTabItemTextLocal(tabHwnd, index) == caption) {
 			tabIndex = index;
 			break;
 		}
 	}
 
 	if (tabIndex < 0) {
-		TCITEMA item = {};
+		std::wstring captionWide = GetLeftWorkAreaTabCaptionWide();
+		TCITEMW item = {};
 		item.mask = TCIF_TEXT;
-		item.pszText = const_cast<LPSTR>(caption.c_str());
+		item.pszText = captionWide.data();
 		const int imageIndex = EnsureLeftWorkAreaTabImageIndex(tabHwnd);
 		if (imageIndex >= 0) {
 			item.mask |= TCIF_IMAGE;
 			item.iImage = imageIndex;
 		}
-		const LRESULT insertIndex = SendMessageA(tabHwnd, TCM_INSERTITEMA, static_cast<WPARAM>(itemCount), reinterpret_cast<LPARAM>(&item));
+		const LRESULT insertIndex = SendMessageW(tabHwnd, TCM_INSERTITEMW, static_cast<WPARAM>(itemCount), reinterpret_cast<LPARAM>(&item));
 		if (insertIndex < 0) {
 			LogChatTab("insert left work area tab failed");
 			return false;
@@ -2827,10 +2987,10 @@ bool EnsureLeftWorkAreaChatTabAdded()
 		g_leftWorkAreaHost.imageIndex = EnsureLeftWorkAreaTabImageIndex(tabHwnd);
 	}
 	if (g_leftWorkAreaHost.imageIndex >= 0) {
-		TCITEMA item = {};
+		TCITEMW item = {};
 		item.mask = TCIF_IMAGE;
 		item.iImage = g_leftWorkAreaHost.imageIndex;
-		SendMessageA(tabHwnd, TCM_SETITEMA, static_cast<WPARAM>(tabIndex), reinterpret_cast<LPARAM>(&item));
+		SendMessageW(tabHwnd, TCM_SETITEMW, static_cast<WPARAM>(tabIndex), reinterpret_cast<LPARAM>(&item));
 	}
 	if (!g_leftWorkAreaHost.subclassInstalled) {
 		if (SetWindowSubclass(hostHwnd, LeftWorkAreaHostSubclassProc, kLeftWorkAreaHostSubclassId, 0) == FALSE) {
@@ -2958,7 +3118,7 @@ void Shutdown()
 	if (g_leftWorkAreaHost.tabHwnd != nullptr &&
 		IsWindow(g_leftWorkAreaHost.tabHwnd) &&
 		g_leftWorkAreaHost.tabIndex >= 0 &&
-		ReadTabItemTextA(g_leftWorkAreaHost.tabHwnd, g_leftWorkAreaHost.tabIndex) == GetLeftWorkAreaTabCaption()) {
+		ReadTabItemTextLocal(g_leftWorkAreaHost.tabHwnd, g_leftWorkAreaHost.tabIndex) == GetLeftWorkAreaTabCaption()) {
 		SendMessageA(g_leftWorkAreaHost.tabHwnd, TCM_DELETEITEM, static_cast<WPARAM>(g_leftWorkAreaHost.tabIndex), 0);
 	}
 	g_leftWorkAreaHost = {};

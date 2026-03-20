@@ -174,6 +174,27 @@ std::string ConvertUtf8ToLocalForEOutput(const std::string& text)
 	return local;
 }
 
+std::string ConvertWideToLocalForEOutput(const std::wstring& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+
+	const int localLen = WideCharToMultiByte(CP_ACP, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	if (localLen <= 0) {
+		return std::string();
+	}
+
+	std::string local(static_cast<size_t>(localLen), '\0');
+	if (WideCharToMultiByte(CP_ACP, 0, text.c_str(), -1, local.data(), localLen, nullptr, nullptr) <= 0) {
+		return std::string();
+	}
+	if (!local.empty() && local.back() == '\0') {
+		local.pop_back();
+	}
+	return local;
+}
+
 std::string ConvertPossiblyUtf8ToLocalForEOutput(const std::string& text)
 {
 	if (text.empty()) {
@@ -332,6 +353,15 @@ std::string ReadTabItemText(HWND tabHwnd, int index)
 {
 	if (tabHwnd == nullptr || !IsWindow(tabHwnd) || index < 0) {
 		return std::string();
+	}
+
+	wchar_t wideBuf[512] = {};
+	TCITEMW wideItem = {};
+	wideItem.mask = TCIF_TEXT;
+	wideItem.pszText = wideBuf;
+	wideItem.cchTextMax = static_cast<int>(sizeof(wideBuf) / sizeof(wideBuf[0]));
+	if (SendMessageW(tabHwnd, TCM_GETITEMW, static_cast<WPARAM>(index), reinterpret_cast<LPARAM>(&wideItem)) != FALSE) {
+		return ConvertWideToLocalForEOutput(std::wstring(wideBuf));
 	}
 
 	char textBuf[512] = {};
