@@ -42,6 +42,8 @@ constexpr int IDC_PREVIEW_CANCEL = 2;
 constexpr int IDC_INPUT_EDIT = 1201;
 constexpr int IDC_INPUT_OK = 1;
 constexpr int IDC_INPUT_CANCEL = 2;
+constexpr UINT_PTR kAIConfigWebViewInitTimerId = 0xAC01;
+constexpr UINT kAIConfigWebViewInitTimeoutMs = 12000;
 
 HMODULE GetCurrentModuleHandle()
 {
@@ -480,6 +482,25 @@ struct AIConfigWebViewDialogContext {
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
 };
 
+std::wstring EscapeJsSingleQuotedWide(const std::wstring& text)
+{
+	std::wstring out;
+	out.reserve(text.size() + 32);
+	for (wchar_t ch : text) {
+		switch (ch)
+		{
+		case L'\\': out += L"\\\\"; break;
+		case L'\'': out += L"\\'"; break;
+		case L'\r': out += L"\\r"; break;
+		case L'\n': out += L"\\n"; break;
+		case 0x2028: out += L"\\u2028"; break;
+		case 0x2029: out += L"\\u2029"; break;
+		default: out.push_back(ch); break;
+		}
+	}
+	return out;
+}
+
 void PopulateProtocolCombo(HWND hCombo, AIProtocolType selected)
 {
 	if (hCombo == nullptr) {
@@ -545,7 +566,7 @@ HFONT GetLinkFont()
 	return s_linkFont;
 }
 
-std::string BuildAIConfigWebViewHtml(const AISettings& settings)
+std::string BuildAIConfigWebViewSettingsJson(const AISettings& settings)
 {
 	nlohmann::json initialSettings;
 	initialSettings["protocolType"] = AIService::ProtocolTypeToString(settings.protocolType);
@@ -554,28 +575,34 @@ std::string BuildAIConfigWebViewHtml(const AISettings& settings)
 	initialSettings["model"] = LocalToUtf8Text(settings.model);
 	initialSettings["extraPrompt"] = LocalToUtf8Text(settings.extraSystemPrompt);
 	initialSettings["tavilyApiKey"] = LocalToUtf8Text(settings.tavilyApiKey);
+	return initialSettings.dump();
+}
 
+std::string BuildAIConfigWebViewShellHtml()
+{
 	std::string html;
 	html.reserve(7000);
 	html += "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light only\">";
 	html += "<style>";
-	html += "html,body{margin:0;padding:0;background:#f4f6f8;color:#1f2937;font:14px/1.5 'Microsoft YaHei UI','Segoe UI',sans-serif;}";
-	html += "*{box-sizing:border-box;} body{padding:16px;} h1{margin:0 0 8px 0;font-size:22px;} h2{margin:0 0 10px 0;font-size:16px;} p{margin:0 0 10px 0;color:#4b5563;} .wrap{max-width:1100px;margin:0 auto;} .panel{background:#fff;border:1px solid #d7dce2;border-radius:10px;padding:16px 18px;margin-bottom:14px;} .row{margin-bottom:12px;} .row label{display:block;margin-bottom:6px;font-weight:700;color:#374151;} .input,.select,.textarea{width:100%;border:1px solid #c7d0da;border-radius:8px;padding:9px 10px;background:#fff;font:14px/1.5 'Microsoft YaHei UI','Segoe UI',sans-serif;color:#111827;} .textarea{min-height:140px;resize:vertical;} .inline{display:flex;gap:8px;align-items:center;} .inline .input{flex:1 1 auto;} .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;} .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;} .btn{border:1px solid #bfc8d4;background:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font:600 13px/1 'Microsoft YaHei UI','Segoe UI',sans-serif;} .btn.primary{background:#1565c0;border-color:#1565c0;color:#fff;} .btn.secondary{background:#eb6c2d;border-color:#eb6c2d;color:#fff;} .tip{font-size:12px;color:#6b7280;} .code{font-family:Consolas,'Courier New',monospace;background:#eef2f7;border-radius:4px;padding:1px 5px;} @media (max-width:900px){.grid{grid-template-columns:1fr;}}";
-	html += "</style></head><body><div class='wrap'><div class='panel'><h1>AutoLinker AI 设置</h1><p>统一配置主模型参数和 Tavily 联网搜索密钥。保存时由宿主程序完成最终校验。</p></div><div class='grid'><div class='panel'><h2>主模型</h2><div class='row'><label for='protocol'>Protocol</label><select id='protocol' class='select'><option value='OpenAI'>OpenAI</option><option value='Gemini'>Gemini</option><option value='Claude'>Claude</option></select></div><div class='row'><label for='baseUrl'>Base URL</label><input id='baseUrl' class='input' placeholder='https://right.codes/codex' /></div><div class='row'><label for='apiKey'>API Key</label><div class='inline'><input id='apiKey' class='input' type='password' placeholder='主模型 API Key' /><button id='toggleApiKey' class='btn' type='button'>显示</button></div></div><div class='row'><label for='model'>Model</label><input id='model' class='input' placeholder='例如 gpt-5.2-medium' /></div><div class='row'><label for='extraPrompt'>System Prompt</label><textarea id='extraPrompt' class='textarea' placeholder='附加系统提示词'></textarea></div><div class='btns'><button id='fillRightCodes' class='btn secondary' type='button'>一键填入 right.codes</button><button id='openRightCodes' class='btn' type='button'>打开 right.codes</button></div><p class='tip'>主模型配置为空时无法开始 AI 对话。</p></div>";
-	html += "<div class='panel'><h2>Tavily 联网搜索</h2><div class='row'><label for='tavilyApiKey'>Tavily API Key</label><div class='inline'><input id='tavilyApiKey' class='input' type='password' placeholder='用于 search_web_tavily' /><button id='toggleTavilyKey' class='btn' type='button'>显示</button></div></div><p>这个 Key 仅供 <span class='code'>search_web_tavily</span> 工具使用，不影响主模型配置。</p><p class='tip'>PowerShell 命令执行工具仍然会逐次弹窗确认。</p><div class='btns'><button id='cancelBtn' class='btn' type='button'>取消</button><button id='saveBtn' class='btn primary' type='button'>保存并继续</button></div></div></div><script>";
-	html += "const initialSettings=" + initialSettings.dump() + ";";
+	html += "html,body{margin:0;padding:0;background:#f4f6f8;color:#1f2937;font:14px/1.5 'Microsoft YaHei UI','Segoe UI',sans-serif;height:100%;}";
+	html += "*{box-sizing:border-box;} body{padding:0;} h1{margin:0 0 8px 0;font-size:22px;} h2{margin:0 0 10px 0;font-size:16px;} p{margin:0 0 10px 0;color:#4b5563;} .wrap{width:100%;min-height:100vh;margin:0;} .hero{padding:18px 20px 12px 20px;background:#eef3f8;border-bottom:1px solid #d7dce2;} .content{padding:0;} .grid{display:grid;grid-template-columns:1fr 1fr;gap:0;} .panel{background:#fff;border:0;padding:18px 20px;min-width:0;} .panel + .panel{border-left:1px solid #d7dce2;} .row{margin-bottom:12px;} .row label{display:block;margin-bottom:6px;font-weight:700;color:#374151;} .input,.select,.textarea{width:100%;border:1px solid #c7d0da;border-radius:8px;padding:9px 10px;background:#fff;font:14px/1.5 'Microsoft YaHei UI','Segoe UI',sans-serif;color:#111827;} .textarea{min-height:140px;resize:vertical;} .inline{display:flex;gap:8px;align-items:center;} .inline .input{flex:1 1 auto;} .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;} .footer{display:flex;justify-content:flex-end;gap:10px;align-items:center;padding:16px 20px;border-top:1px solid #d7dce2;background:#fff;} .btn{border:1px solid #bfc8d4;background:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font:600 13px/1 'Microsoft YaHei UI','Segoe UI',sans-serif;} .btn.primary{background:#1565c0;border-color:#1565c0;color:#fff;} .btn.secondary{background:#eb6c2d;border-color:#eb6c2d;color:#fff;} .tip{font-size:12px;color:#6b7280;} .code{font-family:Consolas,'Courier New',monospace;background:#eef2f7;border-radius:4px;padding:1px 5px;} @media (max-width:900px){.hero{padding:16px;} .grid{grid-template-columns:1fr;} .panel{padding:16px;} .panel + .panel{border-left:0;border-top:1px solid #d7dce2;} .footer{padding:16px;flex-direction:column-reverse;align-items:stretch;} .footer .btn{width:100%;}}";
+	html += "</style></head><body><div class='wrap'><div class='hero'><h1>AutoLinker AI &#x8BBE;&#x7F6E;</h1><p>&#x7EDF;&#x4E00;&#x914D;&#x7F6E;&#x4E3B;&#x6A21;&#x578B;&#x53C2;&#x6570;&#x548C; Tavily &#x8054;&#x7F51;&#x641C;&#x7D22;&#x5BC6;&#x94A5;&#x3002;&#x4FDD;&#x5B58;&#x65F6;&#x7531;&#x5BBF;&#x4E3B;&#x7A0B;&#x5E8F;&#x5B8C;&#x6210;&#x6700;&#x7EC8;&#x6821;&#x9A8C;&#x3002;</p></div><div class='content'><div class='grid'><div class='panel'><h2>&#x4E3B;&#x6A21;&#x578B;</h2><div class='row'><label for='protocol'>Protocol</label><select id='protocol' class='select'><option value='OpenAI'>OpenAI</option><option value='Gemini'>Gemini</option><option value='Claude'>Claude</option></select></div><div class='row'><label for='baseUrl'>Base URL</label><input id='baseUrl' class='input' placeholder='https://right.codes/codex' /></div><div class='row'><label for='apiKey'>API Key</label><div class='inline'><input id='apiKey' class='input' type='password' placeholder='&#x4E3B;&#x6A21;&#x578B; API Key' /><button id='toggleApiKey' class='btn' type='button'>&#x663E;&#x793A;</button></div></div><div class='row'><label for='model'>Model</label><input id='model' class='input' placeholder='&#x4F8B;&#x5982; gpt-5.2-medium' /></div><div class='row'><label for='extraPrompt'>System Prompt</label><textarea id='extraPrompt' class='textarea' placeholder='&#x9644;&#x52A0;&#x7CFB;&#x7EDF;&#x63D0;&#x793A;&#x8BCD;'></textarea></div><div class='btns'><button id='fillRightCodes' class='btn secondary' type='button'>&#x4E00;&#x952E;&#x586B;&#x5165; right.codes</button><button id='openRightCodes' class='btn' type='button'>&#x6253;&#x5F00; right.codes</button></div><p class='tip'>&#x4E3B;&#x6A21;&#x578B;&#x914D;&#x7F6E;&#x4E3A;&#x7A7A;&#x65F6;&#x65E0;&#x6CD5;&#x5F00;&#x59CB; AI &#x5BF9;&#x8BDD;&#x3002;</p></div>";
+	html += "<div class='panel'><h2>Tavily &#x8054;&#x7F51;&#x641C;&#x7D22;</h2><div class='row'><label for='tavilyApiKey'>Tavily API Key</label><div class='inline'><input id='tavilyApiKey' class='input' type='password' placeholder='&#x7528;&#x4E8E; search_web_tavily' /><button id='toggleTavilyKey' class='btn' type='button'>&#x663E;&#x793A;</button></div></div><p>&#x8FD9;&#x4E2A; Key &#x4EC5;&#x4F9B; <span class='code'>search_web_tavily</span> &#x5DE5;&#x5177;&#x4F7F;&#x7528;&#xFF0C;&#x4E0D;&#x5F71;&#x54CD;&#x4E3B;&#x6A21;&#x578B;&#x914D;&#x7F6E;&#x3002;</p><p class='tip'>PowerShell &#x547D;&#x4EE4;&#x6267;&#x884C;&#x5DE5;&#x5177;&#x4ECD;&#x7136;&#x4F1A;&#x9010;&#x6B21;&#x5F39;&#x7A97;&#x786E;&#x8BA4;&#x3002;</p></div></div></div><div class='footer'><button id='cancelBtn' class='btn' type='button'>&#x53D6;&#x6D88;</button><button id='saveBtn' class='btn primary' type='button'>&#x4FDD;&#x5B58;&#x5E76;&#x7EE7;&#x7EED;</button></div></div><script>";
+	html += "const initialSettings={protocolType:'OpenAI',baseUrl:'',apiKey:'',model:'',extraPrompt:'',tavilyApiKey:''};";
 	html += "function $(id){return document.getElementById(id);} function post(payload){if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify(payload));}}";
 	html += "function setField(id,value){const el=$(id); if(el){el.value=value||'';}}";
-	html += "function toggleSecret(id,btnId){const input=$(id),btn=$(btnId); if(!input||!btn){return;} const next=input.type==='password'?'text':'password'; input.type=next; btn.textContent=next==='password'?'显示':'隐藏';}";
+	html += "function toggleSecret(id,btnId){const input=$(id),btn=$(btnId); if(!input||!btn){return;} const next=input.type==='password'?'text':'password'; input.type=next; btn.textContent=next==='password'?'\\u663E\\u793A':'\\u9690\\u85CF';}";
 	html += "function collect(){return {protocol_type:$('protocol').value||'OpenAI',base_url:$('baseUrl').value||'',api_key:$('apiKey').value||'',model:$('model').value||'',extra_system_prompt:$('extraPrompt').value||'',tavily_api_key:$('tavilyApiKey').value||''};}";
-	html += "function validate(data){if(!data.base_url.trim()||!data.api_key.trim()||!data.model.trim()){alert('baseUrl / apiKey / model 不能为空。'); return false;} return true;}";
-	html += "function applyInitial(){var protocol=$('protocol'); if(protocol){protocol.value='OpenAI'; var desired=initialSettings.protocolType||'OpenAI'; protocol.value=desired; if(!protocol.value){protocol.selectedIndex=0;}} setField('baseUrl',initialSettings.baseUrl);setField('apiKey',initialSettings.apiKey);setField('model',initialSettings.model);setField('extraPrompt',initialSettings.extraPrompt);setField('tavilyApiKey',initialSettings.tavilyApiKey);}";
+	html += "function validate(data){if(!data.base_url.trim()||!data.api_key.trim()||!data.model.trim()){alert('baseUrl / apiKey / model \\u4E0D\\u80FD\\u4E3A\\u7A7A\\u3002'); return false;} return true;}";
+	html += "function applyInitial(settings){const next=settings||initialSettings; var protocol=$('protocol'); if(protocol){protocol.value='OpenAI'; var desired=next.protocolType||'OpenAI'; protocol.value=desired; if(!protocol.value){protocol.selectedIndex=0;}} setField('baseUrl',next.baseUrl);setField('apiKey',next.apiKey);setField('model',next.model);setField('extraPrompt',next.extraPrompt);setField('tavilyApiKey',next.tavilyApiKey);}";
+	html += "window.autolinkerApplySettings=function(settings){applyInitial(settings);};";
+	html += "window.autolinkerFocusPrimary=function(){if($('baseUrl')){$('baseUrl').focus();}};";
 	html += "$('toggleApiKey').addEventListener('click',function(){toggleSecret('apiKey','toggleApiKey');}); $('toggleTavilyKey').addEventListener('click',function(){toggleSecret('tavilyApiKey','toggleTavilyKey');});";
 	html += "$('fillRightCodes').addEventListener('click',function(){$('protocol').value='OpenAI';$('baseUrl').value='https://right.codes/codex';$('model').value='gpt-5.2-medium';$('apiKey').focus();});";
 	html += "$('openRightCodes').addEventListener('click',function(){post({action:'open_right_codes'});});";
 	html += "$('cancelBtn').addEventListener('click',function(){post({action:'cancel'});});";
 	html += "$('saveBtn').addEventListener('click',function(){const data=collect(); if(!validate(data)){return;} post({action:'save',data:data});});";
-	html += "applyInitial(); setTimeout(function(){if($('baseUrl')){$('baseUrl').focus();}},0);";
+	html += "applyInitial(initialSettings);";
 	html += "</script></body></html>";
 	return html;
 }
@@ -588,22 +615,23 @@ void LayoutAIConfigWebViewDialog(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 
 	RECT rc = {};
 	GetClientRect(hWnd, &rc);
-	const int margin = 12;
-	const int hostWidth = static_cast<int>((std::max)(0L, rc.right - margin * 2L));
-	const int hostHeight = static_cast<int>((std::max)(0L, rc.bottom - margin * 2L));
-	const int loadingWidth = static_cast<int>((std::max)(0L, rc.right - margin * 2L - 24L));
+	const int hostWidth = static_cast<int>((std::max)(0L, rc.right));
+	const int hostHeight = static_cast<int>((std::max)(0L, rc.bottom));
+	const int loadingLeft = 16;
+	const int loadingTop = 14;
+	const int loadingWidth = static_cast<int>((std::max)(0L, rc.right - loadingLeft * 2L));
 	if (ctx->hHost != nullptr) {
-		MoveWindow(ctx->hHost, margin, margin, hostWidth, hostHeight, TRUE);
+		MoveWindow(ctx->hHost, 0, 0, hostWidth, hostHeight, TRUE);
 	}
 	if (ctx->hLoading != nullptr) {
-		MoveWindow(ctx->hLoading, margin + 12, margin + 12, loadingWidth, 24, TRUE);
+		MoveWindow(ctx->hLoading, loadingLeft, loadingTop, loadingWidth, 24, TRUE);
 	}
 	if (ctx->webViewController != nullptr) {
 		RECT bounds = {};
-		bounds.left = margin;
-		bounds.top = margin;
-		bounds.right = static_cast<LONG>(margin + hostWidth);
-		bounds.bottom = static_cast<LONG>(margin + hostHeight);
+		bounds.left = 0;
+		bounds.top = 0;
+		bounds.right = static_cast<LONG>(hostWidth);
+		bounds.bottom = static_cast<LONG>(hostHeight);
 		ctx->webViewController->put_Bounds(bounds);
 	}
 }
@@ -819,6 +847,34 @@ bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* c
 	return true;
 }
 
+void ExecuteAIConfigWebViewScript(AIConfigWebViewDialogContext* ctx, const std::wstring& script)
+{
+	if (ctx == nullptr || !ctx->webViewReady || ctx->webView == nullptr || script.empty()) {
+		return;
+	}
+	ctx->webView->ExecuteScript(script.c_str(), nullptr);
+}
+
+void ApplyAIConfigWebViewSettings(AIConfigWebViewDialogContext* ctx)
+{
+	if (ctx == nullptr || ctx->settings == nullptr || !ctx->webViewReady) {
+		return;
+	}
+
+	const std::string settingsJsonUtf8 = BuildAIConfigWebViewSettingsJson(*ctx->settings);
+	const std::wstring settingsJsonWide = Utf8ToWide(settingsJsonUtf8);
+	if (settingsJsonWide.empty()) {
+		OutputStringToELog("[AI Config][WebView2] settings json conversion failed");
+		return;
+	}
+
+	std::wstring script = L"window.autolinkerApplySettings(JSON.parse('";
+	script += EscapeJsSingleQuotedWide(settingsJsonWide);
+	script += L"'));window.autolinkerFocusPrimary();";
+	OutputStringToELog(std::format("[AI Config][WebView2] apply settings jsonChars={}", settingsJsonWide.size()));
+	ExecuteAIConfigWebViewScript(ctx, script);
+}
+
 void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 {
 	if (hWnd == nullptr || ctx == nullptr || ctx->hHost == nullptr) {
@@ -844,7 +900,7 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 
 				innerCtx->webViewEnvironment = environment;
 				return environment->CreateCoreWebView2Controller(
-					hWnd,
+					innerCtx->hHost,
 					Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
 						[hWnd](HRESULT controllerResult, ICoreWebView2Controller* controller) -> HRESULT {
 							auto* readyCtx = reinterpret_cast<AIConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
@@ -920,11 +976,13 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 										args->get_IsSuccess(&isSuccess);
 										if (isSuccess == TRUE) {
 											navCtx->webViewReady = true;
+											KillTimer(hWnd, kAIConfigWebViewInitTimerId);
 											if (navCtx->hLoading != nullptr) {
 												ShowWindow(navCtx->hLoading, SW_HIDE);
 											}
 											OutputStringToELog("[AI Config][WebView2] navigation completed successfully");
 											LayoutAIConfigWebViewDialog(hWnd, navCtx);
+											ApplyAIConfigWebViewSettings(navCtx);
 											return S_OK;
 										}
 
@@ -949,15 +1007,15 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 								nullptr);
 
 							LayoutAIConfigWebViewDialog(hWnd, readyCtx);
-							const std::wstring html = WideFromLocal(BuildAIConfigWebViewHtml(*readyCtx->settings));
-							if (html.empty()) {
-								OutputStringToELog("[AI Config][WebView2] html conversion failed");
+							const std::wstring shellHtml = Utf8ToWide(BuildAIConfigWebViewShellHtml());
+							if (shellHtml.empty()) {
+								OutputStringToELog("[AI Config][WebView2] shell html conversion failed");
 								readyCtx->fallbackRequested = true;
 								DestroyWindow(hWnd);
 								return S_OK;
 							}
-							OutputStringToELog(std::format("[AI Config][WebView2] controller ready=1 htmlChars={}", html.size()));
-							readyCtx->webView->NavigateToString(html.c_str());
+							OutputStringToELog(std::format("[AI Config][WebView2] controller ready=1 shellHtmlChars={}", shellHtml.size()));
+							readyCtx->webView->NavigateToString(shellHtml.c_str());
 							return S_OK;
 						}).Get());
 			}).Get());
@@ -989,7 +1047,7 @@ LRESULT CALLBACK AIConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, 
 			WS_EX_CLIENTEDGE,
 			"STATIC",
 			"",
-			WS_CHILD,
+			WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
 			0,
 			0,
 			0,
@@ -1012,8 +1070,8 @@ LRESULT CALLBACK AIConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, 
 			nullptr,
 			nullptr);
 		SetDefaultFont(ctx->hLoading);
-		ShowWindow(ctx->hHost, SW_HIDE);
 		LayoutAIConfigWebViewDialog(hWnd, ctx);
+		SetTimer(hWnd, kAIConfigWebViewInitTimerId, kAIConfigWebViewInitTimeoutMs, nullptr);
 		StartAIConfigWebView(hWnd, ctx);
 		return 0;
 	}
@@ -1033,11 +1091,25 @@ LRESULT CALLBACK AIConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, 
 		}
 		return 0;
 
+	case WM_TIMER:
+		if (ctx != nullptr && wParam == kAIConfigWebViewInitTimerId) {
+			if (!ctx->webViewReady) {
+				OutputStringToELog("[AI Config][WebView2] initialization timed out, fallback to native dialog");
+				ctx->fallbackRequested = true;
+				DestroyWindow(hWnd);
+				return 0;
+			}
+			KillTimer(hWnd, kAIConfigWebViewInitTimerId);
+			return 0;
+		}
+		break;
+
 	case WM_CLOSE:
 		DestroyWindow(hWnd);
 		return 0;
 
 	case WM_DESTROY:
+		KillTimer(hWnd, kAIConfigWebViewInitTimerId);
 		if (ctx != nullptr) {
 			ctx->webView = nullptr;
 			ctx->webViewController = nullptr;
@@ -1383,7 +1455,7 @@ AIConfigDialogRunResult ShowAIConfigDialogWebView(HWND owner, AISettings& ioSett
 		wc.lpszClassName,
 		"AutoLinker AI Config",
 		WS_CAPTION | WS_SYSMENU | WS_VISIBLE | WS_THICKFRAME,
-		CW_USEDEFAULT, CW_USEDEFAULT, 1060, 760,
+		CW_USEDEFAULT, CW_USEDEFAULT, 1060, 860,
 		owner,
 		nullptr,
 		wc.hInstance,
