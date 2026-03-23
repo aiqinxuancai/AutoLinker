@@ -92,6 +92,29 @@ std::filesystem::path GetAutoRunModulePublicInfoTestMarkerPath()
 	return dir / "autorun_module_public_info_test.flag";
 }
 
+std::wstring GetWebView2UserDataFolderPath()
+{
+	wchar_t tempPathBuffer[MAX_PATH] = {};
+	const DWORD tempPathLength = GetTempPathW(static_cast<DWORD>(std::size(tempPathBuffer)), tempPathBuffer);
+
+	std::filesystem::path tempPath;
+	if (tempPathLength > 0 && tempPathLength < std::size(tempPathBuffer)) {
+		tempPath = tempPathBuffer;
+	}
+	else {
+		std::error_code fallbackError;
+		tempPath = std::filesystem::temp_directory_path(fallbackError);
+		if (fallbackError) {
+			return L"";
+		}
+	}
+
+	const std::filesystem::path webViewPath = tempPath / "AutoLinker" / "WebView2";
+	std::error_code createError;
+	std::filesystem::create_directories(webViewPath, createError);
+	return webViewPath.wstring();
+}
+
 std::string EscapeOneLineForLog(std::string text)
 {
 	for (size_t i = 0; i < text.size(); ++i) {

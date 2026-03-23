@@ -881,9 +881,10 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 		return;
 	}
 
+	const std::wstring webViewUserDataFolder = GetWebView2UserDataFolderPath();
 	const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
 		nullptr,
-		nullptr,
+		webViewUserDataFolder.empty() ? nullptr : webViewUserDataFolder.c_str(),
 		nullptr,
 		Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
 			[hWnd](HRESULT envResult, ICoreWebView2Environment* environment) -> HRESULT {
