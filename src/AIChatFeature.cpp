@@ -1262,7 +1262,17 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												const std::string action = payload.contains("action") && payload["action"].is_string()
 													? payload["action"].get<std::string>()
 													: std::string();
-												if (action == "submit") {
+												if (action == "copy_code") {
+													const std::string text = payload.contains("text") && payload["text"].is_string()
+														? Utf8ToLocalText(payload["text"].get<std::string>())
+														: std::string();
+													const bool ok = !text.empty() && IDEFacade::Instance().SetClipboardText(text);
+													OutputStringToELog(std::format(
+														"[AI Chat][WebView2] copy code block ok={} bytes={}",
+														ok ? 1 : 0,
+														text.size()));
+												}
+												else if (action == "submit") {
 													const std::string text = payload.contains("text") && payload["text"].is_string()
 														? Utf8ToLocalText(payload["text"].get<std::string>())
 														: std::string();
@@ -1409,28 +1419,7 @@ bool SetClipboardTextSimple(const std::string& text)
 	if (text.empty()) {
 		return false;
 	}
-	if (!OpenClipboard(nullptr)) {
-		return false;
-	}
-
-	bool ok = false;
-	if (EmptyClipboard()) {
-		const size_t bytes = text.size() + 1;
-		HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-		if (hMem != nullptr) {
-			void* ptr = GlobalLock(hMem);
-			if (ptr != nullptr) {
-				std::memcpy(ptr, text.c_str(), bytes);
-				GlobalUnlock(hMem);
-				ok = (SetClipboardData(CF_TEXT, hMem) != nullptr);
-			}
-			if (!ok) {
-				GlobalFree(hMem);
-			}
-		}
-	}
-	CloseClipboard();
-	return ok;
+	return IDEFacade::Instance().SetClipboardText(text);
 }
 
 bool RunModalWindow(HWND owner, HWND hDialog)
@@ -1588,6 +1577,16 @@ std::string RenderMarkdownToHtml(const std::string& markdown)
 			inList = false;
 		}
 	};
+	auto openCodeBlock = [&]() {
+		html += "<div class=\"code-block\"><button class=\"code-copy-btn\" type=\"button\" title=\"复制代码\" aria-label=\"复制代码\"><svg viewBox='0 0 16 16' aria-hidden='true'><path d='M5.5 1.75A1.75 1.75 0 0 1 7.25 0h5A1.75 1.75 0 0 1 14 1.75v7.5A1.75 1.75 0 0 1 12.25 11h-5A1.75 1.75 0 0 1 5.5 9.25z'></path><path d='M2.75 4A1.75 1.75 0 0 0 1 5.75v7.5C1 14.216 1.784 15 2.75 15h5A1.75 1.75 0 0 0 9.5 13.25V13h-1v.25a.75.75 0 0 1-.75.75h-5a.75.75 0 0 1-.75-.75v-7.5A.75.75 0 0 1 2.75 5H3V4z'></path></svg></button><pre><code>";
+		inCodeBlock = true;
+	};
+	auto closeCodeBlock = [&]() {
+		if (inCodeBlock) {
+			html += "</code></pre></div>";
+			inCodeBlock = false;
+		}
+	};
 
 	for (const std::string& line : lines) {
 		const std::string trimmed = TrimAsciiCopy(line);
@@ -1595,12 +1594,10 @@ std::string RenderMarkdownToHtml(const std::string& markdown)
 			closeParagraph();
 			closeList();
 			if (!inCodeBlock) {
-				html += "<pre><code>";
-				inCodeBlock = true;
+				openCodeBlock();
 			}
 			else {
-				html += "</code></pre>";
-				inCodeBlock = false;
+				closeCodeBlock();
 			}
 			continue;
 		}
@@ -1658,9 +1655,7 @@ std::string RenderMarkdownToHtml(const std::string& markdown)
 
 	closeParagraph();
 	closeList();
-	if (inCodeBlock) {
-		html += "</code></pre>";
-	}
+	closeCodeBlock();
 	return html;
 }
 
@@ -1808,7 +1803,7 @@ std::string BuildHistoryHtmlLocked(const AIChatSessionState& state)
 std::string BuildHistoryWebViewShellHtml()
 {
 	std::string html;
-	html.reserve(2600);
+	html.reserve(4200);
 	html += "<!doctype html><html><head><meta charset=\"utf-8\"><style>";
 	html += "html,body{margin:0;padding:0;background:#ffffff;color:#222;font:13px/1.6 'Microsoft YaHei UI','Segoe UI',sans-serif;}";
 	html += "body{padding:0;}";
@@ -1836,7 +1831,14 @@ std::string BuildHistoryWebViewShellHtml()
 	html += ".body p,.body ul,.body pre,.body h1,.body h2,.body h3,.body h4,.body h5,.body h6{margin:0 0 8px 0;}";
 	html += ".body ul{padding-left:20px;}";
 	html += ".body code{font-family:Consolas,'Courier New',monospace;background:#f2f2f2;border-radius:4px;padding:1px 4px;overflow-wrap:anywhere;word-break:break-word;}";
-	html += ".body pre{overflow:auto;background:#f6f8fa;border-radius:6px;padding:10px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;}";
+	html += ".body .code-block{position:relative;margin:0 0 8px 0;}";
+	html += ".body .code-copy-btn{position:absolute;top:8px;right:8px;z-index:1;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:1px solid #d0d7de;background:#ffffff;color:#57606a;border-radius:6px;padding:0;cursor:pointer;box-shadow:0 1px 2px rgba(31,35,40,.06);}";
+	html += ".body .code-copy-btn:hover{background:#f3f4f6;color:#24292f;}";
+	html += ".body .code-copy-btn:active{background:#e9ebef;}";
+	html += ".body .code-copy-btn svg{width:15px;height:15px;fill:currentColor;pointer-events:none;}";
+	html += ".body .code-copy-btn.copied{background:#e7f6ec;border-color:#9dd3ae;color:#146c2e;}";
+	html += ".body .code-copy-btn.failed{background:#fff1f0;border-color:#ffb3ad;color:#c62828;}";
+	html += ".body pre{overflow:auto;background:#f6f8fa;border-radius:6px;padding:42px 10px 10px 10px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;}";
 	html += ".body pre code{background:transparent;padding:0;border-radius:0;}";
 	html += ".body a{color:#0b63c9;text-decoration:none;}";
 	html += ".body a:hover{text-decoration:underline;}";
@@ -1847,8 +1849,11 @@ std::string BuildHistoryWebViewShellHtml()
 	html += "window.autolinkerFocusInput=function(){var input=document.getElementById('chat-input');if(input){input.focus();}};";
 	html += "(function(){var input=document.getElementById('chat-input');var send=document.getElementById('send-btn');var clear=document.getElementById('clear-btn');";
 	html += "function post(obj){if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify(obj));}}";
+	html += "function setCopyState(btn,state){if(!btn){return;}var copied=state==='copied';var failed=state==='failed';btn.classList.toggle('copied',copied);btn.classList.toggle('failed',failed);var title='复制代码';if(copied){title='已复制';}else if(failed){title='复制失败';}btn.setAttribute('title',title);btn.setAttribute('aria-label',title);if(btn._copyTimer){clearTimeout(btn._copyTimer);}if(state!=='idle'){btn._copyTimer=setTimeout(function(){btn.classList.remove('copied');btn.classList.remove('failed');btn.setAttribute('title','复制代码');btn.setAttribute('aria-label','复制代码');btn._copyTimer=0;},1600);}}";
+	html += "function copyCode(btn){if(!btn){return;}var block=btn.closest('.code-block');var code=block?block.querySelector('code'):null;var text=code?(code.textContent||''):'';if(!text){setCopyState(btn,'failed');return;}if(window.chrome&&window.chrome.webview){post({action:'copy_code',text:text});setCopyState(btn,'copied');return;}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(function(){setCopyState(btn,'copied');},function(){setCopyState(btn,'failed');});return;}setCopyState(btn,'failed');}";
 	html += "function doSend(){if(!input||input.disabled){return;} post({action:'submit',text:input.value||''});}";
 	html += "if(send){send.addEventListener('click',doSend);} if(clear){clear.addEventListener('click',function(){post({action:'clear'});});}";
+	html += "document.addEventListener('click',function(e){var btn=e.target&&e.target.closest?e.target.closest('.code-copy-btn'):null;if(!btn){return;}e.preventDefault();copyCode(btn);});";
 	html += "if(input){input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.ctrlKey){e.preventDefault();doSend();}}); setTimeout(function(){input.focus();},0);}})();";
 	html += "</script></body></html>";
 	return html;

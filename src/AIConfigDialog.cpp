@@ -44,6 +44,8 @@ constexpr int IDC_INPUT_OK = 1;
 constexpr int IDC_INPUT_CANCEL = 2;
 constexpr UINT_PTR kAIConfigWebViewInitTimerId = 0xAC01;
 constexpr UINT kAIConfigWebViewInitTimeoutMs = 12000;
+constexpr UINT_PTR kAIPreviewWebViewInitTimerId = 0xAC02;
+constexpr UINT kAIPreviewWebViewInitTimeoutMs = 12000;
 
 HMODULE GetCurrentModuleHandle()
 {
@@ -440,20 +442,30 @@ std::string JsonStringLiteral(const std::string& utf8Text)
 	return nlohmann::json(utf8Text).dump();
 }
 
-bool IsWebView2RuntimeAvailable()
+bool IsWebView2RuntimeAvailableWithTag(const char* logTag)
 {
 	LPWSTR version = nullptr;
 	const HRESULT hr = GetAvailableCoreWebView2BrowserVersionString(nullptr, &version);
 	const bool available = SUCCEEDED(hr);
-	OutputStringToELog(std::format("[AI Config][WebView2] runtime available={}", available ? 1 : 0));
+	OutputStringToELog(std::format("[{}][WebView2] runtime available={}", logTag == nullptr ? "AI Config" : logTag, available ? 1 : 0));
 	if (version != nullptr) {
 		CoTaskMemFree(version);
 	}
 	return available;
 }
 
+bool IsWebView2RuntimeAvailable()
+{
+	return IsWebView2RuntimeAvailableWithTag("AI Config");
+}
+
 struct AIConfigDialogRunResult {
 	bool accepted = false;
+	bool fallbackRequested = false;
+};
+
+struct AIPreviewWebViewRunResult {
+	AIPreviewAction action = AIPreviewAction::Cancel;
 	bool fallbackRequested = false;
 };
 
@@ -473,6 +485,21 @@ struct AIConfigDialogContext {
 struct AIConfigWebViewDialogContext {
 	AISettings* settings = nullptr;
 	bool accepted = false;
+	bool fallbackRequested = false;
+	bool webViewReady = false;
+	HWND hHost = nullptr;
+	HWND hLoading = nullptr;
+	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
+	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
+	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
+};
+
+struct AIPreviewWebViewDialogContext {
+	std::string title;
+	std::string content;
+	std::string primaryText;
+	std::string secondaryText;
+	AIPreviewAction action = AIPreviewAction::Cancel;
 	bool fallbackRequested = false;
 	bool webViewReady = false;
 	HWND hHost = nullptr;
@@ -1045,7 +1072,7 @@ LRESULT CALLBACK AIConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, 
 		}
 
 		ctx->hHost = CreateWindowExA(
-			WS_EX_CLIENTEDGE,
+			0,
 			"STATIC",
 			"",
 			WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
@@ -1111,6 +1138,354 @@ LRESULT CALLBACK AIConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, 
 
 	case WM_DESTROY:
 		KillTimer(hWnd, kAIConfigWebViewInitTimerId);
+		if (ctx != nullptr) {
+			ctx->webView = nullptr;
+			ctx->webViewController = nullptr;
+			ctx->webViewEnvironment = nullptr;
+		}
+		return 0;
+
+	default:
+		break;
+	}
+
+	return DefWindowProcA(hWnd, uMsg, wParam, lParam);
+}
+
+std::string BuildAIPreviewWebViewPayloadJson(const AIPreviewWebViewDialogContext& ctx)
+{
+	nlohmann::json payload;
+	payload["title"] = LocalToUtf8Text(ctx.title);
+	payload["content"] = LocalToUtf8Text(ctx.content);
+	payload["primaryText"] = LocalToUtf8Text(ctx.primaryText);
+	payload["secondaryText"] = LocalToUtf8Text(ctx.secondaryText);
+	return payload.dump();
+}
+
+std::string BuildAIPreviewWebViewShellHtml()
+{
+	std::string html;
+	html.reserve(5200);
+	html += "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light only\">";
+	html += "<style>";
+	html += "html,body{margin:0;padding:0;background:#f4f6f8;color:#1f2937;font:14px/1.5 'Microsoft YaHei UI','Segoe UI',sans-serif;height:100%;}";
+	html += "*{box-sizing:border-box;} body{padding:0;} h1{margin:0 0 8px 0;font-size:22px;} p{margin:0;color:#4b5563;} .wrap{min-height:100vh;display:flex;flex-direction:column;} .hero{padding:18px 20px 12px 20px;background:#eef3f8;border-bottom:1px solid #d7dce2;} .panel{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;padding:18px 20px;background:#fff;} .toolbar{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap;} .badge{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:#e7eef7;color:#35506b;font:600 12px/1 'Microsoft YaHei UI','Segoe UI',sans-serif;} .tip{font-size:12px;color:#6b7280;} .viewer{flex:1 1 auto;min-height:260px;margin:0;padding:16px;border:1px solid #d7dce2;border-radius:12px;background:#fbfcfe;color:#111827;font:13px/1.6 Consolas,'Courier New',monospace;white-space:pre;overflow:auto;tab-size:4;} .footer{display:flex;justify-content:flex-end;gap:10px;align-items:center;padding:16px 20px;border-top:1px solid #d7dce2;background:#fff;} .btn{border:1px solid #bfc8d4;background:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font:600 13px/1 'Microsoft YaHei UI','Segoe UI',sans-serif;} .btn.primary{background:#1565c0;border-color:#1565c0;color:#fff;} .btn.secondary{background:#eb6c2d;border-color:#eb6c2d;color:#fff;} .btn[hidden]{display:none!important;} @media (max-width:900px){.hero{padding:16px;} .panel{padding:16px;} .viewer{min-height:220px;padding:14px;} .footer{padding:16px;flex-direction:column-reverse;align-items:stretch;} .footer .btn{width:100%;}}";
+	html += "</style></head><body><div class='wrap'><div class='hero'><h1 id='dialogTitle'>AutoLinker AI &#x786E;&#x8BA4;</h1><p id='dialogSubtitle'>&#x8BF7;&#x786E;&#x8BA4;&#x4EE5;&#x4E0B;&#x5185;&#x5BB9;&#xFF0C;&#x786E;&#x8BA4;&#x540E;&#x5C06;&#x7EE7;&#x7EED;&#x6267;&#x884C;&#x3002;</p></div><div class='panel'><div class='toolbar'><span class='badge'>&#x53EA;&#x8BFB;&#x9884;&#x89C8;</span><span class='tip'>&#x5185;&#x5BB9;&#x4F1A;&#x4FDD;&#x7559;&#x539F;&#x59CB;&#x6362;&#x884C;&#x4E0E;&#x7F29;&#x8FDB;&#x3002;</span></div><pre id='contentView' class='viewer'></pre></div><div class='footer'><button id='cancelBtn' class='btn' type='button'>&#x53D6;&#x6D88;</button><button id='secondaryBtn' class='btn secondary' type='button' hidden>&#x6B21;&#x8981;&#x64CD;&#x4F5C;</button><button id='primaryBtn' class='btn primary' type='button'>&#x786E;&#x5B9A;</button></div></div><script>";
+	html += "const initialPreview={title:'',content:'',primaryText:'\\u786E\\u5B9A',secondaryText:''};";
+	html += "function $(id){return document.getElementById(id);} function post(payload){if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify(payload));}}";
+	html += "function setText(id,value){const el=$(id); if(el){el.textContent=value||'';}}";
+	html += "function applyPreview(preview){const next=preview||initialPreview; setText('dialogTitle',next.title||'AutoLinker AI Preview'); setText('dialogSubtitle',next.secondaryText?'\\u8BF7\\u786E\\u8BA4\\u4EE5\\u4E0B\\u5185\\u5BB9\\uFF0C\\u53EF\\u4EE5\\u9009\\u62E9\\u4E0D\\u540C\\u7684\\u540E\\u7EED\\u52A8\\u4F5C\\u3002':'\\u8BF7\\u786E\\u8BA4\\u4EE5\\u4E0B\\u5185\\u5BB9\\uFF0C\\u786E\\u8BA4\\u540E\\u5C06\\u7EE7\\u7EED\\u6267\\u884C\\u3002'); setText('contentView',next.content||''); const primary=$('primaryBtn'); if(primary){primary.textContent=next.primaryText||'\\u786E\\u5B9A';} const secondary=$('secondaryBtn'); if(secondary){const hasSecondary=!!(next.secondaryText&&next.secondaryText.length); secondary.hidden=!hasSecondary; if(hasSecondary){secondary.textContent=next.secondaryText;}}}";
+	html += "window.autolinkerApplyPreview=function(preview){applyPreview(preview);};";
+	html += "window.autolinkerFocusPrimary=function(){if($('primaryBtn')){$('primaryBtn').focus();}};";
+	html += "$('primaryBtn').addEventListener('click',function(){post({action:'primary'});});";
+	html += "$('secondaryBtn').addEventListener('click',function(){post({action:'secondary'});});";
+	html += "$('cancelBtn').addEventListener('click',function(){post({action:'cancel'});});";
+	html += "document.addEventListener('keydown',function(evt){if(evt.key==='Escape'){evt.preventDefault(); post({action:'cancel'}); return;} if(evt.key==='Enter'&&!evt.shiftKey&&!evt.ctrlKey&&!evt.altKey&&!evt.metaKey){evt.preventDefault(); post({action:'primary'});}});";
+	html += "applyPreview(initialPreview);";
+	html += "</script></body></html>";
+	return html;
+}
+
+void LayoutAIPreviewWebViewDialog(HWND hWnd, AIPreviewWebViewDialogContext* ctx)
+{
+	if (hWnd == nullptr || ctx == nullptr) {
+		return;
+	}
+
+	RECT rc = {};
+	GetClientRect(hWnd, &rc);
+	const int hostWidth = static_cast<int>((std::max)(0L, rc.right));
+	const int hostHeight = static_cast<int>((std::max)(0L, rc.bottom));
+	const int loadingLeft = 16;
+	const int loadingTop = 14;
+	const int loadingWidth = static_cast<int>((std::max)(0L, rc.right - loadingLeft * 2L));
+	if (ctx->hHost != nullptr) {
+		MoveWindow(ctx->hHost, 0, 0, hostWidth, hostHeight, TRUE);
+	}
+	if (ctx->hLoading != nullptr) {
+		MoveWindow(ctx->hLoading, loadingLeft, loadingTop, loadingWidth, 24, TRUE);
+	}
+	if (ctx->webViewController != nullptr) {
+		RECT bounds = {};
+		bounds.left = 0;
+		bounds.top = 0;
+		bounds.right = static_cast<LONG>(hostWidth);
+		bounds.bottom = static_cast<LONG>(hostHeight);
+		ctx->webViewController->put_Bounds(bounds);
+	}
+}
+
+void ExecuteAIPreviewWebViewScript(AIPreviewWebViewDialogContext* ctx, const std::wstring& script)
+{
+	if (ctx == nullptr || !ctx->webViewReady || ctx->webView == nullptr || script.empty()) {
+		return;
+	}
+	ctx->webView->ExecuteScript(script.c_str(), nullptr);
+}
+
+void ApplyAIPreviewWebViewPayload(AIPreviewWebViewDialogContext* ctx)
+{
+	if (ctx == nullptr || !ctx->webViewReady) {
+		return;
+	}
+
+	const std::string payloadJsonUtf8 = BuildAIPreviewWebViewPayloadJson(*ctx);
+	const std::wstring payloadJsonWide = Utf8ToWide(payloadJsonUtf8);
+	if (payloadJsonWide.empty()) {
+		OutputStringToELog("[AI Preview][WebView2] payload json conversion failed");
+		return;
+	}
+
+	std::wstring script = L"window.autolinkerApplyPreview(JSON.parse('";
+	script += EscapeJsSingleQuotedWide(payloadJsonWide);
+	script += L"'));window.autolinkerFocusPrimary();";
+	OutputStringToELog(std::format("[AI Preview][WebView2] apply payload jsonChars={}", payloadJsonWide.size()));
+	ExecuteAIPreviewWebViewScript(ctx, script);
+}
+
+void StartAIPreviewWebView(HWND hWnd, AIPreviewWebViewDialogContext* ctx)
+{
+	if (hWnd == nullptr || ctx == nullptr || ctx->hHost == nullptr) {
+		return;
+	}
+
+	const std::wstring webViewUserDataFolder = GetWebView2UserDataFolderPath();
+	const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
+		nullptr,
+		webViewUserDataFolder.empty() ? nullptr : webViewUserDataFolder.c_str(),
+		nullptr,
+		Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+			[hWnd](HRESULT envResult, ICoreWebView2Environment* environment) -> HRESULT {
+				auto* innerCtx = reinterpret_cast<AIPreviewWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+				if (innerCtx == nullptr || !IsWindow(hWnd)) {
+					return S_OK;
+				}
+				if (FAILED(envResult) || environment == nullptr) {
+					OutputStringToELog(std::format("[AI Preview][WebView2] create environment failed hr=0x{:08X}", static_cast<unsigned int>(envResult)));
+					innerCtx->fallbackRequested = true;
+					DestroyWindow(hWnd);
+					return S_OK;
+				}
+
+				innerCtx->webViewEnvironment = environment;
+				return environment->CreateCoreWebView2Controller(
+					innerCtx->hHost,
+					Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+						[hWnd](HRESULT controllerResult, ICoreWebView2Controller* controller) -> HRESULT {
+							auto* readyCtx = reinterpret_cast<AIPreviewWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+							if (readyCtx == nullptr || !IsWindow(hWnd)) {
+								return S_OK;
+							}
+							if (FAILED(controllerResult) || controller == nullptr) {
+								OutputStringToELog(std::format("[AI Preview][WebView2] create controller failed hr=0x{:08X}", static_cast<unsigned int>(controllerResult)));
+								readyCtx->fallbackRequested = true;
+								DestroyWindow(hWnd);
+								return S_OK;
+							}
+
+							readyCtx->webViewController = controller;
+							readyCtx->webViewController->get_CoreWebView2(&readyCtx->webView);
+							if (readyCtx->webView == nullptr) {
+								OutputStringToELog("[AI Preview][WebView2] get_CoreWebView2 returned null");
+								readyCtx->fallbackRequested = true;
+								DestroyWindow(hWnd);
+								return S_OK;
+							}
+
+							Microsoft::WRL::ComPtr<ICoreWebView2Settings> webSettings;
+							if (SUCCEEDED(readyCtx->webView->get_Settings(&webSettings)) && webSettings != nullptr) {
+								webSettings->put_AreDevToolsEnabled(FALSE);
+								webSettings->put_AreDefaultContextMenusEnabled(FALSE);
+								webSettings->put_IsStatusBarEnabled(FALSE);
+								webSettings->put_IsZoomControlEnabled(FALSE);
+							}
+
+							readyCtx->webView->add_WebMessageReceived(
+								Microsoft::WRL::Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+									[hWnd](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+										auto* messageCtx = reinterpret_cast<AIPreviewWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+										if (messageCtx == nullptr || args == nullptr || !IsWindow(hWnd)) {
+											return S_OK;
+										}
+
+										LPWSTR rawMessage = nullptr;
+										if (FAILED(args->TryGetWebMessageAsString(&rawMessage)) || rawMessage == nullptr) {
+											return S_OK;
+										}
+
+										const std::string utf8Message = WideToUtf8(rawMessage);
+										CoTaskMemFree(rawMessage);
+										try {
+											const nlohmann::json payload = nlohmann::json::parse(utf8Message);
+											const std::string action = payload.value("action", "");
+											if (action == "primary") {
+												messageCtx->action = AIPreviewAction::PrimaryConfirm;
+												DestroyWindow(hWnd);
+											}
+											else if (action == "secondary") {
+												messageCtx->action = AIPreviewAction::SecondaryConfirm;
+												DestroyWindow(hWnd);
+											}
+											else if (action == "cancel") {
+												messageCtx->action = AIPreviewAction::Cancel;
+												DestroyWindow(hWnd);
+											}
+										}
+										catch (...) {
+										}
+										return S_OK;
+									}).Get(),
+								nullptr);
+
+							readyCtx->webView->add_NavigationCompleted(
+								Microsoft::WRL::Callback<ICoreWebView2NavigationCompletedEventHandler>(
+									[hWnd](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+										auto* navCtx = reinterpret_cast<AIPreviewWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+										if (navCtx == nullptr || args == nullptr || !IsWindow(hWnd)) {
+											return S_OK;
+										}
+
+										BOOL isSuccess = FALSE;
+										args->get_IsSuccess(&isSuccess);
+										if (isSuccess == TRUE) {
+											navCtx->webViewReady = true;
+											KillTimer(hWnd, kAIPreviewWebViewInitTimerId);
+											if (navCtx->hLoading != nullptr) {
+												ShowWindow(navCtx->hLoading, SW_HIDE);
+											}
+											OutputStringToELog("[AI Preview][WebView2] navigation completed successfully");
+											LayoutAIPreviewWebViewDialog(hWnd, navCtx);
+											ApplyAIPreviewWebViewPayload(navCtx);
+											return S_OK;
+										}
+
+										COREWEBVIEW2_WEB_ERROR_STATUS webErrorStatus = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+										args->get_WebErrorStatus(&webErrorStatus);
+										if (webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED ||
+											webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED ||
+											webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET) {
+											OutputStringToELog(std::format(
+												"[AI Preview][WebView2] navigation superseded errorStatus={}",
+												static_cast<int>(webErrorStatus)));
+											return S_OK;
+										}
+
+										OutputStringToELog(std::format(
+											"[AI Preview][WebView2] navigation failed errorStatus={}",
+											static_cast<int>(webErrorStatus)));
+										navCtx->fallbackRequested = true;
+										DestroyWindow(hWnd);
+										return S_OK;
+									}).Get(),
+								nullptr);
+
+							LayoutAIPreviewWebViewDialog(hWnd, readyCtx);
+							const std::wstring shellHtml = Utf8ToWide(BuildAIPreviewWebViewShellHtml());
+							if (shellHtml.empty()) {
+								OutputStringToELog("[AI Preview][WebView2] shell html conversion failed");
+								readyCtx->fallbackRequested = true;
+								DestroyWindow(hWnd);
+								return S_OK;
+							}
+							OutputStringToELog(std::format("[AI Preview][WebView2] controller ready=1 shellHtmlChars={}", shellHtml.size()));
+							readyCtx->webView->NavigateToString(shellHtml.c_str());
+							return S_OK;
+						}).Get());
+			}).Get());
+
+	if (FAILED(hr)) {
+		OutputStringToELog(std::format("[AI Preview][WebView2] bootstrap failed hr=0x{:08X}", static_cast<unsigned int>(hr)));
+		ctx->fallbackRequested = true;
+		DestroyWindow(hWnd);
+	}
+}
+
+LRESULT CALLBACK AIPreviewWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+	auto* ctx = reinterpret_cast<AIPreviewWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+	switch (uMsg)
+	{
+	case WM_NCCREATE: {
+		const auto* create = reinterpret_cast<CREATESTRUCTA*>(lParam);
+		SetWindowLongPtrA(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+		return TRUE;
+	}
+
+	case WM_CREATE: {
+		if (ctx == nullptr) {
+			return -1;
+		}
+
+		ctx->hHost = CreateWindowExA(
+			0,
+			"STATIC",
+			"",
+			WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+			0,
+			0,
+			0,
+			0,
+			hWnd,
+			nullptr,
+			nullptr,
+			nullptr);
+		ctx->hLoading = CreateWindowExW(
+			0,
+			L"STATIC",
+			L"正在初始化 WebView2 确认窗口...",
+			WS_CHILD | WS_VISIBLE,
+			0,
+			0,
+			0,
+			0,
+			hWnd,
+			nullptr,
+			nullptr,
+			nullptr);
+		SetDefaultFont(ctx->hLoading);
+		LayoutAIPreviewWebViewDialog(hWnd, ctx);
+		SetTimer(hWnd, kAIPreviewWebViewInitTimerId, kAIPreviewWebViewInitTimeoutMs, nullptr);
+		StartAIPreviewWebView(hWnd, ctx);
+		return 0;
+	}
+
+	case WM_GETMINMAXINFO: {
+		auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+		if (mmi != nullptr) {
+			mmi->ptMinTrackSize.x = (std::max)(mmi->ptMinTrackSize.x, 760L);
+			mmi->ptMinTrackSize.y = (std::max)(mmi->ptMinTrackSize.y, 520L);
+		}
+		return 0;
+	}
+
+	case WM_SIZE:
+		if (ctx != nullptr) {
+			LayoutAIPreviewWebViewDialog(hWnd, ctx);
+		}
+		return 0;
+
+	case WM_TIMER:
+		if (ctx != nullptr && wParam == kAIPreviewWebViewInitTimerId) {
+			if (!ctx->webViewReady) {
+				OutputStringToELog("[AI Preview][WebView2] initialization timed out, fallback to native dialog");
+				ctx->fallbackRequested = true;
+				DestroyWindow(hWnd);
+				return 0;
+			}
+			KillTimer(hWnd, kAIPreviewWebViewInitTimerId);
+			return 0;
+		}
+		break;
+
+	case WM_CLOSE:
+		if (ctx != nullptr) {
+			ctx->action = AIPreviewAction::Cancel;
+		}
+		DestroyWindow(hWnd);
+		return 0;
+
+	case WM_DESTROY:
+		KillTimer(hWnd, kAIPreviewWebViewInitTimerId);
 		if (ctx != nullptr) {
 			ctx->webView = nullptr;
 			ctx->webViewController = nullptr;
@@ -1486,7 +1861,7 @@ bool ShowAIConfigDialog(HWND owner, AISettings& ioSettings)
 	return webViewResult.accepted;
 }
 
-AIPreviewAction ShowAIPreviewDialogEx(
+AIPreviewAction ShowAIPreviewDialogNative(
 	HWND owner,
 	const std::string& title,
 	const std::string& content,
@@ -1536,6 +1911,89 @@ AIPreviewAction ShowAIPreviewDialogEx(
 	EnsureWindowTitle(hDialog, ctx.title);
 	RunModalWindow(owner, hDialog);
 	return ctx.action;
+}
+
+AIPreviewWebViewRunResult ShowAIPreviewDialogWebView(
+	HWND owner,
+	const std::string& title,
+	const std::string& content,
+	const std::string& primaryText,
+	const std::string& secondaryText)
+{
+	AIPreviewWebViewRunResult result = {};
+	if (!IsWebView2RuntimeAvailableWithTag("AI Preview")) {
+		OutputStringToELog("[AI Preview][WebView2] runtime unavailable, fallback to native dialog");
+		result.fallbackRequested = true;
+		return result;
+	}
+
+	ComCtl6ActivationScope themeScope;
+	INITCOMMONCONTROLSEX icex = {};
+	icex.dwSize = sizeof(icex);
+	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES | ICC_LINK_CLASS;
+	InitCommonControlsEx(&icex);
+
+	WNDCLASSEXA wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.lpfnWndProc = AIPreviewWebViewDialogProc;
+	wc.hInstance = GetModuleHandleA(nullptr);
+	wc.lpszClassName = "AutoLinkerAIPreviewWebViewDialogWindow";
+	wc.hIcon = GetAppIconLarge();
+	wc.hIconSm = GetAppIconSmall();
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+	RegisterClassExA(&wc);
+
+	AIPreviewWebViewDialogContext ctx = {};
+	ctx.title = title.empty() ? "AutoLinker AI Preview" : title;
+	ctx.content = content;
+	ctx.primaryText = primaryText.empty() ? "\u786E\u5B9A" : primaryText;
+	ctx.secondaryText = secondaryText;
+	ctx.action = AIPreviewAction::Cancel;
+
+	HWND hDialog = CreateWindowExA(
+		WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+		wc.lpszClassName,
+		ctx.title.c_str(),
+		WS_CAPTION | WS_SYSMENU | WS_VISIBLE | WS_THICKFRAME,
+		CW_USEDEFAULT, CW_USEDEFAULT, 960, 700,
+		owner,
+		nullptr,
+		wc.hInstance,
+		&ctx);
+
+	if (hDialog == nullptr) {
+		OutputStringToELog("[AI Preview][WebView2] CreateWindowExA failed, fallback to native dialog");
+		result.fallbackRequested = true;
+		return result;
+	}
+
+	ApplyWindowIcon(hDialog);
+	EnsureWindowTitle(hDialog, ctx.title);
+	RunModalWindow(owner, hDialog);
+	result.action = ctx.action;
+	result.fallbackRequested = ctx.fallbackRequested;
+	return result;
+}
+
+AIPreviewAction ShowAIPreviewDialogEx(
+	HWND owner,
+	const std::string& title,
+	const std::string& content,
+	const std::string& primaryText,
+	const std::string& secondaryText)
+{
+	const AIPreviewWebViewRunResult webViewResult = ShowAIPreviewDialogWebView(
+		owner,
+		title,
+		content,
+		primaryText,
+		secondaryText);
+	if (webViewResult.fallbackRequested) {
+		OutputStringToELog("[AI Preview][WebView2] fallback to native dialog");
+		return ShowAIPreviewDialogNative(owner, title, content, primaryText, secondaryText);
+	}
+	return webViewResult.action;
 }
 
 bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string& content, const std::string& confirmText)
