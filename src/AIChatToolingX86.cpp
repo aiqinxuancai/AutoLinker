@@ -449,53 +449,6 @@ bool MatchProgramItemKind(const ProgramTreeItemInfo& item, const std::string& ki
 	return item.typeKey == kind;
 }
 
-bool TryGetProgramItemCodeByNameForAI(
-	const std::string& name,
-	const std::string& kindFilter,
-	ProgramTreeItemInfo& outItem,
-	std::string& outCode,
-	std::string& outTrace,
-	std::string& outError)
-{
-	outCode.clear();
-	outTrace.clear();
-	outError.clear();
-
-	std::vector<ProgramTreeItemInfo> items;
-	if (!TryListProgramTreeItemsForAI(items, &outError)) {
-		return false;
-	}
-
-	std::vector<ProgramTreeItemInfo> matched;
-	for (const auto& item : items) {
-		if (item.name == name && MatchProgramItemKind(item, kindFilter)) {
-			matched.push_back(item);
-		}
-	}
-	if (matched.empty()) {
-		outError = "program item not found";
-		return false;
-	}
-	if (matched.size() > 1) {
-		outError = "program item name is ambiguous";
-		return false;
-	}
-
-	outItem = matched.front();
-	e571::RawSearchContextPageDumpDebugResult dumpResult;
-	if (!e571::DebugDumpCodePageByProgramTreeItemData(
-			outItem.itemData,
-			GetCurrentProcessImageBaseForAI(),
-			&outCode,
-			&dumpResult)) {
-		outTrace = dumpResult.trace;
-		outError = "get page code failed";
-		return false;
-	}
-	outTrace = dumpResult.trace;
-	return true;
-}
-
 bool TryGetProgramItemByNameForAI(
 	const std::string& name,
 	const std::string& kindFilter,
@@ -4363,56 +4316,6 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		return Utf8ToLocalText(r.dump());
 	}
 
-	if (toolName == "get_program_item_code") {
-		nlohmann::json args;
-		try {
-			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
-		}
-		catch (const std::exception& ex) {
-			nlohmann::json r;
-			r["ok"] = false;
-			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
-		}
-
-		const std::string name = args.contains("name") && args["name"].is_string()
-			? Utf8ToLocalText(args["name"].get<std::string>())
-			: std::string();
-		const std::string kind = args.contains("kind") && args["kind"].is_string()
-			? Utf8ToLocalText(args["kind"].get<std::string>())
-			: std::string();
-		if (TrimAsciiCopy(name).empty()) {
-			return R"({"ok":false,"error":"name is required"})";
-		}
-
-		ProgramTreeItemInfo item;
-		std::string code;
-		std::string trace;
-		std::string error;
-		if (!TryGetProgramItemCodeByNameForAI(name, kind, item, code, trace, error)) {
-			nlohmann::json r;
-			r["ok"] = false;
-			r["error"] = error.empty() ? "get program item code failed" : error;
-			if (!trace.empty()) {
-				r["trace"] = trace;
-			}
-			return Utf8ToLocalText(r.dump());
-		}
-
-		nlohmann::json r;
-		r["ok"] = true;
-		r["name"] = LocalToUtf8Text(item.name);
-		r["type_key"] = item.typeKey;
-		r["type_name"] = LocalToUtf8Text(item.typeName);
-		r["item_data"] = item.itemData;
-		r["trace"] = trace;
-		r["code_kind"] = "pseudo_reference";
-		r["warning"] = LocalToUtf8Text("该代码来自程序树按名称抓取，与IDE正常编辑页结构可能不同，仅可作为伪代码参考。");
-		r["code"] = LocalToUtf8Text(code);
-		outOk = true;
-		return Utf8ToLocalText(r.dump());
-	}
-
 	if (toolName == "switch_to_program_item_page") {
 		nlohmann::json args;
 		try {
@@ -4463,25 +4366,19 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 			return Utf8ToLocalText(r.dump());
 		}
 
-		std::string openTrace;
-		if (!e571::DebugOpenProgramTreeItemByData(
+		std::string unusedCode;
+		e571::NativeRealPageAccessResult accessResult{};
+		if (!e571::GetRealPageCodeByProgramTreeItemData(
 				matched.front().itemData,
 				GetCurrentProcessImageBaseForAI(),
-				&openTrace)) {
+				&unusedCode,
+				&accessResult)) {
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = "open program item page failed";
-			r["trace"] = openTrace;
+			r["trace"] = LocalToUtf8Text(accessResult.trace);
 			return Utf8ToLocalText(r.dump());
 		}
-
-		std::string currentPageName;
-		std::string currentPageType;
-		std::string currentPageTrace;
-		const bool currentPageOk = IDEFacade::Instance().GetCurrentPageName(
-			currentPageName,
-			&currentPageType,
-			&currentPageTrace);
 
 		nlohmann::json r;
 		r["ok"] = true;
@@ -4489,11 +4386,8 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		r["type_key"] = matched.front().typeKey;
 		r["type_name"] = LocalToUtf8Text(matched.front().typeName);
 		r["item_data"] = matched.front().itemData;
-		r["trace"] = openTrace;
-		r["current_page_ok"] = currentPageOk;
-		r["current_page_name"] = LocalToUtf8Text(currentPageName);
-		r["current_page_type"] = LocalToUtf8Text(currentPageType);
-		r["current_page_trace"] = currentPageTrace;
+		r["trace"] = LocalToUtf8Text(accessResult.trace);
+		r["code_bytes"] = unusedCode.size();
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
 	}

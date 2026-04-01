@@ -7,14 +7,14 @@
 * 项目的依赖要精简，基于Win32+MFC实现，避免引入vcpkg包。
 * 注重项目的可维护性，对于可独立工作的工具类、管理类，应单独封装。
 * 避免单文件代码量过于庞大难以维护。
-* 必要时使用mcp来对e.exe进行逆向来实现功能。
+* 必要时使用mcp来对易语言主EXE进行逆向来实现功能。
 * 对.h头文件始终添加简单的中文注释。
 * 源代码文件保持UTF8+BOM的格式保存，注意中文是否存在乱码并进行修正。
-* 源代码文件使用windows下的换行符（CR LF）。
+* 源代码文件使用windows下的换行符（CRLF）。
 * 项目使用ISO C++20 标准 (/std:c++20)，可使用其特性开发。
 * 如果在修复bug时，觉得代码存在过度设计（反复打补丁修bug，然后又有新bug），应该直接过渡设计的问题并提供在设计层面上的优化方案，而非简单的打上补丁修复bug草草了事
 
-### 编译测试
+### 编译
 
 请在完成修改后验证fne_release+x86是否可正常编译，
 
@@ -25,4 +25,13 @@ MSBuild.exe ..\\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platfo
 ```
 
 如果编译存在报错，请进行修正，确保功能实现正常的情况下可正常编译。
+
+### 测试
+
+如果需要测试当前支持库，请先将AutoLinker.fne覆盖至"C:\Users\aiqin\OneDrive\e5.6\lib"，然后执行并调用：
+
+当前主要开发基于："C:\Users\aiqin\OneDrive\e5.6\e571.exe"
+需要兼容版本："C:\Users\aiqin\OneDrive\e5.6\e5.95.exe"
+
+打开当前代码目录下的"test_a.e"文件。
 

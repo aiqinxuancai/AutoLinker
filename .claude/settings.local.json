@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/**)",
+      "Read(//Users/sge65k/**)"
+    ]
+  }
+}

@@ -79,6 +79,131 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 	return text.substr(0, maxLen) + "...";
 }
 
+constexpr int kAiRequestRetryCount = 5;
+
+bool IsSuccessfulHttpStatus(int statusCode)
+{
+	return statusCode >= 200 && statusCode < 300;
+}
+
+bool IsRetryableHttpStatus(int statusCode)
+{
+	return statusCode == 0 ||
+		statusCode == 408 ||
+		statusCode == 409 ||
+		statusCode == 425 ||
+		statusCode == 429 ||
+		statusCode == 500 ||
+		statusCode == 502 ||
+		statusCode == 503 ||
+		statusCode == 504;
+}
+
+bool ContainsRetryableTransportHint(const std::string& responseBody)
+{
+	const std::string lower = ToLowerAsciiCopy(responseBody);
+	return lower.find("error in internetopen") != std::string::npos ||
+		lower.find("error in internetcrackurl") != std::string::npos ||
+		lower.find("error in internetconnect") != std::string::npos ||
+		lower.find("error in httpopenrequest") != std::string::npos ||
+		lower.find("error in httpsendrequest") != std::string::npos ||
+		lower.find("timeout") != std::string::npos ||
+		lower.find("timed out") != std::string::npos ||
+		lower.find("cannot connect") != std::string::npos ||
+		lower.find("connection") != std::string::npos;
+}
+
+bool ShouldRetryAiHttpRequest(int statusCode, const std::string& responseBody)
+{
+	return IsRetryableHttpStatus(statusCode) || ContainsRetryableTransportHint(responseBody);
+}
+
+DWORD ComputeAiRetryDelayMs(int retryIndex)
+{
+	switch (retryIndex) {
+	case 0:
+		return 250;
+	case 1:
+		return 500;
+	case 2:
+		return 1000;
+	case 3:
+		return 1500;
+	default:
+		return 2000;
+	}
+}
+
+void LogAiRetryAttempt(const std::string& tag, int nextAttemptIndex, int statusCode, const std::string& responseBody)
+{
+	OutputStringToELog(std::format(
+		"[AI Chat][Retry] {} attempt {}/{} http={} reason={}",
+		tag,
+		nextAttemptIndex,
+		kAiRequestRetryCount + 1,
+		statusCode,
+		TruncateForLog(responseBody, 120)));
+}
+
+std::pair<std::string, int> PerformPostRequestWithRetry(
+	const std::string& url,
+	const std::string& postData,
+	const std::string& customHeaders,
+	int timeout,
+	bool autoCookies,
+	bool neverRedirect,
+	const char* retryTag)
+{
+	std::pair<std::string, int> lastResult;
+	for (int attempt = 0; attempt <= kAiRequestRetryCount; ++attempt) {
+		lastResult = PerformPostRequest(url, postData, customHeaders, timeout, autoCookies, neverRedirect);
+		if (!ShouldRetryAiHttpRequest(lastResult.second, lastResult.first) || attempt >= kAiRequestRetryCount) {
+			return lastResult;
+		}
+
+		LogAiRetryAttempt(retryTag == nullptr ? "post" : retryTag, attempt + 2, lastResult.second, lastResult.first);
+		::Sleep(ComputeAiRetryDelayMs(attempt));
+	}
+	return lastResult;
+}
+
+std::pair<std::string, int> PerformPostRequestStreamingWithRetry(
+	const std::string& url,
+	const std::string& postData,
+	const std::function<bool(const std::string& chunk)>& onChunk,
+	const std::string& customHeaders,
+	int timeout,
+	bool autoCookies,
+	bool neverRedirect,
+	const char* retryTag)
+{
+	std::pair<std::string, int> lastResult;
+	for (int attempt = 0; attempt <= kAiRequestRetryCount; ++attempt) {
+		bool sawChunk = false;
+		lastResult = PerformPostRequestStreaming(
+			url,
+			postData,
+			[&onChunk, &sawChunk](const std::string& chunk) -> bool {
+				if (!chunk.empty()) {
+					sawChunk = true;
+				}
+				return onChunk ? onChunk(chunk) : true;
+			},
+			customHeaders,
+			timeout,
+			autoCookies,
+			neverRedirect);
+		const bool streamAccepted = sawChunk && IsSuccessfulHttpStatus(lastResult.second);
+		if (streamAccepted || !ShouldRetryAiHttpRequest(lastResult.second, lastResult.first) || attempt >= kAiRequestRetryCount) {
+			return lastResult;
+		}
+
+		LogAiRetryAttempt(retryTag == nullptr ? "stream" : retryTag, attempt + 2, lastResult.second, lastResult.first);
+		::Sleep(ComputeAiRetryDelayMs(attempt));
+	}
+	return lastResult;
+}
+
 std::string LocalToUtf8(const std::string& text);
 
 size_t ClampUtf8PrefixBoundary(const std::string& text, size_t maxBytes)
@@ -750,19 +875,6 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
-		{"name", "get_program_item_code"},
-		{"description", "Get code of a program tree item by exact name, optionally constrained by kind. Important: this may switch the IDE current page as part of native retrieval, and returned code is only pseudo-code reference and may differ from the normal IDE page structure."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"name", {{"type", "string"}}},
-				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}}
-			}},
-			{"required", nlohmann::json::array({"name"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
 		{"name", "get_program_item_real_code"},
 		{"description", "Get the real full source text of one program tree page by exact page_name, optionally constrained by kind. This switches the IDE current page and uses the editor's internal copy path without touching the system clipboard. Use this when you need source text matching manual Select-All plus Copy."},
 		{"inputSchema", {
@@ -1192,15 +1304,15 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"2) 只想知道当前打开页是谁，不需要整页代码时，优先调用 get_current_page_info。\n"
 		"3) 支持库相关信息：先用 list_support_libraries，再按需用 get_support_library_info / search_support_library_info。\n"
 		"4) 模块公开信息：先用 list_imported_modules，再按需用 get_module_public_info / search_module_public_info。\n"
-		"5) 程序树页面与伪代码：先用 list_program_items，再按需用 get_program_item_code 或 switch_to_program_item_page。\n"
-		"5.1) 需要某个页面的真实整页源码时，用 get_program_item_real_code，不要把 get_program_item_code 的伪代码当成真实源码。\n"
+		"5) 程序树页面：先用 list_program_items 定位页面，再按需用 get_program_item_real_code 或 switch_to_program_item_page。\n"
+		"5.1) list_program_items 附带的代码仍只是伪代码参考；需要某个页面的真实整页源码时，用 get_program_item_real_code。\n"
 		"5.2) 需要分页查看或从缓存读取真实源码时，用 read_program_item_real_code。\n"
 		"5.3) 需要真正改写某个页面源码时，先调用 get_program_item_real_code 或 read_program_item_real_code 建立缓存，再按需用 edit_program_item_code / multi_edit_program_item_code / write_program_item_real_code。\n"
 		"5.4) 需要预览改动而不写回时，用 diff_program_item_code。\n"
 		"5.5) 需要按符号操作真实源码时，用 list_program_item_symbols / get_symbol_real_code / edit_symbol_real_code / insert_program_item_code_block。\n"
 		"5.6) 需要在真实页内做精确搜索或回滚最近写入时，用 search_program_item_real_code / restore_program_item_code_snapshot。\n"
 		"6) 搜索工程关键字时先用 search_project_keyword，拿到具体 jump_token 后再决定是否调用 jump_to_search_result。\n"
-		"7) jump_to_search_result、switch_to_program_item_page、get_program_item_code 都会改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
+		"7) jump_to_search_result、switch_to_program_item_page、get_program_item_real_code 都会改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
 		"8) 通过搜索、程序树、模块公开信息、支持库公开信息拿到的代码或文本，多数只是伪代码 / 公共接口参考，不一定等于 IDE 正常编辑页。\n"
 		"9) 需要无弹窗编译时调用 compile_with_output_path。它会指定输出路径并拦截系统保存对话框，支持模块工程编译为 ec，以及窗口程序 / 控制台程序 / DLL 的编译与静态编译；最终是否编译成功仍要结合 IDE 输出或产物确认。\n"
 		"10) 只想让用户手工改代码时调用 request_code_edit；需要自动整页回写真实源码时优先使用真实页工具，不要退回伪代码工具。\n"
@@ -1499,13 +1611,14 @@ AIResult ExecuteTaskClaude(const std::string& systemPrompt, const std::string& i
 		}
 	});
 
-	const auto [responseBody, statusCode] = PerformPostRequest(
+	const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
 		endpoint,
 		requestBody.dump(),
 		BuildClaudeHeaders(settings),
 		settings.timeoutMs,
 		false,
-		false);
+		false,
+		"claude-task");
 	result.httpStatus = statusCode;
 	if (statusCode < 200 || statusCode >= 300) {
 		result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
@@ -1552,13 +1665,14 @@ AIResult ExecuteTaskGemini(const std::string& systemPrompt, const std::string& i
 		}
 	});
 
-	const auto [responseBody, statusCode] = PerformPostRequest(
+	const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
 		endpoint,
 		requestBody.dump(),
 		BuildJsonHeadersOnly(),
 		settings.timeoutMs,
 		false,
-		false);
+		false,
+		"gemini-task");
 	result.httpStatus = statusCode;
 	if (statusCode < 200 || statusCode >= 300) {
 		result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
@@ -1629,13 +1743,14 @@ AIChatResult ExecuteChatWithToolsClaude(
 		requestBody["tool_choice"] = { {"type", "auto"} };
 		requestBody["stream"] = false;
 
-		const auto [responseBody, statusCode] = PerformPostRequest(
+		const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
 			endpoint,
 			requestBody.dump(),
 			BuildClaudeHeaders(settings),
 			settings.timeoutMs,
 			false,
-			false);
+			false,
+			"claude-chat");
 		result.httpStatus = statusCode;
 		if (statusCode < 200 || statusCode >= 300) {
 			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
@@ -1760,13 +1875,14 @@ AIChatResult ExecuteChatWithToolsGemini(
 		requestBody["contents"] = contents;
 		requestBody["tools"] = tools;
 
-		const auto [responseBody, statusCode] = PerformPostRequest(
+		const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
 			endpoint,
 			requestBody.dump(),
 			BuildJsonHeadersOnly(),
 			settings.timeoutMs,
 			false,
-			false);
+			false,
+			"gemini-chat");
 		result.httpStatus = statusCode;
 		if (statusCode < 200 || statusCode >= 300) {
 			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
@@ -1890,7 +2006,7 @@ bool AIService::LoadSettings(ConfigManager& config, AISettings& outSettings)
 			outSettings.maxToolRounds = (std::clamp)(std::stoi(maxToolRoundsValue), 4, 64);
 		}
 		catch (...) {
-			outSettings.maxToolRounds = 24;
+			outSettings.maxToolRounds = 48;
 		}
 	}
 
@@ -2034,7 +2150,7 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 	}
 
 	const auto [responseBody, statusCode] =
-		PerformPostRequest(endpoint, requestBodyText, headers, settings.timeoutMs, false, false);
+		PerformPostRequestWithRetry(endpoint, requestBodyText, headers, settings.timeoutMs, false, false, "openai-task");
 	result.httpStatus = statusCode;
 
 	if (statusCode < 200 || statusCode >= 300) {
@@ -2150,7 +2266,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 		ChatStreamParseState streamState;
 		const auto networkStart = PerfClock::now();
 		const auto [responseBody, statusCode] =
-			PerformPostRequestStreaming(
+			PerformPostRequestStreamingWithRetry(
 				endpoint,
 				requestBodyText,
 				[&streamState, &streamCallback](const std::string& chunk) -> bool {
@@ -2159,7 +2275,8 @@ AIChatResult AIService::ExecuteChatWithTools(
 				headers,
 				settings.timeoutMs,
 				false,
-				false);
+				false,
+				"openai-chat");
 		LogAIPerfCost(
 			traceId,
 			"AIService.ExecuteTask.network_total",

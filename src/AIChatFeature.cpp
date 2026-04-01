@@ -3199,7 +3199,7 @@ bool ExecutePublicTool(const std::string& toolName, const std::string& arguments
 	}
 
 	bool toolOk = false;
-	const std::string resultJsonLocal = ExecuteToolCall(toolName, argumentsJson, toolOk);
+	const std::string resultJsonLocal = ExecuteToolCall(toolName, argumentsJson, toolOk, false);
 	outResultJsonUtf8 = LocalToUtf8Text(resultJsonLocal);
 	outOk = toolOk;
 	return true;

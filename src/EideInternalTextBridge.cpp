@@ -11,12 +11,15 @@
 #include <cctype>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
+#include "Global.h"
 #include "MemFind.h"
+#include "WindowHelper.h"
 #include "direct_global_search_debug.hpp"
 
 namespace e571 {
@@ -108,6 +111,7 @@ struct NativeEditorCommandAddresses {
 	bool ok = false;
 	std::uintptr_t moduleBase = 0;
 	std::uintptr_t editorDispatchCommand = 0;
+	std::uintptr_t editorPasteHandler = 0;
 };
 
 struct EditorDispatchTargetInfo {
@@ -186,15 +190,43 @@ std::uintptr_t ResolveUniqueCodeAddress(const char* pattern, std::uintptr_t modu
 	return NormalizeRuntimeAddress(static_cast<std::uintptr_t>(matches.front()), moduleBase);
 }
 
+std::uintptr_t ResolveUniqueCodeAddressFromPatterns(
+	const std::initializer_list<const char*> patterns,
+	std::uintptr_t moduleBase)
+{
+	for (const char* pattern : patterns) {
+		if (pattern == nullptr || *pattern == '\0') {
+			continue;
+		}
+
+		const std::uintptr_t resolvedAddress = ResolveUniqueCodeAddress(pattern, moduleBase);
+		if (resolvedAddress != 0) {
+			return resolvedAddress;
+		}
+	}
+	return 0;
+}
+
 bool PopulateNativeEditorCommandAddresses(NativeEditorCommandAddresses& addrs, std::uintptr_t moduleBase)
 {
 	addrs = {};
 	addrs.moduleBase = moduleBase;
-	addrs.editorDispatchCommand = ResolveUniqueCodeAddress(
-		"A1 ?? ?? ?? ?? 53 56 8B F1 85 C0 74 0A 5E B8 01 00 00 00 5B C2 10 00 8A 5C 24 10 F6 C3 10 74 09",
+	addrs.editorDispatchCommand = ResolveUniqueCodeAddressFromPatterns(
+		{
+			"A1 ?? ?? ?? ?? 53 56 8B F1 85 C0 74 0A 5E B8 01 00 00 00 5B C2 10 00 8B 5C 24 10 F6 C3 10 74 0A 5E B8 01 00 00 00 5B C2 10 00 8B 4C 24 0C 33 C0 8B D1 81 E2 00 00 FF 7F",
+			"8B 0D ?? ?? ?? ?? 53 56 8B F1 85 C9 74 0A 5E B8 01 00 00 00 5B C2 10 00 8B 5C 24 10 F6 C3 10 74 0A 5E B8 01 00 00 00 5B C2 10 00 8B 4C 24 0C 33 C0 8B D1 81 E2 00 00 FF 7F",
+		},
 		moduleBase);
 	if (addrs.editorDispatchCommand == 0) {
 		addrs.editorDispatchCommand = kKnownEditorDispatchCommandRva;
+	}
+	addrs.editorPasteHandler = ResolveUniqueCodeAddressFromPatterns(
+		{
+			"6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 81 EC ?? 03 00 00 53 55 56 57 8B F9 8D 4C 24 28 89 7C 24 24 E8 ?? ?? ?? ?? 8D 4C 24 64 E8 ?? ?? ?? ?? 33 ED 8D 8C 24 BC 00 00 00 89 AC 24 ?? 03 00 00 E8 ?? ?? ?? ?? 8D 8C 24 D0 00 00 00 C6 84 24 ?? 03 00 00 01 E8 ?? ?? ?? ??",
+		},
+		moduleBase);
+	if (addrs.editorPasteHandler == 0) {
+		addrs.editorPasteHandler = kKnownEditorPasteHandlerRva;
 	}
 	addrs.ok = addrs.editorDispatchCommand != 0;
 	addrs.initialized = true;
@@ -626,6 +658,19 @@ public:
 			}
 		}
 		return false;
+	}
+
+	bool HasClipboardTraffic() const
+	{
+		std::lock_guard<std::mutex> lock(g_fakeClipboardDataMutex);
+		return
+			m_context.openCalls != 0 ||
+			m_context.emptyCalls != 0 ||
+			m_context.setCalls != 0 ||
+			m_context.setTextCalls != 0 ||
+			m_context.getCalls != 0 ||
+			m_context.formatQueryCalls != 0 ||
+			m_context.closeCalls != 0;
 	}
 
 	std::string BuildStatsText() const
@@ -2071,6 +2116,16 @@ private:
 };
 
 bool TryResolveInnerEditorObject(std::uintptr_t rawObject, EditorDispatchTargetInfo* outInfo);
+void DispatchSyntheticKey(HWND editorHwnd, WORD vk, bool ctrlDown);
+void SettleEditorAfterCommand(DWORD waitMs);
+
+std::string ToLowerAsciiCopyLocalBridge(std::string text)
+{
+	for (char& ch : text) {
+		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+	}
+	return text;
+}
 
 std::string WindowClassToString(HWND hWnd)
 {
@@ -2095,6 +2150,1070 @@ std::string WindowTextToString(HWND hWnd)
 		return std::string();
 	}
 	return text;
+}
+
+std::vector<HWND> CollectChildWindowsByClassName(HWND rootHwnd, const char* className)
+{
+	std::vector<HWND> windows;
+	if (rootHwnd == nullptr || !IsWindow(rootHwnd) || className == nullptr || className[0] == '\0') {
+		return windows;
+	}
+
+	struct EnumContext {
+		const char* className = nullptr;
+		std::vector<HWND>* windows = nullptr;
+	};
+
+	EnumContext context{};
+	context.className = className;
+	context.windows = &windows;
+	EnumChildWindows(
+		rootHwnd,
+		[](HWND hWnd, LPARAM lParam) -> BOOL {
+			auto* ctx = reinterpret_cast<EnumContext*>(lParam);
+			if (ctx == nullptr || ctx->windows == nullptr || ctx->className == nullptr) {
+				return TRUE;
+			}
+
+			char currentClassName[128] = {};
+			if (GetClassNameA(hWnd, currentClassName, static_cast<int>(sizeof(currentClassName))) > 0 &&
+				std::strcmp(currentClassName, ctx->className) == 0) {
+				ctx->windows->push_back(hWnd);
+			}
+			return TRUE;
+		},
+		reinterpret_cast<LPARAM>(&context));
+	return windows;
+}
+
+HWND ResolveMainIdeWindow()
+{
+	if (g_hwnd != nullptr && IsWindow(g_hwnd)) {
+		return g_hwnd;
+	}
+
+	CWnd* const mainWnd = AfxGetMainWnd();
+	if (mainWnd != nullptr) {
+		const HWND hWnd = mainWnd->GetSafeHwnd();
+		if (hWnd != nullptr && IsWindow(hWnd)) {
+			g_hwnd = hWnd;
+			return hWnd;
+		}
+	}
+
+	const HWND enumeratedHwnd = GetMainWindowByProcessId();
+	if (enumeratedHwnd != nullptr && IsWindow(enumeratedHwnd)) {
+		g_hwnd = enumeratedHwnd;
+		return enumeratedHwnd;
+	}
+	return nullptr;
+}
+
+struct WindowDepthInfo {
+	HWND hWnd = nullptr;
+	int depth = 0;
+};
+
+struct EditorWindowCandidateInfo {
+	HWND hWnd = nullptr;
+	int depth = 0;
+	int score = 0;
+	std::string className;
+	std::string title;
+};
+
+bool IsSameOrChildWindow(HWND rootHwnd, HWND targetHwnd)
+{
+	return rootHwnd != nullptr &&
+		targetHwnd != nullptr &&
+		(rootHwnd == targetHwnd || IsChild(rootHwnd, targetHwnd) != FALSE);
+}
+
+void CollectDescendantWindowsWithDepth(HWND rootHwnd, int depth, std::vector<WindowDepthInfo>& outWindows)
+{
+	if (rootHwnd == nullptr || !IsWindow(rootHwnd)) {
+		return;
+	}
+
+	for (HWND childHwnd = GetWindow(rootHwnd, GW_CHILD);
+		 childHwnd != nullptr;
+		 childHwnd = GetWindow(childHwnd, GW_HWNDNEXT)) {
+		if (!IsWindow(childHwnd)) {
+			continue;
+		}
+		outWindows.push_back({ childHwnd, depth });
+		CollectDescendantWindowsWithDepth(childHwnd, depth + 1, outWindows);
+	}
+}
+
+bool IsIgnoredEditorCandidateClass(const std::string& className)
+{
+	const std::string lowerClassName = ToLowerAsciiCopyLocalBridge(className);
+	if (lowerClassName.empty()) {
+		return false;
+	}
+
+	if (lowerClassName == "scrollbar" ||
+		lowerClassName == "toolbarwindow32" ||
+		lowerClassName == "ccustomtabctrl" ||
+		lowerClassName == "mdiclient" ||
+		lowerClassName == "msctls_statusbar32" ||
+		lowerClassName == "systabcontrol32" ||
+		lowerClassName == "button" ||
+		lowerClassName == "combobox" ||
+		lowerClassName == "msctls_progress32" ||
+		lowerClassName == "tooltips_class32" ||
+		lowerClassName == "systreeview32" ||
+		lowerClassName == "#32770") {
+		return true;
+	}
+
+	return lowerClassName.rfind("afxcontrolbar", 0) == 0;
+}
+
+bool IsPreferredEditorCandidateClass(const std::string& className)
+{
+	return className.rfind("Afx:", 0) == 0 || className.rfind("AfxMDIFrame", 0) == 0;
+}
+
+bool IsReadableCommittedProtection(DWORD protect)
+{
+	if ((protect & PAGE_GUARD) != 0) {
+		return false;
+	}
+
+	switch (protect & 0xFF) {
+	case PAGE_READONLY:
+	case PAGE_READWRITE:
+	case PAGE_WRITECOPY:
+	case PAGE_EXECUTE_READ:
+	case PAGE_EXECUTE_READWRITE:
+	case PAGE_EXECUTE_WRITECOPY:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool IsReadableAddressRange(std::uintptr_t address, size_t bytes)
+{
+	if (address == 0 || bytes == 0) {
+		return false;
+	}
+
+	MEMORY_BASIC_INFORMATION mbi = {};
+	if (VirtualQuery(reinterpret_cast<LPCVOID>(address), &mbi, sizeof(mbi)) != sizeof(mbi)) {
+		return false;
+	}
+	if (mbi.State != MEM_COMMIT || !IsReadableCommittedProtection(mbi.Protect)) {
+		return false;
+	}
+
+	const std::uintptr_t regionStart = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+	const std::uintptr_t regionEnd = regionStart + mbi.RegionSize;
+	if (address < regionStart || address > regionEnd) {
+		return false;
+	}
+	return bytes <= (regionEnd - address);
+}
+
+bool TryReadUint32ArraySafe(std::uintptr_t address, std::uint32_t* outValues, size_t count)
+{
+	if (outValues == nullptr || count == 0) {
+		return false;
+	}
+	const size_t totalBytes = count * sizeof(std::uint32_t);
+	if (!IsReadableAddressRange(address, totalBytes)) {
+		return false;
+	}
+
+	__try {
+		std::memcpy(outValues, reinterpret_cast<const void*>(address), totalBytes);
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+bool TryReadMemoryBytesSafe(std::uintptr_t address, void* buffer, size_t bytes)
+{
+	if (buffer == nullptr || bytes == 0) {
+		return false;
+	}
+	if (!IsReadableAddressRange(address, bytes)) {
+		return false;
+	}
+
+	SIZE_T bytesRead = 0;
+	return ReadProcessMemory(
+			   GetCurrentProcess(),
+			   reinterpret_cast<LPCVOID>(address),
+			   buffer,
+			   bytes,
+			   &bytesRead) != FALSE &&
+		bytesRead == bytes;
+}
+
+std::uintptr_t GetModuleImageEnd(std::uintptr_t moduleBase)
+{
+	if (moduleBase == 0) {
+		return 0;
+	}
+
+	__try {
+		const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(moduleBase);
+		if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+			return 0;
+		}
+		const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(moduleBase + dos->e_lfanew);
+		if (nt->Signature != IMAGE_NT_SIGNATURE) {
+			return 0;
+		}
+		return moduleBase + nt->OptionalHeader.SizeOfImage;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return 0;
+	}
+}
+
+bool IsRecognizedEditorPageType(unsigned int pageType)
+{
+	switch (pageType) {
+	case 1:
+	case 2:
+	case 3:
+	case 4:
+	case 6:
+	case 7:
+	case 8:
+		return true;
+	default:
+		return false;
+	}
+}
+
+std::uintptr_t ResolveInnerEditorObjectFromFields(const std::uint32_t* fields, unsigned int* outPageType = nullptr)
+{
+	if (outPageType != nullptr) {
+		*outPageType = 0;
+	}
+	if (fields == nullptr) {
+		return 0;
+	}
+
+	const unsigned int pageType = fields[15];
+	if (outPageType != nullptr) {
+		*outPageType = pageType;
+	}
+
+	switch (pageType) {
+	case 1:
+		return static_cast<std::uintptr_t>(fields[21]);
+	case 2:
+		return static_cast<std::uintptr_t>(fields[16]);
+	case 3:
+		return static_cast<std::uintptr_t>(fields[17]);
+	case 4:
+		return static_cast<std::uintptr_t>(fields[18]);
+	case 6:
+	case 7:
+	case 8:
+		return static_cast<std::uintptr_t>(fields[20]);
+	default:
+		return 0;
+	}
+}
+
+std::vector<EditorWindowCandidateInfo> CollectEditorWindowCandidatesFromMdiChild(HWND mdiChildHwnd)
+{
+	std::vector<EditorWindowCandidateInfo> candidates;
+	if (mdiChildHwnd == nullptr || !IsWindow(mdiChildHwnd)) {
+		return candidates;
+	}
+
+	const auto appendCandidate = [&candidates](HWND hWnd, int depth) {
+		if (hWnd == nullptr || !IsWindow(hWnd) || !IsWindowVisible(hWnd)) {
+			return;
+		}
+
+		const std::string className = WindowClassToString(hWnd);
+		if (IsIgnoredEditorCandidateClass(className)) {
+			return;
+		}
+
+		const std::string title = WindowTextToString(hWnd);
+		int score = depth * 100;
+		if (IsPreferredEditorCandidateClass(className)) {
+			score += 1000;
+		}
+		if (title.empty()) {
+			score += 100;
+		}
+		if (GetWindow(hWnd, GW_CHILD) == nullptr) {
+			score += 20;
+		}
+		if (GetFocus() == hWnd) {
+			score += 2000;
+		}
+
+		for (auto& existing : candidates) {
+			if (existing.hWnd == hWnd) {
+				if (score > existing.score) {
+					existing.depth = depth;
+					existing.score = score;
+					existing.className = className;
+					existing.title = title;
+				}
+				return;
+			}
+		}
+
+		candidates.push_back({ hWnd, depth, score, className, title });
+	};
+
+	GUITHREADINFO guiInfo = {};
+	guiInfo.cbSize = sizeof(guiInfo);
+	if (GetGUIThreadInfo(GetCurrentThreadId(), &guiInfo)) {
+		if (guiInfo.hwndFocus != nullptr && IsSameOrChildWindow(mdiChildHwnd, guiInfo.hwndFocus)) {
+			appendCandidate(guiInfo.hwndFocus, 0);
+		}
+		if (guiInfo.hwndCaret != nullptr && IsSameOrChildWindow(mdiChildHwnd, guiInfo.hwndCaret)) {
+			appendCandidate(guiInfo.hwndCaret, 0);
+		}
+	}
+
+	std::vector<WindowDepthInfo> descendants;
+	CollectDescendantWindowsWithDepth(mdiChildHwnd, 1, descendants);
+	for (const auto& info : descendants) {
+		appendCandidate(info.hWnd, info.depth);
+	}
+
+	std::sort(
+		candidates.begin(),
+		candidates.end(),
+		[](const EditorWindowCandidateInfo& lhs, const EditorWindowCandidateInfo& rhs) {
+			if (lhs.score != rhs.score) {
+				return lhs.score > rhs.score;
+			}
+			if (lhs.depth != rhs.depth) {
+				return lhs.depth > rhs.depth;
+			}
+			return reinterpret_cast<std::uintptr_t>(lhs.hWnd) < reinterpret_cast<std::uintptr_t>(rhs.hWnd);
+		});
+	return candidates;
+}
+
+bool TryResolveEditorObjectFromWindowHandleHeuristic(
+	HWND targetHwnd,
+	std::uintptr_t moduleBase,
+	std::uintptr_t* outEditorObject,
+	std::string* outTrace)
+{
+	if (outEditorObject != nullptr) {
+		*outEditorObject = 0;
+	}
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (targetHwnd == nullptr || !IsWindow(targetHwnd) || moduleBase == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = "hwnd_heuristic_invalid_argument";
+		}
+		return false;
+	}
+
+	const std::uintptr_t moduleEnd = GetModuleImageEnd(moduleBase);
+	if (moduleEnd <= moduleBase) {
+		if (outTrace != nullptr) {
+			*outTrace = "hwnd_heuristic_module_range_invalid";
+		}
+		return false;
+	}
+
+	const std::uint32_t hwndValue = static_cast<std::uint32_t>(
+		reinterpret_cast<std::uintptr_t>(targetHwnd));
+	const size_t kMaxScannableRegionBytes = 64u * 1024u * 1024u;
+	std::uintptr_t bestObject = 0;
+	unsigned int bestPageType = 0;
+	std::uintptr_t bestInnerObject = 0;
+	std::uintptr_t bestVtable = 0;
+	int bestScore = -1;
+	size_t hitCount = 0;
+	size_t scannedRegionCount = 0;
+	size_t candidateCount = 0;
+
+	SYSTEM_INFO systemInfo = {};
+	GetSystemInfo(&systemInfo);
+	std::uintptr_t cursor = reinterpret_cast<std::uintptr_t>(systemInfo.lpMinimumApplicationAddress);
+	const std::uintptr_t limit = reinterpret_cast<std::uintptr_t>(systemInfo.lpMaximumApplicationAddress);
+	while (cursor < limit) {
+		MEMORY_BASIC_INFORMATION mbi = {};
+		if (VirtualQuery(reinterpret_cast<LPCVOID>(cursor), &mbi, sizeof(mbi)) != sizeof(mbi)) {
+			break;
+		}
+
+		const std::uintptr_t regionBase = reinterpret_cast<std::uintptr_t>(mbi.BaseAddress);
+		const std::uintptr_t regionSize = static_cast<std::uintptr_t>(mbi.RegionSize);
+		const std::uintptr_t nextCursor = regionBase + regionSize;
+		if (nextCursor <= cursor) {
+			break;
+		}
+
+		if (mbi.State == MEM_COMMIT &&
+			IsReadableCommittedProtection(mbi.Protect) &&
+			regionSize >= sizeof(std::uint32_t) &&
+			regionSize <= kMaxScannableRegionBytes) {
+			++scannedRegionCount;
+			const size_t wordCount = static_cast<size_t>(regionSize / sizeof(std::uint32_t));
+			std::vector<std::uint32_t> words(wordCount, 0);
+			if (!TryReadMemoryBytesSafe(
+					regionBase,
+					words.data(),
+					wordCount * sizeof(std::uint32_t))) {
+				cursor = nextCursor;
+				continue;
+			}
+
+			for (size_t index = 0; index < wordCount; ++index) {
+				if (words[index] != hwndValue) {
+					continue;
+				}
+
+				++hitCount;
+				const std::uintptr_t hitAddress = regionBase + index * sizeof(std::uint32_t);
+				if (hitAddress < 0x1C) {
+					continue;
+				}
+
+				const std::uintptr_t candidateObject = hitAddress - 0x1C;
+				std::uint32_t fields[24] = {};
+				if (!TryReadUint32ArraySafe(candidateObject, fields, std::size(fields)) ||
+					fields[7] != hwndValue) {
+					continue;
+				}
+
+				++candidateCount;
+				const std::uintptr_t vtable = static_cast<std::uintptr_t>(fields[0]);
+				const bool vtableInModule = vtable >= moduleBase && vtable < moduleEnd;
+				unsigned int pageType = 0;
+				const std::uintptr_t innerObject = ResolveInnerEditorObjectFromFields(fields, &pageType);
+				const bool pageTypeOk = IsRecognizedEditorPageType(pageType);
+				const bool innerReadable =
+					innerObject != 0 &&
+					innerObject > 0x10000 &&
+					IsReadableAddressRange(innerObject, sizeof(std::uint32_t) * 8);
+
+				int score = 0;
+				if (fields[7] == hwndValue) {
+					score += 100;
+				}
+				if (vtableInModule) {
+					score += 200;
+				}
+				if (pageTypeOk) {
+					score += 1000;
+				}
+				if (innerObject != 0) {
+					score += 80;
+				}
+				if (innerReadable) {
+					score += 120;
+				}
+				if (fields[1] == 1) {
+					score += 10;
+				}
+				if (fields[5] == 1) {
+					score += 10;
+				}
+
+				if (score > bestScore) {
+					bestScore = score;
+					bestObject = candidateObject;
+					bestPageType = pageType;
+					bestInnerObject = innerObject;
+					bestVtable = vtable;
+				}
+			}
+		}
+
+		cursor = nextCursor;
+	}
+
+	if (bestObject == 0) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				"hwnd_heuristic_failed"
+				"|hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(targetHwnd)) +
+				"|hits=" + std::to_string(hitCount) +
+				"|candidates=" + std::to_string(candidateCount) +
+				"|regions=" + std::to_string(scannedRegionCount);
+		}
+		return false;
+	}
+
+	if (outEditorObject != nullptr) {
+		*outEditorObject = bestObject;
+	}
+	if (outTrace != nullptr) {
+		*outTrace =
+			"hwnd_heuristic_ok"
+			"|hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(targetHwnd)) +
+			"|object=" + std::to_string(bestObject) +
+			"|page_type=" + std::to_string(bestPageType) +
+			"|inner=" + std::to_string(bestInnerObject) +
+			"|vtable=" + std::to_string(bestVtable) +
+			"|score=" + std::to_string(bestScore) +
+			"|hits=" + std::to_string(hitCount) +
+			"|candidates=" + std::to_string(candidateCount) +
+			"|regions=" + std::to_string(scannedRegionCount);
+	}
+	return true;
+}
+
+bool TryResolveEditorObjectFromMdiChildHeuristic(
+	HWND mdiChildHwnd,
+	std::uintptr_t moduleBase,
+	std::uintptr_t* outEditorObject,
+	HWND* outMatchedHwnd,
+	std::string* outTrace)
+{
+	if (outEditorObject != nullptr) {
+		*outEditorObject = 0;
+	}
+	if (outMatchedHwnd != nullptr) {
+		*outMatchedHwnd = nullptr;
+	}
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (mdiChildHwnd == nullptr || !IsWindow(mdiChildHwnd)) {
+		if (outTrace != nullptr) {
+			*outTrace = "mdi_child_invalid";
+		}
+		return false;
+	}
+
+	const auto candidates = CollectEditorWindowCandidatesFromMdiChild(mdiChildHwnd);
+	if (candidates.empty()) {
+		if (outTrace != nullptr) {
+			*outTrace = "editor_hwnd_candidates_missing";
+		}
+		return false;
+	}
+
+	std::string attemptsSummary;
+	for (const auto& candidate : candidates) {
+		std::uintptr_t editorObject = 0;
+		std::string candidateTrace;
+		if (TryResolveEditorObjectFromWindowHandleHeuristic(
+				candidate.hWnd,
+				moduleBase,
+				&editorObject,
+				&candidateTrace) &&
+			editorObject != 0) {
+			if (outEditorObject != nullptr) {
+				*outEditorObject = editorObject;
+			}
+			if (outMatchedHwnd != nullptr) {
+				*outMatchedHwnd = candidate.hWnd;
+			}
+			if (outTrace != nullptr) {
+				*outTrace =
+					"mdi_hwnd_heuristic_ok"
+					"|candidate_count=" + std::to_string(candidates.size()) +
+					"|matched_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(candidate.hWnd)) +
+					"|matched_class=" + candidate.className +
+					"|matched_depth=" + std::to_string(candidate.depth) +
+					"|matched_score=" + std::to_string(candidate.score) +
+					"|" +
+					candidateTrace;
+			}
+			return true;
+		}
+
+		if (attemptsSummary.size() < 320) {
+			if (!attemptsSummary.empty()) {
+				attemptsSummary += ";";
+			}
+			attemptsSummary +=
+				std::to_string(reinterpret_cast<std::uintptr_t>(candidate.hWnd)) +
+				"/" +
+				candidate.className +
+				"/" +
+				candidateTrace;
+		}
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			"mdi_hwnd_heuristic_failed"
+			"|candidate_count=" + std::to_string(candidates.size());
+		if (!attemptsSummary.empty()) {
+			*outTrace += "|attempts=" + attemptsSummary;
+		}
+	}
+	return false;
+}
+
+bool TryResolveEditorWindowFromMdiChild(
+	HWND mdiChildHwnd,
+	HWND* outEditorHwnd,
+	std::string* outTrace)
+{
+	if (outEditorHwnd != nullptr) {
+		*outEditorHwnd = nullptr;
+	}
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (mdiChildHwnd == nullptr || !IsWindow(mdiChildHwnd)) {
+		if (outTrace != nullptr) {
+			*outTrace = "mdi_child_invalid";
+		}
+		return false;
+	}
+
+	GUITHREADINFO guiInfo = {};
+	guiInfo.cbSize = sizeof(guiInfo);
+	if (GetGUIThreadInfo(GetCurrentThreadId(), &guiInfo) &&
+		guiInfo.hwndFocus != nullptr &&
+		IsSameOrChildWindow(mdiChildHwnd, guiInfo.hwndFocus)) {
+		const std::string focusClass = WindowClassToString(guiInfo.hwndFocus);
+		if (!IsIgnoredEditorCandidateClass(focusClass)) {
+			if (outEditorHwnd != nullptr) {
+				*outEditorHwnd = guiInfo.hwndFocus;
+			}
+			if (outTrace != nullptr) {
+				*outTrace =
+					"editor_hwnd_focus_ok"
+					"|class=" + focusClass +
+					"|title=" + WindowTextToString(guiInfo.hwndFocus);
+			}
+			return true;
+		}
+	}
+
+	std::vector<WindowDepthInfo> descendants;
+	CollectDescendantWindowsWithDepth(mdiChildHwnd, 1, descendants);
+
+	HWND bestHwnd = nullptr;
+	int bestScore = -2147483647;
+	int bestDepth = 0;
+	std::string bestClass;
+	std::string bestTitle;
+	for (const auto& info : descendants) {
+		if (info.hWnd == nullptr || !IsWindow(info.hWnd) || !IsWindowVisible(info.hWnd)) {
+			continue;
+		}
+
+		const std::string className = WindowClassToString(info.hWnd);
+		if (IsIgnoredEditorCandidateClass(className)) {
+			continue;
+		}
+
+		const std::string title = WindowTextToString(info.hWnd);
+		int score = info.depth * 100;
+		if (IsPreferredEditorCandidateClass(className)) {
+			score += 1000;
+		}
+		if (title.empty()) {
+			score += 100;
+		}
+		if (GetWindow(info.hWnd, GW_CHILD) == nullptr) {
+			score += 20;
+		}
+
+		if (bestHwnd == nullptr || score > bestScore) {
+			bestHwnd = info.hWnd;
+			bestScore = score;
+			bestDepth = info.depth;
+			bestClass = className;
+			bestTitle = title;
+		}
+	}
+
+	if (bestHwnd == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				"editor_hwnd_candidate_missing"
+				"|mdi_class=" + WindowClassToString(mdiChildHwnd) +
+				"|mdi_title=" + WindowTextToString(mdiChildHwnd);
+		}
+		return false;
+	}
+
+	if (outEditorHwnd != nullptr) {
+		*outEditorHwnd = bestHwnd;
+	}
+	if (outTrace != nullptr) {
+		*outTrace =
+			"editor_hwnd_candidate_ok"
+			"|class=" + bestClass +
+			"|title=" + bestTitle +
+			"|depth=" + std::to_string(bestDepth) +
+			"|count=" + std::to_string(descendants.size());
+	}
+	return true;
+}
+
+HTREEITEM GetTreeNextItemInternal(HWND treeHwnd, HTREEITEM item, UINT code)
+{
+	return reinterpret_cast<HTREEITEM>(
+		SendMessageA(treeHwnd, TVM_GETNEXTITEM, static_cast<WPARAM>(code), reinterpret_cast<LPARAM>(item)));
+}
+
+bool QueryTreeItemInfoInternal(
+	HWND treeHwnd,
+	HTREEITEM item,
+	std::string* outText,
+	unsigned int* outItemData,
+	int* outChildCount)
+{
+	if (outText != nullptr) {
+		outText->clear();
+	}
+	if (outItemData != nullptr) {
+		*outItemData = 0;
+	}
+	if (outChildCount != nullptr) {
+		*outChildCount = 0;
+	}
+	if (treeHwnd == nullptr || !IsWindow(treeHwnd) || item == nullptr) {
+		return false;
+	}
+
+	char textBuf[512] = {};
+	TVITEMA tvItem = {};
+	tvItem.mask = TVIF_HANDLE | TVIF_TEXT | TVIF_PARAM | TVIF_CHILDREN;
+	tvItem.hItem = item;
+	tvItem.pszText = textBuf;
+	tvItem.cchTextMax = static_cast<int>(sizeof(textBuf));
+	if (SendMessageA(treeHwnd, TVM_GETITEMA, 0, reinterpret_cast<LPARAM>(&tvItem)) == FALSE) {
+		return false;
+	}
+
+	if (outText != nullptr) {
+		*outText = textBuf;
+	}
+	if (outItemData != nullptr) {
+		*outItemData = static_cast<unsigned int>(tvItem.lParam);
+	}
+	if (outChildCount != nullptr) {
+		*outChildCount = tvItem.cChildren;
+	}
+	return true;
+}
+
+HWND FindProgramDataTreeViewWindow(std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+
+	const HWND mainHwnd = ResolveMainIdeWindow();
+	if (mainHwnd == nullptr || !IsWindow(mainHwnd)) {
+		if (outTrace != nullptr) {
+			*outTrace = "main_window_invalid";
+		}
+		return nullptr;
+	}
+
+	const auto treeWindows = CollectChildWindowsByClassName(mainHwnd, WC_TREEVIEWA);
+	for (HWND treeHwnd : treeWindows) {
+		const HTREEITEM rootItem = GetTreeNextItemInternal(treeHwnd, nullptr, TVGN_ROOT);
+		std::string rootText;
+		if (!QueryTreeItemInfoInternal(treeHwnd, rootItem, &rootText, nullptr, nullptr)) {
+			continue;
+		}
+		if (rootText == "程序数据") {
+			if (outTrace != nullptr) {
+				*outTrace =
+					"tree_ok|hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(treeHwnd)) +
+					"|root=" + rootText;
+			}
+			return treeHwnd;
+		}
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace = "program_tree_not_found";
+	}
+	return nullptr;
+}
+
+HTREEITEM FindProgramTreeItemByDataRecursive(
+	HWND treeHwnd,
+	HTREEITEM firstItem,
+	unsigned int targetItemData,
+	int depth,
+	int maxDepth,
+	std::string* outItemText)
+{
+	if (treeHwnd == nullptr || firstItem == nullptr || depth > maxDepth) {
+		return nullptr;
+	}
+
+	for (HTREEITEM item = firstItem; item != nullptr; item = GetTreeNextItemInternal(treeHwnd, item, TVGN_NEXT)) {
+		unsigned int itemData = 0;
+		std::string itemText;
+		int childCount = 0;
+		if (!QueryTreeItemInfoInternal(treeHwnd, item, &itemText, &itemData, &childCount)) {
+			continue;
+		}
+
+		if (itemData == targetItemData) {
+			if (outItemText != nullptr) {
+				*outItemText = itemText;
+			}
+			return item;
+		}
+
+		if (depth < maxDepth && childCount > 0) {
+			if (HTREEITEM foundItem = FindProgramTreeItemByDataRecursive(
+					treeHwnd,
+					GetTreeNextItemInternal(treeHwnd, item, TVGN_CHILD),
+					targetItemData,
+					depth + 1,
+					maxDepth,
+					outItemText)) {
+				return foundItem;
+			}
+		}
+	}
+	return nullptr;
+}
+
+HWND GetActiveMdiChildWindow(HWND mainHwnd)
+{
+	for (HWND mdiHwnd : CollectChildWindowsByClassName(mainHwnd, "MDIClient")) {
+		const HWND activeChild = reinterpret_cast<HWND>(SendMessageA(mdiHwnd, WM_MDIGETACTIVE, 0, 0));
+		if (activeChild != nullptr && IsWindow(activeChild)) {
+			return activeChild;
+		}
+	}
+	return nullptr;
+}
+
+bool TriggerProgramTreeItemOpenByUi(
+	HWND treeHwnd,
+	HTREEITEM item,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (treeHwnd == nullptr || !IsWindow(treeHwnd) || item == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace = "tree_open_invalid_argument";
+		}
+		return false;
+	}
+
+	SendMessageA(treeHwnd, TVM_ENSUREVISIBLE, 0, reinterpret_cast<LPARAM>(item));
+	SendMessageA(treeHwnd, TVM_SELECTITEM, TVGN_CARET, reinterpret_cast<LPARAM>(item));
+	SetFocus(treeHwnd);
+	PumpPendingMessages();
+	Sleep(40);
+	DispatchSyntheticKey(treeHwnd, VK_RETURN, false);
+	PumpPendingMessages();
+	Sleep(80);
+
+	if (outTrace != nullptr) {
+		*outTrace = "tree_open_triggered";
+	}
+	return true;
+}
+
+bool TryResolveProgramTreeItemEditorWindowByUi(
+	unsigned int itemData,
+	HWND* outEditorHwnd,
+	std::string* outTrace)
+{
+	if (outEditorHwnd != nullptr) {
+		*outEditorHwnd = nullptr;
+	}
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+
+	std::string treeTrace;
+	const HWND mainHwnd = ResolveMainIdeWindow();
+	const HWND treeHwnd = FindProgramDataTreeViewWindow(&treeTrace);
+	if (mainHwnd == nullptr || treeHwnd == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace = treeTrace.empty() ? "program_tree_unavailable" : treeTrace;
+		}
+		return false;
+	}
+
+	const HTREEITEM rootItem = GetTreeNextItemInternal(treeHwnd, nullptr, TVGN_ROOT);
+	const HTREEITEM firstChild = GetTreeNextItemInternal(treeHwnd, rootItem, TVGN_CHILD);
+	std::string itemText;
+	const HTREEITEM item = FindProgramTreeItemByDataRecursive(
+		treeHwnd,
+		firstChild,
+		itemData,
+		0,
+		8,
+		&itemText);
+	if (item == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				treeTrace +
+				"|tree_item_not_found|item_data=" + std::to_string(itemData);
+		}
+		return false;
+	}
+
+	const HWND activeBefore = GetActiveMdiChildWindow(mainHwnd);
+	std::string openTrace;
+	if (!TriggerProgramTreeItemOpenByUi(treeHwnd, item, &openTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = treeTrace + "|" + openTrace;
+		}
+		return false;
+	}
+
+	for (int attempt = 0; attempt < 60; ++attempt) {
+		PumpPendingMessages();
+		const HWND activeChild = GetActiveMdiChildWindow(mainHwnd);
+		if (activeChild != nullptr && IsWindow(activeChild)) {
+			HWND editorHwnd = nullptr;
+			std::string editorTrace;
+			if (TryResolveEditorWindowFromMdiChild(activeChild, &editorHwnd, &editorTrace) &&
+				editorHwnd != nullptr &&
+				IsWindow(editorHwnd)) {
+				if (outEditorHwnd != nullptr) {
+					*outEditorHwnd = editorHwnd;
+				}
+				if (outTrace != nullptr) {
+					*outTrace =
+						treeTrace +
+						"|" +
+						openTrace +
+						"|resolve_editor_hwnd_ui_ok" +
+						"|item=" + itemText +
+						"|active_changed=" + std::to_string(activeChild != activeBefore ? 1 : 0) +
+						"|active_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(activeChild)) +
+						"|active_class=" + WindowClassToString(activeChild) +
+						"|active_text=" + WindowTextToString(activeChild) +
+						"|" +
+						editorTrace;
+				}
+				return true;
+			}
+		}
+		Sleep(25);
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			treeTrace +
+			"|" +
+			openTrace +
+			"|resolve_editor_hwnd_ui_failed|item=" + itemText;
+	}
+	return false;
+}
+
+bool TryResolveProgramTreeItemEditorObjectByUi(
+	unsigned int itemData,
+	std::uintptr_t moduleBase,
+	std::uintptr_t* outEditorObject,
+	std::string* outTrace)
+{
+	if (outEditorObject != nullptr) {
+		*outEditorObject = 0;
+	}
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+
+	std::string treeTrace;
+	const HWND mainHwnd = ResolveMainIdeWindow();
+	const HWND treeHwnd = FindProgramDataTreeViewWindow(&treeTrace);
+	if (mainHwnd == nullptr || treeHwnd == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace = treeTrace.empty() ? "program_tree_unavailable" : treeTrace;
+		}
+		return false;
+	}
+
+	const HTREEITEM rootItem = GetTreeNextItemInternal(treeHwnd, nullptr, TVGN_ROOT);
+	const HTREEITEM firstChild = GetTreeNextItemInternal(treeHwnd, rootItem, TVGN_CHILD);
+	std::string itemText;
+	const HTREEITEM item = FindProgramTreeItemByDataRecursive(
+		treeHwnd,
+		firstChild,
+		itemData,
+		0,
+		8,
+		&itemText);
+	if (item == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				treeTrace +
+				"|tree_item_not_found|item_data=" + std::to_string(itemData);
+		}
+		return false;
+	}
+
+	const HWND activeBefore = GetActiveMdiChildWindow(mainHwnd);
+	std::string openTrace;
+	if (!TriggerProgramTreeItemOpenByUi(treeHwnd, item, &openTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = treeTrace + "|" + openTrace;
+		}
+		return false;
+	}
+
+	for (int attempt = 0; attempt < 60; ++attempt) {
+		PumpPendingMessages();
+		const HWND activeChild = GetActiveMdiChildWindow(mainHwnd);
+		if (activeChild != nullptr && IsWindow(activeChild)) {
+			std::uintptr_t editorObject = 0;
+			HWND matchedEditorHwnd = nullptr;
+			std::string heuristicTrace;
+			if (TryResolveEditorObjectFromMdiChildHeuristic(
+					activeChild,
+					moduleBase,
+					&editorObject,
+					&matchedEditorHwnd,
+					&heuristicTrace) &&
+				editorObject != 0) {
+				if (outEditorObject != nullptr) {
+					*outEditorObject = editorObject;
+				}
+				if (outTrace != nullptr) {
+					*outTrace =
+						treeTrace +
+						"|" +
+						openTrace +
+						"|resolve_editor_ui_ok" +
+						"|item=" + itemText +
+						"|active_changed=" + std::to_string(activeChild != activeBefore ? 1 : 0) +
+						"|active_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(activeChild)) +
+						"|active_class=" + WindowClassToString(activeChild) +
+						"|active_text=" + WindowTextToString(activeChild) +
+						"|matched_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(matchedEditorHwnd)) +
+						"|" +
+						heuristicTrace;
+				}
+				return true;
+			}
+		}
+		Sleep(25);
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			treeTrace +
+			"|" +
+			openTrace +
+			"|resolve_editor_ui_failed|item=" + itemText;
+	}
+	return false;
 }
 
 HWND FindMdiChildWindow(HWND hWnd)
@@ -2283,6 +3402,23 @@ void DispatchSyntheticKey(HWND editorHwnd, WORD vk, bool ctrlDown)
 	}
 
 	SetKeyboardState(originalKeyboardState);
+}
+
+void ActivateEditorWindowByClick(HWND editorHwnd)
+{
+	if (editorHwnd == nullptr || !IsWindow(editorHwnd)) {
+		return;
+	}
+
+	RECT clientRect = {};
+	GetClientRect(editorHwnd, &clientRect);
+	const int x = clientRect.right > 8 ? 8 : (clientRect.right > 0 ? clientRect.right / 2 : 1);
+	const int y = clientRect.bottom > 8 ? 8 : (clientRect.bottom > 0 ? clientRect.bottom / 2 : 1);
+	const LPARAM clickPos = MAKELPARAM(x, y);
+	SendMessageA(editorHwnd, WM_MOUSEMOVE, 0, clickPos);
+	SendMessageA(editorHwnd, WM_LBUTTONDOWN, MK_LBUTTON, clickPos);
+	SendMessageA(editorHwnd, WM_LBUTTONUP, 0, clickPos);
+	PumpPendingMessages();
 }
 
 bool InvokeDispatchMethod(
@@ -2671,6 +3807,337 @@ bool RunEditorInputSequence(
 	return pumpOk;
 }
 
+bool RunEditorInputSequenceSyntheticOnly(
+	HWND editorHwnd,
+	EditorInputSequence sequence,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (editorHwnd == nullptr || !IsWindow(editorHwnd)) {
+		if (outTrace != nullptr) {
+			*outTrace = "editor_hwnd_invalid";
+		}
+		return false;
+	}
+
+	const HWND rootHwnd = GetAncestor(editorHwnd, GA_ROOT);
+	const HWND mdiChildHwnd = FindMdiChildWindow(editorHwnd);
+	const HWND foregroundBefore = GetForegroundWindow();
+	if (rootHwnd != nullptr && IsWindow(rootHwnd)) {
+		const DWORD currentThreadId = GetCurrentThreadId();
+		const DWORD foregroundThreadId = foregroundBefore != nullptr
+			? GetWindowThreadProcessId(foregroundBefore, nullptr)
+			: 0;
+		const bool attachedInput =
+			foregroundThreadId != 0 &&
+			foregroundThreadId != currentThreadId &&
+			AttachThreadInput(currentThreadId, foregroundThreadId, TRUE) != FALSE;
+		if (IsIconic(rootHwnd)) {
+			ShowWindow(rootHwnd, SW_RESTORE);
+		}
+		BringWindowToTop(rootHwnd);
+		SetForegroundWindow(rootHwnd);
+		SetActiveWindow(rootHwnd);
+		if (attachedInput) {
+			AttachThreadInput(currentThreadId, foregroundThreadId, FALSE);
+		}
+	}
+
+	const HWND previousFocus = GetFocus();
+	SetFocus(editorHwnd);
+	const HWND focusedAfterSetFocus = GetFocus();
+	const HWND foregroundAfterActivate = GetForegroundWindow();
+	UpdateWindow(editorHwnd);
+	ActivateEditorWindowByClick(editorHwnd);
+
+	bool pumpOk = true;
+	switch (sequence) {
+	case EditorInputSequence::SelectAllCopy:
+		DispatchSyntheticKey(editorHwnd, 'A', true);
+		Sleep(50);
+		DispatchSyntheticKey(editorHwnd, 'C', true);
+		break;
+	case EditorInputSequence::SelectAllDeletePaste:
+		DispatchSyntheticKey(editorHwnd, 'A', true);
+		Sleep(50);
+		DispatchSyntheticKey(editorHwnd, VK_DELETE, false);
+		Sleep(50);
+		DispatchSyntheticKey(editorHwnd, 'V', true);
+		break;
+	default:
+		pumpOk = false;
+		break;
+	}
+	PumpPendingMessages();
+
+	if (previousFocus != nullptr && IsWindow(previousFocus)) {
+		SetFocus(previousFocus);
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			std::string("input_sequence_") +
+			(pumpOk ? "ok" : "failed") +
+			"|class=" + WindowClassToString(editorHwnd) +
+			"|mdi_child_class=" + WindowClassToString(mdiChildHwnd) +
+			"|mdi_child_title=" + WindowTextToString(mdiChildHwnd) +
+			"|focus_after_set=" + WindowClassToString(focusedAfterSetFocus) +
+			"|foreground_after=" + WindowClassToString(foregroundAfterActivate) +
+			"|mode=synthetic_only";
+	}
+	return pumpOk;
+}
+
+bool SendWindowCommandToRoute(HWND editorHwnd, UINT commandId, std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (editorHwnd == nullptr || !IsWindow(editorHwnd) || commandId == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = "window_command_invalid";
+		}
+		return false;
+	}
+
+	const HWND rootHwnd = GetAncestor(editorHwnd, GA_ROOT);
+	if (rootHwnd != nullptr && IsWindow(rootHwnd)) {
+		BringWindowToTop(rootHwnd);
+		SetForegroundWindow(rootHwnd);
+		SetActiveWindow(rootHwnd);
+	}
+	SetFocus(editorHwnd);
+	ActivateEditorWindowByClick(editorHwnd);
+
+	const auto chain = CollectWindowRouteChain(editorHwnd);
+	if (chain.empty()) {
+		if (outTrace != nullptr) {
+			*outTrace = "window_command_chain_empty";
+		}
+		return false;
+	}
+
+	for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+		const HWND targetHwnd = *it;
+		if (targetHwnd == nullptr || !IsWindow(targetHwnd)) {
+			continue;
+		}
+		SendMessageA(targetHwnd, WM_COMMAND, MAKEWPARAM(commandId, 0), 0);
+		PumpPendingMessages();
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			"window_command_sent"
+			"|id=" + std::to_string(commandId) +
+			"|targets=" + std::to_string(chain.size());
+	}
+	return true;
+}
+
+bool RunEditorInputSequenceByWindowRoute(
+	HWND editorHwnd,
+	EditorInputSequence sequence,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (editorHwnd == nullptr || !IsWindow(editorHwnd)) {
+		if (outTrace != nullptr) {
+			*outTrace = "editor_hwnd_invalid";
+		}
+		return false;
+	}
+
+	std::string selectTrace;
+	if (!SendWindowCommandToRoute(editorHwnd, kEditorUiCmdSelectAll, &selectTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = selectTrace.empty() ? "route_select_all_failed" : selectTrace;
+		}
+		return false;
+	}
+	Sleep(50);
+
+	std::string actionTrace;
+	switch (sequence) {
+	case EditorInputSequence::SelectAllCopy:
+		if (!SendWindowCommandToRoute(editorHwnd, kEditorUiCmdCopy, &actionTrace)) {
+			if (outTrace != nullptr) {
+				*outTrace = selectTrace + "|" + actionTrace;
+			}
+			return false;
+		}
+		break;
+	case EditorInputSequence::SelectAllDeletePaste:
+		DispatchSyntheticKey(editorHwnd, VK_DELETE, false);
+		Sleep(50);
+		if (!SendWindowCommandToRoute(editorHwnd, kEditorUiCmdPaste, &actionTrace)) {
+			if (outTrace != nullptr) {
+				*outTrace = selectTrace + "|" + actionTrace;
+			}
+			return false;
+		}
+		break;
+	default:
+		if (outTrace != nullptr) {
+			*outTrace = "route_sequence_unsupported";
+		}
+		return false;
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace = selectTrace + "|" + actionTrace + "|mode=window_route";
+	}
+	return true;
+}
+
+bool CopyWholePageTextByEditorWindowInput(
+	HWND editorHwnd,
+	std::string* outCode,
+	NativeRealPageAccessResult* outResult)
+{
+	if (outCode != nullptr) {
+		outCode->clear();
+	}
+	if (outResult != nullptr) {
+		*outResult = {};
+	}
+	if (editorHwnd == nullptr || !IsWindow(editorHwnd) || outCode == nullptr) {
+		if (outResult != nullptr) {
+			outResult->trace = "editor_hwnd_invalid";
+		}
+		return false;
+	}
+
+	ScopedFakeClipboard fakeClipboard;
+	if (!fakeClipboard.IsActive()) {
+		if (outResult != nullptr) {
+			outResult->trace = "fake_clipboard_install_failed";
+		}
+		return false;
+	}
+
+	std::string inputTrace;
+	if (!RunEditorInputSequenceByWindowRoute(editorHwnd, EditorInputSequence::SelectAllCopy, &inputTrace)) {
+		if (outResult != nullptr) {
+			outResult->trace = inputTrace.empty() ? "input_sequence_failed" : inputTrace;
+		}
+		return false;
+	}
+
+	std::string clipboardTrace;
+	if ((!WaitForFakeClipboardText(fakeClipboard, outCode, &clipboardTrace) || outCode->empty()) &&
+		!fakeClipboard.HasClipboardTraffic()) {
+		std::string syntheticTrace;
+		if (!RunEditorInputSequenceSyntheticOnly(editorHwnd, EditorInputSequence::SelectAllCopy, &syntheticTrace)) {
+			if (outResult != nullptr) {
+				outResult->trace =
+					inputTrace +
+					"|copy_text_format_missing|" +
+					clipboardTrace +
+					"|synthetic_failed|" +
+					syntheticTrace;
+			}
+			return false;
+		}
+		inputTrace += "|fallback_synthetic|" + syntheticTrace;
+	}
+
+	if (!WaitForFakeClipboardText(fakeClipboard, outCode, &clipboardTrace) ||
+		outCode->empty()) {
+		if (outResult != nullptr) {
+			outResult->trace =
+				inputTrace +
+				"|copy_text_format_missing|" +
+				clipboardTrace;
+		}
+		return false;
+	}
+
+	if (outResult != nullptr) {
+		outResult->ok = true;
+		outResult->usedClipboardEmulation = true;
+		outResult->capturedCustomFormat = fakeClipboard.HasCustomFormat();
+		outResult->textBytes = outCode->size();
+		outResult->trace =
+			"copy_ok|window_input|" +
+			inputTrace +
+			"|" +
+			clipboardTrace;
+	}
+	return true;
+}
+
+bool ReplaceWholePageTextByEditorWindowInput(
+	HWND editorHwnd,
+	const std::string& newPageCode,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (editorHwnd == nullptr || !IsWindow(editorHwnd) || newPageCode.empty()) {
+		if (outTrace != nullptr) {
+			*outTrace = "editor_hwnd_invalid";
+		}
+		return false;
+	}
+
+	ScopedFakeClipboard fakeClipboard;
+	if (!fakeClipboard.IsActive()) {
+		if (outTrace != nullptr) {
+			*outTrace = "fake_clipboard_install_failed";
+		}
+		return false;
+	}
+
+	HANDLE textHandle = CreateClipboardAnsiTextHandle(newPageCode);
+	if (textHandle == nullptr || !fakeClipboard.SetFormatHandle(CF_TEXT, textHandle)) {
+		if (textHandle != nullptr) {
+			GlobalFree(textHandle);
+		}
+		if (outTrace != nullptr) {
+			*outTrace = "paste_text_handle_failed";
+		}
+		return false;
+	}
+
+	std::string inputTrace;
+	if (!RunEditorInputSequenceByWindowRoute(editorHwnd, EditorInputSequence::SelectAllDeletePaste, &inputTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = inputTrace.empty() ? "input_sequence_failed" : inputTrace;
+		}
+		return false;
+	}
+
+	if (!fakeClipboard.HasClipboardTraffic()) {
+		std::string syntheticTrace;
+		if (!RunEditorInputSequenceSyntheticOnly(editorHwnd, EditorInputSequence::SelectAllDeletePaste, &syntheticTrace)) {
+			if (outTrace != nullptr) {
+				*outTrace =
+					inputTrace +
+					"|synthetic_failed|" +
+					syntheticTrace;
+			}
+			return false;
+		}
+		inputTrace += "|fallback_synthetic|" + syntheticTrace;
+	}
+
+	SettleEditorAfterCommand(120);
+	if (outTrace != nullptr) {
+		*outTrace =
+			"replace_ok|window_input|" +
+			inputTrace +
+			"|" +
+			fakeClipboard.BuildStatsText();
+	}
+	return true;
+}
+
 bool InvokeMfcCommandRoute(HWND editorHwnd, UINT commandId, std::string* outTrace)
 {
 	if (outTrace != nullptr) {
@@ -2802,30 +4269,8 @@ bool TryResolveInnerEditorObject(std::uintptr_t rawObject, EditorDispatchTargetI
 
 	__try {
 		const auto* fields = reinterpret_cast<const std::uint32_t*>(rawObject);
-		const unsigned int pageType = fields[15];
-		std::uintptr_t innerObject = 0;
-		switch (pageType) {
-		case 1:
-			innerObject = static_cast<std::uintptr_t>(fields[21]);
-			break;
-		case 2:
-			innerObject = static_cast<std::uintptr_t>(fields[16]);
-			break;
-		case 3:
-			innerObject = static_cast<std::uintptr_t>(fields[17]);
-			break;
-		case 4:
-			innerObject = static_cast<std::uintptr_t>(fields[18]);
-			break;
-		case 6:
-		case 7:
-		case 8:
-			innerObject = static_cast<std::uintptr_t>(fields[20]);
-			break;
-		default:
-			innerObject = 0;
-			break;
-		}
+		unsigned int pageType = 0;
+		const std::uintptr_t innerObject = ResolveInnerEditorObjectFromFields(fields, &pageType);
 
 		if (outInfo != nullptr) {
 			outInfo->pageType = pageType;
@@ -3662,13 +5107,15 @@ bool PastePlainTextByEditor(
 		"PastePlainTextByEditor.clipboard_ready|" +
 		fakeClipboard.BuildStatsText());
 
-	const auto pasteHandlerFn = moduleBase == 0
-		? nullptr
-		: reinterpret_cast<FnEditorPasteHandler>(
-			moduleBase + (kKnownEditorPasteHandlerRva - kImageBase));
+	const auto& addrs = GetNativeEditorCommandAddresses(moduleBase);
+	const auto pasteHandlerFn = ResolveInternalAddress<FnEditorPasteHandler>(
+		moduleBase,
+		addrs.editorPasteHandler);
 	if (pasteHandlerFn == nullptr) {
 		if (outTrace != nullptr) {
-			*outTrace = "paste_handler_resolve_failed|module_base=" + std::to_string(moduleBase);
+			*outTrace =
+				"paste_handler_resolve_failed|module_base=" + std::to_string(moduleBase) +
+				"|normalized=" + std::to_string(addrs.editorPasteHandler);
 		}
 		return false;
 	}
@@ -4284,6 +5731,224 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	return true;
 }
 
+bool ReplaceRealPageCodeByEditorWindowInternal(
+	HWND editorHwnd,
+	const std::string& newPageCode,
+	NativeRealPageAccessResult* outResult)
+{
+	AppendPageEditTraceLine(
+		"ReplaceRealPageCodeByWindow.begin|hwnd=" +
+		std::to_string(reinterpret_cast<std::uintptr_t>(editorHwnd)) +
+		"|bytes=" +
+		std::to_string(newPageCode.size()));
+	if (outResult != nullptr) {
+		*outResult = {};
+	}
+	if (editorHwnd == nullptr || !IsWindow(editorHwnd) || newPageCode.empty()) {
+		if (outResult != nullptr) {
+			outResult->trace = "invalid_argument";
+		}
+		return false;
+	}
+
+	const std::string normalizedNewPageCode = NormalizeLineBreakToCrLf(newPageCode);
+	std::string replaceTrace;
+	if (!ReplaceWholePageTextByEditorWindowInput(editorHwnd, normalizedNewPageCode, &replaceTrace)) {
+		AppendPageEditTraceLine("ReplaceRealPageCodeByWindow.replace_failed|" + replaceTrace);
+		if (outResult != nullptr) {
+			outResult->trace = "replace_failed|" + replaceTrace;
+		}
+		return false;
+	}
+	AppendPageEditTraceLine("ReplaceRealPageCodeByWindow.after_replace|" + replaceTrace);
+
+	std::string verifyCode;
+	NativeRealPageAccessResult verifyResult{};
+	if (!CopyWholePageTextByEditorWindowInput(editorHwnd, &verifyCode, &verifyResult)) {
+		AppendPageEditTraceLine("ReplaceRealPageCodeByWindow.verify_read_failed|" + verifyResult.trace);
+		if (outResult != nullptr) {
+			outResult->trace =
+				replaceTrace +
+				"|verify_read_failed|" +
+				verifyResult.trace;
+		}
+		return false;
+	}
+	AppendPageEditTraceLine(
+		"ReplaceRealPageCodeByWindow.after_verify_read|bytes=" +
+		std::to_string(verifyCode.size()) +
+		"|" +
+		verifyResult.trace);
+
+	const std::string normalizedVerifyCode = NormalizePageCodeForLooseCompare(verifyCode);
+	const std::string normalizedExpectedCode = NormalizePageCodeForLooseCompare(normalizedNewPageCode);
+	if (normalizedVerifyCode != normalizedExpectedCode) {
+		const std::string mismatchSummary = BuildTextMismatchSummary(
+			normalizedExpectedCode,
+			normalizedVerifyCode);
+		AppendPageEditTraceLine("ReplaceRealPageCodeByWindow.verify_mismatch|" + mismatchSummary);
+		if (outResult != nullptr) {
+			outResult->trace =
+				replaceTrace +
+				"|verify_mismatch|" +
+				mismatchSummary;
+		}
+		return false;
+	}
+
+	if (outResult != nullptr) {
+		*outResult = verifyResult;
+		outResult->ok = true;
+		outResult->trace =
+			"write_by_window_input|" +
+			replaceTrace +
+			"|verify_ok|" +
+			verifyResult.trace;
+	}
+	return true;
+}
+
+bool ResolveEditorObjectByProgramTreeItemDataInternal(
+	unsigned int itemData,
+	std::uintptr_t moduleBase,
+	std::uintptr_t* outEditorObject,
+	std::string* outTrace)
+{
+	if (outEditorObject != nullptr) {
+		*outEditorObject = 0;
+	}
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+
+	std::uintptr_t editorObject = 0;
+	std::string uiTrace;
+	if (TryResolveProgramTreeItemEditorObjectByUi(itemData, moduleBase, &editorObject, &uiTrace) &&
+		editorObject != 0) {
+		if (outEditorObject != nullptr) {
+			*outEditorObject = editorObject;
+		}
+		if (outTrace != nullptr) {
+			*outTrace = uiTrace;
+		}
+		return true;
+	}
+
+	std::string debugTrace;
+	if (!DebugResolveEditorObjectByProgramTreeItemData(
+			itemData,
+			moduleBase,
+			&editorObject,
+			nullptr,
+			nullptr,
+			nullptr,
+			&debugTrace) ||
+		editorObject == 0) {
+		if (outTrace != nullptr) {
+			if (!uiTrace.empty() && !debugTrace.empty()) {
+				*outTrace = uiTrace + "|fallback_debug_failed|" + debugTrace;
+			}
+			else {
+				*outTrace = !uiTrace.empty() ? uiTrace : debugTrace;
+			}
+		}
+		return false;
+	}
+
+	if (outEditorObject != nullptr) {
+		*outEditorObject = editorObject;
+	}
+	if (outTrace != nullptr) {
+		*outTrace =
+			(!uiTrace.empty() ? (uiTrace + "|fallback_debug_ok|") : "fallback_debug_ok|") +
+			debugTrace;
+	}
+	return true;
+}
+
+}
+
+bool OpenProgramTreeItemPageByData(
+	unsigned int itemData,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+
+	std::string treeTrace;
+	const HWND mainHwnd = ResolveMainIdeWindow();
+	const HWND treeHwnd = FindProgramDataTreeViewWindow(&treeTrace);
+	if (mainHwnd == nullptr || treeHwnd == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace = treeTrace.empty() ? "program_tree_unavailable" : treeTrace;
+		}
+		return false;
+	}
+
+	const HTREEITEM rootItem = GetTreeNextItemInternal(treeHwnd, nullptr, TVGN_ROOT);
+	const HTREEITEM firstChild = GetTreeNextItemInternal(treeHwnd, rootItem, TVGN_CHILD);
+	std::string itemText;
+	const HTREEITEM item = FindProgramTreeItemByDataRecursive(
+		treeHwnd,
+		firstChild,
+		itemData,
+		0,
+		8,
+		&itemText);
+	if (item == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				treeTrace +
+				"|tree_item_not_found|item_data=" + std::to_string(itemData);
+		}
+		return false;
+	}
+
+	const HWND activeBefore = GetActiveMdiChildWindow(mainHwnd);
+	std::string openTrace;
+	if (!TriggerProgramTreeItemOpenByUi(treeHwnd, item, &openTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = treeTrace + "|" + openTrace;
+		}
+		return false;
+	}
+
+	for (int attempt = 0; attempt < 60; ++attempt) {
+		PumpPendingMessages();
+		const HWND activeChild = GetActiveMdiChildWindow(mainHwnd);
+		if (activeChild != nullptr && IsWindow(activeChild)) {
+			const std::string activeTitle = WindowTextToString(activeChild);
+			const bool titleMatches =
+				!itemText.empty() &&
+				activeTitle.find(itemText) != std::string::npos;
+			if (activeChild != activeBefore || titleMatches || attempt >= 2) {
+				if (outTrace != nullptr) {
+					*outTrace =
+						treeTrace +
+						"|" +
+						openTrace +
+						"|open_page_ok" +
+						"|item=" + itemText +
+						"|active_changed=" + std::to_string(activeChild != activeBefore ? 1 : 0) +
+						"|active_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(activeChild)) +
+						"|active_class=" + WindowClassToString(activeChild) +
+						"|active_text=" + activeTitle;
+				}
+				return true;
+			}
+		}
+		Sleep(25);
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			treeTrace +
+			"|" +
+			openTrace +
+			"|open_page_timeout|item=" + itemText;
+	}
+	return false;
 }
 
 bool GetRealPageCodeByEditorObject(
@@ -4330,17 +5995,14 @@ bool GetRealPageCodeByProgramTreeItemData(
 	}
 
 	std::uintptr_t editorObject = 0;
-	std::string openTrace;
-	if (!DebugResolveEditorObjectByProgramTreeItemData(
+	std::string resolveTrace;
+	if (!ResolveEditorObjectByProgramTreeItemDataInternal(
 			itemData,
 			moduleBase,
 			&editorObject,
-			nullptr,
-			nullptr,
-			nullptr,
-			&openTrace)) {
+			&resolveTrace)) {
 		if (outResult != nullptr) {
-			outResult->trace = openTrace.empty() ? "resolve_editor_failed" : openTrace;
+			outResult->trace = resolveTrace.empty() ? "resolve_editor_failed" : resolveTrace;
 		}
 		return false;
 	}
@@ -4348,7 +6010,7 @@ bool GetRealPageCodeByProgramTreeItemData(
 	NativeRealPageAccessResult localResult{};
 	const bool ok = GetRealPageCodeByEditorObject(editorObject, moduleBase, outCode, &localResult);
 	localResult.editorObject = editorObject;
-	localResult.trace = openTrace.empty() ? localResult.trace : (openTrace + "|" + localResult.trace);
+	localResult.trace = resolveTrace.empty() ? localResult.trace : (resolveTrace + "|" + localResult.trace);
 	if (outResult != nullptr) {
 		*outResult = std::move(localResult);
 	}
@@ -4382,17 +6044,14 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 	}
 
 	std::uintptr_t editorObject = 0;
-	std::string openTrace;
-	if (!DebugResolveEditorObjectByProgramTreeItemData(
+	std::string resolveTrace;
+	if (!ResolveEditorObjectByProgramTreeItemDataInternal(
 			itemData,
 			moduleBase,
 			&editorObject,
-			nullptr,
-			nullptr,
-			nullptr,
-			&openTrace)) {
+			&resolveTrace)) {
 		if (outResult != nullptr) {
-			outResult->trace = openTrace.empty() ? "resolve_editor_failed" : openTrace;
+			outResult->trace = resolveTrace.empty() ? "resolve_editor_failed" : resolveTrace;
 		}
 		return false;
 	}
@@ -4405,7 +6064,7 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 		rollbackPageCode,
 		&localResult);
 	localResult.editorObject = editorObject;
-	localResult.trace = openTrace.empty() ? localResult.trace : (openTrace + "|" + localResult.trace);
+	localResult.trace = resolveTrace.empty() ? localResult.trace : (resolveTrace + "|" + localResult.trace);
 	if (outResult != nullptr) {
 		*outResult = std::move(localResult);
 	}

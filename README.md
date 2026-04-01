@@ -1,4 +1,4 @@
-﻿# AutoLinker
+# AutoLinker
 
 AutoLinker支持库，通过各种方法实现以下功能：
 * 不同的.e源文件使用不同的链接器
@@ -150,9 +150,9 @@ AutoLinker支持库，通过各种方法实现以下功能：
   - 列出程序树中的程序集、类模块、全局变量、自定义数据类型、DLL 命令、窗口、资源等项目。
   - 支持按 `kind`、名称过滤，并可选附带代码。
   - 说明：这里通过程序树抓到的代码是伪代码参考，结构可能与正常 IDE 页略有差异。
-- `get_program_item_code`
-  - 按精确名称获取某个程序树项目的整页代码。
-  - 说明：返回代码属于伪代码参考。
+- `get_program_item_real_code`
+  - 按精确名称获取某个程序树项目的真实整页源码。
+  - 说明：该工具会切换 IDE 当前页，并通过编辑器内部路径抓取真实源码。
 - `switch_to_program_item_page`
   - 按精确名称切换到某个程序集/类/资源页面。
   - 只负责切页，不返回代码。
@@ -257,7 +257,7 @@ AutoLinker支持库，通过各种方法实现以下功能：
 
 ### ⭐会改变 IDE 当前页的工具
 - 以下工具具有副作用，会导致当前 IDE 页面或光标位置发生变化：
-  - `get_program_item_code`
+  - `get_program_item_real_code`
   - `switch_to_program_item_page`
   - `jump_to_search_result`
 - 使用这些工具前后，不要假定当前页仍保持不变。
@@ -267,7 +267,6 @@ AutoLinker支持库，通过各种方法实现以下功能：
   - `get_module_public_info`
   - `search_module_public_info`
   - `list_program_items` 中附带的代码
-  - `get_program_item_code`
   - `search_project_keyword` 的结果文本及其后续关联代码
 - 这些内容适合做定位、检索、接口参考，但不应当当作 100% 原样源码。
 

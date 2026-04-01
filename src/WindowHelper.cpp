@@ -4,6 +4,38 @@
 #include "PathHelper.h"
 #include <fnshare.h>
 #include <format>
+#include <regex>
+
+namespace {
+
+std::string TrimAsciiCopyLocal(const std::string& text)
+{
+	size_t begin = 0;
+	size_t end = text.size();
+	while (begin < end && std::isspace(static_cast<unsigned char>(text[begin])) != 0) {
+		++begin;
+	}
+	while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])) != 0) {
+		--end;
+	}
+	return text.substr(begin, end - begin);
+}
+
+std::string StripTrailingBracketAnnotations(const std::string& text)
+{
+	static const std::regex kTrailingBracketPattern(R"(\s*\[[^\[\]\r\n]*\]\s*$)");
+	std::string stripped = text;
+	for (;;) {
+		const std::string next = std::regex_replace(stripped, kTrailingBracketPattern, std::string());
+		if (next == stripped) {
+			break;
+		}
+		stripped = next;
+	}
+	return TrimAsciiCopyLocal(stripped);
+}
+
+}
 
 BOOL CALLBACK EnumChildProcOutputWindow(HWND hwnd, LPARAM lParam) {
 	char buffer[256] = { 0 };
@@ -35,7 +67,7 @@ std::string GetSourceFilePath() {
 	HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
 	char buffer[256] = { 0 };
 	GetWindowText(hWnd, buffer, sizeof(buffer));
-	auto path = ExtractBetweenDashes(std::string(buffer));
+	auto path = StripTrailingBracketAnnotations(ExtractBetweenDashes(std::string(buffer)));
 	return path;
 }
 

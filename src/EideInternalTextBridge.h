@@ -32,6 +32,11 @@ bool GetRealPageCodeByProgramTreeItemData(
 	std::string* outCode,
 	NativeRealPageAccessResult* outResult = nullptr);
 
+// 按程序树页数据切换到对应页面。
+bool OpenProgramTreeItemPageByData(
+	unsigned int itemData,
+	std::string* outTrace = nullptr);
+
 // 按编辑器对象整页覆盖真实源码。
 bool ReplaceRealPageCodeByEditorObject(
 	std::uintptr_t editorObject,

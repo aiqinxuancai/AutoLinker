@@ -1,10 +1,11 @@
-#include "LocalMcpServer.h"
+﻿#include "LocalMcpServer.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <format>
@@ -19,6 +20,7 @@
 #include "AIChatFeature.h"
 #include "AIService.h"
 #include "Global.h"
+#include "IDEFacade.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -69,6 +71,354 @@ std::string ToLowerAsciiCopy(const std::string& text)
 void LogMcp(const std::string& message)
 {
 	OutputStringToELog("[LocalMCP] " + message);
+}
+
+bool IsStrictUtf8Text(const std::string& text)
+{
+	if (text.empty()) {
+		return true;
+	}
+	return MultiByteToWideChar(
+		CP_UTF8,
+		MB_ERR_INVALID_CHARS,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0) > 0;
+}
+
+size_t FindValidUtf8PrefixLength(const std::string& text, size_t maxBytes)
+{
+	size_t prefix = (std::min)(text.size(), maxBytes);
+	while (prefix > 0) {
+		if (MultiByteToWideChar(
+			CP_UTF8,
+			MB_ERR_INVALID_CHARS,
+			text.data(),
+			static_cast<int>(prefix),
+			nullptr,
+			0) > 0) {
+			return prefix;
+		}
+		--prefix;
+	}
+	return 0;
+}
+
+bool TryDecodeTextToWide(const std::string& text, std::wstring& outWide)
+{
+	outWide.clear();
+	if (text.empty()) {
+		return true;
+	}
+
+	int wideLen = MultiByteToWideChar(
+		CP_UTF8,
+		MB_ERR_INVALID_CHARS,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0);
+	UINT codePage = CP_UTF8;
+	DWORD flags = MB_ERR_INVALID_CHARS;
+
+	if (wideLen <= 0) {
+		wideLen = MultiByteToWideChar(
+			CP_ACP,
+			0,
+			text.data(),
+			static_cast<int>(text.size()),
+			nullptr,
+			0);
+		codePage = CP_ACP;
+		flags = 0;
+		if (wideLen <= 0) {
+			return false;
+		}
+	}
+
+	outWide.assign(static_cast<size_t>(wideLen), L'\0');
+	if (MultiByteToWideChar(
+		codePage,
+		flags,
+		text.data(),
+		static_cast<int>(text.size()),
+		outWide.data(),
+		wideLen) <= 0) {
+		outWide.clear();
+		return false;
+	}
+	return true;
+}
+
+std::string EncodeWideToUtf8(const std::wstring& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+
+	const int utf8Len = WideCharToMultiByte(
+		CP_UTF8,
+		0,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0,
+		nullptr,
+		nullptr);
+	if (utf8Len <= 0) {
+		return std::string();
+	}
+
+	std::string utf8(static_cast<size_t>(utf8Len), '\0');
+	if (WideCharToMultiByte(
+		CP_UTF8,
+		0,
+		text.data(),
+		static_cast<int>(text.size()),
+		utf8.data(),
+		utf8Len,
+		nullptr,
+		nullptr) <= 0) {
+		return std::string();
+	}
+	return utf8;
+}
+
+std::string ConvertUtf8ToGbkText(const std::string& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+	if (!IsStrictUtf8Text(text)) {
+		return text;
+	}
+
+	const int wideLen = MultiByteToWideChar(
+		CP_UTF8,
+		MB_ERR_INVALID_CHARS,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0);
+	if (wideLen <= 0) {
+		return text;
+	}
+
+	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+	if (MultiByteToWideChar(
+		CP_UTF8,
+		MB_ERR_INVALID_CHARS,
+		text.data(),
+		static_cast<int>(text.size()),
+		wide.data(),
+		wideLen) <= 0) {
+		return text;
+	}
+
+	constexpr UINT kGbkCodePage = 936;
+	const int gbkLen = WideCharToMultiByte(
+		kGbkCodePage,
+		0,
+		wide.data(),
+		wideLen,
+		nullptr,
+		0,
+		nullptr,
+		nullptr);
+	if (gbkLen <= 0) {
+		return text;
+	}
+
+	std::string gbk(static_cast<size_t>(gbkLen), '\0');
+	if (WideCharToMultiByte(
+		kGbkCodePage,
+		0,
+		wide.data(),
+		wideLen,
+		gbk.data(),
+		gbkLen,
+		nullptr,
+		nullptr) <= 0) {
+		return text;
+	}
+	return gbk;
+}
+
+void LogMcpCallLine(const std::string& message)
+{
+	OutputStringToELog(ConvertUtf8ToGbkText("[MCP] " + message));
+}
+
+std::string TrimAsciiSingleLine(const std::string& text)
+{
+	return TrimAsciiCopy(text);
+}
+
+void ReplaceAllInPlace(std::string& text, const std::string& from, const std::string& to)
+{
+	if (from.empty()) {
+		return;
+	}
+
+	size_t pos = 0;
+	while ((pos = text.find(from, pos)) != std::string::npos) {
+		text.replace(pos, from.size(), to);
+		pos += to.size();
+	}
+}
+
+std::string SanitizeSingleLineText(std::string text)
+{
+	ReplaceAllInPlace(text, "\\r\\n", " ");
+	ReplaceAllInPlace(text, "\\n", " ");
+	ReplaceAllInPlace(text, "\\r", " ");
+	ReplaceAllInPlace(text, "\\t", " ");
+	ReplaceAllInPlace(text, "\r\n", " ");
+	ReplaceAllInPlace(text, "\n", " ");
+	ReplaceAllInPlace(text, "\r", " ");
+	ReplaceAllInPlace(text, "\t", " ");
+
+	std::string collapsed;
+	collapsed.reserve(text.size());
+	bool previousWhitespace = false;
+	for (unsigned char ch : text) {
+		if (std::isspace(ch) != 0) {
+			if (!previousWhitespace) {
+				collapsed.push_back(' ');
+				previousWhitespace = true;
+			}
+			continue;
+		}
+		collapsed.push_back(static_cast<char>(ch));
+		previousWhitespace = false;
+	}
+	return TrimAsciiSingleLine(collapsed);
+}
+
+std::string TruncateMcpLogText(const std::string& text, size_t maxChars = 180)
+{
+	std::wstring wide;
+	if (TryDecodeTextToWide(text, wide)) {
+		if (wide.size() <= maxChars) {
+			return text;
+		}
+		const std::wstring truncatedWide = wide.substr(0, maxChars);
+		const std::string truncatedUtf8 = EncodeWideToUtf8(truncatedWide);
+		if (!truncatedUtf8.empty()) {
+			return truncatedUtf8 + "...";
+		}
+	}
+
+	if (text.size() <= maxChars) {
+		return text;
+	}
+	const size_t keepBytes = FindValidUtf8PrefixLength(text, maxChars);
+	if (keepBytes > 0) {
+		return text.substr(0, keepBytes) + "...";
+	}
+	return text.substr(0, maxChars) + "...";
+}
+
+std::string FormatMcpLogJson(const nlohmann::json& value)
+{
+	return TruncateMcpLogText(SanitizeSingleLineText(value.dump()), 180);
+}
+
+std::string FormatMcpLogText(const std::string& value)
+{
+	return TruncateMcpLogText(SanitizeSingleLineText(value), 180);
+}
+
+std::string BuildJsonValueCallSuffix(const nlohmann::json& value)
+{
+	if (value.is_null()) {
+		return "null";
+	}
+	if (value.is_object() && value.empty()) {
+		return "null";
+	}
+	return FormatMcpLogJson(value);
+}
+
+struct McpLogContext {
+	bool enabled = false;
+	std::string responseName;
+	std::string requestDisplay;
+	std::string responseDisplay;
+};
+
+McpLogContext BuildMcpLogContextForPayload(const nlohmann::json& payload)
+{
+	McpLogContext ctx{};
+	ctx.enabled = true;
+
+	if (!payload.is_object()) {
+		ctx.responseName = "invalid_request";
+		ctx.requestDisplay = "invalid_request(" + FormatMcpLogJson(payload) + ")";
+		return ctx;
+	}
+
+	const std::string method = payload.contains("method") && payload["method"].is_string()
+		? payload["method"].get<std::string>()
+		: std::string("unknown_method");
+	const nlohmann::json params = payload.contains("params") ? payload["params"] : nlohmann::json(nullptr);
+
+	if (method == "tools/call" &&
+		params.is_object() &&
+		params.contains("name") &&
+		params["name"].is_string()) {
+		const std::string toolName = params["name"].get<std::string>();
+		const nlohmann::json arguments = params.contains("arguments")
+			? params["arguments"]
+			: nlohmann::json(nullptr);
+		ctx.responseName = toolName;
+		ctx.requestDisplay = toolName + "(" + BuildJsonValueCallSuffix(arguments) + ")";
+		return ctx;
+	}
+
+	ctx.responseName = method;
+	ctx.requestDisplay = method + "(" + BuildJsonValueCallSuffix(params) + ")";
+	return ctx;
+}
+
+McpLogContext BuildMcpLogContextForRequestBody(const std::string& body)
+{
+	try {
+		const nlohmann::json payload = body.empty()
+			? nlohmann::json::object()
+			: nlohmann::json::parse(body);
+		return BuildMcpLogContextForPayload(payload);
+	}
+	catch (...) {
+		McpLogContext ctx{};
+		ctx.enabled = true;
+		ctx.responseName = "invalid_json";
+		ctx.requestDisplay = "invalid_json(" + FormatMcpLogText(body) + ")";
+		return ctx;
+	}
+}
+
+void LogMcpRequest(const McpLogContext& ctx)
+{
+	if (!ctx.enabled) {
+		return;
+	}
+	LogMcpCallLine(">> " + ctx.requestDisplay);
+}
+
+void LogMcpResponse(const McpLogContext& ctx, double elapsedMs)
+{
+	if (!ctx.enabled) {
+		return;
+	}
+
+	const std::string responseText = ctx.responseDisplay.empty() ? "null" : ctx.responseDisplay;
+	LogMcpCallLine(std::format(
+		"<< {} ({:.1f}ms) {}",
+		ctx.responseName.empty() ? "unknown" : ctx.responseName,
+		elapsedMs,
+		responseText));
 }
 
 void CloseSocketSafe(SOCKET& sock)
@@ -320,27 +670,55 @@ bool TryBuildToolCallResult(const nlohmann::json& params, nlohmann::json& outRes
 	return true;
 }
 
-bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::string& outBody)
+bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::string& outBody, McpLogContext* outLogContext)
 {
 	outStatusCode = 200;
 	outBody.clear();
+	if (outLogContext != nullptr) {
+		*outLogContext = {};
+	}
 
 	nlohmann::json payload;
 	try {
 		payload = request.body.empty() ? nlohmann::json::object() : nlohmann::json::parse(request.body);
 	}
 	catch (const std::exception& ex) {
+		if (outLogContext != nullptr) {
+			outLogContext->enabled = true;
+			outLogContext->responseName = "invalid_json";
+			outLogContext->requestDisplay = "invalid_json(" + FormatMcpLogText(request.body) + ")";
+			outLogContext->responseDisplay = FormatMcpLogJson({
+				{"code", -32700},
+				{"message", std::string("parse error: ") + ex.what()}
+			});
+		}
 		outBody = BuildJsonRpcError(nullptr, -32700, std::string("parse error: ") + ex.what()).dump();
 		return true;
 	}
 
+	if (outLogContext != nullptr) {
+		*outLogContext = BuildMcpLogContextForPayload(payload);
+	}
+
 	if (!payload.is_object()) {
+		if (outLogContext != nullptr) {
+			outLogContext->responseDisplay = FormatMcpLogJson({
+				{"code", -32600},
+				{"message", "request must be a JSON object"}
+			});
+		}
 		outBody = BuildJsonRpcError(nullptr, -32600, "request must be a JSON object").dump();
 		return true;
 	}
 
 	const nlohmann::json id = payload.contains("id") ? payload["id"] : nlohmann::json(nullptr);
 	if (!payload.contains("method") || !payload["method"].is_string()) {
+		if (outLogContext != nullptr) {
+			outLogContext->responseDisplay = FormatMcpLogJson({
+				{"code", -32600},
+				{"message", "method is required"}
+			});
+		}
 		outBody = BuildJsonRpcError(id, -32600, "method is required").dump();
 		return true;
 	}
@@ -352,16 +730,27 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 	if (method == "notifications/initialized") {
 		outStatusCode = 202;
 		outBody.clear();
+		if (outLogContext != nullptr) {
+			outLogContext->responseDisplay = "null";
+		}
 		return true;
 	}
 
 	if (method == "ping") {
-		outBody = BuildJsonRpcResult(id, nlohmann::json::object()).dump();
+		const nlohmann::json result = nlohmann::json::object();
+		if (outLogContext != nullptr) {
+			outLogContext->responseDisplay = FormatMcpLogJson(result);
+		}
+		outBody = BuildJsonRpcResult(id, result).dump();
 		return true;
 	}
 
 	if (method == "initialize") {
-		outBody = BuildJsonRpcResult(id, BuildInitializeResult()).dump();
+		const nlohmann::json result = BuildInitializeResult();
+		if (outLogContext != nullptr) {
+			outLogContext->responseDisplay = FormatMcpLogJson(result);
+		}
+		outBody = BuildJsonRpcResult(id, result).dump();
 		return true;
 	}
 
@@ -369,8 +758,17 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 		nlohmann::json result;
 		std::string error;
 		if (!TryBuildToolListResult(result, error)) {
+			if (outLogContext != nullptr) {
+				outLogContext->responseDisplay = FormatMcpLogJson({
+					{"code", -32603},
+					{"message", error}
+				});
+			}
 			outBody = BuildJsonRpcError(id, -32603, error).dump();
 			return true;
+		}
+		if (outLogContext != nullptr) {
+			outLogContext->responseDisplay = FormatMcpLogJson(result);
 		}
 		outBody = BuildJsonRpcResult(id, result).dump();
 		return true;
@@ -380,8 +778,17 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 		nlohmann::json result;
 		std::string error;
 		if (!TryBuildToolCallResult(params, result, error)) {
+			if (outLogContext != nullptr) {
+				outLogContext->responseDisplay = FormatMcpLogJson({
+					{"code", -32602},
+					{"message", error}
+				});
+			}
 			outBody = BuildJsonRpcError(id, -32602, error).dump();
 			return true;
+		}
+		if (outLogContext != nullptr) {
+			outLogContext->responseDisplay = FormatMcpLogJson(result);
 		}
 		outBody = BuildJsonRpcResult(id, result).dump();
 		return true;
@@ -390,9 +797,18 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 	if (!hasId) {
 		outStatusCode = 202;
 		outBody.clear();
+		if (outLogContext != nullptr) {
+			outLogContext->responseDisplay = "null";
+		}
 		return true;
 	}
 
+	if (outLogContext != nullptr) {
+		outLogContext->responseDisplay = FormatMcpLogJson({
+			{"code", -32601},
+			{"message", "method not found"}
+		});
+	}
 	outBody = BuildJsonRpcError(id, -32601, "method not found").dump();
 	return true;
 }
@@ -436,11 +852,30 @@ void HandleClient(SOCKET clientSock)
 		return;
 	}
 
+	McpLogContext logContext = BuildMcpLogContextForRequestBody(request.body);
+	LogMcpRequest(logContext);
+	const auto startTime = std::chrono::steady_clock::now();
+
 	int statusCode = 200;
 	std::string responseBody;
-	if (!TryHandleJsonRpc(request, statusCode, responseBody)) {
+	McpLogContext handledLogContext;
+	if (!TryHandleJsonRpc(request, statusCode, responseBody, &handledLogContext)) {
+		const double elapsedMs = std::chrono::duration<double, std::milli>(
+			std::chrono::steady_clock::now() - startTime).count();
+		logContext.responseName = handledLogContext.responseName.empty() ? logContext.responseName : handledLogContext.responseName;
+		logContext.responseDisplay = R"({"ok":false,"error":"internal server error"})";
+		LogMcpResponse(logContext, elapsedMs);
 		SendHttpResponse(clientSock, 500, "Internal Server Error", "application/json; charset=utf-8", R"({"ok":false,"error":"internal server error"})");
 		return;
+	}
+	if (handledLogContext.enabled) {
+		if (!handledLogContext.responseName.empty()) {
+			logContext.responseName = handledLogContext.responseName;
+		}
+		if (!handledLogContext.requestDisplay.empty()) {
+			logContext.requestDisplay = handledLogContext.requestDisplay;
+		}
+		logContext.responseDisplay = handledLogContext.responseDisplay;
 	}
 
 	const char* statusText = "OK";
@@ -450,6 +885,9 @@ void HandleClient(SOCKET clientSock)
 	else if (statusCode == 204) {
 		statusText = "No Content";
 	}
+	const double elapsedMs = std::chrono::duration<double, std::milli>(
+		std::chrono::steady_clock::now() - startTime).count();
+	LogMcpResponse(logContext, elapsedMs);
 	SendHttpResponse(clientSock, statusCode, statusText, "application/json; charset=utf-8", responseBody);
 }
 
