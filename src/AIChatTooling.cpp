@@ -433,7 +433,17 @@ std::string ExecuteToolCall(const std::string& toolName, const std::string& argu
 		toolName == "list_program_items" ||
 		toolName == "get_program_item_code" ||
 		toolName == "get_program_item_real_code" ||
+		toolName == "read_program_item_real_code" ||
 		toolName == "edit_program_item_code" ||
+		toolName == "multi_edit_program_item_code" ||
+		toolName == "write_program_item_real_code" ||
+		toolName == "diff_program_item_code" ||
+		toolName == "restore_program_item_code_snapshot" ||
+		toolName == "search_program_item_real_code" ||
+		toolName == "list_program_item_symbols" ||
+		toolName == "get_symbol_real_code" ||
+		toolName == "edit_symbol_real_code" ||
+		toolName == "insert_program_item_code_block" ||
 		toolName == "switch_to_program_item_page" ||
 		toolName == "search_project_keyword" ||
 		toolName == "jump_to_search_result" ||

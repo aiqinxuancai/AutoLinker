@@ -579,6 +579,195 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "read_program_item_real_code"},
+		{"description", "Read one real program page from cache or live editor state and optionally return only a line range view. Use refresh_cache=true when you need a fresh capture from the IDE."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"offset_lines", {{"type", "integer"}, {"minimum", 0}}},
+				{"limit_lines", {{"type", "integer"}, {"minimum", 0}}},
+				{"with_line_numbers", {{"type", "boolean"}}},
+				{"refresh_cache", {{"type", "boolean"}}}
+			}},
+			{"required", nlohmann::json::array({"page_name"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "multi_edit_program_item_code"},
+		{"description", "Apply multiple exact text edits against one cached real page, then rewrite the whole page through the internal editor path. By default this is atomic and fails if any edit does not match."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"edits", {{"type", "array"}, {"items", {
+					{"type", "object"},
+					{"properties", {
+						{"old_text", {{"type", "string"}}},
+						{"new_text", {{"type", "string"}}},
+						{"replace_all", {{"type", "boolean"}}}
+					}},
+					{"required", nlohmann::json::array({"old_text", "new_text"})},
+					{"additionalProperties", false}
+				}}}},
+				{"fail_on_unmatched", {{"type", "boolean"}}},
+				{"atomic", {{"type", "boolean"}}}
+			}},
+			{"required", nlohmann::json::array({"page_name", "edits"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "write_program_item_real_code"},
+		{"description", "Overwrite one real program page with the provided full source text using the internal full-page delete and rewrite path. Optionally provide expected_base_hash to guard against concurrent page changes."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"full_code", {{"type", "string"}}},
+				{"expected_base_hash", {{"type", "string"}}}
+			}},
+			{"required", nlohmann::json::array({"page_name", "full_code"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "diff_program_item_code"},
+		{"description", "Build a structured diff for one real page against a proposed full_code or text edits without writing anything back to the editor."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"new_code", {{"type", "string"}}},
+				{"old_text", {{"type", "string"}}},
+				{"new_text", {{"type", "string"}}},
+				{"edits", {{"type", "array"}, {"items", {
+					{"type", "object"},
+					{"properties", {
+						{"old_text", {{"type", "string"}}},
+						{"new_text", {{"type", "string"}}},
+						{"replace_all", {{"type", "boolean"}}}
+					}},
+					{"required", nlohmann::json::array({"old_text", "new_text"})},
+					{"additionalProperties", false}
+				}}}},
+				{"refresh_cache", {{"type", "boolean"}}},
+				{"fail_on_unmatched", {{"type", "boolean"}}}
+			}},
+			{"required", nlohmann::json::array({"page_name"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "restore_program_item_code_snapshot"},
+		{"description", "Restore one real page from the latest cached snapshot or a specified snapshot_id. Snapshots are created automatically before successful full-page writes."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"snapshot_id", {{"type", "string"}}},
+				{"restore_latest", {{"type", "boolean"}}}
+			}},
+			{"required", nlohmann::json::array({"page_name"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "search_program_item_real_code"},
+		{"description", "Search inside one real program page and return exact line hits with optional context lines."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"keyword", {{"type", "string"}}},
+				{"case_sensitive", {{"type", "boolean"}}},
+				{"use_regex", {{"type", "boolean"}}},
+				{"context_lines", {{"type", "integer"}, {"minimum", 0}, {"maximum", 20}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}},
+				{"refresh_cache", {{"type", "boolean"}}}
+			}},
+			{"required", nlohmann::json::array({"page_name", "keyword"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "list_program_item_symbols"},
+		{"description", "Parse one real page and list its symbols such as page header, subroutines, parameters, local variables and top-level variables."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"refresh_cache", {{"type", "boolean"}}}
+			}},
+			{"required", nlohmann::json::array({"page_name"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "get_symbol_real_code"},
+		{"description", "Return the exact real source text for one parsed symbol inside a program page."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"symbol_name", {{"type", "string"}}},
+				{"symbol_kind", {{"type", "string"}, {"description", "Examples: page_header, subroutine, assembly_variable, member_variable, parameter, local_variable."}}},
+				{"parent_symbol_name", {{"type", "string"}}},
+				{"occurrence", {{"type", "integer"}, {"minimum", 1}}},
+				{"refresh_cache", {{"type", "boolean"}}}
+			}},
+			{"required", nlohmann::json::array({"page_name"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "edit_symbol_real_code"},
+		{"description", "Replace one parsed symbol's full real source block inside a cached page, then rewrite the entire page through the internal editor path."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"symbol_name", {{"type", "string"}}},
+				{"symbol_kind", {{"type", "string"}, {"description", "Examples: page_header, subroutine, assembly_variable, member_variable, parameter, local_variable."}}},
+				{"parent_symbol_name", {{"type", "string"}}},
+				{"occurrence", {{"type", "integer"}, {"minimum", 1}}},
+				{"new_code", {{"type", "string"}}}
+			}},
+			{"required", nlohmann::json::array({"page_name", "new_code"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "insert_program_item_code_block"},
+		{"description", "Insert one code block into a cached real page at the top, bottom, around a symbol, or around an exact anchor text, then rewrite the whole page through the internal editor path."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"code_block", {{"type", "string"}}},
+				{"mode", {{"type", "string"}, {"description", "One of: top, bottom, before_symbol, after_symbol, before_text, after_text."}}},
+				{"symbol_name", {{"type", "string"}}},
+				{"symbol_kind", {{"type", "string"}}},
+				{"parent_symbol_name", {{"type", "string"}}},
+				{"anchor_text", {{"type", "string"}}},
+				{"occurrence", {{"type", "integer"}, {"minimum", 1}}}
+			}},
+			{"required", nlohmann::json::array({"page_name", "code_block", "mode"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "switch_to_program_item_page"},
 		{"description", "Switch/open a program tree page by exact name, optionally constrained by kind. This will change the IDE current page and only activates that page; it does not fetch code."},
 		{"inputSchema", {
@@ -793,12 +982,16 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"4) 模块公开信息：先用 list_imported_modules，再按需用 get_module_public_info / search_module_public_info。\n"
 		"5) 程序树页面与伪代码：先用 list_program_items，再按需用 get_program_item_code 或 switch_to_program_item_page。\n"
 		"5.1) 需要某个页面的真实整页源码时，用 get_program_item_real_code，不要把 get_program_item_code 的伪代码当成真实源码。\n"
-		"5.2) 需要真正改写某个页面源码时，先调用 get_program_item_real_code 建立缓存，再调用 edit_program_item_code。\n"
+		"5.2) 需要分页查看或从缓存读取真实源码时，用 read_program_item_real_code。\n"
+		"5.3) 需要真正改写某个页面源码时，先调用 get_program_item_real_code 或 read_program_item_real_code 建立缓存，再按需用 edit_program_item_code / multi_edit_program_item_code / write_program_item_real_code。\n"
+		"5.4) 需要预览改动而不写回时，用 diff_program_item_code。\n"
+		"5.5) 需要按符号操作真实源码时，用 list_program_item_symbols / get_symbol_real_code / edit_symbol_real_code / insert_program_item_code_block。\n"
+		"5.6) 需要在真实页内做精确搜索或回滚最近写入时，用 search_program_item_real_code / restore_program_item_code_snapshot。\n"
 		"6) 搜索工程关键字时先用 search_project_keyword，拿到具体 jump_token 后再决定是否调用 jump_to_search_result。\n"
 		"7) jump_to_search_result、switch_to_program_item_page、get_program_item_code 都会改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
 		"8) 通过搜索、程序树、模块公开信息、支持库公开信息拿到的代码或文本，多数只是伪代码 / 公共接口参考，不一定等于 IDE 正常编辑页。\n"
 		"9) 需要无弹窗编译时调用 compile_with_output_path。它会指定输出路径并拦截系统保存对话框，支持模块工程编译为 ec，以及窗口程序 / 控制台程序 / DLL 的编译与静态编译；最终是否编译成功仍要结合 IDE 输出或产物确认。\n"
-		"10) 只想让用户手工改代码时调用 request_code_edit；需要自动整页回写真实源码时调用 edit_program_item_code。\n"
+		"10) 只想让用户手工改代码时调用 request_code_edit；需要自动整页回写真实源码时优先使用真实页工具，不要退回伪代码工具。\n"
 		"11) 需要联网查实时信息、文档、网页摘要时调用 search_web_tavily。\n"
 		"12) 已经拿到具体文档 URL 时，优先调用 extract_web_document 读取正文；只有在需要看原始响应时再调用 fetch_url。\n"
 		"13) 需要在本机查环境、查文件、执行受控自动化时调用 run_powershell_command；它每次都会向用户确认，命令要尽量小、明确、可解释。\n"
