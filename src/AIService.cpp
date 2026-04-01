@@ -4,6 +4,7 @@
 #include <cctype>
 #include <filesystem>
 #include <format>
+#include <string_view>
 #include <Windows.h>
 
 #include "..\\thirdparty\\json.hpp"
@@ -76,6 +77,217 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 		return text;
 	}
 	return text.substr(0, maxLen) + "...";
+}
+
+std::string LocalToUtf8(const std::string& text);
+
+size_t ClampUtf8PrefixBoundary(const std::string& text, size_t maxBytes)
+{
+	size_t end = (std::min)(maxBytes, text.size());
+	while (end > 0 && end < text.size() &&
+		(static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) {
+		--end;
+	}
+	return end;
+}
+
+size_t ClampUtf8SuffixStartBoundary(const std::string& text, size_t tailBytes)
+{
+	if (tailBytes >= text.size()) {
+		return 0;
+	}
+
+	size_t start = text.size() - tailBytes;
+	while (start < text.size() &&
+		(static_cast<unsigned char>(text[start]) & 0xC0) == 0x80) {
+		++start;
+	}
+	return start;
+}
+
+std::string TruncateUtf8Text(const std::string& text, size_t maxBytes)
+{
+	if (text.size() <= maxBytes) {
+		return text;
+	}
+
+	const size_t end = ClampUtf8PrefixBoundary(text, maxBytes);
+	return text.substr(0, end) + std::format("...[truncated {} bytes]", text.size() - end);
+}
+
+std::string BuildUtf8Excerpt(const std::string& text, size_t headBytes, size_t tailBytes)
+{
+	if (text.size() <= headBytes + tailBytes + 64) {
+		return text;
+	}
+
+	const size_t headEnd = ClampUtf8PrefixBoundary(text, headBytes);
+	const size_t tailStart = ClampUtf8SuffixStartBoundary(text, tailBytes);
+	if (tailStart <= headEnd) {
+		return TruncateUtf8Text(text, headBytes + tailBytes);
+	}
+
+	return text.substr(0, headEnd) +
+		std::format("\n...[truncated {} bytes]...\n", tailStart - headEnd) +
+		text.substr(tailStart);
+}
+
+bool EndsWithAsciiInsensitive(std::string_view text, std::string_view suffix)
+{
+	if (text.size() < suffix.size()) {
+		return false;
+	}
+
+	const size_t offset = text.size() - suffix.size();
+	for (size_t i = 0; i < suffix.size(); ++i) {
+		const unsigned char left = static_cast<unsigned char>(text[offset + i]);
+		const unsigned char right = static_cast<unsigned char>(suffix[i]);
+		if (std::tolower(left) != std::tolower(right)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+std::string ToLowerAsciiCopy(std::string_view text)
+{
+	std::string lowered(text.begin(), text.end());
+	std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+		return static_cast<char>(std::tolower(c));
+	});
+	return lowered;
+}
+
+bool IsCodeLikeKey(std::string_view key)
+{
+	const std::string lowered = ToLowerAsciiCopy(key);
+	return lowered == "code" ||
+		lowered == "proposed_code" ||
+		lowered == "plain_text" ||
+		EndsWithAsciiInsensitive(lowered, "_code");
+}
+
+bool IsTraceLikeKey(std::string_view key)
+{
+	const std::string lowered = ToLowerAsciiCopy(key);
+	return lowered == "trace" ||
+		EndsWithAsciiInsensitive(lowered, "_trace");
+}
+
+size_t GetCompactArrayLimit(std::string_view key)
+{
+	const std::string lowered = ToLowerAsciiCopy(key);
+	if (lowered == "hunks") {
+		return 4;
+	}
+	if (lowered == "matches") {
+		return 5;
+	}
+	if (lowered == "symbols") {
+		return 16;
+	}
+	if (lowered == "results") {
+		return 8;
+	}
+	return 6;
+}
+
+nlohmann::json CompactToolContextJsonValue(const nlohmann::json& value, std::string_view key, int depth)
+{
+	if (depth >= 6) {
+		return "[omitted: max depth]";
+	}
+
+	if (value.is_null() || value.is_boolean() || value.is_number()) {
+		return value;
+	}
+
+	if (value.is_string()) {
+		const std::string text = value.get<std::string>();
+		if (IsCodeLikeKey(key)) {
+			return BuildUtf8Excerpt(text, 2400, 900);
+		}
+		if (IsTraceLikeKey(key)) {
+			return TruncateUtf8Text(text, 1200);
+		}
+		return TruncateUtf8Text(text, 800);
+	}
+
+	if (value.is_array()) {
+		const size_t limit = GetCompactArrayLimit(key);
+		nlohmann::json out = nlohmann::json::array();
+		for (size_t i = 0; i < value.size() && i < limit; ++i) {
+			out.push_back(CompactToolContextJsonValue(value[i], key, depth + 1));
+		}
+		if (value.size() > limit) {
+			out.push_back({
+				{"_truncated", true},
+				{"omitted_items", value.size() - limit}
+			});
+		}
+		return out;
+	}
+
+	if (value.is_object()) {
+		nlohmann::json out = nlohmann::json::object();
+		for (auto it = value.begin(); it != value.end(); ++it) {
+			out[it.key()] = CompactToolContextJsonValue(it.value(), it.key(), depth + 1);
+		}
+		return out;
+	}
+
+	return TruncateUtf8Text(value.dump(), 800);
+}
+
+struct CompactToolResultPayload {
+	std::string textUtf8;
+	nlohmann::json jsonValue = nlohmann::json::object();
+};
+
+CompactToolResultPayload BuildCompactToolResultPayload(const std::string& toolName, const std::string& toolResultLocal)
+{
+	CompactToolResultPayload payload;
+	const std::string resultUtf8 = LocalToUtf8(toolResultLocal);
+
+	try {
+		nlohmann::json parsed = nlohmann::json::parse(resultUtf8);
+		nlohmann::json compact = CompactToolContextJsonValue(parsed, "", 0);
+		if (!compact.is_object()) {
+			payload.jsonValue = {
+				{"tool_name", toolName},
+				{"result", compact}
+			};
+		}
+		else {
+			payload.jsonValue = std::move(compact);
+		}
+	}
+	catch (...) {
+		payload.jsonValue = {
+			{"tool_name", toolName},
+			{"ok", false},
+			{"text", BuildUtf8Excerpt(resultUtf8, 1800, 600)}
+		};
+	}
+
+	payload.textUtf8 = payload.jsonValue.dump();
+	return payload;
+}
+
+int GetMaxToolRounds(const AISettings& settings)
+{
+	return (std::clamp)(settings.maxToolRounds, 4, 64);
+}
+
+std::string BuildToolRoundsExceededError(int maxToolRounds, const std::vector<AIChatToolEvent>& toolEvents)
+{
+	std::string message = std::format("tool call rounds exceeded limit ({})", maxToolRounds);
+	if (!toolEvents.empty()) {
+		message += " after ";
+		message += std::to_string(toolEvents.size());
+		message += " tool calls";
+	}
+	return message;
 }
 
 bool IsValidUtf8(const std::string& text)
@@ -1405,8 +1617,8 @@ AIChatResult ExecuteChatWithToolsClaude(
 		});
 	}
 
-	constexpr int kMaxToolRounds = 8;
-	for (int round = 0; round < kMaxToolRounds; ++round) {
+	const int maxToolRounds = GetMaxToolRounds(settings);
+	for (int round = 0; round < maxToolRounds; ++round) {
 		nlohmann::json requestBody;
 		requestBody["model"] = LocalToUtf8(settings.model);
 		requestBody["max_tokens"] = 4096;
@@ -1481,6 +1693,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 			else {
 				toolResultLocal = R"({"ok":false,"error":"tool callback not set"})";
 			}
+			const CompactToolResultPayload compactPayload = BuildCompactToolResultPayload(call.name, toolResultLocal);
 
 			AIChatToolEvent evt = {};
 			evt.name = call.name;
@@ -1495,14 +1708,14 @@ AIChatResult ExecuteChatWithToolsClaude(
 					{
 						{"type", "tool_result"},
 						{"tool_use_id", callId},
-						{"content", LocalToUtf8(toolResultLocal)}
+						{"content", compactPayload.textUtf8}
 					}
 				})}
 			});
 		}
 	}
 
-	result.error = "tool call rounds exceeded limit";
+	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
 	return result;
 }
 
@@ -1537,8 +1750,8 @@ AIChatResult ExecuteChatWithToolsGemini(
 		});
 	}
 
-	constexpr int kMaxToolRounds = 8;
-	for (int round = 0; round < kMaxToolRounds; ++round) {
+	const int maxToolRounds = GetMaxToolRounds(settings);
+	for (int round = 0; round < maxToolRounds; ++round) {
 		nlohmann::json requestBody;
 		requestBody["system_instruction"] = {
 			{"parts", nlohmann::json::array({ {{"text", systemUtf8}} })}
@@ -1613,6 +1826,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 			else {
 				toolResultLocal = R"({"ok":false,"error":"tool callback not set"})";
 			}
+			const CompactToolResultPayload compactPayload = BuildCompactToolResultPayload(call.name, toolResultLocal);
 
 			AIChatToolEvent evt = {};
 			evt.name = call.name;
@@ -1621,24 +1835,13 @@ AIChatResult ExecuteChatWithToolsGemini(
 			evt.ok = toolOk;
 			result.toolEvents.push_back(std::move(evt));
 
-			nlohmann::json toolResultNode;
-			try {
-				toolResultNode = nlohmann::json::parse(LocalToUtf8(toolResultLocal));
-			}
-			catch (...) {
-				toolResultNode = {
-					{"ok", toolOk},
-					{"text", LocalToUtf8(toolResultLocal)}
-				};
-			}
-
 			contents.push_back({
 				{"role", "user"},
 				{"parts", nlohmann::json::array({
 					{
 						{"functionResponse", {
 							{"name", call.name},
-							{"response", toolResultNode}
+							{"response", compactPayload.jsonValue}
 						}}
 					}
 				})}
@@ -1646,7 +1849,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 		}
 	}
 
-	result.error = "tool call rounds exceeded limit";
+	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
 	return result;
 }
 } // namespace
@@ -1681,6 +1884,16 @@ bool AIService::LoadSettings(ConfigManager& config, AISettings& outSettings)
 		}
 	}
 
+	const std::string maxToolRoundsValue = config.getValue("ai.max_tool_rounds");
+	if (!maxToolRoundsValue.empty()) {
+		try {
+			outSettings.maxToolRounds = (std::clamp)(std::stoi(maxToolRoundsValue), 4, 64);
+		}
+		catch (...) {
+			outSettings.maxToolRounds = 24;
+		}
+	}
+
 	return true;
 }
 
@@ -1693,6 +1906,7 @@ void AIService::SaveSettings(ConfigManager& config, const AISettings& settings)
 	config.setValue("ai.system_prompt_extra", settings.extraSystemPrompt);
 	config.setValue("ai.tavily_api_key", settings.tavilyApiKey);
 	config.setValue("ai.timeout_ms", std::to_string(settings.timeoutMs));
+	config.setValue("ai.max_tool_rounds", std::to_string((std::clamp)(settings.maxToolRounds, 4, 64)));
 	config.setValue("ai.temperature", std::format("{:.2f}", settings.temperature));
 }
 
@@ -1913,9 +2127,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 	}
 
 	const nlohmann::json tools = BuildChatToolDefinitions();
-	constexpr int kMaxToolRounds = 8;
+	const int maxToolRounds = GetMaxToolRounds(settings);
 
-	for (int round = 0; round < kMaxToolRounds; ++round) {
+	for (int round = 0; round < maxToolRounds; ++round) {
 		nlohmann::json requestBody;
 		requestBody["model"] = LocalToUtf8(settings.model);
 		requestBody["temperature"] = settings.temperature;
@@ -2026,6 +2240,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 					toolResultLocal = R"({"ok":false,"error":"tool callback not set"})";
 					toolOk = false;
 				}
+				const CompactToolResultPayload compactPayload = BuildCompactToolResultPayload(toolName, toolResultLocal);
 
 				AIChatToolEvent evt = {};
 				evt.name = toolName;
@@ -2038,7 +2253,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 					{"role", "tool"},
 					{"tool_call_id", callId},
 					{"name", toolName},
-					{"content", LocalToUtf8(toolResultLocal)}
+					{"content", compactPayload.textUtf8}
 				});
 			}
 			continue;
@@ -2059,7 +2274,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 		return result;
 	}
 
-	result.error = "tool call rounds exceeded limit";
+	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
 	return result;
 }
 

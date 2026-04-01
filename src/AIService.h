@@ -31,6 +31,8 @@ struct AISettings {
 	std::string extraSystemPrompt;
 	std::string tavilyApiKey;
 	int timeoutMs = 120000;
+	// 工具调用最大轮数。
+	int maxToolRounds = 24;
 	double temperature = 0.2;
 };
 
