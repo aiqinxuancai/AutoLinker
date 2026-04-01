@@ -432,6 +432,8 @@ std::string ExecuteToolCall(const std::string& toolName, const std::string& argu
 		toolName == "search_module_public_info" ||
 		toolName == "list_program_items" ||
 		toolName == "get_program_item_code" ||
+		toolName == "get_program_item_real_code" ||
+		toolName == "edit_program_item_code" ||
 		toolName == "switch_to_program_item_page" ||
 		toolName == "search_project_keyword" ||
 		toolName == "jump_to_search_result" ||

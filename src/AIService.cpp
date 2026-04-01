@@ -551,6 +551,34 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "get_program_item_real_code"},
+		{"description", "Get the real full source text of one program tree page by exact page_name, optionally constrained by kind. This switches the IDE current page and uses the editor's internal copy path without touching the system clipboard. Use this when you need source text matching manual Select-All plus Copy."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}}
+			}},
+			{"required", nlohmann::json::array({"page_name"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "edit_program_item_code"},
+		{"description", "Edit one program tree page by exact page_name. Requires a previously cached real page snapshot from get_program_item_real_code, replaces one exact old_text occurrence inside that cached page, then deletes and rewrites the full page through the editor's internal path without touching the system clipboard."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"old_text", {{"type", "string"}}},
+				{"new_text", {{"type", "string"}}}
+			}},
+			{"required", nlohmann::json::array({"page_name", "old_text", "new_text"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "switch_to_program_item_page"},
 		{"description", "Switch/open a program tree page by exact name, optionally constrained by kind. This will change the IDE current page and only activates that page; it does not fetch code."},
 		{"inputSchema", {
@@ -764,11 +792,13 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"3) 支持库相关信息：先用 list_support_libraries，再按需用 get_support_library_info / search_support_library_info。\n"
 		"4) 模块公开信息：先用 list_imported_modules，再按需用 get_module_public_info / search_module_public_info。\n"
 		"5) 程序树页面与伪代码：先用 list_program_items，再按需用 get_program_item_code 或 switch_to_program_item_page。\n"
+		"5.1) 需要某个页面的真实整页源码时，用 get_program_item_real_code，不要把 get_program_item_code 的伪代码当成真实源码。\n"
+		"5.2) 需要真正改写某个页面源码时，先调用 get_program_item_real_code 建立缓存，再调用 edit_program_item_code。\n"
 		"6) 搜索工程关键字时先用 search_project_keyword，拿到具体 jump_token 后再决定是否调用 jump_to_search_result。\n"
 		"7) jump_to_search_result、switch_to_program_item_page、get_program_item_code 都会改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
 		"8) 通过搜索、程序树、模块公开信息、支持库公开信息拿到的代码或文本，多数只是伪代码 / 公共接口参考，不一定等于 IDE 正常编辑页。\n"
 		"9) 需要无弹窗编译时调用 compile_with_output_path。它会指定输出路径并拦截系统保存对话框，支持模块工程编译为 ec，以及窗口程序 / 控制台程序 / DLL 的编译与静态编译；最终是否编译成功仍要结合 IDE 输出或产物确认。\n"
-		"10) 需要真正修改代码时调用 request_code_edit。\n"
+		"10) 只想让用户手工改代码时调用 request_code_edit；需要自动整页回写真实源码时调用 edit_program_item_code。\n"
 		"11) 需要联网查实时信息、文档、网页摘要时调用 search_web_tavily。\n"
 		"12) 已经拿到具体文档 URL 时，优先调用 extract_web_document 读取正文；只有在需要看原始响应时再调用 fetch_url。\n"
 		"13) 需要在本机查环境、查文件、执行受控自动化时调用 run_powershell_command；它每次都会向用户确认，命令要尽量小、明确、可解释。\n"

@@ -50,6 +50,9 @@
     <ClCompile Include="src\ConfigManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\EideInternalTextBridge.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\ECOMEx.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -81,6 +84,9 @@
       <Filter>AI</Filter>
     </ClCompile>
     <ClCompile Include="src\PathHelper.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\PageCodeCacheManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="src\StringHelper.cpp">
@@ -150,6 +156,9 @@
     <ClInclude Include="src\ConfigManager.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="src\EideInternalTextBridge.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
     <ClInclude Include="src\ECOMEx.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -175,6 +184,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\PathHelper.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\PageCodeCacheManager.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\resource.h">

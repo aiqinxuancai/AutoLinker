@@ -2993,6 +2993,49 @@ bool e571::DebugOpenProgramTreeItemByData(
     return ok && editorObject != nullptr;
 }
 
+bool e571::DebugResolveEditorObjectByProgramTreeItemData(
+    unsigned int itemData,
+    std::uintptr_t moduleBase,
+    std::uintptr_t* outEditorObject,
+    int* outResolvedType,
+    int* outResolvedIndex,
+    int* outBucketData,
+    std::string* outTrace) {
+    if (outEditorObject != nullptr) {
+        *outEditorObject = 0;
+    }
+
+    void* editorObject = nullptr;
+    int resolvedType = 0;
+    int resolvedIndex = -1;
+    int bucketData = 0;
+    std::string trace;
+    const bool ok = TryResolveEditorObjectForProgramTreeItemData(
+        itemData,
+        moduleBase,
+        &editorObject,
+        &resolvedType,
+        &resolvedIndex,
+        &bucketData,
+        &trace);
+    if (outEditorObject != nullptr) {
+        *outEditorObject = reinterpret_cast<std::uintptr_t>(editorObject);
+    }
+    if (outResolvedType != nullptr) {
+        *outResolvedType = resolvedType;
+    }
+    if (outResolvedIndex != nullptr) {
+        *outResolvedIndex = resolvedIndex;
+    }
+    if (outBucketData != nullptr) {
+        *outBucketData = bucketData;
+    }
+    if (outTrace != nullptr) {
+        *outTrace = trace;
+    }
+    return ok && editorObject != nullptr;
+}
+
 bool e571::DebugJumpToSearchHit(
     const DirectGlobalSearchDebugHit& hit,
     std::uintptr_t moduleBase,

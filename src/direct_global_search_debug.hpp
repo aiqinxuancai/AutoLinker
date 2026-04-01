@@ -94,6 +94,15 @@ bool DebugOpenProgramTreeItemByData(
     std::uintptr_t moduleBase,
     std::string* outTrace = nullptr);
 
+bool DebugResolveEditorObjectByProgramTreeItemData(
+    unsigned int itemData,
+    std::uintptr_t moduleBase,
+    std::uintptr_t* outEditorObject,
+    int* outResolvedType = nullptr,
+    int* outResolvedIndex = nullptr,
+    int* outBucketData = nullptr,
+    std::string* outTrace = nullptr);
+
 bool DebugJumpToSearchHit(
     const DirectGlobalSearchDebugHit& hit,
     std::uintptr_t moduleBase,

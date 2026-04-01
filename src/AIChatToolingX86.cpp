@@ -24,6 +24,8 @@
 #include "..\\elib\\lib2.h"
 
 #include "IDEFacade.h"
+#include "EideInternalTextBridge.h"
+#include "PageCodeCacheManager.h"
 #include "PathHelper.h"
 #if defined(_M_IX86)
 #include "direct_global_search_debug.hpp"
@@ -490,6 +492,75 @@ bool TryGetProgramItemCodeByNameForAI(
 		return false;
 	}
 	outTrace = dumpResult.trace;
+	return true;
+}
+
+bool TryGetProgramItemByNameForAI(
+	const std::string& name,
+	const std::string& kindFilter,
+	ProgramTreeItemInfo& outItem,
+	std::string& outError)
+{
+	outItem = {};
+	outError.clear();
+
+	std::vector<ProgramTreeItemInfo> items;
+	if (!TryListProgramTreeItemsForAI(items, &outError)) {
+		return false;
+	}
+
+	std::vector<ProgramTreeItemInfo> matched;
+	for (const auto& item : items) {
+		if (item.name == name && MatchProgramItemKind(item, kindFilter)) {
+			matched.push_back(item);
+		}
+	}
+	if (matched.empty()) {
+		outError = "program item not found";
+		return false;
+	}
+	if (matched.size() > 1) {
+		outError = "program item name is ambiguous";
+		return false;
+	}
+
+	outItem = matched.front();
+	return true;
+}
+
+size_t CountExactOccurrencesForAI(const std::string& text, const std::string& needle)
+{
+	if (needle.empty()) {
+		return 0;
+	}
+
+	size_t count = 0;
+	size_t pos = 0;
+	while ((pos = text.find(needle, pos)) != std::string::npos) {
+		++count;
+		pos += needle.size();
+	}
+	return count;
+}
+
+bool ReplaceExactlyOnceForAI(
+	const std::string& source,
+	const std::string& oldText,
+	const std::string& newText,
+	std::string& outResult,
+	size_t& outMatchCount)
+{
+	outResult.clear();
+	outMatchCount = CountExactOccurrencesForAI(source, oldText);
+	if (outMatchCount != 1) {
+		return false;
+	}
+
+	const size_t pos = source.find(oldText);
+	outResult.reserve(source.size() - oldText.size() + newText.size());
+	outResult.append(source.substr(0, pos));
+	outResult.append(newText);
+	outResult.append(source.substr(pos + oldText.size()));
 	return true;
 }
 
@@ -2597,6 +2668,224 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		r["page_name"] = LocalToUtf8Text(pageName);
 		r["page_type"] = LocalToUtf8Text(pageType);
 		r["page_name_trace"] = pageNameTrace;
+		outOk = true;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "get_program_item_real_code") {
+		nlohmann::json args;
+		try {
+			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const std::string pageName = args.contains("page_name") && args["page_name"].is_string()
+			? Utf8ToLocalText(args["page_name"].get<std::string>())
+			: std::string();
+		const std::string kind = args.contains("kind") && args["kind"].is_string()
+			? Utf8ToLocalText(args["kind"].get<std::string>())
+			: std::string();
+		if (TrimAsciiCopy(pageName).empty()) {
+			return R"({"ok":false,"error":"page_name is required"})";
+		}
+
+		ProgramTreeItemInfo item;
+		std::string error;
+		if (!TryGetProgramItemByNameForAI(pageName, kind, item, error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "program item lookup failed" : error;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		std::string code;
+		e571::NativeRealPageAccessResult accessResult{};
+		if (!e571::GetRealPageCodeByProgramTreeItemData(
+				item.itemData,
+				GetCurrentProcessImageBaseForAI(),
+				&code,
+				&accessResult)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "get real page code failed";
+			r["trace"] = LocalToUtf8Text(accessResult.trace);
+			r["item_data"] = item.itemData;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		PageCodeCacheEntry cacheEntry;
+		cacheEntry.pageName = item.name;
+		cacheEntry.kind = item.typeKey;
+		cacheEntry.pageTypeKey = item.typeKey;
+		cacheEntry.pageTypeName = item.typeName;
+		cacheEntry.itemData = item.itemData;
+		cacheEntry.code = code;
+		PageCodeCacheManager::Instance().Put(cacheEntry);
+
+		nlohmann::json r;
+		r["ok"] = true;
+		r["page_name"] = LocalToUtf8Text(item.name);
+		r["type_key"] = item.typeKey;
+		r["type_name"] = LocalToUtf8Text(item.typeName);
+		r["item_data"] = item.itemData;
+		r["code_kind"] = "real_source";
+		r["trace"] = LocalToUtf8Text(accessResult.trace);
+		r["captured_custom_format"] = accessResult.capturedCustomFormat;
+		r["code"] = LocalToUtf8Text(code);
+		outOk = true;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "edit_program_item_code") {
+		nlohmann::json args;
+		try {
+			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const std::string pageName = args.contains("page_name") && args["page_name"].is_string()
+			? Utf8ToLocalText(args["page_name"].get<std::string>())
+			: std::string();
+		const std::string kind = args.contains("kind") && args["kind"].is_string()
+			? Utf8ToLocalText(args["kind"].get<std::string>())
+			: std::string();
+		const std::string oldText = args.contains("old_text") && args["old_text"].is_string()
+			? Utf8ToLocalText(args["old_text"].get<std::string>())
+			: std::string();
+		const std::string newText = args.contains("new_text") && args["new_text"].is_string()
+			? Utf8ToLocalText(args["new_text"].get<std::string>())
+			: std::string();
+		if (TrimAsciiCopy(pageName).empty()) {
+			return R"({"ok":false,"error":"page_name is required"})";
+		}
+		if (oldText.empty()) {
+			return R"({"ok":false,"error":"old_text is required"})";
+		}
+
+		ProgramTreeItemInfo item;
+		std::string error;
+		if (!TryGetProgramItemByNameForAI(pageName, kind, item, error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "program item lookup failed" : error;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		PageCodeCacheEntry cachedEntry;
+		if (!PageCodeCacheManager::Instance().Get(item.name, item.typeKey, cachedEntry)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "page cache missing, call get_program_item_real_code first";
+			r["page_name"] = LocalToUtf8Text(item.name);
+			r["type_key"] = item.typeKey;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		size_t matchCount = 0;
+		std::string replacedCode;
+		if (!ReplaceExactlyOnceForAI(cachedEntry.code, oldText, newText, replacedCode, matchCount)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = matchCount == 0 ? "old_text not found in cached page" : "old_text matched multiple times in cached page";
+			r["match_count"] = matchCount;
+			r["page_name"] = LocalToUtf8Text(item.name);
+			r["type_key"] = item.typeKey;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		std::string liveCode;
+		e571::NativeRealPageAccessResult liveReadResult{};
+		if (!e571::GetRealPageCodeByProgramTreeItemData(
+				item.itemData,
+				GetCurrentProcessImageBaseForAI(),
+				&liveCode,
+				&liveReadResult)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "get live real page code failed";
+			r["trace"] = LocalToUtf8Text(liveReadResult.trace);
+			r["page_name"] = LocalToUtf8Text(item.name);
+			r["type_key"] = item.typeKey;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		if (liveCode != cachedEntry.code) {
+			cachedEntry.code = liveCode;
+			PageCodeCacheManager::Instance().Put(cachedEntry);
+
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "live page code changed since cache was captured; cache refreshed, retry the edit";
+			r["page_name"] = LocalToUtf8Text(item.name);
+			r["type_key"] = item.typeKey;
+			r["trace"] = LocalToUtf8Text(liveReadResult.trace);
+			r["code"] = LocalToUtf8Text(liveCode);
+			return Utf8ToLocalText(r.dump());
+		}
+
+		e571::NativeRealPageAccessResult writeResult{};
+		if (!e571::ReplaceRealPageCodeByProgramTreeItemData(
+				item.itemData,
+				GetCurrentProcessImageBaseForAI(),
+				replacedCode,
+				&cachedEntry.code,
+				&writeResult)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "replace real page code failed";
+			r["page_name"] = LocalToUtf8Text(item.name);
+			r["type_key"] = item.typeKey;
+			r["trace"] = LocalToUtf8Text(writeResult.trace);
+			r["rollback_attempted"] = writeResult.rollbackAttempted;
+			r["rollback_succeeded"] = writeResult.rollbackSucceeded;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		std::string finalCode;
+		e571::NativeRealPageAccessResult finalReadResult{};
+		if (!e571::GetRealPageCodeByProgramTreeItemData(
+				item.itemData,
+				GetCurrentProcessImageBaseForAI(),
+				&finalCode,
+				&finalReadResult)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "final real page verification failed";
+			r["trace"] = LocalToUtf8Text(finalReadResult.trace);
+			r["page_name"] = LocalToUtf8Text(item.name);
+			r["type_key"] = item.typeKey;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		PageCodeCacheEntry newEntry = cachedEntry;
+		newEntry.code = finalCode;
+		newEntry.pageTypeKey = item.typeKey;
+		newEntry.pageTypeName = item.typeName;
+		newEntry.itemData = item.itemData;
+		PageCodeCacheManager::Instance().Put(newEntry);
+
+		nlohmann::json r;
+		r["ok"] = true;
+		r["page_name"] = LocalToUtf8Text(item.name);
+		r["type_key"] = item.typeKey;
+		r["type_name"] = LocalToUtf8Text(item.typeName);
+		r["item_data"] = item.itemData;
+		r["match_count"] = matchCount;
+		r["trace"] = LocalToUtf8Text(writeResult.trace + "|" + finalReadResult.trace);
+		r["rollback_attempted"] = writeResult.rollbackAttempted;
+		r["rollback_succeeded"] = writeResult.rollbackSucceeded;
+		r["code_kind"] = "real_source";
+		r["code"] = LocalToUtf8Text(finalCode);
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
 	}
