@@ -894,6 +894,37 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "search_module_public_code"},
+		{"description", "Search keyword line-by-line inside imported module public declaration text. Returns module, md5 and matched line numbers so the caller can read exact line ranges later. Important: this is public-interface pseudo-reference, not full module source code."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"keyword", {{"type", "string"}}},
+				{"module_name", {{"type", "string"}}},
+				{"module_path", {{"type", "string"}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 500}}}
+			}},
+			{"required", nlohmann::json::array({"keyword"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "read_module_public_code"},
+		{"description", "Read a specific line range from one module's cached public declaration text. Prefer md5 from search_module_public_code results when available; otherwise module_name/module_path can be used."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"md5", {{"type", "string"}}},
+				{"module_name", {{"type", "string"}}},
+				{"module_path", {{"type", "string"}}},
+				{"start_line", {{"type", "integer"}, {"minimum", 1}}},
+				{"end_line", {{"type", "integer"}, {"minimum", 1}}}
+			}},
+			{"required", nlohmann::json::array({"start_line", "end_line"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "list_program_items"},
 		{"description", "List program tree items such as assemblies, class modules, global variables, user-defined types, DLL commands, forms and resources. Can optionally include code for each item. Important: code returned by program-tree lookup is only pseudo-code reference and may differ from the normal IDE page structure."},
 		{"inputSchema", {
@@ -1324,7 +1355,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"2) 只想知道当前打开页是谁，不需要整页代码时，优先调用 get_current_page_info；需要当前源码路径、MCP 端口、进程路径等实例级信息时，调用 get_current_eide_info。\n"
 		"3) 本机有多个易语言实例时，先用 list_local_mcp_instances，再通过 call_local_mcp_instance_tool 转发到目标实例；不要臆测端口。\n"
 		"4) 支持库相关信息：先用 list_support_libraries，再按需用 get_support_library_info / search_support_library_info。\n"
-		"5) 模块公开信息：先用 list_imported_modules，再按需用 get_module_public_info / search_module_public_info。\n"
+		"5) 模块公开信息：先用 list_imported_modules；需要结构化公开接口时用 get_module_public_info / search_module_public_info，需要按行搜索和读取公开声明文本时用 search_module_public_code / read_module_public_code。\n"
 		"6) 程序树页面：先用 list_program_items 定位页面，再按需用 get_program_item_real_code 或 switch_to_program_item_page。\n"
 		"6.1) list_program_items 附带的代码仍只是伪代码参考；需要某个页面的真实整页源码时，用 get_program_item_real_code。\n"
 		"6.2) 需要分页查看或从缓存读取真实源码时，用 read_program_item_real_code。\n"

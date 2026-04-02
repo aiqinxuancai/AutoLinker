@@ -840,6 +840,8 @@ std::string ExecuteToolCallImpl(const std::string& toolName, const std::string& 
 		toolName == "search_support_library_info" ||
 		toolName == "get_module_public_info" ||
 		toolName == "search_module_public_info" ||
+		toolName == "search_module_public_code" ||
+		toolName == "read_module_public_code" ||
 		toolName == "list_program_items" ||
 		toolName == "get_program_item_real_code" ||
 		toolName == "read_program_item_real_code" ||

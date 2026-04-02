@@ -40,6 +40,8 @@ struct ModulePublicInfoCacheEntry {
 	e571::ModulePublicInfoDump dump;
 	std::string error;
 	bool ok = false;
+	std::string normalizedText;
+	std::vector<std::string> lines;
 };
 
 struct SupportLibraryDumpCacheEntry {
@@ -71,6 +73,10 @@ struct KeywordSearchResultInfo {
 	int lineNumber = -1;
 	std::string text;
 };
+
+std::vector<std::string> SplitLinesCopyForAI(const std::string& text);
+std::string NormalizeLineBreaksForAI(std::string text);
+
 static std::string TrimAsciiCopy(const std::string& text)
 {
 	size_t begin = 0;
@@ -1129,7 +1135,25 @@ std::filesystem::path GetAICacheDirectoryForAI()
 	}
 }
 
+std::filesystem::path GetModulePublicInfoDirectoryForAI()
+{
+	try {
+		return std::filesystem::path(GetBasePath()) / "AutoLinker" / "ecomInfo";
+	}
+	catch (...) {
+		return std::filesystem::path();
+	}
+}
+
 std::filesystem::path GetModulePublicInfoCachePathForAI(const std::string& md5)
+{
+	if (TrimAsciiCopy(md5).empty()) {
+		return std::filesystem::path();
+	}
+	return GetModulePublicInfoDirectoryForAI() / (md5 + ".json");
+}
+
+std::filesystem::path GetLegacyModulePublicInfoCachePathForAI(const std::string& md5)
 {
 	if (TrimAsciiCopy(md5).empty()) {
 		return std::filesystem::path();
@@ -1386,13 +1410,110 @@ bool DeserializeModulePublicInfoDumpForAI(const nlohmann::json& row, e571::Modul
 	return true;
 }
 
-bool TryLoadModulePublicInfoCachedForAI(
+void BuildModulePublicInfoLineCacheForAI(ModulePublicInfoCacheEntry& entry)
+{
+	entry.normalizedText = NormalizeLineBreaksForAI(entry.dump.formattedText);
+	entry.lines = SplitLinesCopyForAI(entry.normalizedText);
+}
+
+bool TryLoadModulePublicInfoCacheEntryFromJsonForAI(
+	const nlohmann::json& cacheJson,
+	const std::string& fallbackModulePath,
+	const std::string& md5,
+	ModulePublicInfoCacheEntry& outEntry)
+{
+	outEntry = {};
+	if (!cacheJson.is_object() ||
+		cacheJson.value("schema", std::string()) != "module_public_info_v1" ||
+		cacheJson.value("md5", std::string()) != md5 ||
+		!cacheJson.contains("dump")) {
+		return false;
+	}
+
+	e571::ModulePublicInfoDump cachedDump;
+	if (!DeserializeModulePublicInfoDumpForAI(cacheJson["dump"], cachedDump)) {
+		return false;
+	}
+	if (!TrimAsciiCopy(fallbackModulePath).empty()) {
+		cachedDump.modulePath = fallbackModulePath;
+	}
+
+	outEntry.md5 = md5;
+	outEntry.dump = std::move(cachedDump);
+	outEntry.ok = true;
+	BuildModulePublicInfoLineCacheForAI(outEntry);
+	return true;
+}
+
+bool TryLoadModulePublicInfoCacheEntryByMd5ForAI(
+	const std::string& md5,
+	ModulePublicInfoCacheEntry& outEntry,
+	std::string& outError)
+{
+	outEntry = {};
+	outError.clear();
+	const std::string trimmedMd5 = TrimAsciiCopy(md5);
+	if (trimmedMd5.empty()) {
+		outError = "md5 is required";
+		return false;
+	}
+
+	{
+		std::lock_guard<std::mutex> guard(g_modulePublicInfoCacheMutex);
+		for (const auto& [cacheKey, entry] : g_modulePublicInfoCache) {
+			(void)cacheKey;
+			if (entry.md5 == trimmedMd5) {
+				outEntry = entry;
+				outError = entry.error;
+				return entry.ok;
+			}
+		}
+	}
+
+	const auto tryLoadFromPath = [&](const std::filesystem::path& cachePath, bool migrateToNewPath) -> bool {
+		nlohmann::json cacheJson = nlohmann::json::object();
+		if (!TryReadJsonCacheFileForAI(cachePath, cacheJson)) {
+			return false;
+		}
+
+		ModulePublicInfoCacheEntry entry;
+		if (!TryLoadModulePublicInfoCacheEntryFromJsonForAI(cacheJson, std::string(), trimmedMd5, entry)) {
+			return false;
+		}
+
+		if (migrateToNewPath) {
+			TryWriteJsonCacheFileForAI(GetModulePublicInfoCachePathForAI(trimmedMd5), cacheJson);
+		}
+
+		const std::string cacheKey = BuildFileCacheKeyForAI(entry.dump.modulePath);
+		if (!cacheKey.empty()) {
+			std::lock_guard<std::mutex> guard(g_modulePublicInfoCacheMutex);
+			g_modulePublicInfoCache[cacheKey] = entry;
+		}
+
+		outEntry = std::move(entry);
+		outError.clear();
+		return true;
+	};
+
+	if (tryLoadFromPath(GetModulePublicInfoCachePathForAI(trimmedMd5), false)) {
+		return true;
+	}
+	if (tryLoadFromPath(GetLegacyModulePublicInfoCachePathForAI(trimmedMd5), true)) {
+		return true;
+	}
+
+	outError = "module public info cache not found by md5";
+	return false;
+}
+
+bool TryLoadModulePublicInfoCacheEntryForAI(
 	const std::string& modulePath,
-	e571::ModulePublicInfoDump& outDump,
+	ModulePublicInfoCacheEntry& outEntry,
 	std::string& outError,
 	bool* outCacheHit = nullptr)
 {
-	outDump = {};
+	outEntry = {};
 	outError.clear();
 	if (outCacheHit != nullptr) {
 		*outCacheHit = false;
@@ -1400,11 +1521,18 @@ bool TryLoadModulePublicInfoCachedForAI(
 
 	std::string md5;
 	if (!TryGetFileMd5HexForAI(modulePath, md5) || md5.empty()) {
-		return e571::LoadModulePublicInfoDump(
+		e571::ModulePublicInfoDump dump;
+		const bool ok = e571::LoadModulePublicInfoDump(
 			modulePath,
 			GetCurrentProcessImageBaseForAI(),
-			&outDump,
+			&dump,
 			&outError);
+		outEntry.md5.clear();
+		outEntry.dump = std::move(dump);
+		outEntry.error = outError;
+		outEntry.ok = ok;
+		BuildModulePublicInfoLineCacheForAI(outEntry);
+		return ok;
 	}
 
 	const std::string cacheKey = BuildFileCacheKeyForAI(modulePath);
@@ -1412,7 +1540,7 @@ bool TryLoadModulePublicInfoCachedForAI(
 		std::lock_guard<std::mutex> guard(g_modulePublicInfoCacheMutex);
 		const auto it = g_modulePublicInfoCache.find(cacheKey);
 		if (it != g_modulePublicInfoCache.end() && it->second.md5 == md5) {
-			outDump = it->second.dump;
+			outEntry = it->second;
 			outError = it->second.error;
 			if (outCacheHit != nullptr) {
 				*outCacheHit = true;
@@ -1421,31 +1549,35 @@ bool TryLoadModulePublicInfoCachedForAI(
 		}
 	}
 
-	{
+	const auto tryLoadCachePath = [&](const std::filesystem::path& cachePath, bool migrateToNewPath) -> bool {
 		nlohmann::json cacheJson;
-		if (TryReadJsonCacheFileForAI(GetModulePublicInfoCachePathForAI(md5), cacheJson) &&
-			cacheJson.is_object() &&
-			cacheJson.value("schema", std::string()) == "module_public_info_v1" &&
-			cacheJson.value("md5", std::string()) == md5 &&
-			cacheJson.contains("dump")) {
-			e571::ModulePublicInfoDump cachedDump;
-			if (DeserializeModulePublicInfoDumpForAI(cacheJson["dump"], cachedDump)) {
-				cachedDump.modulePath = modulePath;
-				ModulePublicInfoCacheEntry entry;
-				entry.md5 = md5;
-				entry.dump = cachedDump;
-				entry.ok = true;
-				{
-					std::lock_guard<std::mutex> guard(g_modulePublicInfoCacheMutex);
-					g_modulePublicInfoCache[cacheKey] = entry;
-				}
-				outDump = std::move(cachedDump);
-				if (outCacheHit != nullptr) {
-					*outCacheHit = true;
-				}
-				return true;
-			}
+		if (!TryReadJsonCacheFileForAI(cachePath, cacheJson)) {
+			return false;
 		}
+
+		ModulePublicInfoCacheEntry entry;
+		if (!TryLoadModulePublicInfoCacheEntryFromJsonForAI(cacheJson, modulePath, md5, entry)) {
+			return false;
+		}
+		if (migrateToNewPath) {
+			TryWriteJsonCacheFileForAI(GetModulePublicInfoCachePathForAI(md5), cacheJson);
+		}
+		{
+			std::lock_guard<std::mutex> guard(g_modulePublicInfoCacheMutex);
+			g_modulePublicInfoCache[cacheKey] = entry;
+		}
+		outEntry = std::move(entry);
+		if (outCacheHit != nullptr) {
+			*outCacheHit = true;
+		}
+		return true;
+	};
+
+	if (tryLoadCachePath(GetModulePublicInfoCachePathForAI(md5), false)) {
+		return true;
+	}
+	if (tryLoadCachePath(GetLegacyModulePublicInfoCachePathForAI(md5), true)) {
+		return true;
 	}
 
 	e571::ModulePublicInfoDump loadedDump;
@@ -1461,9 +1593,10 @@ bool TryLoadModulePublicInfoCachedForAI(
 	entry.dump = loadedDump;
 	entry.error = loadError;
 	entry.ok = ok;
+	BuildModulePublicInfoLineCacheForAI(entry);
 	{
 		std::lock_guard<std::mutex> guard(g_modulePublicInfoCacheMutex);
-		g_modulePublicInfoCache[cacheKey] = std::move(entry);
+		g_modulePublicInfoCache[cacheKey] = entry;
 	}
 
 	if (ok) {
@@ -1474,8 +1607,20 @@ bool TryLoadModulePublicInfoCachedForAI(
 		TryWriteJsonCacheFileForAI(GetModulePublicInfoCachePathForAI(md5), cacheJson);
 	}
 
-	outDump = std::move(loadedDump);
+	outEntry = std::move(entry);
 	outError = loadError;
+	return ok;
+}
+
+bool TryLoadModulePublicInfoCachedForAI(
+	const std::string& modulePath,
+	e571::ModulePublicInfoDump& outDump,
+	std::string& outError,
+	bool* outCacheHit = nullptr)
+{
+	ModulePublicInfoCacheEntry entry;
+	const bool ok = TryLoadModulePublicInfoCacheEntryForAI(modulePath, entry, outError, outCacheHit);
+	outDump = std::move(entry.dump);
 	return ok;
 }
 
@@ -1517,6 +1662,20 @@ std::string NormalizeLineBreaksForAI(std::string text)
 {
 	text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
 	return text;
+}
+
+bool ContainsKeywordInsensitiveForAI(
+	const std::string& text,
+	const std::string& keyword,
+	const std::string& keywordLower)
+{
+	if (keyword.empty()) {
+		return true;
+	}
+	if (text.find(keyword) != std::string::npos) {
+		return true;
+	}
+	return ToLowerAsciiCopyLocal(text).find(keywordLower) != std::string::npos;
 }
 
 bool TryGetAnsiPtrTextLengthForAI(LPCSTR textPtr, size_t& outLength)
@@ -2883,6 +3042,272 @@ std::string BuildSearchModulePublicInfoJsonOnMainThread(const std::string& argum
 	r["matches"] = std::move(matches);
 	outOk = true;
 	return Utf8ToLocalText(r.dump());
+}
+
+bool TryResolveModulePublicInfoEntryForReadForAI(
+	const nlohmann::json& args,
+	ModulePublicInfoCacheEntry& outEntry,
+	std::string& outError)
+{
+	outEntry = {};
+	outError.clear();
+
+	const std::string md5 = args.contains("md5") && args["md5"].is_string()
+		? TrimAsciiCopy(args["md5"].get<std::string>())
+		: std::string();
+	if (!md5.empty()) {
+		return TryLoadModulePublicInfoCacheEntryByMd5ForAI(md5, outEntry, outError);
+	}
+
+	const std::string moduleName = args.contains("module_name") && args["module_name"].is_string()
+		? Utf8ToLocalText(args["module_name"].get<std::string>())
+		: std::string();
+	const std::string modulePath = args.contains("module_path") && args["module_path"].is_string()
+		? Utf8ToLocalText(args["module_path"].get<std::string>())
+		: std::string();
+
+	std::string resolvedPath;
+	if (!ResolveImportedModulePathForAI(moduleName, modulePath, resolvedPath, outError)) {
+		return false;
+	}
+
+	return TryLoadModulePublicInfoCacheEntryForAI(resolvedPath, outEntry, outError, nullptr);
+}
+
+std::string BuildSearchModulePublicCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const std::string keyword = args.contains("keyword") && args["keyword"].is_string()
+		? Utf8ToLocalText(args["keyword"].get<std::string>())
+		: std::string();
+	const std::string moduleName = args.contains("module_name") && args["module_name"].is_string()
+		? Utf8ToLocalText(args["module_name"].get<std::string>())
+		: std::string();
+	const std::string modulePath = args.contains("module_path") && args["module_path"].is_string()
+		? Utf8ToLocalText(args["module_path"].get<std::string>())
+		: std::string();
+	const int limit = args.contains("limit") && args["limit"].is_number_integer()
+		? (std::clamp)(args["limit"].get<int>(), 1, 500)
+		: 100;
+
+	const std::string keywordLocal = TrimAsciiCopy(keyword);
+	if (keywordLocal.empty()) {
+		return R"({"ok":false,"error":"keyword is required"})";
+	}
+	const std::string keywordLower = ToLowerAsciiCopyLocal(keywordLocal);
+
+	std::vector<std::string> paths;
+	std::string resolveError;
+	if (!TrimAsciiCopy(moduleName).empty() || !TrimAsciiCopy(modulePath).empty()) {
+		std::string resolvedPath;
+		if (!ResolveImportedModulePathForAI(moduleName, modulePath, resolvedPath, resolveError)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = resolveError;
+			return Utf8ToLocalText(r.dump());
+		}
+		paths.push_back(resolvedPath);
+	}
+	else if (!TryListImportedModulePathsForAI(paths, &resolveError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = resolveError.empty() ? "list imported modules failed" : resolveError;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	nlohmann::json matches = nlohmann::json::array();
+	for (const auto& path : paths) {
+		ModulePublicInfoCacheEntry entry;
+		std::string loadError;
+		if (!TryLoadModulePublicInfoCacheEntryForAI(path, entry, loadError, nullptr)) {
+			continue;
+		}
+
+		for (size_t lineIndex = 0;
+			lineIndex < entry.lines.size() && static_cast<int>(matches.size()) < limit;
+			++lineIndex) {
+			const std::string& line = entry.lines[lineIndex];
+			if (!ContainsKeywordInsensitiveForAI(line, keywordLocal, keywordLower)) {
+				continue;
+			}
+
+			nlohmann::json row;
+			row["module_path"] = LocalToUtf8Text(entry.dump.modulePath);
+			row["module_name"] = LocalToUtf8Text(GetFileStemForAI(entry.dump.modulePath));
+			row["md5"] = entry.md5;
+			row["source_kind"] = entry.dump.sourceKind;
+			row["line_number"] = static_cast<int>(lineIndex) + 1;
+			row["text"] = LocalToUtf8Text(line);
+			if (!entry.md5.empty()) {
+				row["cache_path"] = LocalToUtf8Text(GetModulePublicInfoCachePathForAI(entry.md5).string());
+			}
+			matches.push_back(std::move(row));
+		}
+
+		if (static_cast<int>(matches.size()) >= limit) {
+			break;
+		}
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["keyword"] = LocalToUtf8Text(keywordLocal);
+	r["match_count"] = matches.size();
+	r["warning"] = LocalToUtf8Text("这里搜索的是模块公开声明文本的按行结果。它来自模块公开信息窗口抓取或 .ec 离线解析，只能作为公开接口/伪代码参考，不是模块完整源码。");
+	r["matches"] = std::move(matches);
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+std::string BuildReadModulePublicCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const int startLine = args.contains("start_line") && args["start_line"].is_number_integer()
+		? args["start_line"].get<int>()
+		: -1;
+	const int endLine = args.contains("end_line") && args["end_line"].is_number_integer()
+		? args["end_line"].get<int>()
+		: startLine;
+	if (startLine <= 0 || endLine <= 0 || endLine < startLine) {
+		return R"({"ok":false,"error":"start_line/end_line is invalid"})";
+	}
+
+	ModulePublicInfoCacheEntry entry;
+	std::string loadError;
+	if (!TryResolveModulePublicInfoEntryForReadForAI(args, entry, loadError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = loadError.empty() ? "load module public code failed" : loadError;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const int totalLines = static_cast<int>(entry.lines.size());
+	if (totalLines <= 0) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "module public code text is empty";
+		r["module_path"] = LocalToUtf8Text(entry.dump.modulePath);
+		r["md5"] = entry.md5;
+		return Utf8ToLocalText(r.dump());
+	}
+	if (startLine > totalLines) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "start_line exceeds total_lines";
+		r["module_path"] = LocalToUtf8Text(entry.dump.modulePath);
+		r["md5"] = entry.md5;
+		r["total_lines"] = totalLines;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const int clampedEndLine = (std::min)(endLine, totalLines);
+	nlohmann::json lines = nlohmann::json::array();
+	std::string text;
+	for (int lineNo = startLine; lineNo <= clampedEndLine; ++lineNo) {
+		const std::string& line = entry.lines[static_cast<size_t>(lineNo - 1)];
+		if (!text.empty()) {
+			text += "\n";
+		}
+		text += line;
+		lines.push_back({
+			{"line_number", lineNo},
+			{"text", LocalToUtf8Text(line)}
+		});
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["module_path"] = LocalToUtf8Text(entry.dump.modulePath);
+	r["module_name"] = LocalToUtf8Text(GetFileStemForAI(entry.dump.modulePath));
+	r["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(entry.dump.modulePath));
+	r["md5"] = entry.md5;
+	r["source_kind"] = entry.dump.sourceKind;
+	r["total_lines"] = totalLines;
+	r["start_line"] = startLine;
+	r["end_line"] = clampedEndLine;
+	r["returned_line_count"] = clampedEndLine - startLine + 1;
+	r["code_kind"] = "pseudo_reference";
+	r["warning"] = LocalToUtf8Text("这里返回的是模块公开声明文本的指定行范围。它来自模块公开信息窗口抓取或 .ec 离线解析，只能作为公开接口/伪代码参考，不是模块完整源码。");
+	if (!entry.md5.empty()) {
+		r["cache_path"] = LocalToUtf8Text(GetModulePublicInfoCachePathForAI(entry.md5).string());
+	}
+	r["text"] = LocalToUtf8Text(text);
+	r["lines"] = std::move(lines);
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+void WarmupImportedModulePublicInfoCacheOnMainThread()
+{
+	static bool s_warmupDone = false;
+	if (s_warmupDone) {
+		return;
+	}
+	s_warmupDone = true;
+
+	std::vector<std::string> paths;
+	std::string listError;
+	if (!TryListImportedModulePathsForAI(paths, &listError)) {
+		OutputStringToELog(std::format(
+			"[ModulePublicInfoWarmup] 枚举导入模块失败 error={}",
+			listError.empty() ? "list_imported_modules_failed" : listError));
+		return;
+	}
+
+	if (paths.empty()) {
+		OutputStringToELog("[ModulePublicInfoWarmup] 当前项目没有导入模块，跳过预热");
+		return;
+	}
+
+	int okCount = 0;
+	int failCount = 0;
+	int cacheHitCount = 0;
+	for (const auto& path : paths) {
+		ModulePublicInfoCacheEntry entry;
+		std::string loadError;
+		bool cacheHit = false;
+		if (TryLoadModulePublicInfoCacheEntryForAI(path, entry, loadError, &cacheHit)) {
+			++okCount;
+			if (cacheHit) {
+				++cacheHitCount;
+			}
+			continue;
+		}
+
+		++failCount;
+		OutputStringToELog(std::format(
+			"[ModulePublicInfoWarmup] 预热失败 module={} error={}",
+			path,
+			loadError.empty() ? "load_module_public_info_failed" : loadError));
+	}
+
+	OutputStringToELog(std::format(
+		"[ModulePublicInfoWarmup] 预热完成 total={} ok={} cacheHit={} fail={} dir={}",
+		paths.size(),
+		okCount,
+		cacheHitCount,
+		failCount,
+		GetModulePublicInfoDirectoryForAI().string()));
 }
 
 std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -4351,6 +4776,14 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 
 	if (toolName == "search_module_public_info") {
 		return BuildSearchModulePublicInfoJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "search_module_public_code") {
+		return BuildSearchModulePublicCodeJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "read_module_public_code") {
+		return BuildReadModulePublicCodeJsonOnMainThread(argumentsJson, outOk);
 	}
 
 	if (toolName == "list_program_items") {
