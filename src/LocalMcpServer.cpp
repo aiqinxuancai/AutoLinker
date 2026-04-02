@@ -21,6 +21,7 @@
 #include "AIService.h"
 #include "Global.h"
 #include "IDEFacade.h"
+#include "LocalMcpInstanceRegistry.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -38,6 +39,10 @@ std::atomic_int g_boundPort = 0;
 std::mutex g_stateMutex;
 std::thread g_serverThread;
 SOCKET g_listenSocket = INVALID_SOCKET;
+std::string g_instanceId;
+std::string g_sourceFilePathHint;
+std::string g_pageNameHint;
+std::string g_pageTypeHint;
 
 struct HttpRequest {
 	std::string method;
@@ -434,6 +439,83 @@ void CloseSocketSafe(SOCKET& sock)
 bool IsPortInUseError(int error)
 {
 	return error == WSAEADDRINUSE || error == WSAEACCES;
+}
+
+std::string GetCurrentProcessPathLocal()
+{
+	char buffer[MAX_PATH] = {};
+	const DWORD len = GetModuleFileNameA(nullptr, buffer, static_cast<DWORD>(sizeof(buffer)));
+	if (len == 0 || len >= sizeof(buffer)) {
+		return std::string();
+	}
+	return std::string(buffer, buffer + len);
+}
+
+std::string GetCurrentProcessNameLocal()
+{
+	const std::string fullPath = GetCurrentProcessPathLocal();
+	if (fullPath.empty()) {
+		return std::string();
+	}
+	const size_t pos = fullPath.find_last_of("\\/");
+	return pos == std::string::npos ? fullPath : fullPath.substr(pos + 1);
+}
+
+std::string BuildEndpointForPort(int port)
+{
+	if (port <= 0) {
+		return std::string();
+	}
+	return std::format("http://{}:{}/mcp", kBindHost, port);
+}
+
+std::string GenerateInstanceId()
+{
+	return std::format("pid-{}-{:X}", GetCurrentProcessId(), GetTickCount64());
+}
+
+LocalMcpInstanceRegistry::InstanceRecord BuildCurrentInstanceRecord()
+{
+	LocalMcpInstanceRegistry::InstanceRecord record;
+	record.instanceId = g_instanceId;
+	record.processId = GetCurrentProcessId();
+	record.processPath = GetCurrentProcessPathLocal();
+	record.processName = GetCurrentProcessNameLocal();
+	record.port = g_boundPort.load();
+	record.endpoint = BuildEndpointForPort(record.port);
+	{
+		std::lock_guard<std::mutex> lock(g_stateMutex);
+		record.sourceFilePathHint = g_sourceFilePathHint;
+		record.pageNameHint = g_pageNameHint;
+		record.pageTypeHint = g_pageTypeHint;
+	}
+	record.lastSeenUnixMs = static_cast<std::uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::system_clock::now().time_since_epoch()).count());
+	return record;
+}
+
+void RefreshCurrentInstanceRegistry()
+{
+	const LocalMcpInstanceRegistry::InstanceRecord record = BuildCurrentInstanceRecord();
+	if (record.instanceId.empty() || record.port <= 0 || record.endpoint.empty()) {
+		return;
+	}
+	std::string error;
+	if (!LocalMcpInstanceRegistry::UpsertCurrentInstance(record, &error) && !error.empty()) {
+		LogMcp(std::format("refresh registry failed: {}", error));
+	}
+}
+
+void RemoveCurrentInstanceRegistry()
+{
+	if (g_instanceId.empty()) {
+		return;
+	}
+	std::string error;
+	if (!LocalMcpInstanceRegistry::RemoveCurrentInstance(g_instanceId, &error) && !error.empty()) {
+		LogMcp(std::format("remove registry failed: {}", error));
+	}
 }
 
 bool ReadExactBytes(SOCKET sock, std::string& buffer, size_t wantedBytes)
@@ -835,8 +917,11 @@ void HandleClient(SOCKET clientSock)
 			{"ok", true},
 			{"service", kServerName},
 			{"version", kServerVersion},
+			{"instance_id", g_instanceId},
+			{"process_id", GetCurrentProcessId()},
+			{"process_path", GetCurrentProcessPathLocal()},
 			{"port", g_boundPort.load()},
-			{"mcp_endpoint", std::format("http://{}:{}/mcp", kBindHost, g_boundPort.load())}
+			{"mcp_endpoint", BuildEndpointForPort(g_boundPort.load())}
 		};
 		SendHttpResponse(clientSock, 200, "OK", "application/json; charset=utf-8", health.dump());
 		return;
@@ -956,10 +1041,16 @@ void ServerThreadMain()
 	g_boundPort.store(boundPort);
 	g_running.store(true);
 	LogMcp(std::format("listening on http://{}:{}/mcp", kBindHost, boundPort));
+	RefreshCurrentInstanceRegistry();
+	auto lastRegistryRefresh = std::chrono::steady_clock::now();
 
 	for (;;) {
 		if (g_stopRequested.load()) {
 			break;
+		}
+		if (std::chrono::steady_clock::now() - lastRegistryRefresh >= std::chrono::seconds(2)) {
+			RefreshCurrentInstanceRegistry();
+			lastRegistryRefresh = std::chrono::steady_clock::now();
 		}
 
 		SOCKET listenSock = INVALID_SOCKET;
@@ -1009,6 +1100,7 @@ void ServerThreadMain()
 	}
 	g_running.store(false);
 	g_boundPort.store(0);
+	RemoveCurrentInstanceRegistry();
 	WSACleanup();
 	LogMcp("stopped");
 }
@@ -1026,6 +1118,10 @@ void Initialize()
 	g_stopRequested.store(false);
 	g_running.store(false);
 	g_boundPort.store(0);
+	g_instanceId = GenerateInstanceId();
+	g_sourceFilePathHint.clear();
+	g_pageNameHint.clear();
+	g_pageTypeHint.clear();
 	g_serverThread = std::thread(ServerThreadMain);
 }
 
@@ -1054,6 +1150,30 @@ bool IsRunning()
 int GetBoundPort()
 {
 	return g_boundPort.load();
+}
+
+std::string GetInstanceId()
+{
+	std::lock_guard<std::mutex> lock(g_stateMutex);
+	return g_instanceId;
+}
+
+std::string GetEndpoint()
+{
+	return BuildEndpointForPort(g_boundPort.load());
+}
+
+void UpdateInstanceHints(const std::string& sourceFilePath, const std::string& pageName, const std::string& pageType)
+{
+	{
+		std::lock_guard<std::mutex> lock(g_stateMutex);
+		g_sourceFilePathHint = sourceFilePath;
+		g_pageNameHint = pageName;
+		g_pageTypeHint = pageType;
+	}
+	if (g_running.load()) {
+		RefreshCurrentInstanceRegistry();
+	}
 }
 
 } // namespace LocalMcpServer

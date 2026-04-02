@@ -3,10 +3,13 @@
 #include "AIService.h"
 #include "ConfigManager.h"
 #include "Global.h"
+#include "LocalMcpInstanceRegistry.h"
+#include "LocalMcpServer.h"
 #include "PowerShellToolRunner.h"
 #include "TavilyClient.h"
 #include "WebDocumentClient.h"
 #include "WebDocumentExtractor.h"
+#include "WinINetUtil.h"
 
 #include <Windows.h>
 
@@ -377,9 +380,254 @@ bool RequestToolExecutionFromMainThread(
 	return true;
 }
 
+std::string BuildEndpointFromPortLocal(int port)
+{
+	if (port <= 0) {
+		return std::string();
+	}
+	return std::format("http://127.0.0.1:{}/mcp", port);
+}
+
+bool TryResolveLocalInstanceTarget(
+	const std::string& instanceId,
+	int port,
+	LocalMcpInstanceRegistry::InstanceRecord& outRecord,
+	std::string& outError)
+{
+	outRecord = {};
+	outError.clear();
+
+	std::vector<LocalMcpInstanceRegistry::InstanceRecord> records;
+	if (!LocalMcpInstanceRegistry::LoadInstances(records, &outError)) {
+		if (outError.empty()) {
+			outError = "load local mcp instances failed";
+		}
+		return false;
+	}
+
+	for (const auto& record : records) {
+		if (!instanceId.empty() && record.instanceId == instanceId) {
+			outRecord = record;
+			return true;
+		}
+		if (instanceId.empty() && port > 0 && record.port == port) {
+			outRecord = record;
+			return true;
+		}
+	}
+
+	outError = "target instance not found";
+	return false;
+}
+
+std::string BuildForwardedToolResultJson(
+	const LocalMcpInstanceRegistry::InstanceRecord& target,
+	const std::string& toolName,
+	const nlohmann::json& rpcResponse,
+	bool& outForwardOk)
+{
+	outForwardOk = false;
+	nlohmann::json result;
+	result["ok"] = false;
+	result["target_instance_id"] = target.instanceId;
+	result["target_process_id"] = target.processId;
+	result["target_port"] = target.port;
+	result["target_endpoint"] = target.endpoint.empty() ? BuildEndpointFromPortLocal(target.port) : target.endpoint;
+	result["tool_name"] = toolName;
+
+	if (!rpcResponse.is_object()) {
+		result["error"] = "invalid forwarded rpc response";
+		return Utf8ToLocalText(result.dump());
+	}
+
+	if (rpcResponse.contains("error")) {
+		result["error"] = rpcResponse["error"];
+		if (rpcResponse.contains("id")) {
+			result["rpc_id"] = rpcResponse["id"];
+		}
+		return Utf8ToLocalText(result.dump());
+	}
+
+	if (!rpcResponse.contains("result") || !rpcResponse["result"].is_object()) {
+		result["error"] = "forwarded rpc result missing";
+		return Utf8ToLocalText(result.dump());
+	}
+
+	const nlohmann::json rpcResult = rpcResponse["result"];
+	const bool mcpIsError = rpcResult.value("isError", false);
+	result["mcp_is_error"] = mcpIsError;
+
+	if (rpcResult.contains("structuredContent")) {
+		result["tool_result"] = rpcResult["structuredContent"];
+	}
+	else if (rpcResult.contains("content") && rpcResult["content"].is_array() && !rpcResult["content"].empty()) {
+		const nlohmann::json& firstContent = rpcResult["content"].front();
+		if (firstContent.is_object() &&
+			firstContent.value("type", std::string()) == "text" &&
+			firstContent.contains("text") &&
+			firstContent["text"].is_string()) {
+			const std::string text = firstContent["text"].get<std::string>();
+			try {
+				result["tool_result"] = nlohmann::json::parse(text);
+			}
+			catch (...) {
+				result["tool_result_text"] = text;
+			}
+		}
+	}
+
+	if (rpcResult.contains("content")) {
+		result["raw_content"] = rpcResult["content"];
+	}
+
+	outForwardOk = !mcpIsError;
+	result["ok"] = outForwardOk;
+	return Utf8ToLocalText(result.dump());
+}
+
 std::string ExecuteToolCallImpl(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
 {
 	outOk = false;
+
+	if (toolName == "list_local_mcp_instances") {
+		std::vector<LocalMcpInstanceRegistry::InstanceRecord> records;
+		std::string error;
+		if (!LocalMcpInstanceRegistry::LoadInstances(records, &error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "load local mcp instances failed" : error;
+			r["registry_file"] = LocalMcpInstanceRegistry::GetRegistryFilePath();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		nlohmann::json rows = nlohmann::json::array();
+		const std::string currentInstanceId = LocalMcpServer::GetInstanceId();
+		for (const auto& record : records) {
+			rows.push_back({
+				{"instance_id", record.instanceId},
+				{"is_current", !currentInstanceId.empty() && record.instanceId == currentInstanceId},
+				{"process_id", record.processId},
+				{"process_path", record.processPath},
+				{"process_name", record.processName},
+				{"port", record.port},
+				{"endpoint", record.endpoint.empty() ? BuildEndpointFromPortLocal(record.port) : record.endpoint},
+				{"source_file_path_hint", record.sourceFilePathHint},
+				{"page_name_hint", record.pageNameHint},
+				{"page_type_hint", record.pageTypeHint},
+				{"last_seen_unix_ms", record.lastSeenUnixMs}
+			});
+		}
+
+		nlohmann::json r;
+		r["ok"] = true;
+		r["registry_file"] = LocalMcpInstanceRegistry::GetRegistryFilePath();
+		r["current_instance_id"] = currentInstanceId;
+		r["count"] = records.size();
+		r["instances"] = std::move(rows);
+		outOk = true;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "call_local_mcp_instance_tool") {
+		nlohmann::json args;
+		try {
+			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const std::string instanceId =
+			args.contains("instance_id") && args["instance_id"].is_string()
+			? args["instance_id"].get<std::string>()
+			: std::string();
+		const int port =
+			args.contains("port") && args["port"].is_number_integer()
+			? args["port"].get<int>()
+			: 0;
+		const std::string targetToolName =
+			args.contains("tool_name") && args["tool_name"].is_string()
+			? args["tool_name"].get<std::string>()
+			: std::string();
+		const int timeoutSeconds =
+			args.contains("timeout_seconds") && args["timeout_seconds"].is_number_integer()
+			? (std::clamp)(args["timeout_seconds"].get<int>(), 1, 120)
+			: 30;
+		const nlohmann::json targetArguments =
+			args.contains("arguments") ? args["arguments"] : nlohmann::json::object();
+
+		if (instanceId.empty() && port <= 0) {
+			return R"({"ok":false,"error":"instance_id or port is required"})";
+		}
+		if (TrimAsciiCopy(targetToolName).empty()) {
+			return R"({"ok":false,"error":"tool_name is required"})";
+		}
+		if (targetToolName == "call_local_mcp_instance_tool") {
+			return R"({"ok":false,"error":"recursive forwarding of call_local_mcp_instance_tool is not allowed"})";
+		}
+
+		LocalMcpInstanceRegistry::InstanceRecord target;
+		std::string resolveError;
+		if (!TryResolveLocalInstanceTarget(instanceId, port, target, resolveError)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = resolveError.empty() ? "target instance not found" : resolveError;
+			r["requested_instance_id"] = instanceId;
+			r["requested_port"] = port;
+			r["registry_file"] = LocalMcpInstanceRegistry::GetRegistryFilePath();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const std::string endpoint = target.endpoint.empty() ? BuildEndpointFromPortLocal(target.port) : target.endpoint;
+		nlohmann::json rpcRequest = {
+			{"jsonrpc", "2.0"},
+			{"id", std::format("forward-{}-{}", GetCurrentProcessId(), GetTickCount64())},
+			{"method", "tools/call"},
+			{"params", {
+				{"name", targetToolName},
+				{"arguments", targetArguments}
+			}}
+		};
+
+		const auto httpResult = PerformPostRequest(
+			endpoint,
+			rpcRequest.dump(),
+			"Content-Type: application/json\r\n",
+			timeoutSeconds * 1000,
+			true,
+			true);
+		if (httpResult.second < 200 || httpResult.second >= 300) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "forward http request failed";
+			r["http_status"] = httpResult.second;
+			r["target_instance_id"] = target.instanceId;
+			r["target_port"] = target.port;
+			r["target_endpoint"] = endpoint;
+			r["response_text"] = LocalToUtf8Text(httpResult.first);
+			return Utf8ToLocalText(r.dump());
+		}
+
+		try {
+			const nlohmann::json rpcResponse = httpResult.first.empty()
+				? nlohmann::json::object()
+				: nlohmann::json::parse(httpResult.first);
+			return BuildForwardedToolResultJson(target, targetToolName, rpcResponse, outOk);
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("parse forwarded rpc response failed: ") + ex.what();
+			r["target_instance_id"] = target.instanceId;
+			r["target_port"] = target.port;
+			r["target_endpoint"] = endpoint;
+			r["response_text"] = LocalToUtf8Text(httpResult.first);
+			return Utf8ToLocalText(r.dump());
+		}
+	}
 
 	if (toolName == "run_powershell_command") {
 		std::string commandUtf8;
@@ -585,6 +833,7 @@ std::string ExecuteToolCallImpl(const std::string& toolName, const std::string& 
 
 	if (toolName == "get_current_page_code" ||
 		toolName == "get_current_page_info" ||
+		toolName == "get_current_eide_info" ||
 		toolName == "list_imported_modules" ||
 		toolName == "list_support_libraries" ||
 		toolName == "get_support_library_info" ||

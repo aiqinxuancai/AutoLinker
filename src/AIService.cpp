@@ -784,6 +784,40 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "get_current_eide_info"},
+		{"description", "Get current E-language IDE instance information, including current source file path, current page info, MCP port/endpoint, process id and executable path."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", nlohmann::json::object()},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "list_local_mcp_instances"},
+		{"description", "List other AutoLinker local MCP instances currently running on this machine, including instance_id, pid, port, endpoint and cached IDE hints."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", nlohmann::json::object()},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "call_local_mcp_instance_tool"},
+		{"description", "Forward one MCP tool call to another local AutoLinker instance discovered by list_local_mcp_instances. This is the generic cross-instance method; it is stateless and avoids global switching side effects."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"instance_id", {{"type", "string"}, {"description", "Target instance_id returned by list_local_mcp_instances."}}},
+				{"port", {{"type", "integer"}, {"minimum", 1}, {"maximum", 65535}, {"description", "Optional target port when instance_id is unknown."}}},
+				{"tool_name", {{"type", "string"}}},
+				{"arguments", {{"type", "object"}, {"description", "Arguments object passed through to the target tool."}}},
+				{"timeout_seconds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 120}}}
+			}},
+			{"required", nlohmann::json::array({"tool_name"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "list_imported_modules"},
 		{"description", "List imported ECOM/e-module paths from the current project. This only lists modules; actual public declarations must be queried separately."},
 		{"inputSchema", {
@@ -1287,27 +1321,28 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		".判断结束\n\n"
 		"工具使用规则：\n"
 		"1) 需要当前页完整代码时调用 get_current_page_code；如果还要页名与类型，调用 get_current_page_info。\n"
-		"2) 只想知道当前打开页是谁，不需要整页代码时，优先调用 get_current_page_info。\n"
-		"3) 支持库相关信息：先用 list_support_libraries，再按需用 get_support_library_info / search_support_library_info。\n"
-		"4) 模块公开信息：先用 list_imported_modules，再按需用 get_module_public_info / search_module_public_info。\n"
-		"5) 程序树页面：先用 list_program_items 定位页面，再按需用 get_program_item_real_code 或 switch_to_program_item_page。\n"
-		"5.1) list_program_items 附带的代码仍只是伪代码参考；需要某个页面的真实整页源码时，用 get_program_item_real_code。\n"
-		"5.2) 需要分页查看或从缓存读取真实源码时，用 read_program_item_real_code。\n"
-		"5.3) 需要真正改写某个页面源码时，先调用 get_program_item_real_code 或 read_program_item_real_code 建立缓存，再按需用 edit_program_item_code / multi_edit_program_item_code / write_program_item_real_code。\n"
-		"5.4) 需要预览改动而不写回时，用 diff_program_item_code。\n"
-		"5.5) 需要按符号操作真实源码时，用 list_program_item_symbols / get_symbol_real_code / edit_symbol_real_code / insert_program_item_code_block。\n"
-		"5.6) 需要在真实页内做精确搜索或回滚最近写入时，用 search_program_item_real_code / restore_program_item_code_snapshot。\n"
-		"6) 搜索工程关键字时先用 search_project_keyword，拿到具体 jump_token 后再决定是否调用 jump_to_search_result。\n"
-		"7) jump_to_search_result、switch_to_program_item_page、get_program_item_real_code 都会改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
-		"8) 通过搜索、程序树、模块公开信息、支持库公开信息拿到的代码或文本，多数只是伪代码 / 公共接口参考，不一定等于 IDE 正常编辑页。\n"
-		"9) 需要无弹窗编译时调用 compile_with_output_path。它会指定输出路径并拦截系统保存对话框，支持模块工程编译为 ec，以及窗口程序 / 控制台程序 / DLL 的编译与静态编译；最终是否编译成功仍要结合 IDE 输出或产物确认。\n"
-		"10) 需要自动整页回写真实源码时优先使用真实页工具，不要退回伪代码工具。\n"
-		"11) 需要联网查实时信息、文档、网页摘要时调用 search_web_tavily。\n"
-		"12) 已经拿到具体文档 URL 时，优先调用 extract_web_document 读取正文；只有在需要看原始响应时再调用 fetch_url。\n"
-		"13) 需要在本机查环境、查文件、执行受控自动化时调用 run_powershell_command；它每次都会向用户确认，命令要尽量小、明确、可解释。\n"
-		"14) run_powershell_command 被用户取消后，不要机械重试，应改为解释下一步或换别的工具。\n"
-		"15) 工具失败时先分析失败原因并换更合适的工具，不要机械重试同一个调用。\n"
-		"16) 不要要求用户手动补上下文，优先自己通过工具获取。\n";
+		"2) 只想知道当前打开页是谁，不需要整页代码时，优先调用 get_current_page_info；需要当前源码路径、MCP 端口、进程路径等实例级信息时，调用 get_current_eide_info。\n"
+		"3) 本机有多个易语言实例时，先用 list_local_mcp_instances，再通过 call_local_mcp_instance_tool 转发到目标实例；不要臆测端口。\n"
+		"4) 支持库相关信息：先用 list_support_libraries，再按需用 get_support_library_info / search_support_library_info。\n"
+		"5) 模块公开信息：先用 list_imported_modules，再按需用 get_module_public_info / search_module_public_info。\n"
+		"6) 程序树页面：先用 list_program_items 定位页面，再按需用 get_program_item_real_code 或 switch_to_program_item_page。\n"
+		"6.1) list_program_items 附带的代码仍只是伪代码参考；需要某个页面的真实整页源码时，用 get_program_item_real_code。\n"
+		"6.2) 需要分页查看或从缓存读取真实源码时，用 read_program_item_real_code。\n"
+		"6.3) 需要真正改写某个页面源码时，先调用 get_program_item_real_code 或 read_program_item_real_code 建立缓存，再按需用 edit_program_item_code / multi_edit_program_item_code / write_program_item_real_code。\n"
+		"6.4) 需要预览改动而不写回时，用 diff_program_item_code。\n"
+		"6.5) 需要按符号操作真实源码时，用 list_program_item_symbols / get_symbol_real_code / edit_symbol_real_code / insert_program_item_code_block。\n"
+		"6.6) 需要在真实页内做精确搜索或回滚最近写入时，用 search_program_item_real_code / restore_program_item_code_snapshot。\n"
+		"7) 搜索工程关键字时先用 search_project_keyword，拿到具体 jump_token 后再决定是否调用 jump_to_search_result。\n"
+		"8) jump_to_search_result、switch_to_program_item_page、get_program_item_real_code 都会改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
+		"9) 通过搜索、程序树、模块公开信息、支持库公开信息拿到的代码或文本，多数只是伪代码 / 公共接口参考，不一定等于 IDE 正常编辑页。\n"
+		"10) 需要无弹窗编译时调用 compile_with_output_path。它会指定输出路径并拦截系统保存对话框，支持模块工程编译为 ec，以及窗口程序 / 控制台程序 / DLL 的编译与静态编译；最终是否编译成功仍要结合 IDE 输出或产物确认。\n"
+		"11) 需要自动整页回写真实源码时优先使用真实页工具，不要退回伪代码工具。\n"
+		"12) 需要联网查实时信息、文档、网页摘要时调用 search_web_tavily。\n"
+		"13) 已经拿到具体文档 URL 时，优先调用 extract_web_document 读取正文；只有在需要看原始响应时再调用 fetch_url。\n"
+		"14) 需要在本机查环境、查文件、执行受控自动化时调用 run_powershell_command；它每次都会向用户确认，命令要尽量小、明确、可解释。\n"
+		"15) run_powershell_command 被用户取消后，不要机械重试，应改为解释下一步或换别的工具。\n"
+		"16) 工具失败时先分析失败原因并换更合适的工具，不要机械重试同一个调用。\n"
+		"17) 不要要求用户手动补上下文，优先自己通过工具获取。\n";
 	const std::string extraPrompt = AIService::Trim(settings.extraSystemPrompt);
 	if (!extraPrompt.empty()) {
 		prompt += "\n附加系统提示：\n";

@@ -497,6 +497,7 @@
     <ClCompile Include="src\AIChatTooling.cpp" />
     <ClCompile Include="src\AIChatToolingX86.cpp" />
     <ClCompile Include="src\AIService.cpp" />
+    <ClCompile Include="src\LocalMcpInstanceRegistry.cpp" />
     <ClCompile Include="src\LocalMcpServer.cpp" />
     <ClCompile Include="src\PathHelper.cpp" />
     <ClCompile Include="src\PageCodeCacheManager.cpp" />
@@ -535,6 +536,7 @@
     <ClInclude Include="src\IDEFacade.h" />
     <ClInclude Include="src\InlineHook.h" />
     <ClInclude Include="src\LinkerManager.h" />
+    <ClInclude Include="src\LocalMcpInstanceRegistry.h" />
     <ClInclude Include="src\LocalMcpServer.h" />
     <ClInclude Include="src\MemFind.h" />
     <ClInclude Include="src\ModelManager.h" />

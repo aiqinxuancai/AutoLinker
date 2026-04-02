@@ -25,9 +25,12 @@
 
 #include "IDEFacade.h"
 #include "EideInternalTextBridge.h"
+#include "Global.h"
+#include "LocalMcpServer.h"
 #include "PageCodeCacheManager.h"
 #include "PathHelper.h"
 #include "RealPageCodeToolSupport.h"
+#include "WindowHelper.h"
 #if defined(_M_IX86)
 #include "direct_global_search_debug.hpp"
 #include "native_module_public_info.hpp"
@@ -199,6 +202,33 @@ std::string Utf8ToLocalText(const std::string& text)
 	}
 	return ConvertCodePage(text, CP_UTF8, CP_ACP, MB_ERR_INVALID_CHARS);
 }
+
+std::string GetCurrentProcessPathForAI()
+{
+	char buffer[MAX_PATH] = {};
+	const DWORD len = GetModuleFileNameA(nullptr, buffer, static_cast<DWORD>(sizeof(buffer)));
+	if (len == 0 || len >= sizeof(buffer)) {
+		return std::string();
+	}
+	return std::string(buffer, buffer + len);
+}
+
+std::string GetCurrentProcessNameForAI()
+{
+	const std::string fullPath = GetCurrentProcessPathForAI();
+	if (fullPath.empty()) {
+		return std::string();
+	}
+	const size_t pos = fullPath.find_last_of("\\/");
+	return pos == std::string::npos ? fullPath : fullPath.substr(pos + 1);
+}
+
+std::string RefreshCurrentSourceFilePathForAI()
+{
+	g_nowOpenSourceFilePath = GetSourceFilePath();
+	return g_nowOpenSourceFilePath;
+}
+
 std::uintptr_t GetCurrentProcessImageBaseForAI()
 {
 	HMODULE module = GetModuleHandleW(nullptr);
@@ -2936,6 +2966,7 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 	outOk = false;
 
 	if (toolName == "get_current_page_code") {
+		const std::string sourceFilePath = RefreshCurrentSourceFilePathForAI();
 		std::string pageName;
 		std::string pageType;
 		std::string pageNameTrace;
@@ -2999,6 +3030,7 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		r["ok"] = true;
 		r["code"] = LocalToUtf8Text(pageCode);
 		r["code_kind"] = codeKind;
+		r["source_file_path"] = LocalToUtf8Text(sourceFilePath);
 		r["page_name_ok"] = nameOk;
 		r["page_name"] = LocalToUtf8Text(pageName);
 		r["page_type"] = LocalToUtf8Text(pageType);
@@ -3006,11 +3038,13 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		if (!codeTrace.empty()) {
 			r["trace"] = LocalToUtf8Text(codeTrace);
 		}
+		LocalMcpServer::UpdateInstanceHints(sourceFilePath, pageName, pageType);
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
 	}
 
 	if (toolName == "get_current_page_info") {
+		const std::string sourceFilePath = RefreshCurrentSourceFilePathForAI();
 		std::string pageName;
 		std::string pageType;
 		std::string pageNameTrace;
@@ -3024,9 +3058,50 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 
 		nlohmann::json r;
 		r["ok"] = true;
+		r["source_file_path"] = LocalToUtf8Text(sourceFilePath);
 		r["page_name"] = LocalToUtf8Text(pageName);
 		r["page_type"] = LocalToUtf8Text(pageType);
 		r["page_name_trace"] = pageNameTrace;
+		LocalMcpServer::UpdateInstanceHints(sourceFilePath, pageName, pageType);
+		outOk = true;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "get_current_eide_info") {
+		const std::string sourceFilePath = RefreshCurrentSourceFilePathForAI();
+		std::string pageName;
+		std::string pageType;
+		std::string pageNameTrace;
+		const bool pageNameOk = IDEFacade::Instance().GetCurrentPageName(pageName, &pageType, &pageNameTrace);
+
+		std::string mainWindowTitle;
+		if (HWND mainWindow = IDEFacade::Instance().GetMainWindow();
+			mainWindow != nullptr && IsWindow(mainWindow)) {
+			char title[512] = {};
+			GetWindowTextA(mainWindow, title, static_cast<int>(sizeof(title)));
+			mainWindowTitle = title;
+		}
+
+		LocalMcpServer::UpdateInstanceHints(sourceFilePath, pageName, pageType);
+
+		nlohmann::json r;
+		r["ok"] = true;
+		r["process_id"] = GetCurrentProcessId();
+		r["process_path"] = LocalToUtf8Text(GetCurrentProcessPathForAI());
+		r["process_name"] = LocalToUtf8Text(GetCurrentProcessNameForAI());
+		r["source_file_path"] = LocalToUtf8Text(sourceFilePath);
+		r["source_file_name"] = LocalToUtf8Text(sourceFilePath.empty() ? std::string() : std::filesystem::path(sourceFilePath).filename().string());
+		r["source_directory"] = LocalToUtf8Text(sourceFilePath.empty() ? std::string() : std::filesystem::path(sourceFilePath).parent_path().string());
+		r["source_file_exists"] = !sourceFilePath.empty() && std::filesystem::exists(std::filesystem::path(sourceFilePath));
+		r["page_name_ok"] = pageNameOk;
+		r["current_page_name"] = LocalToUtf8Text(pageName);
+		r["current_page_type"] = LocalToUtf8Text(pageType);
+		r["page_name_trace"] = pageNameTrace;
+		r["main_window_title"] = LocalToUtf8Text(mainWindowTitle);
+		r["mcp_running"] = LocalMcpServer::IsRunning();
+		r["mcp_instance_id"] = LocalMcpServer::GetInstanceId();
+		r["mcp_port"] = LocalMcpServer::GetBoundPort();
+		r["mcp_endpoint"] = LocalMcpServer::GetEndpoint();
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
 	}
