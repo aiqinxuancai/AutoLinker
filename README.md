@@ -2,6 +2,8 @@
 
 AutoLinker支持库，通过逆向实现易语言上的AI Agent，即代码全自动编写，会自动根据你的需求，查找、获取相关代码，并直接对代码进行编辑、修改、插入功能。
 
+同时提供MCP服务，你可以将易语言IDE接入到Codex、Claude Code、Gemini Cli等工具中，其也可以自行调用易语言全自动编写代码，具体参考下方MCP相关内容。
+
 ## 使用方法
 编译后将AutoLinker.fne放在易语言的lib目录中，并启用AutoLinker支持库。
 
