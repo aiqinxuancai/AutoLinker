@@ -5963,7 +5963,9 @@ bool TryActivateProgramTreeItemPageByEditorObjectFallback(
 		SendMessageA(mdiClientHwnd, WM_MDIACTIVATE, reinterpret_cast<WPARAM>(mdiChildHwnd), 0);
 	}
 	SetFocus(editorHwnd);
-	ActivateEditorWindowByClick(editorHwnd);
+	UpdateWindow(editorHwnd);
+	SendMessageA(editorHwnd, WM_CANCELMODE, 0, 0);
+	ReleaseCapture();
 	PumpPendingMessages();
 
 	const HWND mainHwnd = ResolveMainIdeWindow();

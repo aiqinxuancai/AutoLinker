@@ -134,6 +134,12 @@ void RunTreeViewProbeTest();
 
 void RunProgramTreeDirectPageDumpTest();
 
+// 测试切换到常量表页面。
+void RunProgramTreeSwitchToConstantTableTest();
+
+// 测试抓取常量表页面真实代码。
+void RunProgramTreeReadConstantTableCodeTest();
+
 void RunProgramTreeListTest();
 
 void RunCurrentPageWindowProbeTest();

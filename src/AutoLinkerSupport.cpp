@@ -22,6 +22,7 @@
 #include "PathHelper.h"
 #include "WindowHelper.h"
 #include "direct_global_search.hpp"
+#include "EideInternalTextBridge.h"
 #if defined(_M_IX86)
 #include "direct_global_search_debug.hpp"
 #include "native_module_public_info.hpp"
@@ -30,11 +31,13 @@
 std::mutex g_aiRoundtripLogMutex;
 std::mutex g_addTabTestLogMutex;
 std::mutex g_directGlobalSearchPageDumpLogMutex;
+std::mutex g_programTreePageDumpLogMutex;
 std::mutex g_programTreeListLogMutex;
 std::mutex g_modulePublicInfoLogMutex;
 std::mutex g_supportLibraryInfoLogMutex;
 constexpr const char* kDirectGlobalSearchTestKeyword = "subWinHwnd";
 constexpr const char* kTreeDirectPageDumpTestName = "Class_HWND";
+constexpr const char* kProgramTreeConstantTablePageName = "常量表...";
 
 std::filesystem::path GetAIRoundtripLogPath()
 {
@@ -66,6 +69,14 @@ std::filesystem::path GetProgramTreeListLogPath()
 	std::error_code ec;
 	std::filesystem::create_directories(dir, ec);
 	return dir / "program_tree_items_last.txt";
+}
+
+std::filesystem::path GetProgramTreePageDumpLogPath()
+{
+	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	return dir / "program_tree_page_last.txt";
 }
 
 std::filesystem::path GetModulePublicInfoLogPath()
@@ -628,6 +639,47 @@ HWND FindProgramDataTreeView()
 std::uintptr_t GetCurrentProcessImageBase();
 void WriteDirectGlobalSearchPageDump(const std::string& text);
 void LogCurrentPageCodePreview(const std::string& pageCode, size_t maxLines);
+
+void WriteProgramTreePageDump(const std::string& text)
+{
+	const auto path = GetProgramTreePageDumpLogPath();
+	std::lock_guard<std::mutex> guard(g_programTreePageDumpLogMutex);
+	std::ofstream out(path, std::ios::trunc | std::ios::binary);
+	if (!out.is_open()) {
+		OutputStringToELog("[ProgramTreePageDumpTest] 写页面代码文件失败");
+		return;
+	}
+	out.write(text.data(), static_cast<std::streamsize>(text.size()));
+}
+
+void LogPageCodePreviewWithTag(const char* logTag, const std::string& pageCode, size_t maxLines)
+{
+	const std::string tag =
+		(logTag != nullptr && logTag[0] != '\0')
+			? logTag
+			: "ProgramTreePageDumpTest";
+	size_t lineBegin = 0;
+	size_t lineIndex = 0;
+	while (lineBegin <= pageCode.size() && lineIndex < maxLines) {
+		size_t lineEnd = pageCode.find('\n', lineBegin);
+		std::string line = pageCode.substr(
+			lineBegin,
+			lineEnd == std::string::npos ? std::string::npos : lineEnd - lineBegin);
+		if (!line.empty() && line.back() == '\r') {
+			line.pop_back();
+		}
+		OutputStringToELog(std::format(
+			"[{}] pageLine#{} {}",
+			tag,
+			lineIndex,
+			EscapeOneLineForLog(ConvertPossiblyUtf8ToLocalForEOutput(line))));
+		++lineIndex;
+		if (lineEnd == std::string::npos) {
+			break;
+		}
+		lineBegin = lineEnd + 1;
+	}
+}
 
 bool TryListImportedModulePathsForTest(std::vector<std::string>& outPaths, std::string* outError)
 {
@@ -1883,6 +1935,14 @@ struct ProgramTreeVisualHints
 	int windowAssemblyImage = -1;
 };
 
+struct ProgramTreeExactItemInfo
+{
+	std::string text;
+	unsigned int itemData = 0;
+	int image = -1;
+	int selectedImage = -1;
+};
+
 bool IsProgramTreeType1Item(const ProgramTreePageItemInfo& item)
 {
 	return (item.itemData >> 28) == 1u;
@@ -2117,7 +2177,7 @@ void RunProgramTreeDirectPageDumpTest()
 		return;
 	}
 
-	WriteDirectGlobalSearchPageDump(currentPageCode);
+	WriteProgramTreePageDump(currentPageCode);
 	const size_t lineCount = static_cast<size_t>(std::count(currentPageCode.begin(), currentPageCode.end(), '\n')) +
 		(currentPageCode.empty() ? 0u : 1u);
 	OutputStringToELog(std::format(
@@ -2133,13 +2193,200 @@ void RunProgramTreeDirectPageDumpTest()
 		lineCount,
 		dumpResult.fetchFailures,
 		EscapeOneLineForLog(dumpResult.trace),
-		GetDirectGlobalSearchPageDumpLogPath().string()));
-	LogCurrentPageCodePreview(currentPageCode, 10);
+		GetProgramTreePageDumpLogPath().string()));
+	LogPageCodePreviewWithTag("TreeDirectPageDumpTest", currentPageCode, 10);
+}
+
+bool TryFindProgramTreeItemByExactNameForTest(
+	const std::string& targetName,
+	ProgramTreeExactItemInfo& outItem,
+	std::string& outError)
+{
+	outItem = {};
+	outError.clear();
+
+	const HWND treeHwnd = FindProgramDataTreeView();
+	if (treeHwnd == nullptr) {
+		outError = "program tree not found";
+		return false;
+	}
+
+	const HTREEITEM rootItem = GetTreeNextItem(treeHwnd, nullptr, TVGN_ROOT);
+	const HTREEITEM item = FindTreeItemByExactTextRecursive(treeHwnd, rootItem, targetName, 4, 0);
+	if (item == nullptr) {
+		outError = "tree item not found";
+		return false;
+	}
+
+	LPARAM itemData = 0;
+	UINT state = 0;
+	int childCount = 0;
+	if (!QueryTreeItemInfo(
+			treeHwnd,
+			item,
+			outItem.text,
+			itemData,
+			state,
+			childCount,
+			outItem.image,
+			outItem.selectedImage)) {
+		outError = "read tree item info failed";
+		return false;
+	}
+
+	outItem.itemData = static_cast<unsigned int>(itemData);
+	return true;
+}
+
+void RunProgramTreeOpenExactPageTest(const char* logTag, const char* targetName)
+{
+	const std::string tag =
+		(logTag != nullptr && logTag[0] != '\0')
+			? logTag
+			: "ProgramTreeOpenPageTest";
+	const std::string pageName =
+		(targetName != nullptr && targetName[0] != '\0')
+			? targetName
+			: std::string();
+
+	OutputStringToELog(std::format(
+		"[{}] 开始切换程序树页面 name={}",
+		tag,
+		EscapeOneLineForLog(pageName)));
+
+	ProgramTreeExactItemInfo item;
+	std::string error;
+	if (!TryFindProgramTreeItemByExactNameForTest(pageName, item, error)) {
+		OutputStringToELog(std::format(
+			"[{}] 切换失败 name={} error={}",
+			tag,
+			EscapeOneLineForLog(pageName),
+			EscapeOneLineForLog(error)));
+		return;
+	}
+
+	std::string openTrace;
+	if (!e571::OpenProgramTreeItemPageByData(
+			item.itemData,
+			&openTrace)) {
+		OutputStringToELog(std::format(
+			"[{}] 切换失败 text={} data=0x{:08X} image={} selImage={} trace={}",
+			tag,
+			EscapeOneLineForLog(item.text),
+			item.itemData,
+			item.image,
+			item.selectedImage,
+			EscapeOneLineForLog(openTrace)));
+		return;
+	}
+
+	std::string currentPageName;
+	std::string currentPageType;
+	std::string currentPageDiag;
+	const bool currentOk = IDEFacade::Instance().GetCurrentPageName(
+		currentPageName,
+		&currentPageType,
+		&currentPageDiag);
+
+	OutputStringToELog(std::format(
+		"[{}] 切换成功 text={} data=0x{:08X} image={} selImage={} currentOk={} currentName={} currentType={} currentDiag={} trace={}",
+		tag,
+		EscapeOneLineForLog(item.text),
+		item.itemData,
+		item.image,
+		item.selectedImage,
+		currentOk ? 1 : 0,
+		EscapeOneLineForLog(currentPageName),
+		EscapeOneLineForLog(currentPageType),
+		EscapeOneLineForLog(currentPageDiag),
+		EscapeOneLineForLog(openTrace)));
+}
+
+void RunProgramTreeReadExactPageCodeTest(const char* logTag, const char* targetName)
+{
+	const std::string tag =
+		(logTag != nullptr && logTag[0] != '\0')
+			? logTag
+			: "ProgramTreeReadCodeTest";
+	const std::string pageName =
+		(targetName != nullptr && targetName[0] != '\0')
+			? targetName
+			: std::string();
+
+	OutputStringToELog(std::format(
+		"[{}] 开始抓取程序树页面真实代码 name={}",
+		tag,
+		EscapeOneLineForLog(pageName)));
+
+	ProgramTreeExactItemInfo item;
+	std::string error;
+	if (!TryFindProgramTreeItemByExactNameForTest(pageName, item, error)) {
+		OutputStringToELog(std::format(
+			"[{}] 抓取失败 name={} error={}",
+			tag,
+			EscapeOneLineForLog(pageName),
+			EscapeOneLineForLog(error)));
+		return;
+	}
+
+	std::string pageCode;
+	e571::NativeRealPageAccessResult accessResult{};
+	if (!e571::GetRealPageCodeByProgramTreeItemData(
+			item.itemData,
+			GetCurrentProcessImageBase(),
+			&pageCode,
+			&accessResult)) {
+		OutputStringToELog(std::format(
+			"[{}] 抓取失败 text={} data=0x{:08X} image={} selImage={} trace={}",
+			tag,
+			EscapeOneLineForLog(item.text),
+			item.itemData,
+			item.image,
+			item.selectedImage,
+			EscapeOneLineForLog(accessResult.trace)));
+		return;
+	}
+
+	WriteProgramTreePageDump(pageCode);
+	const size_t lineCount = static_cast<size_t>(std::count(pageCode.begin(), pageCode.end(), '\n')) +
+		(pageCode.empty() ? 0u : 1u);
+	OutputStringToELog(std::format(
+		"[{}] 抓取成功 text={} data=0x{:08X} image={} selImage={} bytes={} lines={} trace={} path={}",
+		tag,
+		EscapeOneLineForLog(item.text),
+		item.itemData,
+		item.image,
+		item.selectedImage,
+		pageCode.size(),
+		lineCount,
+		EscapeOneLineForLog(accessResult.trace),
+		GetProgramTreePageDumpLogPath().string()));
+	LogPageCodePreviewWithTag(tag.c_str(), pageCode, 10);
+}
+
+void RunProgramTreeSwitchToConstantTableTest()
+{
+	RunProgramTreeOpenExactPageTest("TreeConstSwitchTest", kProgramTreeConstantTablePageName);
+}
+
+void RunProgramTreeReadConstantTableCodeTest()
+{
+	RunProgramTreeReadExactPageCodeTest("TreeConstCodeTest", kProgramTreeConstantTablePageName);
 }
 #else
 void RunProgramTreeDirectPageDumpTest()
 {
 	OutputStringToELog("[TreeDirectPageDumpTest] 当前仅支持 x86 配置");
+}
+
+void RunProgramTreeSwitchToConstantTableTest()
+{
+	OutputStringToELog("[TreeConstSwitchTest] 当前仅支持 x86 配置");
+}
+
+void RunProgramTreeReadConstantTableCodeTest()
+{
+	OutputStringToELog("[TreeConstCodeTest] 当前仅支持 x86 配置");
 }
 #endif
 

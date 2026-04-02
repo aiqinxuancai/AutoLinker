@@ -5,6 +5,7 @@
 #include <CommCtrl.h>
 #include <process.h>
 
+#include <array>
 #include <filesystem>
 #include <format>
 #include <string>
@@ -24,6 +25,89 @@
 #pragma comment(lib, "comctl32.lib")
 
 bool FneInit();
+
+namespace {
+
+struct AddInMenuEntry {
+	const char* title;
+	const char* description;
+	void (*handler)();
+};
+
+void OpenProjectDirectoryAddIn()
+{
+	std::string cmd = std::format("/select,{}", g_nowOpenSourceFilePath);
+	ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
+}
+
+void OpenAutoLinkerConfigDirectoryAddIn()
+{
+	std::string cmd = std::format("{}\\AutoLinker", GetBasePath());
+	ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
+}
+
+void OpenELanguageDirectoryAddIn()
+{
+	std::string cmd = std::format("{}", GetBasePath());
+	ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
+}
+
+void ShowAISettingsAddIn()
+{
+	AISettings settings = {};
+	AIService::LoadSettings(g_configManager, settings);
+	if (!ShowAIConfigDialog(g_hwnd, settings)) {
+		OutputStringToELog("AI配置已取消");
+		return;
+	}
+	AIService::SaveSettings(g_configManager, settings);
+	OutputStringToELog("AI配置已保存");
+}
+
+const auto& GetAddInMenuEntries()
+{
+	static const std::array<AddInMenuEntry, 20> kEntries = { {
+		{ "打开项目目录", "这是个用作测试的辅助工具功能。", &OpenProjectDirectoryAddIn },
+		{ "打开AutoLinker配置目录", "这是个用作测试的辅助工具功能。", &OpenAutoLinkerConfigDirectoryAddIn },
+		{ "打开E语言目录", "这是个用作测试的辅助工具功能。", &OpenELanguageDirectoryAddIn },
+		{ "复制当前函数代码", "复制当前光标所在子程序完整代码到剪贴板。", &TryCopyCurrentFunctionCode },
+		{ "AutoLinker AI接口设置", "编辑AI接口地址、API Key、模型和提示词等配置。", &ShowAISettingsAddIn },
+		{ "FN_ADD_TAB结构传递测试", "构造ADD_TAB_INF调用FN_ADD_TAB，并打印调用前后结构体字段。", &RunFnAddTabStructPassThroughTest },
+		{ "测试整体搜索subWinHwnd", "调用direct_global_search固定搜索subWinHwnd，并输出命中结果到E输出窗口。", &RunDirectGlobalSearchKeywordTest },
+		{ "测试定位subWinHwnd首个结果", "调用direct_global_search固定搜索subWinHwnd，并跳转到首个命中位置。", &RunDirectGlobalSearchLocateKeywordTest },
+		{ "测试定位后抓取当前页代码", "先定位到subWinHwnd首个命中，再抓取当前代码页完整代码并写入AutoLinker目录。", &RunDirectGlobalSearchLocateAndDumpCurrentPageTest },
+		{ "测试枚举左侧TreeView", "枚举主窗口下所有SysTreeView32，并输出前几层节点文本与item data特征。", &RunTreeViewProbeTest },
+		{ "测试程序树按名称抓代码", "在程序树中固定查找Class_HWND，并根据tree item data直接抓取整页代码。", &RunProgramTreeDirectPageDumpTest },
+		{ "测试枚举程序树页面", "枚举程序树中所有页面节点，输出名称、类型和item data，并写入文件。", &RunProgramTreeListTest },
+		{ "测试当前页窗口与页签", "探测MDIClient当前活动子页与CCustomTabCtrl当前选中项文本，用于定位当前页名称来源。", &RunCurrentPageWindowProbeTest },
+		{ "测试获取当前页名称", "调用IDEFacade当前页名称接口，输出当前页名称、类型和来源链路。", &RunCurrentPageNameTest },
+		{ "测试枚举导入模块", "枚举当前项目导入的易模块路径。", &RunImportedModuleListTest },
+		{ "测试首个模块公开信息", "对当前项目首个导入模块执行原生公开信息抓取，并输出摘要与日志文件路径。", &RunFirstImportedModulePublicInfoTest },
+		{ "测试首个支持库公开信息", "枚举当前已选支持库，并对首个可定位文件的支持库执行GetNewInf公开信息抓取，输出摘要与日志文件路径。", &RunFirstSupportLibraryInfoTest },
+		{ "测试编译静态EXE", "调用静态编译窗口程序EXE测试，并将输出文件写入AutoLinker\\StaticCompileTest目录。", &RunStaticCompileWindowsExeTest },
+		{ "测试切换常量表...", "按程序树精确名称切换到“常量表...”页面，并输出切页后的当前页信息。", &RunProgramTreeSwitchToConstantTableTest },
+		{ "测试获取常量表...代码", "按程序树精确名称抓取“常量表...”页面真实代码，并输出摘要与日志文件路径。", &RunProgramTreeReadConstantTableCodeTest },
+	} };
+	return kEntries;
+}
+
+const std::string& GetAddInMenuInfoText()
+{
+	static const std::string kMenuInfo = [] {
+		std::string text;
+		for (const auto& entry : GetAddInMenuEntries()) {
+			text.append(entry.title);
+			text.push_back('\0');
+			text.append(entry.description);
+			text.push_back('\0');
+		}
+		text.push_back('\0');
+		return text;
+	}();
+	return kMenuInfo;
+}
+
+} // namespace
 
 void ChangeVMProtectModel(bool isLib)
 {
@@ -116,77 +200,14 @@ INT NESRUNFUNC(INT code, DWORD p1, DWORD p2)
 
 INT WINAPI fnAddInFunc(INT nAddInFnIndex)
 {
-	switch (nAddInFnIndex) {
-	case 0: {
-		std::string cmd = std::format("/select,{}", g_nowOpenSourceFilePath);
-		ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
-		break;
+	const auto& entries = GetAddInMenuEntries();
+	if (nAddInFnIndex < 0 || static_cast<size_t>(nAddInFnIndex) >= entries.size()) {
+		return 0;
 	}
-	case 1: {
-		std::string cmd = std::format("{}\\AutoLinker", GetBasePath());
-		ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
-		break;
-	}
-	case 2: {
-		std::string cmd = std::format("{}", GetBasePath());
-		ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
-		break;
-	}
-	case 3:
-		TryCopyCurrentFunctionCode();
-		break;
-	case 4: {
-		AISettings settings = {};
-		AIService::LoadSettings(g_configManager, settings);
-		if (!ShowAIConfigDialog(g_hwnd, settings)) {
-			OutputStringToELog("AI配置已取消");
-			break;
-		}
-		AIService::SaveSettings(g_configManager, settings);
-		OutputStringToELog("AI配置已保存");
-		break;
-	}
-	case 5:
-		RunFnAddTabStructPassThroughTest();
-		break;
-	case 6:
-		RunDirectGlobalSearchKeywordTest();
-		break;
-	case 7:
-		RunDirectGlobalSearchLocateKeywordTest();
-		break;
-	case 8:
-		RunDirectGlobalSearchLocateAndDumpCurrentPageTest();
-		break;
-	case 9:
-		RunTreeViewProbeTest();
-		break;
-	case 10:
-		RunProgramTreeDirectPageDumpTest();
-		break;
-	case 11:
-		RunProgramTreeListTest();
-		break;
-	case 12:
-		RunCurrentPageWindowProbeTest();
-		break;
-	case 13:
-		RunCurrentPageNameTest();
-		break;
-	case 14:
-		RunImportedModuleListTest();
-		break;
-	case 15:
-		RunFirstImportedModulePublicInfoTest();
-		break;
-	case 16:
-		RunFirstSupportLibraryInfoTest();
-		break;
-	case 17:
-		RunStaticCompileWindowsExeTest();
-		break;
-	default:
-		break;
+
+	const auto handler = entries[static_cast<size_t>(nAddInFnIndex)].handler;
+	if (handler != nullptr) {
+		handler();
 	}
 
 	return 0;
@@ -348,7 +369,7 @@ static LIB_INFOX LibInfo =
 	NULL,
 	NULL,
 	fnAddInFunc,
-	_T("打开项目目录\0这是个用作测试的辅助工具功能。\0打开AutoLinker配置目录\0这是个用作测试的辅助工具功能。\0打开E语言目录\0这是个用作测试的辅助工具功能。\0复制当前函数代码\0复制当前光标所在子程序完整代码到剪贴板。\0AutoLinker AI接口设置\0编辑AI接口地址、API Key、模型和提示词等配置。\0FN_ADD_TAB结构传递测试\0构造ADD_TAB_INF调用FN_ADD_TAB，并打印调用前后结构体字段。\0测试整体搜索subWinHwnd\0调用direct_global_search固定搜索subWinHwnd，并输出命中结果到E输出窗口。\0测试定位subWinHwnd首个结果\0调用direct_global_search固定搜索subWinHwnd，并跳转到首个命中位置。\0测试定位后抓取当前页代码\0先定位到subWinHwnd首个命中，再抓取当前代码页完整代码并写入AutoLinker目录。\0测试枚举左侧TreeView\0枚举主窗口下所有SysTreeView32，并输出前几层节点文本与item data特征。\0测试程序树按名称抓代码\0在程序树中固定查找Class_HWND，并根据tree item data直接抓取整页代码。\0测试枚举程序树页面\0枚举程序树中所有页面节点，输出名称、类型和item data，并写入文件。\0测试当前页窗口与页签\0探测MDIClient当前活动子页与CCustomTabCtrl当前选中项文本，用于定位当前页名称来源。\0测试获取当前页名称\0调用IDEFacade当前页名称接口，输出当前页名称、类型和来源链路。\0测试枚举导入模块\0枚举当前项目导入的易模块路径。\0测试首个模块公开信息\0对当前项目首个导入模块执行原生公开信息抓取，并输出摘要与日志文件路径。\0测试首个支持库公开信息\0枚举当前已选支持库，并对首个可定位文件的支持库执行GetNewInf公开信息抓取，输出摘要与日志文件路径。\0测试编译静态EXE\0调用静态编译窗口程序EXE测试，并将输出文件写入AutoLinker\\StaticCompileTest目录。\0\0"),
+	NULL,
 	AutoLinker_MessageNotify,
 	NULL,
 	NULL,
@@ -363,6 +384,7 @@ static LIB_INFOX LibInfo =
 
 PLIB_INFOX WINAPI GetNewInf()
 {
+	LibInfo.m_szzAddInFnInfo = GetAddInMenuInfoText().c_str();
 	return (&LibInfo);
 }
 #endif
