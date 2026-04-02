@@ -7,6 +7,7 @@
 
 #include <array>
 #include <filesystem>
+#include <fstream>
 #include <format>
 #include <string>
 
@@ -27,7 +28,31 @@
 
 bool FneInit();
 
+std::string g_autoRunModulePublicInfoRequestedPath;
+
 namespace {
+
+std::string ReadAutoRunMarkerText(const std::filesystem::path& path)
+{
+	std::ifstream in(path, std::ios::binary);
+	if (!in.is_open()) {
+		return std::string();
+	}
+
+	in.seekg(0, std::ios::end);
+	const std::streamoff size = in.tellg();
+	if (size <= 0) {
+		return std::string();
+	}
+	in.seekg(0, std::ios::beg);
+
+	std::string text(static_cast<size_t>(size), '\0');
+	in.read(text.data(), size);
+	if (!in.good() && static_cast<size_t>(in.gcount()) != text.size()) {
+		return std::string();
+	}
+	return text;
+}
 
 constexpr UINT WM_AUTOLINKER_WARMUP_MODULE_PUBLIC_INFO = WM_USER + 1004;
 
@@ -292,9 +317,17 @@ bool FneInit()
 
 	const auto autoRunMarker = GetAutoRunModulePublicInfoTestMarkerPath();
 	if (std::filesystem::exists(autoRunMarker)) {
+		g_autoRunModulePublicInfoRequestedPath = TrimAsciiCopy(ReadAutoRunMarkerText(autoRunMarker));
 		std::error_code removeEc;
 		std::filesystem::remove(autoRunMarker, removeEc);
-		OutputStringToELog("[ModulePublicInfoTest] 检测到自动测试标记，稍后执行首个导入模块公开信息测试");
+		if (g_autoRunModulePublicInfoRequestedPath.empty()) {
+			OutputStringToELog("[ModulePublicInfoTest] 检测到自动测试标记，稍后执行首个导入模块公开信息测试");
+		}
+		else {
+			OutputStringToELog(std::format(
+				"[ModulePublicInfoTest] 检测到自动测试标记，稍后执行指定模块公开信息测试 path={}",
+				EscapeOneLineForLog(g_autoRunModulePublicInfoRequestedPath)));
+		}
 		_beginthread(AutoRunModulePublicInfoTestThread, 0, nullptr);
 	}
 

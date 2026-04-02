@@ -44,6 +44,9 @@ extern bool g_initStarted;
 // 已完成 IDE 就绪后的界面初始化。
 extern bool g_uiInitialized;
 
+// 自动模块公开信息测试指定的目标模块路径。
+extern std::string g_autoRunModulePublicInfoRequestedPath;
+
 
 
 inline constexpr UINT IDM_AUTOLINKER_CTX_COPY_FUNC = 31001;

@@ -14,6 +14,7 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include "ECOMEx.h"
@@ -703,6 +704,52 @@ bool TryListImportedModulePathsForTest(std::vector<std::string>& outPaths, std::
 			outPaths.push_back(path);
 		}
 	}
+	return true;
+}
+
+bool EnsureModuleImportedForTest(const std::string& modulePath, std::string* outError)
+{
+	if (outError != nullptr) {
+		outError->clear();
+	}
+
+	const std::string trimmedPath = TrimAsciiCopy(modulePath);
+	if (trimmedPath.empty()) {
+		if (outError != nullptr) {
+			*outError = "module_path_empty";
+		}
+		return false;
+	}
+
+	IDEFacade& ide = IDEFacade::Instance();
+	if (ide.FindECOMIndex(trimmedPath) >= 0) {
+		return true;
+	}
+
+	if (!std::filesystem::exists(std::filesystem::path(trimmedPath))) {
+		if (outError != nullptr) {
+			*outError = "module_file_not_found";
+		}
+		return false;
+	}
+
+	OutputStringToELog(std::format(
+		"[ModulePublicInfoTest] 目标模块未导入，尝试自动导入 path={}",
+		EscapeOneLineForLog(trimmedPath)));
+	if (!ide.AddECOM2(trimmedPath) && !ide.AddECOM(trimmedPath)) {
+		if (outError != nullptr) {
+			*outError = "add_ecom_failed";
+		}
+		return false;
+	}
+
+	if (ide.FindECOMIndex(trimmedPath) < 0) {
+		if (outError != nullptr) {
+			*outError = "add_ecom_succeeded_but_index_not_found";
+		}
+		return false;
+	}
+
 	return true;
 }
 
@@ -1627,26 +1674,110 @@ void RunImportedModuleListTest()
 	}
 }
 
+std::string NormalizeModuleRecordKeyForTest(const e571::ModulePublicInfoRecord& record)
+{
+	std::string key = record.kind;
+	key += "|";
+	key += record.name;
+	key += "|";
+	key += record.typeText;
+	key += "|";
+	key += record.signatureText;
+	return key;
+}
+
+std::unordered_map<std::string, int> BuildModuleRecordCountMapForTest(const e571::ModulePublicInfoDump& dump)
+{
+	std::unordered_map<std::string, int> counts;
+	for (const auto& record : dump.records) {
+		++counts[NormalizeModuleRecordKeyForTest(record)];
+	}
+	return counts;
+}
+
+void AppendModuleRecordDiffLinesForTest(
+	const char* title,
+	const std::unordered_map<std::string, int>& left,
+	const std::unordered_map<std::string, int>& right,
+	std::vector<std::string>& lines,
+	size_t maxCount)
+{
+	lines.push_back(title);
+	size_t appended = 0;
+	for (const auto& [key, count] : left) {
+		const int rightCount = right.contains(key) ? right.at(key) : 0;
+		if (count <= rightCount) {
+			continue;
+		}
+		lines.push_back(std::format(
+			"  diff count={} key={}",
+			count - rightCount,
+			EscapeOneLineForLog(key)));
+		++appended;
+		if (appended >= maxCount) {
+			break;
+		}
+	}
+	if (appended == 0) {
+		lines.push_back("  none");
+	}
+}
+
 void RunFirstImportedModulePublicInfoTest()
 {
-	OutputStringToELog("[ModulePublicInfoTest] 开始抓取首个导入模块公开信息");
-
-	std::vector<std::string> paths;
-	std::string error;
-	if (!TryListImportedModulePathsForTest(paths, &error)) {
+	const std::string requestedPath = TrimAsciiCopy(g_autoRunModulePublicInfoRequestedPath);
+	std::string modulePath;
+	if (!requestedPath.empty()) {
 		OutputStringToELog(std::format(
-			"[ModulePublicInfoTest] 获取模块列表失败 error={}",
-			EscapeOneLineForLog(error)));
-		return;
+			"[ModulePublicInfoTest] 开始抓取指定模块公开信息 path={}",
+			EscapeOneLineForLog(requestedPath)));
+		std::string importError;
+		if (!EnsureModuleImportedForTest(requestedPath, &importError)) {
+			OutputStringToELog(std::format(
+				"[ModulePublicInfoTest] 指定模块导入失败 path={} error={}",
+				EscapeOneLineForLog(requestedPath),
+				EscapeOneLineForLog(importError)));
+			g_autoRunModulePublicInfoRequestedPath.clear();
+			return;
+		}
+		modulePath = requestedPath;
 	}
-	if (paths.empty()) {
-		OutputStringToELog("[ModulePublicInfoTest] 当前项目没有导入任何模块");
-		return;
+	else {
+		OutputStringToELog("[ModulePublicInfoTest] 开始抓取首个导入模块公开信息");
+
+		std::vector<std::string> paths;
+		std::string error;
+		if (!TryListImportedModulePathsForTest(paths, &error)) {
+			OutputStringToELog(std::format(
+				"[ModulePublicInfoTest] 获取模块列表失败 error={}",
+				EscapeOneLineForLog(error)));
+			return;
+		}
+		if (paths.empty()) {
+			OutputStringToELog("[ModulePublicInfoTest] 当前项目没有导入任何模块");
+			return;
+		}
+		modulePath = paths.front();
 	}
 
-	const std::string modulePath = paths.front();
+	e571::ModulePublicInfoDump localDump;
+	e571::ModulePublicInfoDump ideDump;
 	e571::ModulePublicInfoDump dump;
 	std::string loadError;
+	std::string localError;
+	std::string ideError;
+	const bool localOk = e571::LoadModulePublicInfoDumpFromSource(
+		modulePath,
+		GetCurrentProcessImageBase(),
+		e571::ModulePublicInfoLoadSource::kLocalEc,
+		&localDump,
+		&localError);
+	const bool ideOk = e571::LoadModulePublicInfoDumpFromSource(
+		modulePath,
+		GetCurrentProcessImageBase(),
+		e571::ModulePublicInfoLoadSource::kHiddenDialog,
+		&ideDump,
+		&ideError);
 	if (!e571::LoadModulePublicInfoDump(
 			modulePath,
 			GetCurrentProcessImageBase(),
@@ -1745,6 +1876,33 @@ void RunFirstImportedModulePublicInfoTest()
 				EscapeOneLineForLog(record.extractedStrings[s])));
 		}
 	}
+
+	lines.push_back("");
+	lines.push_back("[Compare]");
+	lines.push_back(std::format(
+		"local_ok={} local_records={} local_error={} local_trace={}",
+		localOk ? 1 : 0,
+		localDump.records.size(),
+		EscapeOneLineForLog(localError),
+		EscapeOneLineForLog(localDump.trace)));
+	lines.push_back(std::format(
+		"ide_ok={} ide_records={} ide_error={} ide_trace={}",
+		ideOk ? 1 : 0,
+		ideDump.records.size(),
+		EscapeOneLineForLog(ideError),
+		EscapeOneLineForLog(ideDump.trace)));
+	if (localOk && ideOk) {
+		const auto localCounts = BuildModuleRecordCountMapForTest(localDump);
+		const auto ideCounts = BuildModuleRecordCountMapForTest(ideDump);
+		AppendModuleRecordDiffLinesForTest("[LocalOnly]", localCounts, ideCounts, lines, 20);
+		AppendModuleRecordDiffLinesForTest("[IdeOnly]", ideCounts, localCounts, lines, 20);
+		OutputStringToELog(std::format(
+			"[ModulePublicInfoTest] 对比完成 path={} localRecords={} ideRecords={}",
+			EscapeOneLineForLog(modulePath),
+			localDump.records.size(),
+			ideDump.records.size()));
+	}
+
 	if (dump.records.size() > previewCount) {
 		OutputStringToELog(std::format(
 			"[ModulePublicInfoTest] 仅展示前 {} 条，剩余 {} 条请查看文件",
@@ -1756,6 +1914,7 @@ void RunFirstImportedModulePublicInfoTest()
 	OutputStringToELog(std::format(
 		"[ModulePublicInfoTest] 日志文件 path={}",
 		GetModulePublicInfoLogPath().string()));
+	g_autoRunModulePublicInfoRequestedPath.clear();
 }
 
 void RunFirstSupportLibraryInfoTest()

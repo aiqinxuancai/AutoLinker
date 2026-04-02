@@ -42,6 +42,8 @@ MSBuild.exe ..\\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platfo
 
 ### 测试
 
+#### 常规测试
+
 如果需要测试当前支持库，请先将AutoLinker.fne覆盖至"C:\Users\aiqin\OneDrive\e5.6\lib"，然后执行并调用：
 
 当前主要开发基于："C:\Users\aiqin\OneDrive\e5.6\e571.exe"
@@ -49,3 +51,6 @@ MSBuild.exe ..\\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platfo
 
 打开当前代码目录下的"test_a.e"文件。
 
+#### 非依赖易语言IDE的功能测试
+
+fne本质是一个dll文件，不分功能需要载入到IDE中测试，但有一些比如模块本地解析方法等，你可以使用AutoLinkerTest项目来完成测试。

@@ -1,4 +1,5 @@
-#include "native_module_public_info.hpp"
+﻿#include "native_module_public_info.hpp"
+#include "EcModulePublicInfoReader.h"
 
 #include <Windows.h>
 #include <CommCtrl.h>
@@ -795,226 +796,8 @@ bool ParseModulePublicInfoFromEcFile(
 	ModulePublicInfoDump& outDump,
 	std::string* outError)
 {
-	std::vector<unsigned char> bytes;
-	if (!ReadFileBytes(modulePath, bytes)) {
-		if (outError != nullptr) {
-			*outError = "read_module_file_failed";
-		}
-		return false;
-	}
-
-	const auto allStrings = ExtractMeaningfulNullTerminatedStrings(bytes, 0, bytes.size());
-	if (allStrings.empty()) {
-		if (outError != nullptr) {
-			*outError = "module_file_contains_no_readable_strings";
-		}
-		return false;
-	}
-
-	const std::string fileStem = std::filesystem::path(modulePath).stem().string();
-	std::string moduleName = fileStem;
-	for (const auto& entry : allStrings) {
-		if (entry.text == fileStem) {
-			moduleName = entry.text;
-			break;
-		}
-	}
-
-	std::string assemblyName;
-	std::string assemblyComment;
-	for (const auto& entry : allStrings) {
-		const size_t markerPos = entry.text.find("@备注:");
-		if (markerPos == std::string::npos) {
-			continue;
-		}
-
-		std::string left = TrimAsciiWhitespaceCopy(entry.text.substr(0, markerPos));
-		std::string right = TrimAsciiWhitespaceCopy(entry.text.substr(markerPos + std::strlen("@备注:")));
-		if (!left.empty()) {
-			assemblyName = left;
-		}
-		if (!right.empty()) {
-			assemblyComment = right;
-		}
-		break;
-	}
-
-	if (assemblyName.empty()) {
-		TryParseAssemblyHeaderText(allStrings, assemblyName, assemblyComment);
-	}
-
-	std::vector<ParsedProcedureItem> topLevelProcedures;
-	std::vector<ParsedProcedureItem> memberProcedures;
-	std::unordered_set<std::string> usedIdentifiers;
-	for (size_t offset = 0; offset + sizeof(kTopLevelProcedureCore) <= bytes.size(); ) {
-		ParsedProcedureItem item;
-		if (!TryParseProcedureItemAt(bytes, offset, assemblyName, item)) {
-			++offset;
-			continue;
-		}
-
-		if (!item.isPublic || item.name.empty() || item.name.front() == '_') {
-			offset = (std::max)(offset + 1, item.endOffset);
-			continue;
-		}
-
-		usedIdentifiers.insert(item.name);
-		for (const auto& param : item.params) {
-			usedIdentifiers.insert(param.name);
-		}
-
-		if (item.memberProcedure) {
-			memberProcedures.push_back(std::move(item));
-		}
-		else {
-			topLevelProcedures.push_back(std::move(item));
-		}
-		offset = (std::max)(offset + 1, item.endOffset);
-	}
-
-	std::vector<ModulePublicInfoRecord> records;
-	records.reserve(topLevelProcedures.size() + memberProcedures.size() + 16);
-
-	const auto appendProcedureRecords = [&](const std::vector<ParsedProcedureItem>& items) {
-		for (const auto& item : items) {
-			ModulePublicInfoRecord record;
-			record.tag = 308;
-			record.kind = "procedure";
-			record.name = item.name;
-			record.typeText = item.returnTypeText;
-			record.flagsText = item.isPublic ? "公开" : "";
-			record.comment = item.comment;
-			record.signatureText = BuildProcedureSignature(item);
-			record.params = item.params;
-			record.extractedStrings.push_back(item.name);
-			if (!item.comment.empty()) {
-				record.extractedStrings.push_back(item.comment);
-			}
-			for (const auto& param : item.params) {
-				record.extractedStrings.push_back(param.name);
-				if (!param.comment.empty()) {
-					record.extractedStrings.push_back(param.comment);
-				}
-			}
-			records.push_back(std::move(record));
-		}
-	};
-
-	appendProcedureRecords(topLevelProcedures);
-
-	if (!assemblyName.empty()) {
-		ModulePublicInfoRecord assemblyRecord;
-		assemblyRecord.tag = 305;
-		assemblyRecord.kind = "assembly";
-		assemblyRecord.name = assemblyName;
-		assemblyRecord.flagsText = "公开";
-		assemblyRecord.comment = assemblyComment;
-		assemblyRecord.signatureText = ".程序集 " + assemblyName + ", , 公开";
-		assemblyRecord.extractedStrings.push_back(assemblyName);
-		if (!assemblyComment.empty()) {
-			assemblyRecord.extractedStrings.push_back(assemblyComment);
-		}
-		records.push_back(std::move(assemblyRecord));
-	}
-
-	appendProcedureRecords(memberProcedures);
-
-	std::unordered_set<std::string> seenConstantNames;
-	for (size_t i = 0; i + 1 < allStrings.size(); ++i) {
-		const std::string& name = allStrings[i].text;
-		const std::string& comment = allStrings[i + 1].text;
-		if (usedIdentifiers.contains(name) ||
-			seenConstantNames.contains(name) ||
-			name == moduleName ||
-			name == assemblyName) {
-			continue;
-		}
-		if (!IsLikelyConstantName(name) || !IsLikelyCommentText(comment)) {
-			continue;
-		}
-		if (comment.size() < 2 || allStrings[i + 1].offset <= allStrings[i].offset) {
-			continue;
-		}
-		if (allStrings[i + 1].offset - allStrings[i].offset > 256) {
-			continue;
-		}
-
-		ModulePublicInfoRecord record;
-		record.tag = 307;
-		record.kind = "constant";
-		record.name = name;
-		record.flagsText = "公开";
-		record.comment = comment;
-		record.signatureText = std::format(".常量 {}, \"\", 公开, {}", name, comment);
-		record.extractedStrings.push_back(name);
-		record.extractedStrings.push_back(comment);
-		records.push_back(std::move(record));
-		seenConstantNames.insert(name);
-	}
-
-	if (records.empty()) {
-		if (outError != nullptr) {
-			*outError = "module_file_parse_produced_no_public_items";
-		}
-		return false;
-	}
-
-	std::vector<std::string> lines;
-	if (!moduleName.empty()) {
-		lines.push_back("模块名称：" + moduleName);
-		lines.push_back("");
-	}
-	if (!assemblyName.empty()) {
-		lines.push_back(assemblyName);
-		if (!assemblyComment.empty()) {
-			lines.push_back("@备注:");
-			lines.push_back(assemblyComment);
-		}
-		lines.push_back("");
-	}
-	lines.push_back("------------------------------");
-	lines.push_back("");
-	lines.push_back(".版本 2");
-	lines.push_back("");
-
-	for (const auto& record : records) {
-		if (!record.signatureText.empty()) {
-			lines.push_back(record.signatureText);
-		}
-		for (const auto& param : record.params) {
-			std::string paramLine = ".参数 " + param.name;
-			if (!param.typeText.empty()) {
-				paramLine += ", " + param.typeText;
-			}
-			if (!param.flagsText.empty()) {
-				paramLine += ", " + param.flagsText;
-			}
-			else {
-				paramLine += ", ";
-			}
-			if (!param.comment.empty()) {
-				paramLine += ", " + param.comment;
-			}
-			lines.push_back(std::move(paramLine));
-		}
-		lines.push_back("");
-	}
-
-	outDump = {};
-	outDump.modulePath = modulePath;
-	outDump.nativeResult = 1;
-	outDump.sourceKind = "ec_file_parser";
-	outDump.assemblyName = assemblyName;
-	outDump.assemblyComment = assemblyComment;
-	outDump.formattedText = JoinLines(lines);
-	outDump.trace = std::format(
-		"parser=ec_file public_records={} top_level={} member={} constants={}",
-		records.size(),
-		topLevelProcedures.size(),
-		memberProcedures.size(),
-		seenConstantNames.size());
-	outDump.records = std::move(records);
-	return true;
+	EcModulePublicInfoReader reader;
+	return reader.Load(modulePath, outDump, outError);
 }
 
 LRESULT CALLBACK HiddenModuleInfoDialogCbtProc(int code, WPARAM wParam, LPARAM lParam)
@@ -3081,9 +2864,10 @@ bool LoadModulePublicInfoDumpOnce(
 
 }  // namespace
 
-bool LoadModulePublicInfoDump(
+bool LoadModulePublicInfoDumpFromSource(
 	const std::string& modulePath,
 	std::uintptr_t moduleBase,
+	ModulePublicInfoLoadSource source,
 	ModulePublicInfoDump* outDump,
 	std::string* outError)
 {
@@ -3097,6 +2881,55 @@ bool LoadModulePublicInfoDump(
 	if (modulePath.empty()) {
 		if (outError != nullptr) {
 			*outError = "module path is empty";
+		}
+		return false;
+	}
+
+	if (source == ModulePublicInfoLoadSource::kLocalEc) {
+		ModulePublicInfoDump localDump;
+		const bool ok = ParseModulePublicInfoFromEcFile(modulePath, localDump, outError);
+		if (ok && outDump != nullptr) {
+			*outDump = std::move(localDump);
+		}
+		return ok;
+	}
+
+	if (source == ModulePublicInfoLoadSource::kHiddenDialog) {
+		ModulePublicInfoDump hiddenOnlyDump;
+		const bool ok = LoadModulePublicInfoDumpHiddenDialog(modulePath, moduleBase, hiddenOnlyDump, outError);
+		if (ok && outDump != nullptr) {
+			*outDump = std::move(hiddenOnlyDump);
+		}
+		return ok;
+	}
+
+	const auto& nativeAddrs = GetNativeModulePublicInfoAddresses(moduleBase);
+	if (source == ModulePublicInfoLoadSource::kNativeRecorder) {
+		if (!nativeAddrs.ok) {
+			if (outError != nullptr) {
+				*outError = "resolve_native_addresses_failed";
+			}
+			return false;
+		}
+
+		ModulePublicInfoDump nativeDump;
+		std::string nativeError;
+		const bool ok = LoadModulePublicInfoDumpOnce(modulePath, moduleBase, nativeAddrs, nativeDump, &nativeError);
+		if (ok) {
+			nativeDump.sourceKind = "native_recorder";
+			if (outDump != nullptr) {
+				*outDump = std::move(nativeDump);
+			}
+			if (outError != nullptr) {
+				outError->clear();
+			}
+			return true;
+		}
+		if (outDump != nullptr) {
+			*outDump = std::move(nativeDump);
+		}
+		if (outError != nullptr) {
+			*outError = nativeError.empty() ? "load_module_public_info_failed" : nativeError;
 		}
 		return false;
 	}
@@ -3147,6 +2980,7 @@ bool LoadModulePublicInfoDump(
 	ModulePublicInfoDump dump;
 	std::string firstError;
 	if (LoadModulePublicInfoDumpOnce(modulePath, moduleBase, addrs, dump, &firstError)) {
+		dump.sourceKind = "native_recorder";
 		if (outDump != nullptr) {
 			*outDump = std::move(dump);
 		}
@@ -3204,6 +3038,20 @@ bool LoadModulePublicInfoDump(
 			: (!hiddenError.empty() ? hiddenError : parseError);
 	}
 	return false;
+}
+
+bool LoadModulePublicInfoDump(
+	const std::string& modulePath,
+	std::uintptr_t moduleBase,
+	ModulePublicInfoDump* outDump,
+	std::string* outError)
+{
+	return LoadModulePublicInfoDumpFromSource(
+		modulePath,
+		moduleBase,
+		ModulePublicInfoLoadSource::kAuto,
+		outDump,
+		outError);
 }
 
 }  // namespace e571

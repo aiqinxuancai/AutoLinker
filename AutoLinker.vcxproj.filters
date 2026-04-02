@@ -47,7 +47,13 @@
     <ClCompile Include="src\AutoLinkerSupport.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\AutoLinkerTestApi.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\ConfigManager.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\EcModulePublicInfoReader.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="src\EideInternalTextBridge.cpp">
@@ -141,6 +147,12 @@
     <ClInclude Include="src\AutoLinkerInternal.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="src\AutoLinkerTestApi.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AutoLinkerVersion.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
     <ClInclude Include="src\AIConfigDialog.h">
       <Filter>AI</Filter>
     </ClInclude>
@@ -157,6 +169,9 @@
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\ConfigManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\EcModulePublicInfoReader.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\EideInternalTextBridge.h">

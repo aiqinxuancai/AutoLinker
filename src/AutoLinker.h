@@ -22,6 +22,8 @@
 
 #include <string>
 
+#include "AutoLinkerVersion.h"
+
 #include "..\\thirdparty\\json.hpp"
 
 
@@ -33,10 +35,6 @@ using json = nlohmann::json;
 
 
 #define LIBARAYNAME "AutoLinker_MessageNotify"
-
-
-
-#define AUTOLINKER_VERSION "0.0.0"
 
 
 

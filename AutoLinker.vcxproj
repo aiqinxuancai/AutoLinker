@@ -466,7 +466,16 @@
     <ClCompile Include="src\AutoLinkerMenu.cpp" />
     <ClCompile Include="src\AutoLinkerRuntime.cpp" />
     <ClCompile Include="src\AutoLinkerSupport.cpp" />
+    <ClCompile Include="src\AutoLinkerTestApi.cpp" />
     <ClCompile Include="src\ConfigManager.cpp" />
+    <ClCompile Include="src\EcModulePublicInfoReader.cpp">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='fne_debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='fne_release|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='static_lib_debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='static_lib_release|x64'">true</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="src\EideInternalTextBridge.cpp" />
     <ClCompile Include="src\direct_global_search.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -484,7 +493,6 @@
     <ClCompile Include="src\ModelManager.cpp" />
     <ClCompile Include="src\MouseBack.cpp" />
     <ClCompile Include="src\native_module_public_info.cpp">
-      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='fne_debug|x64'">true</ExcludedFromBuild>
@@ -523,12 +531,15 @@
     <ClInclude Include="elib\untshare.h" />
     <ClInclude Include="src\AutoLinker.h" />
     <ClInclude Include="src\AutoLinkerInternal.h" />
+    <ClInclude Include="src\AutoLinkerTestApi.h" />
+    <ClInclude Include="src\AutoLinkerVersion.h" />
     <ClInclude Include="src\AIConfigDialog.h" />
     <ClInclude Include="src\AIChatFeature.h" />
     <ClInclude Include="src\AIChatTooling.h" />
     <ClInclude Include="src\AIChatToolingInternal.h" />
     <ClInclude Include="src\AIService.h" />
     <ClInclude Include="src\ConfigManager.h" />
+    <ClInclude Include="src\EcModulePublicInfoReader.h" />
     <ClInclude Include="src\EideInternalTextBridge.h" />
     <ClInclude Include="src\direct_global_search.hpp" />
     <ClInclude Include="src\ECOMEx.h" />

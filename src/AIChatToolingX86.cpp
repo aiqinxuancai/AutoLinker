@@ -1221,6 +1221,8 @@ bool TryWriteJsonCacheFileForAI(const std::filesystem::path& path, const nlohman
 	}
 }
 
+constexpr const char* kModulePublicInfoCacheSchemaForAI = "module_public_info_v2";
+
 nlohmann::json SerializeModulePublicInfoParamForAI(const e571::ModulePublicInfoParam& param)
 {
 	nlohmann::json row = nlohmann::json::object();
@@ -1424,7 +1426,7 @@ bool TryLoadModulePublicInfoCacheEntryFromJsonForAI(
 {
 	outEntry = {};
 	if (!cacheJson.is_object() ||
-		cacheJson.value("schema", std::string()) != "module_public_info_v1" ||
+		cacheJson.value("schema", std::string()) != kModulePublicInfoCacheSchemaForAI ||
 		cacheJson.value("md5", std::string()) != md5 ||
 		!cacheJson.contains("dump")) {
 		return false;
@@ -1601,7 +1603,7 @@ bool TryLoadModulePublicInfoCacheEntryForAI(
 
 	if (ok) {
 		nlohmann::json cacheJson = nlohmann::json::object();
-		cacheJson["schema"] = "module_public_info_v1";
+		cacheJson["schema"] = kModulePublicInfoCacheSchemaForAI;
 		cacheJson["md5"] = md5;
 		cacheJson["dump"] = SerializeModulePublicInfoDumpForAI(loadedDump);
 		TryWriteJsonCacheFileForAI(GetModulePublicInfoCachePathForAI(md5), cacheJson);

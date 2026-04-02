@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cstdint>
 #include <string>
@@ -42,6 +42,21 @@ struct ModulePublicInfoDump {
 	int nativeResult = -1;
 	std::vector<ModulePublicInfoRecord> records;
 };
+
+// 模块公开信息加载来源。
+enum class ModulePublicInfoLoadSource {
+	kAuto,
+	kHiddenDialog,
+	kLocalEc,
+	kNativeRecorder,
+};
+
+bool LoadModulePublicInfoDumpFromSource(
+	const std::string& modulePath,
+	std::uintptr_t moduleBase,
+	ModulePublicInfoLoadSource source,
+	ModulePublicInfoDump* outDump,
+	std::string* outError);
 
 bool LoadModulePublicInfoDump(
 	const std::string& modulePath,
