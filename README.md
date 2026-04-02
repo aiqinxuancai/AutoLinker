@@ -1,12 +1,22 @@
 # AutoLinker
 
-AutoLinker支持库，通过各种方法实现以下功能：
-* 不同的.e源文件使用不同的链接器
-* 调试、编译时动静态ec自动切换
-* 重写核心库函数
+AutoLinker支持库，通过逆向实现易语言上的AI Agent，即代码全自动编写，会自动根据你的需求，查找、获取相关代码，并直接对代码进行编辑、修改、插入功能。
 
 ## 使用方法
-编译后将AutoLinker.fne放在e的lib目录中，并启用AutoLinker支持库。
+编译后将AutoLinker.fne放在易语言的lib目录中，并启用AutoLinker支持库。
+
+### ⭐右键菜单 AI 功能
+1. `AI优化函数` 对当前函数做等价优化。
+2. `AI为当前函数添加注释`
+3. `AI翻译当前函数+变量名` 将函数名、参数名、局部变量名翻译/重命名为英文 `lowerCamelCase`。
+4. `AI翻译选中文本`
+5. `AI按当前页类型添加代码` 根据“当前页类型 + 你的需求 + 当前页上下文”生成新增代码。
+
+### ⭐AI Agent 会话页签
+
+<img width="989" height="644" alt="QQ20260401-134616" src="https://github.com/user-attachments/assets/7a08de65-5107-4d0e-a6f1-3314cb813d67" />
+
+- 支持本地 MCP 工具调用（如读取当前页代码、搜索代码、搜索支持库内容、搜索模块内容）。
 
 ### ⭐不同的.e源文件使用不同的链接器
 
@@ -31,19 +41,7 @@ AutoLinker支持库，通过各种方法实现以下功能：
   VMPSDK.ec=VMPSDK_LIB.ec
   ```
 
-## AutoLinker AI 功能使用说明
-
-### ⭐右键菜单 AI 功能
-1. `AI优化函数` 对当前函数做等价优化。
-2. `AI为当前函数添加注释`
-3. `AI翻译当前函数+变量名` 将函数名、参数名、局部变量名翻译/重命名为英文 `lowerCamelCase`。
-4. `AI翻译选中文本`
-5. `AI按当前页类型添加代码` 根据“当前页类型 + 你的需求 + 当前页上下文”生成新增代码。
-
-### ⭐AI 会话页签（内置 TAB）
-<img width="531" height="680" alt="image" src="https://github.com/user-attachments/assets/5e468094-649e-4620-a2e4-0fa586cf8547" />
-
-- 支持本地 MCP 工具调用（如读取当前页代码、搜索代码、搜索支持库内容、搜索模块内容、弹出代码修改对话框）。
+---
 
 ## AutoLinker 本地 MCP 文档
 
@@ -68,7 +66,7 @@ AutoLinker支持库，通过各种方法实现以下功能：
 ### ⭐客户端接入 JSON 示例
 
 #### 通用 HTTP MCP 配置
-- 如果你的 MCP 客户端支持基于 HTTP 的 MCP，可直接配置为：
+- 如果你的 MCP 客户端支持基于 HTTP 的 MCP，可直接配置为，默认端口19207，如果占用则顺延+1：
   ```json
   {
     "mcpServers": {
@@ -79,43 +77,8 @@ AutoLinker支持库，通过各种方法实现以下功能：
     }
   }
   ```
-
-#### 某些客户端的简化写法
-- 有些客户端不要求显式写 `transport`，可写成：
-  ```json
-  {
-    "mcpServers": {
-      "AutoLinker": {
-        "url": "http://127.0.0.1:19207/mcp"
-      }
-    }
-  }
-  ```
-
-#### 如果端口被自动顺延
-- 当 `19207` 被占用时，AutoLinker 会自动尝试后续端口，所以客户端配置中的 `url` 需要与 E 输出窗口中的实际监听地址保持一致，例如：
-  ```json
-  {
-    "mcpServers": {
-      "AutoLinker": {
-        "transport": "streamable_http",
-        "url": "http://127.0.0.1:19208/mcp"
-      }
-    }
-  }
-  ```
-
-#### 说明
+  
 - AutoLinker 当前提供的是本地 HTTP MCP 服务，不是 `stdio` 型 MCP。
-- 如果某个客户端只支持 `stdio` 方式而不支持 HTTP/Streamable HTTP，则不能直接接入当前版本的 AutoLinker MCP。
-
-### ⭐HTTP 访问说明
-- `GET /` 或 `GET /mcp`
-  - 返回服务健康信息和当前 `mcp_endpoint`
-- `POST /mcp`
-  - 发送 JSON-RPC 请求
-- `OPTIONS /mcp`
-  - CORS 预检
 
 ### ⭐tools/list 返回的当前公开工具
 
@@ -151,108 +114,7 @@ AutoLinker支持库，通过各种方法实现以下功能：
 | 联网 | `fetch_url` | 抓取指定 URL 原始文本响应 |
 | 联网 | `extract_web_document` | 提取网页正文与链接摘要 |
 
-### ⭐tools/call 参数说明
-- 调用格式：
-  ```json
-  {
-    "jsonrpc": "2.0",
-    "id": 1,
-    "method": "tools/call",
-    "params": {
-      "name": "get_current_page_info",
-      "arguments": {}
-    }
-  }
-  ```
-- `params.name`
-  - 工具名称
-- `params.arguments`
-  - 工具参数对象
-
-### ⭐常用调用示例
-
-#### 列出工具
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/list",
-  "params": {}
-}
-```
-
-#### 获取当前页信息
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 2,
-  "method": "tools/call",
-  "params": {
-    "name": "get_current_page_info",
-    "arguments": {}
-  }
-}
-```
-
-#### 获取当前页代码
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 3,
-  "method": "tools/call",
-  "params": {
-    "name": "get_current_page_code",
-    "arguments": {}
-  }
-}
-```
-
-#### 搜索项目关键词
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 4,
-  "method": "tools/call",
-  "params": {
-    "name": "search_project_keyword",
-    "arguments": {
-      "keyword": "subWinHwnd",
-      "limit": 20
-    }
-  }
-}
-```
-
-#### 跳转到某条搜索结果
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 5,
-  "method": "tools/call",
-  "params": {
-    "name": "jump_to_search_result",
-    "arguments": {
-      "jump_token": "v1:1:1224804111:315:0:0"
-    }
-  }
-}
-```
-
-### ⭐会改变 IDE 当前页的工具
-- 以下工具具有副作用，会导致当前 IDE 页面或光标位置发生变化：
-  - `get_program_item_real_code`
-  - `switch_to_program_item_page`
-  - `jump_to_search_result`
-- 使用这些工具前后，不要假定当前页仍保持不变。
-
-### ⭐关于“伪代码参考”的说明
-- 以下来源拿到的代码/结构，不等同于 IDE 中用户正在编辑的原始页内容：
-  - `get_module_public_info`
-  - `search_module_public_info`
-  - `list_program_items` 中附带的代码
-  - `search_project_keyword` 的结果文本及其后续关联代码
-- 这些内容适合做定位、检索、接口参考，但不应当当作 100% 原样源码。
-
+---
 
 ## 其他功能
 
