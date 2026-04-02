@@ -49,6 +49,9 @@ struct SupportLibraryDumpCacheEntry {
 	nlohmann::json dumpJson = nlohmann::json::object();
 	std::string error;
 	bool ok = false;
+	std::string sourceKind;
+	std::string normalizedText;
+	std::vector<std::string> lines;
 };
 
 std::mutex g_modulePublicInfoCacheMutex;
@@ -1418,6 +1421,247 @@ void BuildModulePublicInfoLineCacheForAI(ModulePublicInfoCacheEntry& entry)
 	entry.lines = SplitLinesCopyForAI(entry.normalizedText);
 }
 
+std::string JoinLinesForAI(const std::vector<std::string>& lines)
+{
+	std::string text;
+	for (size_t i = 0; i < lines.size(); ++i) {
+		text += lines[i];
+		if (i + 1 < lines.size()) {
+			text += "\n";
+		}
+	}
+	return text;
+}
+
+std::string GetJsonStringFieldLocalForAI(const nlohmann::json& row, const char* key)
+{
+	if (!row.is_object() || key == nullptr) {
+		return std::string();
+	}
+	if (!row.contains(key) || !row[key].is_string()) {
+		return std::string();
+	}
+	return Utf8ToLocalText(row[key].get<std::string>());
+}
+
+int GetJsonIntFieldForAI(const nlohmann::json& row, const char* key, int defaultValue = 0)
+{
+	if (!row.is_object() || key == nullptr) {
+		return defaultValue;
+	}
+	if (!row.contains(key) || !row[key].is_number_integer()) {
+		return defaultValue;
+	}
+	return row[key].get<int>();
+}
+
+std::string DecodeSupportLibraryDataTypeForAI(int typeValue)
+{
+	const DATA_TYPE type = static_cast<DATA_TYPE>(typeValue);
+	const bool isArray = (type & DT_IS_ARY) != 0;
+	const bool isVar = (type & DT_IS_VAR) != 0;
+	const DATA_TYPE baseType = static_cast<DATA_TYPE>(type & ~DT_IS_ARY);
+
+	std::string text;
+	switch (baseType) {
+	case _SDT_NULL: text = "空类型"; break;
+	case _SDT_ALL: text = "通用型"; break;
+	case SDT_BYTE: text = "字节型"; break;
+	case SDT_SHORT: text = "短整数型"; break;
+	case SDT_INT: text = "整数型"; break;
+	case SDT_INT64: text = "长整数型"; break;
+	case SDT_FLOAT: text = "小数型"; break;
+	case SDT_DOUBLE: text = "双精度小数型"; break;
+	case SDT_BOOL: text = "逻辑型"; break;
+	case SDT_DATE_TIME: text = "日期时间型"; break;
+	case SDT_TEXT: text = "文本型"; break;
+	case SDT_BIN: text = "字节集"; break;
+	case SDT_SUB_PTR: text = "子程序指针"; break;
+	case SDT_STATMENT: text = "子语句"; break;
+	default:
+		if ((baseType & DTM_USER_DATA_TYPE_MASK) != 0) {
+			text = std::format("用户自定义类型(0x{:08X})", static_cast<unsigned int>(baseType));
+		}
+		else if ((baseType & DTM_SYS_DATA_TYPE_MASK) != 0) {
+			text = std::format("系统类型(0x{:08X})", static_cast<unsigned int>(baseType));
+		}
+		else {
+			text = std::format("库类型(0x{:08X})", static_cast<unsigned int>(baseType));
+		}
+		break;
+	}
+
+	if (isArray) {
+		text += "[]";
+	}
+	if (isVar) {
+		text += "&";
+	}
+	return text;
+}
+
+std::string DecodeSupportLibraryConstTypeForAI(int typeValue)
+{
+	switch (static_cast<SHORT>(typeValue)) {
+	case CT_NULL: return "空";
+	case CT_NUM: return "数值";
+	case CT_BOOL: return "逻辑";
+	case CT_TEXT: return "文本";
+	default: return std::format("未知({})", typeValue);
+	}
+}
+
+std::string BuildSupportLibraryPublicTextFromDumpForAI(const nlohmann::json& dumpJson)
+{
+	if (!dumpJson.is_object()) {
+		return std::string();
+	}
+
+	std::vector<std::string> lines;
+	const std::string supportLibraryName = GetJsonStringFieldLocalForAI(dumpJson, "support_library_name");
+	const std::string versionText = GetJsonStringFieldLocalForAI(dumpJson, "version");
+	const std::string explainText = GetJsonStringFieldLocalForAI(dumpJson, "explain");
+	const std::string authorText = GetJsonStringFieldLocalForAI(dumpJson, "author");
+	const std::string filePath = GetJsonStringFieldLocalForAI(dumpJson, "file_path");
+
+	if (!supportLibraryName.empty()) {
+		lines.push_back("支持库名称：" + supportLibraryName);
+	}
+	if (!versionText.empty()) {
+		lines.push_back("版本：" + versionText);
+	}
+	if (!authorText.empty()) {
+		lines.push_back("作者：" + authorText);
+	}
+	if (!filePath.empty()) {
+		lines.push_back("文件路径：" + filePath);
+	}
+	if (!explainText.empty()) {
+		lines.push_back("说明：" + explainText);
+	}
+
+	if (dumpJson.contains("commands") && dumpJson["commands"].is_array()) {
+		lines.push_back("");
+		lines.push_back("[命令]");
+		for (const auto& cmd : dumpJson["commands"]) {
+			const std::string nameText = GetJsonStringFieldLocalForAI(cmd, "name");
+			const std::string categoryText = std::to_string(GetJsonIntFieldForAI(cmd, "category", 0));
+			const std::string returnTypeText = DecodeSupportLibraryDataTypeForAI(
+				GetJsonIntFieldForAI(cmd, "return_type", 0));
+			const std::string explain = GetJsonStringFieldLocalForAI(cmd, "explain");
+
+			lines.push_back(std::format(
+				".命令 {}, {}, 分类={}",
+				nameText.empty() ? std::string("<未命名>") : nameText,
+				returnTypeText,
+				categoryText));
+			if (!explain.empty()) {
+				lines.push_back("  说明：" + explain);
+			}
+
+			if (cmd.contains("args") && cmd["args"].is_array()) {
+				for (const auto& arg : cmd["args"]) {
+					const std::string argName = GetJsonStringFieldLocalForAI(arg, "name");
+					const std::string argExplain = GetJsonStringFieldLocalForAI(arg, "explain");
+					const std::string argTypeText = DecodeSupportLibraryDataTypeForAI(
+						GetJsonIntFieldForAI(arg, "data_type", 0));
+					std::string argLine = std::format(
+						"  .参数 {}, {}",
+						argName.empty() ? std::string("<未命名>") : argName,
+						argTypeText);
+					if (!argExplain.empty()) {
+						argLine += ", " + argExplain;
+					}
+					lines.push_back(std::move(argLine));
+				}
+			}
+		}
+	}
+
+	if (dumpJson.contains("data_types") && dumpJson["data_types"].is_array()) {
+		lines.push_back("");
+		lines.push_back("[数据类型]");
+		for (const auto& item : dumpJson["data_types"]) {
+			const std::string nameText = GetJsonStringFieldLocalForAI(item, "name");
+			const std::string explain = GetJsonStringFieldLocalForAI(item, "explain");
+			lines.push_back(std::format(
+				".数据类型 {}",
+				nameText.empty() ? std::string("<未命名>") : nameText));
+			if (!explain.empty()) {
+				lines.push_back("  说明：" + explain);
+			}
+
+			if (item.contains("members") && item["members"].is_array()) {
+				for (const auto& member : item["members"]) {
+					const std::string memberName = GetJsonStringFieldLocalForAI(member, "name");
+					const std::string memberExplain = GetJsonStringFieldLocalForAI(member, "explain");
+					const std::string memberTypeText = DecodeSupportLibraryDataTypeForAI(
+						GetJsonIntFieldForAI(member, "data_type", 0));
+					std::string memberLine = std::format(
+						"  .成员 {}, {}",
+						memberName.empty() ? std::string("<未命名>") : memberName,
+						memberTypeText);
+					if (!memberExplain.empty()) {
+						memberLine += ", " + memberExplain;
+					}
+					lines.push_back(std::move(memberLine));
+				}
+			}
+
+			if (item.contains("member_commands") && item["member_commands"].is_array()) {
+				for (const auto& memberCmd : item["member_commands"]) {
+					const std::string memberCmdName = GetJsonStringFieldLocalForAI(memberCmd, "name");
+					if (!memberCmdName.empty()) {
+						lines.push_back("  .成员命令 " + memberCmdName);
+					}
+				}
+			}
+		}
+	}
+
+	if (dumpJson.contains("constants") && dumpJson["constants"].is_array()) {
+		lines.push_back("");
+		lines.push_back("[常量]");
+		for (const auto& item : dumpJson["constants"]) {
+			const std::string nameText = GetJsonStringFieldLocalForAI(item, "name");
+			const std::string explain = GetJsonStringFieldLocalForAI(item, "explain");
+			const std::string textValue = GetJsonStringFieldLocalForAI(item, "text_value");
+			const std::string constTypeText = DecodeSupportLibraryConstTypeForAI(
+				GetJsonIntFieldForAI(item, "type", 0));
+			std::string line = std::format(
+				".常量 {}, {}",
+				nameText.empty() ? std::string("<未命名>") : nameText,
+				constTypeText);
+			if (!textValue.empty()) {
+				line += ", " + textValue;
+			}
+			else if (item.contains("numeric_value") && item["numeric_value"].is_number()) {
+				line += ", " + item["numeric_value"].dump();
+			}
+			if (!explain.empty()) {
+				line += ", " + explain;
+			}
+			lines.push_back(std::move(line));
+		}
+	}
+
+	return JoinLinesForAI(lines);
+}
+
+void BuildSupportLibraryLineCacheForAI(SupportLibraryDumpCacheEntry& entry)
+{
+	std::string text = GetJsonStringFieldLocalForAI(entry.dumpJson, "formatted_text");
+	if (text.empty()) {
+		text = BuildSupportLibraryPublicTextFromDumpForAI(entry.dumpJson);
+		if (!text.empty()) {
+			entry.dumpJson["formatted_text"] = LocalToUtf8Text(text);
+		}
+	}
+
+	entry.normalizedText = NormalizeLineBreaksForAI(text);
+	entry.lines = SplitLinesCopyForAI(entry.normalizedText);
+}
+
 bool TryLoadModulePublicInfoCacheEntryFromJsonForAI(
 	const nlohmann::json& cacheJson,
 	const std::string& fallbackModulePath,
@@ -2372,6 +2616,8 @@ bool TryLoadSupportLibraryDumpCachedForAI(
 			entry.dumpJson = cachedDump;
 			entry.error.clear();
 			entry.ok = true;
+			entry.sourceKind = "getnewinf";
+			BuildSupportLibraryLineCacheForAI(entry);
 			{
 				std::lock_guard<std::mutex> guard(g_supportLibraryDumpCacheMutex);
 				g_supportLibraryDumpCache[cacheKey] = entry;
@@ -2394,6 +2640,8 @@ bool TryLoadSupportLibraryDumpCachedForAI(
 	entry.dumpJson = loadedJson;
 	entry.error = loadError;
 	entry.ok = ok;
+	entry.sourceKind = "getnewinf";
+	BuildSupportLibraryLineCacheForAI(entry);
 	{
 		std::lock_guard<std::mutex> guard(g_supportLibraryDumpCacheMutex);
 		g_supportLibraryDumpCache[cacheKey] = std::move(entry);
@@ -2410,6 +2658,52 @@ bool TryLoadSupportLibraryDumpCachedForAI(
 	outJson = std::move(loadedJson);
 	outError = loadError;
 	return ok;
+}
+
+bool TryLoadSupportLibraryDumpCacheEntryByMd5ForAI(
+	const std::string& md5,
+	SupportLibraryDumpCacheEntry& outEntry,
+	std::string& outError)
+{
+	outEntry = {};
+	outError.clear();
+
+	const std::string trimmedMd5 = TrimAsciiCopy(md5);
+	if (trimmedMd5.empty()) {
+		outError = "md5 is required";
+		return false;
+	}
+
+	{
+		std::lock_guard<std::mutex> guard(g_supportLibraryDumpCacheMutex);
+		for (const auto& [cacheKey, entry] : g_supportLibraryDumpCache) {
+			(void)cacheKey;
+			if (entry.md5 == trimmedMd5) {
+				outEntry = entry;
+				outError = entry.error;
+				return entry.ok;
+			}
+		}
+	}
+
+	nlohmann::json cacheJson = nlohmann::json::object();
+	if (!TryReadJsonCacheFileForAI(GetSupportLibraryInfoCachePathForAI(trimmedMd5), cacheJson) ||
+		!cacheJson.is_object() ||
+		cacheJson.value("schema", "") != "support_library_info_v1" ||
+		cacheJson.value("md5", "") != trimmedMd5 ||
+		!cacheJson.contains("dump") ||
+		!cacheJson["dump"].is_object()) {
+		outError = "support library cache not found by md5";
+		return false;
+	}
+
+	outEntry.md5 = trimmedMd5;
+	outEntry.dumpJson = cacheJson["dump"];
+	outEntry.error.clear();
+	outEntry.ok = true;
+	outEntry.sourceKind = "getnewinf";
+	BuildSupportLibraryLineCacheForAI(outEntry);
+	return true;
 }
 
 const char* GetModulePublicInfoTagKeyForAI(int tag)
@@ -2818,6 +3112,265 @@ std::string BuildSearchSupportLibraryInfoJsonOnMainThread(const std::string& arg
 	r["match_count"] = matches.size();
 	r["warning"] = LocalToUtf8Text("支持库检索优先来自支持库文件 GetNewInf/lib2.h 结构解析；无法解析文件时退回 IDE 返回的支持库信息文本。结果属于公开接口参考，不是项目源码页。");
 	r["matches"] = std::move(matches);
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+bool TryResolveSupportLibraryEntryForReadForAI(
+	const nlohmann::json& args,
+	SupportLibraryDumpCacheEntry& outEntry,
+	SupportLibraryInfoHeaderForAI* outHeader,
+	std::string& outError)
+{
+	outEntry = {};
+	outError.clear();
+	if (outHeader != nullptr) {
+		*outHeader = {};
+	}
+
+	const std::string md5 = args.contains("md5") && args["md5"].is_string()
+		? TrimAsciiCopy(args["md5"].get<std::string>())
+		: std::string();
+	if (!md5.empty()) {
+		return TryLoadSupportLibraryDumpCacheEntryByMd5ForAI(md5, outEntry, outError);
+	}
+
+	SupportLibraryInfoHeaderForAI header;
+	if (!ResolveSupportLibraryHeaderForAI(args, header, outError)) {
+		return false;
+	}
+	if (outHeader != nullptr) {
+		*outHeader = header;
+	}
+
+	if (!header.filePath.empty()) {
+		std::string loadError;
+		nlohmann::json dumpJson = nlohmann::json::object();
+		if (TryLoadSupportLibraryDumpCachedForAI(header.filePath, dumpJson, loadError, nullptr)) {
+			outEntry.dumpJson = std::move(dumpJson);
+			outEntry.ok = true;
+			outEntry.error.clear();
+			outEntry.sourceKind = "getnewinf";
+			TryGetFileMd5HexForAI(header.filePath, outEntry.md5);
+			BuildSupportLibraryLineCacheForAI(outEntry);
+			return true;
+		}
+	}
+
+	outEntry.dumpJson = nlohmann::json::object();
+	outEntry.dumpJson["ok"] = true;
+	outEntry.dumpJson["support_library_name"] = LocalToUtf8Text(header.name);
+	outEntry.dumpJson["file_path"] = LocalToUtf8Text(header.filePath);
+	outEntry.dumpJson["file_name"] = LocalToUtf8Text(header.fileName);
+	outEntry.dumpJson["version"] = LocalToUtf8Text(header.versionText);
+	outEntry.dumpJson["info_text"] = LocalToUtf8Text(header.rawText);
+	outEntry.dumpJson["formatted_text"] = LocalToUtf8Text(header.rawText);
+	outEntry.ok = true;
+	outEntry.sourceKind = "ide_text";
+	outEntry.normalizedText = NormalizeLineBreaksForAI(header.rawText);
+	outEntry.lines = SplitLinesCopyForAI(outEntry.normalizedText);
+	return true;
+}
+
+std::string BuildSearchSupportLibraryPublicCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const std::string keyword = args.contains("keyword") && args["keyword"].is_string()
+		? Utf8ToLocalText(args["keyword"].get<std::string>())
+		: std::string();
+	const int limit = args.contains("limit") && args["limit"].is_number_integer()
+		? (std::clamp)(args["limit"].get<int>(), 1, 500)
+		: 100;
+
+	const std::string keywordLocal = TrimAsciiCopy(keyword);
+	if (keywordLocal.empty()) {
+		return R"({"ok":false,"error":"keyword is required"})";
+	}
+	const std::string keywordLower = ToLowerAsciiCopyLocal(keywordLocal);
+
+	std::vector<SupportLibraryInfoHeaderForAI> libs;
+	std::string error;
+	if (args.contains("index") || args.contains("name") || args.contains("file_path")) {
+		SupportLibraryInfoHeaderForAI header;
+		if (!ResolveSupportLibraryHeaderForAI(args, header, error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error;
+			return Utf8ToLocalText(r.dump());
+		}
+		libs.push_back(std::move(header));
+	}
+	else if (!TryListSupportLibrariesForAI(libs, &error)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = error.empty() ? "list support libraries failed" : error;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	nlohmann::json matches = nlohmann::json::array();
+	for (const auto& lib : libs) {
+		nlohmann::json resolveArgs = nlohmann::json::object();
+		if (lib.index >= 0) {
+			resolveArgs["index"] = lib.index;
+		}
+		if (!lib.filePath.empty()) {
+			resolveArgs["file_path"] = LocalToUtf8Text(lib.filePath);
+		}
+		else if (!lib.name.empty()) {
+			resolveArgs["name"] = LocalToUtf8Text(lib.name);
+		}
+
+		SupportLibraryDumpCacheEntry entry;
+		SupportLibraryInfoHeaderForAI resolvedHeader;
+		std::string loadError;
+		if (!TryResolveSupportLibraryEntryForReadForAI(resolveArgs, entry, &resolvedHeader, loadError)) {
+			continue;
+		}
+
+		for (size_t lineIndex = 0;
+			lineIndex < entry.lines.size() && static_cast<int>(matches.size()) < limit;
+			++lineIndex) {
+			const std::string& line = entry.lines[lineIndex];
+			if (!ContainsKeywordInsensitiveForAI(line, keywordLocal, keywordLower)) {
+				continue;
+			}
+
+			nlohmann::json row;
+			row["support_library_name"] = LocalToUtf8Text(
+				GetJsonStringFieldLocalForAI(entry.dumpJson, "support_library_name"));
+			row["file_path"] = LocalToUtf8Text(
+				GetJsonStringFieldLocalForAI(entry.dumpJson, "file_path"));
+			row["file_name"] = LocalToUtf8Text(
+				GetJsonStringFieldLocalForAI(entry.dumpJson, "file_name"));
+			row["md5"] = entry.md5;
+			row["source_kind"] = entry.sourceKind;
+			row["line_number"] = static_cast<int>(lineIndex) + 1;
+			row["text"] = LocalToUtf8Text(line);
+			if (!entry.md5.empty()) {
+				row["cache_path"] = LocalToUtf8Text(GetSupportLibraryInfoCachePathForAI(entry.md5).string());
+			}
+			matches.push_back(std::move(row));
+		}
+
+		if (static_cast<int>(matches.size()) >= limit) {
+			break;
+		}
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["keyword"] = LocalToUtf8Text(keywordLocal);
+	r["match_count"] = matches.size();
+	r["warning"] = LocalToUtf8Text("这里搜索的是支持库公开信息的按行文本。优先来自支持库文件 GetNewInf/lib2.h 结构解析；无法定位文件时退回 IDE 支持库信息文本。结果属于公开接口参考，不是项目源码页。");
+	r["matches"] = std::move(matches);
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+std::string BuildReadSupportLibraryPublicCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const int startLine = args.contains("start_line") && args["start_line"].is_number_integer()
+		? args["start_line"].get<int>()
+		: -1;
+	const int endLine = args.contains("end_line") && args["end_line"].is_number_integer()
+		? args["end_line"].get<int>()
+		: startLine;
+	if (startLine <= 0 || endLine <= 0 || endLine < startLine) {
+		return R"({"ok":false,"error":"start_line/end_line is invalid"})";
+	}
+
+	SupportLibraryDumpCacheEntry entry;
+	SupportLibraryInfoHeaderForAI header;
+	std::string loadError;
+	if (!TryResolveSupportLibraryEntryForReadForAI(args, entry, &header, loadError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = loadError.empty() ? "load support library public code failed" : loadError;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const int totalLines = static_cast<int>(entry.lines.size());
+	if (totalLines <= 0) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "support library public code text is empty";
+		r["support_library_name"] = LocalToUtf8Text(
+			GetJsonStringFieldLocalForAI(entry.dumpJson, "support_library_name"));
+		r["file_path"] = LocalToUtf8Text(
+			GetJsonStringFieldLocalForAI(entry.dumpJson, "file_path"));
+		r["md5"] = entry.md5;
+		return Utf8ToLocalText(r.dump());
+	}
+	if (startLine > totalLines) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "start_line exceeds total_lines";
+		r["support_library_name"] = LocalToUtf8Text(
+			GetJsonStringFieldLocalForAI(entry.dumpJson, "support_library_name"));
+		r["file_path"] = LocalToUtf8Text(
+			GetJsonStringFieldLocalForAI(entry.dumpJson, "file_path"));
+		r["md5"] = entry.md5;
+		r["total_lines"] = totalLines;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const int clampedEndLine = (std::min)(endLine, totalLines);
+	nlohmann::json lines = nlohmann::json::array();
+	std::string text;
+	for (int lineNo = startLine; lineNo <= clampedEndLine; ++lineNo) {
+		const std::string& line = entry.lines[static_cast<size_t>(lineNo - 1)];
+		if (!text.empty()) {
+			text += "\n";
+		}
+		text += line;
+		lines.push_back({
+			{"line_number", lineNo},
+			{"text", LocalToUtf8Text(line)}
+		});
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["support_library_name"] = LocalToUtf8Text(
+		GetJsonStringFieldLocalForAI(entry.dumpJson, "support_library_name"));
+	r["file_path"] = LocalToUtf8Text(
+		GetJsonStringFieldLocalForAI(entry.dumpJson, "file_path"));
+	r["file_name"] = LocalToUtf8Text(
+		GetJsonStringFieldLocalForAI(entry.dumpJson, "file_name"));
+	r["md5"] = entry.md5;
+	r["source_kind"] = entry.sourceKind;
+	r["total_lines"] = totalLines;
+	r["start_line"] = startLine;
+	r["end_line"] = clampedEndLine;
+	r["returned_line_count"] = clampedEndLine - startLine + 1;
+	r["code_kind"] = "pseudo_reference";
+	r["warning"] = LocalToUtf8Text("这里返回的是支持库公开信息文本的指定行范围。优先来自支持库文件 GetNewInf/lib2.h 结构解析；无法定位文件时退回 IDE 支持库信息文本。结果属于公开接口参考，不是项目源码页。");
+	if (!entry.md5.empty()) {
+		r["cache_path"] = LocalToUtf8Text(GetSupportLibraryInfoCachePathForAI(entry.md5).string());
+	}
+	r["text"] = LocalToUtf8Text(text);
+	r["lines"] = std::move(lines);
 	outOk = true;
 	return Utf8ToLocalText(r.dump());
 }
@@ -4770,6 +5323,14 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 
 	if (toolName == "search_support_library_info") {
 		return BuildSearchSupportLibraryInfoJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "search_support_library_public_code") {
+		return BuildSearchSupportLibraryPublicCodeJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "read_support_library_public_code") {
+		return BuildReadSupportLibraryPublicCodeJsonOnMainThread(argumentsJson, outOk);
 	}
 
 	if (toolName == "get_module_public_info") {

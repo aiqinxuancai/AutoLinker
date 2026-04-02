@@ -1,0 +1,42 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+      - duplicate
+      - invalid
+      - question
+      - wontfix
+  categories:
+    - title: 新功能
+      labels:
+        - feature
+        - enhancement
+        - feat
+    - title: 问题修复
+      labels:
+        - fix
+        - bug
+        - bugfix
+        - regression
+    - title: 优化调整
+      labels:
+        - refactor
+        - optimize
+        - performance
+        - cleanup
+    - title: 文档与说明
+      labels:
+        - docs
+        - documentation
+    - title: 构建与 CI
+      labels:
+        - ci
+        - build
+        - dependencies
+    - title: 测试相关
+      labels:
+        - test
+        - tests
+    - title: 其他更新
+      labels:
+        - chore

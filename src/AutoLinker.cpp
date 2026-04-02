@@ -54,21 +54,11 @@ std::string ReadAutoRunMarkerText(const std::filesystem::path& path)
 	return text;
 }
 
-constexpr UINT WM_AUTOLINKER_WARMUP_MODULE_PUBLIC_INFO = WM_USER + 1004;
-
 struct AddInMenuEntry {
 	const char* title;
 	const char* description;
 	void (*handler)();
 };
-
-void WarmupModulePublicInfoCacheThread(void* /*pParams*/)
-{
-	Sleep(1500);
-	if (g_hwnd != nullptr && IsWindow(g_hwnd)) {
-		PostMessageA(g_hwnd, WM_AUTOLINKER_WARMUP_MODULE_PUBLIC_INFO, 0, 0);
-	}
-}
 
 void OpenProjectDirectoryAddIn()
 {
@@ -194,12 +184,6 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	}
 	if (uMsg == WM_AUTOLINKER_RUN_MODULE_INFO_TEST) {
 		RunFirstImportedModulePublicInfoTest();
-		return 0;
-	}
-	if (uMsg == WM_AUTOLINKER_WARMUP_MODULE_PUBLIC_INFO) {
-#if defined(_M_IX86)
-		WarmupImportedModulePublicInfoCacheOnMainThread();
-#endif
 		return 0;
 	}
 	if (uMsg == WM_NCDESTROY) {
@@ -332,9 +316,6 @@ bool FneInit()
 	}
 
 	_beginthread(FneCheckNewVersion, 0, NULL);
-#if defined(_M_IX86)
-	_beginthread(WarmupModulePublicInfoCacheThread, 0, nullptr);
-#endif
 	g_uiInitialized = true;
 	OutputStringToELog("初始化完成");
 	return true;

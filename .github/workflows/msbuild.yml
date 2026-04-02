@@ -16,7 +16,7 @@ jobs:
     runs-on: windows-2025-vs2026
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
 
     - name: Set System Locale to Chinese
       run: |
@@ -55,3 +55,4 @@ jobs:
       with:
         artifacts: "AutoLinker-${{github.ref_name}}.zip"
         token: ${{ secrets.GITHUB_TOKEN }}
+        generateReleaseNotes: true
