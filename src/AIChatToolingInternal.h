@@ -22,17 +22,14 @@ struct ToolExecutionRequest {
 // 主线程工具对话请求。
 struct ToolDialogRequest {
 	enum class Kind {
-		CodeEdit,
 		Confirmation
 	};
 
-	Kind kind = Kind::CodeEdit;
+	Kind kind = Kind::Confirmation;
 	std::string title;
-	std::string hint;
 	std::string content;
 	std::string primaryText;
 	std::string secondaryText;
-	std::string resultText;
 	bool accepted = false;
 	bool done = false;
 	std::mutex mutex;
@@ -45,12 +42,6 @@ HWND GetAIChatMainWindowForTooling();
 ConfigManager* GetAIChatConfigManagerForTooling();
 // 获取 AI 对话工具执行消息。
 UINT GetAIChatToolExecMessageForTooling();
-// 请求代码编辑对话。
-bool RequestCodeEditForTooling(
-	const std::string& title,
-	const std::string& hint,
-	const std::string& initialCode,
-	std::string& outCode);
 // 请求确认对话。
 bool RequestConfirmationForTooling(
 	const std::string& title,

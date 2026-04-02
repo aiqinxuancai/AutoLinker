@@ -381,41 +381,6 @@ std::string ExecuteToolCallImpl(const std::string& toolName, const std::string& 
 {
 	outOk = false;
 
-	if (toolName == "request_code_edit") {
-		std::string title = LocalFromWide(L"AI\u4ee3\u7801\u7f16\u8f91");
-		std::string hint;
-		std::string initialCode;
-		try {
-			const nlohmann::json args = nlohmann::json::parse(argumentsJson);
-			if (args.contains("title") && args["title"].is_string()) {
-				title = Utf8ToLocalText(args["title"].get<std::string>());
-			}
-			if (args.contains("hint") && args["hint"].is_string()) {
-				hint = Utf8ToLocalText(args["hint"].get<std::string>());
-			}
-			if (args.contains("initial_code") && args["initial_code"].is_string()) {
-				initialCode = Utf8ToLocalText(args["initial_code"].get<std::string>());
-			}
-		}
-		catch (const std::exception& ex) {
-			nlohmann::json r;
-			r["ok"] = false;
-			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
-		}
-
-		std::string editedCode;
-		if (!RequestCodeEditForTooling(title, hint, initialCode, editedCode)) {
-			return R"({"ok":false,"cancelled":true})";
-		}
-
-		nlohmann::json r;
-		r["ok"] = true;
-		r["code"] = LocalToUtf8Text(editedCode);
-		outOk = true;
-		return Utf8ToLocalText(r.dump());
-	}
-
 	if (toolName == "run_powershell_command") {
 		std::string commandUtf8;
 		std::string workingDirectoryUtf8;

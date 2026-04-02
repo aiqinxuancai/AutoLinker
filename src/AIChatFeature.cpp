@@ -62,10 +62,6 @@ constexpr int IDC_AI_CHAT_INPUT = 2102;
 constexpr int IDC_AI_CHAT_SEND = 32553;
 constexpr int IDC_AI_CHAT_CLEAR_HISTORY = 32554;
 
-constexpr int IDC_CODE_EDIT = 2201;
-constexpr int IDC_CODE_OK = 1;
-constexpr int IDC_CODE_CANCEL = 2;
-constexpr int IDC_CODE_COPY = 2204;
 constexpr UINT_PTR kEditSubclassId = 1;
 constexpr UINT_PTR kActionControlSubclassId = 2;
 constexpr UINT_PTR kLeftWorkAreaHostSubclassId = 3;
@@ -112,16 +108,6 @@ struct ChatDialogContext {
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
-};
-
-struct CodeEditDialogContext {
-	std::string title;
-	std::string text;
-	bool accepted = false;
-	HWND hEdit = nullptr;
-	HWND hCopy = nullptr;
-	HWND hOk = nullptr;
-	HWND hCancel = nullptr;
 };
 
 struct AIChatAsyncRequest {
@@ -1066,48 +1052,6 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	}
 }
 
-void LayoutCodeEditDialog(HWND hWnd, CodeEditDialogContext* ctx)
-{
-	if (hWnd == nullptr || ctx == nullptr) {
-		return;
-	}
-
-	RECT rc = {};
-	GetClientRect(hWnd, &rc);
-	const int clientWidth = rc.right - rc.left;
-	const int clientHeight = rc.bottom - rc.top;
-
-	const int margin = 14;
-	const int gap = 8;
-	const int buttonHeight = 30;
-	const int copyWidth = 116;
-	const int okWidth = 84;
-	const int cancelWidth = 56;
-
-	const int buttonY = clientHeight - margin - buttonHeight;
-	const int cancelX = clientWidth - margin - cancelWidth;
-	const int okX = cancelX - gap - okWidth;
-	const int copyX = okX - gap - copyWidth;
-
-	const int editX = margin;
-	const int editY = margin;
-	const int editWidth = (std::max)(120, clientWidth - margin * 2);
-	const int editHeight = (std::max)(100, buttonY - gap - editY);
-
-	if (ctx->hEdit != nullptr) {
-		MoveWindow(ctx->hEdit, editX, editY, editWidth, editHeight, TRUE);
-	}
-	if (ctx->hCopy != nullptr) {
-		MoveWindow(ctx->hCopy, copyX, buttonY, copyWidth, buttonHeight, TRUE);
-	}
-	if (ctx->hOk != nullptr) {
-		MoveWindow(ctx->hOk, okX, buttonY, okWidth, buttonHeight, TRUE);
-	}
-	if (ctx->hCancel != nullptr) {
-		MoveWindow(ctx->hCancel, cancelX, buttonY, cancelWidth, buttonHeight, TRUE);
-	}
-}
-
 void SyncHistoryPresentation(ChatDialogContext* ctx)
 {
 	if (ctx == nullptr) {
@@ -1412,14 +1356,6 @@ void UpdateInputRowsAndLayout(HWND hWnd, ChatDialogContext* ctx, bool forceLayou
 
 	ctx->inputRowsVisible = targetRows;
 	LayoutAIChatDialog(hWnd, ctx);
-}
-
-bool SetClipboardTextSimple(const std::string& text)
-{
-	if (text.empty()) {
-		return false;
-	}
-	return IDEFacade::Instance().SetClipboardText(text);
 }
 
 bool RunModalWindow(HWND owner, HWND hDialog)
@@ -1948,41 +1884,6 @@ bool EnsureChatSettingsReady(AISettings& settings)
 	return true;
 }
 
-bool RequestCodeEditFromMainThread(
-	const std::string& title,
-	const std::string& hint,
-	const std::string& initialCode,
-	std::string& outCode)
-{
-	outCode.clear();
-	if (g_mainWindow == nullptr || !IsWindow(g_mainWindow)) {
-		return false;
-	}
-
-	ToolDialogRequest request = {};
-	request.kind = ToolDialogRequest::Kind::CodeEdit;
-	request.title = title;
-	request.hint = hint;
-	request.content = initialCode;
-	if (g_msgAIChatToolDialog == 0) {
-		return false;
-	}
-	if (PostMessage(g_mainWindow, g_msgAIChatToolDialog, 0, reinterpret_cast<LPARAM>(&request)) == FALSE) {
-		return false;
-	}
-
-	std::unique_lock<std::mutex> lock(request.mutex);
-	if (!request.cv.wait_for(lock, std::chrono::minutes(20), [&request]() { return request.done; })) {
-		return false;
-	}
-	if (!request.accepted) {
-		return false;
-	}
-
-	outCode = request.resultText;
-	return true;
-}
-
 bool RequestConfirmationFromMainThread(
 	const std::string& title,
 	const std::string& content,
@@ -2466,96 +2367,6 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 	return DefWindowProcA(hWnd, uMsg, wParam, lParam);
 }
 
-LRESULT CALLBACK CodeEditDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
-{
-	auto* ctx = reinterpret_cast<CodeEditDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
-	switch (uMsg)
-	{
-	case WM_NCCREATE: {
-		const auto* create = reinterpret_cast<CREATESTRUCTA*>(lParam);
-		SetWindowLongPtrA(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
-		return TRUE;
-	}
-
-	case WM_CREATE: {
-		if (ctx == nullptr) {
-			return -1;
-		}
-
-		ctx->hEdit = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
-			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
-			14, 14, 752, 450, hWnd, reinterpret_cast<HMENU>(IDC_CODE_EDIT), nullptr, nullptr);
-		const std::string normalized = NormalizeCodeForEIDE(ctx->text);
-		SetWindowTextA(ctx->hEdit, normalized.c_str());
-
-		ctx->hCopy = CreateWindowW(L"BUTTON", L"\u590D\u5236\u5230\u526A\u8D34\u677F",
-			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 494, 474, 116, 30, hWnd,
-			reinterpret_cast<HMENU>(IDC_CODE_COPY), nullptr, nullptr);
-		ctx->hOk = CreateWindowW(L"BUTTON", L"\u63D0\u4F9B\u7ED9AI",
-			WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 618, 474, 84, 30, hWnd,
-			reinterpret_cast<HMENU>(IDC_CODE_OK), nullptr, nullptr);
-		ctx->hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88",
-			WS_CHILD | WS_VISIBLE | WS_TABSTOP, 710, 474, 56, 30, hWnd,
-			reinterpret_cast<HMENU>(IDC_CODE_CANCEL), nullptr, nullptr);
-
-		SetDefaultFont(ctx->hEdit);
-		SetDefaultFont(ctx->hCopy);
-		SetDefaultFont(ctx->hOk);
-		SetDefaultFont(ctx->hCancel);
-		InstallEditHotkeys(ctx->hEdit, kEditFlagNone);
-		LayoutCodeEditDialog(hWnd, ctx);
-		SetFocus(ctx->hEdit);
-		return 0;
-	}
-
-	case WM_GETMINMAXINFO: {
-		auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
-		ApplyMinTrackSize(hWnd, mmi, 560, 360);
-		return 0;
-	}
-
-	case WM_SIZE:
-		if (ctx != nullptr) {
-			LayoutCodeEditDialog(hWnd, ctx);
-		}
-		return 0;
-
-	case WM_COMMAND: {
-		if (ctx == nullptr) {
-			return 0;
-		}
-		const int id = LOWORD(wParam);
-		if (id == IDC_CODE_COPY) {
-			const std::string text = GetEditTextA(ctx->hEdit);
-			if (!SetClipboardTextSimple(text)) {
-                MessageBoxA(hWnd, "Copy failed.", "AI Code Edit", MB_ICONWARNING | MB_OK);
-			}
-			return 0;
-		}
-		if (id == IDC_CODE_OK) {
-			ctx->text = GetEditTextA(ctx->hEdit);
-			ctx->accepted = true;
-			DestroyWindow(hWnd);
-			return 0;
-		}
-		if (id == IDC_CODE_CANCEL) {
-			ctx->accepted = false;
-			DestroyWindow(hWnd);
-			return 0;
-		}
-		return 0;
-	}
-
-	case WM_CLOSE:
-		DestroyWindow(hWnd);
-		return 0;
-
-	default:
-		break;
-	}
-	return DefWindowProcA(hWnd, uMsg, wParam, lParam);
-}
-
 bool HandleToolDialogRequest(LPARAM lParam)
 {
 	auto* request = reinterpret_cast<ToolDialogRequest*>(lParam);
@@ -2564,17 +2375,7 @@ bool HandleToolDialogRequest(LPARAM lParam)
 	}
 
 	bool accepted = false;
-	std::string resultText;
-	if (request->kind == ToolDialogRequest::Kind::CodeEdit) {
-		std::string title = request->title.empty() ? "AI Tool: Code Edit" : request->title;
-		if (!TrimAsciiCopy(request->hint).empty()) {
-			title += " - " + request->hint;
-		}
-
-		resultText = request->content;
-		accepted = ShowAICodeEditDialog(g_mainWindow, title, request->content, resultText);
-	}
-	else if (request->kind == ToolDialogRequest::Kind::Confirmation) {
+	if (request->kind == ToolDialogRequest::Kind::Confirmation) {
 		const AIPreviewAction action = ShowAIPreviewDialogEx(
 			g_mainWindow,
 			request->title.empty() ? "AI Tool Confirmation" : request->title,
@@ -2587,7 +2388,6 @@ bool HandleToolDialogRequest(LPARAM lParam)
 	{
 		std::lock_guard<std::mutex> guard(request->mutex);
 		request->accepted = accepted;
-		request->resultText = resultText;
 		request->done = true;
 	}
 	request->cv.notify_one();
@@ -2629,15 +2429,6 @@ UINT GetAIChatToolExecMessageForTooling()
 	return g_msgAIChatToolExec;
 }
 
-bool RequestCodeEditForTooling(
-	const std::string& title,
-	const std::string& hint,
-	const std::string& initialCode,
-	std::string& outCode)
-{
-	return RequestCodeEditFromMainThread(title, hint, initialCode, outCode);
-}
-
 bool RequestConfirmationForTooling(
 	const std::string& title,
 	const std::string& content,
@@ -2650,52 +2441,6 @@ bool RequestConfirmationForTooling(
 
 bool EnsureChatHostWindowCreated();
 void FocusChatInputControl();
-
-bool ShowAICodeEditDialog(HWND owner, const std::string& title, const std::string& initialCode, std::string& ioCode)
-{
-	ComCtl6ActivationScope themeScope;
-	INITCOMMONCONTROLSEX icex = {};
-	icex.dwSize = sizeof(icex);
-	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES | ICC_LINK_CLASS;
-	InitCommonControlsEx(&icex);
-
-	WNDCLASSEXA wc = {};
-	wc.cbSize = sizeof(wc);
-	wc.lpfnWndProc = CodeEditDialogProc;
-	wc.hInstance = GetModuleHandleA(nullptr);
-	wc.lpszClassName = "AutoLinkerAICodeEditDialogWindow";
-	wc.hIcon = GetAppIconLarge();
-	wc.hIconSm = GetAppIconSmall();
-	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-	RegisterClassExA(&wc);
-
-	CodeEditDialogContext ctx = {};
-	ctx.title = title.empty() ? "AutoLinker AI Code Edit" : title;
-	ctx.text = initialCode;
-
-	HWND hDialog = CreateWindowExA(
-		WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
-		wc.lpszClassName,
-		ctx.title.c_str(),
-		WS_CAPTION | WS_SYSMENU | WS_VISIBLE | WS_SIZEBOX,
-		CW_USEDEFAULT, CW_USEDEFAULT, 800, 560,
-		owner,
-		nullptr,
-		wc.hInstance,
-		&ctx);
-	if (hDialog == nullptr) {
-		return false;
-	}
-
-	ApplyWindowIcon(hDialog);
-	EnsureWindowTitle(hDialog, ctx.title);
-	RunModalWindow(owner, hDialog);
-	if (ctx.accepted) {
-		ioCode = ctx.text;
-	}
-	return ctx.accepted;
-}
 
 std::string GetChatTabCaption()
 {

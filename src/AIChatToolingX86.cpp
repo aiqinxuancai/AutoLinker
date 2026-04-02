@@ -2936,22 +2936,76 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 	outOk = false;
 
 	if (toolName == "get_current_page_code") {
-		std::string pageCode;
-		if (!IDEFacade::Instance().GetCurrentPageCode(pageCode)) {
-			return R"({"ok":false,"error":"GetCurrentPageCode failed"})";
-		}
-
 		std::string pageName;
 		std::string pageType;
 		std::string pageNameTrace;
 		const bool nameOk = IDEFacade::Instance().GetCurrentPageName(pageName, &pageType, &pageNameTrace);
+
+		std::string pageCode;
+		std::string codeKind;
+		std::string codeTrace;
+		if (nameOk && !TrimAsciiCopy(pageName).empty()) {
+			std::vector<std::string> lookupNames;
+			lookupNames.push_back(pageName);
+
+			const size_t slashPos = pageName.find(" / ");
+			if (slashPos != std::string::npos) {
+				const std::string primaryName = TrimAsciiCopy(pageName.substr(0, slashPos));
+				if (!primaryName.empty() && primaryName != pageName) {
+					lookupNames.push_back(primaryName);
+				}
+			}
+
+			for (const auto& lookupName : lookupNames) {
+				ProgramTreeItemInfo item;
+				std::string lookupError;
+				if (TryGetProgramItemByNameForAI(lookupName, std::string(), item, lookupError)) {
+					e571::NativeRealPageAccessResult accessResult{};
+					std::string readError;
+					if (TryReadRealPageCodeForAI(item, pageCode, accessResult, readError)) {
+						codeKind = "real_source";
+						codeTrace = accessResult.trace;
+						break;
+					}
+					codeTrace = !accessResult.trace.empty() ? accessResult.trace : readError;
+				}
+				else if (!lookupError.empty()) {
+					codeTrace = lookupError;
+				}
+			}
+		}
+
+		if (pageCode.empty()) {
+			if (!IDEFacade::Instance().GetCurrentPageCode(pageCode)) {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["error"] = "GetCurrentPageCode failed";
+				r["page_name_ok"] = nameOk;
+				r["page_name"] = LocalToUtf8Text(pageName);
+				r["page_type"] = LocalToUtf8Text(pageType);
+				r["page_name_trace"] = pageNameTrace;
+				if (!codeTrace.empty()) {
+					r["trace"] = LocalToUtf8Text(codeTrace);
+				}
+				return Utf8ToLocalText(r.dump());
+			}
+			codeKind = "editor_clipboard";
+			if (codeTrace.empty()) {
+				codeTrace = "clipboard";
+			}
+		}
+
 		nlohmann::json r;
 		r["ok"] = true;
 		r["code"] = LocalToUtf8Text(pageCode);
+		r["code_kind"] = codeKind;
 		r["page_name_ok"] = nameOk;
 		r["page_name"] = LocalToUtf8Text(pageName);
 		r["page_type"] = LocalToUtf8Text(pageType);
 		r["page_name_trace"] = pageNameTrace;
+		if (!codeTrace.empty()) {
+			r["trace"] = LocalToUtf8Text(codeTrace);
+		}
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
 	}
@@ -4366,17 +4420,14 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 			return Utf8ToLocalText(r.dump());
 		}
 
-		std::string unusedCode;
-		e571::NativeRealPageAccessResult accessResult{};
-		if (!e571::GetRealPageCodeByProgramTreeItemData(
+		std::string switchTrace;
+		if (!e571::OpenProgramTreeItemPageByData(
 				matched.front().itemData,
-				GetCurrentProcessImageBaseForAI(),
-				&unusedCode,
-				&accessResult)) {
+				&switchTrace)) {
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = "open program item page failed";
-			r["trace"] = LocalToUtf8Text(accessResult.trace);
+			r["trace"] = LocalToUtf8Text(switchTrace);
 			return Utf8ToLocalText(r.dump());
 		}
 
@@ -4386,8 +4437,7 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		r["type_key"] = matched.front().typeKey;
 		r["type_name"] = LocalToUtf8Text(matched.front().typeName);
 		r["item_data"] = matched.front().itemData;
-		r["trace"] = LocalToUtf8Text(accessResult.trace);
-		r["code_bytes"] = unusedCode.size();
+		r["trace"] = LocalToUtf8Text(switchTrace);
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
 	}

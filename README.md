@@ -119,54 +119,37 @@ AutoLinker支持库，通过各种方法实现以下功能：
 
 ### ⭐tools/list 返回的当前公开工具
 
-#### 1. 当前页相关
-- `get_current_page_info`
-  - 获取当前 IDE 页名称、页类型以及名称解析来源。
-- `get_current_page_code`
-  - 获取当前 IDE 页完整代码，同时返回当前页名称和页类型。
-
-#### 2. 模块相关
-- `list_imported_modules`
-  - 列出当前项目导入的易模块/ECOM 路径。
-- `get_module_public_info`
-  - 获取指定模块的公开接口信息。
-  - 说明：这里返回的是模块公开接口/伪代码参考，不是正常 IDE 源码页。
-- `search_module_public_info`
-  - 在模块公开接口信息中搜索关键词。
-  - 说明：搜索结果同样属于公开接口/伪代码参考。
-
-#### 3. 支持库相关
-- `list_support_libraries`
-  - 列出当前 IDE 已选支持库。
-  - 返回支持库基本信息、文件路径解析结果以及原始信息文本。
-- `get_support_library_info`
-  - 获取单个支持库公开信息。
-  - 优先通过支持库文件 `GetNewInf/lib2.h` 结构解析命令、常量、数据类型等；无法定位文件时退回 IDE 文本。
-- `search_support_library_info`
-  - 在支持库公开信息中搜索关键词。
-
-#### 4. 程序树/项目结构相关
-- `list_program_items`
-  - 列出程序树中的程序集、类模块、全局变量、自定义数据类型、DLL 命令、窗口、资源等项目。
-  - 支持按 `kind`、名称过滤，并可选附带代码。
-  - 说明：这里通过程序树抓到的代码是伪代码参考，结构可能与正常 IDE 页略有差异。
-- `get_program_item_real_code`
-  - 按精确名称获取某个程序树项目的真实整页源码。
-  - 说明：该工具会切换 IDE 当前页，并通过编辑器内部路径抓取真实源码。
-- `switch_to_program_item_page`
-  - 按精确名称切换到某个程序集/类/资源页面。
-  - 只负责切页，不返回代码。
-
-#### 5. 项目搜索相关
-- `search_project_keyword`
-  - 调用 IDE 整体搜索，在项目内搜索关键词。
-  - 返回匹配页名、页类型、行号、显示文本和 `jump_token`。
-- `jump_to_search_result`
-  - 使用 `search_project_keyword` 返回的 `jump_token` 精确跳转到某一条结果。
-
-#### 6. 本地交互相关
-- `request_code_edit`
-  - 弹出本地代码编辑确认窗口，返回用户确认后的代码。
+| 类别 | 方法 | 说明 |
+| --- | --- | --- |
+| 当前页 | `get_current_page_code` | 获取当前页完整源码与页面信息 |
+| 当前页 | `get_current_page_info` | 获取当前页名称、类型与解析来源 |
+| 模块 | `list_imported_modules` | 列出当前项目导入模块 |
+| 支持库 | `list_support_libraries` | 列出当前已选支持库 |
+| 支持库 | `get_support_library_info` | 获取单个支持库公开信息 |
+| 支持库 | `search_support_library_info` | 搜索支持库公开信息 |
+| 模块 | `get_module_public_info` | 获取模块公开接口信息 |
+| 模块 | `search_module_public_info` | 搜索模块公开接口信息 |
+| 程序树 | `list_program_items` | 列出程序树项目，可选附带参考代码 |
+| 程序树真实源码 | `get_program_item_real_code` | 获取指定程序树页面真实整页源码 |
+| 程序树真实源码 | `read_program_item_real_code` | 读取真实源码缓存或分页视图 |
+| 程序树真实源码 | `edit_program_item_code` | 按精确文本编辑真实源码页 |
+| 程序树真实源码 | `multi_edit_program_item_code` | 批量编辑真实源码页 |
+| 程序树真实源码 | `write_program_item_real_code` | 用整页源码覆盖写回 |
+| 程序树真实源码 | `diff_program_item_code` | 生成真实源码页差异预览 |
+| 程序树真实源码 | `restore_program_item_code_snapshot` | 恢复真实源码页快照 |
+| 程序树真实源码 | `search_program_item_real_code` | 在真实源码页内搜索 |
+| 程序树真实源码 | `list_program_item_symbols` | 解析并列出页面符号 |
+| 程序树真实源码 | `get_symbol_real_code` | 获取符号对应真实源码 |
+| 程序树真实源码 | `edit_symbol_real_code` | 按符号替换真实源码 |
+| 程序树真实源码 | `insert_program_item_code_block` | 按位置或符号插入代码块 |
+| 程序树 | `switch_to_program_item_page` | 切换到指定程序树页面 |
+| 搜索 | `search_project_keyword` | 调用 IDE 整体搜索 |
+| 搜索 | `jump_to_search_result` | 跳转到指定搜索结果 |
+| 编译 | `compile_with_output_path` | 指定输出路径发起编译/静态编译 |
+| 本地交互 | `run_powershell_command` | 经过确认后执行 PowerShell 命令 |
+| 联网 | `search_web_tavily` | 联网搜索网页结果 |
+| 联网 | `fetch_url` | 抓取指定 URL 原始文本响应 |
+| 联网 | `extract_web_document` | 提取网页正文与链接摘要 |
 
 ### ⭐tools/call 参数说明
 - 调用格式：

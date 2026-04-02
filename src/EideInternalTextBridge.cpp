@@ -3079,6 +3079,15 @@ bool TryResolveProgramTreeItemEditorWindowByUi(
 		PumpPendingMessages();
 		const HWND activeChild = GetActiveMdiChildWindow(mainHwnd);
 		if (activeChild != nullptr && IsWindow(activeChild)) {
+			const std::string activeTitle = WindowTextToString(activeChild);
+			const bool titleMatches =
+				!itemText.empty() &&
+				activeTitle.find(itemText) != std::string::npos;
+			if (activeChild == activeBefore && !titleMatches) {
+				Sleep(25);
+				continue;
+			}
+
 			HWND editorHwnd = nullptr;
 			std::string editorTrace;
 			if (TryResolveEditorWindowFromMdiChild(activeChild, &editorHwnd, &editorTrace) &&
@@ -3097,7 +3106,7 @@ bool TryResolveProgramTreeItemEditorWindowByUi(
 						"|active_changed=" + std::to_string(activeChild != activeBefore ? 1 : 0) +
 						"|active_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(activeChild)) +
 						"|active_class=" + WindowClassToString(activeChild) +
-						"|active_text=" + WindowTextToString(activeChild) +
+						"|active_text=" + activeTitle +
 						"|" +
 						editorTrace;
 				}
@@ -3172,6 +3181,15 @@ bool TryResolveProgramTreeItemEditorObjectByUi(
 		PumpPendingMessages();
 		const HWND activeChild = GetActiveMdiChildWindow(mainHwnd);
 		if (activeChild != nullptr && IsWindow(activeChild)) {
+			const std::string activeTitle = WindowTextToString(activeChild);
+			const bool titleMatches =
+				!itemText.empty() &&
+				activeTitle.find(itemText) != std::string::npos;
+			if (activeChild == activeBefore && !titleMatches) {
+				Sleep(25);
+				continue;
+			}
+
 			std::uintptr_t editorObject = 0;
 			HWND matchedEditorHwnd = nullptr;
 			std::string heuristicTrace;
@@ -3195,7 +3213,7 @@ bool TryResolveProgramTreeItemEditorObjectByUi(
 						"|active_changed=" + std::to_string(activeChild != activeBefore ? 1 : 0) +
 						"|active_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(activeChild)) +
 						"|active_class=" + WindowClassToString(activeChild) +
-						"|active_text=" + WindowTextToString(activeChild) +
+						"|active_text=" + activeTitle +
 						"|matched_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(matchedEditorHwnd)) +
 						"|" +
 						heuristicTrace;
@@ -5866,6 +5884,135 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 	return true;
 }
 
+bool TryActivateProgramTreeItemPageByEditorObjectFallback(
+	unsigned int itemData,
+	const std::string& itemText,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+
+	const std::uintptr_t moduleBase =
+		reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+	if (moduleBase == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = "fallback_activate_module_base_invalid";
+		}
+		return false;
+	}
+
+	std::uintptr_t editorObject = 0;
+	int resolvedType = 0;
+	int resolvedIndex = -1;
+	int bucketData = 0;
+	std::string resolveTrace;
+	if (!DebugResolveEditorObjectByProgramTreeItemData(
+			itemData,
+			moduleBase,
+			&editorObject,
+			&resolvedType,
+			&resolvedIndex,
+			&bucketData,
+			&resolveTrace) ||
+		editorObject == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = "fallback_activate_resolve_failed|" + resolveTrace;
+		}
+		return false;
+	}
+
+	std::string editorHwndTrace;
+	HWND editorHwnd = ResolveEditorInputWindow(editorObject, &editorHwndTrace);
+	if ((editorHwnd == nullptr || !IsWindow(editorHwnd)) &&
+		!TryReadEditorWindowHandleFromObject(editorObject, &editorHwnd)) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				"fallback_activate_editor_hwnd_failed|" +
+				resolveTrace +
+				"|" +
+				editorHwndTrace;
+		}
+		return false;
+	}
+
+	const HWND mdiChildHwnd = FindMdiChildWindow(editorHwnd);
+	if (mdiChildHwnd == nullptr || !IsWindow(mdiChildHwnd)) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				"fallback_activate_mdi_child_failed|" +
+				resolveTrace +
+				"|" +
+				editorHwndTrace +
+				"|editor_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(editorHwnd));
+		}
+		return false;
+	}
+
+	const HWND mdiClientHwnd = GetParent(mdiChildHwnd);
+	const HWND rootHwnd = GetAncestor(mdiChildHwnd, GA_ROOT);
+	if (rootHwnd != nullptr && IsWindow(rootHwnd)) {
+		if (IsIconic(rootHwnd)) {
+			ShowWindow(rootHwnd, SW_RESTORE);
+		}
+		BringWindowToTop(rootHwnd);
+		SetForegroundWindow(rootHwnd);
+		SetActiveWindow(rootHwnd);
+	}
+	if (mdiClientHwnd != nullptr && IsWindow(mdiClientHwnd)) {
+		SendMessageA(mdiClientHwnd, WM_MDIACTIVATE, reinterpret_cast<WPARAM>(mdiChildHwnd), 0);
+	}
+	SetFocus(editorHwnd);
+	ActivateEditorWindowByClick(editorHwnd);
+	PumpPendingMessages();
+
+	const HWND mainHwnd = ResolveMainIdeWindow();
+	for (int attempt = 0; attempt < 60; ++attempt) {
+		PumpPendingMessages();
+		const HWND activeChild = GetActiveMdiChildWindow(mainHwnd);
+		if (activeChild != nullptr && IsWindow(activeChild)) {
+			const std::string activeTitle = WindowTextToString(activeChild);
+			const bool titleMatches =
+				!itemText.empty() &&
+				activeTitle.find(itemText) != std::string::npos;
+			if (activeChild == mdiChildHwnd || titleMatches) {
+				if (outTrace != nullptr) {
+					*outTrace =
+						"fallback_activate_ok"
+						"|item=" + itemText +
+						"|editor_object=" + std::to_string(editorObject) +
+						"|resolved_type=" + std::to_string(resolvedType) +
+						"|resolved_index=" + std::to_string(resolvedIndex) +
+						"|bucket_data=" + std::to_string(bucketData) +
+						"|mdi_child=" + std::to_string(reinterpret_cast<std::uintptr_t>(mdiChildHwnd)) +
+						"|active_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(activeChild)) +
+						"|active_class=" + WindowClassToString(activeChild) +
+						"|active_text=" + activeTitle +
+						"|" +
+						resolveTrace +
+						"|" +
+						editorHwndTrace;
+				}
+				return true;
+			}
+		}
+		Sleep(25);
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			"fallback_activate_timeout"
+			"|item=" + itemText +
+			"|editor_object=" + std::to_string(editorObject) +
+			"|mdi_child=" + std::to_string(reinterpret_cast<std::uintptr_t>(mdiChildHwnd)) +
+			"|" +
+			resolveTrace +
+			"|" +
+			editorHwndTrace;
+	}
+	return false;
+}
+
 }
 
 bool OpenProgramTreeItemPageByData(
@@ -5922,7 +6069,7 @@ bool OpenProgramTreeItemPageByData(
 			const bool titleMatches =
 				!itemText.empty() &&
 				activeTitle.find(itemText) != std::string::npos;
-			if (activeChild != activeBefore || titleMatches || attempt >= 2) {
+			if (activeChild != activeBefore || titleMatches) {
 				if (outTrace != nullptr) {
 					*outTrace =
 						treeTrace +
@@ -5941,12 +6088,22 @@ bool OpenProgramTreeItemPageByData(
 		Sleep(25);
 	}
 
+	std::string fallbackTrace;
+	if (TryActivateProgramTreeItemPageByEditorObjectFallback(itemData, itemText, &fallbackTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = treeTrace + "|" + openTrace + "|" + fallbackTrace;
+		}
+		return true;
+	}
+
 	if (outTrace != nullptr) {
 		*outTrace =
 			treeTrace +
 			"|" +
 			openTrace +
-			"|open_page_timeout|item=" + itemText;
+			"|open_page_timeout|item=" + itemText +
+			"|" +
+			fallbackTrace;
 	}
 	return false;
 }

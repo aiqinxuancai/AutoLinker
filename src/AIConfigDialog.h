@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <Windows.h>
 #include <string>
@@ -20,4 +20,3 @@ AIPreviewAction ShowAIPreviewDialogEx(
 	const std::string& secondaryText = "");
 bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string& content, const std::string& confirmText = "");
 bool ShowAITextInputDialog(HWND owner, const std::string& title, const std::string& hint, std::string& ioText);
-bool ShowAICodeEditDialog(HWND owner, const std::string& title, const std::string& initialCode, std::string& ioCode);
