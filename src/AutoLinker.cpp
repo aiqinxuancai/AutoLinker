@@ -77,7 +77,7 @@ void ShowAISettingsAddIn()
 
 const auto& GetAddInMenuEntries()
 {
-	static const std::array<AddInMenuEntry, 20> kEntries = { {
+	static const std::array<AddInMenuEntry, 21> kEntries = { {
 		{ "打开项目目录", "这是个用作测试的辅助工具功能。", &OpenProjectDirectoryAddIn },
 		{ "打开AutoLinker配置目录", "这是个用作测试的辅助工具功能。", &OpenAutoLinkerConfigDirectoryAddIn },
 		{ "打开E语言目录", "这是个用作测试的辅助工具功能。", &OpenELanguageDirectoryAddIn },
@@ -98,6 +98,7 @@ const auto& GetAddInMenuEntries()
 		{ "测试编译静态EXE", "调用静态编译窗口程序EXE测试，并将输出文件写入AutoLinker\\StaticCompileTest目录。", &RunStaticCompileWindowsExeTest },
 		{ "测试切换常量表...", "按程序树精确名称切换到“常量表...”页面，并输出切页后的当前页信息。", &RunProgramTreeSwitchToConstantTableTest },
 		{ "测试获取常量表...代码", "按程序树精确名称抓取“常量表...”页面真实代码，并输出摘要与日志文件路径。", &RunProgramTreeReadConstantTableCodeTest },
+		{ "测试导出全部页面代码", "枚举程序树全部页面并补抓常量表等特殊页，将真实代码汇总写入当前 e 文件同名 txt。", &RunProgramTreeExportAllPageCodesTest },
 	} };
 	return kEntries;
 }

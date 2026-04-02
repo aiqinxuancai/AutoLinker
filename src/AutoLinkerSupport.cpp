@@ -23,6 +23,7 @@
 #include "WindowHelper.h"
 #include "direct_global_search.hpp"
 #include "EideInternalTextBridge.h"
+#include "RealPageCodeToolSupport.h"
 #if defined(_M_IX86)
 #include "direct_global_search_debug.hpp"
 #include "native_module_public_info.hpp"
@@ -2373,6 +2374,235 @@ void RunProgramTreeReadConstantTableCodeTest()
 {
 	RunProgramTreeReadExactPageCodeTest("TreeConstCodeTest", kProgramTreeConstantTablePageName);
 }
+
+std::filesystem::path BuildCurrentSourceAllPageDumpPathForTest(std::string& outSourcePath)
+{
+	outSourcePath.clear();
+	UpdateCurrentOpenSourceFile();
+
+	std::string sourcePath = TrimAsciiCopy(g_nowOpenSourceFilePath);
+	if (sourcePath.empty()) {
+		sourcePath = TrimAsciiCopy(GetSourceFilePath());
+	}
+	if (sourcePath.empty()) {
+		return {};
+	}
+
+	std::filesystem::path outputPath(sourcePath);
+	if (!outputPath.has_filename()) {
+		return {};
+	}
+
+	outSourcePath = sourcePath;
+	outputPath.replace_extension(".txt");
+	return outputPath;
+}
+
+bool TryAppendSpecialProgramTreePageForExport(
+	std::vector<ProgramTreePageItemInfo>& items,
+	std::unordered_set<unsigned int>& seenItemData,
+	const char* pageName,
+	const char* typeName)
+{
+	if (pageName == nullptr || pageName[0] == '\0') {
+		return false;
+	}
+
+	ProgramTreeExactItemInfo exactItem;
+	std::string error;
+	if (!TryFindProgramTreeItemByExactNameForTest(pageName, exactItem, error)) {
+		return false;
+	}
+
+	if (!seenItemData.insert(exactItem.itemData).second) {
+		return true;
+	}
+
+	ProgramTreePageItemInfo item;
+	item.text = exactItem.text;
+	item.itemData = exactItem.itemData;
+	item.image = exactItem.image;
+	item.selectedImage = exactItem.selectedImage;
+	item.typeName =
+		(typeName != nullptr && typeName[0] != '\0')
+			? typeName
+			: "特殊页";
+	items.push_back(std::move(item));
+	return true;
+}
+
+size_t CountProgramTreeCodeLinesForTest(const std::string& text)
+{
+	if (text.empty()) {
+		return 0;
+	}
+	return static_cast<size_t>(std::count(text.begin(), text.end(), '\n')) + 1u;
+}
+
+void WriteProgramTreeAllPageCodesHeader(
+	std::ofstream& out,
+	const std::string& sourcePath,
+	const std::filesystem::path& outputPath,
+	size_t totalCount)
+{
+	out << "AutoLinker Program Tree All Page Dump\r\n";
+	out << std::format("source={}\r\n", sourcePath);
+	out << std::format("output={}\r\n", outputPath.string());
+	out << std::format("total_pages={}\r\n", totalCount);
+	out << "\r\n";
+}
+
+void WriteProgramTreeAllPageCodesSection(
+	std::ofstream& out,
+	size_t index,
+	size_t totalCount,
+	const ProgramTreePageItemInfo& item,
+	const std::string& pageCode,
+	const std::string& trace)
+{
+	out << "================================================================================\r\n";
+	out << std::format(
+		"[{}/{}] type={} name={} data=0x{:08X} image={} selImage={} bytes={} lines={}\r\n",
+		index + 1,
+		totalCount,
+		item.typeName,
+		item.text,
+		item.itemData,
+		item.image,
+		item.selectedImage,
+		pageCode.size(),
+		CountProgramTreeCodeLinesForTest(pageCode));
+	if (!trace.empty()) {
+		out << std::format("trace={}\r\n", trace);
+	}
+	out << "--------------------------------------------------------------------------------\r\n";
+	out.write(pageCode.data(), static_cast<std::streamsize>(pageCode.size()));
+	if (pageCode.empty() || pageCode.back() != '\n') {
+		out << "\r\n";
+	}
+	out << "\r\n";
+}
+
+void WriteProgramTreeAllPageCodesErrorSection(
+	std::ofstream& out,
+	size_t index,
+	size_t totalCount,
+	const ProgramTreePageItemInfo& item,
+	const std::string& error)
+{
+	out << "================================================================================\r\n";
+	out << std::format(
+		"[{}/{}] type={} name={} data=0x{:08X} image={} selImage={}\r\n",
+		index + 1,
+		totalCount,
+		item.typeName,
+		item.text,
+		item.itemData,
+		item.image,
+		item.selectedImage);
+	out << "--------------------------------------------------------------------------------\r\n";
+	out << std::format("read_error={}\r\n\r\n", error);
+}
+
+void RunProgramTreeExportAllPageCodesTest()
+{
+	OutputStringToELog("[ProgramTreeExportAll] 开始导出程序树全部页面代码");
+
+	std::string sourcePath;
+	const std::filesystem::path outputPath = BuildCurrentSourceAllPageDumpPathForTest(sourcePath);
+	if (outputPath.empty()) {
+		OutputStringToELog("[ProgramTreeExportAll] 中止：无法确定当前 e 文件路径");
+		return;
+	}
+
+	const HWND treeHwnd = FindProgramDataTreeView();
+	if (treeHwnd == nullptr) {
+		OutputStringToELog("[ProgramTreeExportAll] 中止：未找到程序树 TreeView");
+		return;
+	}
+
+	const HTREEITEM rootItem = GetTreeNextItem(treeHwnd, nullptr, TVGN_ROOT);
+	const HTREEITEM firstChild = GetTreeNextItem(treeHwnd, rootItem, TVGN_CHILD);
+	std::vector<ProgramTreePageItemInfo> items;
+	CollectProgramTreePageItemsRecursive(treeHwnd, firstChild, 0, 8, items);
+	const ProgramTreeVisualHints hints = BuildProgramTreeVisualHints(items);
+	for (auto& item : items) {
+		item.typeName = DescribeProgramTreeItemType(item.itemData, item.text, item.image, hints);
+	}
+
+	std::unordered_set<unsigned int> seenItemData;
+	seenItemData.reserve(items.size() + 4);
+	for (const auto& item : items) {
+		seenItemData.insert(item.itemData);
+	}
+
+	if (TryAppendSpecialProgramTreePageForExport(
+			items,
+			seenItemData,
+			kProgramTreeConstantTablePageName,
+			"常量表")) {
+		OutputStringToELog(std::format(
+			"[ProgramTreeExportAll] 已补充特殊页 name={}",
+			kProgramTreeConstantTablePageName));
+	}
+
+	std::ofstream out(outputPath, std::ios::trunc | std::ios::binary);
+	if (!out.is_open()) {
+		OutputStringToELog(std::format(
+			"[ProgramTreeExportAll] 中止：输出文件创建失败 path={}",
+			outputPath.string()));
+		return;
+	}
+
+	WriteProgramTreeAllPageCodesHeader(out, sourcePath, outputPath, items.size());
+
+	size_t successCount = 0;
+	size_t failedCount = 0;
+	for (size_t index = 0; index < items.size(); ++index) {
+		const auto& item = items[index];
+		OutputStringToELog(std::format(
+			"[ProgramTreeExportAll] 抓取 {}/{} type={} name={}",
+			index + 1,
+			items.size(),
+			item.typeName,
+			EscapeOneLineForLog(item.text)));
+
+		std::string pageCode;
+		e571::NativeRealPageAccessResult accessResult{};
+		if (!e571::GetRealPageCodeByProgramTreeItemData(
+				item.itemData,
+				GetCurrentProcessImageBase(),
+				&pageCode,
+				&accessResult)) {
+			++failedCount;
+			WriteProgramTreeAllPageCodesErrorSection(
+				out,
+				index,
+				items.size(),
+				item,
+				accessResult.trace.empty() ? "GetRealPageCodeByProgramTreeItemData failed" : accessResult.trace);
+			continue;
+		}
+
+		pageCode = NormalizeRealCodeLineBreaksToCrLf(pageCode);
+		WriteProgramTreeAllPageCodesSection(
+			out,
+			index,
+			items.size(),
+			item,
+			pageCode,
+			accessResult.trace);
+		++successCount;
+	}
+
+	out.flush();
+	OutputStringToELog(std::format(
+		"[ProgramTreeExportAll] 导出完成 success={} failed={} total={} path={}",
+		successCount,
+		failedCount,
+		items.size(),
+		outputPath.string()));
+}
 #else
 void RunProgramTreeDirectPageDumpTest()
 {
@@ -2387,6 +2617,11 @@ void RunProgramTreeSwitchToConstantTableTest()
 void RunProgramTreeReadConstantTableCodeTest()
 {
 	OutputStringToELog("[TreeConstCodeTest] 当前仅支持 x86 配置");
+}
+
+void RunProgramTreeExportAllPageCodesTest()
+{
+	OutputStringToELog("[ProgramTreeExportAll] 当前仅支持 x86 配置");
 }
 #endif
 

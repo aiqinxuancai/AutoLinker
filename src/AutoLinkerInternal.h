@@ -140,6 +140,9 @@ void RunProgramTreeSwitchToConstantTableTest();
 // 测试抓取常量表页面真实代码。
 void RunProgramTreeReadConstantTableCodeTest();
 
+// 测试导出全部页面真实代码到当前 e 文件同名 txt。
+void RunProgramTreeExportAllPageCodesTest();
+
 void RunProgramTreeListTest();
 
 void RunCurrentPageWindowProbeTest();
