@@ -38,8 +38,8 @@ extern bool g_preDebugging;
 
 extern bool g_preCompiling;
 
-// 已完成基础挂接。
-extern bool g_initStarted;
+// 已接收到系统通知接口，可在后续阶段调用 NotifySys。
+extern bool g_notifySysReady;
 
 // 已完成 IDE 就绪后的界面初始化。
 extern bool g_uiInitialized;

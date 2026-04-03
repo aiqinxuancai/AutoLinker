@@ -19,7 +19,7 @@ ModelManager g_modelManager;
 HWND g_hwnd = NULL;
 bool g_preDebugging = false;
 bool g_preCompiling = false;
-bool g_initStarted = false;
+bool g_notifySysReady = false;
 bool g_uiInitialized = false;
 
 namespace {

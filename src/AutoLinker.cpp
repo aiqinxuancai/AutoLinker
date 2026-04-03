@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <format>
+#include <mutex>
 #include <string>
 
 #include "AIChatTooling.h"
@@ -18,6 +19,7 @@
 #include "Global.h"
 #include "IDEFacade.h"
 #include "LocalMcpServer.h"
+#include "MemFind.h"
 #include "MouseBack.h"
 #include "PathHelper.h"
 #include "Version.h"
@@ -31,6 +33,83 @@ bool FneInit();
 std::string g_autoRunModulePublicInfoRequestedPath;
 
 namespace {
+
+bool g_mainWindowSubclassInstalled = false;
+bool g_initTraceSessionStarted = false;
+std::mutex g_initTraceMutex;
+
+constexpr const char* kDebugStartPattern =
+	"55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 81 EC ?? ?? 00 00 56 89 8D ?? FB FF FF 8B 8D ?? FB FF FF 81 C1 C0 00 00 00 E8 ?? ?? ?? ?? 85 C0 74 05 E9 ?? 08 00 00";
+constexpr const char* kCompileStartPattern =
+	"55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 81 EC C4 00";
+
+std::filesystem::path GetInitTraceLogPath()
+{
+	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	return dir / "startup_init_last.log";
+}
+
+std::string BuildInitTraceTimestamp()
+{
+	SYSTEMTIME st = {};
+	GetLocalTime(&st);
+	return std::format(
+		"{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+		st.wYear,
+		st.wMonth,
+		st.wDay,
+		st.wHour,
+		st.wMinute,
+		st.wSecond,
+		st.wMilliseconds);
+}
+
+void TraceInitStep(const std::string& step)
+{
+	std::lock_guard<std::mutex> lock(g_initTraceMutex);
+	const auto path = GetInitTraceLogPath();
+	const auto mode = g_initTraceSessionStarted ? (std::ios::app | std::ios::binary) : (std::ios::trunc | std::ios::binary);
+	std::ofstream out(path, mode);
+	if (!out.is_open()) {
+		return;
+	}
+	g_initTraceSessionStarted = true;
+	out << "[" << BuildInitTraceTimestamp() << "] " << step << "\r\n";
+}
+
+void ResolveCompileDebugStartAddressesForInit()
+{
+	if (g_debugStartAddress > 0 && g_compileStartAddress > 0) {
+		TraceInitStep(std::format(
+			"编译/调试入口地址已就绪 debug=0x{:X} compile=0x{:X}",
+			g_debugStartAddress,
+			g_compileStartAddress));
+		return;
+	}
+
+	TraceInitStep("开始解析编译/调试入口地址");
+	if (g_debugStartAddress <= 0) {
+		g_debugStartAddress = FindSelfModelMemory(kDebugStartPattern);
+	}
+	if (g_compileStartAddress <= 0) {
+		g_compileStartAddress = FindSelfModelMemory(kCompileStartPattern);
+	}
+
+	if (g_debugStartAddress > 0 && g_compileStartAddress > 0) {
+		TraceInitStep(std::format(
+			"编译/调试入口地址解析完成 debug=0x{:X} compile=0x{:X}",
+			g_debugStartAddress,
+			g_compileStartAddress));
+		return;
+	}
+
+	TraceInitStep(std::format(
+		"编译/调试入口地址未完整解析 debug=0x{:X} compile=0x{:X}，将跳过对应 Hook",
+		g_debugStartAddress,
+		g_compileStartAddress));
+}
 
 std::string ReadAutoRunMarkerText(const std::filesystem::path& path)
 {
@@ -189,6 +268,7 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	if (uMsg == WM_NCDESTROY) {
 		LocalMcpServer::Shutdown();
 		AIChatFeature::Shutdown();
+		g_mainWindowSubclassInstalled = false;
 		RemoveWindowSubclass(hWnd, MainWindowSubclassProc, uIdSubclass);
 		return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 	}
@@ -280,27 +360,78 @@ void FneCheckNewVersion(void* pParams)
 bool FneInit()
 {
 	if (g_uiInitialized) {
+		TraceInitStep("FneInit 已初始化，跳过重复执行");
 		return true;
 	}
 
+	TraceInitStep("进入 FneInit");
 	OutputStringToELog("开始初始化");
 
-	if (g_hwnd == NULL || !IsWindow(g_hwnd)) {
-		OutputStringToELog("主窗口句柄无效");
+	if (!g_notifySysReady) {
+		TraceInitStep("系统通知接口尚未就绪，初始化终止");
+		OutputStringToELog("系统通知接口尚未就绪");
 		return false;
 	}
 
+	if (g_hwnd == NULL || !IsWindow(g_hwnd)) {
+		TraceInitStep("开始获取主窗口句柄");
+		g_hwnd = reinterpret_cast<HWND>(NotifySys(NES_GET_MAIN_HWND, 0, 0));
+		if (g_hwnd == nullptr || !IsWindow(g_hwnd)) {
+			TraceInitStep("NotifySys 获取主窗口句柄失败，改用进程枚举");
+			g_hwnd = GetMainWindowByProcessId();
+		}
+	}
+
+	if (g_hwnd == NULL || !IsWindow(g_hwnd)) {
+		TraceInitStep("主窗口句柄无效，初始化终止");
+		OutputStringToELog("主窗口句柄无效");
+		return false;
+	}
+	TraceInitStep(std::format(
+		"主窗口句柄有效 hwnd={}",
+		static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(g_hwnd))));
+
+	if (!g_mainWindowSubclassInstalled) {
+		TraceInitStep("开始安装主窗口子类");
+		if (SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0) == FALSE) {
+			TraceInitStep("主窗口子类化失败，初始化终止");
+			OutputStringToELog("主窗口子类化失败");
+			return false;
+		}
+		g_mainWindowSubclassInstalled = true;
+		TraceInitStep("主窗口子类化完成");
+	}
+
 	DWORD processID = GetCurrentProcessId();
+	TraceInitStep(std::format(
+		"记录进程信息 pid={} hwnd={}",
+		processID,
+		static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(g_hwnd))));
 	OutputStringToELog(std::format("E进程ID{} 主句柄{}", processID, (int)g_hwnd));
 
+	TraceInitStep("开始注册 IDE 右键菜单");
 	RegisterIDEContextMenu();
+	TraceInitStep("IDE 右键菜单注册完成");
+	TraceInitStep("开始启动编辑框子类化巡检线程");
 	StartEditViewSubclassTask();
+	TraceInitStep("编辑框子类化巡检线程已启动");
+	TraceInitStep("开始输出当前源码链接器信息");
 	OutputCurrentSourceLinker();
-	AIChatFeature::EnsureTabCreated();
+	TraceInitStep("当前源码链接器信息输出完成");
+	TraceInitStep("开始初始化 AI Chat");
+	AIChatFeature::Initialize(g_hwnd, &g_configManager);
+	TraceInitStep("AI Chat 初始化完成");
+	TraceInitStep("开始初始化 Local MCP");
+	LocalMcpServer::Initialize();
+	TraceInitStep("Local MCP 初始化完成");
+	ResolveCompileDebugStartAddressesForInit();
+	TraceInitStep("开始安装文件与编译相关 Hook");
 	StartHookCreateFileA();
+	TraceInitStep("文件与编译相关 Hook 安装完成");
 
 	const auto autoRunMarker = GetAutoRunModulePublicInfoTestMarkerPath();
 	if (std::filesystem::exists(autoRunMarker)) {
+		TraceInitStep("检测到自动模块公开信息测试标记");
 		g_autoRunModulePublicInfoRequestedPath = TrimAsciiCopy(ReadAutoRunMarkerText(autoRunMarker));
 		std::error_code removeEc;
 		std::filesystem::remove(autoRunMarker, removeEc);
@@ -313,10 +444,14 @@ bool FneInit()
 				EscapeOneLineForLog(g_autoRunModulePublicInfoRequestedPath)));
 		}
 		_beginthread(AutoRunModulePublicInfoTestThread, 0, nullptr);
+		TraceInitStep("自动模块公开信息测试线程已启动");
 	}
 
+	TraceInitStep("开始启动版本检查线程");
 	_beginthread(FneCheckNewVersion, 0, NULL);
+	TraceInitStep("版本检查线程已启动");
 	g_uiInitialized = true;
+	TraceInitStep("FneInit 完成");
 	OutputStringToELog("初始化完成");
 	return true;
 }
@@ -337,34 +472,24 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 		return (INT)NULL;
 	}
 	else if (nMsg == NL_SYS_NOTIFY_FUNCTION) {
-		if (dwParam1) {
-			SetUserSysNotify(reinterpret_cast<PFN_NOTIFY_SYS>(dwParam1));
-		}
-		if (dwParam1 && !g_initStarted) {
-			g_hwnd = reinterpret_cast<HWND>(NotifySys(NES_GET_MAIN_HWND, 0, 0));
-			if (g_hwnd == nullptr || !IsWindow(g_hwnd)) {
-				g_hwnd = GetMainWindowByProcessId();
-			}
-			if (g_hwnd) {
-				g_initStarted = true;
-				SetWindowSubclass(g_hwnd, MainWindowSubclassProc, 0, 0);
-				AIChatFeature::Initialize(g_hwnd, &g_configManager);
-				LocalMcpServer::Initialize();
-				OutputStringToELog("主窗口子类化完成，等待 IDE 就绪通知");
-			}
-			else {
-				OutputStringToELog("无法获取主窗口句柄");
-			}
+		if (dwParam1 && !g_notifySysReady) {
+			g_notifySysReady = true;
+			TraceInitStep("收到 NL_SYS_NOTIFY_FUNCTION，系统通知接口已就绪");
+			OutputStringToELog("系统通知接口已就绪，等待 IDE 就绪通知");
 		}
 	}
 	else if (nMsg == NL_IDE_READY) {
-		if (!g_initStarted) {
-			OutputStringToELog("收到 NL_IDE_READY，但基础初始化尚未完成");
+		TraceInitStep("收到 NL_IDE_READY");
+		if (!g_notifySysReady) {
+			TraceInitStep("系统通知接口尚未就绪，无法执行 IDE 就绪初始化");
+			OutputStringToELog("收到 NL_IDE_READY，但系统通知接口尚未就绪");
 		}
 		else if (FneInit()) {
+			TraceInitStep("NL_IDE_READY 初始化成功");
 			OutputStringToELog("收到 NL_IDE_READY，界面初始化成功");
 		}
 		else {
+			TraceInitStep("NL_IDE_READY 初始化失败");
 			OutputStringToELog("收到 NL_IDE_READY，但界面初始化失败");
 		}
 	}

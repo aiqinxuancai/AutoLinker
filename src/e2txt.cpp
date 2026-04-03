@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
@@ -179,6 +180,11 @@ struct ProgramSection {
 	std::vector<DllInfo> dlls;
 };
 
+struct ClassPublicityInfo {
+	std::int32_t classId = 0;
+	std::int32_t flags = 0;
+};
+
 struct FormInfo {
 	BlockHeader header;
 	std::int32_t unknown1 = 0;
@@ -199,10 +205,12 @@ struct ConstantInfo {
 	std::int32_t offset = 0;
 	std::int32_t length = 0;
 	std::int16_t attr = 0;
+	std::uint32_t pageType = 0;
 	std::string name;
 	std::string comment;
 	std::string valueText;
 	bool longText = false;
+	size_t textByteLength = 0;
 };
 
 struct ResourceSection {
@@ -211,17 +219,23 @@ struct ResourceSection {
 	std::int32_t reserve = 0;
 };
 
+
 struct ModuleSections {
 	bool hasSystemInfo = false;
 	bool hasUserInfo = false;
 	bool hasProgram = false;
 	bool hasResources = false;
+	bool hasClassPublicity = false;
 	RawSystemInfoSection systemInfo = {};
 	UserInfoSection userInfo;
 	ProgramSection program;
 	ResourceSection resources;
+	std::vector<ClassPublicityInfo> classPublicities;
 	std::vector<std::uint8_t> ecomSectionBytes;
 };
+
+std::string FormatNumberLiteral(double value);
+std::string FormatDateLiteral(double value);
 
 struct EComDependencyRecord {
 	std::string name;
@@ -309,6 +323,35 @@ std::string QuoteIfNotEmpty(const std::string& text)
 {
 	const std::string trimmed = TrimAsciiCopy(text);
 	return trimmed.empty() ? std::string() : Quote(trimmed);
+}
+
+std::string BuildDefinitionLine(
+	const std::string& type,
+	const std::vector<std::string>& rawItems,
+	int indent = 0)
+{
+	std::ostringstream stream;
+	for (int i = 0; i < indent; ++i) {
+		stream << "    ";
+	}
+	stream << "." << type;
+
+	size_t count = rawItems.size();
+	while (count > 0 && rawItems[count - 1].empty()) {
+		--count;
+	}
+	if (count == 0) {
+		return stream.str();
+	}
+
+	stream << " ";
+	for (size_t i = 0; i < count; ++i) {
+		if (i != 0) {
+			stream << ", ";
+		}
+		stream << rawItems[i];
+	}
+	return stream.str();
 }
 
 std::uint32_t GetHighType(std::uint32_t value)
@@ -568,6 +611,26 @@ private:
 	const std::vector<std::uint8_t>& m_bytes;
 	size_t m_pos = 0;
 };
+
+std::string BuildReaderHexContext(const ByteReader& reader, size_t centerPos)
+{
+	const auto& bytes = reader.bytes();
+	if (bytes.empty()) {
+		return std::string();
+	}
+
+	const size_t begin = centerPos > 8 ? centerPos - 8 : 0;
+	const size_t end = (std::min)(bytes.size(), centerPos + 8);
+	std::ostringstream stream;
+	stream << std::hex << std::uppercase << std::setfill('0');
+	for (size_t i = begin; i < end; ++i) {
+		if (i != begin) {
+			stream << ' ';
+		}
+		stream << std::setw(2) << static_cast<unsigned int>(bytes[i]);
+	}
+	return stream.str();
+}
 
 bool DecodeSectionName(const RawSectionInfo& info, std::string& outName)
 {
@@ -960,12 +1023,13 @@ bool ParseConstants(std::int32_t count, const std::vector<std::uint8_t>& bytes, 
 			return false;
 		}
 
-		const std::uint32_t pageType = GetHighType(static_cast<std::uint32_t>(item.marker));
-		if (pageType == kConstPageValue) {
+		item.pageType = GetHighType(static_cast<std::uint32_t>(item.marker));
+		if (item.pageType == kConstPageValue) {
 			std::uint8_t valueType = 0;
 			if (!itemReader.ReadU8(valueType)) {
 				return false;
 			}
+			item.longText = (item.attr & kConstAttrLongText) != 0;
 			switch (valueType) {
 			case kConstTypeEmpty:
 				item.valueText.clear();
@@ -975,9 +1039,7 @@ bool ParseConstants(std::int32_t count, const std::vector<std::uint8_t>& bytes, 
 				if (!itemReader.ReadDouble(value)) {
 					return false;
 				}
-				std::ostringstream stream;
-				stream << value;
-				item.valueText = stream.str();
+				item.valueText = FormatNumberLiteral(value);
 				break;
 			}
 			case kConstTypeBool: {
@@ -993,20 +1055,22 @@ bool ParseConstants(std::int32_t count, const std::vector<std::uint8_t>& bytes, 
 				if (!itemReader.ReadDouble(value)) {
 					return false;
 				}
-				char buffer[128] = {};
-				DateTimeFormat(buffer, static_cast<int>(sizeof(buffer)), value, FALSE);
-				item.valueText = buffer;
+				item.valueText = FormatDateLiteral(value);
 				break;
 			}
 			case kConstTypeText: {
-				if (!itemReader.ReadDynamicText(item.valueText)) {
+				bool isNull = false;
+				std::string rawText;
+				if (!itemReader.ReadBStr(rawText, isNull)) {
 					return false;
 				}
-				std::int16_t trailingAttr = 0;
-				if (!itemReader.ReadI16(trailingAttr)) {
-					return false;
+				item.textByteLength = rawText.size();
+				if (isNull) {
+					item.valueText.clear();
 				}
-				item.longText = (trailingAttr & kConstAttrLongText) != 0;
+				else {
+					item.valueText = "“" + rawText + "”";
+				}
 				break;
 			}
 			default:
@@ -1014,13 +1078,13 @@ bool ParseConstants(std::int32_t count, const std::vector<std::uint8_t>& bytes, 
 				break;
 			}
 		}
-		else if (pageType == kConstPageImage) {
+		else if (item.pageType == kConstPageImage) {
 			item.valueText = "<图片>";
 			if (!itemReader.SkipDynamicBytes()) {
 				return false;
 			}
 		}
-		else if (pageType == kConstPageSound) {
+		else if (item.pageType == kConstPageSound) {
 			item.valueText = "<声音>";
 			if (!itemReader.SkipDynamicBytes()) {
 				return false;
@@ -1056,6 +1120,24 @@ bool ParseResourceSection(const std::vector<std::uint8_t>& bytes, ResourceSectio
 		reader.ReadDynamicBytes(constBytes) &&
 		ParseConstants(constCount, constBytes, outResource.constants) &&
 		reader.ReadI32(outResource.reserve);
+}
+
+bool ParseClassPublicitySection(const std::vector<std::uint8_t>& bytes, std::vector<ClassPublicityInfo>& outItems)
+{
+	outItems.clear();
+	if ((bytes.size() % 8u) != 0u) {
+		return false;
+	}
+
+	ByteReader reader(bytes);
+	while (!reader.eof()) {
+		ClassPublicityInfo item;
+		if (!reader.ReadI32(item.classId) || !reader.ReadI32(item.flags)) {
+			return false;
+		}
+		outItems.push_back(item);
+	}
+	return true;
 }
 
 bool ParseUserInfoSection(const std::vector<std::uint8_t>& bytes, UserInfoSection& outUser)
@@ -1194,6 +1276,15 @@ bool ParseModuleSections(const std::string& modulePath, ModuleSections& outSecti
 			}
 			outSections.hasResources = true;
 		}
+		else if (sectionName == "辅助信息段2") {
+			if (!ParseClassPublicitySection(sectionBytes, outSections.classPublicities)) {
+				if (outError != nullptr) {
+					*outError = "class_publicity_section_parse_failed";
+				}
+				return false;
+			}
+			outSections.hasClassPublicity = true;
+		}
 		else if (sectionName == "易模块记录段") {
 			outSections.ecomSectionBytes = std::move(sectionBytes);
 		}
@@ -1304,10 +1395,13 @@ std::string BuildArraySuffix(const std::vector<std::int32_t>& bounds)
 	if (bounds.empty()) {
 		return std::string();
 	}
+	if (bounds.size() == 1 && bounds[0] == 0) {
+		return "\"0\"";
+	}
 	std::vector<std::string> parts;
 	parts.reserve(bounds.size());
 	for (const auto bound : bounds) {
-		parts.push_back(std::to_string(bound));
+		parts.push_back(bound == 0 ? std::string() : std::to_string(bound));
 	}
 	return "\"" + JoinStrings(parts, ",") + "\"";
 }
@@ -2212,13 +2306,102 @@ std::string BuildVarFlags(const VariableInfo& info)
 
 std::string BuildTypeField(const VariableInfo& info, SymbolResolver& resolver)
 {
-	std::string out = TrimAsciiCopy(resolver.ResolveType(info.dataType));
-	if ((info.attr & kVarAttrArray) != 0 || !info.arrayBounds.empty()) {
-		if (!out.empty()) {
-			out += ", , " + BuildArraySuffix(info.arrayBounds);
-		}
+	return TrimAsciiCopy(resolver.ResolveType(info.dataType));
+}
+
+std::string BuildMethodParameterLine(const VariableInfo& info, SymbolResolver& resolver)
+{
+	std::vector<std::string> flags;
+	if ((info.attr & kVarAttrByRef) != 0) {
+		flags.push_back("参考");
 	}
-	return out;
+	if ((info.attr & kVarAttrNullable) != 0) {
+		flags.push_back("可空");
+	}
+	if ((info.attr & kVarAttrArray) != 0) {
+		flags.push_back("数组");
+	}
+	return BuildDefinitionLine(
+		"参数",
+		{
+			TrimAsciiCopy(info.name),
+			BuildTypeField(info, resolver),
+			JoinStrings(flags, " "),
+			TrimAsciiCopy(info.comment),
+		});
+}
+
+std::string BuildLocalVariableLine(const VariableInfo& info, SymbolResolver& resolver)
+{
+	return BuildDefinitionLine(
+		"局部变量",
+		{
+			TrimAsciiCopy(info.name),
+			BuildTypeField(info, resolver),
+			(info.attr & 0x0001) != 0 ? "静态" : std::string(),
+			BuildArraySuffix(info.arrayBounds),
+			TrimAsciiCopy(info.comment),
+		});
+}
+
+std::string BuildClassVariableLine(const VariableInfo& info, SymbolResolver& resolver)
+{
+	return BuildDefinitionLine(
+		"程序集变量",
+		{
+			TrimAsciiCopy(info.name),
+			BuildTypeField(info, resolver),
+			std::string(),
+			BuildArraySuffix(info.arrayBounds),
+			TrimAsciiCopy(info.comment),
+		});
+}
+
+std::string BuildGlobalVariableLine(const VariableInfo& info, SymbolResolver& resolver)
+{
+	return BuildDefinitionLine(
+		"全局变量",
+		{
+			TrimAsciiCopy(info.name),
+			BuildTypeField(info, resolver),
+			(info.attr & 0x0100) != 0 ? "公开" : std::string(),
+			BuildArraySuffix(info.arrayBounds),
+			TrimAsciiCopy(info.comment),
+		});
+}
+
+std::string BuildStructMemberLine(const VariableInfo& info, const std::string& resolvedType)
+{
+	return BuildDefinitionLine(
+		"成员",
+		{
+			TrimAsciiCopy(info.name),
+			resolvedType,
+			(info.attr & kVarAttrByRef) != 0 ? "传址" : std::string(),
+			BuildArraySuffix(info.arrayBounds),
+			TrimAsciiCopy(info.comment),
+		},
+		1);
+}
+
+std::string BuildDllParameterLine(const VariableInfo& info, const std::string& resolvedType)
+{
+	std::vector<std::string> flags;
+	if ((info.attr & kVarAttrByRef) != 0) {
+		flags.push_back("传址");
+	}
+	if ((info.attr & kVarAttrArray) != 0) {
+		flags.push_back("数组");
+	}
+	return BuildDefinitionLine(
+		"参数",
+		{
+			TrimAsciiCopy(info.name),
+			resolvedType,
+			JoinStrings(flags, " "),
+			TrimAsciiCopy(info.comment),
+		},
+		1);
 }
 
 void AppendLine(Page& page, const std::string& line)
@@ -2322,9 +2505,28 @@ std::string BuildIndent(int level)
 
 std::string FormatNumberLiteral(double value)
 {
+	if (std::isfinite(value)) {
+		const double rounded = std::round(value);
+		if (std::fabs(value - rounded) < 1e-12 &&
+			rounded >= static_cast<double>((std::numeric_limits<long long>::min)()) &&
+			rounded <= static_cast<double>((std::numeric_limits<long long>::max)())) {
+			return std::to_string(static_cast<long long>(rounded));
+		}
+	}
+
 	std::ostringstream stream;
-	stream << std::setprecision(15) << value;
-	return stream.str();
+	stream << std::fixed << std::setprecision(15) << value;
+	std::string text = stream.str();
+	while (!text.empty() && text.back() == '0') {
+		text.pop_back();
+	}
+	if (!text.empty() && text.back() == '.') {
+		text.pop_back();
+	}
+	if (text == "-0") {
+		text = "0";
+	}
+	return text.empty() ? "0" : text;
 }
 
 std::string FormatDateLiteral(double value)
@@ -2811,8 +3013,14 @@ bool ParseExpression(ByteReader& reader, std::unique_ptr<Expr>& outExpr, std::st
 	case 0x20:
 		expr->kind = ExprKind::ArrayLiteralEnd;
 		break;
-	case 0x21:
-		return ParseCallExpressionWithoutType(reader, outExpr, nullptr, nullptr, nullptr, outError);
+	case 0x21: {
+		std::unique_ptr<Expr> callExpr;
+		if (!ParseCallExpressionWithoutType(reader, callExpr, nullptr, nullptr, nullptr, outError) || callExpr == nullptr) {
+			return false;
+		}
+		expr = std::move(callExpr);
+		break;
+	}
 	case 0x23:
 		expr->kind = ExprKind::EnumConstant;
 		if (!reader.ReadI16(expr->shortValue2) ||
@@ -2859,7 +3067,10 @@ bool ParseExpression(ByteReader& reader, std::unique_ptr<Expr>& outExpr, std::st
 	default:
 		if (outError != nullptr) {
 			std::ostringstream stream;
-			stream << "unknown_expression_type_" << std::hex << std::uppercase << static_cast<int>(type);
+			stream << "unknown_expression_type_"
+				<< std::hex << std::uppercase << static_cast<int>(type)
+				<< "@0x" << reader.position() - 1
+				<< "|ctx=" << BuildReaderHexContext(reader, reader.position() - 1);
 			*outError = stream.str();
 		}
 		return false;
@@ -2910,7 +3121,7 @@ bool ParseExpression(ByteReader& reader, std::unique_ptr<Expr>& outExpr, std::st
 			auto wrapper = std::make_unique<Expr>();
 			wrapper->kind = ExprKind::AccessArray;
 			wrapper->target = std::move(expr);
-			if (!ParseExpression(reader, wrapper->extra, outError, false)) {
+			if (!ParseExpression(reader, wrapper->extra, outError, true)) {
 				return false;
 			}
 			expr = std::move(wrapper);
@@ -3420,6 +3631,16 @@ bool TryRenderFunctionBody(const FunctionInfo& functionInfo, SymbolResolver& res
 	return true;
 }
 
+bool IsProgramPagePublic(const ModuleSections& sections, std::int32_t pageId)
+{
+	for (const auto& item : sections.classPublicities) {
+		if (item.classId == pageId) {
+			return (item.flags & 0x1) != 0;
+		}
+	}
+	return false;
+}
+
 void BuildProgramPages(const ModuleSections& sections, const GenerateOptions& options, Document& outDocument)
 {
 	SymbolResolver resolver(sections.program, sections.resources, outDocument.sourcePath);
@@ -3449,60 +3670,49 @@ void BuildProgramPages(const ModuleSections& sections, const GenerateOptions& op
 			firstProgramPage = false;
 		}
 
-		std::string pageHeader = ".程序集 " + page.name;
-		if (pageInfo.baseClass != 0) {
-			pageHeader += ", <对象>";
+		std::string baseClassName;
+		if (pageInfo.baseClass != 0 && pageInfo.baseClass != -1) {
+			baseClassName = TrimAsciiCopy(resolver.ResolveType(pageInfo.baseClass));
 		}
-		AppendLine(page, pageHeader);
+		if (baseClassName == "对象") {
+			baseClassName.clear();
+		}
+		AppendLine(page, BuildDefinitionLine(
+			"程序集",
+			{
+				page.name,
+				baseClassName,
+				IsProgramPagePublic(sections, pageInfo.header.dwId) ? "公开" : std::string(),
+				TrimAsciiCopy(pageInfo.comment),
+			}));
 		AppendLine(page, "");
+
+		for (const auto& pageVar : pageInfo.pageVars) {
+			AppendLine(page, BuildClassVariableLine(pageVar, resolver));
+		}
+		if (!pageInfo.pageVars.empty()) {
+			AppendLine(page, "");
+		}
 
 		for (const auto* functionInfo : functions) {
 			if (functionInfo == nullptr) {
 				continue;
 			}
-			std::string subLine = ".子程序 " + TrimAsciiCopy(functionInfo->name);
-			const std::string returnType = TrimAsciiCopy(resolver.ResolveType(functionInfo->returnType));
-			const std::string comment = TrimAsciiCopy(functionInfo->comment);
-			if (!returnType.empty() || !comment.empty()) {
-				subLine += ", ";
-				subLine += returnType;
-				subLine += ", ";
-				if (!comment.empty()) {
-					subLine += ", " + comment;
-				}
-			}
-			AppendLine(page, subLine);
+			AppendLine(page, BuildDefinitionLine(
+				"子程序",
+				{
+					TrimAsciiCopy(functionInfo->name),
+					TrimAsciiCopy(resolver.ResolveType(functionInfo->returnType)),
+					(functionInfo->attr & 0x8) != 0 ? "公开" : std::string(),
+					TrimAsciiCopy(functionInfo->comment),
+				}));
 
 			for (const auto& param : functionInfo->params) {
-				std::string line = ".参数 " + TrimAsciiCopy(param.name);
-				const std::string typeText = BuildTypeField(param, resolver);
-				if (!typeText.empty()) {
-					line += ", " + typeText;
-				}
-				const std::string flagsText = BuildVarFlags(param);
-				if (!flagsText.empty()) {
-					line += ", " + flagsText;
-				}
-				if (!TrimAsciiCopy(param.comment).empty()) {
-					line += ", " + TrimAsciiCopy(param.comment);
-				}
-				AppendLine(page, line);
+				AppendLine(page, BuildMethodParameterLine(param, resolver));
 			}
 
 			for (const auto& local : functionInfo->locals) {
-				std::string line = ".局部变量 " + TrimAsciiCopy(local.name);
-				const std::string typeText = BuildTypeField(local, resolver);
-				if (!typeText.empty()) {
-					line += ", " + typeText;
-				}
-				const std::string flagsText = BuildVarFlags(local);
-				if (!flagsText.empty()) {
-					line += ", " + flagsText;
-				}
-				if (!TrimAsciiCopy(local.comment).empty()) {
-					line += ", " + TrimAsciiCopy(local.comment);
-				}
-				AppendLine(page, line);
+				AppendLine(page, BuildLocalVariableLine(local, resolver));
 			}
 
 			std::vector<std::string> bodyLines;
@@ -3543,16 +3753,7 @@ void BuildGlobalPage(const ModuleSections& sections, Document& outDocument)
 	AppendLine(page, ".版本 2");
 	AppendLine(page, "");
 	for (const auto& item : sections.program.globals) {
-		std::string line = ".全局变量 " + TrimAsciiCopy(item.name);
-		const std::string typeText = BuildTypeField(item, resolver);
-		if (!typeText.empty()) {
-			line += ", " + typeText;
-		}
-		const std::string flagsText = BuildVarFlags(item);
-		if (!flagsText.empty()) {
-			line += ", " + flagsText;
-		}
-		AppendLine(page, line);
+		AppendLine(page, BuildGlobalVariableLine(item, resolver));
 	}
 	outDocument.pages.push_back(std::move(page));
 }
@@ -3576,17 +3777,16 @@ void BuildStructPage(const ModuleSections& sections, const AnonymousTypeHints& h
 				typeName = it->second;
 			}
 		}
-		AppendLine(page, ".数据类型 " + typeName + ", 公开");
+		AppendLine(page, BuildDefinitionLine(
+			"数据类型",
+			{
+				typeName,
+				(item.attr & 0x2) != 0 ? "公开" : std::string(),
+				TrimAsciiCopy(item.comment),
+			}));
 		for (const auto& member : item.members) {
-			std::string line = "    .成员 " + TrimAsciiCopy(member.name);
 			const std::string resolvedType = ResolveMemberTypeWithHints(member, typeName, resolver, hints);
-			if (!resolvedType.empty()) {
-				line += ", " + resolvedType;
-			}
-			if (!member.arrayBounds.empty()) {
-				line += ", , " + BuildArraySuffix(member.arrayBounds);
-			}
-			AppendLine(page, line);
+			AppendLine(page, BuildStructMemberLine(member, resolvedType));
 		}
 		AppendLine(page, "");
 	}
@@ -3607,27 +3807,19 @@ void BuildDllPage(const ModuleSections& sections, const AnonymousTypeHints& hint
 	AppendLine(page, "");
 	for (const auto& item : sections.program.dlls) {
 		const std::string dllName = TrimAsciiCopy(item.name);
-		std::string line = ".DLL命令 " + dllName;
-		const std::string returnType = TrimAsciiCopy(resolver.ResolveType(item.returnType));
-		if (!returnType.empty()) {
-			line += ", " + returnType;
-		}
-		line += ", " + QuoteIfNotEmpty(item.fileName);
-		line += ", " + QuoteIfNotEmpty(item.commandName);
-		line += ", 公开";
-		AppendLine(page, line);
+		AppendLine(page, BuildDefinitionLine(
+			"DLL命令",
+			{
+				dllName,
+				TrimAsciiCopy(resolver.ResolveType(item.returnType)),
+				QuoteIfNotEmpty(item.fileName),
+				QuoteIfNotEmpty(item.commandName),
+				(item.attr & 0x2) != 0 ? "公开" : std::string(),
+				TrimAsciiCopy(item.comment),
+			}));
 		for (const auto& param : item.params) {
-			std::string paramLine = "    .参数 " + TrimAsciiCopy(param.name);
 			std::string typeText = ResolveDllParamTypeWithHints(param, dllName, resolver, hints);
-			if ((param.attr & kVarAttrArray) != 0 || !param.arrayBounds.empty()) {
-				if (!typeText.empty()) {
-					typeText += ", , " + BuildArraySuffix(param.arrayBounds);
-				}
-			}
-			if (!typeText.empty()) {
-				paramLine += ", " + typeText;
-			}
-			AppendLine(page, paramLine);
+			AppendLine(page, BuildDllParameterLine(param, typeText));
 		}
 		AppendLine(page, "");
 	}
@@ -3636,7 +3828,11 @@ void BuildDllPage(const ModuleSections& sections, const AnonymousTypeHints& hint
 
 void BuildConstantPage(const ModuleSections& sections, Document& outDocument)
 {
-	if (sections.resources.constants.empty()) {
+	const bool hasValueConstants = std::any_of(
+		sections.resources.constants.begin(),
+		sections.resources.constants.end(),
+		[](const ConstantInfo& item) { return item.pageType == kConstPageValue; });
+	if (!hasValueConstants) {
 		return;
 	}
 
@@ -3646,11 +3842,30 @@ void BuildConstantPage(const ModuleSections& sections, Document& outDocument)
 	AppendLine(page, ".版本 2");
 	AppendLine(page, "");
 	for (const auto& item : sections.resources.constants) {
-		std::string valueText = item.valueText;
-		if (item.longText) {
-			valueText = "<文本长度: " + std::to_string(item.valueText.size()) + ">";
+		if (item.pageType != kConstPageValue || item.valueText == "<图片>" || item.valueText == "<声音>") {
+			continue;
 		}
-		AppendLine(page, ".常量 " + TrimAsciiCopy(item.name) + ", " + Quote(valueText));
+		std::string valueText = item.valueText;
+		if (item.longText && item.textByteLength > 64) {
+			valueText = "<文本长度: " + std::to_string(item.textByteLength) + ">";
+		}
+		else if (!valueText.empty() &&
+			valueText.find_first_of("eE") != std::string::npos &&
+			valueText.find_first_not_of("0123456789+-.eE") == std::string::npos) {
+			try {
+				valueText = FormatNumberLiteral(std::stod(valueText));
+			}
+			catch (...) {
+			}
+		}
+		AppendLine(page, BuildDefinitionLine(
+			"常量",
+			{
+				TrimAsciiCopy(item.name),
+				Quote(valueText),
+				(item.attr & 0x2) != 0 ? "公开" : std::string(),
+				TrimAsciiCopy(item.comment),
+			}));
 	}
 	outDocument.pages.push_back(std::move(page));
 }
@@ -3667,11 +3882,7 @@ void BuildFormPage(const ModuleSections& sections, Document& outDocument)
 	AppendLine(page, ".版本 2");
 	AppendLine(page, "");
 	for (const auto& item : sections.resources.forms) {
-		std::string line = ".窗口 " + TrimAsciiCopy(item.name);
-		if (!TrimAsciiCopy(item.comment).empty()) {
-			line += ", " + TrimAsciiCopy(item.comment);
-		}
-		AppendLine(page, line);
+		AppendLine(page, BuildDefinitionLine("窗口", { TrimAsciiCopy(item.name), TrimAsciiCopy(item.comment) }));
 	}
 	outDocument.pages.push_back(std::move(page));
 }
