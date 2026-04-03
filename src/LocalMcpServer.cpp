@@ -497,24 +497,40 @@ LocalMcpInstanceRegistry::InstanceRecord BuildCurrentInstanceRecord()
 
 void RefreshCurrentInstanceRegistry()
 {
-	const LocalMcpInstanceRegistry::InstanceRecord record = BuildCurrentInstanceRecord();
-	if (record.instanceId.empty() || record.port <= 0 || record.endpoint.empty()) {
-		return;
+	try {
+		const LocalMcpInstanceRegistry::InstanceRecord record = BuildCurrentInstanceRecord();
+		if (record.instanceId.empty() || record.port <= 0 || record.endpoint.empty()) {
+			return;
+		}
+		std::string error;
+		if (!LocalMcpInstanceRegistry::UpsertCurrentInstance(record, &error) && !error.empty()) {
+			LogMcp(std::format("refresh registry failed: {}", error));
+		}
 	}
-	std::string error;
-	if (!LocalMcpInstanceRegistry::UpsertCurrentInstance(record, &error) && !error.empty()) {
-		LogMcp(std::format("refresh registry failed: {}", error));
+	catch (const std::exception& ex) {
+		LogMcp(std::format("refresh registry exception: {}", ex.what()));
+	}
+	catch (...) {
+		LogMcp("refresh registry exception: unknown");
 	}
 }
 
 void RemoveCurrentInstanceRegistry()
 {
-	if (g_instanceId.empty()) {
-		return;
+	try {
+		if (g_instanceId.empty()) {
+			return;
+		}
+		std::string error;
+		if (!LocalMcpInstanceRegistry::RemoveCurrentInstance(g_instanceId, &error) && !error.empty()) {
+			LogMcp(std::format("remove registry failed: {}", error));
+		}
 	}
-	std::string error;
-	if (!LocalMcpInstanceRegistry::RemoveCurrentInstance(g_instanceId, &error) && !error.empty()) {
-		LogMcp(std::format("remove registry failed: {}", error));
+	catch (const std::exception& ex) {
+		LogMcp(std::format("remove registry exception: {}", ex.what()));
+	}
+	catch (...) {
+		LogMcp("remove registry exception: unknown");
 	}
 }
 

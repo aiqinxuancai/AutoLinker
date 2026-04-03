@@ -487,6 +487,7 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='static_lib_release|x64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="src\ECOMEx.cpp" />
+    <ClCompile Include="src\e2txt.cpp" />
     <ClCompile Include="src\IDEFacade.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\MemFind.cpp" />
@@ -541,6 +542,7 @@
     <ClInclude Include="src\ConfigManager.h" />
     <ClInclude Include="src\EcModulePublicInfoReader.h" />
     <ClInclude Include="src\EideInternalTextBridge.h" />
+    <ClInclude Include="src\e2txt.h" />
     <ClInclude Include="src\direct_global_search.hpp" />
     <ClInclude Include="src\ECOMEx.h" />
     <ClInclude Include="src\Global.h" />

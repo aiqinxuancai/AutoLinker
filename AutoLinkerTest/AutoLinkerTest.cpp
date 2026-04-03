@@ -118,6 +118,7 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest between-dashes <text>" << std::endl;
 	std::cout << "  AutoLinkerTest version-text" << std::endl;
 	std::cout << "  AutoLinkerTest module-local-dump <module-path>" << std::endl;
+	std::cout << "  AutoLinkerTest e2txt-generate <input-path> <output-path>" << std::endl;
 }
 
 }
@@ -151,6 +152,21 @@ int main(int argc, char* argv[])
 			return EXIT_FAILURE;
 		}
 		return RunStringCommand(commandName, "");
+	}
+
+	if (commandName == "e2txt-generate") {
+		if (argc != 4) {
+			PrintUsage();
+			return EXIT_FAILURE;
+		}
+
+		char buffer[524288] = {};
+		const int result = AutoLinkerTest_GenerateE2Txt(argv[2], argv[3], buffer, static_cast<int>(sizeof(buffer)));
+		if (result < 0) {
+			return PrintStringResult(commandName.c_str(), result, buffer);
+		}
+		std::cout << buffer << std::endl;
+		return EXIT_SUCCESS;
 	}
 
 	PrintUsage();

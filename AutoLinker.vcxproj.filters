@@ -62,6 +62,9 @@
     <ClCompile Include="src\ECOMEx.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\e2txt.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\IDEFacade.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -175,6 +178,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\EideInternalTextBridge.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\e2txt.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\ECOMEx.h">

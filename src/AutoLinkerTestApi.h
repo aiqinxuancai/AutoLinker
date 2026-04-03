@@ -32,4 +32,7 @@ AUTOLINKER_TEST_API int AutoLinkerTest_GetVersionText(char* buffer, int bufferSi
 // 执行本地 EC 公开信息解析，并输出调试文本。
 AUTOLINKER_TEST_API int AutoLinkerTest_DumpLocalModulePublicInfo(const char* modulePath, char* buffer, int bufferSize);
 
+// 执行原生 e2txt 导出，并输出结果摘要。
+AUTOLINKER_TEST_API int AutoLinkerTest_GenerateE2Txt(const char* inputPath, const char* outputPath, char* buffer, int bufferSize);
+
 }

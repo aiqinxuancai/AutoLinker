@@ -9,6 +9,7 @@
 #include "EcModulePublicInfoReader.h"
 #include "PathHelper.h"
 #include "Version.h"
+#include "e2txt.h"
 
 namespace {
 
@@ -124,4 +125,20 @@ extern "C" int AutoLinkerTest_DumpLocalModulePublicInfo(const char* modulePath, 
 	}
 
 	return CopyStringToBuffer(BuildLocalModulePublicInfoDebugText(dump), buffer, bufferSize);
+}
+
+extern "C" int AutoLinkerTest_GenerateE2Txt(const char* inputPath, const char* outputPath, char* buffer, int bufferSize)
+{
+	if (inputPath == nullptr || outputPath == nullptr) {
+		return AUTOLINKER_TEST_STRING_INVALID_ARGUMENT;
+	}
+
+	e2txt::Generator generator;
+	std::string summary;
+	std::string error;
+	if (!generator.GenerateToFile(inputPath, outputPath, &summary, &error)) {
+		return CopyStringToBuffer("generate_failed: " + error, buffer, bufferSize);
+	}
+
+	return CopyStringToBuffer(summary, buffer, bufferSize);
 }

@@ -754,6 +754,16 @@ private:
 std::string NormalizeLineBreakToCrLf(const std::string& text);
 std::string NormalizeLineBreakToLf(const std::string& text);
 std::string NormalizePageCodeForLooseCompare(const std::string& text);
+std::string NormalizePageCodeLineForStructuralCompare(const std::string& line);
+std::vector<std::string> BuildPageCodeStructuralFingerprint(const std::string& text);
+std::string BuildStructuralMismatchSummary(
+	const std::vector<std::string>& expectedLines,
+	const std::vector<std::string>& actualLines);
+bool VerifyRealPageCodeMatches(
+	const std::string& expectedCode,
+	const std::string& actualCode,
+	std::string* outMode,
+	std::string* outSummary);
 
 std::string EnsureTextUsesGbkCodePage(const std::string& text)
 {
@@ -1945,6 +1955,165 @@ std::string NormalizePageCodeForLooseCompare(const std::string& text)
 	}
 
 	return result;
+}
+
+std::string NormalizePageCodeLineForStructuralCompare(const std::string& line)
+{
+	const std::string trimmedLine = TrimAsciiCopyLocal(line);
+	if (trimmedLine.empty()) {
+		return std::string();
+	}
+
+	std::string normalized;
+	normalized.reserve(trimmedLine.size());
+	bool inString = false;
+
+	for (size_t i = 0; i < trimmedLine.size(); ++i) {
+		const char ch = trimmedLine[i];
+		if (!inString && std::isspace(static_cast<unsigned char>(ch)) != 0) {
+			continue;
+		}
+
+		normalized.push_back(ch);
+		if (ch != '"') {
+			continue;
+		}
+
+		if (inString && i + 1 < trimmedLine.size() && trimmedLine[i + 1] == '"') {
+			normalized.push_back(trimmedLine[i + 1]);
+			++i;
+			continue;
+		}
+
+		inString = !inString;
+	}
+
+	return normalized;
+}
+
+std::vector<std::string> BuildPageCodeStructuralFingerprint(const std::string& text)
+{
+	const std::string normalized = NormalizeLineBreakToLf(text);
+	std::vector<std::string> lines;
+
+	size_t start = 0;
+	while (start <= normalized.size()) {
+		size_t end = normalized.find('\n', start);
+		if (end == std::string::npos) {
+			end = normalized.size();
+		}
+
+		const std::string line = normalized.substr(start, end - start);
+		const std::string trimmedLine = TrimAsciiCopyLocal(line);
+		if (!trimmedLine.empty() && trimmedLine.rfind(".支持库", 0) != 0) {
+			const std::string normalizedLine = NormalizePageCodeLineForStructuralCompare(trimmedLine);
+			if (!normalizedLine.empty()) {
+				lines.push_back(normalizedLine);
+			}
+		}
+
+		if (end == normalized.size()) {
+			break;
+		}
+		start = end + 1;
+	}
+
+	return lines;
+}
+
+std::string BuildStructuralMismatchSummary(
+	const std::vector<std::string>& expectedLines,
+	const std::vector<std::string>& actualLines)
+{
+	const auto buildAsciiSafeSnippet = [](const std::string& text) {
+		const size_t len = (std::min<size_t>)(80, text.size());
+		const std::string snippet = text.substr(0, len);
+		std::string safe;
+		safe.reserve(snippet.size() * 4);
+		static constexpr char kHex[] = "0123456789ABCDEF";
+		for (unsigned char ch : snippet) {
+			if (ch >= 0x20 && ch <= 0x7E && ch != '\\') {
+				safe.push_back(static_cast<char>(ch));
+				continue;
+			}
+			safe.push_back('\\');
+			safe.push_back('x');
+			safe.push_back(kHex[(ch >> 4) & 0x0F]);
+			safe.push_back(kHex[ch & 0x0F]);
+		}
+		return safe;
+	};
+
+	const size_t common = (std::min)(expectedLines.size(), actualLines.size());
+	size_t mismatchLine = common;
+	for (size_t i = 0; i < common; ++i) {
+		if (expectedLines[i] != actualLines[i]) {
+			mismatchLine = i;
+			break;
+		}
+	}
+
+	const std::string expectedLine = mismatchLine < expectedLines.size()
+		? expectedLines[mismatchLine]
+		: std::string();
+	const std::string actualLine = mismatchLine < actualLines.size()
+		? actualLines[mismatchLine]
+		: std::string();
+
+	return
+		"structural_line=" + std::to_string(mismatchLine + 1) +
+		"|expected_lines=" + std::to_string(expectedLines.size()) +
+		"|actual_lines=" + std::to_string(actualLines.size()) +
+		"|expected_line=" + buildAsciiSafeSnippet(expectedLine) +
+		"|actual_line=" + buildAsciiSafeSnippet(actualLine);
+}
+
+bool VerifyRealPageCodeMatches(
+	const std::string& expectedCode,
+	const std::string& actualCode,
+	std::string* outMode,
+	std::string* outSummary)
+{
+	if (outMode != nullptr) {
+		outMode->clear();
+	}
+	if (outSummary != nullptr) {
+		outSummary->clear();
+	}
+
+	const std::string normalizedExpectedCode = NormalizePageCodeForLooseCompare(expectedCode);
+	const std::string normalizedActualCode = NormalizePageCodeForLooseCompare(actualCode);
+	if (normalizedExpectedCode == normalizedActualCode) {
+		if (outMode != nullptr) {
+			*outMode = "loose_text";
+		}
+		return true;
+	}
+
+	const std::vector<std::string> expectedFingerprint = BuildPageCodeStructuralFingerprint(expectedCode);
+	const std::vector<std::string> actualFingerprint = BuildPageCodeStructuralFingerprint(actualCode);
+	if (expectedFingerprint == actualFingerprint) {
+		if (outMode != nullptr) {
+			*outMode = "structural";
+		}
+		if (outSummary != nullptr) {
+			*outSummary =
+				"loose_text_mismatch|" +
+				BuildTextMismatchSummary(normalizedExpectedCode, normalizedActualCode) +
+				"|structural_lines=" +
+				std::to_string(expectedFingerprint.size());
+		}
+		return true;
+	}
+
+	if (outSummary != nullptr) {
+		*outSummary =
+			"loose_text_mismatch|" +
+			BuildTextMismatchSummary(normalizedExpectedCode, normalizedActualCode) +
+			"|structural_mismatch|" +
+			BuildStructuralMismatchSummary(expectedFingerprint, actualFingerprint);
+	}
+	return false;
 }
 
 HANDLE CreateClipboardAnsiTextHandle(const std::string& text)
@@ -5613,12 +5782,25 @@ bool TryRollbackRealPageCode(
 	}
 
 	if (expectedPageCode != nullptr &&
-		!expectedPageCode->empty() &&
-		NormalizeLineBreakToLf(verifyCode) != NormalizeLineBreakToLf(*expectedPageCode)) {
-		if (outTrace != nullptr) {
-			*outTrace = rollbackWriteTrace + "|rollback_verify_mismatch";
+		!expectedPageCode->empty()) {
+		std::string verifyMode;
+		std::string verifySummary;
+		if (!VerifyRealPageCodeMatches(*expectedPageCode, verifyCode, &verifyMode, &verifySummary)) {
+			if (outTrace != nullptr) {
+				*outTrace = rollbackWriteTrace + "|rollback_verify_mismatch|" + verifySummary;
+			}
+			return false;
 		}
-		return false;
+		if (outTrace != nullptr) {
+			*outTrace =
+				"rollback_ok|" +
+				rollbackWriteTrace +
+				"|rollback_verify_" +
+				verifyMode +
+				"|" +
+				verifyResult.trace;
+		}
+		return true;
 	}
 
 	if (outTrace != nullptr) {
@@ -5713,13 +5895,10 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 		"|" +
 		verifyResult.trace);
 
-	const std::string normalizedVerifyCode = NormalizePageCodeForLooseCompare(verifyCode);
-	const std::string normalizedExpectedCode = NormalizePageCodeForLooseCompare(normalizedNewPageCode);
-	if (normalizedVerifyCode != normalizedExpectedCode) {
-		const std::string mismatchSummary = BuildTextMismatchSummary(
-			normalizedExpectedCode,
-			normalizedVerifyCode);
-		AppendPageEditTraceLine("ReplaceRealPageCode.verify_mismatch|" + mismatchSummary);
+	std::string verifyMode;
+	std::string verifySummary;
+	if (!VerifyRealPageCodeMatches(normalizedNewPageCode, verifyCode, &verifyMode, &verifySummary)) {
+		AppendPageEditTraceLine("ReplaceRealPageCode.verify_mismatch|" + verifySummary);
 		if (outResult != nullptr) {
 			outResult->trace =
 				selectTrace +
@@ -5728,9 +5907,12 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 				"|" +
 				replaceTrace +
 				"|verify_mismatch|" +
-				mismatchSummary;
+				verifySummary;
 		}
 		return false;
+	}
+	if (verifyMode == "structural") {
+		AppendPageEditTraceLine("ReplaceRealPageCode.verify_structural_ok|" + verifySummary);
 	}
 	AppendPageEditTraceLine("ReplaceRealPageCode.success");
 
@@ -5740,10 +5922,13 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 		outResult->textBytes = verifyCode.size();
 		outResult->trace =
 			selectTrace +
+			"|" +
 			writeStrategyTrace +
 			"|" +
 			replaceTrace +
-			"|verify_ok|" +
+			"|verify_ok_" +
+			verifyMode +
+			"|" +
 			verifyResult.trace;
 	}
 	return true;
@@ -5798,20 +5983,20 @@ bool ReplaceRealPageCodeByEditorWindowInternal(
 		"|" +
 		verifyResult.trace);
 
-	const std::string normalizedVerifyCode = NormalizePageCodeForLooseCompare(verifyCode);
-	const std::string normalizedExpectedCode = NormalizePageCodeForLooseCompare(normalizedNewPageCode);
-	if (normalizedVerifyCode != normalizedExpectedCode) {
-		const std::string mismatchSummary = BuildTextMismatchSummary(
-			normalizedExpectedCode,
-			normalizedVerifyCode);
-		AppendPageEditTraceLine("ReplaceRealPageCodeByWindow.verify_mismatch|" + mismatchSummary);
+	std::string verifyMode;
+	std::string verifySummary;
+	if (!VerifyRealPageCodeMatches(normalizedNewPageCode, verifyCode, &verifyMode, &verifySummary)) {
+		AppendPageEditTraceLine("ReplaceRealPageCodeByWindow.verify_mismatch|" + verifySummary);
 		if (outResult != nullptr) {
 			outResult->trace =
 				replaceTrace +
 				"|verify_mismatch|" +
-				mismatchSummary;
+				verifySummary;
 		}
 		return false;
+	}
+	if (verifyMode == "structural") {
+		AppendPageEditTraceLine("ReplaceRealPageCodeByWindow.verify_structural_ok|" + verifySummary);
 	}
 
 	if (outResult != nullptr) {
@@ -5820,7 +6005,9 @@ bool ReplaceRealPageCodeByEditorWindowInternal(
 		outResult->trace =
 			"write_by_window_input|" +
 			replaceTrace +
-			"|verify_ok|" +
+			"|verify_ok_" +
+			verifyMode +
+			"|" +
 			verifyResult.trace;
 	}
 	return true;

@@ -97,18 +97,110 @@ bool IsProcessLikelyAlive(unsigned long processId)
 	return waitResult == WAIT_TIMEOUT;
 }
 
+bool IsValidUtf8Text(const std::string& text)
+{
+	if (text.empty()) {
+		return true;
+	}
+	return MultiByteToWideChar(
+		CP_UTF8,
+		MB_ERR_INVALID_CHARS,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0) > 0;
+}
+
+std::string ConvertCodePage(const std::string& text, UINT fromCodePage, UINT toCodePage, DWORD fromFlags = 0)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+
+	const int wideLen = MultiByteToWideChar(
+		fromCodePage,
+		fromFlags,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0);
+	if (wideLen <= 0) {
+		return text;
+	}
+
+	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+	if (MultiByteToWideChar(
+		fromCodePage,
+		fromFlags,
+		text.data(),
+		static_cast<int>(text.size()),
+		wide.data(),
+		wideLen) <= 0) {
+		return text;
+	}
+
+	const int outLen = WideCharToMultiByte(
+		toCodePage,
+		0,
+		wide.data(),
+		wideLen,
+		nullptr,
+		0,
+		nullptr,
+		nullptr);
+	if (outLen <= 0) {
+		return text;
+	}
+
+	std::string out(static_cast<size_t>(outLen), '\0');
+	if (WideCharToMultiByte(
+		toCodePage,
+		0,
+		wide.data(),
+		wideLen,
+		out.data(),
+		outLen,
+		nullptr,
+		nullptr) <= 0) {
+		return text;
+	}
+	return out;
+}
+
+std::string LocalToUtf8Text(const std::string& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+	if (IsValidUtf8Text(text)) {
+		return text;
+	}
+	return ConvertCodePage(text, CP_ACP, CP_UTF8, 0);
+}
+
+std::string Utf8ToLocalText(const std::string& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+	if (!IsValidUtf8Text(text)) {
+		return text;
+	}
+	return ConvertCodePage(text, CP_UTF8, CP_ACP, MB_ERR_INVALID_CHARS);
+}
+
 nlohmann::json BuildRecordJson(const LocalMcpInstanceRegistry::InstanceRecord& record)
 {
 	return {
-		{"instance_id", record.instanceId},
+		{"instance_id", LocalToUtf8Text(record.instanceId)},
 		{"process_id", record.processId},
-		{"process_path", record.processPath},
-		{"process_name", record.processName},
+		{"process_path", LocalToUtf8Text(record.processPath)},
+		{"process_name", LocalToUtf8Text(record.processName)},
 		{"port", record.port},
-		{"endpoint", record.endpoint},
-		{"source_file_path_hint", record.sourceFilePathHint},
-		{"page_name_hint", record.pageNameHint},
-		{"page_type_hint", record.pageTypeHint},
+		{"endpoint", LocalToUtf8Text(record.endpoint)},
+		{"source_file_path_hint", LocalToUtf8Text(record.sourceFilePathHint)},
+		{"page_name_hint", LocalToUtf8Text(record.pageNameHint)},
+		{"page_type_hint", LocalToUtf8Text(record.pageTypeHint)},
 		{"last_seen_unix_ms", record.lastSeenUnixMs}
 	};
 }
@@ -120,15 +212,15 @@ LocalMcpInstanceRegistry::InstanceRecord ParseRecordJson(const nlohmann::json& v
 		return record;
 	}
 
-	record.instanceId = value.value("instance_id", std::string());
+	record.instanceId = Utf8ToLocalText(value.value("instance_id", std::string()));
 	record.processId = value.value("process_id", 0UL);
-	record.processPath = value.value("process_path", std::string());
-	record.processName = value.value("process_name", std::string());
+	record.processPath = Utf8ToLocalText(value.value("process_path", std::string()));
+	record.processName = Utf8ToLocalText(value.value("process_name", std::string()));
 	record.port = value.value("port", 0);
-	record.endpoint = value.value("endpoint", std::string());
-	record.sourceFilePathHint = value.value("source_file_path_hint", std::string());
-	record.pageNameHint = value.value("page_name_hint", std::string());
-	record.pageTypeHint = value.value("page_type_hint", std::string());
+	record.endpoint = Utf8ToLocalText(value.value("endpoint", std::string()));
+	record.sourceFilePathHint = Utf8ToLocalText(value.value("source_file_path_hint", std::string()));
+	record.pageNameHint = Utf8ToLocalText(value.value("page_name_hint", std::string()));
+	record.pageTypeHint = Utf8ToLocalText(value.value("page_type_hint", std::string()));
 	record.lastSeenUnixMs = value.value("last_seen_unix_ms", static_cast<std::uint64_t>(0));
 	return record;
 }
