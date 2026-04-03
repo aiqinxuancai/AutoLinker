@@ -1163,7 +1163,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "insert_program_item_code_block"},
-		{"description", "Insert one code block into a cached real page at the top, bottom, around a symbol, or around an exact anchor text, then rewrite the whole page through the internal editor path."},
+		{"description", "Insert one code block into a cached real page at the top, bottom, around a symbol, or around an exact anchor text, then rewrite the whole page through the internal editor path. If this tool returns ok=true, treat the insertion as completed and do not immediately issue extra rewrite calls on the same page unless the user explicitly asks for further cleanup or refinement."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1350,7 +1350,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"当前项目类型：" + projectType + "\n\n"
 		"易语言基础约定：\n"
 		"- 以 # 开头的标识通常表示常量。\n"
-		"- 以 . 开头的是易语言系统指令/关键字，例如 .版本、.程序集、.子程序、.参数、.局部变量、.如果、.否则。\n"
+		"- 以 . 开头的是易语言系统指令/关键字，例如 .版本、.程序集、.子程序、.参数、.常量、.DLL声明、.数据、.局部变量、.如果、.如果真、.否则。\n"
 		"- 单引号 ' 开头表示注释。\n"
 		"- 真 / 假 是布尔值。\n"
 		"- 赋值常写作 `变量 ＝ 值`，不要误写成 C/C++ 风格的 `=`。\n"
@@ -1358,11 +1358,11 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"- 返回常见写法是 `返回 (...)`。\n"
 		"- 全角中文标点和全角运算符在代码里较常见，分析时不要误判。\n\n"
 		"常见流程控制示例：\n"
-		"1) 条件成立执行：\n"
+		"1) if：\n"
 		".如果真 ()\n"
 		"    a ＝ 0\n"
 		".如果真结束\n\n"
-		"2) if / else：\n"
+		"2) if else：\n"
 		".如果 (a ＝ 0)\n"
 		"    a ＝ 1\n"
 		".否则\n"
@@ -1414,7 +1414,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"13) 已经拿到具体文档 URL 时，优先调用 extract_web_document 读取正文；只有在需要看原始响应时再调用 fetch_url。\n"
 		"14) 需要在本机查环境、查文件、执行受控自动化时调用 run_powershell_command；它每次都会向用户确认，命令要尽量小、明确、可解释。\n"
 		"15) run_powershell_command 被用户取消后，不要机械重试，应改为解释下一步或换别的工具。\n"
-		"16) 工具失败时先分析失败原因并换更合适的工具，不要机械重试同一个调用。\n"
+		"16) 工具失败时先分析失败原因并换更合适的工具，不要机械重试同一个调用；真实页写工具一旦已经返回 ok=true，就默认停止，不要立刻对同一页继续追加无必要的二次写回。\n"
 		"17) 不要要求用户手动补上下文，优先自己通过工具获取。\n";
 	const std::string extraPrompt = AIService::Trim(settings.extraSystemPrompt);
 	if (!extraPrompt.empty()) {

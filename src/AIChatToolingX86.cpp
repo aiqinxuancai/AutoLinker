@@ -85,6 +85,13 @@ struct KeywordSearchResultInfo {
 
 std::vector<std::string> SplitLinesCopyForAI(const std::string& text);
 std::string NormalizeLineBreaksForAI(std::string text);
+std::string NormalizeRealPageCodeForLooseCompareForAI(const std::string& text);
+std::string NormalizeRealPageCodeLineForStructuralCompareForAI(const std::string& line);
+std::vector<std::string> BuildRealPageStructuralFingerprintForAI(const std::string& text);
+bool VerifyRealPageCodeMatchesForAI(
+	const std::string& expectedCode,
+	const std::string& actualCode,
+	std::string* outMode);
 
 static std::string TrimAsciiCopy(const std::string& text)
 {
@@ -790,6 +797,40 @@ bool TryWriteRealPageCodeForAI(
 		outRollbackAttempted = writeResult.rollbackAttempted;
 		outRollbackSucceeded = writeResult.rollbackSucceeded;
 		outTrace = writeResult.trace;
+
+		std::string recoveredCode;
+		e571::NativeRealPageAccessResult recoveredReadResult{};
+		std::string recoveredReadError;
+		if (TryReadRealPageCodeForAI(item, recoveredCode, recoveredReadResult, recoveredReadError)) {
+			std::string recoveredVerifyMode;
+			if (VerifyRealPageCodeMatchesForAI(normalizedNewCode, recoveredCode, &recoveredVerifyMode)) {
+				PageCodeCacheEntry postSnapshotEntry;
+				const bool hasPostSnapshotEntry = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, postSnapshotEntry);
+				PutPageCodeCacheEntryForAI(item, recoveredCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
+
+				outFinalCode = recoveredCode;
+				outTrace =
+					writeResult.trace +
+					"|post_failure_verify_ok_" +
+					recoveredVerifyMode +
+					"|" +
+					recoveredReadResult.trace;
+				outError.clear();
+				return true;
+			}
+
+			outTrace =
+				writeResult.trace +
+				"|post_failure_verify_mismatch|" +
+				recoveredReadResult.trace;
+		}
+		else if (!recoveredReadError.empty()) {
+			outTrace =
+				writeResult.trace +
+				"|post_failure_verify_read_failed|" +
+				recoveredReadResult.trace;
+		}
+
 		outError = "replace real page code failed";
 		return false;
 	}
@@ -2045,6 +2086,126 @@ std::string NormalizeLineBreaksForAI(std::string text)
 {
 	text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
 	return text;
+}
+
+std::string NormalizeRealPageCodeForLooseCompareForAI(const std::string& text)
+{
+	const std::string normalized = NormalizeRealCodeLineBreaksToCrLf(text);
+	std::string result;
+	result.reserve(normalized.size());
+	bool lastKeptLineBlank = false;
+
+	size_t start = 0;
+	while (start <= normalized.size()) {
+		size_t end = normalized.find("\r\n", start);
+		if (end == std::string::npos) {
+			end = normalized.size();
+		}
+
+		const std::string line = normalized.substr(start, end - start);
+		const std::string trimmedLine = TrimAsciiCopy(line);
+		if (trimmedLine.rfind(".支持库", 0) != 0) {
+			const bool isBlankLine = trimmedLine.empty();
+			if (!(isBlankLine && lastKeptLineBlank)) {
+				result.append(line);
+				if (end != normalized.size()) {
+					result.append("\r\n");
+				}
+				lastKeptLineBlank = isBlankLine;
+			}
+		}
+
+		if (end == normalized.size()) {
+			break;
+		}
+		start = end + 2;
+	}
+
+	while (result.size() >= 2 && result.compare(result.size() - 2, 2, "\r\n") == 0) {
+		result.resize(result.size() - 2);
+	}
+	return result;
+}
+
+std::string NormalizeRealPageCodeLineForStructuralCompareForAI(const std::string& line)
+{
+	const std::string trimmedLine = TrimAsciiCopy(line);
+	if (trimmedLine.empty()) {
+		return std::string();
+	}
+
+	std::string normalized;
+	normalized.reserve(trimmedLine.size());
+	bool inString = false;
+	for (size_t i = 0; i < trimmedLine.size(); ++i) {
+		const char ch = trimmedLine[i];
+		if (!inString && std::isspace(static_cast<unsigned char>(ch)) != 0) {
+			continue;
+		}
+
+		normalized.push_back(ch);
+		if (ch != '"') {
+			continue;
+		}
+
+		if (inString && i + 1 < trimmedLine.size() && trimmedLine[i + 1] == '"') {
+			normalized.push_back(trimmedLine[i + 1]);
+			++i;
+			continue;
+		}
+
+		inString = !inString;
+	}
+	return normalized;
+}
+
+std::vector<std::string> BuildRealPageStructuralFingerprintForAI(const std::string& text)
+{
+	const std::vector<std::string> lines = SplitRealCodeLines(NormalizeRealCodeLineBreaksToCrLf(text));
+	std::vector<std::string> fingerprint;
+	fingerprint.reserve(lines.size());
+	for (const auto& line : lines) {
+		const std::string trimmedLine = TrimAsciiCopy(line);
+		if (trimmedLine.empty() || trimmedLine.rfind(".支持库", 0) == 0) {
+			continue;
+		}
+
+		const std::string normalizedLine = NormalizeRealPageCodeLineForStructuralCompareForAI(trimmedLine);
+		if (!normalizedLine.empty()) {
+			fingerprint.push_back(normalizedLine);
+		}
+	}
+	return fingerprint;
+}
+
+bool VerifyRealPageCodeMatchesForAI(
+	const std::string& expectedCode,
+	const std::string& actualCode,
+	std::string* outMode)
+{
+	if (outMode != nullptr) {
+		outMode->clear();
+	}
+
+	const std::string normalizedExpected = NormalizeRealPageCodeForLooseCompareForAI(expectedCode);
+	const std::string normalizedActual = NormalizeRealPageCodeForLooseCompareForAI(actualCode);
+	if (normalizedExpected == normalizedActual) {
+		if (outMode != nullptr) {
+			*outMode = "loose_text";
+		}
+		return true;
+	}
+
+	const std::vector<std::string> expectedFingerprint = BuildRealPageStructuralFingerprintForAI(expectedCode);
+	const std::vector<std::string> actualFingerprint = BuildRealPageStructuralFingerprintForAI(actualCode);
+	if (expectedFingerprint == actualFingerprint) {
+		if (outMode != nullptr) {
+			*outMode = "structural";
+		}
+		return true;
+	}
+
+	return false;
 }
 
 bool ContainsKeywordInsensitiveForAI(
