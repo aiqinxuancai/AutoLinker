@@ -837,11 +837,10 @@ std::string ExecuteToolCallImpl(const std::string& toolName, const std::string& 
 		toolName == "list_imported_modules" ||
 		toolName == "list_support_libraries" ||
 		toolName == "get_support_library_info" ||
-		toolName == "search_support_library_info" ||
+		toolName == "search_public_code" ||
 		toolName == "search_support_library_public_code" ||
 		toolName == "read_support_library_public_code" ||
 		toolName == "get_module_public_info" ||
-		toolName == "search_module_public_info" ||
 		toolName == "search_module_public_code" ||
 		toolName == "read_module_public_code" ||
 		toolName == "list_program_items" ||
@@ -859,6 +858,7 @@ std::string ExecuteToolCallImpl(const std::string& toolName, const std::string& 
 		toolName == "insert_program_item_code_block" ||
 		toolName == "switch_to_program_item_page" ||
 		toolName == "search_project_keyword" ||
+		toolName == "read_project_search_result_code" ||
 		toolName == "jump_to_search_result" ||
 		toolName == "compile_with_output_path") {
 		std::string resultJson;

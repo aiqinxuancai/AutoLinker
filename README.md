@@ -119,11 +119,10 @@ url = "http://127.0.0.1:19207/mcp"
 | 模块 | `list_imported_modules` | 列出当前项目导入模块 |
 | 支持库 | `list_support_libraries` | 列出当前已选支持库 |
 | 支持库 | `get_support_library_info` | 获取单个支持库公开信息 |
-| 支持库 | `search_support_library_info` | 搜索支持库公开信息 |
+| 完全搜索 | `search_public_code` | 统一搜索当前 IDE 工程源码命中、模块公开声明、支持库公开声明，支持多关键字或正则 |
 | 支持库 | `search_support_library_public_code` | 按行搜索支持库公开声明文本 |
 | 支持库 | `read_support_library_public_code` | 读取支持库公开声明文本指定行范围 |
 | 模块 | `get_module_public_info` | 获取模块公开接口信息 |
-| 模块 | `search_module_public_info` | 搜索模块公开接口信息 |
 | 模块 | `search_module_public_code` | 按行搜索模块公开声明文本 |
 | 模块 | `read_module_public_code` | 读取模块公开声明文本指定行范围 |
 | 程序树 | `list_program_items` | 列出程序树项目，可选附带参考代码 |
@@ -140,13 +139,45 @@ url = "http://127.0.0.1:19207/mcp"
 | 程序树真实源码 | `edit_symbol_real_code` | 按符号替换真实源码 |
 | 程序树真实源码 | `insert_program_item_code_block` | 按位置或符号插入代码块 |
 | 程序树 | `switch_to_program_item_page` | 切换到指定程序树页面 |
-| 搜索 | `search_project_keyword` | 调用 IDE 整体搜索 |
+| 搜索 | `search_project_keyword` | 仅搜索当前 IDE 工程源码命中 |
+| 搜索 | `read_project_search_result_code` | 基于 IDE 搜索命中读取真实页代码行范围 |
 | 搜索 | `jump_to_search_result` | 跳转到指定搜索结果 |
 | 编译 | `compile_with_output_path` | 指定输出路径发起编译/静态编译 |
 | 本地交互 | `run_powershell_command` | 经过确认后执行 PowerShell 命令 |
 | 联网 | `search_web_tavily` | 联网搜索网页结果 |
 | 联网 | `fetch_url` | 抓取指定 URL 原始文本响应 |
 | 联网 | `extract_web_document` | 提取网页正文与链接摘要 |
+
+### ⭐完全搜索说明
+
+- 推荐优先使用 `search_public_code` 做完全搜索，它会同时搜索：
+  - 当前 IDE 工程源码命中
+  - 模块公开声明文本
+  - 支持库公开声明文本
+- 结果会明确返回 `target_type`（`project`、`module` 或 `support_library`）以及 `read_tool`。
+- 若命中 `project`，后续调用 `read_project_search_result_code`。
+- 若命中 `module`，后续调用 `read_module_public_code`。
+- 若命中 `support_library`，后续调用 `read_support_library_public_code`。
+- `search_public_code` 支持：
+  - 单关键字：`keyword`
+  - 多关键字：`keywords`
+  - 关键字组合模式：`keyword_mode = all | any`
+  - 正则：`regex` + `regex_flags`
+- `target_types` 现支持：`project`、`module`、`support_library`
+- 如果要快速定位子程序、常量、数据类型、DLL命令、程序集变量、参数、局部变量、全局变量，可考虑使用类似 `.子程序 XXXX`、`.常量 XXXX`、`.数据类型 XXXX`、`.DLL命令 XXXX`、`.参数 XXXX`、`.全局变量 XXXX` 来进行。
+
+### ⭐IDE 搜索结果读行说明
+
+- `search_project_keyword` 仅用于搜索当前 IDE 工程源码命中，不包含模块公开声明与支持库公开声明；如果你要做完全搜索，优先使用 `search_public_code`。
+- 返回结果还会附带 `hit_index_in_page`、`hit_total_in_page`、`same_text_occurrence_index`、`same_text_occurrence_total`，用于区分同一页面内的多个命中，尤其是同页同文本重复命中。
+- 若需要基于某个 IDE 搜索命中继续读取真实代码行，请调用 `read_project_search_result_code`。
+- `read_project_search_result_code` 会：
+  - 先按 `jump_token` 跳到 IDE 搜索结果
+  - 抓取并缓存当前页完整真实源码
+  - 优先用 `search_text` + `same_text_occurrence_index` 在整页代码中定位“同页同文本第 N 次出现”
+  - 若无法按该序号定位，再退回到旧的提示行号最近匹配策略
+  - 最后返回该命中行附近的代码片段
+- 调用时建议把 `search_project_keyword` 返回的 `search_text` 与 `same_text_occurrence_index` 一并原样传回 `read_project_search_result_code`。
 
 ---
 

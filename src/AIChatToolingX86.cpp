@@ -12,7 +12,9 @@
 #include <filesystem>
 #include <fstream>
 #include <format>
+#include <limits>
 #include <mutex>
+#include <regex>
 #include <string>
 #include <tlhelp32.h>
 #include <unordered_map>
@@ -75,6 +77,10 @@ struct KeywordSearchResultInfo {
 	std::string pageTypeName;
 	int lineNumber = -1;
 	std::string text;
+	int hitIndexInPage = 0;
+	int hitTotalInPage = 0;
+	int sameTextOccurrenceIndex = 0;
+	int sameTextOccurrenceTotal = 0;
 };
 
 std::vector<std::string> SplitLinesCopyForAI(const std::string& text);
@@ -923,6 +929,137 @@ bool ParsePageNameFromSearchDisplayText(const std::string& displayText, std::str
 		return !outPageName.empty();
 	}
 
+	return false;
+}
+
+std::string BuildProjectSearchGroupingKeyForAI(const std::string& pageName, const std::string& text)
+{
+	return ToLowerAsciiCopyLocal(TrimAsciiCopy(pageName)) + "\n" + ToLowerAsciiCopyLocal(TrimAsciiCopy(text));
+}
+
+std::vector<std::string> BuildSearchTextCandidatesForAI(const std::string& searchText, const std::string& pageName)
+{
+	std::vector<std::string> candidates;
+	const auto pushUnique = [&](std::string text) {
+		text = TrimAsciiCopy(text);
+		if (text.empty()) {
+			return;
+		}
+		for (const auto& existing : candidates) {
+			if (existing == text) {
+				return;
+			}
+		}
+		candidates.push_back(std::move(text));
+	};
+
+	pushUnique(searchText);
+
+	const size_t arrowPos = searchText.find(" -> ");
+	if (arrowPos != std::string::npos) {
+		pushUnique(searchText.substr(arrowPos + 4));
+	}
+
+	const std::string trimmedPageName = TrimAsciiCopy(pageName);
+	if (!trimmedPageName.empty() && searchText.rfind(trimmedPageName, 0) == 0) {
+		std::string suffix = searchText.substr(trimmedPageName.size());
+		suffix = TrimAsciiCopy(suffix);
+		if (suffix.rfind("->", 0) == 0) {
+			suffix = TrimAsciiCopy(suffix.substr(2));
+		}
+		pushUnique(suffix);
+	}
+
+	return candidates;
+}
+
+bool TryResolveProjectSearchLineNumberForAI(
+	const std::vector<std::string>& pageLines,
+	const std::vector<std::string>& candidates,
+	int sameTextOccurrenceIndex,
+	int hintLineNumber,
+	int& outResolvedLineNumber,
+	std::string& outResolvedBy,
+	std::string& outMatchedCandidate,
+	int& outMatchedCandidateTotal)
+{
+	outResolvedLineNumber = -1;
+	outResolvedBy.clear();
+	outMatchedCandidate.clear();
+	outMatchedCandidateTotal = 0;
+
+	if (pageLines.empty()) {
+		outResolvedBy = "page_empty";
+		return false;
+	}
+
+	std::vector<std::pair<int, std::string>> matches;
+	for (const auto& candidate : candidates) {
+		std::vector<int> candidateMatches;
+		const std::string candidateLower = ToLowerAsciiCopyLocal(candidate);
+		const bool caseSensitive = false;
+		for (size_t i = 0; i < pageLines.size(); ++i) {
+			const bool matched = caseSensitive
+				? (pageLines[i].find(candidate) != std::string::npos)
+				: (pageLines[i].find(candidate) != std::string::npos ||
+				   ToLowerAsciiCopyLocal(pageLines[i]).find(candidateLower) != std::string::npos);
+			if (matched) {
+				candidateMatches.push_back(static_cast<int>(i) + 1);
+			}
+		}
+
+		if (!candidateMatches.empty()) {
+			if (matches.empty()) {
+				for (const int lineNumber : candidateMatches) {
+					matches.emplace_back(lineNumber, candidate);
+				}
+				outMatchedCandidateTotal = static_cast<int>(candidateMatches.size());
+			}
+
+			if (sameTextOccurrenceIndex > 0 &&
+				sameTextOccurrenceIndex <= static_cast<int>(candidateMatches.size())) {
+				outResolvedLineNumber = candidateMatches[static_cast<size_t>(sameTextOccurrenceIndex - 1)];
+				outMatchedCandidate = candidate;
+				outMatchedCandidateTotal = static_cast<int>(candidateMatches.size());
+				outResolvedBy = "matched_text_occurrence_index";
+				return true;
+			}
+		}
+	}
+
+	if (!matches.empty()) {
+		size_t bestIndex = 0;
+		if (hintLineNumber > 0) {
+			int bestDistance = (std::numeric_limits<int>::max)();
+			for (size_t i = 0; i < matches.size(); ++i) {
+				const int distance = std::abs(matches[i].first - hintLineNumber);
+				if (distance < bestDistance) {
+					bestDistance = distance;
+					bestIndex = i;
+				}
+			}
+		}
+
+		outResolvedLineNumber = matches[bestIndex].first;
+		outMatchedCandidate = matches[bestIndex].second;
+		if (sameTextOccurrenceIndex > 0) {
+			outResolvedBy = matches.size() == 1
+				? "same_text_occurrence_fallback_unique"
+				: "same_text_occurrence_fallback_nearest_hint";
+		}
+		else {
+			outResolvedBy = matches.size() == 1 ? "matched_text_unique" : "matched_text_nearest_hint";
+		}
+		return true;
+	}
+
+	if (hintLineNumber > 0 && hintLineNumber <= static_cast<int>(pageLines.size())) {
+		outResolvedLineNumber = hintLineNumber;
+		outResolvedBy = "search_hint_fallback";
+		return true;
+	}
+
+	outResolvedBy = "not_found";
 	return false;
 }
 
@@ -1922,6 +2059,197 @@ bool ContainsKeywordInsensitiveForAI(
 		return true;
 	}
 	return ToLowerAsciiCopyLocal(text).find(keywordLower) != std::string::npos;
+}
+
+struct PublicCodeSearchSpecForAI {
+	std::vector<std::string> keywords;
+	std::vector<std::string> keywordsLower;
+	std::string keywordMode = "all";
+	bool caseSensitive = false;
+	bool useRegex = false;
+	std::string regexText;
+	std::string regexFlags;
+	std::regex regex;
+	bool searchModules = true;
+	bool searchSupportLibraries = true;
+	bool searchProject = true;
+};
+
+bool TryBuildPublicCodeSearchSpecForAI(
+	const nlohmann::json& args,
+	PublicCodeSearchSpecForAI& outSpec,
+	std::string& outError)
+{
+	outSpec = {};
+	outError.clear();
+
+	if (args.contains("keyword") && args["keyword"].is_string()) {
+		const std::string keyword = TrimAsciiCopy(Utf8ToLocalText(args["keyword"].get<std::string>()));
+		if (!keyword.empty()) {
+			outSpec.keywords.push_back(keyword);
+		}
+	}
+
+	if (args.contains("keywords") && args["keywords"].is_array()) {
+		for (const auto& item : args["keywords"]) {
+			if (!item.is_string()) {
+				continue;
+			}
+			const std::string keyword = TrimAsciiCopy(Utf8ToLocalText(item.get<std::string>()));
+			if (!keyword.empty()) {
+				outSpec.keywords.push_back(keyword);
+			}
+		}
+	}
+
+	if (args.contains("keyword_mode") && args["keyword_mode"].is_string()) {
+		outSpec.keywordMode = ToLowerAsciiCopyLocal(TrimAsciiCopy(args["keyword_mode"].get<std::string>()));
+	}
+	if (outSpec.keywordMode != "all" && outSpec.keywordMode != "any") {
+		outError = "keyword_mode must be all or any";
+		return false;
+	}
+
+	outSpec.caseSensitive = args.contains("case_sensitive") && args["case_sensitive"].is_boolean()
+		? args["case_sensitive"].get<bool>()
+		: false;
+
+	for (const auto& keyword : outSpec.keywords) {
+		outSpec.keywordsLower.push_back(outSpec.caseSensitive ? keyword : ToLowerAsciiCopyLocal(keyword));
+	}
+
+	if (args.contains("regex") && args["regex"].is_string()) {
+		outSpec.regexText = TrimAsciiCopy(Utf8ToLocalText(args["regex"].get<std::string>()));
+	}
+	if (args.contains("regex_flags") && args["regex_flags"].is_string()) {
+		outSpec.regexFlags = ToLowerAsciiCopyLocal(TrimAsciiCopy(args["regex_flags"].get<std::string>()));
+	}
+	if (!outSpec.regexText.empty()) {
+		std::regex_constants::syntax_option_type options = std::regex_constants::ECMAScript;
+		if (outSpec.regexFlags.find('i') != std::string::npos) {
+			options |= std::regex_constants::icase;
+		}
+		try {
+			outSpec.regex = std::regex(outSpec.regexText, options);
+			outSpec.useRegex = true;
+		}
+		catch (const std::regex_error& ex) {
+			outError = std::string("invalid regex: ") + ex.what();
+			return false;
+		}
+	}
+
+	if (args.contains("target_types") && args["target_types"].is_array()) {
+		outSpec.searchModules = false;
+		outSpec.searchSupportLibraries = false;
+		outSpec.searchProject = false;
+		for (const auto& item : args["target_types"]) {
+			if (!item.is_string()) {
+				continue;
+			}
+			const std::string type = ToLowerAsciiCopyLocal(TrimAsciiCopy(item.get<std::string>()));
+			if (type == "module" || type == "modules") {
+				outSpec.searchModules = true;
+			}
+			else if (type == "support_library" || type == "support_libraries" || type == "library") {
+				outSpec.searchSupportLibraries = true;
+			}
+			else if (type == "project" || type == "ide" || type == "project_page" || type == "ide_project") {
+				outSpec.searchProject = true;
+			}
+		}
+		if (!outSpec.searchModules && !outSpec.searchSupportLibraries && !outSpec.searchProject) {
+			outError = "target_types must contain project and/or module and/or support_library";
+			return false;
+		}
+	}
+
+	if (outSpec.keywords.empty() && !outSpec.useRegex) {
+		outError = "keyword/keywords/regex is required";
+		return false;
+	}
+
+	return true;
+}
+
+bool MatchPublicCodeSearchLineForAI(
+	const std::string& line,
+	const PublicCodeSearchSpecForAI& spec,
+	std::vector<std::string>& outMatchedKeywords)
+{
+	outMatchedKeywords.clear();
+
+	if (spec.useRegex && !std::regex_search(line, spec.regex)) {
+		return false;
+	}
+
+	if (spec.keywords.empty()) {
+		return true;
+	}
+
+	if (spec.keywordMode == "all") {
+		for (size_t i = 0; i < spec.keywords.size(); ++i) {
+			const bool matched = spec.caseSensitive
+				? (line.find(spec.keywords[i]) != std::string::npos)
+				: ContainsKeywordInsensitiveForAI(line, spec.keywords[i], spec.keywordsLower[i]);
+			if (!matched) {
+				outMatchedKeywords.clear();
+				return false;
+			}
+			outMatchedKeywords.push_back(spec.keywords[i]);
+		}
+		return true;
+	}
+
+	for (size_t i = 0; i < spec.keywords.size(); ++i) {
+		const bool matched = spec.caseSensitive
+			? (line.find(spec.keywords[i]) != std::string::npos)
+			: ContainsKeywordInsensitiveForAI(line, spec.keywords[i], spec.keywordsLower[i]);
+		if (matched) {
+			outMatchedKeywords.push_back(spec.keywords[i]);
+		}
+	}
+	return !outMatchedKeywords.empty();
+}
+
+std::vector<KeywordSearchResultInfo> BuildKeywordSearchResultInfosForAI(
+	const std::vector<e571::DirectGlobalSearchDebugHit>& hits,
+	const std::vector<ProgramTreeItemInfo>& items)
+{
+	std::vector<KeywordSearchResultInfo> infos;
+	infos.reserve(hits.size());
+
+	std::unordered_map<std::string, int> pageTotals;
+	std::unordered_map<std::string, int> textTotals;
+	for (size_t i = 0; i < hits.size(); ++i) {
+		KeywordSearchResultInfo info;
+		info.text = hits[i].displayText;
+		info.lineNumber = hits[i].outerIndex + 1;
+		ParsePageNameFromSearchDisplayText(hits[i].displayText, info.pageName);
+		for (const auto& item : items) {
+			if (!info.pageName.empty() && item.name == info.pageName) {
+				info.pageTypeKey = item.typeKey;
+				info.pageTypeName = item.typeName;
+				break;
+			}
+		}
+		++pageTotals[ToLowerAsciiCopyLocal(TrimAsciiCopy(info.pageName))];
+		++textTotals[BuildProjectSearchGroupingKeyForAI(info.pageName, info.text)];
+		infos.push_back(std::move(info));
+	}
+
+	std::unordered_map<std::string, int> pageSeen;
+	std::unordered_map<std::string, int> textSeen;
+	for (auto& info : infos) {
+		const std::string pageKey = ToLowerAsciiCopyLocal(TrimAsciiCopy(info.pageName));
+		const std::string textKey = BuildProjectSearchGroupingKeyForAI(info.pageName, info.text);
+		info.hitIndexInPage = ++pageSeen[pageKey];
+		info.hitTotalInPage = pageTotals[pageKey];
+		info.sameTextOccurrenceIndex = ++textSeen[textKey];
+		info.sameTextOccurrenceTotal = textTotals[textKey];
+	}
+
+	return infos;
 }
 
 bool TryGetAnsiPtrTextLengthForAI(LPCSTR textPtr, size_t& outLength)
@@ -3812,6 +4140,310 @@ std::string BuildReadModulePublicCodeJsonOnMainThread(const std::string& argumen
 	return Utf8ToLocalText(r.dump());
 }
 
+std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	PublicCodeSearchSpecForAI spec;
+	std::string specError;
+	if (!TryBuildPublicCodeSearchSpecForAI(args, spec, specError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = specError;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const int limit = args.contains("limit") && args["limit"].is_number_integer()
+		? (std::clamp)(args["limit"].get<int>(), 1, 500)
+		: 100;
+
+	nlohmann::json matches = nlohmann::json::array();
+	std::vector<std::string> warnings;
+
+	if (spec.searchProject && spec.keywords.empty()) {
+		warnings.push_back("当前请求包含 project 搜索，但未提供 keyword/keywords。IDE 工程搜索只能以关键字作为种子，因此本次未包含工程命中。");
+	}
+
+	if (spec.searchProject && !spec.keywords.empty() && static_cast<int>(matches.size()) < limit) {
+		const std::string ideSeedKeyword = spec.keywords.front();
+		bool dialogHandled = false;
+		const auto hits = e571::DebugSearchDirectGlobalKeywordHiddenDetailed(
+			ideSeedKeyword.c_str(),
+			GetCurrentProcessImageBaseForAI(),
+			&dialogHandled);
+
+		std::vector<ProgramTreeItemInfo> items;
+		std::string listError;
+		TryListProgramTreeItemsForAI(items, &listError);
+
+		if (!listError.empty()) {
+			warnings.push_back(std::string("工程页类型解析存在异常: ") + listError);
+		}
+
+		const auto infos = BuildKeywordSearchResultInfosForAI(hits, items);
+		for (size_t i = 0; i < infos.size() && static_cast<int>(matches.size()) < limit; ++i) {
+			std::vector<std::string> matchedKeywords;
+			if (!MatchPublicCodeSearchLineForAI(infos[i].text, spec, matchedKeywords)) {
+				continue;
+			}
+
+			nlohmann::json row;
+			row["target_type"] = "project";
+			row["read_tool"] = "read_project_search_result_code";
+			row["jump_tool"] = "jump_to_search_result";
+			row["source_kind"] = "ide_hidden_search";
+			row["page_name"] = LocalToUtf8Text(infos[i].pageName);
+			row["page_type_key"] = infos[i].pageTypeKey;
+			row["page_type_name"] = LocalToUtf8Text(infos[i].pageTypeName);
+			row["line_number"] = infos[i].lineNumber;
+			row["text"] = LocalToUtf8Text(infos[i].text);
+			row["jump_token"] = BuildSearchJumpToken(hits[i]);
+			row["hit_index_in_page"] = infos[i].hitIndexInPage;
+			row["hit_total_in_page"] = infos[i].hitTotalInPage;
+			row["same_text_occurrence_index"] = infos[i].sameTextOccurrenceIndex;
+			row["same_text_occurrence_total"] = infos[i].sameTextOccurrenceTotal;
+			if (!matchedKeywords.empty()) {
+				nlohmann::json keywords = nlohmann::json::array();
+				for (const auto& keyword : matchedKeywords) {
+					keywords.push_back(LocalToUtf8Text(keyword));
+				}
+				row["matched_keywords"] = std::move(keywords);
+			}
+			if (spec.useRegex) {
+				row["matched_regex"] = LocalToUtf8Text(spec.regexText);
+			}
+			matches.push_back(std::move(row));
+		}
+
+		if (dialogHandled) {
+			warnings.push_back("IDE 搜索过程中出现过对话框处理。");
+		}
+	}
+
+	if (spec.searchModules) {
+		std::vector<std::string> modulePaths;
+		std::string resolveError;
+
+		const std::string moduleName = args.contains("module_name") && args["module_name"].is_string()
+			? Utf8ToLocalText(args["module_name"].get<std::string>())
+			: std::string();
+		const std::string modulePath = args.contains("module_path") && args["module_path"].is_string()
+			? Utf8ToLocalText(args["module_path"].get<std::string>())
+			: std::string();
+
+		if (!TrimAsciiCopy(moduleName).empty() || !TrimAsciiCopy(modulePath).empty()) {
+			std::string resolvedPath;
+			if (!ResolveImportedModulePathForAI(moduleName, modulePath, resolvedPath, resolveError)) {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["error"] = resolveError;
+				return Utf8ToLocalText(r.dump());
+			}
+			modulePaths.push_back(resolvedPath);
+		}
+		else if (!TryListImportedModulePathsForAI(modulePaths, &resolveError)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = resolveError.empty() ? "list imported modules failed" : resolveError;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		for (const auto& path : modulePaths) {
+			ModulePublicInfoCacheEntry entry;
+			std::string loadError;
+			if (!TryLoadModulePublicInfoCacheEntryForAI(path, entry, loadError, nullptr)) {
+				continue;
+			}
+
+			for (size_t lineIndex = 0;
+				lineIndex < entry.lines.size() && static_cast<int>(matches.size()) < limit;
+				++lineIndex) {
+				std::vector<std::string> matchedKeywords;
+				const std::string& line = entry.lines[lineIndex];
+				if (!MatchPublicCodeSearchLineForAI(line, spec, matchedKeywords)) {
+					continue;
+				}
+
+				nlohmann::json row;
+				row["target_type"] = "module";
+				row["read_tool"] = "read_module_public_code";
+				row["module_path"] = LocalToUtf8Text(entry.dump.modulePath);
+				row["module_name"] = LocalToUtf8Text(GetFileStemForAI(entry.dump.modulePath));
+				row["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(entry.dump.modulePath));
+				row["md5"] = entry.md5;
+				row["source_kind"] = entry.dump.sourceKind;
+				row["line_number"] = static_cast<int>(lineIndex) + 1;
+				row["text"] = LocalToUtf8Text(line);
+				if (!matchedKeywords.empty()) {
+					nlohmann::json keywords = nlohmann::json::array();
+					for (const auto& keyword : matchedKeywords) {
+						keywords.push_back(LocalToUtf8Text(keyword));
+					}
+					row["matched_keywords"] = std::move(keywords);
+				}
+				if (spec.useRegex) {
+					row["matched_regex"] = LocalToUtf8Text(spec.regexText);
+				}
+				if (!entry.md5.empty()) {
+					row["cache_path"] = LocalToUtf8Text(GetModulePublicInfoCachePathForAI(entry.md5).string());
+				}
+				matches.push_back(std::move(row));
+			}
+
+			if (static_cast<int>(matches.size()) >= limit) {
+				break;
+			}
+		}
+	}
+
+	if (spec.searchSupportLibraries && static_cast<int>(matches.size()) < limit) {
+		std::vector<SupportLibraryInfoHeaderForAI> libs;
+		std::string error;
+
+		const bool hasSupportLibraryFilter =
+			(args.contains("support_library_index") && args["support_library_index"].is_number_integer()) ||
+			(args.contains("support_library_name") && args["support_library_name"].is_string()) ||
+			(args.contains("support_library_path") && args["support_library_path"].is_string());
+
+		if (hasSupportLibraryFilter) {
+			nlohmann::json libArgs = nlohmann::json::object();
+			if (args.contains("support_library_index")) {
+				libArgs["index"] = args["support_library_index"];
+			}
+			if (args.contains("support_library_name")) {
+				libArgs["name"] = args["support_library_name"];
+			}
+			if (args.contains("support_library_path")) {
+				libArgs["file_path"] = args["support_library_path"];
+			}
+
+			SupportLibraryInfoHeaderForAI header;
+			if (!ResolveSupportLibraryHeaderForAI(libArgs, header, error)) {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["error"] = error;
+				return Utf8ToLocalText(r.dump());
+			}
+			libs.push_back(std::move(header));
+		}
+		else if (!TryListSupportLibrariesForAI(libs, &error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "list support libraries failed" : error;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		for (const auto& lib : libs) {
+			nlohmann::json resolveArgs = nlohmann::json::object();
+			if (lib.index >= 0) {
+				resolveArgs["index"] = lib.index;
+			}
+			if (!lib.filePath.empty()) {
+				resolveArgs["file_path"] = LocalToUtf8Text(lib.filePath);
+			}
+			else if (!lib.name.empty()) {
+				resolveArgs["name"] = LocalToUtf8Text(lib.name);
+			}
+
+			SupportLibraryDumpCacheEntry entry;
+			SupportLibraryInfoHeaderForAI resolvedHeader;
+			std::string loadError;
+			if (!TryResolveSupportLibraryEntryForReadForAI(resolveArgs, entry, &resolvedHeader, loadError)) {
+				continue;
+			}
+
+			for (size_t lineIndex = 0;
+				lineIndex < entry.lines.size() && static_cast<int>(matches.size()) < limit;
+				++lineIndex) {
+				std::vector<std::string> matchedKeywords;
+				const std::string& line = entry.lines[lineIndex];
+				if (!MatchPublicCodeSearchLineForAI(line, spec, matchedKeywords)) {
+					continue;
+				}
+
+				nlohmann::json row;
+				row["target_type"] = "support_library";
+				row["read_tool"] = "read_support_library_public_code";
+				row["support_library_name"] = LocalToUtf8Text(
+					GetJsonStringFieldLocalForAI(entry.dumpJson, "support_library_name"));
+				row["file_path"] = LocalToUtf8Text(
+					GetJsonStringFieldLocalForAI(entry.dumpJson, "file_path"));
+				row["file_name"] = LocalToUtf8Text(
+					GetJsonStringFieldLocalForAI(entry.dumpJson, "file_name"));
+				row["md5"] = entry.md5;
+				row["source_kind"] = entry.sourceKind;
+				row["line_number"] = static_cast<int>(lineIndex) + 1;
+				row["text"] = LocalToUtf8Text(line);
+				if (!matchedKeywords.empty()) {
+					nlohmann::json keywords = nlohmann::json::array();
+					for (const auto& keyword : matchedKeywords) {
+						keywords.push_back(LocalToUtf8Text(keyword));
+					}
+					row["matched_keywords"] = std::move(keywords);
+				}
+				if (spec.useRegex) {
+					row["matched_regex"] = LocalToUtf8Text(spec.regexText);
+				}
+				if (!entry.md5.empty()) {
+					row["cache_path"] = LocalToUtf8Text(GetSupportLibraryInfoCachePathForAI(entry.md5).string());
+				}
+				matches.push_back(std::move(row));
+			}
+
+			if (static_cast<int>(matches.size()) >= limit) {
+				break;
+			}
+		}
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["match_count"] = matches.size();
+	r["keyword_mode"] = spec.keywordMode;
+	r["case_sensitive"] = spec.caseSensitive;
+	r["target_types"] = nlohmann::json::array();
+	if (spec.searchProject) {
+		r["target_types"].push_back("project");
+	}
+	if (spec.searchModules) {
+		r["target_types"].push_back("module");
+	}
+	if (spec.searchSupportLibraries) {
+		r["target_types"].push_back("support_library");
+	}
+	if (!spec.keywords.empty()) {
+		nlohmann::json keywords = nlohmann::json::array();
+		for (const auto& keyword : spec.keywords) {
+			keywords.push_back(LocalToUtf8Text(keyword));
+		}
+		r["keywords"] = std::move(keywords);
+	}
+	if (spec.useRegex) {
+		r["regex"] = LocalToUtf8Text(spec.regexText);
+		if (!spec.regexFlags.empty()) {
+			r["regex_flags"] = spec.regexFlags;
+		}
+	}
+	std::string warning = "这里是完全搜索：会同时搜索当前 IDE 工程源码命中、模块公开声明文本、支持库公开声明文本。命中后请根据结果里的 target_type 与 read_tool 继续读取。若要快速定位子程序、常量、数据类型、DLL命令、程序集变量、参数、局部变量、全局变量，可考虑使用类似“.子程序 XXXX”、“.常量 XXXX”、“.数据类型 XXXX”、“.DLL命令 XXXX”、“.参数 XXXX”、“.全局变量 XXXX”来进行。";
+	for (const auto& extraWarning : warnings) {
+		warning += " ";
+		warning += extraWarning;
+	}
+	r["warning"] = LocalToUtf8Text(warning);
+	r["matches"] = std::move(matches);
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
 void WarmupImportedModulePublicInfoCacheOnMainThread()
 {
 	static bool s_warmupDone = false;
@@ -3901,28 +4533,22 @@ std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argument
 	std::string listError;
 	TryListProgramTreeItemsForAI(items, &listError);
 
+	const auto infos = BuildKeywordSearchResultInfosForAI(hits, items);
 	nlohmann::json results = nlohmann::json::array();
-	for (size_t i = 0; i < hits.size() && static_cast<int>(results.size()) < limit; ++i) {
-		KeywordSearchResultInfo info;
-		info.text = hits[i].displayText;
-		info.lineNumber = hits[i].outerIndex + 1;
-		ParsePageNameFromSearchDisplayText(hits[i].displayText, info.pageName);
-		for (const auto& item : items) {
-			if (!info.pageName.empty() && item.name == info.pageName) {
-				info.pageTypeKey = item.typeKey;
-				info.pageTypeName = item.typeName;
-				break;
-			}
-		}
-
+	for (size_t i = 0; i < infos.size() && static_cast<int>(results.size()) < limit; ++i) {
 		nlohmann::json row;
 		row["index"] = static_cast<int>(i);
-		row["page_name"] = LocalToUtf8Text(info.pageName);
-		row["page_type_key"] = info.pageTypeKey;
-		row["page_type_name"] = LocalToUtf8Text(info.pageTypeName);
-		row["line_number"] = info.lineNumber;
-		row["text"] = LocalToUtf8Text(info.text);
+		row["page_name"] = LocalToUtf8Text(infos[i].pageName);
+		row["page_type_key"] = infos[i].pageTypeKey;
+		row["page_type_name"] = LocalToUtf8Text(infos[i].pageTypeName);
+		row["line_number"] = infos[i].lineNumber;
+		row["text"] = LocalToUtf8Text(infos[i].text);
 		row["jump_token"] = BuildSearchJumpToken(hits[i]);
+		row["read_tool"] = "read_project_search_result_code";
+		row["hit_index_in_page"] = infos[i].hitIndexInPage;
+		row["hit_total_in_page"] = infos[i].hitTotalInPage;
+		row["same_text_occurrence_index"] = infos[i].sameTextOccurrenceIndex;
+		row["same_text_occurrence_total"] = infos[i].sameTextOccurrenceTotal;
 		results.push_back(std::move(row));
 	}
 
@@ -3932,11 +4558,167 @@ std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argument
 	r["count"] = hits.size();
 	r["dialog_handled"] = dialogHandled;
 	r["code_kind"] = "pseudo_reference";
-	r["warning"] = LocalToUtf8Text("搜索结果文本以及后续按页面名抓取到的代码，与IDE正常编辑页结构可能不同，仅可作为伪代码参考。");
+	r["warning"] = LocalToUtf8Text("这里仅搜索当前 IDE 工程源码命中，不包含模块公开声明与支持库公开声明。搜索结果文本以及后续按页面名抓取到的代码，与IDE正常编辑页结构可能不同，仅可作为伪代码参考。");
 	r["results"] = std::move(results);
 	if (!listError.empty()) {
 		r["page_type_lookup_error"] = listError;
 	}
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+std::string BuildReadProjectSearchResultCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const std::string jumpToken = GetJsonStringArgumentLocal(args, "jump_token");
+	const std::string searchText = GetJsonStringArgumentLocal(args, "search_text");
+	const int sameTextOccurrenceIndex = (std::max)(0, GetJsonIntArgument(args, "same_text_occurrence_index", 0));
+	const int contextBefore = (std::clamp)(GetJsonIntArgument(args, "context_before", 3), 0, 50);
+	const int contextAfter = (std::clamp)(GetJsonIntArgument(args, "context_after", 8), 0, 50);
+	const bool refreshCache = GetJsonBoolArgument(args, "refresh_cache", true);
+	if (TrimAsciiCopy(jumpToken).empty()) {
+		return R"({"ok":false,"error":"jump_token is required"})";
+	}
+	if (TrimAsciiCopy(searchText).empty()) {
+		return R"({"ok":false,"error":"search_text is required"})";
+	}
+
+	e571::DirectGlobalSearchDebugHit hit{};
+	if (!ParseSearchJumpToken(jumpToken, hit)) {
+		return R"({"ok":false,"error":"invalid jump_token"})";
+	}
+
+	std::string jumpTrace;
+	if (!e571::DebugJumpToSearchHit(hit, GetCurrentProcessImageBaseForAI(), &jumpTrace)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "jump to search result failed";
+		r["trace"] = jumpTrace;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	std::string currentPageName;
+	std::string currentPageType;
+	std::string currentPageTrace;
+	if (!IDEFacade::Instance().GetCurrentPageName(currentPageName, &currentPageType, &currentPageTrace) ||
+		TrimAsciiCopy(currentPageName).empty()) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "get current page after jump failed";
+		r["trace"] = jumpTrace;
+		r["current_page_trace"] = currentPageTrace;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	ProgramTreeItemInfo item;
+	std::string itemError;
+	if (!TryGetProgramItemByNameForAI(currentPageName, std::string(), item, itemError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = itemError.empty() ? "program item lookup failed" : itemError;
+		r["trace"] = jumpTrace;
+		r["current_page_name"] = LocalToUtf8Text(currentPageName);
+		r["current_page_type"] = LocalToUtf8Text(currentPageType);
+		return Utf8ToLocalText(r.dump());
+	}
+
+	std::string code;
+	PageCodeCacheEntry cacheEntry;
+	bool fromCache = false;
+	std::string codeTrace;
+	if (!TryLoadRealPageCodeForReadForAI(item, refreshCache, code, cacheEntry, fromCache, codeTrace, itemError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = itemError.empty() ? "read real page code failed" : itemError;
+		r["trace"] = LocalToUtf8Text(jumpTrace + "|" + codeTrace);
+		r["current_page_name"] = LocalToUtf8Text(item.name);
+		r["current_page_type"] = LocalToUtf8Text(item.typeName);
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const auto pageLines = SplitLinesCopyForAI(NormalizeLineBreaksForAI(code));
+	const std::vector<std::string> candidates = BuildSearchTextCandidatesForAI(searchText, item.name);
+	const int hintLineNumber = hit.outerIndex + 1;
+	int resolvedLineNumber = -1;
+	std::string resolvedBy;
+	std::string matchedCandidate;
+	int matchedCandidateTotal = 0;
+	const bool resolved = TryResolveProjectSearchLineNumberForAI(
+		pageLines,
+		candidates,
+		sameTextOccurrenceIndex,
+		hintLineNumber,
+		resolvedLineNumber,
+		resolvedBy,
+		matchedCandidate,
+		matchedCandidateTotal);
+	if (!resolved) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "resolve matched line failed";
+		r["trace"] = LocalToUtf8Text(jumpTrace + "|" + codeTrace);
+		r["page_name"] = LocalToUtf8Text(item.name);
+		r["type_key"] = item.typeKey;
+		r["type_name"] = LocalToUtf8Text(item.typeName);
+		r["search_line_hint"] = hintLineNumber;
+		r["resolve_method"] = resolvedBy;
+		r["search_text"] = LocalToUtf8Text(searchText);
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const int totalLines = static_cast<int>(pageLines.size());
+	const int startLine = (std::max)(1, resolvedLineNumber - contextBefore);
+	const int endLine = (std::min)(totalLines, resolvedLineNumber + contextAfter);
+
+	nlohmann::json lines = nlohmann::json::array();
+	std::string text;
+	for (int lineNo = startLine; lineNo <= endLine; ++lineNo) {
+		const std::string& line = pageLines[static_cast<size_t>(lineNo - 1)];
+		if (!text.empty()) {
+			text += "\n";
+		}
+		text += line;
+		nlohmann::json row;
+		row["line_number"] = lineNo;
+		row["text"] = LocalToUtf8Text(line);
+		row["is_match_line"] = (lineNo == resolvedLineNumber);
+		lines.push_back(std::move(row));
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["page_name"] = LocalToUtf8Text(item.name);
+	r["type_key"] = item.typeKey;
+	r["type_name"] = LocalToUtf8Text(item.typeName);
+	r["item_data"] = item.itemData;
+	r["jump_token"] = jumpToken;
+	r["search_text"] = LocalToUtf8Text(searchText);
+	r["same_text_occurrence_index"] = sameTextOccurrenceIndex;
+	r["search_line_hint"] = hintLineNumber;
+	r["resolved_line_number"] = resolvedLineNumber;
+	r["resolve_method"] = resolvedBy;
+	r["matched_candidate"] = LocalToUtf8Text(matchedCandidate);
+	r["matched_candidate_total"] = matchedCandidateTotal;
+	r["from_cache"] = fromCache;
+	r["code_hash"] = cacheEntry.codeHash;
+	r["total_lines"] = totalLines;
+	r["start_line"] = startLine;
+	r["end_line"] = endLine;
+	r["returned_line_count"] = endLine - startLine + 1;
+	r["trace"] = LocalToUtf8Text(jumpTrace + "|" + codeTrace);
+	r["warning"] = LocalToUtf8Text("该结果来自 IDE 搜索命中后跳转并抓取真实页面源码，再用搜索结果文本在整页代码中回定位得到的行号。若提供了 same_text_occurrence_index，系统会优先按同页同文本第 N 次出现定位；只有在无法匹配该序号时，才会退回到旧的最近提示行号策略。");
+	r["text"] = LocalToUtf8Text(text);
+	r["lines"] = std::move(lines);
 	outOk = true;
 	return Utf8ToLocalText(r.dump());
 }
@@ -5321,8 +6103,8 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		return BuildGetSupportLibraryInfoJsonOnMainThread(argumentsJson, outOk);
 	}
 
-	if (toolName == "search_support_library_info") {
-		return BuildSearchSupportLibraryInfoJsonOnMainThread(argumentsJson, outOk);
+	if (toolName == "search_public_code") {
+		return BuildSearchPublicCodeJsonOnMainThread(argumentsJson, outOk);
 	}
 
 	if (toolName == "search_support_library_public_code") {
@@ -5335,10 +6117,6 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 
 	if (toolName == "get_module_public_info") {
 		return BuildGetModulePublicInfoJsonOnMainThread(argumentsJson, outOk);
-	}
-
-	if (toolName == "search_module_public_info") {
-		return BuildSearchModulePublicInfoJsonOnMainThread(argumentsJson, outOk);
 	}
 
 	if (toolName == "search_module_public_code") {
@@ -5515,6 +6293,10 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 
 	if (toolName == "search_project_keyword") {
 		return BuildProgramSearchResultJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "read_project_search_result_code") {
+		return BuildReadProjectSearchResultCodeJsonOnMainThread(argumentsJson, outOk);
 	}
 
 	if (toolName == "jump_to_search_result") {
