@@ -65,6 +65,7 @@ constexpr int IDC_AI_CHAT_CLEAR_HISTORY = 32554;
 constexpr UINT_PTR kEditSubclassId = 1;
 constexpr UINT_PTR kActionControlSubclassId = 2;
 constexpr UINT_PTR kLeftWorkAreaHostSubclassId = 3;
+constexpr int kLeftWorkAreaPageBottomInset = 4;
 constexpr DWORD_PTR kEditFlagNone = 0;
 constexpr DWORD_PTR kEditFlagSubmitOnEnter = 1;
 constexpr UINT_PTR kActionSubmit = 1;
@@ -2558,7 +2559,7 @@ void LayoutLeftWorkAreaChatPage()
 
 	RECT rc = GetLeftWorkAreaPageRectInHost();
 	const int width = (std::max)(120, static_cast<int>(rc.right - rc.left));
-	const int height = (std::max)(120, static_cast<int>(rc.bottom - rc.top));
+	const int height = (std::max)(120, static_cast<int>(rc.bottom - rc.top) - kLeftWorkAreaPageBottomInset);
 	SetWindowPos(
 		g_chatDialog,
 		HWND_TOP,
