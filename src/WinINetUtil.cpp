@@ -5,6 +5,87 @@
 #pragma comment(lib, "wininet.lib")
 
 namespace {
+constexpr int kHttpStatusCancelled = 499;
+constexpr const char* kCancelledResponseText = "Request cancelled";
+} // namespace
+
+void HttpRequestCancellation::CloseHandleLocked(HINTERNET& handle)
+{
+	if (handle == nullptr) {
+		return;
+	}
+	HINTERNET closingHandle = handle;
+	handle = nullptr;
+	InternetCloseHandle(closingHandle);
+}
+
+void HttpRequestCancellation::AttachHandleLocked(HINTERNET& slot, HINTERNET handle)
+{
+	slot = handle;
+	if (cancelled_.load()) {
+		CloseHandleLocked(slot);
+	}
+}
+
+void HttpRequestCancellation::CloseRegisteredHandleLocked(HINTERNET& slot, HINTERNET handle)
+{
+	if (handle == nullptr || slot != handle) {
+		return;
+	}
+	CloseHandleLocked(slot);
+}
+
+void HttpRequestCancellation::Cancel()
+{
+	cancelled_.store(true);
+	std::lock_guard<std::mutex> guard(mutex_);
+	CloseHandleLocked(requestHandle_);
+	CloseHandleLocked(connectionHandle_);
+	CloseHandleLocked(internetHandle_);
+}
+
+bool HttpRequestCancellation::IsCancelled() const
+{
+	return cancelled_.load();
+}
+
+void HttpRequestCancellation::AttachInternetHandle(HINTERNET handle)
+{
+	std::lock_guard<std::mutex> guard(mutex_);
+	AttachHandleLocked(internetHandle_, handle);
+}
+
+void HttpRequestCancellation::AttachConnectionHandle(HINTERNET handle)
+{
+	std::lock_guard<std::mutex> guard(mutex_);
+	AttachHandleLocked(connectionHandle_, handle);
+}
+
+void HttpRequestCancellation::AttachRequestHandle(HINTERNET handle)
+{
+	std::lock_guard<std::mutex> guard(mutex_);
+	AttachHandleLocked(requestHandle_, handle);
+}
+
+void HttpRequestCancellation::CloseRegisteredInternetHandle(HINTERNET handle)
+{
+	std::lock_guard<std::mutex> guard(mutex_);
+	CloseRegisteredHandleLocked(internetHandle_, handle);
+}
+
+void HttpRequestCancellation::CloseRegisteredConnectionHandle(HINTERNET handle)
+{
+	std::lock_guard<std::mutex> guard(mutex_);
+	CloseRegisteredHandleLocked(connectionHandle_, handle);
+}
+
+void HttpRequestCancellation::CloseRegisteredRequestHandle(HINTERNET handle)
+{
+	std::lock_guard<std::mutex> guard(mutex_);
+	CloseRegisteredHandleLocked(requestHandle_, handle);
+}
+
+namespace {
 std::pair<std::string, int> PerformPostRequestCore(
     const std::string& url,
     const std::string& postData,
@@ -12,7 +93,8 @@ std::pair<std::string, int> PerformPostRequestCore(
     int timeout,
     bool autoCookies,
     bool neverRedirect,
-    const std::function<bool(const std::string& chunk)>* onChunk)
+    const std::function<bool(const std::string& chunk)>* onChunk,
+    HttpRequestCancellation* cancellation)
 {
     HINTERNET hInternet = nullptr;
     HINTERNET hConnect = nullptr;
@@ -20,6 +102,48 @@ std::pair<std::string, int> PerformPostRequestCore(
 
     std::string response;
     DWORD statusCode = 0;
+    const auto closeRequest = [&]() {
+        if (cancellation != nullptr) {
+            cancellation->CloseRegisteredRequestHandle(hRequest);
+            hRequest = nullptr;
+            return;
+        }
+        if (hRequest != nullptr) {
+            InternetCloseHandle(hRequest);
+            hRequest = nullptr;
+        }
+    };
+    const auto closeConnect = [&]() {
+        if (cancellation != nullptr) {
+            cancellation->CloseRegisteredConnectionHandle(hConnect);
+            hConnect = nullptr;
+            return;
+        }
+        if (hConnect != nullptr) {
+            InternetCloseHandle(hConnect);
+            hConnect = nullptr;
+        }
+    };
+    const auto closeInternet = [&]() {
+        if (cancellation != nullptr) {
+            cancellation->CloseRegisteredInternetHandle(hInternet);
+            hInternet = nullptr;
+            return;
+        }
+        if (hInternet != nullptr) {
+            InternetCloseHandle(hInternet);
+            hInternet = nullptr;
+        }
+    };
+    const auto cleanupAll = [&]() {
+        closeRequest();
+        closeConnect();
+        closeInternet();
+    };
+    const auto cancelledResult = [&]() -> std::pair<std::string, int> {
+        cleanupAll();
+        return std::make_pair(std::string(kCancelledResponseText), kHttpStatusCancelled);
+    };
 
     DWORD dwFlags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE |
         INTERNET_FLAG_IGNORE_CERT_CN_INVALID | INTERNET_FLAG_IGNORE_CERT_DATE_INVALID;
@@ -31,9 +155,19 @@ std::pair<std::string, int> PerformPostRequestCore(
         dwFlags |= INTERNET_FLAG_NO_COOKIES;
     }
 
+    if (cancellation != nullptr && cancellation->IsCancelled()) {
+        return cancelledResult();
+    }
+
     hInternet = InternetOpenA("HttpPostApp", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
     if (!hInternet) {
         return std::make_pair("Error in InternetOpen", 0);
+    }
+    if (cancellation != nullptr) {
+        cancellation->AttachInternetHandle(hInternet);
+        if (cancellation->IsCancelled()) {
+            return cancelledResult();
+        }
     }
 
     InternetSetOption(hInternet, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
@@ -52,7 +186,7 @@ std::pair<std::string, int> PerformPostRequestCore(
     urlComp.dwUrlPathLength = static_cast<DWORD>(sizeof(urlPath));
 
     if (!InternetCrackUrlA(url.c_str(), static_cast<DWORD>(url.length()), 0, &urlComp)) {
-        InternetCloseHandle(hInternet);
+        closeInternet();
         return std::make_pair("Error in InternetCrackUrl", 0);
     }
 
@@ -73,15 +207,33 @@ std::pair<std::string, int> PerformPostRequestCore(
         0,
         0);
     if (!hConnect) {
-        InternetCloseHandle(hInternet);
+        if (cancellation != nullptr && cancellation->IsCancelled()) {
+            return cancelledResult();
+        }
+        closeInternet();
         return std::make_pair("Error in InternetConnect", 0);
+    }
+    if (cancellation != nullptr) {
+        cancellation->AttachConnectionHandle(hConnect);
+        if (cancellation->IsCancelled()) {
+            return cancelledResult();
+        }
     }
 
     hRequest = HttpOpenRequestA(hConnect, "POST", urlComp.lpszUrlPath, nullptr, nullptr, nullptr, dwFlags, 0);
     if (!hRequest) {
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInternet);
+        if (cancellation != nullptr && cancellation->IsCancelled()) {
+            return cancelledResult();
+        }
+        closeConnect();
+        closeInternet();
         return std::make_pair("Error in HttpOpenRequest", 0);
+    }
+    if (cancellation != nullptr) {
+        cancellation->AttachRequestHandle(hRequest);
+        if (cancellation->IsCancelled()) {
+            return cancelledResult();
+        }
     }
 
     if (!HttpSendRequestA(
@@ -90,10 +242,14 @@ std::pair<std::string, int> PerformPostRequestCore(
         static_cast<DWORD>(customHeaders.length()),
         const_cast<char*>(postData.data()),
         static_cast<DWORD>(postData.size()))) {
-        InternetCloseHandle(hRequest);
-        InternetCloseHandle(hConnect);
-        InternetCloseHandle(hInternet);
+        if (cancellation != nullptr && cancellation->IsCancelled()) {
+            return cancelledResult();
+        }
+        cleanupAll();
         return std::make_pair("Error in HttpSendRequest", 0);
+    }
+    if (cancellation != nullptr && cancellation->IsCancelled()) {
+        return cancelledResult();
     }
 
     char statusCodeStr[32] = {};
@@ -109,18 +265,31 @@ std::pair<std::string, int> PerformPostRequestCore(
 
     char buffer[4096] = {};
     DWORD bytesRead = 0;
-    while (InternetReadFile(hRequest, buffer, sizeof(buffer), &bytesRead) && bytesRead > 0) {
+    while (true) {
+        if (cancellation != nullptr && cancellation->IsCancelled()) {
+            return cancelledResult();
+        }
+        if (!InternetReadFile(hRequest, buffer, sizeof(buffer), &bytesRead)) {
+            if (cancellation != nullptr && cancellation->IsCancelled()) {
+                return cancelledResult();
+            }
+            break;
+        }
+        if (bytesRead == 0) {
+            break;
+        }
         response.append(buffer, bytesRead);
         if (onChunk != nullptr && *onChunk) {
             if (!(*onChunk)(std::string(buffer, bytesRead))) {
                 break;
             }
         }
+        if (cancellation != nullptr && cancellation->IsCancelled()) {
+            return cancelledResult();
+        }
     }
 
-    InternetCloseHandle(hRequest);
-    InternetCloseHandle(hConnect);
-    InternetCloseHandle(hInternet);
+    cleanupAll();
 
     return std::make_pair(response, static_cast<int>(statusCode));
 }
@@ -132,7 +301,8 @@ std::pair<std::string, int> PerformPostRequest(
     const std::string& customHeaders,
     int timeout,
     bool AutoCookies,
-    bool NeverRedirect)
+    bool NeverRedirect,
+    HttpRequestCancellation* cancellation)
 {
     return PerformPostRequestCore(
         url,
@@ -141,7 +311,8 @@ std::pair<std::string, int> PerformPostRequest(
         timeout,
         AutoCookies,
         NeverRedirect,
-        nullptr);
+        nullptr,
+        cancellation);
 }
 
 std::pair<std::string, int> PerformPostRequestStreaming(
@@ -151,7 +322,8 @@ std::pair<std::string, int> PerformPostRequestStreaming(
     const std::string& customHeaders,
     int timeout,
     bool AutoCookies,
-    bool NeverRedirect)
+    bool NeverRedirect,
+    HttpRequestCancellation* cancellation)
 {
     return PerformPostRequestCore(
         url,
@@ -160,7 +332,8 @@ std::pair<std::string, int> PerformPostRequestStreaming(
         timeout,
         AutoCookies,
         NeverRedirect,
-        &onChunk);
+        &onChunk,
+        cancellation);
 }
 
 std::pair<std::string, int> PerformGetRequest(const std::string& url, const std::string& customHeaders, int timeout, bool AutoCookies, bool NeverRedirect) {

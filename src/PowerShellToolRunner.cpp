@@ -152,7 +152,8 @@ std::wstring GetCurrentDirectoryWide()
 PowerShellRunResult PowerShellToolRunner::Run(
 	const std::string& commandUtf8,
 	const std::string& workingDirectoryUtf8,
-	int timeoutSeconds)
+	int timeoutSeconds,
+	const std::function<bool()>& cancelCallback)
 {
 	PowerShellRunResult result = {};
 
@@ -242,11 +243,36 @@ PowerShellRunResult PowerShellToolRunner::Run(
 	std::thread stdoutReader(ReadPipeToString, stdOutRead, &result.stdOut, &stdoutDone);
 	std::thread stderrReader(ReadPipeToString, stdErrRead, &result.stdErr, &stderrDone);
 
-	const DWORD waitResult = WaitForSingleObject(pi.hProcess, static_cast<DWORD>(boundedTimeoutSeconds * 1000));
-	if (waitResult == WAIT_TIMEOUT) {
-		result.timedOut = true;
-		TerminateProcess(pi.hProcess, 124);
-		WaitForSingleObject(pi.hProcess, 5000);
+	const ULONGLONG timeoutMs = static_cast<ULONGLONG>(boundedTimeoutSeconds) * 1000ULL;
+	const ULONGLONG waitStartMs = GetTickCount64();
+	DWORD waitResult = WAIT_TIMEOUT;
+	for (;;) {
+		if (cancelCallback && cancelCallback()) {
+			result.cancelled = true;
+			TerminateProcess(pi.hProcess, 125);
+			WaitForSingleObject(pi.hProcess, 5000);
+			break;
+		}
+
+		const ULONGLONG elapsedMs = GetTickCount64() - waitStartMs;
+		if (elapsedMs >= timeoutMs) {
+			result.timedOut = true;
+			TerminateProcess(pi.hProcess, 124);
+			WaitForSingleObject(pi.hProcess, 5000);
+			break;
+		}
+
+		const DWORD sliceMs = static_cast<DWORD>((std::min)(timeoutMs - elapsedMs, 100ULL));
+		waitResult = WaitForSingleObject(pi.hProcess, sliceMs);
+		if (waitResult == WAIT_OBJECT_0) {
+			break;
+		}
+		if (waitResult != WAIT_TIMEOUT) {
+			result.error = "WaitForSingleObject powershell process failed";
+			TerminateProcess(pi.hProcess, 126);
+			WaitForSingleObject(pi.hProcess, 5000);
+			break;
+		}
 	}
 
 	DWORD exitCode = 0;
@@ -266,6 +292,6 @@ PowerShellRunResult PowerShellToolRunner::Run(
 	CloseHandle(stdOutRead);
 	CloseHandle(stdErrRead);
 
-	result.ok = !result.timedOut && result.error.empty();
+	result.ok = !result.cancelled && !result.timedOut && result.error.empty();
 	return result;
 }

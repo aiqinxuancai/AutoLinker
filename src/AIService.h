@@ -5,6 +5,7 @@
 #include <vector>
 
 class ConfigManager;
+class HttpRequestCancellation;
 
 // AI 任务类型。
 enum class AITaskKind {
@@ -61,6 +62,7 @@ struct AIChatToolEvent {
 // AI 对话结果。
 struct AIChatResult {
 	bool ok = false;
+	bool cancelled = false;
 	std::string content;
 	std::string error;
 	int httpStatus = 0;
@@ -81,7 +83,9 @@ public:
 		const std::vector<AIChatMessage>& contextMessages,
 		const AISettings& settings,
 		const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
-		const std::function<void(const std::string& deltaText)>& streamCallback = {});
+		const std::function<void(const std::string& deltaText)>& streamCallback = {},
+		const std::function<bool()>& cancelCallback = {},
+		HttpRequestCancellation* cancelContext = nullptr);
 	static std::string BuildPublicToolCatalogJson();
 	static std::string NormalizeModelOutputToCode(const std::string& modelText);
 	static std::string Trim(const std::string& text);

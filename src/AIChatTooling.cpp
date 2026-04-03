@@ -485,7 +485,11 @@ std::string BuildForwardedToolResultJson(
 	return Utf8ToLocalText(result.dump());
 }
 
-std::string ExecuteToolCallImpl(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
+std::string ExecuteToolCallImpl(
+	const std::string& toolName,
+	const std::string& argumentsJson,
+	bool& outOk,
+	const std::function<bool()>& cancelCallback)
 {
 	outOk = false;
 
@@ -679,16 +683,19 @@ std::string ExecuteToolCallImpl(const std::string& toolName, const std::string& 
 			return Utf8ToLocalText(r.dump());
 		}
 
-		const PowerShellRunResult runResult = PowerShellToolRunner::Run(commandUtf8, workingDirectoryUtf8, timeoutSeconds);
+		const PowerShellRunResult runResult = PowerShellToolRunner::Run(commandUtf8, workingDirectoryUtf8, timeoutSeconds, cancelCallback);
 		nlohmann::json r;
 		r["ok"] = runResult.ok;
-		r["cancelled"] = false;
+		r["cancelled"] = runResult.cancelled;
 		r["command"] = commandUtf8;
 		r["working_directory"] = runResult.effectiveWorkingDirectory;
 		r["stdout"] = runResult.stdOut;
 		r["stderr"] = runResult.stdErr;
 		r["exit_code"] = runResult.exitCode;
 		r["timed_out"] = runResult.timedOut;
+		if (runResult.cancelled) {
+			r["error"] = "powershell execution cancelled by user";
+		}
 		if (!runResult.error.empty()) {
 			r["error"] = runResult.error;
 		}
@@ -876,15 +883,20 @@ std::string ExecuteToolCallImpl(const std::string& toolName, const std::string& 
 
 } // namespace
 
-std::string ExecuteToolCall(const std::string& toolName, const std::string& argumentsJson, bool& outOk, bool enableLog)
+std::string ExecuteToolCall(
+	const std::string& toolName,
+	const std::string& argumentsJson,
+	bool& outOk,
+	bool enableLog,
+	const std::function<bool()>& cancelCallback)
 {
 	if (!enableLog) {
-		return ExecuteToolCallImpl(toolName, argumentsJson, outOk);
+		return ExecuteToolCallImpl(toolName, argumentsJson, outOk, cancelCallback);
 	}
 
 	LogInternalToolRequest(toolName, argumentsJson);
 	const auto startTime = std::chrono::steady_clock::now();
-	const std::string result = ExecuteToolCallImpl(toolName, argumentsJson, outOk);
+	const std::string result = ExecuteToolCallImpl(toolName, argumentsJson, outOk, cancelCallback);
 	const double elapsedMs = std::chrono::duration<double, std::milli>(
 		std::chrono::steady_clock::now() - startTime).count();
 	LogInternalToolResponse(toolName, result, elapsedMs);

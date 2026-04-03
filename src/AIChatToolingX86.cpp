@@ -83,6 +83,15 @@ struct KeywordSearchResultInfo {
 	int sameTextOccurrenceTotal = 0;
 };
 
+constexpr const char* kProgramTreeConstantTablePageNameForAI = "常量表...";
+constexpr const char* kSearchResultConstantDefinitionTableNameForAI = "常量定义表";
+constexpr const char* kSearchResultUserDataTypeTableNameForAI = "自定义数据类型表";
+constexpr const char* kProgramTreeUserDataTypePageNameForAI = "自定义数据类型";
+constexpr const char* kSearchResultDllCommandTableNameForAI = "DLL命令定义表";
+constexpr const char* kProgramTreeDllCommandPageNameForAI = "Dll命令";
+constexpr const char* kSearchResultGlobalVariableTableNameForAI = "全局变量表";
+constexpr const char* kProgramTreeGlobalVariablePageNameForAI = "全局变量";
+
 std::vector<std::string> SplitLinesCopyForAI(const std::string& text);
 std::string NormalizeLineBreaksForAI(std::string text);
 std::string NormalizeRealPageCodeForLooseCompareForAI(const std::string& text);
@@ -407,6 +416,131 @@ std::string GetProgramTreeTypeName(const std::string& typeKey)
 	return "未知";
 }
 
+std::string NormalizeProgramPageNameForAI(const std::string& name)
+{
+	const std::string trimmed = TrimAsciiCopy(name);
+	if (trimmed == kSearchResultConstantDefinitionTableNameForAI) {
+		return kProgramTreeConstantTablePageNameForAI;
+	}
+	if (trimmed == kSearchResultUserDataTypeTableNameForAI) {
+		return kProgramTreeUserDataTypePageNameForAI;
+	}
+	if (trimmed == kSearchResultDllCommandTableNameForAI) {
+		return kProgramTreeDllCommandPageNameForAI;
+	}
+	if (trimmed == kSearchResultGlobalVariableTableNameForAI) {
+		return kProgramTreeGlobalVariablePageNameForAI;
+	}
+	return trimmed;
+}
+
+HTREEITEM FindTreeItemByExactTextRecursiveForAI(
+	HWND treeHwnd,
+	HTREEITEM firstItem,
+	const std::string& targetText,
+	int maxDepth,
+	int depth)
+{
+	if (treeHwnd == nullptr || firstItem == nullptr || depth > maxDepth) {
+		return nullptr;
+	}
+
+	for (HTREEITEM item = firstItem; item != nullptr; item = GetTreeNextItemForAI(treeHwnd, item, TVGN_NEXT)) {
+		std::string text;
+		LPARAM itemData = 0;
+		int image = -1;
+		int selectedImage = -1;
+		int childCount = 0;
+		if (!QueryTreeItemInfoForAI(treeHwnd, item, text, itemData, image, selectedImage, childCount)) {
+			continue;
+		}
+		if (text == targetText) {
+			return item;
+		}
+		if (depth < maxDepth) {
+			if (HTREEITEM found = FindTreeItemByExactTextRecursiveForAI(
+					treeHwnd,
+					GetTreeNextItemForAI(treeHwnd, item, TVGN_CHILD),
+					targetText,
+					maxDepth,
+					depth + 1);
+				found != nullptr) {
+				return found;
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+bool TryFindProgramTreeItemByExactNameForAI(
+	const std::string& targetName,
+	ProgramTreeItemInfo& outItem,
+	std::string* outError = nullptr)
+{
+	outItem = {};
+	if (outError != nullptr) {
+		outError->clear();
+	}
+
+	const HWND treeHwnd = FindProgramDataTreeViewForAI();
+	if (treeHwnd == nullptr) {
+		if (outError != nullptr) {
+			*outError = "program tree not found";
+		}
+		return false;
+	}
+
+	const HTREEITEM rootItem = GetTreeNextItemForAI(treeHwnd, nullptr, TVGN_ROOT);
+	const HTREEITEM item = FindTreeItemByExactTextRecursiveForAI(treeHwnd, rootItem, targetName, 4, 0);
+	if (item == nullptr) {
+		if (outError != nullptr) {
+			*outError = "tree item not found";
+		}
+		return false;
+	}
+
+	LPARAM itemData = 0;
+	int image = -1;
+	int selectedImage = -1;
+	int childCount = 0;
+	if (!QueryTreeItemInfoForAI(
+			treeHwnd,
+			item,
+			outItem.name,
+			itemData,
+			image,
+			selectedImage,
+			childCount)) {
+		if (outError != nullptr) {
+			*outError = "read tree item info failed";
+		}
+		return false;
+	}
+
+	outItem.itemData = static_cast<unsigned int>(itemData);
+	outItem.image = image;
+	outItem.selectedImage = selectedImage;
+	outItem.typeKey = "const_resource";
+	outItem.typeName = GetProgramTreeTypeName(outItem.typeKey);
+	return true;
+}
+
+void AppendSpecialProgramTreeItemsForAI(std::vector<ProgramTreeItemInfo>& outItems)
+{
+	std::unordered_set<unsigned int> seenItemData;
+	seenItemData.reserve(outItems.size() + 4);
+	for (const auto& item : outItems) {
+		seenItemData.insert(item.itemData);
+	}
+
+	ProgramTreeItemInfo constantTableItem;
+	if (TryFindProgramTreeItemByExactNameForAI(kProgramTreeConstantTablePageNameForAI, constantTableItem) &&
+		seenItemData.insert(constantTableItem.itemData).second) {
+		outItems.push_back(std::move(constantTableItem));
+	}
+}
+
 void CollectProgramTreeItemsRecursiveForAI(
 	HWND treeHwnd,
 	HTREEITEM firstItem,
@@ -489,6 +623,7 @@ bool TryListProgramTreeItemsForAI(std::vector<ProgramTreeItemInfo>& outItems, st
 		item.typeKey = GetProgramTreeTypeKey(item.itemData, item.name, item.image, classImage);
 		item.typeName = GetProgramTreeTypeName(item.typeKey);
 	}
+	AppendSpecialProgramTreeItemsForAI(outItems);
 	return true;
 }
 
@@ -509,6 +644,7 @@ bool TryGetProgramItemByNameForAI(
 {
 	outItem = {};
 	outError.clear();
+	const std::string normalizedName = NormalizeProgramPageNameForAI(name);
 
 	std::vector<ProgramTreeItemInfo> items;
 	if (!TryListProgramTreeItemsForAI(items, &outError)) {
@@ -517,7 +653,7 @@ bool TryGetProgramItemByNameForAI(
 
 	std::vector<ProgramTreeItemInfo> matched;
 	for (const auto& item : items) {
-		if (item.name == name && MatchProgramItemKind(item, kindFilter)) {
+		if (item.name == normalizedName && MatchProgramItemKind(item, kindFilter)) {
 			matched.push_back(item);
 		}
 	}
@@ -960,13 +1096,19 @@ bool ParsePageNameFromSearchDisplayText(const std::string& displayText, std::str
 	outPageName.clear();
 	const size_t arrowPos = displayText.find(" -> ");
 	if (arrowPos != std::string::npos && arrowPos > 0) {
-		outPageName = TrimAsciiCopy(displayText.substr(0, arrowPos));
+		outPageName = NormalizeProgramPageNameForAI(displayText.substr(0, arrowPos));
 		return !outPageName.empty();
 	}
 
+	const size_t colonPos = displayText.find(": ");
 	const size_t parenPos = displayText.find(" (");
+	if (parenPos != std::string::npos && parenPos > 0 && colonPos != std::string::npos && colonPos > parenPos) {
+		outPageName = NormalizeProgramPageNameForAI(displayText.substr(0, parenPos));
+		return !outPageName.empty();
+	}
+
 	if (parenPos != std::string::npos && parenPos > 0) {
-		outPageName = TrimAsciiCopy(displayText.substr(0, parenPos));
+		outPageName = NormalizeProgramPageNameForAI(displayText.substr(0, parenPos));
 		return !outPageName.empty();
 	}
 
@@ -999,6 +1141,12 @@ std::vector<std::string> BuildSearchTextCandidatesForAI(const std::string& searc
 	const size_t arrowPos = searchText.find(" -> ");
 	if (arrowPos != std::string::npos) {
 		pushUnique(searchText.substr(arrowPos + 4));
+	}
+
+	const size_t colonPos = searchText.find(": ");
+	const size_t parenPos = searchText.find(" (");
+	if (colonPos != std::string::npos && parenPos != std::string::npos && colonPos > parenPos) {
+		pushUnique(searchText.substr(colonPos + 2));
 	}
 
 	const std::string trimmedPageName = TrimAsciiCopy(pageName);

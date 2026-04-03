@@ -80,6 +80,32 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 }
 
 constexpr int kAiRequestRetryCount = 5;
+constexpr int kAiRequestCancelledHttpStatus = 499;
+
+bool IsCancelRequested(
+	const std::function<bool()>& cancelCallback,
+	const HttpRequestCancellation* cancelContext = nullptr)
+{
+	return (cancelCallback && cancelCallback()) ||
+		(cancelContext != nullptr && cancelContext->IsCancelled());
+}
+
+bool SleepForRetryWithCancel(
+	DWORD delayMs,
+	const std::function<bool()>& cancelCallback,
+	const HttpRequestCancellation* cancelContext = nullptr)
+{
+	DWORD sleptMs = 0;
+	while (sleptMs < delayMs) {
+		if (IsCancelRequested(cancelCallback, cancelContext)) {
+			return false;
+		}
+		const DWORD sliceMs = (std::min)(delayMs - sleptMs, static_cast<DWORD>(50));
+		::Sleep(sliceMs);
+		sleptMs += sliceMs;
+	}
+	return !IsCancelRequested(cancelCallback, cancelContext);
+}
 
 bool IsSuccessfulHttpStatus(int statusCode)
 {
@@ -145,6 +171,26 @@ void LogAiRetryAttempt(const std::string& tag, int nextAttemptIndex, int statusC
 		TruncateForLog(responseBody, 120)));
 }
 
+AIChatResult BuildCancelledChatResult(const std::string& partialContentLocal = std::string())
+{
+	AIChatResult result = {};
+	result.cancelled = true;
+	result.content = partialContentLocal;
+	result.error = "chat request cancelled by user";
+	result.httpStatus = kAiRequestCancelledHttpStatus;
+	return result;
+}
+
+AIChatResult MarkChatResultCancelled(AIChatResult result, const std::string& partialContentLocal = std::string())
+{
+	result.ok = false;
+	result.cancelled = true;
+	result.content = partialContentLocal;
+	result.error = "chat request cancelled by user";
+	result.httpStatus = kAiRequestCancelledHttpStatus;
+	return result;
+}
+
 std::pair<std::string, int> PerformPostRequestWithRetry(
 	const std::string& url,
 	const std::string& postData,
@@ -152,17 +198,27 @@ std::pair<std::string, int> PerformPostRequestWithRetry(
 	int timeout,
 	bool autoCookies,
 	bool neverRedirect,
-	const char* retryTag)
+	const char* retryTag,
+	const std::function<bool()>& cancelCallback = {},
+	HttpRequestCancellation* cancelContext = nullptr)
 {
 	std::pair<std::string, int> lastResult;
 	for (int attempt = 0; attempt <= kAiRequestRetryCount; ++attempt) {
-		lastResult = PerformPostRequest(url, postData, customHeaders, timeout, autoCookies, neverRedirect);
+		if (IsCancelRequested(cancelCallback, cancelContext)) {
+			return std::make_pair(std::string("Request cancelled"), kAiRequestCancelledHttpStatus);
+		}
+		lastResult = PerformPostRequest(url, postData, customHeaders, timeout, autoCookies, neverRedirect, cancelContext);
+		if (IsCancelRequested(cancelCallback, cancelContext)) {
+			return std::make_pair(std::string("Request cancelled"), kAiRequestCancelledHttpStatus);
+		}
 		if (!ShouldRetryAiHttpRequest(lastResult.second, lastResult.first) || attempt >= kAiRequestRetryCount) {
 			return lastResult;
 		}
 
 		LogAiRetryAttempt(retryTag == nullptr ? "post" : retryTag, attempt + 2, lastResult.second, lastResult.first);
-		::Sleep(ComputeAiRetryDelayMs(attempt));
+		if (!SleepForRetryWithCancel(ComputeAiRetryDelayMs(attempt), cancelCallback, cancelContext)) {
+			return std::make_pair(std::string("Request cancelled"), kAiRequestCancelledHttpStatus);
+		}
 	}
 	return lastResult;
 }
@@ -175,15 +231,23 @@ std::pair<std::string, int> PerformPostRequestStreamingWithRetry(
 	int timeout,
 	bool autoCookies,
 	bool neverRedirect,
-	const char* retryTag)
+	const char* retryTag,
+	const std::function<bool()>& cancelCallback = {},
+	HttpRequestCancellation* cancelContext = nullptr)
 {
 	std::pair<std::string, int> lastResult;
 	for (int attempt = 0; attempt <= kAiRequestRetryCount; ++attempt) {
+		if (IsCancelRequested(cancelCallback, cancelContext)) {
+			return std::make_pair(std::string("Request cancelled"), kAiRequestCancelledHttpStatus);
+		}
 		bool sawChunk = false;
 		lastResult = PerformPostRequestStreaming(
 			url,
 			postData,
-			[&onChunk, &sawChunk](const std::string& chunk) -> bool {
+			[&onChunk, &sawChunk, &cancelCallback, cancelContext](const std::string& chunk) -> bool {
+				if (IsCancelRequested(cancelCallback, cancelContext)) {
+					return false;
+				}
 				if (!chunk.empty()) {
 					sawChunk = true;
 				}
@@ -192,14 +256,20 @@ std::pair<std::string, int> PerformPostRequestStreamingWithRetry(
 			customHeaders,
 			timeout,
 			autoCookies,
-			neverRedirect);
+			neverRedirect,
+			cancelContext);
+		if (IsCancelRequested(cancelCallback, cancelContext)) {
+			return std::make_pair(std::string("Request cancelled"), kAiRequestCancelledHttpStatus);
+		}
 		const bool streamAccepted = sawChunk && IsSuccessfulHttpStatus(lastResult.second);
 		if (streamAccepted || !ShouldRetryAiHttpRequest(lastResult.second, lastResult.first) || attempt >= kAiRequestRetryCount) {
 			return lastResult;
 		}
 
 		LogAiRetryAttempt(retryTag == nullptr ? "stream" : retryTag, attempt + 2, lastResult.second, lastResult.first);
-		::Sleep(ComputeAiRetryDelayMs(attempt));
+		if (!SleepForRetryWithCancel(ComputeAiRetryDelayMs(attempt), cancelCallback, cancelContext)) {
+			return std::make_pair(std::string("Request cancelled"), kAiRequestCancelledHttpStatus);
+		}
 	}
 	return lastResult;
 }
@@ -1799,7 +1869,9 @@ AIChatResult ExecuteChatWithToolsClaude(
 	const std::vector<AIChatMessage>& contextMessages,
 	const AISettings& settings,
 	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
-	const std::function<void(const std::string& deltaText)>& streamCallback)
+	const std::function<void(const std::string& deltaText)>& streamCallback,
+	const std::function<bool()>& cancelCallback,
+	HttpRequestCancellation* cancelContext)
 {
 	AIChatResult result = {};
 	const std::string endpoint = BuildClaudeEndpoint(settings.baseUrl);
@@ -1827,6 +1899,10 @@ AIChatResult ExecuteChatWithToolsClaude(
 
 	const int maxToolRounds = GetMaxToolRounds(settings);
 	for (int round = 0; round < maxToolRounds; ++round) {
+		if (IsCancelRequested(cancelCallback, cancelContext)) {
+			return MarkChatResultCancelled(std::move(result));
+		}
+
 		nlohmann::json requestBody;
 		requestBody["model"] = LocalToUtf8(settings.model);
 		requestBody["max_tokens"] = 4096;
@@ -1844,8 +1920,13 @@ AIChatResult ExecuteChatWithToolsClaude(
 			settings.timeoutMs,
 			false,
 			false,
-			"claude-chat");
+			"claude-chat",
+			cancelCallback,
+			cancelContext);
 		result.httpStatus = statusCode;
+		if (IsCancelRequested(cancelCallback, cancelContext) || statusCode == kAiRequestCancelledHttpStatus) {
+			return MarkChatResultCancelled(std::move(result));
+		}
 		if (statusCode < 200 || statusCode >= 300) {
 			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
 			return result;
@@ -1910,6 +1991,9 @@ AIChatResult ExecuteChatWithToolsClaude(
 			evt.resultJson = toolResultLocal;
 			evt.ok = toolOk;
 			result.toolEvents.push_back(std::move(evt));
+			if (IsCancelRequested(cancelCallback, cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
 
 			messages.push_back({
 				{"role", "user"},
@@ -1932,7 +2016,9 @@ AIChatResult ExecuteChatWithToolsGemini(
 	const std::vector<AIChatMessage>& contextMessages,
 	const AISettings& settings,
 	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
-	const std::function<void(const std::string& deltaText)>& streamCallback)
+	const std::function<void(const std::string& deltaText)>& streamCallback,
+	const std::function<bool()>& cancelCallback,
+	HttpRequestCancellation* cancelContext)
 {
 	AIChatResult result = {};
 	std::string endpoint = BuildGeminiEndpoint(settings.baseUrl, LocalToUtf8(settings.model), false);
@@ -1961,6 +2047,10 @@ AIChatResult ExecuteChatWithToolsGemini(
 
 	const int maxToolRounds = GetMaxToolRounds(settings);
 	for (int round = 0; round < maxToolRounds; ++round) {
+		if (IsCancelRequested(cancelCallback, cancelContext)) {
+			return MarkChatResultCancelled(std::move(result));
+		}
+
 		nlohmann::json requestBody;
 		requestBody["system_instruction"] = {
 			{"parts", nlohmann::json::array({ {{"text", systemUtf8}} })}
@@ -1976,8 +2066,13 @@ AIChatResult ExecuteChatWithToolsGemini(
 			settings.timeoutMs,
 			false,
 			false,
-			"gemini-chat");
+			"gemini-chat",
+			cancelCallback,
+			cancelContext);
 		result.httpStatus = statusCode;
+		if (IsCancelRequested(cancelCallback, cancelContext) || statusCode == kAiRequestCancelledHttpStatus) {
+			return MarkChatResultCancelled(std::move(result));
+		}
 		if (statusCode < 200 || statusCode >= 300) {
 			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
 			return result;
@@ -2044,6 +2139,9 @@ AIChatResult ExecuteChatWithToolsGemini(
 			evt.resultJson = toolResultLocal;
 			evt.ok = toolOk;
 			result.toolEvents.push_back(std::move(evt));
+			if (IsCancelRequested(cancelCallback, cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
 
 			contents.push_back({
 				{"role", "user"},
@@ -2300,7 +2398,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 	const std::vector<AIChatMessage>& contextMessages,
 	const AISettings& settings,
 	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
-	const std::function<void(const std::string& deltaText)>& streamCallback)
+	const std::function<void(const std::string& deltaText)>& streamCallback,
+	const std::function<bool()>& cancelCallback,
+	HttpRequestCancellation* cancelContext)
 {
 	AIChatResult result = {};
 	std::string missingField;
@@ -2308,12 +2408,15 @@ AIChatResult AIService::ExecuteChatWithTools(
 		result.error = "AI settings missing: " + missingField;
 		return result;
 	}
+	if (IsCancelRequested(cancelCallback, cancelContext)) {
+		return MarkChatResultCancelled(std::move(result));
+	}
 
 	if (settings.protocolType == AIProtocolType::Claude) {
-		return ExecuteChatWithToolsClaude(contextMessages, settings, toolCallback, streamCallback);
+		return ExecuteChatWithToolsClaude(contextMessages, settings, toolCallback, streamCallback, cancelCallback, cancelContext);
 	}
 	if (settings.protocolType == AIProtocolType::Gemini) {
-		return ExecuteChatWithToolsGemini(contextMessages, settings, toolCallback, streamCallback);
+		return ExecuteChatWithToolsGemini(contextMessages, settings, toolCallback, streamCallback, cancelCallback, cancelContext);
 	}
 
 	const std::string endpoint = BuildEndpoint(settings.baseUrl);
@@ -2340,6 +2443,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 	const int maxToolRounds = GetMaxToolRounds(settings);
 
 	for (int round = 0; round < maxToolRounds; ++round) {
+		if (IsCancelRequested(cancelCallback, cancelContext)) {
+			return MarkChatResultCancelled(std::move(result));
+		}
 		nlohmann::json requestBody;
 		requestBody["model"] = LocalToUtf8(settings.model);
 		requestBody["temperature"] = settings.temperature;
@@ -2370,13 +2476,18 @@ AIChatResult AIService::ExecuteChatWithTools(
 				settings.timeoutMs,
 				false,
 				false,
-				"openai-chat");
+				"openai-chat",
+				cancelCallback,
+				cancelContext);
 		LogAIPerfCost(
 			traceId,
 			"AIService.ExecuteTask.network_total",
 			ElapsedMs(networkStart),
 			"http=" + std::to_string(statusCode) + " endpoint=" + endpoint);
 		result.httpStatus = statusCode;
+		if (IsCancelRequested(cancelCallback, cancelContext) || statusCode == kAiRequestCancelledHttpStatus) {
+			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(streamState.mergedUtf8));
+		}
 		if (statusCode < 200 || statusCode >= 300) {
 			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
 			return result;
@@ -2385,6 +2496,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 		if (!FlushStreamParseState(streamState, streamCallback)) {
 			result.error = streamState.parseError.empty() ? "Failed to parse AI streaming response" : streamState.parseError;
 			return result;
+		}
+		if (IsCancelRequested(cancelCallback, cancelContext)) {
+			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(streamState.mergedUtf8));
 		}
 
 		nlohmann::json message;
@@ -2459,6 +2573,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 				evt.resultJson = toolResultLocal;
 				evt.ok = toolOk;
 				result.toolEvents.push_back(std::move(evt));
+				if (IsCancelRequested(cancelCallback, cancelContext)) {
+					return MarkChatResultCancelled(std::move(result), Utf8ToLocal(streamState.mergedUtf8));
+				}
 
 				requestMessages.push_back({
 					{"role", "tool"},
@@ -2478,6 +2595,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 		if (mergedUtf8.empty()) {
 			result.error = "AI response content is empty";
 			return result;
+		}
+		if (IsCancelRequested(cancelCallback, cancelContext)) {
+			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(mergedUtf8));
 		}
 
 		result.ok = true;

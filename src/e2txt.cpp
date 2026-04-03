@@ -1537,6 +1537,53 @@ struct SupportLibrarySymbols {
 	std::vector<SupportTypeSymbols> dataTypes;
 };
 
+constexpr std::array<const char*, FIXED_WIN_UNIT_PROPERTY_COUNT> kFixedWinUnitPropertyNames = {
+	"左边",
+	"顶边",
+	"宽度",
+	"高度",
+	"标记",
+	"可视",
+	"禁止",
+	"鼠标指针",
+};
+
+std::string ReadSupportLibraryName(const char* text)
+{
+	return text == nullptr ? std::string() : std::string(text);
+}
+
+std::vector<std::string> BuildSupportTypeMemberNames(const LIB_DATA_TYPE_INFO& dataType)
+{
+	std::vector<std::string> memberNames;
+	const bool isWinUnit =
+		(dataType.m_dwState & LDT_WIN_UNIT) != 0 &&
+		(dataType.m_dwState & LDT_ENUM) == 0;
+	if (isWinUnit) {
+		if (dataType.m_nPropertyCount > 0 && dataType.m_pPropertyBegin != nullptr) {
+			memberNames.reserve(static_cast<size_t>(dataType.m_nPropertyCount));
+			for (int propertyIndex = 0; propertyIndex < dataType.m_nPropertyCount; ++propertyIndex) {
+				memberNames.emplace_back(ReadSupportLibraryName(dataType.m_pPropertyBegin[propertyIndex].m_szName));
+			}
+			return memberNames;
+		}
+
+		memberNames.reserve(kFixedWinUnitPropertyNames.size());
+		for (const char* name : kFixedWinUnitPropertyNames) {
+			memberNames.emplace_back(name == nullptr ? "" : name);
+		}
+		return memberNames;
+	}
+
+	if (dataType.m_nElementCount > 0 && dataType.m_pElementBegin != nullptr) {
+		memberNames.reserve(static_cast<size_t>(dataType.m_nElementCount));
+		for (int memberIndex = 0; memberIndex < dataType.m_nElementCount; ++memberIndex) {
+			memberNames.emplace_back(ReadSupportLibraryName(dataType.m_pElementBegin[memberIndex].m_szName));
+		}
+	}
+	return memberNames;
+}
+
 std::string ResolveCoreLibraryFallbackMemberName(std::int32_t typeId, std::int32_t memberId)
 {
 	if (memberId == 8) {
@@ -1917,7 +1964,7 @@ private:
 			if (!std::filesystem::exists(path, ec)) {
 				continue;
 			}
-			module = LoadLibraryExA(path.string().c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
+			module = LoadLibraryExA(path.string().c_str(), nullptr, 0);
 			if (module != nullptr) {
 				symbols.filePath = path.string();
 				break;
@@ -1946,16 +1993,8 @@ private:
 						for (int i = 0; i < libInfo->m_nDataTypeCount; ++i) {
 							const LIB_DATA_TYPE_INFO& dataType = libInfo->m_pDataType[i];
 							SupportTypeSymbols typeSymbols;
-							typeSymbols.name = dataType.m_szName == nullptr ? "" : dataType.m_szName;
-							if (dataType.m_nElementCount > 0 && dataType.m_pElementBegin != nullptr) {
-								typeSymbols.memberNames.reserve(static_cast<size_t>(dataType.m_nElementCount));
-								for (int memberIndex = 0; memberIndex < dataType.m_nElementCount; ++memberIndex) {
-									typeSymbols.memberNames.emplace_back(
-										dataType.m_pElementBegin[memberIndex].m_szName == nullptr
-											? ""
-											: dataType.m_pElementBegin[memberIndex].m_szName);
-								}
-							}
+							typeSymbols.name = ReadSupportLibraryName(dataType.m_szName);
+							typeSymbols.memberNames = BuildSupportTypeMemberNames(dataType);
 							symbols.dataTypes.push_back(std::move(typeSymbols));
 						}
 					}
@@ -3698,37 +3737,51 @@ void BuildProgramPages(const ModuleSections& sections, const GenerateOptions& op
 			if (functionInfo == nullptr) {
 				continue;
 			}
-			AppendLine(page, BuildDefinitionLine(
-				"子程序",
-				{
-					TrimAsciiCopy(functionInfo->name),
-					TrimAsciiCopy(resolver.ResolveType(functionInfo->returnType)),
-					(functionInfo->attr & 0x8) != 0 ? "公开" : std::string(),
-					TrimAsciiCopy(functionInfo->comment),
-				}));
+			try {
+				AppendLine(page, BuildDefinitionLine(
+					"子程序",
+					{
+						TrimAsciiCopy(functionInfo->name),
+						TrimAsciiCopy(resolver.ResolveType(functionInfo->returnType)),
+						(functionInfo->attr & 0x8) != 0 ? "公开" : std::string(),
+						TrimAsciiCopy(functionInfo->comment),
+					}));
 
-			for (const auto& param : functionInfo->params) {
-				AppendLine(page, BuildMethodParameterLine(param, resolver));
-			}
+				for (const auto& param : functionInfo->params) {
+					AppendLine(page, BuildMethodParameterLine(param, resolver));
+				}
 
-			for (const auto& local : functionInfo->locals) {
-				AppendLine(page, BuildLocalVariableLine(local, resolver));
-			}
+				for (const auto& local : functionInfo->locals) {
+					AppendLine(page, BuildLocalVariableLine(local, resolver));
+				}
 
-			std::vector<std::string> bodyLines;
-			std::string bodyError;
-			if (TryRenderFunctionBody(*functionInfo, resolver, bodyLines, &bodyError)) {
-				if (!bodyLines.empty()) {
-					AppendLine(page, "");
-					for (const auto& bodyLine : bodyLines) {
-						AppendLine(page, bodyLine);
+				std::vector<std::string> bodyLines;
+				std::string bodyError;
+				if (TryRenderFunctionBody(*functionInfo, resolver, bodyLines, &bodyError)) {
+					if (!bodyLines.empty()) {
+						AppendLine(page, "");
+						for (const auto& bodyLine : bodyLines) {
+							AppendLine(page, bodyLine);
+						}
 					}
 				}
+				else {
+					TraceLine("BuildProgramPages body_parse_failed func=" + TrimAsciiCopy(functionInfo->name) + " error=" + bodyError);
+					AppendLine(page, "");
+					AppendLine(page, "' native_parse_failed: " + bodyError);
+				}
 			}
-			else {
-				TraceLine("BuildProgramPages body_parse_failed func=" + TrimAsciiCopy(functionInfo->name) + " error=" + bodyError);
+			catch (const std::exception& ex) {
+				const std::string error = std::string("exception: ") + ex.what();
+				TraceLine("BuildProgramPages exception func=" + TrimAsciiCopy(functionInfo->name) + " error=" + error);
 				AppendLine(page, "");
-				AppendLine(page, "' native_parse_failed: " + bodyError);
+				AppendLine(page, "' native_parse_failed: " + error);
+			}
+			catch (...) {
+				const std::string error = "exception: unknown";
+				TraceLine("BuildProgramPages exception func=" + TrimAsciiCopy(functionInfo->name) + " error=" + error);
+				AppendLine(page, "");
+				AppendLine(page, "' native_parse_failed: " + error);
 			}
 
 			AppendLine(page, "");

@@ -1,4 +1,4 @@
-#include "direct_global_search.hpp"
+﻿#include "direct_global_search.hpp"
 #include "direct_global_search_debug.hpp"
 
 #include <detours.h>
@@ -2691,7 +2691,7 @@ std::vector<e571::DirectGlobalSearchDebugHit> e571::DebugSearchDirectGlobalKeywo
         hits.push_back(std::move(hit));
     }
 
-    if (hits.empty() && rawCount == 0) {
+    if (hits.empty()) {
         return DebugSearchDirectGlobalKeyword(keyword, moduleBase);
     }
     return hits;

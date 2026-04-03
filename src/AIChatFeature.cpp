@@ -33,6 +33,7 @@
 #include "Global.h"
 #include "IDEFacade.h"
 #include "PathHelper.h"
+#include "WinINetUtil.h"
 #include "resource.h"
 #include "..\\elib\\lib2.h"
 #if defined(_M_IX86)
@@ -55,12 +56,14 @@ constexpr UINT WM_AUTOLINKER_AI_CHAT_REFRESH = WM_APP + 203;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT = WM_APP + 204;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_SUBMIT = WM_APP + 205;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_CLEAR = WM_APP + 206;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_STOP = WM_APP + 207;
 constexpr UINT_PTR kHistoryWebViewFlushTimerId = 0xA17;
 
 constexpr int IDC_AI_CHAT_HISTORY = 2101;
 constexpr int IDC_AI_CHAT_INPUT = 2102;
 constexpr int IDC_AI_CHAT_SEND = 32553;
 constexpr int IDC_AI_CHAT_CLEAR_HISTORY = 32554;
+constexpr int IDC_AI_CHAT_STOP = 32555;
 
 constexpr UINT_PTR kEditSubclassId = 1;
 constexpr UINT_PTR kActionControlSubclassId = 2;
@@ -70,6 +73,7 @@ constexpr DWORD_PTR kEditFlagNone = 0;
 constexpr DWORD_PTR kEditFlagSubmitOnEnter = 1;
 constexpr UINT_PTR kActionSubmit = 1;
 constexpr UINT_PTR kActionClear = 2;
+constexpr UINT_PTR kActionStop = 3;
 
 enum class SessionRole {
 	System,
@@ -84,6 +88,23 @@ struct SessionMessage {
 	bool includeInContext = true;
 };
 
+struct AIChatRequestCancellation {
+	std::atomic_bool cancelled = false;
+	HttpRequestCancellation httpRequest;
+
+	bool RequestCancel()
+	{
+		const bool wasCancelled = cancelled.exchange(true);
+		httpRequest.Cancel();
+		return !wasCancelled;
+	}
+
+	bool IsCancelled() const
+	{
+		return cancelled.load();
+	}
+};
+
 struct AIChatSessionState {
 	std::mutex mutex;
 	std::vector<SessionMessage> messages;
@@ -92,6 +113,7 @@ struct AIChatSessionState {
 	bool requestInFlight = false;
 	unsigned long long activeRequestId = 0;
 	unsigned long long nextRequestId = 1;
+	std::shared_ptr<AIChatRequestCancellation> cancellation;
 };
 
 struct ChatDialogContext {
@@ -99,6 +121,7 @@ struct ChatDialogContext {
 	HWND hHistoryHost = nullptr;
 	HWND hInput = nullptr;
 	HWND hSend = nullptr;
+	HWND hStop = nullptr;
 	HWND hClearHistory = nullptr;
 	int inputRowsVisible = 1;
 	bool webViewDesired = false;
@@ -115,6 +138,7 @@ struct AIChatAsyncRequest {
 	unsigned long long requestId = 0;
 	AISettings settings = {};
 	std::vector<AIChatMessage> contextMessages;
+	std::shared_ptr<AIChatRequestCancellation> cancellation;
 };
 
 struct AIChatAsyncResult {
@@ -196,6 +220,8 @@ void RefreshChatDialog(HWND hWnd);
 void RequestClearChatHistoryAsync();
 void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text);
 void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatStopUi(HWND hWnd, ChatDialogContext* ctx);
+bool IsStopRequestedLocked(const AIChatSessionState& state);
 
 std::string GetWindowTextCopyLocalA(HWND hWnd)
 {
@@ -695,9 +721,6 @@ bool IsWebView2RuntimeAvailable()
 	if (version != nullptr) {
 		CoTaskMemFree(version);
 	}
-	OutputStringToELog(std::format(
-		"[AI Chat][WebView2] runtime available={}",
-		g_webView2RuntimeAvailable ? 1 : 0));
 	return g_webView2RuntimeAvailable;
 }
 
@@ -893,6 +916,10 @@ void PostChatAction(HWND hWnd, UINT_PTR action)
 		OutputStringToELog("[AI Chat][UI] click action: clear");
 		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_CLEAR, 0, 0);
 	}
+	else if (action == kActionStop) {
+		OutputStringToELog("[AI Chat][UI] click action: stop");
+		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_STOP, 0, 0);
+	}
 	else {
 		OutputStringToELog("[AI Chat][UI] click action: submit");
 		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_SUBMIT, 0, 0);
@@ -1007,6 +1034,9 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		if (ctx->hSend != nullptr) {
 			ShowWindow(ctx->hSend, SW_HIDE);
 		}
+		if (ctx->hStop != nullptr) {
+			ShowWindow(ctx->hStop, SW_HIDE);
+		}
 		return;
 	}
 
@@ -1051,6 +1081,9 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		ShowWindow(ctx->hSend, SW_SHOW);
 		MoveWindow(ctx->hSend, sendX, inputY, sendWidth, inputHeight, TRUE);
 	}
+	if (ctx->hStop != nullptr) {
+		MoveWindow(ctx->hStop, sendX, inputY, sendWidth, inputHeight, TRUE);
+	}
 }
 
 void SyncHistoryPresentation(ChatDialogContext* ctx)
@@ -1081,13 +1114,15 @@ void ExecuteWebViewScript(ChatDialogContext* ctx, const std::wstring& script)
 	ctx->webView->ExecuteScript(script.c_str(), nullptr);
 }
 
-void UpdateWebViewComposerState(ChatDialogContext* ctx, bool busy)
+void UpdateWebViewComposerState(ChatDialogContext* ctx, bool busy, bool stopRequested = false)
 {
 	if (ctx == nullptr) {
 		return;
 	}
 	std::wstring script = L"window.autolinkerSetBusy(";
 	script += busy ? L"true" : L"false";
+	script += L",";
+	script += stopRequested ? L"true" : L"false";
 	script += L");";
 	ExecuteWebViewScript(ctx, script);
 }
@@ -1226,6 +1261,9 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												else if (action == "clear") {
 													HandleChatClearUi(hWnd, msgCtx);
 												}
+												else if (action == "stop") {
+													HandleChatStopUi(hWnd, msgCtx);
+												}
 											}
 											catch (...) {
 											}
@@ -1254,11 +1292,13 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 													FlushHistoryWebViewHtml(navCtx);
 												}
 												bool inFlight = false;
+												bool stopRequested = false;
 												{
 													std::lock_guard<std::mutex> guard(g_session.mutex);
 													inFlight = g_session.requestInFlight;
+													stopRequested = IsStopRequestedLocked(g_session);
 												}
-												UpdateWebViewComposerState(navCtx, inFlight);
+												UpdateWebViewComposerState(navCtx, inFlight, stopRequested);
 												FocusWebViewInput(navCtx);
 												return S_OK;
 											}
@@ -1299,7 +1339,6 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 									innerCtx->webView->NavigateToString(shellHtml.c_str());
 								}
 							}
-							OutputStringToELog(std::format("[AI Chat][WebView2] controller ready={}", innerCtx->webViewReady ? 1 : 0));
 							return S_OK;
 						}).Get());
 			}).Get());
@@ -1686,6 +1725,13 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 	return out;
 }
 
+bool IsStopRequestedLocked(const AIChatSessionState& state)
+{
+	return state.requestInFlight &&
+		state.cancellation != nullptr &&
+		state.cancellation->IsCancelled();
+}
+
 std::string BuildHistoryHtmlLocked(const AIChatSessionState& state)
 {
 	auto appendMessageCard = [](std::string& html, SessionRole role, const std::string& roleText, const std::string& content, bool renderMarkdown) {
@@ -1719,13 +1765,28 @@ std::string BuildHistoryHtmlLocked(const AIChatSessionState& state)
 	}
 
 	if (state.requestInFlight) {
+		const bool stopRequested = IsStopRequestedLocked(state);
 		const std::string preview = TrimAsciiCopy(state.streamingAssistantPreview);
 		if (!preview.empty()) {
 			appendMessageCard(body, SessionRole::Assistant, "AI", state.streamingAssistantPreview, true);
-			appendMessageCard(body, SessionRole::System, LocalFromWide(L"系统"), LocalFromWide(L"AI 正在生成（流式）..."), false);
+			appendMessageCard(
+				body,
+				SessionRole::System,
+				LocalFromWide(L"系统"),
+				stopRequested
+					? LocalFromWide(L"已发出停止请求，等待当前步骤结束...")
+					: LocalFromWide(L"AI 正在生成（流式）..."),
+				false);
 		}
 		else {
-			appendMessageCard(body, SessionRole::System, LocalFromWide(L"系统"), LocalFromWide(L"等待 AI 返回..."), false);
+			appendMessageCard(
+				body,
+				SessionRole::System,
+				LocalFromWide(L"系统"),
+				stopRequested
+					? LocalFromWide(L"正在中断 AI 请求...")
+					: LocalFromWide(L"等待 AI 返回..."),
+				false);
 		}
 	}
 
@@ -1779,17 +1840,17 @@ std::string BuildHistoryWebViewShellHtml()
 	html += ".body pre code{background:transparent;padding:0;border-radius:0;}";
 	html += ".body a{color:#0b63c9;text-decoration:none;}";
 	html += ".body a:hover{text-decoration:underline;}";
-	html += "</style></head><body><div class=\"layout\"><div id=\"history-scroll\" class=\"history\"><div id=\"chat-root\"></div></div><div class=\"composer\"><div class=\"input-wrap\"><textarea id=\"chat-input\" placeholder=\"输入消息，Enter 发送，Ctrl+Enter 换行\"></textarea><div class=\"actions\"><div class=\"left-actions\"><button id=\"clear-btn\" class=\"btn\" type=\"button\">清空历史会话</button></div><div class=\"right-actions\"><button id=\"send-btn\" class=\"btn primary\" type=\"button\">发送</button></div></div></div></div></div><script>";
+	html += "</style></head><body><div class=\"layout\"><div id=\"history-scroll\" class=\"history\"><div id=\"chat-root\"></div></div><div class=\"composer\"><div class=\"input-wrap\"><textarea id=\"chat-input\" placeholder=\"输入消息，Enter 发送，Ctrl+Enter 换行\"></textarea><div class=\"actions\"><div class=\"left-actions\"><button id=\"clear-btn\" class=\"btn\" type=\"button\">清空历史会话</button></div><div class=\"right-actions\"><button id=\"send-btn\" class=\"btn primary\" type=\"button\">发送</button><button id=\"stop-btn\" class=\"btn\" type=\"button\" style=\"display:none;\">停止</button></div></div></div></div></div><script>";
 	html += "window.autolinkerSetChatHtml=function(html){var root=document.getElementById('chat-root');var scroll=document.getElementById('history-scroll');if(root){root.innerHTML=html||'';if(scroll){scroll.scrollTop=scroll.scrollHeight;}}};";
-	html += "window.autolinkerSetBusy=function(busy){var send=document.getElementById('send-btn');var clear=document.getElementById('clear-btn');var input=document.getElementById('chat-input');if(send){send.disabled=!!busy;}if(clear){clear.disabled=!!busy;}if(input){input.disabled=!!busy;}};";
+	html += "window.autolinkerSetBusy=function(busy,stopRequested){var send=document.getElementById('send-btn');var stop=document.getElementById('stop-btn');var clear=document.getElementById('clear-btn');var input=document.getElementById('chat-input');var isBusy=!!busy;var isStopping=!!stopRequested;if(send){send.disabled=isBusy;send.style.display=isBusy?'none':'';}if(stop){stop.disabled=!isBusy||isStopping;stop.textContent=isStopping?'停止中...':'停止';stop.style.display=isBusy?'':'none';}if(clear){clear.disabled=isBusy;}if(input){input.disabled=isBusy;}};";
 	html += "window.autolinkerClearInput=function(){var input=document.getElementById('chat-input');if(input){input.value='';input.focus();}};";
 	html += "window.autolinkerFocusInput=function(){var input=document.getElementById('chat-input');if(input){input.focus();}};";
-	html += "(function(){var input=document.getElementById('chat-input');var send=document.getElementById('send-btn');var clear=document.getElementById('clear-btn');";
+	html += "(function(){var input=document.getElementById('chat-input');var send=document.getElementById('send-btn');var stop=document.getElementById('stop-btn');var clear=document.getElementById('clear-btn');";
 	html += "function post(obj){if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify(obj));}}";
 	html += "function setCopyState(btn,state){if(!btn){return;}var copied=state==='copied';var failed=state==='failed';btn.classList.toggle('copied',copied);btn.classList.toggle('failed',failed);var title='复制代码';if(copied){title='已复制';}else if(failed){title='复制失败';}btn.setAttribute('title',title);btn.setAttribute('aria-label',title);if(btn._copyTimer){clearTimeout(btn._copyTimer);}if(state!=='idle'){btn._copyTimer=setTimeout(function(){btn.classList.remove('copied');btn.classList.remove('failed');btn.setAttribute('title','复制代码');btn.setAttribute('aria-label','复制代码');btn._copyTimer=0;},1600);}}";
 	html += "function copyCode(btn){if(!btn){return;}var block=btn.closest('.code-block');var code=block?block.querySelector('code'):null;var text=code?(code.textContent||''):'';if(!text){setCopyState(btn,'failed');return;}if(window.chrome&&window.chrome.webview){post({action:'copy_code',text:text});setCopyState(btn,'copied');return;}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(function(){setCopyState(btn,'copied');},function(){setCopyState(btn,'failed');});return;}setCopyState(btn,'failed');}";
 	html += "function doSend(){if(!input||input.disabled){return;} post({action:'submit',text:input.value||''});}";
-	html += "if(send){send.addEventListener('click',doSend);} if(clear){clear.addEventListener('click',function(){post({action:'clear'});});}";
+	html += "function doStop(){post({action:'stop'});} if(send){send.addEventListener('click',doSend);} if(stop){stop.addEventListener('click',doStop);} if(clear){clear.addEventListener('click',function(){post({action:'clear'});});}";
 	html += "document.addEventListener('click',function(e){var btn=e.target&&e.target.closest?e.target.closest('.code-copy-btn'):null;if(!btn){return;}e.preventDefault();copyCode(btn);});";
 	html += "if(input){input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.ctrlKey){e.preventDefault();doSend();}}); setTimeout(function(){input.focus();},0);}})();";
 	html += "</script></body></html>";
@@ -1807,17 +1868,22 @@ std::string BuildHistoryTextLocked(const AIChatSessionState& state)
 		text += "\r\n\r\n";
 	}
 	if (state.requestInFlight) {
+		const bool stopRequested = IsStopRequestedLocked(state);
 		const std::string preview = TrimAsciiCopy(state.streamingAssistantPreview);
 		if (!preview.empty()) {
 			text += "[AI]\r\n";
 			text += state.streamingAssistantPreview;
 			text += "\r\n\r\n";
 			text += "[" + LocalFromWide(L"\u7cfb\u7edf") + "]\r\n"
-				+ LocalFromWide(L"AI \u6b63\u5728\u751f\u6210\uff08\u6d41\u5f0f\uff09...") + "\r\n";
+				+ (stopRequested
+					? LocalFromWide(L"\u5df2\u53d1\u51fa\u505c\u6b62\u8bf7\u6c42\uff0c\u7b49\u5f85\u5f53\u524d\u6b65\u9aa4\u7ed3\u675f...")
+					: LocalFromWide(L"AI \u6b63\u5728\u751f\u6210\uff08\u6d41\u5f0f\uff09...")) + "\r\n";
 		}
 		else {
 			text += "[" + LocalFromWide(L"\u7cfb\u7edf") + "]\r\n"
-				+ LocalFromWide(L"\u7b49\u5f85 AI \u8fd4\u56de...") + "\r\n";
+				+ (stopRequested
+					? LocalFromWide(L"\u6b63\u5728\u4e2d\u65ad AI \u8bf7\u6c42...")
+					: LocalFromWide(L"\u7b49\u5f85 AI \u8fd4\u56de...")) + "\r\n";
 		}
 	}
 	return text;
@@ -1830,6 +1896,25 @@ void PostRefreshDialog()
 	}
 }
 
+bool RequestStopCurrentChat()
+{
+	std::shared_ptr<AIChatRequestCancellation> cancellation;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight || g_session.activeRequestId == 0 || g_session.cancellation == nullptr) {
+			return false;
+		}
+		cancellation = g_session.cancellation;
+	}
+
+	const bool started = cancellation->RequestCancel();
+	if (started) {
+		OutputStringToELog("[AI Chat] stop requested for current dialog session");
+	}
+	PostRefreshDialog();
+	return started;
+}
+
 void RecoverInFlightIfNeeded(const std::string& reason)
 {
 	std::lock_guard<std::mutex> guard(g_session.mutex);
@@ -1838,6 +1923,7 @@ void RecoverInFlightIfNeeded(const std::string& reason)
 	}
 	g_session.requestInFlight = false;
 	g_session.activeRequestId = 0;
+	g_session.cancellation.reset();
 	g_session.streamingAssistantPreview.clear();
 	g_session.messages.push_back(SessionMessage{
 		SessionRole::System,
@@ -1962,12 +2048,23 @@ void RunAIChatWorker(void* pParams)
 		result->chatResult = AIService::ExecuteChatWithTools(
 			request->contextMessages,
 			request->settings,
-			[](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
-				return ExecuteToolCall(toolName, argumentsJson, outOk);
+			[cancellation = request->cancellation](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
+				return ExecuteToolCall(
+					toolName,
+					argumentsJson,
+					outOk,
+					true,
+					[cancellation]() {
+						return cancellation != nullptr && cancellation->IsCancelled();
+					});
 			},
 			[requestId = request->requestId](const std::string& deltaText) {
 				AppendStreamingAssistantDelta(requestId, deltaText);
-			});
+			},
+			[cancellation = request->cancellation]() {
+				return cancellation != nullptr && cancellation->IsCancelled();
+			},
+			request->cancellation != nullptr ? &request->cancellation->httpRequest : nullptr);
 	}
 	catch (const std::exception& ex) {
 		result->chatResult.ok = false;
@@ -2011,9 +2108,11 @@ bool StartChatRequest(const std::string& userInput)
 		request->requestId = g_session.nextRequestId++;
 		request->settings = settings;
 		request->contextMessages = BuildContextMessagesLocked(g_session);
+		request->cancellation = std::make_shared<AIChatRequestCancellation>();
 		g_session.streamingAssistantPreview.clear();
 		g_session.requestInFlight = true;
 		g_session.activeRequestId = request->requestId;
+		g_session.cancellation = request->cancellation;
 	}
 
 	const uintptr_t threadId = _beginthread(RunAIChatWorker, 0, request.get());
@@ -2021,6 +2120,7 @@ bool StartChatRequest(const std::string& userInput)
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		g_session.requestInFlight = false;
 		g_session.activeRequestId = 0;
+		g_session.cancellation.reset();
 		g_session.streamingAssistantPreview.clear();
         g_session.messages.push_back(SessionMessage{ SessionRole::System, "Failed to start background chat task.", false });
 		PostRefreshDialog();
@@ -2085,6 +2185,15 @@ void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx)
 	(void)hWnd;
 }
 
+void HandleChatStopUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	RequestStopCurrentChat();
+	RefreshChatDialog(hWnd);
+}
+
 void ClearChatHistory()
 {
 	std::vector<SessionMessage> oldMessages;
@@ -2133,6 +2242,7 @@ void HandleChatTaskDone(LPARAM lParam)
 
 	g_session.requestInFlight = false;
 	g_session.activeRequestId = 0;
+	g_session.cancellation.reset();
 	g_session.streamingAssistantPreview.clear();
 
 	for (const auto& evt : result->chatResult.toolEvents) {
@@ -2146,7 +2256,24 @@ void HandleChatTaskDone(LPARAM lParam)
 		g_session.messages.push_back(SessionMessage{ SessionRole::Tool, line, false });
 	}
 
-	if (result->chatResult.ok) {
+	if (result->chatResult.cancelled) {
+		const std::string partial = NormalizeCodeForEIDE(result->chatResult.content);
+		if (!TrimAsciiCopy(partial).empty()) {
+			g_session.messages.push_back(SessionMessage{
+				SessionRole::Assistant,
+				partial,
+				true
+			});
+		}
+		g_session.messages.push_back(SessionMessage{
+			SessionRole::System,
+			TrimAsciiCopy(partial).empty()
+				? LocalFromWide(L"已停止本次 AI 对话。")
+				: LocalFromWide(L"已停止本次 AI 对话，已保留已生成内容。"),
+			false
+		});
+	}
+	else if (result->chatResult.ok) {
 		g_session.messages.push_back(SessionMessage{
 			SessionRole::Assistant,
 			NormalizeCodeForEIDE(result->chatResult.content),
@@ -2175,10 +2302,12 @@ void RefreshChatDialog(HWND hWnd)
 	std::string history;
 	std::string historyHtml;
 	bool inFlight = false;
+	bool stopRequested = false;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		if (g_session.requestInFlight && g_session.activeRequestId == 0) {
 			g_session.requestInFlight = false;
+			g_session.cancellation.reset();
 			g_session.streamingAssistantPreview.clear();
 		}
 		history = BuildHistoryTextLocked(g_session);
@@ -2186,6 +2315,7 @@ void RefreshChatDialog(HWND hWnd)
 			historyHtml = BuildHistoryHtmlLocked(g_session);
 		}
 		inFlight = g_session.requestInFlight;
+		stopRequested = IsStopRequestedLocked(g_session);
 	}
 
 	SetWindowTextA(ctx->hHistory, history.c_str());
@@ -2193,8 +2323,20 @@ void RefreshChatDialog(HWND hWnd)
 	if (ctx->webViewDesired) {
 		UpdateHistoryWebViewHtml(ctx, historyHtml);
 	}
-	EnableWindow(ctx->hSend, inFlight ? FALSE : TRUE);
-	UpdateWebViewComposerState(ctx, inFlight);
+	const bool nativeComposerVisible = !ctx->webViewContentReady;
+	if (ctx->hClearHistory != nullptr) {
+		EnableWindow(ctx->hClearHistory, inFlight ? FALSE : TRUE);
+	}
+	if (ctx->hSend != nullptr) {
+		EnableWindow(ctx->hSend, inFlight ? FALSE : TRUE);
+		ShowWindow(ctx->hSend, (nativeComposerVisible && !inFlight) ? SW_SHOW : SW_HIDE);
+	}
+	if (ctx->hStop != nullptr) {
+		EnableWindow(ctx->hStop, (inFlight && !stopRequested) ? TRUE : FALSE);
+		SetWindowTextW(ctx->hStop, stopRequested ? L"\u505c\u6b62\u4e2d..." : L"\u505c\u6b62");
+		ShowWindow(ctx->hStop, (nativeComposerVisible && inFlight) ? SW_SHOW : SW_HIDE);
+	}
+	UpdateWebViewComposerState(ctx, inFlight, stopRequested);
 }
 
 LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
@@ -2241,14 +2383,19 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hSend = CreateWindowW(L"STATIC", L"\u53d1\u9001",
 			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			674, 476, 92, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_SEND), nullptr, nullptr);
+		ctx->hStop = CreateWindowW(L"STATIC", L"\u505c\u6b62",
+			WS_CHILD | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
+			674, 476, 92, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_STOP), nullptr, nullptr);
 
 		SetDefaultFont(ctx->hHistory);
 		SetDefaultFont(ctx->hClearHistory);
 		SetDefaultFont(ctx->hInput);
 		SetDefaultFont(ctx->hSend);
+		SetDefaultFont(ctx->hStop);
 		InstallEditHotkeys(ctx->hHistory, kEditFlagNone);
 		InstallEditHotkeys(ctx->hInput, kEditFlagSubmitOnEnter);
 		InstallChatActionControl(ctx->hSend, kActionSubmit);
+		InstallChatActionControl(ctx->hStop, kActionStop);
 		InstallChatActionControl(ctx->hClearHistory, kActionClear);
 		ctx->inputRowsVisible = 1;
 		LayoutAIChatDialog(hWnd, ctx);
@@ -2287,7 +2434,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 	case WM_CTLCOLORSTATIC:
 		if (ctx != nullptr) {
 			HWND hStatic = reinterpret_cast<HWND>(lParam);
-			if (hStatic != ctx->hClearHistory && hStatic != ctx->hSend) {
+			if (hStatic != ctx->hClearHistory && hStatic != ctx->hSend && hStatic != ctx->hStop) {
 				break;
 			}
 			HDC hdc = reinterpret_cast<HDC>(wParam);
@@ -2338,6 +2485,12 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 	case WM_AUTOLINKER_AI_CHAT_CLEAR:
 		if (ctx != nullptr) {
 			HandleChatClearUi(hWnd, ctx);
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_STOP:
+		if (ctx != nullptr) {
+			HandleChatStopUi(hWnd, ctx);
 		}
 		return 0;
 
@@ -2491,7 +2644,6 @@ int EnsureLeftWorkAreaTabImageIndex(HWND tabHwnd)
 	}
 
 	g_leftWorkAreaHost.imageIndex = addedIndex;
-	LogChatTab("add left work area tab icon ok");
 	return addedIndex;
 }
 
@@ -2729,7 +2881,6 @@ bool EnsureLeftWorkAreaChatTabAdded()
 			return false;
 		}
 		tabIndex = static_cast<int>(insertIndex);
-		LogChatTab("insert left work area tab ok");
 	}
 
 	g_leftWorkAreaHost.tabHwnd = tabHwnd;
@@ -2758,7 +2909,6 @@ bool EnsureLeftWorkAreaChatTabAdded()
 	ShowWindow(g_chatDialog, SW_HIDE);
 	g_chatHostMode = ChatHostMode::LeftWorkArea;
 	g_chatTabAdded = true;
-	LogChatTab("left work area host ok");
 	return true;
 }
 
@@ -2803,7 +2953,6 @@ bool EnsureChatHostWindowCreated()
 		return false;
 	}
 
-	LogChatTab("create host ok");
 	PostMessageA(g_chatDialog, WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT, 0, 0);
 	return true;
 }
