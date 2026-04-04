@@ -57,6 +57,12 @@ std::string TrimAsciiCopyForProjectCache(const std::string& text)
 	return text.substr(begin, end - begin);
 }
 
+bool IsLikelyClassModulePageNameForProjectCache(const std::string& text)
+{
+	const std::string trimmed = TrimAsciiCopyForProjectCache(text);
+	return trimmed.rfind("Class_", 0) == 0 || trimmed.rfind("类", 0) == 0;
+}
+
 bool IsValidUtf8TextForProjectCache(const std::string& text)
 {
 	if (text.empty()) {
@@ -211,7 +217,7 @@ std::string BuildPageTypeKey(const e2txt::Page& page)
 	const std::string typeName = TrimAsciiCopyForProjectCache(page.typeName);
 	const std::string pageName = TrimAsciiCopyForProjectCache(page.name);
 	if (typeName == "程序集") {
-		return pageName.rfind("Class_", 0) == 0 ? "class_module" : "assembly";
+		return IsLikelyClassModulePageNameForProjectCache(pageName) ? "class_module" : "assembly";
 	}
 	if (typeName == "全局变量") {
 		return "global_var";

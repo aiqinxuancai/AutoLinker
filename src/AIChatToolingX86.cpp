@@ -116,6 +116,12 @@ static std::string TrimAsciiCopy(const std::string& text)
 	return text.substr(begin, end - begin);
 }
 
+bool IsLikelyClassModulePageNameForAI(const std::string& text)
+{
+	const std::string trimmed = TrimAsciiCopy(text);
+	return trimmed.rfind("Class_", 0) == 0 || trimmed.rfind("类", 0) == 0;
+}
+
 std::string ToLowerAsciiCopyLocal(std::string text)
 {
 	for (char& ch : text) {
@@ -361,7 +367,7 @@ std::string GetProgramTreeTypeKey(
 	const unsigned int typeNibble = itemData >> 28;
 	switch (typeNibble) {
 	case 1:
-		if (text.rfind("Class_", 0) == 0) {
+		if (IsLikelyClassModulePageNameForAI(text)) {
 			return "class_module";
 		}
 		if (classImage >= 0 && image == classImage) {
@@ -615,7 +621,7 @@ bool TryListProgramTreeItemsForAI(std::vector<ProgramTreeItemInfo>& outItems, st
 
 	int classImage = -1;
 	for (const auto& item : outItems) {
-		if (item.name.rfind("Class_", 0) == 0 && item.image >= 0) {
+		if (IsLikelyClassModulePageNameForAI(item.name) && item.image >= 0) {
 			classImage = item.image;
 			break;
 		}
