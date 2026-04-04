@@ -1035,6 +1035,20 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "get_program_item_project_cache_code"},
+		{"description", "Get one program tree page from the current project-source cache by exact page_name, optionally constrained by kind. This does not switch the IDE page. It serializes the current project from IDE memory and reparses it via e2txt, so the returned code may differ in formatting from the editor's real Select-All plus Copy result."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"page_name", {{"type", "string"}}},
+				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
+				{"refresh_cache", {{"type", "boolean"}, {"description", "When true, refresh the current project-source cache from IDE memory serialization before reading the page. Defaults to true."}}}
+			}},
+			{"required", nlohmann::json::array({"page_name"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "get_program_item_real_code"},
 		{"description", "Get the real full source text of one program tree page by exact page_name, optionally constrained by kind. This switches the IDE current page and uses the editor's internal copy path without touching the system clipboard. Use this when you need source text matching manual Select-All plus Copy."},
 		{"inputSchema", {
@@ -1511,8 +1525,8 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"3) 本机有多个易语言实例时，先用 list_local_mcp_instances，再通过 call_local_mcp_instance_tool 转发到目标实例；不要臆测端口。\n"
 		"4) 支持库相关信息：先用 list_support_libraries，再按需用 get_support_library_info；若需要完全搜索当前工程源码命中、工程源码缓存、模块公开声明、支持库公开声明，优先用 search_public_code；若只查支持库也可用 search_support_library_public_code / read_support_library_public_code。\n"
 		"5) 模块公开信息：先用 list_imported_modules，再按需用 get_module_public_info；若需要完全搜索当前工程源码命中、工程源码缓存、模块公开声明、支持库公开声明，优先用 search_public_code；若只查模块也可用 search_module_public_code / read_module_public_code。\n"
-		"6) 程序树页面：先用 list_program_items 定位页面，再按需用 get_program_item_real_code 或 switch_to_program_item_page。\n"
-		"6.1) list_program_items 附带的代码仍只是伪代码参考；需要某个页面的真实整页源码时，用 get_program_item_real_code。\n"
+		"6) 程序树页面：先用 list_program_items 定位页面；若要求不切换 IDE 页面，优先用 get_program_item_project_cache_code；若要求与编辑器手工全选复制尽量一致的真实源码，再用 get_program_item_real_code 或 switch_to_program_item_page。\n"
+		"6.1) list_program_items 附带的代码仍只是伪代码参考；get_program_item_project_cache_code 来自当前工程源码缓存，不切页但格式可能与编辑器真实页不同；需要某个页面的真实整页源码时，用 get_program_item_real_code。\n"
 		"6.2) 需要分页查看或从缓存读取真实源码时，用 read_program_item_real_code。\n"
 		"6.3) 需要真正改写某个页面源码时，先调用 get_program_item_real_code 或 read_program_item_real_code 建立缓存，再按需用 edit_program_item_code / multi_edit_program_item_code / write_program_item_real_code。\n"
 		"6.4) 需要预览改动而不写回时，用 diff_program_item_code。\n"

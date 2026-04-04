@@ -2583,6 +2583,163 @@ std::string BuildProjectCacheSourceKindForAI(const project_source_cache::Snapsho
 	return "e2txt_project_cache";
 }
 
+bool AreProjectCachePageTypesCompatibleForAI(
+	const std::string& pageTypeKey,
+	const std::string& itemTypeKey)
+{
+	if (pageTypeKey == itemTypeKey) {
+		return true;
+	}
+
+	const auto isAssemblyLike = [](const std::string& value) {
+		return value == "assembly" || value == "class_module";
+	};
+	return isAssemblyLike(pageTypeKey) && isAssemblyLike(itemTypeKey);
+}
+
+const project_source_cache::Page* FindProjectCachePageByProgramItemForAI(
+	const project_source_cache::Snapshot& snapshot,
+	const ProgramTreeItemInfo& item,
+	std::string& outTrace,
+	std::string& outError)
+{
+	outTrace.clear();
+	outError.clear();
+
+	const std::string normalizedName = NormalizeProgramPageNameForAI(item.name);
+	if (normalizedName.empty()) {
+		outError = "program item name is empty";
+		return nullptr;
+	}
+
+	const project_source_cache::Page* exactPage = nullptr;
+	int exactCount = 0;
+	const project_source_cache::Page* loosePage = nullptr;
+	int looseCount = 0;
+
+	for (const auto& page : snapshot.pages) {
+		if (page.name != normalizedName) {
+			continue;
+		}
+
+		if (loosePage == nullptr) {
+			loosePage = &page;
+		}
+		++looseCount;
+
+		if (!AreProjectCachePageTypesCompatibleForAI(page.typeKey, item.typeKey)) {
+			continue;
+		}
+
+		if (exactPage == nullptr) {
+			exactPage = &page;
+		}
+		++exactCount;
+	}
+
+	if (exactCount == 1 && exactPage != nullptr) {
+		outTrace =
+			"page_lookup_exact"
+			"|name=" + normalizedName +
+			"|type_key=" + item.typeKey +
+			"|page_index=" + std::to_string(exactPage->pageIndex);
+		return exactPage;
+	}
+	if (exactCount > 1) {
+		outError = "project cache page name is ambiguous";
+		outTrace =
+			"page_lookup_ambiguous_exact"
+			"|name=" + normalizedName +
+			"|type_key=" + item.typeKey +
+			"|count=" + std::to_string(exactCount);
+		return nullptr;
+	}
+	if (looseCount == 1 && loosePage != nullptr) {
+		outTrace =
+			"page_lookup_name_only"
+			"|name=" + normalizedName +
+			"|item_type_key=" + item.typeKey +
+			"|page_type_key=" + loosePage->typeKey +
+			"|page_index=" + std::to_string(loosePage->pageIndex);
+		return loosePage;
+	}
+	if (looseCount > 1) {
+		outError = "project cache page name is ambiguous";
+		outTrace =
+			"page_lookup_ambiguous_name"
+			"|name=" + normalizedName +
+			"|item_type_key=" + item.typeKey +
+			"|count=" + std::to_string(looseCount);
+		return nullptr;
+	}
+
+	outError = "program item page not found in project cache";
+	outTrace =
+		"page_lookup_not_found"
+		"|name=" + normalizedName +
+		"|type_key=" + item.typeKey;
+	return nullptr;
+}
+
+bool TryGetProgramItemProjectCacheCodeForAI(
+	const ProgramTreeItemInfo& item,
+	bool refreshCache,
+	std::string& outCode,
+	project_source_cache::Snapshot& outSnapshot,
+	const project_source_cache::Page*& outPage,
+	bool& outRefreshed,
+	std::string& outTrace,
+	std::string& outError)
+{
+	outCode.clear();
+	outSnapshot = {};
+	outPage = nullptr;
+	outRefreshed = false;
+	outTrace.clear();
+	outError.clear();
+
+	std::string snapshotTrace;
+	if (!project_source_cache::ProjectSourceCacheManager::Instance().EnsureCurrentSourceLatest(
+			outSnapshot,
+			refreshCache,
+			&outRefreshed,
+			&outError,
+			&snapshotTrace)) {
+		outTrace = snapshotTrace;
+		return false;
+	}
+
+	std::string pageTrace;
+	const project_source_cache::Page* page = FindProjectCachePageByProgramItemForAI(
+		outSnapshot,
+		item,
+		pageTrace,
+		outError);
+	if (page == nullptr) {
+		outTrace = snapshotTrace.empty() ? pageTrace : (snapshotTrace + "|" + pageTrace);
+		return false;
+	}
+
+	outCode = NormalizeRealCodeLineBreaksToCrLf(JoinRealCodeLines(page->lines));
+	if (outCode.empty()) {
+		outError = "project cache page code is empty";
+		outTrace =
+			(snapshotTrace.empty() ? std::string() : (snapshotTrace + "|")) +
+			pageTrace +
+			"|page_empty";
+		return false;
+	}
+
+	outPage = page;
+	outTrace =
+		(snapshotTrace.empty() ? std::string() : (snapshotTrace + "|")) +
+		pageTrace +
+		"|no_switch=1"
+		"|line_count=" + std::to_string(page->lines.size()) +
+		"|code_bytes=" + std::to_string(outCode.size());
+	return true;
+}
+
 template <typename MatchFn>
 std::vector<ProjectCacheSearchHitForAI> CollectProjectCacheSearchHitsForAI(
 	const project_source_cache::Snapshot& snapshot,
@@ -5683,6 +5840,82 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		r["mcp_instance_id"] = LocalMcpServer::GetInstanceId();
 		r["mcp_port"] = LocalMcpServer::GetBoundPort();
 		r["mcp_endpoint"] = LocalMcpServer::GetEndpoint();
+		outOk = true;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	if (toolName == "get_program_item_project_cache_code") {
+		nlohmann::json args;
+		try {
+			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return Utf8ToLocalText(r.dump());
+		}
+
+		const std::string pageName = GetJsonStringArgumentLocal(args, "page_name");
+		const std::string kind = GetJsonStringArgumentLocal(args, "kind");
+		const bool refreshCache = GetJsonBoolArgument(args, "refresh_cache", true);
+		if (TrimAsciiCopy(pageName).empty()) {
+			return R"({"ok":false,"error":"page_name is required"})";
+		}
+
+		ProgramTreeItemInfo item;
+		std::string error;
+		if (!TryGetProgramItemByNameForAI(pageName, kind, item, error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "program item lookup failed" : error;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		std::string code;
+		project_source_cache::Snapshot snapshot;
+		const project_source_cache::Page* page = nullptr;
+		bool refreshed = false;
+		std::string trace;
+		if (!TryGetProgramItemProjectCacheCodeForAI(
+				item,
+				refreshCache,
+				code,
+				snapshot,
+				page,
+				refreshed,
+				trace,
+				error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "get program item project cache code failed" : error;
+			r["trace"] = LocalToUtf8Text(trace);
+			r["page_name"] = LocalToUtf8Text(item.name);
+			r["type_key"] = item.typeKey;
+			r["type_name"] = LocalToUtf8Text(item.typeName);
+			r["refresh_cache"] = refreshCache;
+			return Utf8ToLocalText(r.dump());
+		}
+
+		nlohmann::json r;
+		r["ok"] = true;
+		r["page_name"] = LocalToUtf8Text(item.name);
+		r["type_key"] = item.typeKey;
+		r["type_name"] = LocalToUtf8Text(item.typeName);
+		r["item_data"] = item.itemData;
+		r["page_index"] = page != nullptr ? page->pageIndex : -1;
+		r["code_kind"] = "project_cache_source";
+		r["source_kind"] = BuildProjectCacheSourceKindForAI(snapshot);
+		r["parsed_input_kind"] = snapshot.parsedInputKind;
+		r["source_file_path"] = LocalToUtf8Text(snapshot.sourcePath);
+		r["cache_revision"] = snapshot.revision;
+		r["from_cache"] = !refreshed;
+		r["refresh_cache"] = refreshCache;
+		r["no_switch"] = true;
+		r["trace"] = LocalToUtf8Text(trace);
+		r["code_hash"] = BuildStableTextHashForRealCode(code);
+		r["code"] = LocalToUtf8Text(code);
+		r["warning"] = LocalToUtf8Text("该结果来自当前工程源码缓存：先把当前工程从 IDE 内存直序列化为 .e 二进制，再由 e2txt 解析得到对应页面代码。它不会切换 IDE 页面，但与编辑器当前页的真实复制结果可能存在格式差异。");
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
 	}

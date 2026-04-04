@@ -51,6 +51,8 @@ MSBuild.exe ..\\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platfo
 
 打开当前代码目录下的"test_a.e"文件。
 
+每次测试完毕后需要关闭e主程序才能解除AutoLinker.fne的占用。
+
 #### 非依赖易语言IDE的功能测试
 
 fne本质是一个dll文件，不分功能需要载入到IDE中测试，但有一些比如模块本地解析方法等，你可以使用AutoLinkerTest项目来完成测试。

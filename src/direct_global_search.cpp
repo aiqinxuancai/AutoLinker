@@ -38,6 +38,8 @@ using FnContainerGetAt = int(__thiscall*)(void*, int, int*);
 using FnContainerGetId = int(__thiscall*)(void*, int);
 using FnResolveBucketIndex = int(__thiscall*)(void*, int, int*, int*);
 using FnOpenCodeTarget = HWND(__thiscall*)(void*, int, int, int, int, int, int, int);
+using FnCreateCodePage = void*(__thiscall*)(void*, int, int, void*, int);
+using FnSetMainEditorActiveEditorObject = int(__thiscall*)(void*, void*, int);
 using FnMoveToLine = int(__thiscall*)(HWND, int, int, int, int, int);
 using FnEnsureVisible = int(__thiscall*)(HWND, int, int, int);
 using FnMoveCaretToOffset = int(__thiscall*)(void*, int, int, void*, int);
@@ -49,6 +51,7 @@ using FnPrepareSearchResults = int(__thiscall*)(void*, int);
 using FnSelectSearchResultTab = int(__thiscall*)(void*, int);
 using FnActivateWindowObject = int(__thiscall*)(int);
 using FnSendMessageA = LRESULT(WINAPI*)(HWND, UINT, WPARAM, LPARAM);
+using FnSetFocusApi = HWND(WINAPI*)(HWND);
 using FnConsumeSearchResultRecord = void(__stdcall*)(void*, int);
 using FnFromHandle = void*(__stdcall*)(void*);
 using FnEditorGetOuterCount = int(__thiscall*)(void*);
@@ -70,6 +73,7 @@ struct NativeSearchAddresses {
     std::uintptr_t containerGetId = 0;
     std::uintptr_t resolveBucketIndex = 0;
     std::uintptr_t openCodeTarget = 0;
+    std::uintptr_t createCodePage = 0;
     std::uintptr_t moveToLine = 0;
     std::uintptr_t ensureVisible = 0;
     std::uintptr_t moveCaretToOffset = 0;
@@ -112,6 +116,16 @@ constexpr ptrdiff_t kOffset_ResultRecordContainerType2 = 0xC68;
 constexpr ptrdiff_t kOffset_CWndHwnd = 28;
 constexpr ptrdiff_t kOffset_ByteContainerData = 8;
 constexpr ptrdiff_t kOffset_ByteContainerUsedBytes = 16;
+constexpr ptrdiff_t kOffset_MainEditorHostCreateOwner = 0x0C0;
+constexpr ptrdiff_t kOffset_MainEditorHostOpenPageList = 0x924;
+constexpr ptrdiff_t kOffset_MainEditorHostActiveEditorObject = 0x438;
+constexpr ptrdiff_t kOffset_MainEditorHostFormArray = 0x34C;
+constexpr ptrdiff_t kOffset_PageObjectType = 0x50;
+constexpr ptrdiff_t kOffset_PageObjectType5Key = 0x60;
+constexpr ptrdiff_t kOffset_PageObjectType1Key = 0x68;
+constexpr ptrdiff_t kOffset_PageRuntimeEditorObject = 0x40;
+constexpr ptrdiff_t kOffset_Type1BucketOwner = 0x50;
+constexpr std::uintptr_t kKnownSetMainEditorActiveEditorObjectRva = 0x471B30;
 constexpr UINT kMsg_TcmGetCurSel = 0x130B;
 constexpr UINT kMsg_TcmSetCurSel = 0x130C;
 constexpr UINT kMsg_TcmGetCurFocus = 0x132F;
@@ -162,13 +176,37 @@ struct HiddenBuiltinSearchContext {
     std::vector<e571::DirectGlobalSearch::GlobalSearchHit> rawHits;
 };
 
+struct HiddenOpenCodeTargetContext {
+    bool suppressMdiActivate = true;
+    bool suppressSetFocus = true;
+    HWND blockedFocusHwnd = nullptr;
+};
+
 thread_local HiddenBuiltinSearchContext* g_hiddenBuiltinSearchContext = nullptr;
+thread_local HiddenOpenCodeTargetContext* g_hiddenOpenCodeTargetContext = nullptr;
 
 FnAppendBytes g_originalAppendBytes = nullptr;
 FnPrepareSearchResults g_originalPrepareSearchResults = nullptr;
 FnSelectSearchResultTab g_originalSelectSearchResultTab = nullptr;
 FnActivateWindowObject g_originalActivateWindowObject = nullptr;
 FnSendMessageA g_originalSendMessageA = ::SendMessageA;
+FnSendMessageA g_originalHiddenOpenSendMessageA = ::SendMessageA;
+FnSetFocusApi g_originalHiddenOpenSetFocus = ::SetFocus;
+
+LRESULT WINAPI HiddenOpenCodeTargetHook_SendMessageA(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+HWND WINAPI HiddenOpenCodeTargetHook_SetFocus(HWND hwnd);
+
+class ScopedHiddenOpenCodeTargetApiHooks {
+public:
+    explicit ScopedHiddenOpenCodeTargetApiHooks(HiddenOpenCodeTargetContext& ctx);
+    ~ScopedHiddenOpenCodeTargetApiHooks();
+
+    bool IsInstalled() const;
+
+private:
+    HiddenOpenCodeTargetContext& ctx_;
+    bool installed_;
+};
 
 std::mutex g_nativeSearchAddressMutex;
 NativeSearchAddresses g_nativeSearchAddresses;
@@ -264,6 +302,10 @@ bool PopulateNativeSearchAddresses(NativeSearchAddresses& addrs, std::uintptr_t 
     addrs.openCodeTarget = ResolveUniqueCodeAddress(
         "open_code_target",
         "83 EC 08 53 56 57 8B F9 8B 87 CC 03 00 00 F7 D0 83 E0 01 3C 01 0F 84 C0 02 00 00 8B 5C 24 18 33 F6 83 FB 01 74 39",
+        moduleBase);
+    addrs.createCodePage = ResolveUniqueCodeAddress(
+        "create_code_page",
+        "64 A1 00 00 00 00 6A FF 68 ?? ?? ?? ?? 50 64 89 25 00 00 00 00 53 8B D9 55 56 57 8B 8B 24 09 00 00 8B 01 FF 50 6C",
         moduleBase);
     addrs.moveToLine = ResolveUniqueCodeAddress(
         "move_to_line",
@@ -1338,7 +1380,9 @@ bool TryResolveEditorObjectForProgramTreeItemData(
         openType = 4;
         break;
     case 5:
+        resolvedIndex = static_cast<int>(itemData & 0x0FFFFFFFu);
         openType = 5;
+        arg2 = resolvedIndex;
         break;
     case 6:
         openType = 6;
@@ -1836,6 +1880,718 @@ bool SafeResolveBucketIndex(
     }
 }
 
+bool SafeFindExistingOpenEditorObject(
+    void* mainEditorHost,
+    int openType,
+    int matchKey,
+    void** outEditorObject) {
+    if (outEditorObject != nullptr) {
+        *outEditorObject = nullptr;
+    }
+    if (mainEditorHost == nullptr) {
+        return false;
+    }
+
+    __try {
+        auto* const hostBytes = reinterpret_cast<std::uint8_t*>(mainEditorHost);
+        void* const openPageList =
+            *reinterpret_cast<void**>(hostBytes + kOffset_MainEditorHostOpenPageList);
+        if (openPageList == nullptr) {
+            return false;
+        }
+
+        const auto vtable = *reinterpret_cast<std::uintptr_t*>(openPageList);
+        if (vtable == 0) {
+            return false;
+        }
+
+        const auto getFirst = reinterpret_cast<int(__thiscall*)(void*)>(
+            *reinterpret_cast<const std::uintptr_t*>(vtable + 0x54));
+        const auto getNext = reinterpret_cast<void*(__thiscall*)(void*, int*)>(
+            *reinterpret_cast<const std::uintptr_t*>(vtable + 0x58));
+        if (getFirst == nullptr || getNext == nullptr) {
+            return false;
+        }
+
+        int cursor = getFirst(openPageList);
+        while (cursor != 0) {
+            void* const candidate = getNext(openPageList, &cursor);
+            if (candidate == nullptr) {
+                continue;
+            }
+
+            auto* const candidateBytes = reinterpret_cast<const std::uint8_t*>(candidate);
+            const int candidateType =
+                *reinterpret_cast<const int*>(candidateBytes + kOffset_PageObjectType);
+            if (candidateType != openType) {
+                continue;
+            }
+
+            if (openType == 1) {
+                const int bucketKey =
+                    *reinterpret_cast<const int*>(candidateBytes + kOffset_PageObjectType1Key);
+                if (bucketKey != matchKey) {
+                    continue;
+                }
+            } else if (openType == 5) {
+                const int formKey =
+                    *reinterpret_cast<const int*>(candidateBytes + kOffset_PageObjectType5Key);
+                if (formKey != matchKey) {
+                    continue;
+                }
+            }
+
+            if (outEditorObject != nullptr) {
+                *outEditorObject = candidate;
+            }
+            return true;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    return false;
+}
+
+bool SafeResolveRuntimeEditorObjectFromPageObject(
+    void* mainEditorHost,
+    void* pageObject,
+    void** outEditorObject) {
+    if (outEditorObject != nullptr) {
+        *outEditorObject = nullptr;
+    }
+    if (mainEditorHost == nullptr || pageObject == nullptr) {
+        return false;
+    }
+
+    __try {
+        const auto preferredEditorObject = *reinterpret_cast<const std::uintptr_t*>(
+            reinterpret_cast<const std::uint8_t*>(mainEditorHost) + kOffset_MainEditorHostActiveEditorObject);
+        const auto pageVtable = *reinterpret_cast<const std::uintptr_t*>(pageObject);
+        if (pageVtable == 0) {
+            return false;
+        }
+
+        const auto getFirst = reinterpret_cast<int(__thiscall*)(void*)>(
+            *reinterpret_cast<const std::uintptr_t*>(pageVtable + 96));
+        const auto getNext = reinterpret_cast<void*(__thiscall*)(void*, int*)>(
+            *reinterpret_cast<const std::uintptr_t*>(pageVtable + 100));
+        if (getFirst == nullptr || getNext == nullptr) {
+            return false;
+        }
+
+        void* fallbackEditorObject = nullptr;
+        int cursor = getFirst(pageObject);
+        if (cursor == 0) {
+            return false;
+        }
+
+        do {
+            void* const pageNode = getNext(pageObject, &cursor);
+            if (pageNode == nullptr) {
+                continue;
+            }
+
+            void* const editorObject = *reinterpret_cast<void**>(
+                reinterpret_cast<std::uint8_t*>(pageNode) + kOffset_PageRuntimeEditorObject);
+            if (editorObject == nullptr) {
+                continue;
+            }
+
+            if (fallbackEditorObject == nullptr) {
+                fallbackEditorObject = editorObject;
+            }
+            if (preferredEditorObject != 0 &&
+                reinterpret_cast<std::uintptr_t>(editorObject) == preferredEditorObject) {
+                if (outEditorObject != nullptr) {
+                    *outEditorObject = editorObject;
+                }
+                return true;
+            }
+        } while (cursor != 0);
+
+        if (outEditorObject != nullptr) {
+            *outEditorObject = fallbackEditorObject;
+        }
+        return fallbackEditorObject != nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool SafeCreateEditorObjectNoActivate(
+    FnCreateCodePage fn,
+    void* mainEditorHost,
+    int ownerArg,
+    int openType,
+    int dataArg,
+    int extraArg,
+    void** outEditorObject) {
+    if (outEditorObject != nullptr) {
+        *outEditorObject = nullptr;
+    }
+    if (fn == nullptr || mainEditorHost == nullptr) {
+        return false;
+    }
+
+    __try {
+        void* const editorObject = fn(
+            mainEditorHost,
+            ownerArg,
+            openType,
+            reinterpret_cast<void*>(dataArg),
+            extraArg);
+        if (outEditorObject != nullptr) {
+            *outEditorObject = editorObject;
+        }
+        return editorObject != nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool SafeSetMainEditorActiveEditorObject(
+    FnSetMainEditorActiveEditorObject fn,
+    void* mainEditorHost,
+    void* editorObject,
+    int notifyMode,
+    std::uintptr_t* outPreviousEditorObject,
+    std::uintptr_t* outCurrentEditorObject) {
+    if (outPreviousEditorObject != nullptr) {
+        *outPreviousEditorObject = 0;
+    }
+    if (outCurrentEditorObject != nullptr) {
+        *outCurrentEditorObject = 0;
+    }
+    if (fn == nullptr || mainEditorHost == nullptr) {
+        return false;
+    }
+
+    __try {
+        auto* const hostBytes = reinterpret_cast<std::uint8_t*>(mainEditorHost);
+        const std::uintptr_t previousEditorObject =
+            *reinterpret_cast<const std::uintptr_t*>(hostBytes + kOffset_MainEditorHostActiveEditorObject);
+        fn(mainEditorHost, editorObject, notifyMode);
+        const std::uintptr_t currentEditorObject =
+            *reinterpret_cast<const std::uintptr_t*>(hostBytes + kOffset_MainEditorHostActiveEditorObject);
+        if (outPreviousEditorObject != nullptr) {
+            *outPreviousEditorObject = previousEditorObject;
+        }
+        if (outCurrentEditorObject != nullptr) {
+            *outCurrentEditorObject = currentEditorObject;
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool SafeCallOpenCodeTarget(
+    FnOpenCodeTarget fn,
+    void* mainEditorHost,
+    int openType,
+    int arg2,
+    int arg3,
+    void** outEditorObject) {
+    if (outEditorObject != nullptr) {
+        *outEditorObject = nullptr;
+    }
+    if (fn == nullptr || mainEditorHost == nullptr) {
+        return false;
+    }
+
+    __try {
+        void* const editorObject = reinterpret_cast<void*>(fn(
+            mainEditorHost,
+            openType,
+            arg2,
+            arg3,
+            0,
+            0,
+            1,
+            -1));
+        if (outEditorObject != nullptr) {
+            *outEditorObject = editorObject;
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool SafeReadMainEditorActiveEditorObject(
+    void* mainEditorHost,
+    std::uintptr_t* outEditorObject) {
+    if (outEditorObject != nullptr) {
+        *outEditorObject = 0;
+    }
+    if (mainEditorHost == nullptr) {
+        return false;
+    }
+
+    __try {
+        const auto* const hostBytes = reinterpret_cast<const std::uint8_t*>(mainEditorHost);
+        const std::uintptr_t editorObject = *reinterpret_cast<const std::uintptr_t*>(
+            hostBytes + kOffset_MainEditorHostActiveEditorObject);
+        if (outEditorObject != nullptr) {
+            *outEditorObject = editorObject;
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool TryOpenCodeTargetNoActivate(
+    FnOpenCodeTarget fn,
+    void* mainEditorHost,
+    int openType,
+    int arg2,
+    int arg3,
+    void** outEditorObject,
+    std::string* outTrace) {
+    if (outEditorObject != nullptr) {
+        *outEditorObject = nullptr;
+    }
+    if (outTrace != nullptr) {
+        outTrace->clear();
+    }
+    if (fn == nullptr || mainEditorHost == nullptr) {
+        if (outTrace != nullptr) {
+            *outTrace = "hidden_open_invalid_argument";
+        }
+        return false;
+    }
+
+    HiddenOpenCodeTargetContext hookContext;
+    ScopedHiddenOpenCodeTargetApiHooks hooks(hookContext);
+    if (!hooks.IsInstalled()) {
+        if (outTrace != nullptr) {
+            *outTrace = "hidden_open_hook_install_failed";
+        }
+        return false;
+    }
+
+    void* editorObject = nullptr;
+    if (!SafeCallOpenCodeTarget(fn, mainEditorHost, openType, arg2, arg3, &editorObject)) {
+        if (outTrace != nullptr) {
+            *outTrace = "hidden_open_exception";
+        }
+        return false;
+    }
+
+    if (outEditorObject != nullptr) {
+        *outEditorObject = editorObject;
+    }
+    if (outTrace != nullptr) {
+        *outTrace =
+            std::string(editorObject != nullptr ? "hidden_open_ok" : "hidden_open_null") +
+            "|blocked_focus_hwnd=" +
+            std::to_string(reinterpret_cast<std::uintptr_t>(hookContext.blockedFocusHwnd));
+    }
+    return editorObject != nullptr;
+}
+
+bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
+    unsigned int itemData,
+    std::uintptr_t moduleBase,
+    void** outEditorObject,
+    int* outResolvedType,
+    int* outResolvedIndex,
+    int* outBucketData,
+    std::string* outTrace) {
+    if (outEditorObject != nullptr) {
+        *outEditorObject = nullptr;
+    }
+    if (outResolvedType != nullptr) {
+        *outResolvedType = 0;
+    }
+    if (outResolvedIndex != nullptr) {
+        *outResolvedIndex = -1;
+    }
+    if (outBucketData != nullptr) {
+        *outBucketData = 0;
+    }
+    if (outTrace != nullptr) {
+        outTrace->clear();
+    }
+
+    const unsigned int itemTypeNibble = itemData >> 28;
+    if (itemTypeNibble == 0 || itemTypeNibble == 15) {
+        if (outTrace != nullptr) {
+            *outTrace = "non_page_tree_item";
+        }
+        return false;
+    }
+
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (!addrs.ok) {
+        if (outTrace != nullptr) {
+            *outTrace = "resolve_native_addresses_failed";
+        }
+        return false;
+    }
+    if (addrs.createCodePage == 0) {
+        if (outTrace != nullptr) {
+            *outTrace = "create_code_page_resolve_failed";
+        }
+        return false;
+    }
+
+    void* const mainEditorHost = PtrAbsolute<void>(moduleBase, addrs.mainEditorHost);
+    if (mainEditorHost == nullptr) {
+        if (outTrace != nullptr) {
+            *outTrace = "main_editor_host_null";
+        }
+        return false;
+    }
+
+    const auto containerGetAt = BindAbsolute<FnContainerGetAt>(moduleBase, addrs.containerGetAt);
+    const auto openCodeTarget = BindAbsolute<FnOpenCodeTarget>(moduleBase, addrs.openCodeTarget);
+    const auto createCodePage = BindAbsolute<FnCreateCodePage>(moduleBase, addrs.createCodePage);
+
+    int openType = 0;
+    int resolvedIndex = -1;
+    int bucketData = 0;
+    int openArg2 = -1;
+    int openArg3 = -1;
+    int matchKey = 0;
+    int createOwnerArg = 0;
+    int createDataArg = 0;
+    int createExtraArg = 0;
+
+    switch (itemTypeNibble) {
+    case 1: {
+        resolvedIndex = static_cast<int>(((itemData >> 16) & 0x0FFFu)) - 1;
+        if (resolvedIndex < 0) {
+            if (outTrace != nullptr) {
+                *outTrace = "type1_resolved_index_invalid";
+            }
+            return false;
+        }
+
+        int bucketOk = 0;
+        if (!SafeContainerGetAt(
+                containerGetAt,
+                PtrAbsolute<void>(moduleBase, addrs.type1Container),
+                resolvedIndex,
+                &bucketData,
+                &bucketOk) ||
+            bucketOk == 0 ||
+            bucketData == 0) {
+            if (outTrace != nullptr) {
+                *outTrace = "type1_bucket_lookup_failed";
+            }
+            return false;
+        }
+
+        openType = 1;
+        openArg2 = resolvedIndex;
+        openArg3 = 0;
+        matchKey = bucketData;
+        createOwnerArg = *reinterpret_cast<int*>(bucketData + kOffset_Type1BucketOwner);
+        createDataArg = bucketData;
+        break;
+    }
+    case 2:
+        openType = 3;
+        openArg2 = -1;
+        openArg3 = -1;
+        createOwnerArg = static_cast<int>(
+            reinterpret_cast<std::uintptr_t>(
+                reinterpret_cast<std::uint8_t*>(mainEditorHost) + kOffset_MainEditorHostCreateOwner));
+        createDataArg = ResolveTypeDataRaw(3, moduleBase);
+        break;
+    case 3:
+        openType = 2;
+        openArg2 = -1;
+        openArg3 = -1;
+        createOwnerArg = static_cast<int>(
+            reinterpret_cast<std::uintptr_t>(
+                reinterpret_cast<std::uint8_t*>(mainEditorHost) + kOffset_MainEditorHostCreateOwner));
+        createDataArg = ResolveTypeDataRaw(2, moduleBase);
+        break;
+    case 4:
+        openType = 4;
+        openArg2 = -1;
+        openArg3 = -1;
+        createOwnerArg = static_cast<int>(
+            reinterpret_cast<std::uintptr_t>(
+                reinterpret_cast<std::uint8_t*>(mainEditorHost) + kOffset_MainEditorHostCreateOwner));
+        createDataArg = ResolveTypeDataRaw(4, moduleBase);
+        break;
+    case 5: {
+        openType = 5;
+        resolvedIndex = static_cast<int>(itemData & 0x0FFFFFFFu);
+        if (resolvedIndex < 0) {
+            if (outTrace != nullptr) {
+                *outTrace = "type5_resolved_index_invalid";
+            }
+            return false;
+        }
+
+        int formData = 0;
+        int formOk = 0;
+        if (!SafeContainerGetAt(
+                containerGetAt,
+                reinterpret_cast<std::uint8_t*>(mainEditorHost) + kOffset_MainEditorHostFormArray,
+                resolvedIndex,
+                &formData,
+                &formOk) ||
+            formOk == 0 ||
+            formData == 0) {
+            if (outTrace != nullptr) {
+                *outTrace = "type5_form_lookup_failed";
+            }
+            return false;
+        }
+
+        matchKey = formData;
+        openArg2 = resolvedIndex;
+        openArg3 = -1;
+        createOwnerArg = *reinterpret_cast<int*>(formData);
+        createDataArg = formData;
+        break;
+    }
+    case 6:
+        openType = 6;
+        openArg2 = -1;
+        openArg3 = -1;
+        createOwnerArg = static_cast<int>(
+            reinterpret_cast<std::uintptr_t>(
+                reinterpret_cast<std::uint8_t*>(mainEditorHost) + kOffset_MainEditorHostCreateOwner));
+        createDataArg = ResolveTypeDataRaw(6, moduleBase);
+        break;
+    case 7: {
+        const unsigned int subType = itemData & 0x0FFFFFFFu;
+        openType = (subType == 1u) ? 7 : 8;
+        openArg2 = -1;
+        openArg3 = -1;
+        createOwnerArg = static_cast<int>(
+            reinterpret_cast<std::uintptr_t>(
+                reinterpret_cast<std::uint8_t*>(mainEditorHost) + kOffset_MainEditorHostCreateOwner));
+        createDataArg = ResolveTypeDataRaw(openType, moduleBase);
+        break;
+    }
+    default:
+        if (outTrace != nullptr) {
+            *outTrace = "unsupported_tree_item_type";
+        }
+        return false;
+    }
+
+    if (createOwnerArg == 0 || createDataArg == 0) {
+        if (outTrace != nullptr) {
+            *outTrace = "create_args_invalid";
+        }
+        return false;
+    }
+
+    void* editorObject = nullptr;
+    void* pageObject = nullptr;
+    std::string directTrace;
+    std::string hiddenOpenTrace;
+    if (SafeFindExistingOpenEditorObject(mainEditorHost, openType, matchKey, &pageObject) &&
+        pageObject != nullptr &&
+        SafeResolveRuntimeEditorObjectFromPageObject(mainEditorHost, pageObject, &editorObject) &&
+        editorObject != nullptr) {
+        if (outEditorObject != nullptr) {
+            *outEditorObject = editorObject;
+        }
+        if (outResolvedType != nullptr) {
+            *outResolvedType = openType;
+        }
+        if (outResolvedIndex != nullptr) {
+            *outResolvedIndex = resolvedIndex;
+        }
+        if (outBucketData != nullptr) {
+            *outBucketData = bucketData;
+        }
+        if (outTrace != nullptr) {
+            *outTrace = "open_editor_no_activate_existing";
+        }
+        return true;
+    }
+
+    pageObject = nullptr;
+    if (SafeCreateEditorObjectNoActivate(
+            createCodePage,
+            mainEditorHost,
+            createOwnerArg,
+            openType,
+            createDataArg,
+            createExtraArg,
+            &pageObject) &&
+        pageObject != nullptr) {
+        editorObject = nullptr;
+        if (SafeResolveRuntimeEditorObjectFromPageObject(mainEditorHost, pageObject, &editorObject) &&
+            editorObject != nullptr) {
+            if (outEditorObject != nullptr) {
+                *outEditorObject = editorObject;
+            }
+            if (outResolvedType != nullptr) {
+                *outResolvedType = openType;
+            }
+            if (outResolvedIndex != nullptr) {
+                *outResolvedIndex = resolvedIndex;
+            }
+            if (outBucketData != nullptr) {
+                *outBucketData = bucketData;
+            }
+            if (outTrace != nullptr) {
+                *outTrace = "open_editor_no_activate_created";
+            }
+            return true;
+        }
+
+        directTrace = "open_editor_no_activate_created_runtime_unavailable";
+    } else {
+        directTrace = "create_editor_no_activate_failed";
+    }
+
+    editorObject = nullptr;
+    if (TryOpenCodeTargetNoActivate(
+            openCodeTarget,
+            mainEditorHost,
+            openType,
+            openArg2,
+            openArg3,
+            &editorObject,
+            &hiddenOpenTrace) &&
+        editorObject != nullptr) {
+        if (outEditorObject != nullptr) {
+            *outEditorObject = editorObject;
+        }
+        if (outResolvedType != nullptr) {
+            *outResolvedType = openType;
+        }
+        if (outResolvedIndex != nullptr) {
+            *outResolvedIndex = resolvedIndex;
+        }
+        if (outBucketData != nullptr) {
+            *outBucketData = bucketData;
+        }
+        if (outTrace != nullptr) {
+            *outTrace = directTrace.empty()
+                ? ("open_editor_no_activate_hidden_open|" + hiddenOpenTrace)
+                : (directTrace + "|fallback_hidden_open|" + hiddenOpenTrace);
+        }
+        return true;
+    }
+
+    if (outTrace != nullptr) {
+        *outTrace = directTrace.empty()
+            ? (hiddenOpenTrace.empty() ? "open_editor_no_activate_failed" : ("hidden_open_failed|" + hiddenOpenTrace))
+            : (hiddenOpenTrace.empty() ? directTrace : (directTrace + "|hidden_open_failed|" + hiddenOpenTrace));
+    }
+    return false;
+}
+
+bool DebugSetMainEditorActiveEditorObjectImpl(
+    std::uintptr_t moduleBase,
+    std::uintptr_t editorObject,
+    int notifyMode,
+    std::uintptr_t* outPreviousEditorObject,
+    std::string* outTrace) {
+    if (outPreviousEditorObject != nullptr) {
+        *outPreviousEditorObject = 0;
+    }
+    if (outTrace != nullptr) {
+        outTrace->clear();
+    }
+
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (!addrs.ok) {
+        if (outTrace != nullptr) {
+            *outTrace = "resolve_native_addresses_failed";
+        }
+        return false;
+    }
+
+    void* const mainEditorHost = PtrAbsolute<void>(moduleBase, addrs.mainEditorHost);
+    if (mainEditorHost == nullptr) {
+        if (outTrace != nullptr) {
+            *outTrace = "main_editor_host_null";
+        }
+        return false;
+    }
+
+    const auto setActiveEditorObject = BindAbsolute<FnSetMainEditorActiveEditorObject>(
+        moduleBase,
+        kKnownSetMainEditorActiveEditorObjectRva);
+    std::uintptr_t previousEditorObject = 0;
+    std::uintptr_t currentEditorObject = 0;
+    if (!SafeSetMainEditorActiveEditorObject(
+            setActiveEditorObject,
+            mainEditorHost,
+            reinterpret_cast<void*>(editorObject),
+            notifyMode,
+            &previousEditorObject,
+            &currentEditorObject)) {
+        if (outTrace != nullptr) {
+            *outTrace = "set_active_editor_object_exception";
+        }
+        return false;
+    }
+
+    if (outPreviousEditorObject != nullptr) {
+        *outPreviousEditorObject = previousEditorObject;
+    }
+    if (outTrace != nullptr) {
+        *outTrace =
+            "set_active_editor_object_ok"
+            "|notify=" + std::to_string(notifyMode) +
+            "|previous=" + std::to_string(previousEditorObject) +
+            "|current=" + std::to_string(currentEditorObject) +
+            "|requested=" + std::to_string(editorObject);
+    }
+    return true;
+}
+
+bool DebugGetMainEditorActiveEditorObjectImpl(
+    std::uintptr_t moduleBase,
+    std::uintptr_t* outEditorObject,
+    std::string* outTrace) {
+    if (outEditorObject != nullptr) {
+        *outEditorObject = 0;
+    }
+    if (outTrace != nullptr) {
+        outTrace->clear();
+    }
+
+    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    if (!addrs.ok) {
+        if (outTrace != nullptr) {
+            *outTrace = "resolve_native_addresses_failed";
+        }
+        return false;
+    }
+
+    void* const mainEditorHost = PtrAbsolute<void>(moduleBase, addrs.mainEditorHost);
+    if (mainEditorHost == nullptr) {
+        if (outTrace != nullptr) {
+            *outTrace = "main_editor_host_null";
+        }
+        return false;
+    }
+
+    std::uintptr_t editorObject = 0;
+    if (!SafeReadMainEditorActiveEditorObject(mainEditorHost, &editorObject)) {
+        if (outTrace != nullptr) {
+            *outTrace = "read_active_editor_object_exception";
+        }
+        return false;
+    }
+
+    if (outEditorObject != nullptr) {
+        *outEditorObject = editorObject;
+    }
+    if (outTrace != nullptr) {
+        *outTrace = "get_active_editor_object_ok|current=" + std::to_string(editorObject);
+    }
+    return editorObject != 0;
+}
+
 bool SafeJumpToResult(const e571::DirectGlobalSearch& search, const e571::DirectGlobalSearch::GlobalSearchHit& hit) {
     __try {
         return search.JumpToResult(hit);
@@ -1933,6 +2689,56 @@ LRESULT WINAPI HiddenBuiltinSearchHook_SendMessageA(HWND hwnd, UINT msg, WPARAM 
     }
 
     return g_originalSendMessageA(hwnd, msg, wParam, lParam);
+}
+
+LRESULT WINAPI HiddenOpenCodeTargetHook_SendMessageA(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    HiddenOpenCodeTargetContext* ctx = g_hiddenOpenCodeTargetContext;
+    if (ctx != nullptr && ctx->suppressMdiActivate && msg == WM_MDIACTIVATE) {
+        return 0;
+    }
+
+    return g_originalHiddenOpenSendMessageA(hwnd, msg, wParam, lParam);
+}
+
+HWND WINAPI HiddenOpenCodeTargetHook_SetFocus(HWND hwnd) {
+    HiddenOpenCodeTargetContext* ctx = g_hiddenOpenCodeTargetContext;
+    if (ctx != nullptr && ctx->suppressSetFocus) {
+        ctx->blockedFocusHwnd = hwnd;
+        return ::GetFocus();
+    }
+
+    return g_originalHiddenOpenSetFocus(hwnd);
+}
+
+ScopedHiddenOpenCodeTargetApiHooks::ScopedHiddenOpenCodeTargetApiHooks(HiddenOpenCodeTargetContext& ctx)
+    : ctx_(ctx), installed_(false) {
+    g_originalHiddenOpenSendMessageA = ::SendMessageA;
+    g_originalHiddenOpenSetFocus = ::SetFocus;
+    g_hiddenOpenCodeTargetContext = &ctx_;
+
+    DetourTransactionBegin();
+    DetourUpdateThread(::GetCurrentThread());
+    DetourAttach(&(PVOID&)g_originalHiddenOpenSendMessageA, HiddenOpenCodeTargetHook_SendMessageA);
+    DetourAttach(&(PVOID&)g_originalHiddenOpenSetFocus, HiddenOpenCodeTargetHook_SetFocus);
+    installed_ = (DetourTransactionCommit() == NO_ERROR);
+    if (!installed_) {
+        g_hiddenOpenCodeTargetContext = nullptr;
+    }
+}
+
+ScopedHiddenOpenCodeTargetApiHooks::~ScopedHiddenOpenCodeTargetApiHooks() {
+    if (installed_) {
+        DetourTransactionBegin();
+        DetourUpdateThread(::GetCurrentThread());
+        DetourDetach(&(PVOID&)g_originalHiddenOpenSendMessageA, HiddenOpenCodeTargetHook_SendMessageA);
+        DetourDetach(&(PVOID&)g_originalHiddenOpenSetFocus, HiddenOpenCodeTargetHook_SetFocus);
+        DetourTransactionCommit();
+    }
+    g_hiddenOpenCodeTargetContext = nullptr;
+}
+
+bool ScopedHiddenOpenCodeTargetApiHooks::IsInstalled() const {
+    return installed_;
 }
 
 ScopedHiddenBuiltinSearchApiHooks::ScopedHiddenBuiltinSearchApiHooks(
@@ -2147,6 +2953,27 @@ void SearchOneContextRaw(
 }
 
 }  // namespace
+
+bool e571::DebugSetMainEditorActiveEditorObject(
+    std::uintptr_t moduleBase,
+    std::uintptr_t editorObject,
+    int notifyMode,
+    std::uintptr_t* outPreviousEditorObject,
+    std::string* outTrace) {
+    return DebugSetMainEditorActiveEditorObjectImpl(
+        moduleBase,
+        editorObject,
+        notifyMode,
+        outPreviousEditorObject,
+        outTrace);
+}
+
+bool e571::DebugGetMainEditorActiveEditorObject(
+    std::uintptr_t moduleBase,
+    std::uintptr_t* outEditorObject,
+    std::string* outTrace) {
+    return DebugGetMainEditorActiveEditorObjectImpl(moduleBase, outEditorObject, outTrace);
+}
 
 struct DirectGlobalSearch::DwordContainer {
     int unused0;
@@ -3011,6 +3838,49 @@ bool e571::DebugResolveEditorObjectByProgramTreeItemData(
     int bucketData = 0;
     std::string trace;
     const bool ok = TryResolveEditorObjectForProgramTreeItemData(
+        itemData,
+        moduleBase,
+        &editorObject,
+        &resolvedType,
+        &resolvedIndex,
+        &bucketData,
+        &trace);
+    if (outEditorObject != nullptr) {
+        *outEditorObject = reinterpret_cast<std::uintptr_t>(editorObject);
+    }
+    if (outResolvedType != nullptr) {
+        *outResolvedType = resolvedType;
+    }
+    if (outResolvedIndex != nullptr) {
+        *outResolvedIndex = resolvedIndex;
+    }
+    if (outBucketData != nullptr) {
+        *outBucketData = bucketData;
+    }
+    if (outTrace != nullptr) {
+        *outTrace = trace;
+    }
+    return ok && editorObject != nullptr;
+}
+
+bool e571::DebugResolveEditorObjectByProgramTreeItemDataNoActivate(
+    unsigned int itemData,
+    std::uintptr_t moduleBase,
+    std::uintptr_t* outEditorObject,
+    int* outResolvedType,
+    int* outResolvedIndex,
+    int* outBucketData,
+    std::string* outTrace) {
+    if (outEditorObject != nullptr) {
+        *outEditorObject = 0;
+    }
+
+    void* editorObject = nullptr;
+    int resolvedType = 0;
+    int resolvedIndex = -1;
+    int bucketData = 0;
+    std::string trace;
+    const bool ok = TryResolveEditorObjectForProgramTreeItemDataNoActivate(
         itemData,
         moduleBase,
         &editorObject,

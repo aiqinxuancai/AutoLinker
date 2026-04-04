@@ -851,6 +851,7 @@ std::string ExecuteToolCallImpl(
 		toolName == "search_module_public_code" ||
 		toolName == "read_module_public_code" ||
 		toolName == "list_program_items" ||
+		toolName == "get_program_item_project_cache_code" ||
 		toolName == "get_program_item_real_code" ||
 		toolName == "read_program_item_real_code" ||
 		toolName == "edit_program_item_code" ||
