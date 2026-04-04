@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -48,6 +49,12 @@ struct GenerateOptions {
 class Generator {
 public:
 	bool GenerateDocument(const std::string& inputPath, Document& outDocument, std::string* outError) const;
+	// 按内存中的 .e 二进制直接生成文档。
+	bool GenerateDocumentFromBytes(
+		const std::vector<std::uint8_t>& inputBytes,
+		const std::string& sourcePath,
+		Document& outDocument,
+		std::string* outError) const;
 	bool GenerateText(const Document& document, std::string& outText, std::string* outError) const;
 	bool GenerateToFile(
 		const std::string& inputPath,

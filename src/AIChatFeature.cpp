@@ -10,6 +10,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <format>
 #include <memory>
 #include <mutex>
 #include <new>
@@ -33,6 +34,7 @@
 #include "Global.h"
 #include "IDEFacade.h"
 #include "PathHelper.h"
+#include "ProjectSourceCacheManager.h"
 #include "WinINetUtil.h"
 #include "resource.h"
 #include "..\\elib\\lib2.h"
@@ -2228,6 +2230,36 @@ void RequestClearChatHistoryAsync()
 	}
 }
 
+void RefreshProjectSourceCacheAfterChatTurn()
+{
+#if defined(_M_IX86)
+	project_source_cache::Snapshot snapshot;
+	bool refreshed = false;
+	std::string error;
+	std::string trace;
+	if (project_source_cache::ProjectSourceCacheManager::Instance().EnsureCurrentSourceLatest(
+			snapshot,
+			true,
+			&refreshed,
+			&error,
+			&trace)) {
+		OutputStringToELog(std::format(
+			"[ProjectSourceCache] chat_turn_refresh_ok source={} revision={} pages={} refreshed={} trace={}",
+			snapshot.sourcePath,
+			snapshot.revision,
+			snapshot.pages.size(),
+			refreshed ? 1 : 0,
+			trace));
+	}
+	else if (!error.empty()) {
+		OutputStringToELog(std::format(
+			"[ProjectSourceCache] chat_turn_refresh_skip error={} trace={}",
+			error,
+			trace));
+	}
+#endif
+}
+
 void HandleChatTaskDone(LPARAM lParam)
 {
 	std::unique_ptr<AIChatAsyncResult> result(reinterpret_cast<AIChatAsyncResult*>(lParam));
@@ -2235,61 +2267,65 @@ void HandleChatTaskDone(LPARAM lParam)
 		return;
 	}
 
-	std::lock_guard<std::mutex> guard(g_session.mutex);
-	if (!g_session.requestInFlight || g_session.activeRequestId != result->requestId) {
-		return;
-	}
-
-	g_session.requestInFlight = false;
-	g_session.activeRequestId = 0;
-	g_session.cancellation.reset();
-	g_session.streamingAssistantPreview.clear();
-
-	for (const auto& evt : result->chatResult.toolEvents) {
-		std::string line =
-			LocalFromWide(L"\u8c03\u7528 ") + evt.name +
-			LocalFromWide(L"\uff0c\u8fd4\u56de\uff1a") + evt.resultJson;
-		if (line.size() > 1200) {
-			line.resize(1200);
-			line += "...";
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight || g_session.activeRequestId != result->requestId) {
+			return;
 		}
-		g_session.messages.push_back(SessionMessage{ SessionRole::Tool, line, false });
-	}
 
-	if (result->chatResult.cancelled) {
-		const std::string partial = NormalizeCodeForEIDE(result->chatResult.content);
-		if (!TrimAsciiCopy(partial).empty()) {
+		g_session.requestInFlight = false;
+		g_session.activeRequestId = 0;
+		g_session.cancellation.reset();
+		g_session.streamingAssistantPreview.clear();
+
+		for (const auto& evt : result->chatResult.toolEvents) {
+			std::string line =
+				LocalFromWide(L"\u8c03\u7528 ") + evt.name +
+				LocalFromWide(L"\uff0c\u8fd4\u56de\uff1a") + evt.resultJson;
+			if (line.size() > 1200) {
+				line.resize(1200);
+				line += "...";
+			}
+			g_session.messages.push_back(SessionMessage{ SessionRole::Tool, line, false });
+		}
+
+		if (result->chatResult.cancelled) {
+			const std::string partial = NormalizeCodeForEIDE(result->chatResult.content);
+			if (!TrimAsciiCopy(partial).empty()) {
+				g_session.messages.push_back(SessionMessage{
+					SessionRole::Assistant,
+					partial,
+					true
+				});
+			}
+			g_session.messages.push_back(SessionMessage{
+				SessionRole::System,
+				TrimAsciiCopy(partial).empty()
+					? LocalFromWide(L"已停止本次 AI 对话。")
+					: LocalFromWide(L"已停止本次 AI 对话，已保留已生成内容。"),
+				false
+			});
+		}
+		else if (result->chatResult.ok) {
 			g_session.messages.push_back(SessionMessage{
 				SessionRole::Assistant,
-				partial,
+				NormalizeCodeForEIDE(result->chatResult.content),
 				true
 			});
 		}
-		g_session.messages.push_back(SessionMessage{
-			SessionRole::System,
-			TrimAsciiCopy(partial).empty()
-				? LocalFromWide(L"已停止本次 AI 对话。")
-				: LocalFromWide(L"已停止本次 AI 对话，已保留已生成内容。"),
-			false
-		});
-	}
-	else if (result->chatResult.ok) {
-		g_session.messages.push_back(SessionMessage{
-			SessionRole::Assistant,
-			NormalizeCodeForEIDE(result->chatResult.content),
-			true
-		});
-	}
-	else {
-		const std::string err = result->chatResult.error.empty()
-			? LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25")
-			: (LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25: ") + result->chatResult.error);
-		g_session.messages.push_back(SessionMessage{ SessionRole::System, err, false });
-		OutputStringToELog("[" + LocalFromWide(L"AI\u5bf9\u8bdd") + "]" + err);
+		else {
+			const std::string err = result->chatResult.error.empty()
+				? LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25")
+				: (LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25: ") + result->chatResult.error);
+			g_session.messages.push_back(SessionMessage{ SessionRole::System, err, false });
+			OutputStringToELog("[" + LocalFromWide(L"AI\u5bf9\u8bdd") + "]" + err);
+		}
+
+		CompactHistoryLocked(g_session);
 	}
 
-	CompactHistoryLocked(g_session);
 	PostRefreshDialog();
+	RefreshProjectSourceCacheAfterChatTurn();
 }
 
 void RefreshChatDialog(HWND hWnd)

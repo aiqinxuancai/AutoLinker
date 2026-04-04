@@ -22,6 +22,7 @@
 #include "MemFind.h"
 #include "MouseBack.h"
 #include "PathHelper.h"
+#include "ProjectSourceCacheManager.h"
 #include "Version.h"
 #include "WinINetUtil.h"
 #include "WindowHelper.h"
@@ -428,6 +429,20 @@ bool FneInit()
 	TraceInitStep("开始安装文件与编译相关 Hook");
 	StartHookCreateFileA();
 	TraceInitStep("文件与编译相关 Hook 安装完成");
+	TraceInitStep("开始预热当前工程源码解析缓存");
+	{
+		std::string warmupError;
+		std::string warmupTrace;
+		if (!project_source_cache::ProjectSourceCacheManager::Instance().WarmupCurrentSource(
+				&warmupError,
+				&warmupTrace)) {
+			OutputStringToELog(std::format(
+				"[ProjectSourceCacheWarmup] 跳过或失败 error={} trace={}",
+				warmupError.empty() ? "warmup_failed" : warmupError,
+				warmupTrace));
+		}
+	}
+	TraceInitStep("当前工程源码解析缓存预热结束");
 
 	const auto autoRunMarker = GetAutoRunModulePublicInfoTestMarkerPath();
 	if (std::filesystem::exists(autoRunMarker)) {

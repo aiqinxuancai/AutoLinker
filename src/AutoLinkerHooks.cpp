@@ -14,6 +14,7 @@
 #include <detours.h>
 
 #include "ECOMEx.h"
+#include "EideProjectBinarySerializer.h"
 #include "Global.h"
 #include "IDEFacade.h"
 #include "PathHelper.h"
@@ -29,10 +30,22 @@ struct SilentCompileOutputPathState {
 	std::chrono::steady_clock::time_point createdAt = {};
 };
 
+struct ProjectSnapshotSaveState {
+	bool active = false;
+	bool consumed = false;
+	DWORD ownerThreadId = 0;
+	std::string sourcePath;
+	std::string snapshotPath;
+	std::chrono::steady_clock::time_point createdAt = {};
+};
+
 std::mutex g_silentCompileOutputPathMutex;
 SilentCompileOutputPathState g_silentCompileOutputPathState;
+std::mutex g_projectSnapshotSaveMutex;
+ProjectSnapshotSaveState g_projectSnapshotSaveState;
 
 constexpr auto kSilentCompileOutputPathTimeout = std::chrono::seconds(30);
+constexpr auto kProjectSnapshotSaveTimeout = std::chrono::seconds(15);
 
 std::string NormalizeSilentCompileOutputPath(const std::string& outputPath)
 {
@@ -188,6 +201,95 @@ bool TryHandleSilentCompileOutputPathRequest(LPOPENFILENAMEA item, std::string* 
 	return true;
 }
 
+bool IsWriteLikeCreateFileRequest(DWORD desiredAccess, DWORD creationDisposition)
+{
+	if ((desiredAccess & (GENERIC_WRITE | FILE_APPEND_DATA | FILE_WRITE_DATA)) != 0) {
+		return true;
+	}
+	switch (creationDisposition) {
+	case CREATE_ALWAYS:
+	case CREATE_NEW:
+	case OPEN_ALWAYS:
+	case TRUNCATE_EXISTING:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool TryRedirectProjectSnapshotSavePath(
+	LPCSTR lpFileName,
+	DWORD dwDesiredAccess,
+	DWORD dwCreationDisposition,
+	std::string& outRedirectedPath,
+	std::string* diagnostics)
+{
+	outRedirectedPath.clear();
+	if (lpFileName == nullptr) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "file_name_null";
+		}
+		return false;
+	}
+	if (!IsWriteLikeCreateFileRequest(dwDesiredAccess, dwCreationDisposition)) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "not_write_request";
+		}
+		return false;
+	}
+
+	const std::string normalizedRequested = NormalizeSilentCompileOutputPath(lpFileName);
+	if (normalizedRequested.empty()) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "requested_path_empty";
+		}
+		return false;
+	}
+
+	std::lock_guard<std::mutex> lock(g_projectSnapshotSaveMutex);
+	if (!g_projectSnapshotSaveState.active) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "request_inactive";
+		}
+		return false;
+	}
+
+	const auto now = std::chrono::steady_clock::now();
+	if (now - g_projectSnapshotSaveState.createdAt > kProjectSnapshotSaveTimeout) {
+		g_projectSnapshotSaveState = {};
+		if (diagnostics != nullptr) {
+			*diagnostics = "request_expired";
+		}
+		return false;
+	}
+
+	const DWORD currentThreadId = GetCurrentThreadId();
+	if (g_projectSnapshotSaveState.ownerThreadId != 0 &&
+		g_projectSnapshotSaveState.ownerThreadId != currentThreadId) {
+		if (diagnostics != nullptr) {
+			*diagnostics = std::format(
+				"thread_mismatch owner={} current={}",
+				g_projectSnapshotSaveState.ownerThreadId,
+				currentThreadId);
+		}
+		return false;
+	}
+
+	if (_stricmp(normalizedRequested.c_str(), g_projectSnapshotSaveState.sourcePath.c_str()) != 0) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "path_mismatch";
+		}
+		return false;
+	}
+
+	outRedirectedPath = g_projectSnapshotSaveState.snapshotPath;
+	g_projectSnapshotSaveState.consumed = true;
+	if (diagnostics != nullptr) {
+		*diagnostics = "redirected";
+	}
+	return true;
+}
+
 } // namespace
 
 bool BeginSilentCompileOutputPathRequest(
@@ -229,12 +331,66 @@ bool WasSilentCompileOutputPathRequestConsumed()
 	return g_silentCompileOutputPathState.consumed;
 }
 
+bool BeginProjectSnapshotSaveRequest(
+	const std::string& sourcePath,
+	const std::string& snapshotPath,
+	DWORD ownerThreadId,
+	std::string* diagnostics)
+{
+	const std::string normalizedSource = NormalizeSilentCompileOutputPath(sourcePath);
+	const std::string normalizedSnapshot = NormalizeSilentCompileOutputPath(snapshotPath);
+	if (normalizedSource.empty()) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "normalized_source_path_empty";
+		}
+		return false;
+	}
+	if (normalizedSnapshot.empty()) {
+		if (diagnostics != nullptr) {
+			*diagnostics = "normalized_snapshot_path_empty";
+		}
+		return false;
+	}
+
+	std::lock_guard<std::mutex> lock(g_projectSnapshotSaveMutex);
+	g_projectSnapshotSaveState = {};
+	g_projectSnapshotSaveState.active = true;
+	g_projectSnapshotSaveState.ownerThreadId =
+		ownerThreadId != 0 ? ownerThreadId : GetCurrentThreadId();
+	g_projectSnapshotSaveState.sourcePath = normalizedSource;
+	g_projectSnapshotSaveState.snapshotPath = normalizedSnapshot;
+	g_projectSnapshotSaveState.createdAt = std::chrono::steady_clock::now();
+	if (diagnostics != nullptr) {
+		*diagnostics = std::format("{} -> {}", normalizedSource, normalizedSnapshot);
+	}
+	return true;
+}
+
+void CancelProjectSnapshotSaveRequest()
+{
+	std::lock_guard<std::mutex> lock(g_projectSnapshotSaveMutex);
+	g_projectSnapshotSaveState = {};
+}
+
+bool WasProjectSnapshotSaveRequestConsumed()
+{
+	std::lock_guard<std::mutex> lock(g_projectSnapshotSaveMutex);
+	return g_projectSnapshotSaveState.consumed;
+}
+
 static auto originalCreateFileA = CreateFileA;
 static auto originalGetSaveFileNameA = GetSaveFileNameA;
 static auto originalCreateProcessA = CreateProcessA;
 static auto originalMessageBoxA = MessageBoxA;
 static auto originalTrackPopupMenu = TrackPopupMenu;
 static auto originalTrackPopupMenuEx = TrackPopupMenuEx;
+
+#if defined(_M_IX86)
+constexpr std::uintptr_t kImageBase = 0x400000;
+constexpr std::uintptr_t kKnownProjectSerializeToFileRva = 0x44FDF0;
+typedef int(__thiscall* OriginalProjectSerializeToFileFuncType)(void* thisPtr, LPCSTR lpFileName, int a3);
+OriginalProjectSerializeToFileFuncType originalProjectSerializeToFile = nullptr;
+#endif
 
 typedef int(__thiscall* OriginalEStartDebugFuncType)(DWORD* thisPtr, int a2, int a3);
 OriginalEStartDebugFuncType originalEStartDebugFunc = nullptr;
@@ -255,6 +411,19 @@ int __fastcall MyEStartDebugFunc(DWORD* thisPtr, int dummy, int a2, int a3)
 	RunChangeECOM(false);
 	return originalEStartDebugFunc(thisPtr, a2, a3);
 }
+
+#if defined(_M_IX86)
+int __fastcall MyProjectSerializeToFile(void* thisPtr, int /*dummy*/, LPCSTR lpFileName, int a3)
+{
+	if (thisPtr != nullptr) {
+		const std::string sourcePath = lpFileName != nullptr ? std::string(lpFileName) : std::string();
+		e571::ProjectBinarySerializer::Instance().RecordVerifiedSerializerContext(
+			thisPtr,
+			sourcePath);
+	}
+	return originalProjectSerializeToFile(thisPtr, lpFileName, a3);
+}
+#endif
 
 HANDLE WINAPI MyCreateFileA(
 	LPCSTR lpFileName,
@@ -295,6 +464,28 @@ HANDLE WINAPI MyCreateFileA(
 		else {
 			OutputStringToELog("linker not configured for current source file");
 		}
+	}
+
+	std::string redirectedPath;
+	std::string redirectDiagnostics;
+	if (TryRedirectProjectSnapshotSavePath(
+			lpFileName,
+			dwDesiredAccess,
+			dwCreationDisposition,
+			redirectedPath,
+			&redirectDiagnostics)) {
+		OutputStringToELog(std::format(
+			"[ProjectSourceCache] redirect save path {} -> {}",
+			lpFileName != nullptr ? lpFileName : "",
+			redirectedPath));
+		return originalCreateFileA(
+			redirectedPath.c_str(),
+			dwDesiredAccess,
+			dwShareMode,
+			lpSecurityAttributes,
+			dwCreationDisposition,
+			dwFlagsAndAttributes,
+			hTemplateFile);
 	}
 
 	return originalCreateFileA(
@@ -480,6 +671,17 @@ void StartHookCreateFileA()
 			g_debugStartAddress,
 			g_compileStartAddress));
 	}
+
+#if defined(_M_IX86)
+	const std::uintptr_t moduleBase = reinterpret_cast<std::uintptr_t>(GetModuleHandleA(nullptr));
+	if (moduleBase != 0) {
+		originalProjectSerializeToFile = reinterpret_cast<OriginalProjectSerializeToFileFuncType>(
+			moduleBase + (kKnownProjectSerializeToFileRva - kImageBase));
+		if (originalProjectSerializeToFile != nullptr) {
+			DetourAttach(&(PVOID&)originalProjectSerializeToFile, MyProjectSerializeToFile);
+		}
+	}
+#endif
 
 	DetourTransactionCommit();
 }

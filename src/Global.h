@@ -44,6 +44,15 @@ bool BeginSilentCompileOutputPathRequest(
 void CancelSilentCompileOutputPathRequest();
 bool WasSilentCompileOutputPathRequestConsumed();
 
+bool BeginProjectSnapshotSaveRequest(
+	const std::string& sourcePath,
+	const std::string& snapshotPath,
+	DWORD ownerThreadId = 0,
+	std::string* diagnostics = nullptr);
+
+void CancelProjectSnapshotSaveRequest();
+bool WasProjectSnapshotSaveRequestConsumed();
+
 // 获取 WebView2 用户数据目录。
 std::wstring GetWebView2UserDataFolderPath();
 

@@ -864,6 +864,9 @@ std::string ExecuteToolCallImpl(
 		toolName == "edit_symbol_real_code" ||
 		toolName == "insert_program_item_code_block" ||
 		toolName == "switch_to_program_item_page" ||
+		toolName == "refresh_project_source_cache" ||
+		toolName == "search_project_source_cache" ||
+		toolName == "read_project_source_cache_code" ||
 		toolName == "search_project_keyword" ||
 		toolName == "read_project_search_result_code" ||
 		toolName == "jump_to_search_result" ||

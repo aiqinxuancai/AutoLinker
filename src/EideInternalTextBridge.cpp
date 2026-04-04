@@ -332,6 +332,73 @@ bool DuplicateGlobalHandle(HANDLE sourceHandle, HANDLE* outHandle)
 	return true;
 }
 
+bool CopyGlobalHandleBytesNoFree(HANDLE handle, std::vector<unsigned char>* outBytes)
+{
+	if (outBytes != nullptr) {
+		outBytes->clear();
+	}
+	if (handle == nullptr || outBytes == nullptr) {
+		return false;
+	}
+
+	const SIZE_T size = GlobalSize(handle);
+	if (size == 0) {
+		return false;
+	}
+
+	const void* data = GlobalLock(handle);
+	if (data == nullptr) {
+		return false;
+	}
+
+	const auto* byteData = static_cast<const unsigned char*>(data);
+	outBytes->assign(byteData, byteData + size);
+	GlobalUnlock(handle);
+	return !outBytes->empty();
+}
+
+bool CallGenericThiscallCommandSafe(
+	std::uintptr_t targetObject,
+	std::uintptr_t functionAddress,
+	std::uintptr_t arg1,
+	std::uintptr_t arg2,
+	std::uintptr_t arg3,
+	std::uintptr_t arg4,
+	int* outResult,
+	bool* outThrew)
+{
+	if (outResult != nullptr) {
+		*outResult = 0;
+	}
+	if (outThrew != nullptr) {
+		*outThrew = false;
+	}
+	if (targetObject == 0 || functionAddress == 0) {
+		return false;
+	}
+
+	using FnGenericThiscall = int(__thiscall*)(void*, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
+	const auto fn = reinterpret_cast<FnGenericThiscall>(functionAddress);
+	__try {
+		const int result = fn(
+			reinterpret_cast<void*>(targetObject),
+			arg1,
+			arg2,
+			arg3,
+			arg4);
+		if (outResult != nullptr) {
+			*outResult = result;
+		}
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		if (outThrew != nullptr) {
+			*outThrew = true;
+		}
+		return false;
+	}
+}
+
 struct CustomClipboardPayload {
 	UINT format = 0;
 	HANDLE handle = nullptr;
@@ -6415,6 +6482,181 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 		*outResult = std::move(localResult);
 	}
 	return ok;
+}
+
+bool ResolveCurrentActiveEditorObject(
+	std::uintptr_t moduleBase,
+	ActiveEditorObjectInfo* outInfo)
+{
+	if (outInfo != nullptr) {
+		*outInfo = {};
+	}
+	if (moduleBase == 0) {
+		if (outInfo != nullptr) {
+			outInfo->trace = "module_base_invalid";
+		}
+		return false;
+	}
+
+	const HWND mainHwnd = ResolveMainIdeWindow();
+	if (mainHwnd == nullptr || !IsWindow(mainHwnd)) {
+		if (outInfo != nullptr) {
+			outInfo->trace = "main_ide_window_missing";
+		}
+		return false;
+	}
+
+	const HWND mdiChildHwnd = GetActiveMdiChildWindow(mainHwnd);
+	if (mdiChildHwnd == nullptr || !IsWindow(mdiChildHwnd)) {
+		if (outInfo != nullptr) {
+			outInfo->trace = "active_mdi_child_missing";
+		}
+		return false;
+	}
+
+	std::uintptr_t rawEditorObject = 0;
+	std::string resolveTrace;
+	if (!TryResolveEditorObjectFromMdiChildHeuristic(
+			mdiChildHwnd,
+			moduleBase,
+			&rawEditorObject,
+			nullptr,
+			&resolveTrace) ||
+		rawEditorObject == 0) {
+		if (outInfo != nullptr) {
+			outInfo->trace =
+				"resolve_active_editor_failed"
+				"|mdi_child=" + std::to_string(reinterpret_cast<std::uintptr_t>(mdiChildHwnd)) +
+				"|mdi_title=" + WindowTextToString(mdiChildHwnd) +
+				"|" +
+				resolveTrace;
+		}
+		return false;
+	}
+
+	ActiveEditorObjectInfo info{};
+	info.ok = true;
+	info.rawEditorObject = rawEditorObject;
+	info.trace =
+		"resolve_active_editor_ok"
+		"|mdi_child=" + std::to_string(reinterpret_cast<std::uintptr_t>(mdiChildHwnd)) +
+		"|mdi_title=" + WindowTextToString(mdiChildHwnd) +
+		"|" +
+		resolveTrace;
+
+	EditorDispatchTargetInfo targetInfo{};
+	if (TryResolveInnerEditorObject(rawEditorObject, &targetInfo)) {
+		info.innerEditorObject = targetInfo.innerObject;
+		info.pageType = targetInfo.pageType;
+		info.trace +=
+			"|inner=" + std::to_string(targetInfo.innerObject) +
+			"|page_type=" + std::to_string(targetInfo.pageType);
+	}
+
+	if (outInfo != nullptr) {
+		*outInfo = std::move(info);
+	}
+	return true;
+}
+
+bool CaptureCustomClipboardPayloadByThiscall(
+	const InternalThiscallCommandSpec& spec,
+	std::vector<unsigned char>& outBytes,
+	std::string* outTrace)
+{
+	outBytes.clear();
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (spec.targetObject == 0 || spec.functionAddress == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = "capture_invalid_argument";
+		}
+		return false;
+	}
+
+	ScopedFakeClipboard fakeClipboard;
+	if (!fakeClipboard.IsActive()) {
+		if (outTrace != nullptr) {
+			*outTrace = "capture_fake_clipboard_unavailable";
+		}
+		return false;
+	}
+
+	int invokeResult = 0;
+	bool invokeThrew = false;
+	(void)CallGenericThiscallCommandSafe(
+		spec.targetObject,
+		spec.functionAddress,
+		spec.arg1,
+		spec.arg2,
+		spec.arg3,
+		spec.arg4,
+		&invokeResult,
+		&invokeThrew);
+
+	UINT capturedFormat = 0;
+	HANDLE capturedHandle = nullptr;
+	if (!fakeClipboard.GetFirstCustomFormat(&capturedFormat, &capturedHandle) || capturedHandle == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				"capture_custom_format_missing"
+				"|target=" + std::to_string(spec.targetObject) +
+				"|function=" + std::to_string(spec.functionAddress) +
+				"|invoke_ret=" + std::to_string(invokeResult) +
+				"|invoke_exc=" + std::to_string(invokeThrew ? 1 : 0) +
+				"|" +
+				fakeClipboard.BuildStatsText();
+		}
+		return false;
+	}
+
+	HANDLE duplicatedHandle = nullptr;
+	if (!DuplicateGlobalHandle(capturedHandle, &duplicatedHandle) || duplicatedHandle == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				"capture_duplicate_handle_failed"
+				"|format=" + std::to_string(capturedFormat) +
+				"|target=" + std::to_string(spec.targetObject) +
+				"|function=" + std::to_string(spec.functionAddress) +
+				"|invoke_ret=" + std::to_string(invokeResult) +
+				"|invoke_exc=" + std::to_string(invokeThrew ? 1 : 0) +
+				"|" +
+				fakeClipboard.BuildStatsText();
+		}
+		return false;
+	}
+
+	const bool copyOk = CopyGlobalHandleBytesNoFree(duplicatedHandle, &outBytes);
+	GlobalFree(duplicatedHandle);
+	if (!copyOk || outBytes.empty()) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				"capture_copy_bytes_failed"
+				"|format=" + std::to_string(capturedFormat) +
+				"|target=" + std::to_string(spec.targetObject) +
+				"|function=" + std::to_string(spec.functionAddress) +
+				"|invoke_ret=" + std::to_string(invokeResult) +
+				"|invoke_exc=" + std::to_string(invokeThrew ? 1 : 0) +
+				"|" +
+				fakeClipboard.BuildStatsText();
+		}
+		return false;
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			"capture_ok"
+			"|format=" + std::to_string(capturedFormat) +
+			"|target=" + std::to_string(spec.targetObject) +
+			"|function=" + std::to_string(spec.functionAddress) +
+			"|invoke_ret=" + std::to_string(invokeResult) +
+			"|invoke_exc=" + std::to_string(invokeThrew ? 1 : 0) +
+			"|bytes=" + std::to_string(outBytes.size()) +
+			"|" +
+			fakeClipboard.BuildStatsText();
+	}
+	return true;
 }
 
 }

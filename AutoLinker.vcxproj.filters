@@ -65,6 +65,9 @@
     <ClCompile Include="src\e2txt.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\EideProjectBinarySerializer.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\IDEFacade.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -99,6 +102,9 @@
       <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="src\PageCodeCacheManager.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ProjectSourceCacheManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="src\StringHelper.cpp">
@@ -183,6 +189,9 @@
     <ClInclude Include="src\e2txt.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="src\EideProjectBinarySerializer.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
     <ClInclude Include="src\ECOMEx.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -214,6 +223,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\PageCodeCacheManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ProjectSourceCacheManager.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\resource.h">

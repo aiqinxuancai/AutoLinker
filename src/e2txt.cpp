@@ -1157,15 +1157,12 @@ bool ParseUserInfoSection(const std::vector<std::uint8_t>& bytes, UserInfoSectio
 		reader.ReadI32(outUser.version2);
 }
 
-bool ParseModuleSections(const std::string& modulePath, ModuleSections& outSections, std::string* outError)
+bool ParseModuleSectionsFromBytes(
+	const std::vector<std::uint8_t>& bytes,
+	ModuleSections& outSections,
+	std::string* outError)
 {
-	std::vector<std::uint8_t> bytes;
-	if (!ReadFileBytes(modulePath, bytes)) {
-		if (outError != nullptr) {
-			*outError = "read_module_file_failed";
-		}
-		return false;
-	}
+	outSections = {};
 
 	if (bytes.size() < sizeof(std::uint32_t) * 2) {
 		if (outError != nullptr) {
@@ -1297,6 +1294,18 @@ bool ParseModuleSections(const std::string& modulePath, ModuleSections& outSecti
 		return false;
 	}
 	return true;
+}
+
+bool ParseModuleSections(const std::string& modulePath, ModuleSections& outSections, std::string* outError)
+{
+	std::vector<std::uint8_t> bytes;
+	if (!ReadFileBytes(modulePath, bytes)) {
+		if (outError != nullptr) {
+			*outError = "read_module_file_failed";
+		}
+		return false;
+	}
+	return ParseModuleSectionsFromBytes(bytes, outSections, outError);
 }
 
 bool IsLikelyReadableString(const std::string& text)
@@ -3940,11 +3949,75 @@ void BuildFormPage(const ModuleSections& sections, Document& outDocument)
 	outDocument.pages.push_back(std::move(page));
 }
 
+bool BuildDocumentFromSections(
+	const ModuleSections& sections,
+	const std::string& sourcePath,
+	const GenerateOptions& options,
+	Document& outDocument)
+{
+	Document document;
+	document.sourcePath = sourcePath;
+	document.projectName = sections.hasUserInfo && !TrimAsciiCopy(sections.userInfo.programName).empty()
+		? TrimAsciiCopy(sections.userInfo.programName)
+		: (sourcePath.empty() ? std::string("memory_serialize_project") : std::filesystem::path(sourcePath).stem().string());
+	document.versionText = BuildVersionText(sections);
+
+	BuildDependencies(sections, document);
+	const AnonymousTypeHints anonymousTypeHints = BuildAnonymousTypeHints(sections, sourcePath);
+	BuildProgramPages(sections, options, document);
+	BuildGlobalPage(sections, document);
+	BuildStructPage(sections, anonymousTypeHints, document);
+	BuildDllPage(sections, anonymousTypeHints, document);
+	BuildFormPage(sections, document);
+	BuildConstantPage(sections, document);
+	outDocument = std::move(document);
+	return true;
+}
+
 }  // namespace
 
 bool Generator::GenerateDocument(const std::string& inputPath, Document& outDocument, std::string* outError) const
 {
 	return GenerateDocumentInternal(inputPath, {}, outDocument, outError);
+}
+
+bool Generator::GenerateDocumentFromBytes(
+	const std::vector<std::uint8_t>& inputBytes,
+	const std::string& sourcePath,
+	Document& outDocument,
+	std::string* outError) const
+{
+	TraceLine(
+		"GenerateDocumentFromBytes begin source=" + sourcePath +
+		" bytes=" + std::to_string(inputBytes.size()));
+	if (outError != nullptr) {
+		outError->clear();
+	}
+
+	ModuleSections sections;
+	if (!ParseModuleSectionsFromBytes(inputBytes, sections, outError)) {
+		TraceLine("GenerateDocumentFromBytes parse_failed");
+		return false;
+	}
+	TraceLine(
+		"GenerateDocumentFromBytes parsed code_pages=" + std::to_string(sections.program.codePages.size()) +
+		" functions=" + std::to_string(sections.program.functions.size()) +
+		" globals=" + std::to_string(sections.program.globals.size()) +
+		" data_types=" + std::to_string(sections.program.dataTypes.size()) +
+		" dlls=" + std::to_string(sections.program.dlls.size()) +
+		" forms=" + std::to_string(sections.resources.forms.size()) +
+		" constants=" + std::to_string(sections.resources.constants.size()));
+
+	if (!BuildDocumentFromSections(sections, sourcePath, {}, outDocument)) {
+		if (outError != nullptr && outError->empty()) {
+			*outError = "build_document_failed";
+		}
+		TraceLine("GenerateDocumentFromBytes build_document_failed");
+		return false;
+	}
+	TraceLine("GenerateDocumentFromBytes pages_done count=" + std::to_string(outDocument.pages.size()));
+	TraceLine("GenerateDocumentFromBytes end");
+	return true;
 }
 
 bool Generator::GenerateDocumentInternal(
@@ -3972,24 +4045,14 @@ bool Generator::GenerateDocumentInternal(
 		" forms=" + std::to_string(sections.resources.forms.size()) +
 		" constants=" + std::to_string(sections.resources.constants.size()));
 
-	Document document;
-	document.sourcePath = inputPath;
-	document.projectName = sections.hasUserInfo && !TrimAsciiCopy(sections.userInfo.programName).empty()
-		? TrimAsciiCopy(sections.userInfo.programName)
-		: std::filesystem::path(inputPath).stem().string();
-	document.versionText = BuildVersionText(sections);
-
-	BuildDependencies(sections, document);
-	const AnonymousTypeHints anonymousTypeHints = BuildAnonymousTypeHints(sections, inputPath);
-	BuildProgramPages(sections, options, document);
-	BuildGlobalPage(sections, document);
-	BuildStructPage(sections, anonymousTypeHints, document);
-	BuildDllPage(sections, anonymousTypeHints, document);
-	BuildFormPage(sections, document);
-	BuildConstantPage(sections, document);
-	TraceLine("GenerateDocumentInternal pages_done count=" + std::to_string(document.pages.size()));
-
-	outDocument = std::move(document);
+	if (!BuildDocumentFromSections(sections, inputPath, options, outDocument)) {
+		if (outError != nullptr && outError->empty()) {
+			*outError = "build_document_failed";
+		}
+		TraceLine("GenerateDocumentInternal build_document_failed");
+		return false;
+	}
+	TraceLine("GenerateDocumentInternal pages_done count=" + std::to_string(outDocument.pages.size()));
 	TraceLine("GenerateDocumentInternal end");
 	return true;
 }

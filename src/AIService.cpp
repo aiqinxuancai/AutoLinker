@@ -920,17 +920,17 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "search_public_code"},
-		{"description", "Complete unified search across current IDE project source hits, module public declarations, and support-library public declarations. Supports one keyword, multiple keywords, or regex. Results include target_type and read_tool so the caller can continue with read_project_search_result_code, read_module_public_code, or read_support_library_public_code."},
+		{"description", "Complete unified search across current IDE project source hits, optional current project-source cache hits, module public declarations, and support-library public declarations. Supports one keyword, multiple keywords, or regex. Results include target_type and read_tool so the caller can continue with read_project_search_result_code, read_project_source_cache_code, read_module_public_code, or read_support_library_public_code. If you mainly want current-project cached line hits from the parsed .e file, prefer search_project_source_cache."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
 				{"keyword", {{"type", "string"}, {"description", "Single keyword substring search."}}},
 				{"keywords", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Multiple keyword substrings. Default keyword_mode is all."}}},
-				{"keyword_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"all", "any"})}}}, 
+				{"keyword_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"all", "any"})}}},
 				{"regex", {{"type", "string"}, {"description", "Optional ECMAScript regex tested line-by-line."}}},
 				{"regex_flags", {{"type", "string"}, {"description", "Optional regex flags. Currently supports i for ignore-case."}}},
 				{"case_sensitive", {{"type", "boolean"}}},
-				{"target_types", {{"type", "array"}, {"items", {{"type", "string"}, {"enum", nlohmann::json::array({"project", "module", "support_library"})}}}}},
+				{"target_types", {{"type", "array"}, {"items", {{"type", "string"}, {"enum", nlohmann::json::array({"project", "project_cache", "module", "support_library"})}}}}},
 				{"module_name", {{"type", "string"}}},
 				{"module_path", {{"type", "string"}}},
 				{"support_library_index", {{"type", "integer"}, {"minimum", 0}}}, 
@@ -1265,8 +1265,51 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "refresh_project_source_cache"},
+		{"description", "Force one refresh of the current project-source cache. This only uses direct in-memory project serialization to write a temporary .e snapshot, reparses that snapshot with e2txt, and updates the in-memory project cache. If the current session has not yet captured a valid serializer context, it fails directly and does not fall back to save redirection or disk parsing."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", nlohmann::json::object()},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "search_project_source_cache"},
+		{"description", "Search only inside the current project-source cache built from the parsed current .e file. Before searching, it will try to refresh the cache using direct in-memory project serialization only. This is the preferred tool when you mainly want stable page names and line numbers for current project code."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"keyword", {{"type", "string"}, {"description", "Single keyword substring search."}}},
+				{"keywords", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Multiple keyword substrings. Default keyword_mode is all."}}},
+				{"keyword_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"all", "any"})}}},
+				{"regex", {{"type", "string"}, {"description", "Optional ECMAScript regex tested line-by-line."}}},
+				{"regex_flags", {{"type", "string"}, {"description", "Optional regex flags. Currently supports i for ignore-case."}}},
+				{"case_sensitive", {{"type", "boolean"}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 500}}}
+			}},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "read_project_source_cache_code"},
+		{"description", "Read code around one project-source-cache hit returned by search_project_source_cache or by search_public_code with target_type=project_cache. This reads directly from the parsed project cache and normally does not switch the IDE page. If the cache was refreshed and line numbers shifted, it can use search_text plus same_text_occurrence_index to relocate the line."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"jump_token", {{"type", "string"}}},
+				{"search_text", {{"type", "string"}, {"description", "Optional pass-through text from search_project_source_cache or search_public_code project_cache hits. Recommended when cache revision may have changed."}}},
+				{"same_text_occurrence_index", {{"type", "integer"}, {"minimum", 1}, {"description", "Optional pass-through same-text occurrence index from the search result."}}},
+				{"context_before", {{"type", "integer"}, {"minimum", 0}, {"maximum", 50}}},
+				{"context_after", {{"type", "integer"}, {"minimum", 0}, {"maximum", 50}}},
+				{"refresh_cache", {{"type", "boolean"}}}
+			}},
+			{"required", nlohmann::json::array({"jump_token"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "search_project_keyword"},
-		{"description", "Search current IDE project source hits only using the IDE hidden project search, and return matched page names, line numbers, a jump_token, and same-page occurrence metadata for each result. Use this when you only want current project hits rather than the complete unified search."},
+		{"description", "Search current IDE project source hits only using the IDE hidden project search, and return matched page names, line numbers, a jump_token, and same-page occurrence metadata for each result. Use this when you specifically want the IDE's own search hits rather than the parsed project-source cache."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1296,7 +1339,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "jump_to_search_result"},
-		{"description", "Jump to one specific search result returned by search_project_keyword using that row's jump_token. This will change the IDE current page and caret position."},
+		{"description", "Jump to one specific project search result returned by search_project_keyword or search_project_source_cache using that row's jump_token. For project-source-cache hits it will try to open the corresponding IDE page and return the cached line hint; for IDE hidden-search hits it uses the original IDE jump behavior."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1466,8 +1509,8 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"1) 需要当前页完整代码时调用 get_current_page_code；如果还要页名与类型，调用 get_current_page_info。\n"
 		"2) 只想知道当前打开页是谁，不需要整页代码时，优先调用 get_current_page_info；需要当前源码路径、MCP 端口、进程路径等实例级信息时，调用 get_current_eide_info。\n"
 		"3) 本机有多个易语言实例时，先用 list_local_mcp_instances，再通过 call_local_mcp_instance_tool 转发到目标实例；不要臆测端口。\n"
-		"4) 支持库相关信息：先用 list_support_libraries，再按需用 get_support_library_info；若需要完全搜索当前工程源码命中、模块公开声明、支持库公开声明，优先用 search_public_code；若只查支持库也可用 search_support_library_public_code / read_support_library_public_code。\n"
-		"5) 模块公开信息：先用 list_imported_modules，再按需用 get_module_public_info；若需要完全搜索当前工程源码命中、模块公开声明、支持库公开声明，优先用 search_public_code；若只查模块也可用 search_module_public_code / read_module_public_code。\n"
+		"4) 支持库相关信息：先用 list_support_libraries，再按需用 get_support_library_info；若需要完全搜索当前工程源码命中、工程源码缓存、模块公开声明、支持库公开声明，优先用 search_public_code；若只查支持库也可用 search_support_library_public_code / read_support_library_public_code。\n"
+		"5) 模块公开信息：先用 list_imported_modules，再按需用 get_module_public_info；若需要完全搜索当前工程源码命中、工程源码缓存、模块公开声明、支持库公开声明，优先用 search_public_code；若只查模块也可用 search_module_public_code / read_module_public_code。\n"
 		"6) 程序树页面：先用 list_program_items 定位页面，再按需用 get_program_item_real_code 或 switch_to_program_item_page。\n"
 		"6.1) list_program_items 附带的代码仍只是伪代码参考；需要某个页面的真实整页源码时，用 get_program_item_real_code。\n"
 		"6.2) 需要分页查看或从缓存读取真实源码时，用 read_program_item_real_code。\n"
@@ -1475,8 +1518,8 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"6.4) 需要预览改动而不写回时，用 diff_program_item_code。\n"
 		"6.5) 需要按符号操作真实源码时，用 list_program_item_symbols / get_symbol_real_code / edit_symbol_real_code / insert_program_item_code_block。\n"
 		"6.6) 需要在真实页内做精确搜索或回滚最近写入时，用 search_program_item_real_code / restore_program_item_code_snapshot。\n"
-		"7) 需要完全搜索当前工程源码命中、模块公开声明、支持库公开声明时，优先用 search_public_code；只有在只想搜索当前 IDE 工程源码命中时，才用 search_project_keyword。若要基于某个工程命中结果读取真实页代码行范围，优先用 read_project_search_result_code；仅在需要单纯跳转时再用 jump_to_search_result。\n"
-		"8) read_project_search_result_code、jump_to_search_result、switch_to_program_item_page、get_program_item_real_code 都会改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
+		"7) 若主要想查当前工程源码并需要稳定页名与行号，优先用 search_project_source_cache；必要时可先用 refresh_project_source_cache。只有在明确想使用 IDE 自带隐藏搜索结果时，才用 search_project_keyword。若要基于工程源码缓存命中读取代码行范围，优先用 read_project_source_cache_code；若要基于 IDE 搜索命中读取真实页代码行范围，才用 read_project_search_result_code。\n"
+		"8) search_public_code 是统一搜索，可按 target_types 选择 project、project_cache、module、support_library。对于 project_cache 命中，后续优先用 read_project_source_cache_code；对于 project 命中，后续优先用 read_project_search_result_code。jump_to_search_result、switch_to_program_item_page、get_program_item_real_code 仍可能改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
 		"9) 通过搜索、程序树、模块公开信息、支持库公开信息拿到的代码或文本，多数只是伪代码 / 公共接口参考，不一定等于 IDE 正常编辑页。\n"
 		"10) 需要无弹窗编译时调用 compile_with_output_path。它会指定输出路径并拦截系统保存对话框，支持模块工程编译为 ec，以及窗口程序 / 控制台程序 / DLL 的编译与静态编译；最终是否编译成功仍要结合 IDE 输出或产物确认。\n"
 		"11) 需要自动整页回写真实源码时优先使用真实页工具，不要退回伪代码工具。\n"

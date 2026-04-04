@@ -1,4 +1,4 @@
-# AutoLinker
+﻿# AutoLinker
 
 AutoLinker支持库，通过逆向实现易语言上的AI Agent，即代码全自动编写，会自动根据你的需求，查找、获取相关代码，并直接对代码进行编辑、修改、插入功能。
 
@@ -178,6 +178,17 @@ url = "http://127.0.0.1:19207/mcp"
   - 若无法按该序号定位，再退回到旧的提示行号最近匹配策略
   - 最后返回该命中行附近的代码片段
 - 调用时建议把 `search_project_keyword` 返回的 `search_text` 与 `same_text_occurrence_index` 一并原样传回 `read_project_search_result_code`。
+
+### 工程源码缓存 MCP
+
+- `refresh_project_source_cache`
+  - 触发一次当前工程源码缓存刷新：Hook 保存到临时 `.e` 快照并重新解析。
+- `search_project_source_cache`
+  - 仅搜索当前工程源码缓存，优先用于获取稳定页名与行号。
+- `read_project_source_cache_code`
+  - 基于工程源码缓存命中读取指定行附近代码，通常不切换 IDE 页面。
+- `search_public_code`
+  - 现在额外支持 `target_types = ["project_cache"]`，若主要查当前工程源码，优先使用 `search_project_source_cache`。
 
 ---
 

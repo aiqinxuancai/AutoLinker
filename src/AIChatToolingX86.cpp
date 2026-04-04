@@ -31,6 +31,7 @@
 #include "LocalMcpServer.h"
 #include "PageCodeCacheManager.h"
 #include "PathHelper.h"
+#include "ProjectSourceCacheManager.h"
 #include "RealPageCodeToolSupport.h"
 #include "WindowHelper.h"
 #if defined(_M_IX86)
@@ -2382,6 +2383,7 @@ struct PublicCodeSearchSpecForAI {
 	bool searchModules = true;
 	bool searchSupportLibraries = true;
 	bool searchProject = true;
+	bool searchProjectCache = false;
 };
 
 bool TryBuildPublicCodeSearchSpecForAI(
@@ -2452,6 +2454,7 @@ bool TryBuildPublicCodeSearchSpecForAI(
 		outSpec.searchModules = false;
 		outSpec.searchSupportLibraries = false;
 		outSpec.searchProject = false;
+		outSpec.searchProjectCache = false;
 		for (const auto& item : args["target_types"]) {
 			if (!item.is_string()) {
 				continue;
@@ -2466,9 +2469,15 @@ bool TryBuildPublicCodeSearchSpecForAI(
 			else if (type == "project" || type == "ide" || type == "project_page" || type == "ide_project") {
 				outSpec.searchProject = true;
 			}
+			else if (type == "project_cache" || type == "source_cache" || type == "parsed_project") {
+				outSpec.searchProjectCache = true;
+			}
 		}
-		if (!outSpec.searchModules && !outSpec.searchSupportLibraries && !outSpec.searchProject) {
-			outError = "target_types must contain project and/or module and/or support_library";
+		if (!outSpec.searchModules &&
+			!outSpec.searchSupportLibraries &&
+			!outSpec.searchProject &&
+			!outSpec.searchProjectCache) {
+			outError = "target_types must contain project and/or project_cache and/or module and/or support_library";
 			return false;
 		}
 	}
@@ -2559,6 +2568,100 @@ std::vector<KeywordSearchResultInfo> BuildKeywordSearchResultInfosForAI(
 	}
 
 	return infos;
+}
+
+struct ProjectCacheSearchHitForAI {
+	KeywordSearchResultInfo info;
+	std::vector<std::string> matchedKeywords;
+	std::string jumpToken;
+	int pageIndex = -1;
+};
+
+std::string BuildProjectCacheSourceKindForAI(const project_source_cache::Snapshot& snapshot)
+{
+	(void)snapshot;
+	return "e2txt_project_cache";
+}
+
+template <typename MatchFn>
+std::vector<ProjectCacheSearchHitForAI> CollectProjectCacheSearchHitsForAI(
+	const project_source_cache::Snapshot& snapshot,
+	MatchFn&& matchLine)
+{
+	std::vector<ProjectCacheSearchHitForAI> hits;
+	std::unordered_map<std::string, int> pageTotals;
+	std::unordered_map<std::string, int> textTotals;
+
+	for (const auto& page : snapshot.pages) {
+		for (size_t lineIndex = 0; lineIndex < page.lines.size(); ++lineIndex) {
+			std::vector<std::string> matchedKeywords;
+			const std::string& line = page.lines[lineIndex];
+			if (!matchLine(line, matchedKeywords)) {
+				continue;
+			}
+
+			ProjectCacheSearchHitForAI hit;
+			hit.info.pageName = page.name;
+			hit.info.pageTypeKey = page.typeKey;
+			hit.info.pageTypeName = page.typeName;
+			hit.info.lineNumber = static_cast<int>(lineIndex) + 1;
+			hit.info.text = line;
+			hit.matchedKeywords = std::move(matchedKeywords);
+			hit.pageIndex = page.pageIndex;
+			++pageTotals[ToLowerAsciiCopyLocal(TrimAsciiCopy(hit.info.pageName))];
+			++textTotals[BuildProjectSearchGroupingKeyForAI(hit.info.pageName, hit.info.text)];
+			hits.push_back(std::move(hit));
+		}
+	}
+
+	std::unordered_map<std::string, int> pageSeen;
+	std::unordered_map<std::string, int> textSeen;
+	auto& manager = project_source_cache::ProjectSourceCacheManager::Instance();
+	for (auto& hit : hits) {
+		const std::string pageKey = ToLowerAsciiCopyLocal(TrimAsciiCopy(hit.info.pageName));
+		const std::string textKey = BuildProjectSearchGroupingKeyForAI(hit.info.pageName, hit.info.text);
+		hit.info.hitIndexInPage = ++pageSeen[pageKey];
+		hit.info.hitTotalInPage = pageTotals[pageKey];
+		hit.info.sameTextOccurrenceIndex = ++textSeen[textKey];
+		hit.info.sameTextOccurrenceTotal = textTotals[textKey];
+
+		project_source_cache::HitToken token;
+		token.sourcePath = snapshot.sourcePath;
+		token.revision = snapshot.revision;
+		token.pageIndex = hit.pageIndex;
+		token.lineNumber = hit.info.lineNumber;
+		token.pageName = hit.info.pageName;
+		token.pageTypeKey = hit.info.pageTypeKey;
+		token.pageTypeName = hit.info.pageTypeName;
+		hit.jumpToken = manager.BuildHitToken(token);
+	}
+
+	return hits;
+}
+
+const project_source_cache::Page* FindProjectCachePageForAI(
+	const project_source_cache::Snapshot& snapshot,
+	const project_source_cache::HitToken& token)
+{
+	if (token.pageIndex >= 0 && token.pageIndex < static_cast<int>(snapshot.pages.size())) {
+		const auto& page = snapshot.pages[static_cast<size_t>(token.pageIndex)];
+		if ((token.pageName.empty() || page.name == token.pageName) &&
+			(token.pageTypeKey.empty() || page.typeKey == token.pageTypeKey)) {
+			return &page;
+		}
+	}
+
+	for (const auto& page : snapshot.pages) {
+		if (!token.pageName.empty() && page.name != token.pageName) {
+			continue;
+		}
+		if (!token.pageTypeKey.empty() && page.typeKey != token.pageTypeKey) {
+			continue;
+		}
+		return &page;
+	}
+
+	return nullptr;
 }
 
 bool TryGetAnsiPtrTextLengthForAI(LPCSTR textPtr, size_t& outLength)
@@ -4449,6 +4552,348 @@ std::string BuildReadModulePublicCodeJsonOnMainThread(const std::string& argumen
 	return Utf8ToLocalText(r.dump());
 }
 
+std::string BuildRefreshProjectSourceCacheJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	(void)argumentsJson;
+
+	project_source_cache::Snapshot snapshot;
+	bool refreshed = false;
+	std::string error;
+	std::string trace;
+	if (!project_source_cache::ProjectSourceCacheManager::Instance().EnsureCurrentSourceLatest(
+			snapshot,
+			true,
+			&refreshed,
+			&error,
+			&trace)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = error.empty() ? "refresh project source cache failed" : error;
+		r["trace"] = LocalToUtf8Text(trace);
+		return Utf8ToLocalText(r.dump());
+	}
+
+	nlohmann::json pages = nlohmann::json::array();
+	const size_t previewCount = (std::min)(snapshot.pages.size(), static_cast<size_t>(20));
+	for (size_t i = 0; i < previewCount; ++i) {
+		nlohmann::json row;
+		row["page_index"] = snapshot.pages[i].pageIndex;
+		row["page_name"] = LocalToUtf8Text(snapshot.pages[i].name);
+		row["page_type_key"] = snapshot.pages[i].typeKey;
+		row["page_type_name"] = LocalToUtf8Text(snapshot.pages[i].typeName);
+		row["line_count"] = snapshot.pages[i].lines.size();
+		pages.push_back(std::move(row));
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["refreshed"] = refreshed;
+	r["source_kind"] = BuildProjectCacheSourceKindForAI(snapshot);
+	r["parsed_input_kind"] = snapshot.parsedInputKind;
+	r["source_file_path"] = LocalToUtf8Text(snapshot.sourcePath);
+	r["cache_revision"] = snapshot.revision;
+	r["project_name"] = LocalToUtf8Text(snapshot.projectName);
+	r["version_text"] = LocalToUtf8Text(snapshot.versionText);
+	r["page_count"] = snapshot.pages.size();
+	if (!snapshot.snapshotPath.empty()) {
+		r["snapshot_path"] = LocalToUtf8Text(snapshot.snapshotPath);
+	}
+	r["trace"] = LocalToUtf8Text(trace);
+	r["pages_preview"] = std::move(pages);
+	r["warning"] = LocalToUtf8Text("该工具仅使用内存直序列化：会把当前工程从 IDE 内存直接序列化为二进制字节，并直接交给 e2txt 重新解析刷新内存缓存。若当前会话尚未捕获可用的序列化上下文，它会直接报错，不会再走保存重定向或磁盘兜底。");
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+std::string BuildSearchProjectSourceCacheJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	PublicCodeSearchSpecForAI spec;
+	std::string specError;
+	if (!TryBuildPublicCodeSearchSpecForAI(args, spec, specError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = specError;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const int limit = args.contains("limit") && args["limit"].is_number_integer()
+		? (std::clamp)(args["limit"].get<int>(), 1, 500)
+		: 100;
+
+	project_source_cache::Snapshot snapshot;
+	bool refreshed = false;
+	std::string error;
+	std::string trace;
+	if (!project_source_cache::ProjectSourceCacheManager::Instance().EnsureCurrentSourceLatest(
+			snapshot,
+			true,
+			&refreshed,
+			&error,
+			&trace)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = error.empty() ? "refresh project source cache failed" : error;
+		r["trace"] = LocalToUtf8Text(trace);
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const auto hits = CollectProjectCacheSearchHitsForAI(snapshot, [&](const std::string& line, std::vector<std::string>& matchedKeywords) {
+		return MatchPublicCodeSearchLineForAI(line, spec, matchedKeywords);
+	});
+
+	nlohmann::json results = nlohmann::json::array();
+	for (size_t i = 0; i < hits.size() && static_cast<int>(results.size()) < limit; ++i) {
+		nlohmann::json row;
+		row["index"] = static_cast<int>(i);
+		row["target_type"] = "project_cache";
+		row["read_tool"] = "read_project_source_cache_code";
+		row["jump_tool"] = "jump_to_search_result";
+		row["page_name"] = LocalToUtf8Text(hits[i].info.pageName);
+		row["page_type_key"] = hits[i].info.pageTypeKey;
+		row["page_type_name"] = LocalToUtf8Text(hits[i].info.pageTypeName);
+		row["line_number"] = hits[i].info.lineNumber;
+		row["text"] = LocalToUtf8Text(hits[i].info.text);
+		row["jump_token"] = hits[i].jumpToken;
+		row["source_kind"] = BuildProjectCacheSourceKindForAI(snapshot);
+		row["parsed_input_kind"] = snapshot.parsedInputKind;
+		row["source_file_path"] = LocalToUtf8Text(snapshot.sourcePath);
+		row["cache_revision"] = snapshot.revision;
+		row["hit_index_in_page"] = hits[i].info.hitIndexInPage;
+		row["hit_total_in_page"] = hits[i].info.hitTotalInPage;
+		row["same_text_occurrence_index"] = hits[i].info.sameTextOccurrenceIndex;
+		row["same_text_occurrence_total"] = hits[i].info.sameTextOccurrenceTotal;
+		if (!snapshot.snapshotPath.empty()) {
+			row["snapshot_path"] = LocalToUtf8Text(snapshot.snapshotPath);
+		}
+		if (!hits[i].matchedKeywords.empty()) {
+			nlohmann::json keywords = nlohmann::json::array();
+			for (const auto& keyword : hits[i].matchedKeywords) {
+				keywords.push_back(LocalToUtf8Text(keyword));
+			}
+			row["matched_keywords"] = std::move(keywords);
+		}
+		if (spec.useRegex) {
+			row["matched_regex"] = LocalToUtf8Text(spec.regexText);
+		}
+		results.push_back(std::move(row));
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["match_count"] = hits.size();
+	r["keyword_mode"] = spec.keywordMode;
+	r["case_sensitive"] = spec.caseSensitive;
+	r["source_kind"] = BuildProjectCacheSourceKindForAI(snapshot);
+	r["parsed_input_kind"] = snapshot.parsedInputKind;
+	r["source_file_path"] = LocalToUtf8Text(snapshot.sourcePath);
+	r["cache_revision"] = snapshot.revision;
+	if (!snapshot.snapshotPath.empty()) {
+		r["snapshot_path"] = LocalToUtf8Text(snapshot.snapshotPath);
+	}
+	if (!spec.keywords.empty()) {
+		nlohmann::json keywords = nlohmann::json::array();
+		for (const auto& keyword : spec.keywords) {
+			keywords.push_back(LocalToUtf8Text(keyword));
+		}
+		r["keywords"] = std::move(keywords);
+	}
+	if (spec.useRegex) {
+		r["regex"] = LocalToUtf8Text(spec.regexText);
+		if (!spec.regexFlags.empty()) {
+			r["regex_flags"] = spec.regexFlags;
+		}
+	}
+	r["trace"] = LocalToUtf8Text(trace);
+	r["warning"] = LocalToUtf8Text("这里搜索的是当前工程源码缓存：仅依赖内存直序列化，把当前工程从 IDE 内存导出到临时快照并重新解析，再在解析后的页代码里逐行搜索。若当前会话尚未捕获可用的序列化上下文，它会直接报错，不会再走保存重定向或磁盘兜底。若主要查当前工程源码，优先用这个工具而不是 IDE 隐藏搜索。");
+	r["results"] = std::move(results);
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
+std::string BuildReadProjectSourceCacheCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const std::string jumpToken = (args.contains("jump_token") && args["jump_token"].is_string())
+		? args["jump_token"].get<std::string>()
+		: std::string();
+	const std::string searchText = GetJsonStringArgumentLocal(args, "search_text");
+	const int sameTextOccurrenceIndex = (std::max)(0, GetJsonIntArgument(args, "same_text_occurrence_index", 0));
+	const int contextBefore = (std::clamp)(GetJsonIntArgument(args, "context_before", 3), 0, 50);
+	const int contextAfter = (std::clamp)(GetJsonIntArgument(args, "context_after", 8), 0, 50);
+	const bool refreshCache = GetJsonBoolArgument(args, "refresh_cache", true);
+	if (TrimAsciiCopy(jumpToken).empty()) {
+		return R"({"ok":false,"error":"jump_token is required"})";
+	}
+
+	project_source_cache::HitToken projectToken;
+	std::string projectTokenError;
+	if (!project_source_cache::ProjectSourceCacheManager::Instance().ParseHitToken(
+			jumpToken,
+			projectToken,
+			&projectTokenError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = projectTokenError.empty() ? "invalid project cache jump_token" : projectTokenError;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	project_source_cache::Snapshot snapshot;
+	bool refreshed = false;
+	std::string resolveError;
+	std::string resolveTrace;
+	if (!project_source_cache::ProjectSourceCacheManager::Instance().ResolveSnapshotForHit(
+			projectToken,
+			refreshCache,
+			snapshot,
+			&refreshed,
+			&resolveError,
+			&resolveTrace)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = resolveError.empty() ? "resolve project cache snapshot failed" : resolveError;
+		r["trace"] = LocalToUtf8Text(resolveTrace);
+		r["jump_token"] = jumpToken;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const auto* page = FindProjectCachePageForAI(snapshot, projectToken);
+	if (page == nullptr) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "page not found in project cache snapshot";
+		r["trace"] = LocalToUtf8Text(resolveTrace);
+		r["jump_token"] = jumpToken;
+		r["cache_revision"] = snapshot.revision;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const auto& pageLines = page->lines;
+	const int totalLines = static_cast<int>(pageLines.size());
+	if (totalLines <= 0) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "project cache page is empty";
+		r["trace"] = LocalToUtf8Text(resolveTrace);
+		r["page_name"] = LocalToUtf8Text(page->name);
+		r["type_key"] = page->typeKey;
+		r["type_name"] = LocalToUtf8Text(page->typeName);
+		return Utf8ToLocalText(r.dump());
+	}
+
+	const int hintLineNumber = projectToken.lineNumber;
+	int resolvedLineNumber = -1;
+	std::string resolvedBy;
+	std::string matchedCandidate;
+	int matchedCandidateTotal = 0;
+	if (snapshot.revision == projectToken.revision &&
+		hintLineNumber >= 1 &&
+		hintLineNumber <= totalLines) {
+		resolvedLineNumber = hintLineNumber;
+		resolvedBy = "token_line_number";
+	}
+	else if (!TrimAsciiCopy(searchText).empty()) {
+		const std::vector<std::string> candidates = BuildSearchTextCandidatesForAI(searchText, page->name);
+		if (!TryResolveProjectSearchLineNumberForAI(
+				pageLines,
+				candidates,
+				sameTextOccurrenceIndex,
+				hintLineNumber,
+				resolvedLineNumber,
+				resolvedBy,
+				matchedCandidate,
+				matchedCandidateTotal)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "resolve matched line failed";
+			r["trace"] = LocalToUtf8Text(resolveTrace);
+			r["page_name"] = LocalToUtf8Text(page->name);
+			r["type_key"] = page->typeKey;
+			r["type_name"] = LocalToUtf8Text(page->typeName);
+			r["search_line_hint"] = hintLineNumber;
+			r["resolve_method"] = resolvedBy;
+			r["search_text"] = LocalToUtf8Text(searchText);
+			r["cache_revision"] = snapshot.revision;
+			return Utf8ToLocalText(r.dump());
+		}
+	}
+	else {
+		resolvedLineNumber = (std::clamp)(hintLineNumber, 1, totalLines);
+		resolvedBy = "token_line_hint_fallback";
+	}
+
+	const int startLine = (std::max)(1, resolvedLineNumber - contextBefore);
+	const int endLine = (std::min)(totalLines, resolvedLineNumber + contextAfter);
+	nlohmann::json lines = nlohmann::json::array();
+	std::string text;
+	for (int lineNo = startLine; lineNo <= endLine; ++lineNo) {
+		const std::string& line = pageLines[static_cast<size_t>(lineNo - 1)];
+		if (!text.empty()) {
+			text += "\n";
+		}
+		text += line;
+		nlohmann::json row;
+		row["line_number"] = lineNo;
+		row["text"] = LocalToUtf8Text(line);
+		row["is_match_line"] = (lineNo == resolvedLineNumber);
+		lines.push_back(std::move(row));
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["target_type"] = "project_cache";
+	r["page_name"] = LocalToUtf8Text(page->name);
+	r["type_key"] = page->typeKey;
+	r["type_name"] = LocalToUtf8Text(page->typeName);
+	r["jump_token"] = jumpToken;
+	r["search_text"] = LocalToUtf8Text(searchText);
+	r["same_text_occurrence_index"] = sameTextOccurrenceIndex;
+	r["search_line_hint"] = hintLineNumber;
+	r["resolved_line_number"] = resolvedLineNumber;
+	r["resolve_method"] = resolvedBy;
+	r["matched_candidate"] = LocalToUtf8Text(matchedCandidate);
+	r["matched_candidate_total"] = matchedCandidateTotal;
+	r["from_cache"] = !refreshed;
+	r["code_hash"] = std::format("project-cache:{}:{}", snapshot.revision, page->pageIndex);
+	r["source_kind"] = BuildProjectCacheSourceKindForAI(snapshot);
+	r["parsed_input_kind"] = snapshot.parsedInputKind;
+	r["source_file_path"] = LocalToUtf8Text(snapshot.sourcePath);
+	r["cache_revision"] = snapshot.revision;
+	if (!snapshot.snapshotPath.empty()) {
+		r["snapshot_path"] = LocalToUtf8Text(snapshot.snapshotPath);
+	}
+	r["total_lines"] = totalLines;
+	r["start_line"] = startLine;
+	r["end_line"] = endLine;
+	r["returned_line_count"] = endLine - startLine + 1;
+	r["trace"] = LocalToUtf8Text(resolveTrace);
+	r["warning"] = LocalToUtf8Text("该结果来自当前工程源码缓存，不会切换 IDE 页面。若缓存版本已变化且 refresh_cache=true，系统会先刷新缓存，再优先按 search_text 与 same_text_occurrence_index 重新定位匹配行。");
+	r["text"] = LocalToUtf8Text(text);
+	r["lines"] = std::move(lines);
+	outOk = true;
+	return Utf8ToLocalText(r.dump());
+}
+
 std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
 {
 	nlohmann::json args;
@@ -4478,63 +4923,123 @@ std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJs
 	nlohmann::json matches = nlohmann::json::array();
 	std::vector<std::string> warnings;
 
-	if (spec.searchProject && spec.keywords.empty()) {
-		warnings.push_back("当前请求包含 project 搜索，但未提供 keyword/keywords。IDE 工程搜索只能以关键字作为种子，因此本次未包含工程命中。");
+	if (spec.searchProjectCache && static_cast<int>(matches.size()) < limit) {
+		project_source_cache::Snapshot snapshot;
+		bool refreshed = false;
+		std::string projectError;
+		std::string projectTrace;
+		if (project_source_cache::ProjectSourceCacheManager::Instance().EnsureCurrentSourceLatest(
+				snapshot,
+				true,
+				&refreshed,
+				&projectError,
+				&projectTrace)) {
+			const auto projectHits = CollectProjectCacheSearchHitsForAI(snapshot, [&](const std::string& line, std::vector<std::string>& matchedKeywords) {
+				return MatchPublicCodeSearchLineForAI(line, spec, matchedKeywords);
+			});
+
+			for (size_t i = 0; i < projectHits.size() && static_cast<int>(matches.size()) < limit; ++i) {
+				nlohmann::json row;
+				row["target_type"] = "project_cache";
+				row["read_tool"] = "read_project_source_cache_code";
+				row["jump_tool"] = "jump_to_search_result";
+				row["source_kind"] = BuildProjectCacheSourceKindForAI(snapshot);
+				row["parsed_input_kind"] = snapshot.parsedInputKind;
+				row["source_file_path"] = LocalToUtf8Text(snapshot.sourcePath);
+				row["cache_revision"] = snapshot.revision;
+				row["page_name"] = LocalToUtf8Text(projectHits[i].info.pageName);
+				row["page_type_key"] = projectHits[i].info.pageTypeKey;
+				row["page_type_name"] = LocalToUtf8Text(projectHits[i].info.pageTypeName);
+				row["line_number"] = projectHits[i].info.lineNumber;
+				row["text"] = LocalToUtf8Text(projectHits[i].info.text);
+				row["jump_token"] = projectHits[i].jumpToken;
+				row["hit_index_in_page"] = projectHits[i].info.hitIndexInPage;
+				row["hit_total_in_page"] = projectHits[i].info.hitTotalInPage;
+				row["same_text_occurrence_index"] = projectHits[i].info.sameTextOccurrenceIndex;
+				row["same_text_occurrence_total"] = projectHits[i].info.sameTextOccurrenceTotal;
+				if (!snapshot.snapshotPath.empty()) {
+					row["snapshot_path"] = LocalToUtf8Text(snapshot.snapshotPath);
+				}
+				if (!projectHits[i].matchedKeywords.empty()) {
+					nlohmann::json keywords = nlohmann::json::array();
+					for (const auto& keyword : projectHits[i].matchedKeywords) {
+						keywords.push_back(LocalToUtf8Text(keyword));
+					}
+					row["matched_keywords"] = std::move(keywords);
+				}
+				if (spec.useRegex) {
+					row["matched_regex"] = LocalToUtf8Text(spec.regexText);
+				}
+				matches.push_back(std::move(row));
+			}
+		}
+		else {
+			warnings.push_back(std::string("工程源码缓存搜索失败: ") +
+				(projectError.empty() ? "project_cache_refresh_failed" : projectError));
+			if (!projectTrace.empty()) {
+				warnings.push_back(std::string("工程源码缓存 trace: ") + projectTrace);
+			}
+		}
 	}
 
-	if (spec.searchProject && !spec.keywords.empty() && static_cast<int>(matches.size()) < limit) {
-		const std::string ideSeedKeyword = spec.keywords.front();
-		bool dialogHandled = false;
-		const auto hits = e571::DebugSearchDirectGlobalKeywordHiddenDetailed(
-			ideSeedKeyword.c_str(),
-			GetCurrentProcessImageBaseForAI(),
-			&dialogHandled);
-
-		std::vector<ProgramTreeItemInfo> items;
-		std::string listError;
-		TryListProgramTreeItemsForAI(items, &listError);
-
-		if (!listError.empty()) {
-			warnings.push_back(std::string("工程页类型解析存在异常: ") + listError);
+	if (spec.searchProject && static_cast<int>(matches.size()) < limit) {
+		if (spec.keywords.empty()) {
+			warnings.push_back("当前请求包含 project 搜索，但未提供 keyword/keywords。IDE 工程搜索只能以关键字作为种子，因此本次未包含 project 命中。");
 		}
+		else {
+			const std::string ideSeedKeyword = spec.keywords.front();
+			bool dialogHandled = false;
+			const auto hits = e571::DebugSearchDirectGlobalKeywordHiddenDetailed(
+				ideSeedKeyword.c_str(),
+				GetCurrentProcessImageBaseForAI(),
+				&dialogHandled);
 
-		const auto infos = BuildKeywordSearchResultInfosForAI(hits, items);
-		for (size_t i = 0; i < infos.size() && static_cast<int>(matches.size()) < limit; ++i) {
-			std::vector<std::string> matchedKeywords;
-			if (!MatchPublicCodeSearchLineForAI(infos[i].text, spec, matchedKeywords)) {
-				continue;
+			std::vector<ProgramTreeItemInfo> items;
+			std::string listError;
+			TryListProgramTreeItemsForAI(items, &listError);
+
+			if (!listError.empty()) {
+				warnings.push_back(std::string("工程页类型解析存在异常: ") + listError);
 			}
 
-			nlohmann::json row;
-			row["target_type"] = "project";
-			row["read_tool"] = "read_project_search_result_code";
-			row["jump_tool"] = "jump_to_search_result";
-			row["source_kind"] = "ide_hidden_search";
-			row["page_name"] = LocalToUtf8Text(infos[i].pageName);
-			row["page_type_key"] = infos[i].pageTypeKey;
-			row["page_type_name"] = LocalToUtf8Text(infos[i].pageTypeName);
-			row["line_number"] = infos[i].lineNumber;
-			row["text"] = LocalToUtf8Text(infos[i].text);
-			row["jump_token"] = BuildSearchJumpToken(hits[i]);
-			row["hit_index_in_page"] = infos[i].hitIndexInPage;
-			row["hit_total_in_page"] = infos[i].hitTotalInPage;
-			row["same_text_occurrence_index"] = infos[i].sameTextOccurrenceIndex;
-			row["same_text_occurrence_total"] = infos[i].sameTextOccurrenceTotal;
-			if (!matchedKeywords.empty()) {
-				nlohmann::json keywords = nlohmann::json::array();
-				for (const auto& keyword : matchedKeywords) {
-					keywords.push_back(LocalToUtf8Text(keyword));
+			const auto infos = BuildKeywordSearchResultInfosForAI(hits, items);
+			for (size_t i = 0; i < infos.size() && static_cast<int>(matches.size()) < limit; ++i) {
+				std::vector<std::string> matchedKeywords;
+				if (!MatchPublicCodeSearchLineForAI(infos[i].text, spec, matchedKeywords)) {
+					continue;
 				}
-				row["matched_keywords"] = std::move(keywords);
-			}
-			if (spec.useRegex) {
-				row["matched_regex"] = LocalToUtf8Text(spec.regexText);
-			}
-			matches.push_back(std::move(row));
-		}
 
-		if (dialogHandled) {
-			warnings.push_back("IDE 搜索过程中出现过对话框处理。");
+				nlohmann::json row;
+				row["target_type"] = "project";
+				row["read_tool"] = "read_project_search_result_code";
+				row["jump_tool"] = "jump_to_search_result";
+				row["source_kind"] = "ide_hidden_search";
+				row["page_name"] = LocalToUtf8Text(infos[i].pageName);
+				row["page_type_key"] = infos[i].pageTypeKey;
+				row["page_type_name"] = LocalToUtf8Text(infos[i].pageTypeName);
+				row["line_number"] = infos[i].lineNumber;
+				row["text"] = LocalToUtf8Text(infos[i].text);
+				row["jump_token"] = BuildSearchJumpToken(hits[i]);
+				row["hit_index_in_page"] = infos[i].hitIndexInPage;
+				row["hit_total_in_page"] = infos[i].hitTotalInPage;
+				row["same_text_occurrence_index"] = infos[i].sameTextOccurrenceIndex;
+				row["same_text_occurrence_total"] = infos[i].sameTextOccurrenceTotal;
+				if (!matchedKeywords.empty()) {
+					nlohmann::json keywords = nlohmann::json::array();
+					for (const auto& keyword : matchedKeywords) {
+						keywords.push_back(LocalToUtf8Text(keyword));
+					}
+					row["matched_keywords"] = std::move(keywords);
+				}
+				if (spec.useRegex) {
+					row["matched_regex"] = LocalToUtf8Text(spec.regexText);
+				}
+				matches.push_back(std::move(row));
+			}
+
+			if (dialogHandled) {
+				warnings.push_back("IDE 搜索过程中出现过对话框处理。");
+			}
 		}
 	}
 
@@ -4723,6 +5228,9 @@ std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJs
 	if (spec.searchProject) {
 		r["target_types"].push_back("project");
 	}
+	if (spec.searchProjectCache) {
+		r["target_types"].push_back("project_cache");
+	}
 	if (spec.searchModules) {
 		r["target_types"].push_back("module");
 	}
@@ -4742,7 +5250,7 @@ std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJs
 			r["regex_flags"] = spec.regexFlags;
 		}
 	}
-	std::string warning = "这里是完全搜索：会同时搜索当前 IDE 工程源码命中、模块公开声明文本、支持库公开声明文本。命中后请根据结果里的 target_type 与 read_tool 继续读取。若要快速定位子程序、常量、数据类型、DLL命令、程序集变量、参数、局部变量、全局变量，可考虑使用类似“.子程序 XXXX”、“.常量 XXXX”、“.数据类型 XXXX”、“.DLL命令 XXXX”、“.参数 XXXX”、“.全局变量 XXXX”来进行。";
+	std::string warning = "这里是完全搜索：可按 target_types 搜索当前 IDE 工程源码命中、当前工程源码缓存、模块公开声明文本、支持库公开声明文本。命中后请根据结果里的 target_type 与 read_tool 继续读取。若主要查当前工程源码并希望获得稳定页名和行号，优先用 search_project_source_cache；若要快速定位子程序、常量、数据类型、DLL命令、程序集变量、参数、局部变量、全局变量，可考虑使用类似“.子程序 XXXX”、“.常量 XXXX”、“.数据类型 XXXX”、“.DLL命令 XXXX”、“.参数 XXXX”、“.全局变量 XXXX”来进行。";
 	for (const auto& extraWarning : warnings) {
 		warning += " ";
 		warning += extraWarning;
@@ -4854,6 +5362,7 @@ std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argument
 		row["text"] = LocalToUtf8Text(infos[i].text);
 		row["jump_token"] = BuildSearchJumpToken(hits[i]);
 		row["read_tool"] = "read_project_search_result_code";
+		row["source_kind"] = "ide_hidden_search";
 		row["hit_index_in_page"] = infos[i].hitIndexInPage;
 		row["hit_total_in_page"] = infos[i].hitTotalInPage;
 		row["same_text_occurrence_index"] = infos[i].sameTextOccurrenceIndex;
@@ -4866,8 +5375,9 @@ std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argument
 	r["keyword"] = LocalToUtf8Text(keyword);
 	r["count"] = hits.size();
 	r["dialog_handled"] = dialogHandled;
+	r["source_kind"] = "ide_hidden_search";
 	r["code_kind"] = "pseudo_reference";
-	r["warning"] = LocalToUtf8Text("这里仅搜索当前 IDE 工程源码命中，不包含模块公开声明与支持库公开声明。搜索结果文本以及后续按页面名抓取到的代码，与IDE正常编辑页结构可能不同，仅可作为伪代码参考。");
+	r["warning"] = LocalToUtf8Text("这里仅搜索当前 IDE 工程源码命中，不包含模块公开声明与支持库公开声明。搜索结果文本以及后续按页面名抓取到的代码，与IDE正常编辑页结构可能不同，仅可作为伪代码参考。若你想优先使用当前工程源码缓存并直接拿到稳定页名和行号，请改用 search_project_source_cache。");
 	r["results"] = std::move(results);
 	if (!listError.empty()) {
 		r["page_type_lookup_error"] = listError;
@@ -6608,6 +7118,18 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		return BuildReadProjectSearchResultCodeJsonOnMainThread(argumentsJson, outOk);
 	}
 
+	if (toolName == "refresh_project_source_cache") {
+		return BuildRefreshProjectSourceCacheJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "search_project_source_cache") {
+		return BuildSearchProjectSourceCacheJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "read_project_source_cache_code") {
+		return BuildReadProjectSourceCacheCodeJsonOnMainThread(argumentsJson, outOk);
+	}
+
 	if (toolName == "jump_to_search_result") {
 		nlohmann::json args;
 		try {
@@ -6625,6 +7147,84 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 			: std::string();
 		if (TrimAsciiCopy(jumpToken).empty()) {
 			return R"({"ok":false,"error":"jump_token is required"})";
+		}
+
+		project_source_cache::HitToken projectToken;
+		std::string projectTokenError;
+		if (project_source_cache::ProjectSourceCacheManager::Instance().ParseHitToken(
+				jumpToken,
+				projectToken,
+				&projectTokenError)) {
+			project_source_cache::Snapshot snapshot;
+			bool refreshed = false;
+			std::string resolveError;
+			std::string resolveTrace;
+			if (!project_source_cache::ProjectSourceCacheManager::Instance().ResolveSnapshotForHit(
+					projectToken,
+					false,
+					snapshot,
+					&refreshed,
+					&resolveError,
+					&resolveTrace)) {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["error"] = resolveError.empty() ? "resolve project cache snapshot failed" : resolveError;
+				r["trace"] = LocalToUtf8Text(resolveTrace);
+				return Utf8ToLocalText(r.dump());
+			}
+
+			const auto* page = FindProjectCachePageForAI(snapshot, projectToken);
+			if (page == nullptr) {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["error"] = "page not found in project cache snapshot";
+				r["trace"] = LocalToUtf8Text(resolveTrace);
+				return Utf8ToLocalText(r.dump());
+			}
+
+			ProgramTreeItemInfo item;
+			std::string itemError;
+			if (!TryGetProgramItemByNameForAI(page->name, page->typeKey, item, itemError) &&
+				!TryGetProgramItemByNameForAI(page->name, std::string(), item, itemError)) {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["error"] = itemError.empty() ? "program item lookup failed" : itemError;
+				r["trace"] = LocalToUtf8Text(resolveTrace);
+				r["page_name"] = LocalToUtf8Text(page->name);
+				r["type_key"] = page->typeKey;
+				r["type_name"] = LocalToUtf8Text(page->typeName);
+				return Utf8ToLocalText(r.dump());
+			}
+
+			std::string openTrace;
+			if (!e571::OpenProgramTreeItemPageByData(item.itemData, &openTrace)) {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["error"] = "open program item page failed";
+				r["trace"] = LocalToUtf8Text(resolveTrace + "|" + openTrace);
+				return Utf8ToLocalText(r.dump());
+			}
+
+			std::string currentPageName;
+			std::string currentPageType;
+			std::string currentPageTrace;
+			const bool currentPageOk = IDEFacade::Instance().GetCurrentPageName(
+				currentPageName,
+				&currentPageType,
+				&currentPageTrace);
+
+			nlohmann::json r;
+			r["ok"] = true;
+			r["source_kind"] = BuildProjectCacheSourceKindForAI(snapshot);
+			r["trace"] = LocalToUtf8Text(resolveTrace + "|" + openTrace);
+			r["line_number_hint"] = projectToken.lineNumber;
+			r["current_page_ok"] = currentPageOk;
+			r["current_page_name"] = LocalToUtf8Text(currentPageName);
+			r["current_page_type"] = LocalToUtf8Text(currentPageType);
+			r["current_page_trace"] = currentPageTrace;
+			r["warning"] = LocalToUtf8Text("当前命中来自 e2txt 解析缓存，jump_to_search_result 这里只负责尽量打开对应页面，不再尝试把 IDE 光标精确移动到解析行号。若需要精确行内容，请继续调用 read_project_source_cache_code。");
+			outOk = true;
+			return Utf8ToLocalText(r.dump());
 		}
 
 		e571::DirectGlobalSearchDebugHit hit{};
