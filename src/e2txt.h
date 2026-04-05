@@ -30,6 +30,12 @@ struct Page {
 	std::vector<std::string> lines;
 };
 
+// 导出的窗口 XML 信息。
+struct FormXml {
+	std::string name;
+	std::vector<std::string> lines;
+};
+
 // e2txt 文档对象。
 struct Document {
 	std::string sourcePath;
@@ -38,6 +44,7 @@ struct Document {
 	std::string versionText;
 	std::vector<Dependency> dependencies;
 	std::vector<Page> pages;
+	std::vector<FormXml> formXmls;
 };
 
 // 导出选项。

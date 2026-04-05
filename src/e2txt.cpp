@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -196,6 +197,32 @@ struct FormInfo {
 		std::int32_t dataType = 0;
 		bool isMenu = false;
 		std::string name;
+		bool visible = true;
+		bool disable = false;
+
+		std::string comment;
+		std::int32_t cWndAddress = 0;
+		std::int32_t left = 0;
+		std::int32_t top = 0;
+		std::int32_t width = 0;
+		std::int32_t height = 0;
+		std::int32_t unknownBeforeParent = 0;
+		std::int32_t parent = 0;
+		std::vector<std::int32_t> children;
+		std::vector<std::uint8_t> cursor;
+		std::string tag;
+		std::int32_t unknownBeforeVisible = 0;
+		bool tabStop = true;
+		bool locked = false;
+		std::int32_t tabIndex = 0;
+		std::vector<std::pair<std::int32_t, std::int32_t>> events;
+		std::vector<std::uint8_t> extensionData;
+
+		std::int32_t hotKey = 0;
+		std::int32_t level = 0;
+		bool selected = false;
+		std::string text;
+		std::int32_t clickEvent = 0;
 	};
 	std::vector<ElementInfo> elements;
 };
@@ -920,7 +947,7 @@ bool ParseFormElements(ByteReader& reader, std::vector<FormInfo::ElementInfo>& o
 
 	const size_t blockStart = reader.position();
 	const size_t blockEnd = blockStart + static_cast<size_t>(size);
-	if (blockEnd > reader.bytes().size()) {
+	if (blockEnd < blockStart || blockEnd > reader.bytes().size()) {
 		return false;
 	}
 
@@ -941,6 +968,34 @@ bool ParseFormElements(ByteReader& reader, std::vector<FormInfo::ElementInfo>& o
 	if (blockEnd < payloadStart) {
 		return false;
 	}
+
+	const auto readInt32VectorWithLengthPrefix = [](ByteReader& itemReader, std::vector<std::int32_t>& outValues) -> bool {
+		outValues.clear();
+		std::int32_t valueCount = 0;
+		if (!itemReader.ReadI32(valueCount) || valueCount < 0) {
+			return false;
+		}
+		outValues.resize(static_cast<size_t>(valueCount));
+		for (std::int32_t valueIndex = 0; valueIndex < valueCount; ++valueIndex) {
+			if (!itemReader.ReadI32(outValues[static_cast<size_t>(valueIndex)])) {
+				return false;
+			}
+		}
+		return true;
+	};
+
+	const auto readByteVectorWithLengthPrefix = [](ByteReader& itemReader, std::vector<std::uint8_t>& outBytes) -> bool {
+		std::int32_t byteCount = 0;
+		if (!itemReader.ReadI32(byteCount) || byteCount < 0) {
+			return false;
+		}
+		std::vector<std::uint8_t> bytes;
+		if (!itemReader.ReadRaw(static_cast<size_t>(byteCount), bytes)) {
+			return false;
+		}
+		outBytes = std::move(bytes);
+		return true;
+	};
 
 	outElements.resize(static_cast<size_t>(count));
 	for (std::int32_t i = 0; i < count; ++i) {
@@ -966,10 +1021,79 @@ bool ParseFormElements(ByteReader& reader, std::vector<FormInfo::ElementInfo>& o
 
 		auto& element = outElements[index];
 		element.id = ids[index];
-		if (!itemReader.ReadI32(element.dataType) || !itemReader.Skip(20) || !itemReader.ReadStandardText(element.name)) {
+		if (!itemReader.ReadI32(element.dataType)) {
 			return false;
 		}
 		element.isMenu = element.dataType == 65539;
+
+		std::vector<std::uint8_t> ignoredBytes;
+		if (!itemReader.ReadRaw(20, ignoredBytes) || !itemReader.ReadStandardText(element.name)) {
+			return false;
+		}
+
+		if (element.isMenu) {
+			std::string unusedComment;
+			std::int32_t showStatus = 0;
+			if (!itemReader.ReadStandardText(unusedComment) ||
+				!itemReader.ReadI32(element.hotKey) ||
+				!itemReader.ReadI32(element.level) ||
+				!itemReader.ReadI32(showStatus) ||
+				!itemReader.ReadStandardText(element.text) ||
+				!itemReader.ReadI32(element.clickEvent)) {
+				return false;
+			}
+
+			element.visible = (showStatus & 0x1) == 0;
+			element.disable = (showStatus & 0x2) != 0;
+			element.selected = (showStatus & 0x4) != 0;
+		}
+		else {
+			std::int32_t showStatus = 0;
+			std::int32_t eventCount = 0;
+			if (!itemReader.ReadStandardText(element.comment) ||
+				!itemReader.ReadI32(element.cWndAddress) ||
+				!itemReader.ReadI32(element.left) ||
+				!itemReader.ReadI32(element.top) ||
+				!itemReader.ReadI32(element.width) ||
+				!itemReader.ReadI32(element.height) ||
+				!itemReader.ReadI32(element.unknownBeforeParent) ||
+				!itemReader.ReadI32(element.parent) ||
+				!readInt32VectorWithLengthPrefix(itemReader, element.children) ||
+				!readByteVectorWithLengthPrefix(itemReader, element.cursor) ||
+				!itemReader.ReadStandardText(element.tag) ||
+				!itemReader.ReadI32(element.unknownBeforeVisible) ||
+				!itemReader.ReadI32(showStatus) ||
+				!itemReader.ReadI32(element.tabIndex) ||
+				!itemReader.ReadI32(eventCount) ||
+				eventCount < 0) {
+				return false;
+			}
+
+			element.visible = (showStatus & 0x1) != 0;
+			element.disable = (showStatus & 0x2) != 0;
+			element.tabStop = (showStatus & 0x4) != 0;
+			element.locked = (showStatus & 0x10) != 0;
+
+			element.events.clear();
+			element.events.reserve(static_cast<size_t>(eventCount));
+			for (std::int32_t eventIndex = 0; eventIndex < eventCount; ++eventIndex) {
+				std::int32_t eventKey = 0;
+				std::int32_t eventValue = 0;
+				if (!itemReader.ReadI32(eventKey) || !itemReader.ReadI32(eventValue)) {
+					return false;
+				}
+				element.events.emplace_back(eventKey, eventValue);
+			}
+
+			if (!itemReader.ReadRaw(20, ignoredBytes)) {
+				return false;
+			}
+
+			const size_t remaining = itemEnd >= itemReader.position() ? (itemEnd - itemReader.position()) : 0;
+			if (!itemReader.ReadRaw(remaining, element.extensionData)) {
+				return false;
+			}
+		}
 	}
 
 	return reader.SetPosition(blockEnd);
@@ -1534,6 +1658,7 @@ inline void DecomposeLibDataTypeId(std::int32_t id, std::int16_t& outLib, std::i
 
 struct SupportTypeSymbols {
 	std::string name;
+	bool isTabControl = false;
 	std::vector<std::string> memberNames;
 };
 
@@ -1856,6 +1981,33 @@ public:
 		return name.empty() ? std::string("_Lib") + std::to_string(libraryIndex) + "Type" + std::to_string(typeId) + "Mem" + std::to_string(memberId) : name;
 	}
 
+	bool IsTabControlDataType(std::int32_t typeValue)
+	{
+		if (typeValue == 65557) {
+			return true;
+		}
+
+		const auto rawValue = static_cast<std::uint32_t>(typeValue);
+		if ((rawValue & 0x80000000u) != 0) {
+			return false;
+		}
+
+		const std::uint16_t supportIndex = static_cast<std::uint16_t>(rawValue >> 16);
+		const std::uint16_t typeIndex = static_cast<std::uint16_t>(rawValue & 0xFFFFu);
+		if (supportIndex == 0 || typeIndex == 0) {
+			return false;
+		}
+		if (!EnsureSupportLibraryCacheByTypeIndex(supportIndex)) {
+			return false;
+		}
+
+		const auto* symbols = FindSupportLibrarySymbolsByTypeIndex(supportIndex);
+		if (symbols == nullptr || typeIndex > symbols->dataTypes.size()) {
+			return false;
+		}
+		return symbols->dataTypes[static_cast<size_t>(typeIndex - 1)].isTabControl;
+	}
+
 private:
 	static std::string ToHexSuffix(std::int32_t id)
 	{
@@ -2003,6 +2155,7 @@ private:
 							const LIB_DATA_TYPE_INFO& dataType = libInfo->m_pDataType[i];
 							SupportTypeSymbols typeSymbols;
 							typeSymbols.name = ReadSupportLibraryName(dataType.m_szName);
+							typeSymbols.isTabControl = (dataType.m_dwState & LDT_IS_TAB_UNIT) != 0;
 							typeSymbols.memberNames = BuildSupportTypeMemberNames(dataType);
 							symbols.dataTypes.push_back(std::move(typeSymbols));
 						}
@@ -3932,6 +4085,376 @@ void BuildConstantPage(const ModuleSections& sections, Document& outDocument)
 	outDocument.pages.push_back(std::move(page));
 }
 
+std::string EscapeXmlAttribute(const std::string& text)
+{
+	std::string out;
+	out.reserve(text.size());
+	for (const unsigned char ch : text) {
+		switch (ch) {
+		case '&': out += "&amp;"; break;
+		case '<': out += "&lt;"; break;
+		case '>': out += "&gt;"; break;
+		case '"': out += "&quot;"; break;
+		case '\'': out += "&apos;"; break;
+		default: out.push_back(static_cast<char>(ch)); break;
+		}
+	}
+	return out;
+}
+
+std::string EncodeBase64(const std::vector<std::uint8_t>& bytes)
+{
+	static constexpr char kBase64Table[] =
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	if (bytes.empty()) {
+		return std::string();
+	}
+
+	std::string out;
+	out.reserve(((bytes.size() + 2) / 3) * 4);
+	size_t index = 0;
+	while (index + 3 <= bytes.size()) {
+		const std::uint32_t value =
+			(static_cast<std::uint32_t>(bytes[index]) << 16) |
+			(static_cast<std::uint32_t>(bytes[index + 1]) << 8) |
+			static_cast<std::uint32_t>(bytes[index + 2]);
+		out.push_back(kBase64Table[(value >> 18) & 0x3F]);
+		out.push_back(kBase64Table[(value >> 12) & 0x3F]);
+		out.push_back(kBase64Table[(value >> 6) & 0x3F]);
+		out.push_back(kBase64Table[value & 0x3F]);
+		index += 3;
+	}
+
+	const size_t remaining = bytes.size() - index;
+	if (remaining == 1) {
+		const std::uint32_t value = static_cast<std::uint32_t>(bytes[index]) << 16;
+		out.push_back(kBase64Table[(value >> 18) & 0x3F]);
+		out.push_back(kBase64Table[(value >> 12) & 0x3F]);
+		out.push_back('=');
+		out.push_back('=');
+	}
+	else if (remaining == 2) {
+		const std::uint32_t value =
+			(static_cast<std::uint32_t>(bytes[index]) << 16) |
+			(static_cast<std::uint32_t>(bytes[index + 1]) << 8);
+		out.push_back(kBase64Table[(value >> 18) & 0x3F]);
+		out.push_back(kBase64Table[(value >> 12) & 0x3F]);
+		out.push_back(kBase64Table[(value >> 6) & 0x3F]);
+		out.push_back('=');
+	}
+	return out;
+}
+
+std::string BoolToEText(bool value)
+{
+	return value ? "真" : "假";
+}
+
+bool IsLikelyXmlElementName(const std::string& name)
+{
+	if (name.empty()) {
+		return false;
+	}
+
+	const unsigned char first = static_cast<unsigned char>(name.front());
+	if (!(std::isalpha(first) != 0 || first == '_' || first == ':' || first >= 0x80)) {
+		return false;
+	}
+
+	for (const unsigned char ch : name) {
+		if (ch >= 0x80) {
+			continue;
+		}
+		if (std::isalnum(ch) != 0 || ch == '_' || ch == '-' || ch == '.' || ch == ':') {
+			continue;
+		}
+		return false;
+	}
+	return true;
+}
+
+std::string BuildFallbackFormElementXmlName(const FormInfo::ElementInfo& item)
+{
+	if (epl_system_id::IsLibDataType(item.dataType)) {
+		std::int16_t libId = 0;
+		std::int16_t typeId = 0;
+		epl_system_id::DecomposeLibDataTypeId(item.dataType, libId, typeId);
+		return "未知类型.Lib" + std::to_string(libId) + "." + std::to_string(typeId);
+	}
+	return "未知类型." + std::to_string(item.dataType);
+}
+
+std::string ResolveFormElementXmlName(const FormInfo::ElementInfo& item, SymbolResolver& resolver)
+{
+	std::string name = TrimAsciiCopy(resolver.ResolveType(item.dataType));
+	if (!IsLikelyXmlElementName(name)) {
+		name = BuildFallbackFormElementXmlName(item);
+	}
+	return name;
+}
+
+const FormInfo::ElementInfo* FindFormSelfElement(const FormInfo& form)
+{
+	for (const auto& item : form.elements) {
+		if (!item.isMenu && epl_system_id::GetType(item.id) == epl_system_id::kTypeFormSelf) {
+			return &item;
+		}
+	}
+	for (const auto& item : form.elements) {
+		if (!item.isMenu && item.dataType == 65537 && item.parent == 0) {
+			return &item;
+		}
+	}
+	for (const auto& item : form.elements) {
+		if (!item.isMenu && item.dataType == 65537) {
+			return &item;
+		}
+	}
+	for (const auto& item : form.elements) {
+		if (!item.isMenu) {
+			return &item;
+		}
+	}
+	return nullptr;
+}
+
+void AppendXmlLine(FormXml& formXml, int indent, const std::string& text)
+{
+	formXml.lines.push_back(std::string(static_cast<size_t>(indent) * 2, ' ') + text);
+}
+
+std::string BuildXmlOpenTag(
+	const std::string& tagName,
+	const std::vector<std::pair<std::string, std::string>>& attributes,
+	bool selfClosing)
+{
+	std::ostringstream stream;
+	stream << "<" << tagName;
+	for (const auto& [key, value] : attributes) {
+		stream << " " << key << "=\"" << EscapeXmlAttribute(value) << "\"";
+	}
+	stream << (selfClosing ? " />" : ">");
+	return stream.str();
+}
+
+std::vector<std::pair<std::string, std::string>> BuildFormControlXmlAttributes(
+	const FormInfo::ElementInfo& item,
+	bool includeIdentity)
+{
+	std::vector<std::pair<std::string, std::string>> attributes;
+	if (includeIdentity) {
+		attributes.emplace_back("名称", TrimAsciiCopy(item.name));
+		if (!TrimAsciiCopy(item.comment).empty()) {
+			attributes.emplace_back("备注", TrimAsciiCopy(item.comment));
+		}
+	}
+
+	attributes.emplace_back("左边", std::to_string(item.left));
+	attributes.emplace_back("顶边", std::to_string(item.top));
+	attributes.emplace_back("宽度", std::to_string(item.width));
+	attributes.emplace_back("高度", std::to_string(item.height));
+	if (!TrimAsciiCopy(item.tag).empty()) {
+		attributes.emplace_back("标记", item.tag);
+	}
+	if (item.disable) {
+		attributes.emplace_back("禁止", BoolToEText(true));
+	}
+	if (!item.visible) {
+		attributes.emplace_back("可视", BoolToEText(false));
+	}
+	attributes.emplace_back("鼠标指针", EncodeBase64(item.cursor));
+	attributes.emplace_back("可停留焦点", BoolToEText(item.tabStop));
+	if (item.tabIndex != 0) {
+		attributes.emplace_back("停留顺序", std::to_string(item.tabIndex));
+	}
+	attributes.emplace_back("扩展属性数据", EncodeBase64(item.extensionData));
+	return attributes;
+}
+
+std::vector<std::pair<std::string, std::string>> BuildFormMenuXmlAttributes(const FormInfo::ElementInfo& item)
+{
+	std::vector<std::pair<std::string, std::string>> attributes;
+	attributes.emplace_back("名称", TrimAsciiCopy(item.name));
+	attributes.emplace_back("标题", item.text);
+	if (item.selected) {
+		attributes.emplace_back("选中", BoolToEText(true));
+	}
+	if (item.disable) {
+		attributes.emplace_back("禁止", BoolToEText(true));
+	}
+	if (!item.visible) {
+		attributes.emplace_back("可视", BoolToEText(false));
+	}
+	if (item.hotKey != 0) {
+		attributes.emplace_back("快捷键", std::to_string(item.hotKey));
+	}
+	return attributes;
+}
+
+void BuildFormXmlEntries(const ModuleSections& sections, Document& outDocument)
+{
+	if (sections.resources.forms.empty()) {
+		return;
+	}
+
+	SymbolResolver resolver(sections.program, sections.resources, outDocument.sourcePath);
+	for (const auto& form : sections.resources.forms) {
+		FormXml formXml;
+		formXml.name = TrimAsciiCopy(form.name);
+		formXml.lines.push_back("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+
+		const FormInfo::ElementInfo* formSelf = FindFormSelfElement(form);
+		auto rootAttributes = formSelf != nullptr
+			? BuildFormControlXmlAttributes(*formSelf, false)
+			: std::vector<std::pair<std::string, std::string>>();
+		rootAttributes.insert(rootAttributes.begin(), std::make_pair("名称", formXml.name));
+		if (!TrimAsciiCopy(form.comment).empty()) {
+			rootAttributes.insert(rootAttributes.begin() + 1, std::make_pair("备注", TrimAsciiCopy(form.comment)));
+		}
+		AppendXmlLine(formXml, 0, BuildXmlOpenTag("窗口", rootAttributes, false));
+
+		struct MenuNode {
+			const FormInfo::ElementInfo* item = nullptr;
+			std::vector<size_t> children;
+		};
+
+		std::vector<MenuNode> menuNodes;
+		std::vector<size_t> menuRoots;
+		std::vector<size_t> menuStack;
+		for (const auto& item : form.elements) {
+			if (!item.isMenu) {
+				continue;
+			}
+			while (menuStack.size() > static_cast<size_t>((std::max)(item.level, 0))) {
+				menuStack.pop_back();
+			}
+			const size_t newIndex = menuNodes.size();
+			menuNodes.push_back(MenuNode{ &item, {} });
+			if (menuStack.empty()) {
+				menuRoots.push_back(newIndex);
+			}
+			else {
+				menuNodes[menuStack.back()].children.push_back(newIndex);
+			}
+			menuStack.push_back(newIndex);
+		}
+
+		if (!menuRoots.empty()) {
+			AppendXmlLine(formXml, 1, "<窗口.菜单>");
+			std::function<void(size_t, int)> renderMenu = [&](size_t nodeIndex, int indent) {
+				const MenuNode& node = menuNodes[nodeIndex];
+				const auto attributes = BuildFormMenuXmlAttributes(*node.item);
+				if (node.children.empty()) {
+					AppendXmlLine(formXml, indent, BuildXmlOpenTag("菜单", attributes, true));
+					return;
+				}
+
+				AppendXmlLine(formXml, indent, BuildXmlOpenTag("菜单", attributes, false));
+				for (const size_t childIndex : node.children) {
+					renderMenu(childIndex, indent + 1);
+				}
+				AppendXmlLine(formXml, indent, "</菜单>");
+			};
+
+			for (const size_t nodeIndex : menuRoots) {
+				renderMenu(nodeIndex, 2);
+			}
+			AppendXmlLine(formXml, 1, "</窗口.菜单>");
+		}
+
+		std::vector<const FormInfo::ElementInfo*> controls;
+		controls.reserve(form.elements.size());
+		for (const auto& item : form.elements) {
+			if (item.isMenu) {
+				continue;
+			}
+			if (formSelf != nullptr && &item == formSelf) {
+				continue;
+			}
+			controls.push_back(&item);
+		}
+
+		std::unordered_map<std::int32_t, const FormInfo::ElementInfo*> controlById;
+		controlById.reserve(controls.size());
+		for (const auto* item : controls) {
+			controlById[item->id] = item;
+		}
+
+		const auto findControlById = [&](std::int32_t childId) -> const FormInfo::ElementInfo* {
+			if (const auto it = controlById.find(childId); it != controlById.end()) {
+				return it->second;
+			}
+
+			for (const auto* item : controls) {
+				if ((item->id & epl_system_id::kMaskNum) == (childId & epl_system_id::kMaskNum)) {
+					return item;
+				}
+			}
+			return nullptr;
+		};
+
+		std::vector<const FormInfo::ElementInfo*> rootControls;
+		for (const auto* item : controls) {
+			if (item->parent == 0) {
+				rootControls.push_back(item);
+			}
+		}
+
+		std::function<void(const FormInfo::ElementInfo&, int)> renderControl = [&](const FormInfo::ElementInfo& item, int indent) {
+			const std::string tagName = ResolveFormElementXmlName(item, resolver);
+			const auto attributes = BuildFormControlXmlAttributes(item, true);
+			const bool isTabControl = resolver.IsTabControlDataType(item.dataType);
+			const bool hasChildren = !item.children.empty();
+			if (!hasChildren) {
+				AppendXmlLine(formXml, indent, BuildXmlOpenTag(tagName, attributes, true));
+				return;
+			}
+
+			AppendXmlLine(formXml, indent, BuildXmlOpenTag(tagName, attributes, false));
+			if (isTabControl) {
+				std::vector<const FormInfo::ElementInfo*> currentGroup;
+				auto flushTabGroup = [&]() {
+					AppendXmlLine(formXml, indent + 1, "<" + tagName + ".子夹>");
+					for (const auto* child : currentGroup) {
+						renderControl(*child, indent + 2);
+					}
+					AppendXmlLine(formXml, indent + 1, "</" + tagName + ".子夹>");
+					currentGroup.clear();
+				};
+
+				for (const std::int32_t childId : item.children) {
+					if (childId == 0) {
+						flushTabGroup();
+						continue;
+					}
+					if (const auto* child = findControlById(childId); child != nullptr) {
+						currentGroup.push_back(child);
+					}
+				}
+				flushTabGroup();
+			}
+			else {
+				for (const std::int32_t childId : item.children) {
+					if (childId == 0) {
+						continue;
+					}
+					if (const auto* child = findControlById(childId); child != nullptr) {
+						renderControl(*child, indent + 1);
+					}
+				}
+			}
+			AppendXmlLine(formXml, indent, "</" + tagName + ">");
+		};
+
+		for (const auto* item : rootControls) {
+			renderControl(*item, 1);
+		}
+
+		AppendXmlLine(formXml, 0, "</窗口>");
+		outDocument.formXmls.push_back(std::move(formXml));
+	}
+}
+
 void BuildFormPage(const ModuleSections& sections, Document& outDocument)
 {
 	if (sections.resources.forms.empty()) {
@@ -3969,6 +4492,7 @@ bool BuildDocumentFromSections(
 	BuildStructPage(sections, anonymousTypeHints, document);
 	BuildDllPage(sections, anonymousTypeHints, document);
 	BuildFormPage(sections, document);
+	BuildFormXmlEntries(sections, document);
 	BuildConstantPage(sections, document);
 	outDocument = std::move(document);
 	return true;
@@ -4100,6 +4624,16 @@ bool Generator::GenerateText(const Document& document, std::string& outText, std
 		stream << "[" << (i + 1) << "/" << document.pages.size() << "] type=" << page.typeName << " name=" << page.name << "\r\n";
 		stream << "--------------------------------------------------------------------------------\r\n";
 		for (const auto& line : page.lines) {
+			stream << line << "\r\n";
+		}
+	}
+
+	for (const auto& formXml : document.formXmls) {
+		stream << "\r\n";
+		stream << "================================================================================\r\n";
+		stream << "[Form XML] " << formXml.name << "\r\n";
+		stream << "--------------------------------------------------------------------------------\r\n";
+		for (const auto& line : formXml.lines) {
 			stream << line << "\r\n";
 		}
 	}
