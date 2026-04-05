@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <initializer_list>
 #include <mutex>
 #include <string>
 
@@ -17,6 +18,7 @@
 #include "EideProjectBinarySerializer.h"
 #include "Global.h"
 #include "IDEFacade.h"
+#include "MemFind.h"
 #include "PathHelper.h"
 #include "StringHelper.h"
 
@@ -388,8 +390,57 @@ static auto originalTrackPopupMenuEx = TrackPopupMenuEx;
 #if defined(_M_IX86)
 constexpr std::uintptr_t kImageBase = 0x400000;
 constexpr std::uintptr_t kKnownProjectSerializeToFileRva = 0x44FDF0;
+constexpr const char* kProjectSerializeToFilePattern =
+	"55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 "
+	"81 EC ?? ?? ?? ?? 53 56 8B D9 57 B9 ?? ?? ?? ?? 89 65 ?? E8 ?? ?? ?? ?? "
+	"8B F8 8B 83 ?? ?? ?? ?? 89 7D ?? 8B 48 F8 85 C9 75 ?? 6A 14 C7 45 ?? 00 00 00 00 "
+	"E8 ?? ?? ?? ?? 8B F0";
 typedef int(__thiscall* OriginalProjectSerializeToFileFuncType)(void* thisPtr, LPCSTR lpFileName, int a3);
 OriginalProjectSerializeToFileFuncType originalProjectSerializeToFile = nullptr;
+
+template <typename T>
+T ResolveInternalAddress(std::uintptr_t moduleBase, std::uintptr_t rva)
+{
+	if (moduleBase == 0 || rva < kImageBase) {
+		return nullptr;
+	}
+	return reinterpret_cast<T>(moduleBase + (rva - kImageBase));
+}
+
+std::uintptr_t NormalizeRuntimeAddress(std::uintptr_t runtimeAddress, std::uintptr_t moduleBase)
+{
+	if (runtimeAddress == 0 || moduleBase == 0 || runtimeAddress < moduleBase) {
+		return 0;
+	}
+	return runtimeAddress - moduleBase + kImageBase;
+}
+
+std::uintptr_t ResolveUniqueCodeAddress(const char* pattern, std::uintptr_t moduleBase)
+{
+	if (pattern == nullptr || *pattern == '\0') {
+		return 0;
+	}
+
+	const auto matches = FindSelfModelMemoryAll(pattern);
+	if (matches.size() != 1) {
+		return 0;
+	}
+
+	return NormalizeRuntimeAddress(static_cast<std::uintptr_t>(matches.front()), moduleBase);
+}
+
+std::uintptr_t ResolveUniqueCodeAddressFromPatterns(
+	const std::initializer_list<const char*> patterns,
+	std::uintptr_t moduleBase)
+{
+	for (const char* pattern : patterns) {
+		const std::uintptr_t resolvedAddress = ResolveUniqueCodeAddress(pattern, moduleBase);
+		if (resolvedAddress != 0) {
+			return resolvedAddress;
+		}
+	}
+	return 0;
+}
 #endif
 
 typedef int(__thiscall* OriginalEStartDebugFuncType)(DWORD* thisPtr, int a2, int a3);
@@ -675,10 +726,24 @@ void StartHookCreateFileA()
 #if defined(_M_IX86)
 	const std::uintptr_t moduleBase = reinterpret_cast<std::uintptr_t>(GetModuleHandleA(nullptr));
 	if (moduleBase != 0) {
+		const std::uintptr_t projectSerializeToFileRva = ResolveUniqueCodeAddressFromPatterns(
+			{
+				kProjectSerializeToFilePattern,
+			},
+			moduleBase);
 		originalProjectSerializeToFile = reinterpret_cast<OriginalProjectSerializeToFileFuncType>(
-			moduleBase + (kKnownProjectSerializeToFileRva - kImageBase));
+			ResolveInternalAddress<void*>(
+				moduleBase,
+				projectSerializeToFileRva != 0 ? projectSerializeToFileRva : kKnownProjectSerializeToFileRva));
 		if (originalProjectSerializeToFile != nullptr) {
+			OutputStringToELog(std::format(
+				"[ProjectBinarySerializer] hook serialize_to_file rva=0x{:X} via={}",
+				projectSerializeToFileRva != 0 ? projectSerializeToFileRva : kKnownProjectSerializeToFileRva,
+				projectSerializeToFileRva != 0 ? "pattern" : "fallback"));
 			DetourAttach(&(PVOID&)originalProjectSerializeToFile, MyProjectSerializeToFile);
+		}
+		else {
+			OutputStringToELog("[ProjectBinarySerializer] hook serialize_to_file address unavailable");
 		}
 	}
 #endif

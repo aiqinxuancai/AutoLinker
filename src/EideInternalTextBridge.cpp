@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cctype>
 #include <cstring>
 #include <fstream>
@@ -37,8 +36,7 @@ constexpr unsigned int kEditorUiCmdPaste = 0x2056;
 constexpr unsigned int kEditorUiCmdDelete = VK_DELETE;
 constexpr size_t kEditorDispatchVtableIndex = 56;
 constexpr int kEditorDispatchDefaultFlags = 1;
-constexpr std::uintptr_t kKnownEditorDispatchCommandRva = 0x4B6D70;
-constexpr std::uintptr_t kKnownEditorExportSelectedTextRva = 0x4B8D50;
+constexpr std::uintptr_t kFallbackEditorDispatchCommandRva = 0x4B6D70;
 constexpr std::uintptr_t kKnownEditorFormatRangeTextRva = 0x48EA10;
 constexpr std::uintptr_t kKnownEditorGetRangeCountRva = 0x4C05B0;
 constexpr std::uintptr_t kKnownClipboardTextToObjectWrapperRva = 0x4C9220;
@@ -50,7 +48,7 @@ constexpr std::uintptr_t kKnownClipboardValidateA00Rva = 0x452A00;
 constexpr std::uintptr_t kKnownClipboardValidate560Rva = 0x452560;
 constexpr std::uintptr_t kKnownClipboardValidate230Rva = 0x452230;
 constexpr std::uintptr_t kKnownClipboardCollectionFirstInvalidRva = 0x4521D0;
-constexpr std::uintptr_t kKnownEditorPasteHandlerRva = 0x4BC830;
+constexpr std::uintptr_t kFallbackEditorPasteHandlerRva = 0x4BC830;
 constexpr std::uintptr_t kKnownGlobalSupportLibraryArrayRva = 0x5CB028;
 constexpr std::uintptr_t kKnownSupportLibraryArrayAddUniqueRva = 0x4F4830;
 constexpr std::uintptr_t kKnownClipboardMergeParsedRangeRva = 0x4DABA0;
@@ -61,42 +59,19 @@ constexpr std::uintptr_t kKnownGenericArrayInitRva = 0x486060;
 constexpr std::uintptr_t kKnownGenericArrayAssignRva = 0x486920;
 constexpr std::uintptr_t kKnownGenericArrayFinalizeRva = 0x4863A0;
 constexpr std::uintptr_t kKnownGenericArrayDestroyRva = 0x486260;
-constexpr std::uintptr_t kKnownClipboardObjectInit00Rva = 0x44E2D0;
 constexpr std::uintptr_t kKnownClipboardObjectCtorRva = 0x40E400;
-constexpr std::uintptr_t kKnownClipboardObjectInit3CRva = 0x40EC50;
-constexpr std::uintptr_t kKnownClipboardObjectInit94Rva = 0x53A56A;
-constexpr std::uintptr_t kKnownClipboardObjectInitA8Rva = 0x53A9C8;
-constexpr std::uintptr_t kKnownClipboardObjectInitBCRva = 0x40F9A0;
-constexpr std::uintptr_t kKnownClipboardObjectInit188Rva = 0x40F520;
-constexpr std::uintptr_t kKnownClipboardObjectInit1DCRva = 0x40E810;
-constexpr std::uintptr_t kKnownClipboardObjectInit1FCRva = 0x40EB60;
-constexpr std::uintptr_t kKnownClipboardObjectInit214Rva = 0x40EA70;
-constexpr std::uintptr_t kKnownClipboardObjectInit230Rva = 0x40EBC0;
-constexpr std::uintptr_t kKnownClipboardObjectInit24CRva = 0x40EB90;
-constexpr std::uintptr_t kKnownClipboardObjectInit268Rva = 0x40EBF0;
-constexpr std::uintptr_t kKnownClipboardObjectInit284Rva = 0x40E930;
-constexpr std::uintptr_t kKnownClipboardObjectInit2A0Rva = 0x40E990;
-constexpr std::uintptr_t kKnownClipboardObjectInit2BCRva = 0x40EC20;
-constexpr std::uintptr_t kKnownClipboardObjectArraySetSizeRva = 0x53AAEE;
-constexpr std::uintptr_t kKnownClipboardObjectFillMemoryRva = 0x486F90;
 constexpr std::uintptr_t kKnownGenericArrayVtableRva = 0x574900;
-constexpr std::uintptr_t kKnownEmptyStringRva = 0x5C72A4;
 constexpr std::uintptr_t kKnownCollectionGetValueByIndexRva = 0x4E7EA0;
-constexpr std::uintptr_t kKnownCStringDestroyRva = 0x53BB23;
 constexpr size_t kInternalClipboardObjectSize = 0x340;
 constexpr size_t kInternalGenericArraySize = 0x14;
 constexpr size_t kClipboardObjectSupportLibrariesOffset = 0x94;
 constexpr size_t kClipboardObjectGuidFlagOffset = 0x10C;
 constexpr size_t kClipboardObjectGuidOffset = 0x110;
 
-struct ExeCStringA;
-
 using FnEditorDispatchCommand = int(__thiscall*)(void*, int, int, char*, char*);
-using FnEditorExportSelectedText = BOOL(__thiscall*)(void*, ExeCStringA*, size_t);
 using FnEditorFormatRangeText = void(__thiscall*)(void*, int, int, void*, int);
 using FnEditorUiCommand = int(__thiscall*)(void*, unsigned int);
 using FnEditorPasteHandler = void(__thiscall*)(void*, int);
-using FnClipboardTextToObjectHook = int(__fastcall*)(void*, void*, void*);
 using FnClipboardTextToObjectWrapper = int(__thiscall*)(void*, void*);
 using FnClipboardTextToObjectDirect = int(__thiscall*)(void*, void*);
 using FnEditorInsertClipboardObject = int(__thiscall*)(void*, void*, int, int, int);
@@ -113,14 +88,12 @@ using FnCdeclCStringArrayAddUnique = int(__cdecl*)(CStringArray*, unsigned char*
 using FnThiscallMergeParsedRange = void(__thiscall*)(void*, void*, int, int);
 using FnThiscallPtrArrayRemoveAt = void*(__thiscall*)(void*, int, int);
 using FnCdeclFillMemory = void(__cdecl*)(void*, int);
-using FnExeCStringDestroy = void(__thiscall*)(void*);
 
 struct NativeEditorCommandAddresses {
 	bool initialized = false;
 	bool ok = false;
 	std::uintptr_t moduleBase = 0;
 	std::uintptr_t editorDispatchCommand = 0;
-	std::uintptr_t editorExportSelectedText = 0;
 	std::uintptr_t editorPasteHandler = 0;
 };
 
@@ -128,10 +101,6 @@ struct EditorDispatchTargetInfo {
 	std::uintptr_t rawObject = 0;
 	std::uintptr_t innerObject = 0;
 	unsigned int pageType = 0;
-};
-
-struct ExeCStringA {
-	const char* data = nullptr;
 };
 
 struct FakeClipboardContext {
@@ -171,18 +140,6 @@ std::mutex g_fakeClipboardHookMutex;
 std::mutex g_fakeClipboardDataMutex;
 bool g_fakeClipboardHooksInstalled = false;
 FakeClipboardContext* g_activeFakeClipboard = nullptr;
-std::mutex g_editorExportTextHookMutex;
-std::mutex g_editorExportCaptureMutex;
-bool g_editorExportTextHookInstalled = false;
-FnEditorExportSelectedText g_originalEditorExportSelectedText = nullptr;
-std::mutex g_clipboardTextParseHookMutex;
-std::mutex g_clipboardTextPostProcessMutex;
-bool g_clipboardTextParseHookInstalled = false;
-std::atomic<bool> g_forceFullTextClipboardParse = false;
-bool g_applySupportLibrariesAfterParse = false;
-std::string g_parseSupportLibrarySourceText;
-FnClipboardTextToObjectHook g_originalClipboardTextToObject = nullptr;
-FnClipboardTextToObjectDirect g_directClipboardTextToObject = nullptr;
 
 decltype(&::OpenClipboard) g_originalOpenClipboard = ::OpenClipboard;
 decltype(&::EmptyClipboard) g_originalEmptyClipboard = ::EmptyClipboard;
@@ -191,19 +148,6 @@ decltype(&::GetClipboardData) g_originalGetClipboardData = ::GetClipboardData;
 decltype(&::IsClipboardFormatAvailable) g_originalIsClipboardFormatAvailable = ::IsClipboardFormatAvailable;
 decltype(&::CloseClipboard) g_originalCloseClipboard = ::CloseClipboard;
 
-struct EditorExportCaptureContext {
-	std::uintptr_t targetObject = 0;
-	size_t expectedMode = 0;
-	bool matchedCall = false;
-	bool originalReturnedTrue = false;
-	bool captured = false;
-	std::string text;
-	std::string trace;
-};
-
-EditorExportCaptureContext* g_activeEditorExportCapture = nullptr;
-
-const char* GetExeCStringData(const ExeCStringA& value);
 std::string NormalizeLineBreakToCrLf(const std::string& text);
 
 std::uintptr_t NormalizeRuntimeAddress(std::uintptr_t runtimeAddress, std::uintptr_t moduleBase)
@@ -251,15 +195,7 @@ bool PopulateNativeEditorCommandAddresses(NativeEditorCommandAddresses& addrs, s
 		},
 		moduleBase);
 	if (addrs.editorDispatchCommand == 0) {
-		addrs.editorDispatchCommand = kKnownEditorDispatchCommandRva;
-	}
-	addrs.editorExportSelectedText = ResolveUniqueCodeAddressFromPatterns(
-		{
-			"8B 7C 24 ?? 8B F1 8B CF E8 ?? ?? ?? ?? A1 ?? ?? ?? ?? 89 44 24 ?? 8B 46 78 6A 00 8D 4C 24 ?? 6A 00 51 8B 4E 74 8D 54 24 ?? 6A 01 52 50 51 8B CE C7 44 24 ?? 00 00 00 00 E8 ?? ?? ?? ?? 85 C0 74 ?? 83 78 F8 00",
-		},
-		moduleBase);
-	if (addrs.editorExportSelectedText == 0) {
-		addrs.editorExportSelectedText = kKnownEditorExportSelectedTextRva;
+		addrs.editorDispatchCommand = kFallbackEditorDispatchCommandRva;
 	}
 	addrs.editorPasteHandler = ResolveUniqueCodeAddressFromPatterns(
 		{
@@ -267,7 +203,7 @@ bool PopulateNativeEditorCommandAddresses(NativeEditorCommandAddresses& addrs, s
 		},
 		moduleBase);
 	if (addrs.editorPasteHandler == 0) {
-		addrs.editorPasteHandler = kKnownEditorPasteHandlerRva;
+		addrs.editorPasteHandler = kFallbackEditorPasteHandlerRva;
 	}
 	addrs.ok = addrs.editorDispatchCommand != 0;
 	addrs.initialized = true;
@@ -625,157 +561,7 @@ bool EnsureFakeClipboardHooksInstalled()
 	return g_fakeClipboardHooksInstalled;
 }
 
-BOOL __fastcall HookedEditorExportSelectedText(
-	void* thisPtr,
-	void* edx,
-	ExeCStringA* outText,
-	size_t exportMode)
-{
-	(void)edx;
-	const BOOL result = g_originalEditorExportSelectedText != nullptr
-		? g_originalEditorExportSelectedText(thisPtr, outText, exportMode)
-		: FALSE;
-
-	std::lock_guard<std::mutex> lock(g_editorExportCaptureMutex);
-	EditorExportCaptureContext* ctx = g_activeEditorExportCapture;
-	if (ctx == nullptr) {
-		return result;
-	}
-
-	const std::uintptr_t thisValue = reinterpret_cast<std::uintptr_t>(thisPtr);
-	if (ctx->targetObject != 0 && ctx->targetObject != thisValue) {
-		return result;
-	}
-	if (ctx->expectedMode != exportMode) {
-		return result;
-	}
-	if (ctx->matchedCall) {
-		return result;
-	}
-
-	ctx->matchedCall = true;
-	ctx->originalReturnedTrue = (result != FALSE);
-	ctx->trace =
-		std::string("hook_seen|mode=") +
-		std::to_string(exportMode) +
-		"|target=" + std::to_string(thisValue);
-
-	if (result == FALSE || outText == nullptr) {
-		if (result == FALSE) {
-			ctx->trace += "|original_returned_false";
-		}
-		else {
-			ctx->trace += "|out_text_null";
-		}
-		return result;
-	}
-
-	const char* exportedData = GetExeCStringData(*outText);
-	if (exportedData == nullptr || *exportedData == '\0') {
-		ctx->trace += "|captured_empty";
-		return result;
-	}
-
-	ctx->text = NormalizeLineBreakToCrLf(exportedData);
-	if (ctx->text.empty()) {
-		ctx->trace += "|captured_normalized_empty";
-		return result;
-	}
-
-	ctx->captured = true;
-	ctx->trace += "|captured_bytes=" + std::to_string(ctx->text.size());
-	return result;
-}
-
-bool EnsureEditorExportTextHookInstalled(std::uintptr_t moduleBase)
-{
-	std::lock_guard<std::mutex> lock(g_editorExportTextHookMutex);
-	if (g_editorExportTextHookInstalled) {
-		return true;
-	}
-	if (moduleBase == 0) {
-		return false;
-	}
-
-	const auto& addrs = GetNativeEditorCommandAddresses(moduleBase);
-	g_originalEditorExportSelectedText = ResolveInternalAddress<FnEditorExportSelectedText>(
-		moduleBase,
-		addrs.editorExportSelectedText);
-	if (g_originalEditorExportSelectedText == nullptr) {
-		return false;
-	}
-
-	DetourTransactionBegin();
-	DetourUpdateThread(GetCurrentThread());
-	DetourAttach(&(PVOID&)g_originalEditorExportSelectedText, HookedEditorExportSelectedText);
-	g_editorExportTextHookInstalled = (DetourTransactionCommit() == NO_ERROR);
-	return g_editorExportTextHookInstalled;
-}
-
 std::vector<std::string> ParseSupportLibraryNamesFromPageCode(const std::string& pageCode);
-
-int __fastcall HookedClipboardTextToObject(void* thisPtr, void* edx, void* textObject)
-{
-	(void)edx;
-	int result = 0;
-	if (g_forceFullTextClipboardParse.load(std::memory_order_relaxed) &&
-		g_directClipboardTextToObject != nullptr) {
-		result = g_directClipboardTextToObject(thisPtr, textObject);
-	}
-	else {
-		result = g_originalClipboardTextToObject != nullptr
-			? g_originalClipboardTextToObject(thisPtr, nullptr, textObject)
-			: 0;
-	}
-
-	if (result != 0 && thisPtr != nullptr) {
-		std::string sourceText;
-		{
-			std::lock_guard<std::mutex> lock(g_clipboardTextPostProcessMutex);
-			if (g_applySupportLibrariesAfterParse) {
-				sourceText = g_parseSupportLibrarySourceText;
-			}
-		}
-		if (!sourceText.empty()) {
-			const std::vector<std::string> supportLibraries = ParseSupportLibraryNamesFromPageCode(sourceText);
-			if (!supportLibraries.empty()) {
-				auto* supportLibraryArray = reinterpret_cast<CStringArray*>(
-					reinterpret_cast<std::byte*>(thisPtr) + kClipboardObjectSupportLibrariesOffset);
-				supportLibraryArray->RemoveAll();
-				for (const std::string& name : supportLibraries) {
-					supportLibraryArray->Add(name.c_str());
-				}
-			}
-		}
-	}
-
-	return result;
-}
-
-bool EnsureClipboardTextParseHookInstalled(std::uintptr_t moduleBase)
-{
-	std::lock_guard<std::mutex> lock(g_clipboardTextParseHookMutex);
-	if (g_clipboardTextParseHookInstalled) {
-		return true;
-	}
-	if (moduleBase == 0) {
-		return false;
-	}
-
-	g_originalClipboardTextToObject = reinterpret_cast<FnClipboardTextToObjectHook>(
-		moduleBase + (kKnownClipboardTextToObjectWrapperRva - kImageBase));
-	g_directClipboardTextToObject = reinterpret_cast<FnClipboardTextToObjectDirect>(
-		moduleBase + (kKnownClipboardTextToObjectDirectRva - kImageBase));
-	if (g_originalClipboardTextToObject == nullptr || g_directClipboardTextToObject == nullptr) {
-		return false;
-	}
-
-	DetourTransactionBegin();
-	DetourUpdateThread(GetCurrentThread());
-	DetourAttach(&(PVOID&)g_originalClipboardTextToObject, HookedClipboardTextToObject);
-	g_clipboardTextParseHookInstalled = (DetourTransactionCommit() == NO_ERROR);
-	return g_clipboardTextParseHookInstalled;
-}
 
 class ScopedFakeClipboard {
 public:
@@ -884,128 +670,6 @@ public:
 private:
 	bool m_active = false;
 	FakeClipboardContext m_context;
-};
-
-class ScopedEditorExportCapture {
-public:
-	ScopedEditorExportCapture(std::uintptr_t moduleBase, std::uintptr_t targetObject, size_t expectedMode)
-	{
-		if (!EnsureEditorExportTextHookInstalled(moduleBase) || targetObject == 0) {
-			return;
-		}
-
-		m_context.targetObject = targetObject;
-		m_context.expectedMode = expectedMode;
-		std::lock_guard<std::mutex> lock(g_editorExportCaptureMutex);
-		g_activeEditorExportCapture = &m_context;
-		m_active = true;
-	}
-
-	~ScopedEditorExportCapture()
-	{
-		if (!m_active) {
-			return;
-		}
-
-		std::lock_guard<std::mutex> lock(g_editorExportCaptureMutex);
-		if (g_activeEditorExportCapture == &m_context) {
-			g_activeEditorExportCapture = nullptr;
-		}
-	}
-
-	bool IsActive() const
-	{
-		return m_active;
-	}
-
-	bool TryGetCapturedText(std::string* outText, std::string* outTrace) const
-	{
-		if (outText != nullptr) {
-			outText->clear();
-		}
-		if (outTrace != nullptr) {
-			outTrace->clear();
-		}
-		if (!m_active) {
-			return false;
-		}
-
-		std::lock_guard<std::mutex> lock(g_editorExportCaptureMutex);
-		if (outTrace != nullptr) {
-			*outTrace = m_context.trace;
-		}
-		if (!m_context.captured || m_context.text.empty()) {
-			return false;
-		}
-		if (outText != nullptr) {
-			*outText = m_context.text;
-		}
-		return outText != nullptr && !outText->empty();
-	}
-
-private:
-	bool m_active = false;
-	mutable EditorExportCaptureContext m_context;
-};
-
-class ScopedFullTextClipboardParseOverride {
-public:
-	explicit ScopedFullTextClipboardParseOverride(std::uintptr_t moduleBase)
-	{
-		m_active = EnsureClipboardTextParseHookInstalled(moduleBase);
-		if (m_active) {
-			g_forceFullTextClipboardParse.store(true, std::memory_order_relaxed);
-		}
-	}
-
-	~ScopedFullTextClipboardParseOverride()
-	{
-		if (m_active) {
-			g_forceFullTextClipboardParse.store(false, std::memory_order_relaxed);
-		}
-	}
-
-	bool IsActive() const
-	{
-		return m_active;
-	}
-
-private:
-	bool m_active = false;
-};
-
-class ScopedClipboardParseSupportLibraryOverride {
-public:
-	ScopedClipboardParseSupportLibraryOverride(std::uintptr_t moduleBase, const std::string& pageCode)
-	{
-		m_active = EnsureClipboardTextParseHookInstalled(moduleBase);
-		if (!m_active) {
-			return;
-		}
-
-		std::lock_guard<std::mutex> lock(g_clipboardTextPostProcessMutex);
-		g_applySupportLibrariesAfterParse = true;
-		g_parseSupportLibrarySourceText = pageCode;
-	}
-
-	~ScopedClipboardParseSupportLibraryOverride()
-	{
-		if (!m_active) {
-			return;
-		}
-
-		std::lock_guard<std::mutex> lock(g_clipboardTextPostProcessMutex);
-		g_applySupportLibrariesAfterParse = false;
-		g_parseSupportLibrarySourceText.clear();
-	}
-
-	bool IsActive() const
-	{
-		return m_active;
-	}
-
-private:
-	bool m_active = false;
 };
 
 std::string NormalizeLineBreakToCrLf(const std::string& text);
@@ -1152,68 +816,6 @@ bool CallClipboardBoolSafe(FnThiscallBool fn, void* thisPtr)
 		return fn(thisPtr) != FALSE;
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
-		return false;
-	}
-}
-
-void InitExeCString(ExeCStringA& value, std::uintptr_t moduleBase)
-{
-	value.data = "";
-	const std::uintptr_t emptyDataAddress = ResolveInternalPointer(moduleBase, kKnownEmptyStringRva);
-	if (emptyDataAddress == 0) {
-		return;
-	}
-
-	__try {
-		const char* const* emptyData = reinterpret_cast<const char* const*>(emptyDataAddress);
-		if (emptyData != nullptr && *emptyData != nullptr) {
-			value.data = *emptyData;
-		}
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
-		value.data = "";
-	}
-}
-
-void DestroyExeCString(ExeCStringA& value, std::uintptr_t moduleBase)
-{
-	const auto destroyFn = ResolveInternalAddress<FnExeCStringDestroy>(moduleBase, kKnownCStringDestroyRva);
-	if (destroyFn != nullptr) {
-		__try {
-			destroyFn(&value);
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER) {
-		}
-	}
-	InitExeCString(value, moduleBase);
-}
-
-const char* GetExeCStringData(const ExeCStringA& value)
-{
-	return value.data != nullptr ? value.data : "";
-}
-
-bool CallEditorExportSelectedTextSafe(
-	FnEditorExportSelectedText fn,
-	void* editorObject,
-	size_t exportMode,
-	ExeCStringA* outText,
-	bool* outThrew = nullptr)
-{
-	if (outThrew != nullptr) {
-		*outThrew = false;
-	}
-	if (fn == nullptr || editorObject == nullptr || outText == nullptr) {
-		return false;
-	}
-
-	__try {
-		return fn(editorObject, outText, exportMode) != FALSE;
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
-		if (outThrew != nullptr) {
-			*outThrew = true;
-		}
 		return false;
 	}
 }
@@ -5876,155 +5478,6 @@ bool CopyCurrentSelectionByEditor(
 		outResult->trace = "copy_ok|" + copyTrace + "|" + clipboardTrace;
 	}
 	return true;
-}
-
-bool CopyCurrentSelectionDirectByEditor(
-	std::uintptr_t editorObject,
-	std::uintptr_t moduleBase,
-	size_t exportMode,
-	std::string* outCode,
-	NativeRealPageAccessResult* outResult)
-{
-	if (outResult != nullptr) {
-		*outResult = {};
-		outResult->editorObject = editorObject;
-	}
-	if (outCode != nullptr) {
-		outCode->clear();
-	}
-	if (editorObject == 0 || outCode == nullptr) {
-		if (outResult != nullptr) {
-			outResult->trace = "invalid_argument";
-		}
-		return false;
-	}
-
-	const auto& addrs = GetNativeEditorCommandAddresses(moduleBase);
-	const auto exportFn = ResolveInternalAddress<FnEditorExportSelectedText>(
-		moduleBase,
-		addrs.editorExportSelectedText);
-	if (exportFn == nullptr) {
-		if (outResult != nullptr) {
-			outResult->trace =
-				"direct_export_resolve_failed|module_base=" + std::to_string(moduleBase) +
-				"|normalized=" + std::to_string(addrs.editorExportSelectedText);
-		}
-		return false;
-	}
-
-	const auto tryExport = [&](std::uintptr_t targetObject, const char* targetName, std::string* outAttemptTrace) -> bool {
-		if (outAttemptTrace != nullptr) {
-			outAttemptTrace->clear();
-		}
-
-		ExeCStringA exportedText{};
-		InitExeCString(exportedText, moduleBase);
-		bool callThrew = false;
-		if (!CallEditorExportSelectedTextSafe(
-				exportFn,
-				reinterpret_cast<void*>(targetObject),
-				exportMode,
-				&exportedText,
-				&callThrew)) {
-			DestroyExeCString(exportedText, moduleBase);
-			if (outAttemptTrace != nullptr) {
-				*outAttemptTrace =
-					std::string(targetName) +
-					"|" +
-					(callThrew ? "direct_export_exception" : "direct_export_call_failed") +
-					"|addr=" + std::to_string(reinterpret_cast<std::uintptr_t>(exportFn)) +
-					"|mode=" + std::to_string(exportMode) +
-					"|target=" + std::to_string(targetObject);
-			}
-			return false;
-		}
-
-		const char* exportedData = GetExeCStringData(exportedText);
-		const size_t textLength = std::strlen(exportedData);
-		if (textLength == 0) {
-			DestroyExeCString(exportedText, moduleBase);
-			if (outAttemptTrace != nullptr) {
-				*outAttemptTrace =
-					std::string(targetName) +
-					"|direct_export_empty|addr=" +
-					std::to_string(reinterpret_cast<std::uintptr_t>(exportFn)) +
-					"|mode=" + std::to_string(exportMode) +
-					"|target=" + std::to_string(targetObject);
-			}
-			return false;
-		}
-
-		outCode->assign(exportedData, textLength);
-		DestroyExeCString(exportedText, moduleBase);
-		*outCode = NormalizeLineBreakToCrLf(*outCode);
-		if (outCode->empty()) {
-			if (outAttemptTrace != nullptr) {
-				*outAttemptTrace =
-					std::string(targetName) +
-					"|direct_export_normalized_empty|addr=" +
-					std::to_string(reinterpret_cast<std::uintptr_t>(exportFn)) +
-					"|mode=" + std::to_string(exportMode) +
-					"|target=" + std::to_string(targetObject);
-			}
-			return false;
-		}
-
-		if (outAttemptTrace != nullptr) {
-			*outAttemptTrace =
-				std::string(targetName) +
-				"|direct_export_ok|addr=" +
-				std::to_string(reinterpret_cast<std::uintptr_t>(exportFn)) +
-				"|mode=" + std::to_string(exportMode) +
-				"|target=" + std::to_string(targetObject) +
-				"|bytes=" + std::to_string(outCode->size());
-		}
-		return true;
-	};
-
-	std::string rawTrace;
-	if (tryExport(editorObject, "raw", &rawTrace)) {
-		if (outResult != nullptr) {
-			outResult->ok = true;
-			outResult->usedClipboardEmulation = false;
-			outResult->capturedCustomFormat = false;
-			outResult->textBytes = outCode->size();
-			outResult->trace = rawTrace;
-		}
-		return true;
-	}
-
-	EditorDispatchTargetInfo targetInfo{};
-	if (TryResolveInnerEditorObject(editorObject, &targetInfo) &&
-		targetInfo.innerObject != 0 &&
-		targetInfo.innerObject != editorObject) {
-		std::string innerTrace;
-		if (tryExport(targetInfo.innerObject, "inner", &innerTrace)) {
-			if (outResult != nullptr) {
-				outResult->ok = true;
-				outResult->usedClipboardEmulation = false;
-				outResult->capturedCustomFormat = false;
-				outResult->textBytes = outCode->size();
-				outResult->trace =
-					rawTrace +
-					"|page_type=" + std::to_string(targetInfo.pageType) +
-					"|" + innerTrace;
-			}
-			return true;
-		}
-
-		if (outResult != nullptr) {
-			outResult->trace =
-				rawTrace +
-				"|page_type=" + std::to_string(targetInfo.pageType) +
-				"|" + innerTrace;
-		}
-		return false;
-	}
-
-	if (outResult != nullptr) {
-		outResult->trace = rawTrace + "|inner_unavailable";
-	}
-	return false;
 }
 
 bool TryFormatWholePageTextDirectByEditor(

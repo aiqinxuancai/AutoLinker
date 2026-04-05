@@ -10,11 +10,13 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <initializer_list>
 #include <mutex>
 #include <set>
 
 #include "EideInternalTextBridge.h"
 #include "Global.h"
+#include "MemFind.h"
 #include "WindowHelper.h"
 
 namespace e571 {
@@ -33,6 +35,27 @@ constexpr size_t kCommandObjectVtableScanCount = 96;
 constexpr std::array<unsigned char, 8> kExpectedProjectMagic = {
 	'C', 'N', 'W', 'T', 'E', 'P', 'R', 'G'
 };
+constexpr const char* kDirectProjectSerializeToHandlePattern =
+	"6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 "
+	"83 EC 78 56 8B F1 68 00 10 00 00 68 02 20 00 00 8D 4C 24 ?? E8 ?? ?? ?? ?? "
+	"6A 00 68 00 10 00 00 8D 44 24 ?? 6A 00 50 8D 4C 24 ?? C7 84 24 ?? ?? ?? ?? "
+	"00 00 00 00 E8 ?? ?? ?? ??";
+constexpr const char* kProjectCommandDispatchPatternE571 =
+	"A1 ?? ?? ?? ?? 53 85 C0 74 09 B8 01 00 00 00 5B C2 10 00 8B 5C 24 0C F6 C3 10 "
+	"74 09 B8 01 00 00 00 5B C2 10 00 8B 54 24 08 56 8B C2 33 F6 25 00 00 FF 7F "
+	"3D 00 00 03 02 77 ?? 74 ?? 3D 00 00 01 01 74 ?? 3D 00 00 02 02 75 ??";
+constexpr const char* kProjectCommandDispatchPatternE595 =
+	"A1 ?? ?? ?? ?? 53 85 C0 74 09 B8 01 00 00 00 5B C2 10 00 8B 5C 24 0C F6 C3 10 "
+	"74 09 B8 01 00 00 00 5B C2 10 00 8B 54 24 08 56 8B C2 33 F6 25 00 00 FF 7F "
+	"3D 00 00 03 02 0F 87 ?? ?? ?? ?? 0F 84 ?? ?? ?? ?? 3D 00 00 01 01 74 ?? "
+	"3D 00 00 02 02 0F 85 ?? ?? ?? ??";
+constexpr const char* kProjectCommandDirect203Pattern =
+	"81 7C 24 04 01 00 03 02 74 05 33 C0 C2 10 00 E8 ?? ?? ?? ?? B8 01 00 00 00 C2 10 00";
+constexpr const char* kProjectCommandDirect202Pattern =
+	"6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 83 EC 64 53 55 56 "
+	"8B F1 57 8D 4C 24 60 E8 ?? ?? ?? ?? 8B AC 24 84 00 00 00 33 DB 33 C0 81 FD 32 00 02 02 "
+	"89 5C 24 7C 89 44 24 14 89 5C 24 18 0F 84 ?? ?? ?? ?? 81 FD 33 00 02 02 0F 84 ?? ?? ?? ?? "
+	"F6 84 24 88 00 00 00 0F 0F 84";
 
 using FnSerializeCurrentProjectToHandle = HGLOBAL(__thiscall*)(void*);
 
@@ -45,6 +68,7 @@ struct SerializerAddresses {
 	std::uintptr_t projectCommandDispatch = 0;
 	std::uintptr_t projectCommandDirect203 = 0;
 	std::uintptr_t projectCommandDirect202 = 0;
+	std::string resolveTrace;
 };
 
 std::mutex g_serializerAddressMutex;
@@ -84,6 +108,41 @@ T ResolveInternalAddress(std::uintptr_t moduleBase, std::uintptr_t rva)
 		return nullptr;
 	}
 	return reinterpret_cast<T>(moduleBase + (rva - kImageBase));
+}
+
+std::uintptr_t NormalizeRuntimeAddress(std::uintptr_t runtimeAddress, std::uintptr_t moduleBase)
+{
+	if (runtimeAddress == 0 || moduleBase == 0 || runtimeAddress < moduleBase) {
+		return 0;
+	}
+	return runtimeAddress - moduleBase + kImageBase;
+}
+
+std::uintptr_t ResolveUniqueCodeAddress(const char* pattern, std::uintptr_t moduleBase)
+{
+	if (pattern == nullptr || *pattern == '\0') {
+		return 0;
+	}
+
+	const auto matches = FindSelfModelMemoryAll(pattern);
+	if (matches.size() != 1) {
+		return 0;
+	}
+
+	return NormalizeRuntimeAddress(static_cast<std::uintptr_t>(matches.front()), moduleBase);
+}
+
+std::uintptr_t ResolveUniqueCodeAddressFromPatterns(
+	const std::initializer_list<const char*> patterns,
+	std::uintptr_t moduleBase)
+{
+	for (const char* pattern : patterns) {
+		const std::uintptr_t resolvedAddress = ResolveUniqueCodeAddress(pattern, moduleBase);
+		if (resolvedAddress != 0) {
+			return resolvedAddress;
+		}
+	}
+	return 0;
 }
 
 bool IsReadableAddressRange(std::uintptr_t address, size_t bytes)
@@ -236,11 +295,11 @@ std::string DescribeColdCommandRoute(ColdCommandRoute route)
 {
 	switch (route) {
 	case ColdCommandRoute::DispatchCommand:
-		return "dispatch_50A4F0";
+		return "dispatch";
 	case ColdCommandRoute::Direct2030001:
-		return "direct_50A800";
+		return "direct_2030001";
 	case ColdCommandRoute::Direct2020004:
-		return "direct_50A820";
+		return "direct_2020004";
 	default:
 		return "none";
 	}
@@ -560,15 +619,43 @@ bool PopulateSerializerAddresses(SerializerAddresses& addrs)
 		return false;
 	}
 
+	const std::uintptr_t directSerializeRva = ResolveUniqueCodeAddressFromPatterns(
+		{
+			kDirectProjectSerializeToHandlePattern,
+		},
+		addrs.moduleBase);
+	const std::uintptr_t dispatchRva = ResolveUniqueCodeAddressFromPatterns(
+		{
+			kProjectCommandDispatchPatternE571,
+			kProjectCommandDispatchPatternE595,
+		},
+		addrs.moduleBase);
+	const std::uintptr_t direct203Rva = ResolveUniqueCodeAddressFromPatterns(
+		{
+			kProjectCommandDirect203Pattern,
+		},
+		addrs.moduleBase);
+	const std::uintptr_t direct202Rva = ResolveUniqueCodeAddressFromPatterns(
+		{
+			kProjectCommandDirect202Pattern,
+		},
+		addrs.moduleBase);
+
 	addrs.directSerializeToHandle = ResolveInternalAddress<FnSerializeCurrentProjectToHandle>(
 		addrs.moduleBase,
-		kKnownDirectProjectSerializeToHandleRva);
+		directSerializeRva != 0 ? directSerializeRva : kKnownDirectProjectSerializeToHandleRva);
 	addrs.projectCommandDispatch = reinterpret_cast<std::uintptr_t>(
-		ResolveInternalAddress<void*>(addrs.moduleBase, kKnownProjectCommandDispatchRva));
+		ResolveInternalAddress<void*>(
+			addrs.moduleBase,
+			dispatchRva != 0 ? dispatchRva : kKnownProjectCommandDispatchRva));
 	addrs.projectCommandDirect203 = reinterpret_cast<std::uintptr_t>(
-		ResolveInternalAddress<void*>(addrs.moduleBase, kKnownProjectCommandDirect203Rva));
+		ResolveInternalAddress<void*>(
+			addrs.moduleBase,
+			direct203Rva != 0 ? direct203Rva : kKnownProjectCommandDirect203Rva));
 	addrs.projectCommandDirect202 = reinterpret_cast<std::uintptr_t>(
-		ResolveInternalAddress<void*>(addrs.moduleBase, kKnownProjectCommandDirect202Rva));
+		ResolveInternalAddress<void*>(
+			addrs.moduleBase,
+			direct202Rva != 0 ? direct202Rva : kKnownProjectCommandDirect202Rva));
 	addrs.ok =
 		addrs.directSerializeToHandle != nullptr &&
 		IsLikelyModuleCodeAddress(
@@ -578,6 +665,21 @@ bool PopulateSerializerAddresses(SerializerAddresses& addrs)
 		IsLikelyModuleCodeAddress(addrs.projectCommandDispatch, addrs.moduleBase) &&
 		IsLikelyModuleCodeAddress(addrs.projectCommandDirect203, addrs.moduleBase) &&
 		IsLikelyModuleCodeAddress(addrs.projectCommandDirect202, addrs.moduleBase);
+	addrs.resolveTrace = std::format(
+		"direct=0x{:X}({})|dispatch=0x{:X}({})|direct203=0x{:X}({})|direct202=0x{:X}({})",
+		directSerializeRva != 0 ? directSerializeRva : kKnownDirectProjectSerializeToHandleRva,
+		directSerializeRva != 0 ? "pattern" : "fallback",
+		dispatchRva != 0 ? dispatchRva : kKnownProjectCommandDispatchRva,
+		dispatchRva != 0 ? "pattern" : "fallback",
+		direct203Rva != 0 ? direct203Rva : kKnownProjectCommandDirect203Rva,
+		direct203Rva != 0 ? "pattern" : "fallback",
+		direct202Rva != 0 ? direct202Rva : kKnownProjectCommandDirect202Rva,
+		direct202Rva != 0 ? "pattern" : "fallback");
+	OutputStringToELog(std::format(
+		"[ProjectBinarySerializer] {} ok={} cold_routes_ok={}",
+		addrs.resolveTrace,
+		addrs.ok ? 1 : 0,
+		addrs.coldCommandRoutesOk ? 1 : 0));
 	addrs.initialized = true;
 	return addrs.ok;
 }
