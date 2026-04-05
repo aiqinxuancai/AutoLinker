@@ -842,6 +842,8 @@ std::string ExecuteToolCallImpl(
 		toolName == "get_current_page_info" ||
 		toolName == "get_current_eide_info" ||
 		toolName == "list_imported_modules" ||
+		toolName == "search_available_module_public_code" ||
+		toolName == "add_module_to_project" ||
 		toolName == "list_support_libraries" ||
 		toolName == "get_support_library_info" ||
 		toolName == "search_public_code" ||

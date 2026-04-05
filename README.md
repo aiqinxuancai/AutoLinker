@@ -121,6 +121,8 @@ url = "http://127.0.0.1:19207/mcp"
 | 多实例 | `list_local_mcp_instances` | 列出本机已启动的 AutoLinker MCP 实例 |
 | 多实例 | `call_local_mcp_instance_tool` | 转发调用其他本机实例上的 MCP 工具 |
 | 模块 | `list_imported_modules` | 列出当前项目导入模块 |
+| 模块 | `search_available_module_public_code` | 搜索易语言 `ecom` 目录下所有可用 `.ec` 模块的公开声明文本 |
+| 模块 | `add_module_to_project` | 按路径或模块名将 `.ec` 模块加入当前工程 |
 | 支持库 | `list_support_libraries` | 列出当前已选支持库 |
 | 支持库 | `get_support_library_info` | 获取单个支持库公开信息 |
 | 完全搜索 | `search_public_code` | 默认先刷新并搜索 `project_cache`，再补充当前 IDE 工程源码命中、模块公开声明、支持库公开声明，支持多关键字或正则 |

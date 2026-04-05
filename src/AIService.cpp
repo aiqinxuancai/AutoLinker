@@ -897,6 +897,38 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "search_available_module_public_code"},
+		{"description", "Search available .ec modules under the E-language ecom directory by public declaration text. This recursively scans the ecom directory, loads public info by local .ec parsing plus cache only, and does not import modules automatically. Results include add_tool=add_module_to_project, and when md5 is available they can also be followed by read_module_public_code."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"keyword", {{"type", "string"}, {"description", "Single keyword substring search."}}},
+				{"keywords", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Multiple keyword substrings. Default keyword_mode is all."}}},
+				{"keyword_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"all", "any"})}}},
+				{"regex", {{"type", "string"}, {"description", "Optional ECMAScript regex tested line-by-line."}}},
+				{"regex_flags", {{"type", "string"}, {"description", "Optional regex flags. Currently supports i for ignore-case."}}},
+				{"case_sensitive", {{"type", "boolean"}}},
+				{"module_name", {{"type", "string"}, {"description", "Optional exact or fuzzy module file name / stem filter."}}},
+				{"module_path", {{"type", "string"}, {"description", "Optional exact module path. Relative paths are resolved under the ecom directory when possible."}}},
+				{"name_contains", {{"type", "string"}, {"description", "Optional additional file-name/path substring filter before parsing."}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 500}}}
+			}},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "add_module_to_project"},
+		{"description", "Add one .ec module into the current project. Prefer module_path from search_available_module_public_code results; module_name can also be used when it uniquely resolves under the E-language ecom directory. The tool first checks whether the module is already imported, then tries AddECOM2 and falls back to AddECOM."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"module_path", {{"type", "string"}, {"description", "Preferred full path from search_available_module_public_code."}}},
+				{"module_name", {{"type", "string"}, {"description", "Module file name or stem when unique under the ecom directory."}}}
+			}},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "list_support_libraries"},
 		{"description", "List support libraries currently selected by the IDE. Returns basic parsed fields and the raw support-library info text returned by the IDE."},
 		{"inputSchema", {
@@ -1524,7 +1556,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"2) 只想知道当前打开页是谁，不需要整页代码时，优先调用 get_current_page_info；需要当前源码路径、MCP 端口、进程路径等实例级信息时，调用 get_current_eide_info。\n"
 		"3) 本机有多个易语言实例时，先用 list_local_mcp_instances，再通过 call_local_mcp_instance_tool 转发到目标实例；不要臆测端口。\n"
 		"4) 支持库相关信息：先用 list_support_libraries，再按需用 get_support_library_info；若需要完全搜索当前工程源码命中、工程源码缓存、模块公开声明、支持库公开声明，优先用 search_public_code；若只查支持库也可用 search_support_library_public_code / read_support_library_public_code。\n"
-		"5) 模块公开信息：先用 list_imported_modules，再按需用 get_module_public_info；若需要完全搜索当前工程源码命中、工程源码缓存、模块公开声明、支持库公开声明，优先用 search_public_code；若只查模块也可用 search_module_public_code / read_module_public_code。\n"
+		"5) 模块公开信息：先用 list_imported_modules 查看当前已导入模块，再按需用 get_module_public_info；若需要完全搜索当前工程源码命中、工程源码缓存、模块公开声明、支持库公开声明，优先用 search_public_code；若只查已导入模块也可用 search_module_public_code / read_module_public_code。若想在易语言 ecom 目录中查找尚未导入的可用 .ec 模块，使用 search_available_module_public_code；找到目标后，再用 add_module_to_project 加入当前工程。\n"
 		"6) 程序树页面：先用 list_program_items 定位页面；若要求不切换 IDE 页面，优先用 get_program_item_project_cache_code；若要求与编辑器手工全选复制尽量一致的真实源码，再用 get_program_item_real_code 或 switch_to_program_item_page。\n"
 		"6.1) list_program_items 附带的代码仍只是伪代码参考；get_program_item_project_cache_code 来自当前工程源码缓存，不切页但格式可能与编辑器真实页不同；需要某个页面的真实整页源码时，用 get_program_item_real_code。\n"
 		"6.2) 需要分页查看或从缓存读取真实源码时，用 read_program_item_real_code。\n"
