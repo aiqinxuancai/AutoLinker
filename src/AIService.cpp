@@ -1095,7 +1095,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "multi_edit_program_item_code"},
-		{"description", "Apply multiple exact text edits against one cached real page, then rewrite the whole page through the internal editor path. By default this is atomic and fails if any edit does not match."},
+		{"description", "Apply multiple exact text edits against one cached real page, then rewrite the whole page through the internal editor path. Call get_program_item_real_code or read_program_item_real_code first so the tool works against a fresh cached real page snapshot. By default this is atomic and fails if any edit does not match."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1120,7 +1120,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "write_program_item_real_code"},
-		{"description", "Overwrite one real program page with the provided full source text using the internal full-page delete and rewrite path. Optionally provide expected_base_hash to guard against concurrent page changes."},
+		{"description", "Overwrite one real program page with the provided full source text using the internal full-page delete and rewrite path. Call get_program_item_real_code or read_program_item_real_code first so you base the rewrite on the latest cached real page content. Optionally provide expected_base_hash to guard against concurrent page changes."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1247,7 +1247,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "insert_program_item_code_block"},
-		{"description", "Insert one code block into a cached real page at the top, bottom, around a symbol, or around an exact anchor text, then rewrite the whole page through the internal editor path. If this tool returns ok=true, treat the insertion as completed and do not immediately issue extra rewrite calls on the same page unless the user explicitly asks for further cleanup or refinement."},
+		{"description", "Insert one code block into a cached real page at the top, bottom, around a symbol, or around an exact anchor text, then rewrite the whole page through the internal editor path. Call get_program_item_real_code or read_program_item_real_code first so the insertion is based on a fresh cached real page snapshot. If this tool returns ok=true, treat the insertion as completed and do not immediately issue extra rewrite calls on the same page unless the user explicitly asks for further cleanup or refinement."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
