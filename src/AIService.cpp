@@ -920,7 +920,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "search_public_code"},
-		{"description", "Complete unified search across current IDE project source hits, optional current project-source cache hits, module public declarations, and support-library public declarations. Supports one keyword, multiple keywords, or regex. Results include target_type and read_tool so the caller can continue with read_project_search_result_code, read_project_source_cache_code, read_module_public_code, or read_support_library_public_code. If you mainly want current-project cached line hits from the parsed .e file, prefer search_project_source_cache."},
+		{"description", "Complete unified search across current project-source cache hits, current IDE project source hits, module public declarations, and support-library public declarations. By default it refreshes and searches the current project-source cache first, then supplements IDE project hits. Supports one keyword, multiple keywords, or regex. Results include target_type and read_tool so the caller can continue with read_project_search_result_code, read_project_source_cache_code, read_module_public_code, or read_support_library_public_code. If you mainly want current-project cached line hits from the parsed .e file, prefer search_project_source_cache."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1532,8 +1532,8 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"6.4) 需要预览改动而不写回时，用 diff_program_item_code。\n"
 		"6.5) 需要按符号操作真实源码时，用 list_program_item_symbols / get_symbol_real_code / edit_symbol_real_code / insert_program_item_code_block。\n"
 		"6.6) 需要在真实页内做精确搜索或回滚最近写入时，用 search_program_item_real_code / restore_program_item_code_snapshot。\n"
-		"7) 若主要想查当前工程源码并需要稳定页名与行号，优先用 search_project_source_cache；必要时可先用 refresh_project_source_cache。只有在明确想使用 IDE 自带隐藏搜索结果时，才用 search_project_keyword。若要基于工程源码缓存命中读取代码行范围，优先用 read_project_source_cache_code；若要基于 IDE 搜索命中读取真实页代码行范围，才用 read_project_search_result_code。\n"
-		"8) search_public_code 是统一搜索，可按 target_types 选择 project、project_cache、module、support_library。对于 project_cache 命中，后续优先用 read_project_source_cache_code；对于 project 命中，后续优先用 read_project_search_result_code。jump_to_search_result、switch_to_program_item_page、get_program_item_real_code 仍可能改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
+		"7) 若主要想查当前工程源码并需要稳定页名与行号，优先用 search_project_source_cache。它在搜索前会先强制刷新当前工程源码缓存。只有在明确想使用 IDE 自带隐藏搜索结果时，才用 search_project_keyword。若要基于工程源码缓存命中读取代码行范围，优先用 read_project_source_cache_code；若要基于 IDE 搜索命中读取真实页代码行范围，才用 read_project_search_result_code。\n"
+		"8) search_public_code 是统一搜索，可按 target_types 选择 project、project_cache、module、support_library。默认会先刷新并搜索 project_cache，再补充 project、module、support_library。对于 project_cache 命中，后续优先用 read_project_source_cache_code；对于 project 命中，后续优先用 read_project_search_result_code。jump_to_search_result、switch_to_program_item_page、get_program_item_real_code 仍可能改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
 		"9) 通过搜索、程序树、模块公开信息、支持库公开信息拿到的代码或文本，多数只是伪代码 / 公共接口参考，不一定等于 IDE 正常编辑页。\n"
 		"10) 需要无弹窗编译时调用 compile_with_output_path。它会指定输出路径并拦截系统保存对话框，支持模块工程编译为 ec，以及窗口程序 / 控制台程序 / DLL 的编译与静态编译；最终是否编译成功仍要结合 IDE 输出或产物确认。\n"
 		"11) 需要自动整页回写真实源码时优先使用真实页工具，不要退回伪代码工具。\n"

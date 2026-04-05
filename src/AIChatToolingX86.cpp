@@ -2389,7 +2389,7 @@ struct PublicCodeSearchSpecForAI {
 	bool searchModules = true;
 	bool searchSupportLibraries = true;
 	bool searchProject = true;
-	bool searchProjectCache = false;
+	bool searchProjectCache = true;
 };
 
 bool TryBuildPublicCodeSearchSpecForAI(
@@ -5413,7 +5413,7 @@ std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJs
 			r["regex_flags"] = spec.regexFlags;
 		}
 	}
-	std::string warning = "这里是完全搜索：可按 target_types 搜索当前 IDE 工程源码命中、当前工程源码缓存、模块公开声明文本、支持库公开声明文本。命中后请根据结果里的 target_type 与 read_tool 继续读取。若主要查当前工程源码并希望获得稳定页名和行号，优先用 search_project_source_cache；若要快速定位子程序、常量、数据类型、DLL命令、程序集变量、参数、局部变量、全局变量，可考虑使用类似“.子程序 XXXX”、“.常量 XXXX”、“.数据类型 XXXX”、“.DLL命令 XXXX”、“.参数 XXXX”、“.全局变量 XXXX”来进行。";
+	std::string warning = "这里是完全搜索：默认会先刷新并搜索当前工程源码缓存，再补充当前 IDE 工程源码命中，以及模块公开声明文本、支持库公开声明文本。命中后请根据结果里的 target_type 与 read_tool 继续读取。若主要查当前工程源码并希望获得稳定页名和行号，优先用 search_project_source_cache；若要快速定位子程序、常量、数据类型、DLL命令、程序集变量、参数、局部变量、全局变量，可考虑使用类似“.子程序 XXXX”、“.常量 XXXX”、“.数据类型 XXXX”、“.DLL命令 XXXX”、“.参数 XXXX”、“.全局变量 XXXX”来进行。";
 	for (const auto& extraWarning : warnings) {
 		warning += " ";
 		warning += extraWarning;

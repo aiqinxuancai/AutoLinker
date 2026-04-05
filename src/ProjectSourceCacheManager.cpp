@@ -1,7 +1,6 @@
 ﻿#include "ProjectSourceCacheManager.h"
 
 #include <cctype>
-#include <chrono>
 #include <filesystem>
 #include <format>
 #include <mutex>
@@ -23,13 +22,9 @@ struct CacheState {
 	std::mutex mutex;
 	Snapshot snapshot;
 	uint64_t nextRevision = 1;
-	uint64_t lastRefreshTraceId = 0;
-	std::chrono::steady_clock::time_point lastRefreshAt = {};
 };
 
 CacheState g_cacheState;
-
-constexpr auto kRefreshReuseWindow = std::chrono::milliseconds(1500);
 constexpr char kProjectHitTokenPrefix[] = "e2txt_project_v1:";
 
 std::string JoinTraceParts(const std::vector<std::string>& traces)
@@ -396,8 +391,7 @@ bool TryGenerateDocumentSnapshot(
 
 bool ShouldReuseCurrentSnapshotLocked(
 	const std::string& sourcePath,
-	bool forceRefresh,
-	uint64_t traceId)
+	bool forceRefresh)
 {
 	if (!g_cacheState.snapshot.ok) {
 		return false;
@@ -408,13 +402,7 @@ bool ShouldReuseCurrentSnapshotLocked(
 	if (!forceRefresh) {
 		return true;
 	}
-	if (traceId != 0 && traceId == g_cacheState.lastRefreshTraceId) {
-		return true;
-	}
-	if (g_cacheState.lastRefreshAt.time_since_epoch().count() == 0) {
-		return false;
-	}
-	return (std::chrono::steady_clock::now() - g_cacheState.lastRefreshAt) <= kRefreshReuseWindow;
+	return false;
 }
 
 bool TryCopyCurrentSnapshotLocked(Snapshot& outSnapshot)
@@ -456,7 +444,7 @@ bool ProjectSourceCacheManager::WarmupCurrentSource(std::string* outError, std::
 
 	{
 		std::lock_guard<std::mutex> lock(g_cacheState.mutex);
-		if (ShouldReuseCurrentSnapshotLocked(sourcePath, false, 0)) {
+		if (ShouldReuseCurrentSnapshotLocked(sourcePath, false)) {
 			if (outTrace != nullptr) {
 				*outTrace = std::format(
 					"warmup_reuse_existing revision={} pages={}",
@@ -484,8 +472,6 @@ bool ProjectSourceCacheManager::WarmupCurrentSource(std::string* outError, std::
 	{
 		std::lock_guard<std::mutex> lock(g_cacheState.mutex);
 		g_cacheState.snapshot = snapshot;
-		g_cacheState.lastRefreshTraceId = 0;
-		g_cacheState.lastRefreshAt = std::chrono::steady_clock::now();
 	}
 
 	OutputStringToELog(std::format(
@@ -529,18 +515,16 @@ bool ProjectSourceCacheManager::EnsureCurrentSourceLatest(
 		return false;
 	}
 
-	const uint64_t traceId = GetCurrentAIPerfTraceId();
 	{
 		std::lock_guard<std::mutex> lock(g_cacheState.mutex);
-		if (ShouldReuseCurrentSnapshotLocked(sourcePath, forceRefresh, traceId) &&
+		if (ShouldReuseCurrentSnapshotLocked(sourcePath, forceRefresh) &&
 			TryCopyCurrentSnapshotLocked(outSnapshot)) {
 			if (outTrace != nullptr) {
 				*outTrace = std::format(
-					"reuse_snapshot revision={} pages={} forceRefresh={} traceId={}",
+					"reuse_snapshot revision={} pages={} forceRefresh={}",
 					outSnapshot.revision,
 					outSnapshot.pages.size(),
-					forceRefresh ? 1 : 0,
-					traceId);
+					forceRefresh ? 1 : 0);
 			}
 			return true;
 		}
@@ -579,8 +563,6 @@ bool ProjectSourceCacheManager::EnsureCurrentSourceLatest(
 	{
 		std::lock_guard<std::mutex> lock(g_cacheState.mutex);
 		g_cacheState.snapshot = snapshot;
-		g_cacheState.lastRefreshTraceId = traceId;
-		g_cacheState.lastRefreshAt = std::chrono::steady_clock::now();
 	}
 
 	outSnapshot = snapshot;
