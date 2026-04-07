@@ -44,14 +44,14 @@ MSBuild.exe ..\\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platfo
 
 #### 常规测试
 
-如果需要测试当前支持库，请先将AutoLinker.fne覆盖至"C:\Users\aiqin\OneDrive\e5.6\lib"，然后执行并调用：
+如果需要测试当前支持库，请先将AutoLinker.fne覆盖至"C:\Users\aiqin\OneDrive\e5.6\lib"（需关闭e主程序才能解除AutoLinker.fne的占用），然后执行并调用：
 
 当前主要开发基于："C:\Users\aiqin\OneDrive\e5.6\e571.exe"
 需要兼容版本："C:\Users\aiqin\OneDrive\e5.6\e5.95.exe"
 
 打开当前代码目录下的"test_a.e"文件。
 
-每次测试完毕后需要关闭e主程序才能解除AutoLinker.fne的占用。
+AutoLinker.fne会在加载进IDE后开启MCP服务端口19207，测试时如传递中文页名，请注意为UTF8编码。
 
 #### 非依赖易语言IDE的功能测试
 

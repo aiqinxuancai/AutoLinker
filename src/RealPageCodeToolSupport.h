@@ -62,6 +62,8 @@ struct RealPageInsertSpec {
 std::string BuildStableTextHashForRealCode(const std::string& text);
 std::string NormalizeRealCodeLineBreaksToCrLf(const std::string& text);
 std::string NormalizeRealCodeLineBreaksToLf(const std::string& text);
+std::string PrepareAssemblyVariablesForRealPageWrite(const std::string& text);
+std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string& text);
 std::vector<std::string> SplitRealCodeLines(const std::string& text);
 std::string JoinRealCodeLines(const std::vector<std::string>& lines);
 std::string BuildRealCodeView(

@@ -18,6 +18,7 @@
 
 #include "Global.h"
 #include "MemFind.h"
+#include "RealPageCodeToolSupport.h"
 #include "WindowHelper.h"
 #include "direct_global_search_debug.hpp"
 
@@ -1942,7 +1943,8 @@ std::string NormalizeLineBreakToLf(const std::string& text)
 
 std::string NormalizePageCodeForLooseCompare(const std::string& text)
 {
-	const std::string normalized = NormalizeLineBreakToLf(text);
+	const std::string normalized =
+		NormalizeLineBreakToLf(NormalizeRealPageAssemblyVariableAliasesForCompare(text));
 	std::string result;
 	result.reserve(normalized.size());
 	bool lastKeptLineBlank = false;
@@ -2021,7 +2023,8 @@ std::string NormalizePageCodeLineForStructuralCompare(const std::string& line)
 
 std::vector<std::string> BuildPageCodeStructuralFingerprint(const std::string& text)
 {
-	const std::string normalized = NormalizeLineBreakToLf(text);
+	const std::string normalized =
+		NormalizeLineBreakToLf(NormalizeRealPageAssemblyVariableAliasesForCompare(text));
 	std::vector<std::string> lines;
 
 	size_t start = 0;
@@ -4301,6 +4304,8 @@ bool ReplaceWholePageTextByEditorWindowInput(
 		return false;
 	}
 
+	const std::string preparedPageCode = PrepareAssemblyVariablesForRealPageWrite(newPageCode);
+
 	ScopedFakeClipboard fakeClipboard;
 	if (!fakeClipboard.IsActive()) {
 		if (outTrace != nullptr) {
@@ -4309,7 +4314,7 @@ bool ReplaceWholePageTextByEditorWindowInput(
 		return false;
 	}
 
-	HANDLE textHandle = CreateClipboardAnsiTextHandle(newPageCode);
+	HANDLE textHandle = CreateClipboardAnsiTextHandle(preparedPageCode);
 	if (textHandle == nullptr || !fakeClipboard.SetFormatHandle(CF_TEXT, textHandle)) {
 		if (textHandle != nullptr) {
 			GlobalFree(textHandle);
@@ -5778,6 +5783,8 @@ bool ReplaceWholePageByTextPaste(
 		return false;
 	}
 
+	const std::string preparedPageCode = PrepareAssemblyVariablesForRealPageWrite(pageCode);
+
 	std::string selectTrace;
 	if (!InvokeEditorCommandWithFallback(
 			editorObject,
@@ -5803,7 +5810,7 @@ bool ReplaceWholePageByTextPaste(
 	}
 
 	std::string pasteTrace;
-	if (!PastePlainTextByEditor(editorObject, moduleBase, pageCode, &pasteTrace)) {
+	if (!PastePlainTextByEditor(editorObject, moduleBase, preparedPageCode, &pasteTrace)) {
 		if (outTrace != nullptr) {
 			*outTrace = selectTrace + "|" + deleteTrace + "|" + pasteTrace;
 		}
@@ -5831,6 +5838,8 @@ bool ReplaceWholePageByRawInsertCommand(
 		}
 		return false;
 	}
+
+	const std::string preparedPageCode = PrepareAssemblyVariablesForRealPageWrite(pageCode);
 
 	std::string selectTrace;
 	if (!InvokeEditorCommandWithFallback(
@@ -5862,7 +5871,7 @@ bool ReplaceWholePageByRawInsertCommand(
 			moduleBase,
 			kEditorCmdInsertRawText,
 			1,
-			const_cast<char*>(pageCode.c_str()),
+			const_cast<char*>(preparedPageCode.c_str()),
 			reinterpret_cast<char*>(1),
 			&insertTrace)) {
 		if (outTrace != nullptr) {

@@ -109,6 +109,33 @@ bool IsDirectiveLine(const std::string& trimmed, std::string_view directive)
 	return std::isspace(next) != 0 || next == '(' || next == ',' || next == '\t';
 }
 
+bool TryMatchDirectiveAtLineStart(
+	const std::string& line,
+	std::string_view directive,
+	size_t* outDirectivePos = nullptr)
+{
+	size_t directivePos = 0;
+	while (directivePos < line.size() && (line[directivePos] == ' ' || line[directivePos] == '\t')) {
+		++directivePos;
+	}
+	if (line.size() < directivePos + directive.size()) {
+		return false;
+	}
+	if (!std::equal(directive.begin(), directive.end(), line.begin() + static_cast<std::ptrdiff_t>(directivePos))) {
+		return false;
+	}
+	if (line.size() != directivePos + directive.size()) {
+		const unsigned char next = static_cast<unsigned char>(line[directivePos + directive.size()]);
+		if (std::isspace(next) == 0 && next != '(' && next != ',' && next != '\t') {
+			return false;
+		}
+	}
+	if (outDirectivePos != nullptr) {
+		*outDirectivePos = directivePos;
+	}
+	return true;
+}
+
 bool TryParseTopLevelSymbolSeed(const std::string& trimmed, int lineNumber, TopLevelRealPageSymbolSeed& outSeed)
 {
 	outSeed = {};
@@ -251,6 +278,54 @@ std::string JoinRealCodeLines(const std::vector<std::string>& lines)
 		text += lines[i];
 	}
 	return text;
+}
+
+std::string PrepareAssemblyVariablesForRealPageWrite(const std::string& text)
+{
+	std::vector<std::string> lines = SplitRealCodeLines(text);
+	bool changed = false;
+	for (auto& line : lines) {
+		size_t directivePos = 0;
+		if (!TryMatchDirectiveAtLineStart(line, kDirectiveAssemblyVariable, &directivePos)) {
+			continue;
+		}
+
+		line.replace(
+			directivePos,
+			kDirectiveAssemblyVariable.size(),
+			kDirectiveLocalVariable.data(),
+			kDirectiveLocalVariable.size());
+		changed = true;
+	}
+
+	return changed ? JoinRealCodeLines(lines) : text;
+}
+
+std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string& text)
+{
+	std::vector<std::string> lines = SplitRealCodeLines(text);
+	bool changed = false;
+	bool reachedSubroutineBlock = false;
+	for (auto& line : lines) {
+		const std::string trimmed = TrimAsciiCopyLocal(line);
+		if (!reachedSubroutineBlock) {
+			size_t directivePos = 0;
+			if (TryMatchDirectiveAtLineStart(line, kDirectiveLocalVariable, &directivePos)) {
+				line.replace(
+					directivePos,
+					kDirectiveLocalVariable.size(),
+					kDirectiveAssemblyVariable.data(),
+					kDirectiveAssemblyVariable.size());
+				changed = true;
+			}
+		}
+
+		if (IsDirectiveLine(trimmed, kDirectiveSubroutine)) {
+			reachedSubroutineBlock = true;
+		}
+	}
+
+	return changed ? JoinRealCodeLines(lines) : text;
 }
 
 std::string BuildStableTextHashForRealCode(const std::string& text)
