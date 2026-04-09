@@ -902,10 +902,10 @@ nlohmann::json BuildPublicToolCatalog()
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
-				{"keyword", {{"type", "string"}, {"description", "Single keyword substring search."}}},
-				{"keywords", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Multiple keyword substrings. Default keyword_mode is all."}}},
+				{"keyword", {{"type", "string"}, {"description", "Single literal keyword substring search. Example: {\"keyword\":\".子程序 初始化\"}. Note: \"A|B\" here is treated as plain text, not OR."}}},
+				{"keywords", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Multiple literal keyword substrings. Default keyword_mode is all. Use keyword_mode=any for OR, for example {\"keywords\":[\"初始化\",\"创建\"],\"keyword_mode\":\"any\"}."}}},
 				{"keyword_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"all", "any"})}}},
-				{"regex", {{"type", "string"}, {"description", "Optional ECMAScript regex tested line-by-line."}}},
+				{"regex", {{"type", "string"}, {"description", "Optional ECMAScript regex tested line-by-line. Use regex such as \"初始化|创建\" for OR."}}},
 				{"regex_flags", {{"type", "string"}, {"description", "Optional regex flags. Currently supports i for ignore-case."}}},
 				{"case_sensitive", {{"type", "boolean"}}},
 				{"module_name", {{"type", "string"}, {"description", "Optional exact or fuzzy module file name / stem filter."}}},
@@ -956,10 +956,10 @@ nlohmann::json BuildPublicToolCatalog()
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
-				{"keyword", {{"type", "string"}, {"description", "Single keyword substring search."}}},
-				{"keywords", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Multiple keyword substrings. Default keyword_mode is all."}}},
+				{"keyword", {{"type", "string"}, {"description", "Single literal keyword substring search. Example: {\"keyword\":\".子程序 初始化\"}. Note: \"A|B\" here is treated as plain text, not OR."}}},
+				{"keywords", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Multiple literal keyword substrings. Default keyword_mode is all. Use keyword_mode=any for OR, for example {\"keywords\":[\"初始化\",\"创建\"],\"keyword_mode\":\"any\"}."}}},
 				{"keyword_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"all", "any"})}}},
-				{"regex", {{"type", "string"}, {"description", "Optional ECMAScript regex tested line-by-line."}}},
+				{"regex", {{"type", "string"}, {"description", "Optional ECMAScript regex tested line-by-line. Use regex such as \"初始化|创建\" for OR."}}},
 				{"regex_flags", {{"type", "string"}, {"description", "Optional regex flags. Currently supports i for ignore-case."}}},
 				{"case_sensitive", {{"type", "boolean"}}},
 				{"target_types", {{"type", "array"}, {"items", {{"type", "string"}, {"enum", nlohmann::json::array({"project", "project_cache", "module", "support_library"})}}}}},
@@ -975,17 +975,21 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "search_support_library_public_code"},
-		{"description", "Search keyword line-by-line inside support-library public declaration text. Prefer GetNewInf/lib2.h structured text when the library file can be resolved; otherwise it falls back to the IDE support-library info text."},
+		{"description", "Search line-by-line inside support-library public declaration text. Supports one keyword, multiple keywords, or regex. Prefer GetNewInf/lib2.h structured text when the library file can be resolved; otherwise it falls back to the IDE support-library info text."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
-				{"keyword", {{"type", "string"}}},
+				{"keyword", {{"type", "string"}, {"description", "Single literal keyword substring search. Example: {\"keyword\":\"创建窗口\"}. Note: \"A|B\" here is treated as plain text, not OR."}}},
+				{"keywords", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Multiple literal keyword substrings. Default keyword_mode is all. Use keyword_mode=any for OR, for example {\"keywords\":[\"创建窗口\",\"销毁窗口\"],\"keyword_mode\":\"any\"}."}}},
+				{"keyword_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"all", "any"})}}},
+				{"regex", {{"type", "string"}, {"description", "Optional ECMAScript regex tested line-by-line. Use regex such as \"创建窗口|销毁窗口\" for OR."}}},
+				{"regex_flags", {{"type", "string"}, {"description", "Optional regex flags. Currently supports i for ignore-case."}}},
+				{"case_sensitive", {{"type", "boolean"}}},
 				{"index", {{"type", "integer"}, {"minimum", 0}}},
 				{"name", {{"type", "string"}}},
 				{"file_path", {{"type", "string"}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 500}}}
 			}},
-			{"required", nlohmann::json::array({"keyword"})},
 			{"additionalProperties", false}
 		}}
 	});
@@ -1022,16 +1026,20 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "search_module_public_code"},
-		{"description", "Search keyword line-by-line inside imported module public declaration text. Returns module, md5 and matched line numbers so the caller can read exact line ranges later. Important: this is public-interface pseudo-reference, not full module source code."},
+		{"description", "Search line-by-line inside imported module public declaration text. Supports one keyword, multiple keywords, or regex. Returns module, md5 and matched line numbers so the caller can read exact line ranges later. Important: this is public-interface pseudo-reference, not full module source code."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
-				{"keyword", {{"type", "string"}}},
+				{"keyword", {{"type", "string"}, {"description", "Single literal keyword substring search. Example: {\"keyword\":\".子程序 初始化\"}. Note: \"A|B\" here is treated as plain text, not OR."}}},
+				{"keywords", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Multiple literal keyword substrings. Default keyword_mode is all. Use keyword_mode=any for OR, for example {\"keywords\":[\"初始化\",\"创建\"],\"keyword_mode\":\"any\"}."}}},
+				{"keyword_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"all", "any"})}}},
+				{"regex", {{"type", "string"}, {"description", "Optional ECMAScript regex tested line-by-line. Use regex such as \"初始化|创建\" for OR."}}},
+				{"regex_flags", {{"type", "string"}, {"description", "Optional regex flags. Currently supports i for ignore-case."}}},
+				{"case_sensitive", {{"type", "boolean"}}},
 				{"module_name", {{"type", "string"}}},
 				{"module_path", {{"type", "string"}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 500}}}
 			}},
-			{"required", nlohmann::json::array({"keyword"})},
 			{"additionalProperties", false}
 		}}
 	});
@@ -1210,15 +1218,15 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "search_program_item_real_code"},
-		{"description", "Search inside one real program page and return exact line hits with optional context lines."},
+		{"description", "Search inside one real program page and return exact line hits with optional context lines. Supports one literal keyword by default, or one regex when use_regex=true. This tool does not support keywords arrays."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
 				{"page_name", {{"type", "string"}}},
 				{"kind", {{"type", "string"}, {"description", "Optional kind filter: assembly, class_module, global_var, user_data_type, dll_command, form, const_resource, picture_resource, sound_resource."}}},
-				{"keyword", {{"type", "string"}}},
-				{"case_sensitive", {{"type", "boolean"}}},
-				{"use_regex", {{"type", "boolean"}}},
+				{"keyword", {{"type", "string"}, {"description", "Literal keyword by default; treated as regex pattern when use_regex=true."}}},
+				{"case_sensitive", {{"type", "boolean"}, {"description", "Applies to literal search or regex matching."}}},
+				{"use_regex", {{"type", "boolean"}, {"description", "When true, keyword is interpreted as one ECMAScript regex pattern. For OR use patterns such as 初始化|创建."}}},
 				{"context_lines", {{"type", "integer"}, {"minimum", 0}, {"maximum", 20}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}},
 				{"refresh_cache", {{"type", "boolean"}}}
@@ -1325,10 +1333,10 @@ nlohmann::json BuildPublicToolCatalog()
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
-				{"keyword", {{"type", "string"}, {"description", "Single keyword substring search."}}},
-				{"keywords", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Multiple keyword substrings. Default keyword_mode is all."}}},
+				{"keyword", {{"type", "string"}, {"description", "Single literal keyword substring search. Example: {\"keyword\":\".子程序 初始化\"}. Note: \"A|B\" here is treated as plain text, not OR."}}},
+				{"keywords", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Multiple literal keyword substrings. Default keyword_mode is all. Use keyword_mode=any for OR, for example {\"keywords\":[\"初始化\",\"创建\"],\"keyword_mode\":\"any\"}."}}},
 				{"keyword_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"all", "any"})}}},
-				{"regex", {{"type", "string"}, {"description", "Optional ECMAScript regex tested line-by-line."}}},
+				{"regex", {{"type", "string"}, {"description", "Optional ECMAScript regex tested line-by-line. Use regex such as \"初始化|创建\" for OR."}}},
 				{"regex_flags", {{"type", "string"}, {"description", "Optional regex flags. Currently supports i for ignore-case."}}},
 				{"case_sensitive", {{"type", "boolean"}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 500}}}
@@ -1355,11 +1363,11 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "search_project_keyword"},
-		{"description", "Search current IDE project source hits only using the IDE hidden project search, and return matched page names, line numbers, a jump_token, and same-page occurrence metadata for each result. Use this when you specifically want the IDE's own search hits rather than the parsed project-source cache."},
+		{"description", "Search current IDE project source hits only using the IDE hidden project search, and return matched page names, line numbers, a jump_token, and same-page occurrence metadata for each result. This tool only supports one keyword because the underlying IDE hidden search does not support multi-keyword or regex. Use search_project_source_cache or search_public_code when you need keywords or regex."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
-				{"keyword", {{"type", "string"}}},
+				{"keyword", {{"type", "string"}, {"description", "Single keyword seed passed to the IDE hidden search. Multi-keyword and regex are not supported here."}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}
 			}},
 			{"required", nlohmann::json::array({"keyword"})},

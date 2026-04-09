@@ -126,10 +126,10 @@ url = "http://127.0.0.1:19207/mcp"
 | 支持库 | `list_support_libraries` | 列出当前已选支持库 |
 | 支持库 | `get_support_library_info` | 获取单个支持库公开信息 |
 | 完全搜索 | `search_public_code` | 默认先刷新并搜索 `project_cache`，再补充当前 IDE 工程源码命中、模块公开声明、支持库公开声明，支持多关键字或正则 |
-| 支持库 | `search_support_library_public_code` | 按行搜索支持库公开声明文本 |
+| 支持库 | `search_support_library_public_code` | 按行搜索支持库公开声明文本，支持多关键字或正则 |
 | 支持库 | `read_support_library_public_code` | 读取支持库公开声明文本指定行范围 |
 | 模块 | `get_module_public_info` | 获取模块公开接口信息 |
-| 模块 | `search_module_public_code` | 按行搜索模块公开声明文本 |
+| 模块 | `search_module_public_code` | 按行搜索模块公开声明文本，支持多关键字或正则 |
 | 模块 | `read_module_public_code` | 读取模块公开声明文本指定行范围 |
 | 程序树 | `list_program_items` | 列出程序树项目，可选附带参考代码 |
 | 程序树缓存源码 | `get_program_item_project_cache_code` | 从当前工程源码缓存读取指定程序树页面，不切换 IDE 页面 |
@@ -140,7 +140,7 @@ url = "http://127.0.0.1:19207/mcp"
 | 程序树真实源码 | `write_program_item_real_code` | 用整页源码覆盖写回 |
 | 程序树真实源码 | `diff_program_item_code` | 生成真实源码页差异预览 |
 | 程序树真实源码 | `restore_program_item_code_snapshot` | 恢复真实源码页快照 |
-| 程序树真实源码 | `search_program_item_real_code` | 在真实源码页内搜索 |
+| 程序树真实源码 | `search_program_item_real_code` | 在真实源码页内搜索，支持单关键字或正则 |
 | 程序树真实源码 | `list_program_item_symbols` | 解析并列出页面符号 |
 | 程序树真实源码 | `get_symbol_real_code` | 获取符号对应真实源码 |
 | 程序树真实源码 | `edit_symbol_real_code` | 按符号替换真实源码 |
@@ -149,7 +149,7 @@ url = "http://127.0.0.1:19207/mcp"
 | 工程源码缓存 | `refresh_project_source_cache` | 强制刷新当前工程源码缓存，仅使用内存二进制序列化 |
 | 工程源码缓存 | `search_project_source_cache` | 仅搜索当前工程源码缓存，搜索前会先刷新缓存 |
 | 工程源码缓存 | `read_project_source_cache_code` | 基于工程源码缓存命中读取指定行附近代码，通常不切页 |
-| 搜索 | `search_project_keyword` | 仅搜索当前 IDE 工程源码命中 |
+| 搜索 | `search_project_keyword` | 仅搜索当前 IDE 工程源码命中，仅支持单关键字 |
 | 搜索 | `read_project_search_result_code` | 基于 IDE 搜索命中读取真实页代码行范围 |
 | 搜索 | `jump_to_search_result` | 跳转到指定搜索结果 |
 | 编译 | `compile_with_output_path` | 指定输出路径发起编译/静态编译 |
@@ -157,6 +157,41 @@ url = "http://127.0.0.1:19207/mcp"
 | 联网 | `search_web_tavily` | 联网搜索网页结果 |
 | 联网 | `fetch_url` | 抓取指定 URL 原始文本响应 |
 | 联网 | `extract_web_document` | 提取网页正文与链接摘要 |
+
+### ⭐搜索参数示例
+
+`search_project_source_cache`、`search_public_code`、`search_available_module_public_code`、`search_module_public_code`、`search_support_library_public_code` 这几个工具使用相同的 `keyword / keywords / keyword_mode / regex` 搜索规则，下面是可直接照抄的示例：
+
+单关键字字面量搜索：
+
+```json
+{"keyword":".子程序 初始化"}
+```
+
+多关键字 AND，同一行同时包含全部关键字：
+
+```json
+{"keywords":[".子程序","初始化"],"keyword_mode":"all"}
+```
+
+多关键字 OR，命中任意一个关键字即可：
+
+```json
+{"keywords":["初始化","创建"],"keyword_mode":"any"}
+```
+
+使用正则 OR：
+
+```json
+{"regex":"初始化|创建"}
+```
+
+注意：`{"keyword":"初始化|创建"}` 不会按“或”处理，而是去搜索字面量 `初始化|创建`。如果要做 OR，请使用 `keywords + keyword_mode=\"any\"` 或 `regex`。
+
+其他搜索工具的差异：
+
+- `search_project_keyword` 走 IDE 自带隐藏搜索，只支持单关键字，不支持多关键字或正则。
+- `search_program_item_real_code` 支持 `keyword + use_regex=false` 的单关键字搜索，或 `keyword + use_regex=true` 的单正则搜索；它不支持 `keywords` 数组。
 
 ---
 

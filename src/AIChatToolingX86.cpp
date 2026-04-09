@@ -4687,18 +4687,18 @@ std::string BuildSearchSupportLibraryPublicCodeJsonOnMainThread(const std::strin
 		return Utf8ToLocalText(r.dump());
 	}
 
-	const std::string keyword = args.contains("keyword") && args["keyword"].is_string()
-		? Utf8ToLocalText(args["keyword"].get<std::string>())
-		: std::string();
+	PublicCodeSearchSpecForAI spec;
+	std::string specError;
+	if (!TryBuildPublicCodeSearchSpecForAI(args, spec, specError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = specError;
+		return Utf8ToLocalText(r.dump());
+	}
+
 	const int limit = args.contains("limit") && args["limit"].is_number_integer()
 		? (std::clamp)(args["limit"].get<int>(), 1, 500)
 		: 100;
-
-	const std::string keywordLocal = TrimAsciiCopy(keyword);
-	if (keywordLocal.empty()) {
-		return R"({"ok":false,"error":"keyword is required"})";
-	}
-	const std::string keywordLower = ToLowerAsciiCopyLocal(keywordLocal);
 
 	std::vector<SupportLibraryInfoHeaderForAI> libs;
 	std::string error;
@@ -4742,8 +4742,9 @@ std::string BuildSearchSupportLibraryPublicCodeJsonOnMainThread(const std::strin
 		for (size_t lineIndex = 0;
 			lineIndex < entry.lines.size() && static_cast<int>(matches.size()) < limit;
 			++lineIndex) {
+			std::vector<std::string> matchedKeywords;
 			const std::string& line = entry.lines[lineIndex];
-			if (!ContainsKeywordInsensitiveForAI(line, keywordLocal, keywordLower)) {
+			if (!MatchPublicCodeSearchLineForAI(line, spec, matchedKeywords)) {
 				continue;
 			}
 
@@ -4758,6 +4759,16 @@ std::string BuildSearchSupportLibraryPublicCodeJsonOnMainThread(const std::strin
 			row["source_kind"] = entry.sourceKind;
 			row["line_number"] = static_cast<int>(lineIndex) + 1;
 			row["text"] = LocalToUtf8Text(line);
+			if (!matchedKeywords.empty()) {
+				nlohmann::json keywords = nlohmann::json::array();
+				for (const auto& keyword : matchedKeywords) {
+					keywords.push_back(LocalToUtf8Text(keyword));
+				}
+				row["matched_keywords"] = std::move(keywords);
+			}
+			if (spec.useRegex) {
+				row["matched_regex"] = LocalToUtf8Text(spec.regexText);
+			}
 			if (!entry.md5.empty()) {
 				row["cache_path"] = LocalToUtf8Text(GetSupportLibraryInfoCachePathForAI(entry.md5).string());
 			}
@@ -4771,9 +4782,26 @@ std::string BuildSearchSupportLibraryPublicCodeJsonOnMainThread(const std::strin
 
 	nlohmann::json r;
 	r["ok"] = true;
-	r["keyword"] = LocalToUtf8Text(keywordLocal);
 	r["match_count"] = matches.size();
-	r["warning"] = LocalToUtf8Text("这里搜索的是支持库公开信息的按行文本。优先来自支持库文件 GetNewInf/lib2.h 结构解析；无法定位文件时退回 IDE 支持库信息文本。结果属于公开接口参考，不是项目源码页。");
+	r["keyword_mode"] = spec.keywordMode;
+	r["case_sensitive"] = spec.caseSensitive;
+	if (spec.keywords.size() == 1) {
+		r["keyword"] = LocalToUtf8Text(spec.keywords.front());
+	}
+	if (!spec.keywords.empty()) {
+		nlohmann::json keywords = nlohmann::json::array();
+		for (const auto& keyword : spec.keywords) {
+			keywords.push_back(LocalToUtf8Text(keyword));
+		}
+		r["keywords"] = std::move(keywords);
+	}
+	if (spec.useRegex) {
+		r["regex"] = LocalToUtf8Text(spec.regexText);
+		if (!spec.regexFlags.empty()) {
+			r["regex_flags"] = spec.regexFlags;
+		}
+	}
+	r["warning"] = LocalToUtf8Text("这里搜索的是支持库公开信息的按行文本。优先来自支持库文件 GetNewInf/lib2.h 结构解析；无法定位文件时退回 IDE 支持库信息文本。结果属于公开接口参考，不是项目源码页。现在同样支持单关键字、多关键字与正则按行匹配。");
 	r["matches"] = std::move(matches);
 	outOk = true;
 	return Utf8ToLocalText(r.dump());
@@ -5144,9 +5172,15 @@ std::string BuildSearchModulePublicCodeJsonOnMainThread(const std::string& argum
 		return Utf8ToLocalText(r.dump());
 	}
 
-	const std::string keyword = args.contains("keyword") && args["keyword"].is_string()
-		? Utf8ToLocalText(args["keyword"].get<std::string>())
-		: std::string();
+	PublicCodeSearchSpecForAI spec;
+	std::string specError;
+	if (!TryBuildPublicCodeSearchSpecForAI(args, spec, specError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = specError;
+		return Utf8ToLocalText(r.dump());
+	}
+
 	const std::string moduleName = args.contains("module_name") && args["module_name"].is_string()
 		? Utf8ToLocalText(args["module_name"].get<std::string>())
 		: std::string();
@@ -5156,12 +5190,6 @@ std::string BuildSearchModulePublicCodeJsonOnMainThread(const std::string& argum
 	const int limit = args.contains("limit") && args["limit"].is_number_integer()
 		? (std::clamp)(args["limit"].get<int>(), 1, 500)
 		: 100;
-
-	const std::string keywordLocal = TrimAsciiCopy(keyword);
-	if (keywordLocal.empty()) {
-		return R"({"ok":false,"error":"keyword is required"})";
-	}
-	const std::string keywordLower = ToLowerAsciiCopyLocal(keywordLocal);
 
 	std::vector<std::string> paths;
 	std::string resolveError;
@@ -5193,8 +5221,9 @@ std::string BuildSearchModulePublicCodeJsonOnMainThread(const std::string& argum
 		for (size_t lineIndex = 0;
 			lineIndex < entry.lines.size() && static_cast<int>(matches.size()) < limit;
 			++lineIndex) {
+			std::vector<std::string> matchedKeywords;
 			const std::string& line = entry.lines[lineIndex];
-			if (!ContainsKeywordInsensitiveForAI(line, keywordLocal, keywordLower)) {
+			if (!MatchPublicCodeSearchLineForAI(line, spec, matchedKeywords)) {
 				continue;
 			}
 
@@ -5205,6 +5234,16 @@ std::string BuildSearchModulePublicCodeJsonOnMainThread(const std::string& argum
 			row["source_kind"] = entry.dump.sourceKind;
 			row["line_number"] = static_cast<int>(lineIndex) + 1;
 			row["text"] = LocalToUtf8Text(line);
+			if (!matchedKeywords.empty()) {
+				nlohmann::json keywords = nlohmann::json::array();
+				for (const auto& keyword : matchedKeywords) {
+					keywords.push_back(LocalToUtf8Text(keyword));
+				}
+				row["matched_keywords"] = std::move(keywords);
+			}
+			if (spec.useRegex) {
+				row["matched_regex"] = LocalToUtf8Text(spec.regexText);
+			}
 			if (!entry.md5.empty()) {
 				row["cache_path"] = LocalToUtf8Text(GetModulePublicInfoCachePathForAI(entry.md5).string());
 			}
@@ -5218,9 +5257,26 @@ std::string BuildSearchModulePublicCodeJsonOnMainThread(const std::string& argum
 
 	nlohmann::json r;
 	r["ok"] = true;
-	r["keyword"] = LocalToUtf8Text(keywordLocal);
 	r["match_count"] = matches.size();
-	r["warning"] = LocalToUtf8Text("这里搜索的是模块公开声明文本的按行结果。它来自模块公开信息窗口抓取或 .ec 离线解析，只能作为公开接口/伪代码参考，不是模块完整源码。");
+	r["keyword_mode"] = spec.keywordMode;
+	r["case_sensitive"] = spec.caseSensitive;
+	if (spec.keywords.size() == 1) {
+		r["keyword"] = LocalToUtf8Text(spec.keywords.front());
+	}
+	if (!spec.keywords.empty()) {
+		nlohmann::json keywords = nlohmann::json::array();
+		for (const auto& keyword : spec.keywords) {
+			keywords.push_back(LocalToUtf8Text(keyword));
+		}
+		r["keywords"] = std::move(keywords);
+	}
+	if (spec.useRegex) {
+		r["regex"] = LocalToUtf8Text(spec.regexText);
+		if (!spec.regexFlags.empty()) {
+			r["regex_flags"] = spec.regexFlags;
+		}
+	}
+	r["warning"] = LocalToUtf8Text("这里搜索的是模块公开声明文本的按行结果。它来自模块公开信息窗口抓取或 .ec 离线解析，只能作为公开接口/伪代码参考，不是模块完整源码。现在同样支持单关键字、多关键字与正则按行匹配。");
 	r["matches"] = std::move(matches);
 	outOk = true;
 	return Utf8ToLocalText(r.dump());
