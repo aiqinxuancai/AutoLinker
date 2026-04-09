@@ -2930,14 +2930,24 @@ void RunDirectGlobalSearchKeywordTest()
 		"[DirectGlobalSearchTest] 开始固定搜索 keyword={}",
 		kDirectGlobalSearchTestKeyword));
 
-	const auto result = e571::DebugSearchDirectGlobalKeywordHidden(
+	const auto hits = e571::DebugSearchDirectGlobalKeyword(
 		kDirectGlobalSearchTestKeyword,
 		GetCurrentProcessImageBase());
+	e571::HiddenBuiltinSearchDebugResult result;
+	result.hits = hits.size();
+	result.directHitCount = hits.size();
+	if (!hits.empty()) {
+		result.firstResultText = hits.front().displayText;
+		result.hasDirectFirstHit = true;
+		result.directFirstHit = hits.front();
+	}
+	for (size_t index = 0; index < hits.size() && index < 10; ++index) {
+		result.previewLines.push_back(hits[index].displayText);
+	}
 	OutputStringToELog(std::format(
-		"[DirectGlobalSearchTest] 搜索完成 keyword={} hits={} dialogHandled={} first={}",
+		"[DirectGlobalSearchTest] 搜索完成 keyword={} hits={} first={}",
 		kDirectGlobalSearchTestKeyword,
 		result.hits,
-		result.dialogHandled ? 1 : 0,
 		EscapeOneLineForLog(result.firstResultText)));
 	LogDirectGlobalSearchResults(result, 10);
 }
@@ -2948,41 +2958,29 @@ void RunDirectGlobalSearchLocateKeywordTest()
 		"[DirectGlobalSearchLocateTest] 开始固定搜索并定位 keyword={}",
 		kDirectGlobalSearchTestKeyword));
 
-	e571::HiddenBuiltinSearchDebugResult result;
-	const bool ok = e571::DebugLocateFirstDirectGlobalKeywordHidden(
+	e571::DirectGlobalSearchDebugHit firstHit{};
+	size_t totalHits = 0;
+	const bool ok = e571::DebugLocateFirstDirectGlobalKeyword(
 		kDirectGlobalSearchTestKeyword,
 		GetCurrentProcessImageBase(),
-		&result);
+		&firstHit,
+		&totalHits);
 	OutputStringToELog(std::format(
-		"[DirectGlobalSearchLocateTest] 搜索完成 keyword={} hits={} dialogHandled={}",
+		"[DirectGlobalSearchLocateTest] 搜索完成 keyword={} hits={}",
 		kDirectGlobalSearchTestKeyword,
-		result.hits,
-		result.dialogHandled ? 1 : 0));
-	if (result.hasRawFirstHit) {
-		OutputStringToELog(std::format(
-			"[DirectGlobalSearchLocateTest] rawFirst type={} extra={} outer={} inner={} offset={} rawHits={} resolveOk={} resolvedIndex={} bucketData={}",
-			result.rawFirstHit.type,
-			result.rawFirstHit.extra,
-			result.rawFirstHit.outerIndex,
-			result.rawFirstHit.innerIndex,
-			result.rawFirstHit.matchOffset,
-			result.rawHitCount,
-			result.rawResolveOk ? 1 : 0,
-			result.rawResolvedIndex,
-			result.rawBucketData));
-	}
-	if (result.hasDirectFirstHit) {
+		totalHits));
+	if (ok) {
 		OutputStringToELog(std::format(
 			"[DirectGlobalSearchLocateTest] directFirst type={} extra={} outer={} inner={} offset={} directHits={} text={}",
-			result.directFirstHit.type,
-			result.directFirstHit.extra,
-			result.directFirstHit.outerIndex,
-			result.directFirstHit.innerIndex,
-			result.directFirstHit.matchOffset,
-			result.directHitCount,
-			EscapeOneLineForLog(result.directFirstHit.displayText)));
+			firstHit.type,
+			firstHit.extra,
+			firstHit.outerIndex,
+			firstHit.innerIndex,
+			firstHit.matchOffset,
+			totalHits,
+			EscapeOneLineForLog(firstHit.displayText)));
 	}
-	if (result.hits == 0) {
+	if (totalHits == 0) {
 		OutputStringToELog("[DirectGlobalSearchLocateTest] 未找到可定位结果");
 		return;
 	}
@@ -2990,8 +2988,8 @@ void RunDirectGlobalSearchLocateKeywordTest()
 	OutputStringToELog(std::format(
 		"[DirectGlobalSearchLocateTest] jump={} first={} trace={}",
 		ok ? 1 : 0,
-		EscapeOneLineForLog(result.firstResultText),
-		EscapeOneLineForLog(result.jumpTrace)));
+		EscapeOneLineForLog(firstHit.displayText),
+		EscapeOneLineForLog(ok ? "native_result_consumer_ok" : "native_result_consumer_failed")));
 }
 
 void WriteDirectGlobalSearchPageDump(const std::string& text)
@@ -3036,35 +3034,26 @@ void RunDirectGlobalSearchLocateAndDumpCurrentPageTest()
 		"[DirectGlobalSearchPageDumpTest] 开始固定搜索、定位并抓取当前页代码 keyword={}",
 		kDirectGlobalSearchTestKeyword));
 
-	e571::HiddenBuiltinSearchDebugResult result;
-	const bool located = e571::DebugLocateFirstDirectGlobalKeywordHidden(
+	e571::DirectGlobalSearchDebugHit firstHit{};
+	size_t totalHits = 0;
+	const bool located = e571::DebugLocateFirstDirectGlobalKeyword(
 		kDirectGlobalSearchTestKeyword,
 		GetCurrentProcessImageBase(),
-		&result);
+		&firstHit,
+		&totalHits);
 	OutputStringToELog(std::format(
-		"[DirectGlobalSearchPageDumpTest] 定位完成 keyword={} hits={} dialogHandled={} jump={} trace={}",
+		"[DirectGlobalSearchPageDumpTest] 定位完成 keyword={} hits={} jump={} trace={}",
 		kDirectGlobalSearchTestKeyword,
-		result.hits,
-		result.dialogHandled ? 1 : 0,
+		totalHits,
 		located ? 1 : 0,
-		EscapeOneLineForLog(result.jumpTrace)));
+		EscapeOneLineForLog(located ? "native_result_consumer_ok" : "native_result_consumer_failed")));
 	if (!located) {
 		OutputStringToELog("[DirectGlobalSearchPageDumpTest] 中止：定位失败，未抓取当前页代码");
 		return;
 	}
 
 	std::string currentPageCode;
-	e571::DirectGlobalSearchDebugHit dumpHit = {};
-	if (result.hasRawFirstHit) {
-		dumpHit = result.rawFirstHit;
-	}
-	else if (result.hasDirectFirstHit) {
-		dumpHit = result.directFirstHit;
-	}
-	else {
-		OutputStringToELog("[DirectGlobalSearchPageDumpTest] 中止：没有可用的命中记录用于抓取页面");
-		return;
-	}
+	e571::DirectGlobalSearchDebugHit dumpHit = firstHit;
 
 	e571::NativeEditorPageDumpDebugResult dumpResult;
 	if (!e571::DebugDumpCodePageForSearchHit(

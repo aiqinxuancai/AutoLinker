@@ -1147,7 +1147,7 @@ void Initialize()
 		std::filesystem::path(GetBasePath()) / "AutoLinker";
 	std::error_code ec;
 	std::filesystem::create_directories(logDir, ec);
-	Logger::Instance().Open((logDir / "mcp.log").string());
+	Logger::Instance().Open((logDir / "autolinker.log").string());
 
 	g_serverThread = std::thread(ServerThreadMain);
 }

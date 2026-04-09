@@ -5806,57 +5806,60 @@ std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJs
 		}
 		else {
 			const std::string ideSeedKeyword = spec.keywords.front();
-			bool dialogHandled = false;
-			const auto hits = e571::DebugSearchDirectGlobalKeywordHiddenDetailed(
-				ideSeedKeyword.c_str(),
-				GetCurrentProcessImageBaseForAI(),
-				&dialogHandled);
-
-			std::vector<ProgramTreeItemInfo> items;
-			std::string listError;
-			TryListProgramTreeItemsForAI(items, &listError);
-
-			if (!listError.empty()) {
-				warnings.push_back(std::string("工程页类型解析存在异常: ") + listError);
+			std::string directSearchTrace;
+			if (!e571::DebugIsDirectGlobalSearchSupported(
+					GetCurrentProcessImageBaseForAI(),
+					&directSearchTrace)) {
+				warnings.push_back("当前 IDE 不支持 direct global search，本次未包含 IDE 工程命中。");
+				warnings.push_back(std::string("IDE project search trace: ") + directSearchTrace);
 			}
+			else {
+				const auto hits = e571::DebugSearchDirectGlobalKeyword(
+					ideSeedKeyword.c_str(),
+					GetCurrentProcessImageBaseForAI());
 
-			const auto infos = BuildKeywordSearchResultInfosForAI(hits, items);
-			for (size_t i = 0; i < infos.size() && static_cast<int>(matches.size()) < limit; ++i) {
-				std::vector<std::string> matchedKeywords;
-				if (!MatchPublicCodeSearchLineForAI(infos[i].text, spec, matchedKeywords)) {
-					continue;
+				std::vector<ProgramTreeItemInfo> items;
+				std::string listError;
+				TryListProgramTreeItemsForAI(items, &listError);
+
+				if (!listError.empty()) {
+					warnings.push_back(std::string("工程页类型解析存在异常: ") + listError);
 				}
 
-				nlohmann::json row;
-				row["target_type"] = "project";
-				row["read_tool"] = "read_project_search_result_code";
-				row["jump_tool"] = "jump_to_search_result";
-				row["source_kind"] = "ide_hidden_search";
-				row["page_name"] = LocalToUtf8Text(infos[i].pageName);
-				row["page_type_key"] = infos[i].pageTypeKey;
-				row["page_type_name"] = LocalToUtf8Text(infos[i].pageTypeName);
-				row["line_number"] = infos[i].lineNumber;
-				row["text"] = LocalToUtf8Text(infos[i].text);
-				row["jump_token"] = BuildSearchJumpToken(hits[i]);
-				row["hit_index_in_page"] = infos[i].hitIndexInPage;
-				row["hit_total_in_page"] = infos[i].hitTotalInPage;
-				row["same_text_occurrence_index"] = infos[i].sameTextOccurrenceIndex;
-				row["same_text_occurrence_total"] = infos[i].sameTextOccurrenceTotal;
-				if (!matchedKeywords.empty()) {
-					nlohmann::json keywords = nlohmann::json::array();
-					for (const auto& keyword : matchedKeywords) {
-						keywords.push_back(LocalToUtf8Text(keyword));
+				const auto infos = BuildKeywordSearchResultInfosForAI(hits, items);
+				for (size_t i = 0; i < infos.size() && static_cast<int>(matches.size()) < limit; ++i) {
+					std::vector<std::string> matchedKeywords;
+					if (!MatchPublicCodeSearchLineForAI(infos[i].text, spec, matchedKeywords)) {
+						continue;
 					}
-					row["matched_keywords"] = std::move(keywords);
-				}
-				if (spec.useRegex) {
-					row["matched_regex"] = LocalToUtf8Text(spec.regexText);
-				}
-				matches.push_back(std::move(row));
-			}
 
-			if (dialogHandled) {
-				warnings.push_back("IDE 搜索过程中出现过对话框处理。");
+					nlohmann::json row;
+					row["target_type"] = "project";
+					row["read_tool"] = "read_project_search_result_code";
+					row["jump_tool"] = "jump_to_search_result";
+					row["source_kind"] = "ide_direct_search";
+					row["page_name"] = LocalToUtf8Text(infos[i].pageName);
+					row["page_type_key"] = infos[i].pageTypeKey;
+					row["page_type_name"] = LocalToUtf8Text(infos[i].pageTypeName);
+					row["line_number"] = infos[i].lineNumber;
+					row["text"] = LocalToUtf8Text(infos[i].text);
+					row["jump_token"] = BuildSearchJumpToken(hits[i]);
+					row["hit_index_in_page"] = infos[i].hitIndexInPage;
+					row["hit_total_in_page"] = infos[i].hitTotalInPage;
+					row["same_text_occurrence_index"] = infos[i].sameTextOccurrenceIndex;
+					row["same_text_occurrence_total"] = infos[i].sameTextOccurrenceTotal;
+					if (!matchedKeywords.empty()) {
+						nlohmann::json keywords = nlohmann::json::array();
+						for (const auto& keyword : matchedKeywords) {
+							keywords.push_back(LocalToUtf8Text(keyword));
+						}
+						row["matched_keywords"] = std::move(keywords);
+					}
+					if (spec.useRegex) {
+						row["matched_regex"] = LocalToUtf8Text(spec.regexText);
+					}
+					matches.push_back(std::move(row));
+				}
 			}
 		}
 	}
@@ -6158,11 +6161,17 @@ std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argument
 		return R"({"ok":false,"error":"keyword is required"})";
 	}
 
-	bool dialogHandled = false;
-	const auto hits = e571::DebugSearchDirectGlobalKeywordHiddenDetailed(
+	std::string directSearchTrace;
+	if (!e571::DebugIsDirectGlobalSearchSupported(GetCurrentProcessImageBaseForAI(), &directSearchTrace)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "current IDE does not support direct global search";
+		r["trace"] = directSearchTrace;
+		return Utf8ToLocalText(r.dump());
+	}
+	const auto hits = e571::DebugSearchDirectGlobalKeyword(
 		keyword.c_str(),
-		GetCurrentProcessImageBaseForAI(),
-		&dialogHandled);
+		GetCurrentProcessImageBaseForAI());
 
 	std::vector<ProgramTreeItemInfo> items;
 	std::string listError;
@@ -6180,7 +6189,7 @@ std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argument
 		row["text"] = LocalToUtf8Text(infos[i].text);
 		row["jump_token"] = BuildSearchJumpToken(hits[i]);
 		row["read_tool"] = "read_project_search_result_code";
-		row["source_kind"] = "ide_hidden_search";
+		row["source_kind"] = "ide_direct_search";
 		row["hit_index_in_page"] = infos[i].hitIndexInPage;
 		row["hit_total_in_page"] = infos[i].hitTotalInPage;
 		row["same_text_occurrence_index"] = infos[i].sameTextOccurrenceIndex;
@@ -6192,8 +6201,8 @@ std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argument
 	r["ok"] = true;
 	r["keyword"] = LocalToUtf8Text(keyword);
 	r["count"] = hits.size();
-	r["dialog_handled"] = dialogHandled;
-	r["source_kind"] = "ide_hidden_search";
+	r["dialog_handled"] = false;
+	r["source_kind"] = "ide_direct_search";
 	r["code_kind"] = "pseudo_reference";
 	r["warning"] = LocalToUtf8Text("这里仅搜索当前 IDE 工程源码命中，不包含模块公开声明与支持库公开声明。搜索结果文本以及后续按页面名抓取到的代码，与IDE正常编辑页结构可能不同，仅可作为伪代码参考。若你想优先使用当前工程源码缓存并直接拿到稳定页名和行号，请改用 search_project_source_cache。");
 	r["results"] = std::move(results);

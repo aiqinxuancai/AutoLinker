@@ -1,4 +1,4 @@
-// Logger.h - 统一日志类，全项目共享单例，避免到处造轮子
+﻿// Logger.h - 统一日志类，全项目共享单例，避免到处造轮子
 // 日志文件格式：UTF-8 with BOM，每行以本机时区毫秒精度时间戳开头
 #pragma once
 
@@ -15,13 +15,20 @@ public:
 	// filePath 为完整路径，父目录须已存在
 	void Open(const std::string& filePath);
 
-	// 写入一条日志到文件（category 如 "MCP"、"Tool"、"Init"）
-	// 格式：[时间戳] [category] message\r\n
+	// 写入一条日志到文件（category 如 "MCP"、"Tool"、"Init"；空字符串则省略 [category] 前缀）
+	// 格式：[时间戳] [category] message\r\n  或  [时间戳] message\r\n（category 为空时）
 	void Write(const std::string& category, const std::string& message);
 
 	// 写入一条日志到文件，同时通过 OutputStringToELog 输出至 IDE 日志窗口（GBK）
 	// message 须为 UTF-8 编码
 	void WriteAndIde(const std::string& category, const std::string& message);
+
+	// 文件写入 fileMessage，IDE 显示 ideMessage（均为 UTF-8），用于文件需要完整信息、IDE 只需摘要的场景
+	void WriteSplit(const std::string& category, const std::string& fileMessage, const std::string& ideMessage);
+
+	// 接收 GBK 编码字符串（来自 OutputStringToELog），转 UTF-8 后写入文件
+	// 若当前线程已在 WriteAndIde 中，则跳过（防止双写）
+	void WriteGbk(const std::string& gbkMessage);
 
 	// 构建本机时区毫秒精度时间戳字符串，可供外部使用（如启动追踪）
 	// 格式示例：2026-04-09 09:20:41.501 +0800
@@ -32,6 +39,9 @@ private:
 
 	// 将 UTF-8 文本转换为 GBK，供 IDE 日志窗口使用
 	static std::string Utf8ToGbk(const std::string& text);
+
+	// 将 GBK 文本转换为 UTF-8，供文件写入使用
+	static std::string GbkToUtf8(const std::string& text);
 
 	std::mutex m_mutex;
 	std::ofstream m_file;

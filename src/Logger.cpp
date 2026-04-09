@@ -1,4 +1,4 @@
-// Logger.cpp - 统一日志类实现
+﻿// Logger.cpp - 统一日志类实现
 #include "Logger.h"
 
 #include "Global.h"
@@ -117,18 +117,78 @@ void Logger::Write(const std::string& category, const std::string& message)
 	if (!m_file.is_open()) {
 		return;
 	}
-	const std::string line = std::format(
-		"[{}] [{}] {}\r\n",
-		BuildTimestamp(),
-		category,
-		message);
+	std::string line;
+	if (category.empty()) {
+		line = std::format("[{}] {}\r\n", BuildTimestamp(), message);
+	}
+	else {
+		line = std::format("[{}] [{}] {}\r\n", BuildTimestamp(), category, message);
+	}
 	m_file.write(line.data(), static_cast<std::streamsize>(line.size()));
 	m_file.flush();
 }
 
+// 线程局部标记：在 WriteAndIde 调用 OutputStringToELog 期间阻止 WriteGbk 再次写文件
+thread_local bool g_suppressFileWriteForIde = false;
+
 void Logger::WriteAndIde(const std::string& category, const std::string& message)
 {
 	Write(category, message);
+	// 设置抑制标记，防止下方 OutputStringToELog 触发 WriteGbk 产生双写
+	g_suppressFileWriteForIde = true;
 	// 输出至 IDE 日志窗口，需 GBK 编码
 	OutputStringToELog(Utf8ToGbk("[" + category + "] " + message));
+	g_suppressFileWriteForIde = false;
+}
+
+void Logger::WriteSplit(const std::string& category, const std::string& fileMessage, const std::string& ideMessage)
+{
+	Write(category, fileMessage);
+	g_suppressFileWriteForIde = true;
+	const std::string prefix = category.empty() ? std::string() : "[" + category + "] ";
+	OutputStringToELog(Utf8ToGbk(prefix + ideMessage));
+	g_suppressFileWriteForIde = false;
+}
+
+std::string Logger::GbkToUtf8(const std::string& text)
+{
+	if (text.empty()) {
+		return text;
+	}
+
+	constexpr UINT kGbk = 936;
+	const int wideLen = MultiByteToWideChar(
+		kGbk, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+	if (wideLen <= 0) {
+		return text;
+	}
+
+	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+	if (MultiByteToWideChar(
+		kGbk, 0, text.data(), static_cast<int>(text.size()),
+		wide.data(), wideLen) <= 0) {
+		return text;
+	}
+
+	const int utf8Len = WideCharToMultiByte(
+		CP_UTF8, 0, wide.data(), wideLen, nullptr, 0, nullptr, nullptr);
+	if (utf8Len <= 0) {
+		return text;
+	}
+
+	std::string utf8(static_cast<size_t>(utf8Len), '\0');
+	if (WideCharToMultiByte(
+		CP_UTF8, 0, wide.data(), wideLen,
+		utf8.data(), utf8Len, nullptr, nullptr) <= 0) {
+		return text;
+	}
+	return utf8;
+}
+
+void Logger::WriteGbk(const std::string& gbkMessage)
+{
+	if (g_suppressFileWriteForIde) {
+		return;
+	}
+	Write("", GbkToUtf8(gbkMessage));
 }

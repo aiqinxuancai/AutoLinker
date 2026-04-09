@@ -10,6 +10,7 @@
 
 #include "Global.h"
 #include "IDEFacade.h"
+#include "Logger.h"
 #include "WindowHelper.h"
 
 std::string g_nowOpenSourceFilePath;
@@ -68,6 +69,7 @@ void OutputStringToELog(const std::string& szbuf)
 	const std::string line = "[AutoLinker]" + szbuf;
 	OutputDebugStringA((line + "\n").c_str());
 	IDEFacade::Instance().AppendOutputWindowLine(line);
+	Logger::Instance().WriteGbk(line);
 }
 
 uint64_t AllocateAIPerfTraceId()

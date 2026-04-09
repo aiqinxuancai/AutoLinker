@@ -95,21 +95,28 @@ struct NativeEditorCommandAddresses {
 	std::uintptr_t editorFormatRangeText = 0;
 };
 
-std::string GetCurrentIdeExecutableNameLowerBridge()
+template <size_t N>
+bool MatchRvaSignature(
+	std::uintptr_t moduleBase,
+	std::uintptr_t rva,
+	const std::array<std::uint8_t, N>& signature)
 {
-	char buffer[MAX_PATH] = {};
-	const DWORD len = GetModuleFileNameA(nullptr, buffer, static_cast<DWORD>(sizeof(buffer)));
-	if (len == 0 || len >= sizeof(buffer)) {
-		return std::string();
+	if (moduleBase == 0 || rva < kImageBase) {
+		return false;
 	}
 
-	std::string fullPath(buffer, buffer + len);
-	const size_t slash = fullPath.find_last_of("\\/");
-	std::string fileName = slash == std::string::npos ? fullPath : fullPath.substr(slash + 1);
-	for (char& ch : fileName) {
-		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+	const auto* code = reinterpret_cast<const std::uint8_t*>(moduleBase + (rva - kImageBase));
+	__try {
+		for (size_t index = 0; index < signature.size(); ++index) {
+			if (code[index] != signature[index]) {
+				return false;
+			}
+		}
+		return true;
 	}
-	return fileName;
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
 }
 
 bool IsVersionLockedInternalInteropSupported(std::string* outTrace = nullptr)
@@ -118,14 +125,81 @@ bool IsVersionLockedInternalInteropSupported(std::string* outTrace = nullptr)
 		outTrace->clear();
 	}
 
-	const std::string exeName = GetCurrentIdeExecutableNameLowerBridge();
-	const bool supported = exeName == "e571.exe";
+	const std::uintptr_t moduleBase = reinterpret_cast<std::uintptr_t>(::GetModuleHandleA(nullptr));
+	if (moduleBase == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = "internal_interop_signature_probe_no_module_base";
+		}
+		return false;
+	}
+
+	static constexpr std::array<std::uint8_t, 16> kSigGenericArrayInit = {
+		0x8B, 0xC1, 0x33, 0xC9, 0xC7, 0x00, 0x00, 0x49,
+		0x57, 0x00, 0xC7, 0x40, 0x04, 0x90, 0xBC, 0x5C,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigGenericArrayDestroy = {
+		0x56, 0x8B, 0xF1, 0x8B, 0x46, 0x08, 0x50, 0xE8,
+		0x14, 0x00, 0x00, 0x00, 0x33, 0xC0, 0x89, 0x46,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigGenericArrayAssign = {
+		0x56, 0x57, 0x8B, 0x7C, 0x24, 0x10, 0x85, 0xFF,
+		0x7E, 0x3D, 0x8B, 0x71, 0x10, 0x8D, 0x04, 0x3E,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigGenericArrayFinalize = {
+		0x8B, 0x41, 0x10, 0x8B, 0x51, 0x0C, 0x3B, 0xD0,
+		0x7E, 0x16, 0x8B, 0x51, 0x08, 0x53, 0x8A, 0x5C,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigClipboardObjectCtor = {
+		0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68, 0xDD, 0xE7,
+		0x55, 0x00, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigClipboardObjectDestroy = {
+		0x6A, 0xFF, 0x68, 0x38, 0xD6, 0x55, 0x00, 0x64,
+		0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigClipboardDeserialize = {
+		0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x6A, 0xFF,
+		0x68, 0x53, 0x3F, 0x56, 0x00, 0x50, 0x64, 0x89,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigClipboardSerialize = {
+		0x6A, 0xFF, 0x68, 0xE3, 0x47, 0x56, 0x00, 0x64,
+		0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigClipboardInsert = {
+		0x8B, 0x44, 0x24, 0x10, 0x8B, 0x54, 0x24, 0x0C,
+		0x50, 0x8B, 0x44, 0x24, 0x0C, 0x52, 0x8B, 0x54,
+	};
+
+	struct ProbeItem {
+		const char* label;
+		std::uintptr_t rva;
+		bool matched;
+	};
+
+	std::vector<ProbeItem> items = {
+		{ "generic_array_init", kKnownGenericArrayInitRva, MatchRvaSignature(moduleBase, kKnownGenericArrayInitRva, kSigGenericArrayInit) },
+		{ "generic_array_destroy", kKnownGenericArrayDestroyRva, MatchRvaSignature(moduleBase, kKnownGenericArrayDestroyRva, kSigGenericArrayDestroy) },
+		{ "generic_array_assign", kKnownGenericArrayAssignRva, MatchRvaSignature(moduleBase, kKnownGenericArrayAssignRva, kSigGenericArrayAssign) },
+		{ "generic_array_finalize", kKnownGenericArrayFinalizeRva, MatchRvaSignature(moduleBase, kKnownGenericArrayFinalizeRva, kSigGenericArrayFinalize) },
+		{ "clipboard_object_ctor", kKnownClipboardObjectCtorRva, MatchRvaSignature(moduleBase, kKnownClipboardObjectCtorRva, kSigClipboardObjectCtor) },
+		{ "clipboard_object_destroy", kKnownClipboardObjectDestroyRva, MatchRvaSignature(moduleBase, kKnownClipboardObjectDestroyRva, kSigClipboardObjectDestroy) },
+		{ "clipboard_deserialize", kKnownClipboardDeserializeRva, MatchRvaSignature(moduleBase, kKnownClipboardDeserializeRva, kSigClipboardDeserialize) },
+		{ "clipboard_serialize", kKnownClipboardSerializeRva, MatchRvaSignature(moduleBase, kKnownClipboardSerializeRva, kSigClipboardSerialize) },
+		{ "clipboard_insert", kKnownClipboardInsertObjectRva, MatchRvaSignature(moduleBase, kKnownClipboardInsertObjectRva, kSigClipboardInsert) },
+	};
+
+	bool supported = true;
+	std::string trace = "internal_interop_signature_probe";
+	for (const auto& item : items) {
+		trace += "|" + std::string(item.label) + "=" + (item.matched ? "1" : "0");
+		supported = supported && item.matched;
+	}
+
 	if (outTrace != nullptr) {
 		*outTrace =
-			std::string("version_locked_internal_interop_") +
-			(supported ? "supported" : "unsupported") +
-			"|process=" +
-			(exeName.empty() ? std::string("unknown") : exeName);
+			std::string(supported ? "version_locked_internal_interop_supported" : "version_locked_internal_interop_unsupported") +
+			"|" +
+			trace;
 	}
 	return supported;
 }
@@ -136,16 +210,12 @@ bool IsDirectGlobalSearchEditorResolveSupported(std::string* outTrace = nullptr)
 		outTrace->clear();
 	}
 
-	const std::string exeName = GetCurrentIdeExecutableNameLowerBridge();
-	const bool supported = exeName == "e571.exe";
 	if (outTrace != nullptr) {
 		*outTrace =
-			std::string("direct_global_search_editor_resolve_") +
-			(supported ? "supported" : "unsupported") +
-			"|process=" +
-			(exeName.empty() ? std::string("unknown") : exeName);
+			std::string("direct_global_search_editor_resolve_unsupported") +
+			"|direct_global_search_fixed_layout_unsupported_without_probe";
 	}
-	return supported;
+	return false;
 }
 
 struct EditorDispatchTargetInfo {

@@ -950,17 +950,31 @@ void ProjectBinarySerializer::RecordVerifiedSerializerContext(
 		return;
 	}
 
-	const std::string normalizedSourcePath = NormalizePathForSerializer(sourcePath);
+	const std::string hookSourcePath = NormalizePathForSerializer(sourcePath);
+	const std::string currentSourcePath = ResolveCurrentSourcePathForSerializer();
+	const std::string recordedSourcePath =
+		!currentSourcePath.empty() ? currentSourcePath : hookSourcePath;
 	{
 		std::lock_guard<std::mutex> lock(g_serializerContextMutex);
 		g_serializerContext.serializerThis = serializerThis;
-		g_serializerContext.sourcePath = normalizedSourcePath;
+		g_serializerContext.sourcePath = recordedSourcePath;
 	}
 
-	OutputStringToELog(std::format(
-		"[ProjectBinarySerializer] captured serializer_this={} source={}",
-		reinterpret_cast<std::uintptr_t>(serializerThis),
-		normalizedSourcePath));
+	if (!hookSourcePath.empty() &&
+		!recordedSourcePath.empty() &&
+		_stricmp(hookSourcePath.c_str(), recordedSourcePath.c_str()) != 0) {
+		OutputStringToELog(std::format(
+			"[ProjectBinarySerializer] captured serializer_this={} source={} hook_path={}",
+			reinterpret_cast<std::uintptr_t>(serializerThis),
+			recordedSourcePath,
+			hookSourcePath));
+	}
+	else {
+		OutputStringToELog(std::format(
+			"[ProjectBinarySerializer] captured serializer_this={} source={}",
+			reinterpret_cast<std::uintptr_t>(serializerThis),
+			recordedSourcePath));
+	}
 #else
 	(void)serializerThis;
 	(void)sourcePath;
@@ -1043,59 +1057,46 @@ bool ProjectBinarySerializer::SerializeCurrentProject(
 			return true;
 		}
 
-		std::vector<unsigned char> activeEditorBytes;
-		std::string activeEditorError;
-		std::string activeEditorTrace;
-		if (TrySerializeCurrentProjectFromActiveEditorSerializerField(
-				addrs,
-				activeEditorBytes,
-				&activeEditorError,
-				&activeEditorTrace)) {
-			outBytes = std::move(activeEditorBytes);
-			if (outTrace != nullptr) {
-				*outTrace =
-					"direct_route_failed_fallback_active_editor"
-					"|direct=" + std::to_string(reinterpret_cast<std::uintptr_t>(addrs.directSerializeToHandle)) +
-					"|serializer_this=" + std::to_string(reinterpret_cast<std::uintptr_t>(serializerThis)) +
-					"|source=" + serializerSourcePath +
-					"|direct_error=" + directError +
-					"|" +
-					activeEditorTrace;
-			}
-			return true;
-		}
-
-		std::vector<unsigned char> coldBytes;
-		std::string coldError;
-		std::string coldTrace;
-		if (TrySerializeCurrentProjectFromActiveEditorCommand(addrs, coldBytes, &coldError, &coldTrace)) {
-			outBytes = std::move(coldBytes);
-			if (outTrace != nullptr) {
-				*outTrace =
-					"direct_route_failed_fallback_cold_start"
-					"|direct=" + std::to_string(reinterpret_cast<std::uintptr_t>(addrs.directSerializeToHandle)) +
-					"|serializer_this=" + std::to_string(reinterpret_cast<std::uintptr_t>(serializerThis)) +
-					"|source=" + serializerSourcePath +
-					"|direct_error=" + directError +
-					"|active_editor_error=" + activeEditorError +
-					"|" +
-					coldTrace;
-			}
-			return true;
-		}
-
 		if (outError != nullptr) {
+			std::vector<unsigned char> activeEditorBytes;
+			std::string activeEditorError;
+			std::string activeEditorTrace;
+			if (TrySerializeCurrentProjectFromActiveEditorSerializerField(
+					addrs,
+					activeEditorBytes,
+					&activeEditorError,
+					&activeEditorTrace)) {
+				outBytes = std::move(activeEditorBytes);
+				if (outTrace != nullptr) {
+					*outTrace =
+						"serialize_ok"
+						"|route=active_editor_serializer_field"
+						"|direct=" + std::to_string(reinterpret_cast<std::uintptr_t>(addrs.directSerializeToHandle)) +
+						"|serializer_this=" + std::to_string(reinterpret_cast<std::uintptr_t>(serializerThis)) +
+						"|source=" + serializerSourcePath +
+						"|direct_error=" + directError +
+						"|" +
+						activeEditorTrace;
+				}
+				return true;
+			}
+
 			*outError = directError.empty()
 				? "serialize current project handle failed"
 				: "direct serializer failed: " + directError;
 			if (!activeEditorError.empty()) {
-				*outError += " | active_editor: " + activeEditorError;
-			}
-			if (!coldError.empty()) {
-				*outError += " | cold_start: " + coldError;
+				*outError += " | active_editor_probe: " + activeEditorError;
 			}
 		}
 		if (outTrace != nullptr) {
+			std::vector<unsigned char> activeEditorBytes;
+			std::string activeEditorError;
+			std::string activeEditorTrace;
+			(void)TrySerializeCurrentProjectFromActiveEditorSerializerField(
+				addrs,
+				activeEditorBytes,
+				&activeEditorError,
+				&activeEditorTrace);
 			*outTrace =
 				"serialize_call_failed"
 				"|direct=" + std::to_string(reinterpret_cast<std::uintptr_t>(addrs.directSerializeToHandle)) +
@@ -1103,11 +1104,8 @@ bool ProjectBinarySerializer::SerializeCurrentProject(
 				"|source=" + serializerSourcePath +
 				"|direct_error=" + directError +
 				"|active_editor_error=" + activeEditorError +
-				"|cold_error=" + coldError +
 				"|" +
-				activeEditorTrace +
-				"|" +
-				coldTrace;
+				activeEditorTrace;
 		}
 		return false;
 	}
@@ -1124,26 +1122,10 @@ bool ProjectBinarySerializer::SerializeCurrentProject(
 		if (outTrace != nullptr) {
 			*outTrace =
 				"serialize_ok"
-				"|route=active_editor_field23_direct"
+				"|route=active_editor_serializer_field"
 				"|context_reason=" + serializerContextReason +
 				"|" +
 				activeEditorTrace;
-		}
-		return true;
-	}
-
-	std::vector<unsigned char> coldBytes;
-	std::string coldError;
-	std::string coldTrace;
-	if (TrySerializeCurrentProjectFromActiveEditorCommand(addrs, coldBytes, &coldError, &coldTrace)) {
-		outBytes = std::move(coldBytes);
-		if (outTrace != nullptr) {
-			*outTrace =
-				"serialize_ok"
-				"|route=cold_start_active_editor_command"
-				"|context_reason=" + serializerContextReason +
-				"|" +
-				coldTrace;
 		}
 		return true;
 	}
@@ -1152,9 +1134,6 @@ bool ProjectBinarySerializer::SerializeCurrentProject(
 		*outError = activeEditorError.empty()
 			? "project serializer context unavailable"
 			: activeEditorError;
-		if (!coldError.empty()) {
-			*outError += " | cold_start: " + coldError;
-		}
 	}
 	if (outTrace != nullptr) {
 		*outTrace =
@@ -1162,11 +1141,8 @@ bool ProjectBinarySerializer::SerializeCurrentProject(
 			"|direct=" + std::to_string(reinterpret_cast<std::uintptr_t>(addrs.directSerializeToHandle)) +
 			"|reason=" + serializerContextReason +
 			"|active_editor_error=" + activeEditorError +
-			"|cold_error=" + coldError +
 			"|" +
-			activeEditorTrace +
-			"|" +
-			coldTrace;
+			activeEditorTrace;
 	}
 	return false;
 #endif

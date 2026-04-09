@@ -4,6 +4,7 @@
 #include <detours.h>
 
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <format>
 #include <mbstring.h>
@@ -235,6 +236,20 @@ std::uintptr_t ReadNormalizedAbs32(std::uintptr_t absoluteAddress, std::uintptr_
     const auto runtimeAddress = absoluteAddress - kImageBase + moduleBase;
     const auto runtimeValue = static_cast<std::uintptr_t>(*reinterpret_cast<const std::uint32_t*>(runtimeAddress));
     return NormalizeRuntimeAddress(runtimeValue, moduleBase);
+}
+
+bool HasUnsafeDirectGlobalSearchLayoutSupport(
+    std::uintptr_t moduleBase,
+    std::string* outTrace = nullptr) {
+    (void)moduleBase;
+    if (outTrace != nullptr) {
+        outTrace->clear();
+    }
+
+    if (outTrace != nullptr) {
+        *outTrace = "direct_global_search_fixed_layout_unsupported_without_probe";
+    }
+    return false;
 }
 
 std::uintptr_t ResolveUniqueCodeAddress(
@@ -546,6 +561,16 @@ bool PopulateNativeSearchAddresses(NativeSearchAddresses& addrs, std::uintptr_t 
 const NativeSearchAddresses& GetNativeSearchAddresses(std::uintptr_t moduleBase) {
     std::lock_guard<std::mutex> lock(g_nativeSearchAddressMutex);
     if (!g_nativeSearchAddresses.initialized || g_nativeSearchAddresses.moduleBase != moduleBase) {
+        g_nativeSearchAddresses = {};
+        g_nativeSearchAddresses.moduleBase = moduleBase;
+
+        std::string supportTrace;
+        if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase, &supportTrace)) {
+            g_nativeSearchAddresses.initialized = true;
+            g_nativeSearchAddresses.ok = false;
+            return g_nativeSearchAddresses;
+        }
+
         PopulateNativeSearchAddresses(g_nativeSearchAddresses, moduleBase);
     }
     return g_nativeSearchAddresses;
@@ -553,6 +578,36 @@ const NativeSearchAddresses& GetNativeSearchAddresses(std::uintptr_t moduleBase)
 
 bool HasNativeSearchAddresses(std::uintptr_t moduleBase) {
     return GetNativeSearchAddresses(moduleBase).ok;
+}
+
+bool DebugIsDirectGlobalSearchSupportedImpl(
+    std::uintptr_t moduleBase,
+    std::string* outTrace) {
+    if (outTrace != nullptr) {
+        outTrace->clear();
+    }
+
+    std::string supportTrace;
+    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase, &supportTrace)) {
+        if (outTrace != nullptr) {
+            *outTrace = supportTrace.empty()
+                ? "direct_global_search_fixed_layout_unsupported_without_probe"
+                : supportTrace;
+        }
+        return false;
+    }
+
+    if (!HasNativeSearchAddresses(moduleBase)) {
+        if (outTrace != nullptr) {
+            *outTrace = "resolve_native_addresses_failed";
+        }
+        return false;
+    }
+
+    if (outTrace != nullptr) {
+        *outTrace = "direct_global_search_supported";
+    }
+    return true;
 }
 
 void* GetMainWindowObject(std::uintptr_t moduleBase) {
@@ -842,6 +897,10 @@ private:
 };
 
 HWND GetBuiltinResultListHwnd(std::uintptr_t moduleBase) {
+    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase)) {
+        return nullptr;
+    }
+
     const auto& addrs = GetNativeSearchAddresses(moduleBase);
     if (addrs.searchMode == 0) {
         return nullptr;
@@ -903,6 +962,9 @@ bool TryReadBuiltinResultHit(
     }
     if (outHit != nullptr) {
         std::memset(outHit, 0, sizeof(*outHit));
+    }
+    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase)) {
+        return false;
     }
 
     __try {
@@ -1720,6 +1782,10 @@ int FindFirstBuiltinSearchResultIndex(HWND listHwnd) {
 
 e571::HiddenBuiltinSearchDebugResult CollectBuiltinSearchResult(std::uintptr_t moduleBase) {
     e571::HiddenBuiltinSearchDebugResult result;
+    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase)) {
+        return result;
+    }
+
     HWND listHwnd = GetBuiltinResultListHwnd(moduleBase);
     if (!::IsWindow(listHwnd)) {
         return result;
@@ -1751,6 +1817,10 @@ e571::HiddenBuiltinSearchDebugResult CollectBuiltinSearchResult(std::uintptr_t m
 }
 
 bool TriggerBuiltinSearchFirstResult(std::uintptr_t moduleBase) {
+    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase)) {
+        return false;
+    }
+
     HWND listHwnd = GetBuiltinResultListHwnd(moduleBase);
     if (!::IsWindow(listHwnd)) {
         return false;
@@ -1791,6 +1861,10 @@ bool RunBuiltinSearchDialogHidden(
     bool* outDialogHandled,
     e571::HiddenBuiltinSearchDebugResult* outCapturedResult,
     std::vector<e571::DirectGlobalSearch::GlobalSearchHit>* outRawHits) {
+    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase)) {
+        return false;
+    }
+
     std::array<unsigned char, kBuiltinSearchDialogStorageSize> dialogStorage = {};
     void* const dialogObject = dialogStorage.data();
 
@@ -2303,6 +2377,14 @@ bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
         outTrace->clear();
     }
 
+    std::string supportTrace;
+    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase, &supportTrace)) {
+        if (outTrace != nullptr) {
+            *outTrace = supportTrace;
+        }
+        return false;
+    }
+
     const unsigned int itemTypeNibble = itemData >> 28;
     if (itemTypeNibble == 0 || itemTypeNibble == 15) {
         if (outTrace != nullptr) {
@@ -2595,6 +2677,14 @@ bool DebugSetMainEditorActiveEditorObjectImpl(
         outTrace->clear();
     }
 
+    std::string supportTrace;
+    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase, &supportTrace)) {
+        if (outTrace != nullptr) {
+            *outTrace = supportTrace;
+        }
+        return false;
+    }
+
     const auto& addrs = GetNativeSearchAddresses(moduleBase);
     if (!addrs.ok) {
         if (outTrace != nullptr) {
@@ -2721,6 +2811,9 @@ bool SafeJumpToResult(const e571::DirectGlobalSearch& search, const e571::Direct
 
 void InitHiddenBuiltinSearchTargets(HiddenBuiltinSearchContext& ctx, std::uintptr_t moduleBase) {
     ctx.moduleBase = moduleBase;
+    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase)) {
+        return;
+    }
 
     const auto& addrs = GetNativeSearchAddresses(moduleBase);
     if (!addrs.ok) {
@@ -3140,56 +3233,7 @@ std::vector<DirectGlobalSearch::SearchResult> DirectGlobalSearch::Search(
 }
 
 bool DirectGlobalSearch::JumpToResult(const GlobalSearchHit& hit) const {
-    if (InvokeNativeSearchResultRecordConsumer(moduleBase_, &hit, 1, 0)) {
-        return true;
-    }
-
-    if (hit.type == 1) {
-        int resolvedIndex = -1;
-        const int ok = ResolveBucketIndex(
-            Ptr<DwordContainer>(GetNativeSearchAddresses(moduleBase_).type1Container),
-            hit.extra,
-            nullptr,
-            &resolvedIndex);
-        if (ok == 0) {
-            NotifyOpenFailure(0x30);
-            return false;
-        }
-
-        HWND hwnd = OpenCodeTarget(
-            Ptr<void>(GetNativeSearchAddresses(moduleBase_).mainEditorHost),
-            hit.type,
-            resolvedIndex,
-            0,
-            hit.outerIndex,
-            hit.innerIndex,
-            1,
-            -1);
-        if (hwnd == nullptr) {
-            NotifyOpenFailure(0x30);
-            return false;
-        }
-
-        return FocusResult(hwnd, hit);
-    }
-
-    HWND hwnd = OpenCodeTarget(
-        Ptr<void>(GetNativeSearchAddresses(moduleBase_).mainEditorHost),
-        hit.type,
-        -1,
-        -1,
-        0,
-        0,
-        1,
-        -1);
-    if (hwnd == nullptr) {
-        NotifyOpenFailure(0x30);
-        return false;
-    }
-
-    MoveToLine(hwnd, hit.outerIndex, hit.innerIndex, 0, 1, 0);
-    EnsureVisible(hwnd, 0, 0, 1);
-    return FocusResult(hwnd, hit);
+    return InvokeNativeSearchResultRecordConsumer(moduleBase_, &hit, 1, 0);
 }
 
 bool DirectGlobalSearch::JumpToResult(const SearchResult& result) const {
@@ -3448,6 +3492,12 @@ bool DirectGlobalSearch::FocusResult(HWND hwnd, const GlobalSearchHit& hit) cons
 
 }  // namespace e571
 
+bool e571::DebugIsDirectGlobalSearchSupported(
+    std::uintptr_t moduleBase,
+    std::string* outTrace) {
+    return DebugIsDirectGlobalSearchSupportedImpl(moduleBase, outTrace);
+}
+
 std::vector<e571::DirectGlobalSearchDebugHit> e571::DebugSearchDirectGlobalKeyword(
     const char* keyword,
     std::uintptr_t moduleBase) {
@@ -3488,10 +3538,6 @@ std::vector<e571::DirectGlobalSearchDebugHit> e571::DebugSearchDirectGlobalKeywo
                 if (bucketOk == 0) {
                     break;
                 }
-                if ((reinterpret_cast<const Type1BucketEntry*>(bucketData)->flags & 0x02) != 0) {
-                    continue;
-                }
-
                 ctx.type = 1;
                 ctx.data = bucketData;
                 ctx.flag = 0;
@@ -3554,6 +3600,9 @@ e571::HiddenBuiltinSearchDebugResult e571::DebugSearchDirectGlobalKeywordHidden(
     const char* keyword,
     std::uintptr_t moduleBase) {
     HiddenBuiltinSearchDebugResult result;
+    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase)) {
+        return result;
+    }
     if (keyword == nullptr || keyword[0] == '\0') {
         return result;
     }
@@ -3577,6 +3626,9 @@ std::vector<e571::DirectGlobalSearchDebugHit> e571::DebugSearchDirectGlobalKeywo
     std::uintptr_t moduleBase,
     bool* outDialogHandled) {
     std::vector<DirectGlobalSearchDebugHit> hits;
+    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase)) {
+        return hits;
+    }
     if (outDialogHandled != nullptr) {
         *outDialogHandled = false;
     }
@@ -4043,7 +4095,7 @@ bool e571::DebugJumpToSearchHit(
 
     const bool ok = SafeJumpToResult(search, rawHit);
     if (outTrace != nullptr) {
-        *outTrace = ok ? "jump_ok" : "jump_failed";
+        *outTrace = ok ? "native_result_consumer_ok" : "native_result_consumer_failed";
     }
     return ok;
 }

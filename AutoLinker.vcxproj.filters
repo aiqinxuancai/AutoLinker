@@ -126,6 +126,19 @@
     <ClCompile Include="src\direct_global_search.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\native_module_public_info.cpp" />
+    <ClCompile Include="src\LocalMcpServer.cpp" />
+    <ClCompile Include="src\RealPageCodeToolSupport.cpp" />
+    <ClCompile Include="src\PowerShellToolRunner.cpp" />
+    <ClCompile Include="src\TavilyClient.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\WebDocumentClient.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\WebDocumentExtractor.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="detours\detours.h">
@@ -253,6 +266,19 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\direct_global_search.hpp">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\LocalMcpServer.h" />
+    <ClInclude Include="src\native_module_public_info.hpp" />
+    <ClInclude Include="src\PowerShellToolRunner.h" />
+    <ClInclude Include="src\RealPageCodeToolSupport.h" />
+    <ClInclude Include="src\TavilyClient.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\WebDocumentClient.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\WebDocumentExtractor.h">
       <Filter>Utils</Filter>
     </ClInclude>
   </ItemGroup>

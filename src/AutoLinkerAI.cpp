@@ -246,7 +246,7 @@ void OutputMultiline(const std::string& title, const std::string& body)
 	OutputStringToELog(title);
 	auto lines = SplitLinesNormalized(body);
 	for (const std::string& line : lines) {
-		IDEFacade::Instance().AppendOutputWindowLine(line);
+		OutputStringToELog(line);
 	}
 }
 

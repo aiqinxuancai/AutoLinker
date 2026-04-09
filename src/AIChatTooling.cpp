@@ -330,6 +330,25 @@ std::string FormatToolLogJsonString(const std::string& jsonText)
 	}
 }
 
+// 构建用于文件日志的完整工具 JSON 字符串（单行，不截断）
+std::string FormatToolLogJsonStringFull(const std::string& jsonText)
+{
+	const std::string trimmed = TrimAsciiCopy(jsonText);
+	if (trimmed.empty()) {
+		return "null";
+	}
+	try {
+		const nlohmann::json value = nlohmann::json::parse(trimmed);
+		if (value.is_null() || (value.is_object() && value.empty())) {
+			return "null";
+		}
+		return SanitizeSingleLineText(value.dump());
+	}
+	catch (...) {
+		return SanitizeSingleLineText(jsonText);
+	}
+}
+
 void LogInternalToolCallLine(const std::string& message)
 {
 	Logger::Instance().WriteAndIde("Tool", message);
@@ -337,17 +356,25 @@ void LogInternalToolCallLine(const std::string& message)
 
 void LogInternalToolRequest(const std::string& toolName, const std::string& argumentsJson)
 {
-	LogInternalToolCallLine(">> " + toolName + "(" + FormatToolLogJsonString(argumentsJson) + ")");
+	const std::string ideLine = ">> " + toolName + "(" + FormatToolLogJsonString(argumentsJson) + ")";
+	const std::string fileLine = ">> " + toolName + "(" + FormatToolLogJsonStringFull(argumentsJson) + ")";
+	Logger::Instance().WriteSplit("Tool", fileLine, ideLine);
 }
 
 void LogInternalToolResponse(const std::string& toolName, const std::string& resultJsonLocal, double elapsedMs)
 {
 	const std::string resultJsonUtf8 = LocalToUtf8Text(resultJsonLocal);
-	LogInternalToolCallLine(std::format(
+	const std::string ideLine = std::format(
 		"<< {} ({:.1f}ms) {}",
 		toolName.empty() ? "unknown_tool" : toolName,
 		elapsedMs,
-		FormatToolLogJsonString(resultJsonUtf8)));
+		FormatToolLogJsonString(resultJsonUtf8));
+	const std::string fileLine = std::format(
+		"<< {} ({:.1f}ms) {}",
+		toolName.empty() ? "unknown_tool" : toolName,
+		elapsedMs,
+		FormatToolLogJsonStringFull(resultJsonUtf8));
+	Logger::Instance().WriteSplit("Tool", fileLine, ideLine);
 }
 
 bool RequestToolExecutionFromMainThread(

@@ -53,6 +53,10 @@ struct RawSearchContextPageDumpDebugResult {
     std::string trace;
 };
 
+bool DebugIsDirectGlobalSearchSupported(
+    std::uintptr_t moduleBase = 0x400000,
+    std::string* outTrace = nullptr);
+
 std::vector<DirectGlobalSearchDebugHit> DebugSearchDirectGlobalKeyword(
     const char* keyword,
     std::uintptr_t moduleBase = 0x400000);
