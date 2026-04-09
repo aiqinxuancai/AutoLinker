@@ -5,6 +5,7 @@
 #include "Global.h"
 #include "LocalMcpInstanceRegistry.h"
 #include "LocalMcpServer.h"
+#include "Logger.h"
 #include "PowerShellToolRunner.h"
 #include "TavilyClient.h"
 #include "WebDocumentClient.h"
@@ -331,7 +332,7 @@ std::string FormatToolLogJsonString(const std::string& jsonText)
 
 void LogInternalToolCallLine(const std::string& message)
 {
-	OutputStringToELog(ConvertUtf8ToGbkText("[Tool] " + message));
+	Logger::Instance().WriteAndIde("Tool", message);
 }
 
 void LogInternalToolRequest(const std::string& toolName, const std::string& argumentsJson)

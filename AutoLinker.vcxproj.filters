@@ -98,6 +98,9 @@
     <ClCompile Include="src\LocalMcpInstanceRegistry.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\Logger.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\PathHelper.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -208,6 +211,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\LocalMcpInstanceRegistry.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Logger.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\MemFind.h">

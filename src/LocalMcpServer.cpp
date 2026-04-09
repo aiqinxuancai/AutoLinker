@@ -8,6 +8,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <filesystem>
 #include <format>
 #include <mutex>
 #include <string>
@@ -22,6 +23,8 @@
 #include "Global.h"
 #include "IDEFacade.h"
 #include "LocalMcpInstanceRegistry.h"
+#include "Logger.h"
+#include "PathHelper.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -75,7 +78,7 @@ std::string ToLowerAsciiCopy(const std::string& text)
 
 void LogMcp(const std::string& message)
 {
-	OutputStringToELog("[LocalMCP] " + message);
+	Logger::Instance().WriteAndIde("LocalMCP", message);
 }
 
 bool IsStrictUtf8Text(const std::string& text)
@@ -252,7 +255,7 @@ std::string ConvertUtf8ToGbkText(const std::string& text)
 
 void LogMcpCallLine(const std::string& message)
 {
-	OutputStringToELog(ConvertUtf8ToGbkText("[MCP] " + message));
+	Logger::Instance().WriteAndIde("MCP", message);
 }
 
 std::string TrimAsciiSingleLine(const std::string& text)
@@ -1138,6 +1141,14 @@ void Initialize()
 	g_sourceFilePathHint.clear();
 	g_pageNameHint.clear();
 	g_pageTypeHint.clear();
+
+	// 打开 MCP 日志文件（每次启动覆盖）
+	const std::filesystem::path logDir =
+		std::filesystem::path(GetBasePath()) / "AutoLinker";
+	std::error_code ec;
+	std::filesystem::create_directories(logDir, ec);
+	Logger::Instance().Open((logDir / "mcp.log").string());
+
 	g_serverThread = std::thread(ServerThreadMain);
 }
 

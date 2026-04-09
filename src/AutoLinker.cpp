@@ -19,6 +19,7 @@
 #include "Global.h"
 #include "IDEFacade.h"
 #include "LocalMcpServer.h"
+#include "Logger.h"
 #include "MemFind.h"
 #include "MouseBack.h"
 #include "PathHelper.h"
@@ -52,21 +53,6 @@ std::filesystem::path GetInitTraceLogPath()
 	return dir / "startup_init_last.log";
 }
 
-std::string BuildInitTraceTimestamp()
-{
-	SYSTEMTIME st = {};
-	GetLocalTime(&st);
-	return std::format(
-		"{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
-		st.wYear,
-		st.wMonth,
-		st.wDay,
-		st.wHour,
-		st.wMinute,
-		st.wSecond,
-		st.wMilliseconds);
-}
-
 void TraceInitStep(const std::string& step)
 {
 	std::lock_guard<std::mutex> lock(g_initTraceMutex);
@@ -77,7 +63,7 @@ void TraceInitStep(const std::string& step)
 		return;
 	}
 	g_initTraceSessionStarted = true;
-	out << "[" << BuildInitTraceTimestamp() << "] " << step << "\r\n";
+	out << "[" << Logger::BuildTimestamp() << "] " << step << "\r\n";
 }
 
 void ResolveCompileDebugStartAddressesForInit()
