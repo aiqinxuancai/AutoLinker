@@ -4,6 +4,7 @@
 #include <detours.h>
 
 #include <array>
+#include <cstdint>
 #include <format>
 #include <mbstring.h>
 
@@ -101,6 +102,8 @@ struct NativeSearchAddresses {
     std::uintptr_t appendBytes = 0;
     std::uintptr_t prepareSearchResults = 0;
     std::uintptr_t selectSearchResultTab = 0;
+    std::uintptr_t setMainEditorActiveEditorObject = 0;
+    ptrdiff_t mainEditorHostActiveEditorObjectOffset = 0;
 };
 
 constexpr int kSearchTypes[] = {1, 2, 3, 4, 6, 7, 8};
@@ -118,14 +121,12 @@ constexpr ptrdiff_t kOffset_ByteContainerData = 8;
 constexpr ptrdiff_t kOffset_ByteContainerUsedBytes = 16;
 constexpr ptrdiff_t kOffset_MainEditorHostCreateOwner = 0x0C0;
 constexpr ptrdiff_t kOffset_MainEditorHostOpenPageList = 0x924;
-constexpr ptrdiff_t kOffset_MainEditorHostActiveEditorObject = 0x438;
 constexpr ptrdiff_t kOffset_MainEditorHostFormArray = 0x34C;
 constexpr ptrdiff_t kOffset_PageObjectType = 0x50;
 constexpr ptrdiff_t kOffset_PageObjectType5Key = 0x60;
 constexpr ptrdiff_t kOffset_PageObjectType1Key = 0x68;
 constexpr ptrdiff_t kOffset_PageRuntimeEditorObject = 0x40;
 constexpr ptrdiff_t kOffset_Type1BucketOwner = 0x50;
-constexpr std::uintptr_t kKnownSetMainEditorActiveEditorObjectRva = 0x471B30;
 constexpr UINT kMsg_TcmGetCurSel = 0x130B;
 constexpr UINT kMsg_TcmSetCurSel = 0x130C;
 constexpr UINT kMsg_TcmGetCurFocus = 0x132F;
@@ -265,6 +266,77 @@ std::uintptr_t ResolveUniqueImmAddress(
         return 0;
     }
     return ReadNormalizedImm32(static_cast<std::uintptr_t>(matches.front()), immOffset, moduleBase);
+}
+
+bool TryExtractActiveEditorOffsetFromSetActiveEditorObject(
+    std::uintptr_t moduleBase,
+    std::uintptr_t functionRva,
+    ptrdiff_t* outOffset) {
+    if (outOffset != nullptr) {
+        *outOffset = 0;
+    }
+    if (moduleBase == 0 || functionRva == 0 || functionRva < kImageBase) {
+        return false;
+    }
+
+    const auto* const code = reinterpret_cast<const std::uint8_t*>(moduleBase + (functionRva - kImageBase));
+    __try {
+        if (code == nullptr ||
+            code[0] != 0x53 ||
+            code[1] != 0x8B ||
+            code[2] != 0xD9 ||
+            code[3] != 0x56 ||
+            code[4] != 0x57 ||
+            code[5] != 0x8B ||
+            code[6] != 0xB3 ||
+            code[21] != 0xC7 ||
+            code[22] != 0x83 ||
+            code[44] != 0x8B ||
+            code[45] != 0x83 ||
+            code[56] != 0x89 ||
+            code[57] != 0xBB) {
+            return false;
+        }
+
+        const std::uint32_t disp1 = *reinterpret_cast<const std::uint32_t*>(code + 7);
+        const std::uint32_t disp2 = *reinterpret_cast<const std::uint32_t*>(code + 23);
+        const std::uint32_t disp3 = *reinterpret_cast<const std::uint32_t*>(code + 46);
+        const std::uint32_t disp4 = *reinterpret_cast<const std::uint32_t*>(code + 58);
+        if (disp1 == 0 || disp1 != disp2 || disp1 != disp3 || disp1 != disp4) {
+            return false;
+        }
+
+        if (outOffset != nullptr) {
+            *outOffset = static_cast<ptrdiff_t>(disp1);
+        }
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+std::uintptr_t ResolveSetMainEditorActiveEditorObjectAddress(
+    std::uintptr_t moduleBase,
+    ptrdiff_t* outActiveEditorOffset) {
+    if (outActiveEditorOffset != nullptr) {
+        *outActiveEditorOffset = 0;
+    }
+
+    const std::uintptr_t functionRva = ResolveUniqueCodeAddress(
+        "set_main_editor_active_editor_object",
+        "53 8B D9 56 57 8B B3 ?? ?? ?? ?? 8B 7C 24 10 3B FE 74 ?? 85 F6 C7 83 ?? ?? ?? ?? 00 00 00 00 74 ?? 56 57 6A 00 8B CE E8 ?? ?? ?? ?? 8B 83 ?? ?? ?? ?? 85 C0 75 ?? 85 FF 89 BB ?? ?? ?? ?? 74 ?? 83 7C 24 14 01 75 ?? 56 57 6A 01 8B CF E8 ?? ?? ?? ?? 5F 5E 5B C2 08 00",
+        moduleBase);
+    if (functionRva == 0) {
+        return 0;
+    }
+
+    if (!TryExtractActiveEditorOffsetFromSetActiveEditorObject(
+            moduleBase,
+            functionRva,
+            outActiveEditorOffset)) {
+        OutputStringToELog("[DirectGlobalSearch] resolve main_editor_host_active_editor_offset failed");
+    }
+    return functionRva;
 }
 
 bool PopulateNativeSearchAddresses(NativeSearchAddresses& addrs, std::uintptr_t moduleBase) {
@@ -428,6 +500,9 @@ bool PopulateNativeSearchAddresses(NativeSearchAddresses& addrs, std::uintptr_t 
         "select_search_result_tab",
         "8B 54 24 04 33 C0 83 FA 02 53 0F 94 C0 56 57 83 C0 05 8B F1 68 E8 03 00 00 8B F8 E8 ?? ?? ?? ??",
         moduleBase);
+    addrs.setMainEditorActiveEditorObject = ResolveSetMainEditorActiveEditorObjectAddress(
+        moduleBase,
+        &addrs.mainEditorHostActiveEditorObjectOffset);
 
     addrs.ok =
         addrs.initContext != 0 &&
@@ -1955,6 +2030,7 @@ bool SafeFindExistingOpenEditorObject(
 
 bool SafeResolveRuntimeEditorObjectFromPageObject(
     void* mainEditorHost,
+    ptrdiff_t activeEditorObjectOffset,
     void* pageObject,
     void** outEditorObject) {
     if (outEditorObject != nullptr) {
@@ -1965,8 +2041,11 @@ bool SafeResolveRuntimeEditorObjectFromPageObject(
     }
 
     __try {
-        const auto preferredEditorObject = *reinterpret_cast<const std::uintptr_t*>(
-            reinterpret_cast<const std::uint8_t*>(mainEditorHost) + kOffset_MainEditorHostActiveEditorObject);
+        std::uintptr_t preferredEditorObject = 0;
+        if (activeEditorObjectOffset > 0) {
+            preferredEditorObject = *reinterpret_cast<const std::uintptr_t*>(
+                reinterpret_cast<const std::uint8_t*>(mainEditorHost) + activeEditorObjectOffset);
+        }
         const auto pageVtable = *reinterpret_cast<const std::uintptr_t*>(pageObject);
         if (pageVtable == 0) {
             return false;
@@ -2053,6 +2132,7 @@ bool SafeCreateEditorObjectNoActivate(
 bool SafeSetMainEditorActiveEditorObject(
     FnSetMainEditorActiveEditorObject fn,
     void* mainEditorHost,
+    ptrdiff_t activeEditorObjectOffset,
     void* editorObject,
     int notifyMode,
     std::uintptr_t* outPreviousEditorObject,
@@ -2069,11 +2149,17 @@ bool SafeSetMainEditorActiveEditorObject(
 
     __try {
         auto* const hostBytes = reinterpret_cast<std::uint8_t*>(mainEditorHost);
-        const std::uintptr_t previousEditorObject =
-            *reinterpret_cast<const std::uintptr_t*>(hostBytes + kOffset_MainEditorHostActiveEditorObject);
+        std::uintptr_t previousEditorObject = 0;
+        std::uintptr_t currentEditorObject = 0;
+        if (activeEditorObjectOffset > 0) {
+            previousEditorObject =
+                *reinterpret_cast<const std::uintptr_t*>(hostBytes + activeEditorObjectOffset);
+        }
         fn(mainEditorHost, editorObject, notifyMode);
-        const std::uintptr_t currentEditorObject =
-            *reinterpret_cast<const std::uintptr_t*>(hostBytes + kOffset_MainEditorHostActiveEditorObject);
+        if (activeEditorObjectOffset > 0) {
+            currentEditorObject =
+                *reinterpret_cast<const std::uintptr_t*>(hostBytes + activeEditorObjectOffset);
+        }
         if (outPreviousEditorObject != nullptr) {
             *outPreviousEditorObject = previousEditorObject;
         }
@@ -2121,18 +2207,19 @@ bool SafeCallOpenCodeTarget(
 
 bool SafeReadMainEditorActiveEditorObject(
     void* mainEditorHost,
+    ptrdiff_t activeEditorObjectOffset,
     std::uintptr_t* outEditorObject) {
     if (outEditorObject != nullptr) {
         *outEditorObject = 0;
     }
-    if (mainEditorHost == nullptr) {
+    if (mainEditorHost == nullptr || activeEditorObjectOffset <= 0) {
         return false;
     }
 
     __try {
         const auto* const hostBytes = reinterpret_cast<const std::uint8_t*>(mainEditorHost);
         const std::uintptr_t editorObject = *reinterpret_cast<const std::uintptr_t*>(
-            hostBytes + kOffset_MainEditorHostActiveEditorObject);
+            hostBytes + activeEditorObjectOffset);
         if (outEditorObject != nullptr) {
             *outEditorObject = editorObject;
         }
@@ -2393,7 +2480,11 @@ bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
     std::string hiddenOpenTrace;
     if (SafeFindExistingOpenEditorObject(mainEditorHost, openType, matchKey, &pageObject) &&
         pageObject != nullptr &&
-        SafeResolveRuntimeEditorObjectFromPageObject(mainEditorHost, pageObject, &editorObject) &&
+        SafeResolveRuntimeEditorObjectFromPageObject(
+            mainEditorHost,
+            addrs.mainEditorHostActiveEditorObjectOffset,
+            pageObject,
+            &editorObject) &&
         editorObject != nullptr) {
         if (outEditorObject != nullptr) {
             *outEditorObject = editorObject;
@@ -2424,7 +2515,11 @@ bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
             &pageObject) &&
         pageObject != nullptr) {
         editorObject = nullptr;
-        if (SafeResolveRuntimeEditorObjectFromPageObject(mainEditorHost, pageObject, &editorObject) &&
+        if (SafeResolveRuntimeEditorObjectFromPageObject(
+                mainEditorHost,
+                addrs.mainEditorHostActiveEditorObjectOffset,
+                pageObject,
+                &editorObject) &&
             editorObject != nullptr) {
             if (outEditorObject != nullptr) {
                 *outEditorObject = editorObject;
@@ -2516,14 +2611,28 @@ bool DebugSetMainEditorActiveEditorObjectImpl(
         return false;
     }
 
+    if (addrs.setMainEditorActiveEditorObject == 0) {
+        if (outTrace != nullptr) {
+            *outTrace = "set_active_editor_object_resolve_failed";
+        }
+        return false;
+    }
+    if (addrs.mainEditorHostActiveEditorObjectOffset <= 0) {
+        if (outTrace != nullptr) {
+            *outTrace = "main_editor_host_active_editor_offset_unresolved";
+        }
+        return false;
+    }
+
     const auto setActiveEditorObject = BindAbsolute<FnSetMainEditorActiveEditorObject>(
         moduleBase,
-        kKnownSetMainEditorActiveEditorObjectRva);
+        addrs.setMainEditorActiveEditorObject);
     std::uintptr_t previousEditorObject = 0;
     std::uintptr_t currentEditorObject = 0;
     if (!SafeSetMainEditorActiveEditorObject(
             setActiveEditorObject,
             mainEditorHost,
+            addrs.mainEditorHostActiveEditorObjectOffset,
             reinterpret_cast<void*>(editorObject),
             notifyMode,
             &previousEditorObject,
@@ -2575,8 +2684,18 @@ bool DebugGetMainEditorActiveEditorObjectImpl(
         return false;
     }
 
+    if (addrs.mainEditorHostActiveEditorObjectOffset <= 0) {
+        if (outTrace != nullptr) {
+            *outTrace = "main_editor_host_active_editor_offset_unresolved";
+        }
+        return false;
+    }
+
     std::uintptr_t editorObject = 0;
-    if (!SafeReadMainEditorActiveEditorObject(mainEditorHost, &editorObject)) {
+    if (!SafeReadMainEditorActiveEditorObject(
+            mainEditorHost,
+            addrs.mainEditorHostActiveEditorObjectOffset,
+            &editorObject)) {
         if (outTrace != nullptr) {
             *outTrace = "read_active_editor_object_exception";
         }

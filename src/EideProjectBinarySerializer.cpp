@@ -24,10 +24,6 @@ namespace e571 {
 namespace {
 
 constexpr std::uintptr_t kImageBase = 0x400000;
-constexpr std::uintptr_t kKnownDirectProjectSerializeToHandleRva = 0x45B640;
-constexpr std::uintptr_t kKnownProjectCommandDispatchRva = 0x50A4F0;
-constexpr std::uintptr_t kKnownProjectCommandDirect203Rva = 0x50A800;
-constexpr std::uintptr_t kKnownProjectCommandDirect202Rva = 0x50A820;
 constexpr size_t kActiveEditorSerializerFieldIndex = 23;
 constexpr size_t kCommandObjectFieldScanCount = 96;
 constexpr size_t kCommandObjectGraphMaxDepth = 2;
@@ -643,19 +639,19 @@ bool PopulateSerializerAddresses(SerializerAddresses& addrs)
 
 	addrs.directSerializeToHandle = ResolveInternalAddress<FnSerializeCurrentProjectToHandle>(
 		addrs.moduleBase,
-		directSerializeRva != 0 ? directSerializeRva : kKnownDirectProjectSerializeToHandleRva);
+		directSerializeRva);
 	addrs.projectCommandDispatch = reinterpret_cast<std::uintptr_t>(
 		ResolveInternalAddress<void*>(
 			addrs.moduleBase,
-			dispatchRva != 0 ? dispatchRva : kKnownProjectCommandDispatchRva));
+			dispatchRva));
 	addrs.projectCommandDirect203 = reinterpret_cast<std::uintptr_t>(
 		ResolveInternalAddress<void*>(
 			addrs.moduleBase,
-			direct203Rva != 0 ? direct203Rva : kKnownProjectCommandDirect203Rva));
+			direct203Rva));
 	addrs.projectCommandDirect202 = reinterpret_cast<std::uintptr_t>(
 		ResolveInternalAddress<void*>(
 			addrs.moduleBase,
-			direct202Rva != 0 ? direct202Rva : kKnownProjectCommandDirect202Rva));
+			direct202Rva));
 	addrs.ok =
 		addrs.directSerializeToHandle != nullptr &&
 		IsLikelyModuleCodeAddress(
@@ -667,14 +663,14 @@ bool PopulateSerializerAddresses(SerializerAddresses& addrs)
 		IsLikelyModuleCodeAddress(addrs.projectCommandDirect202, addrs.moduleBase);
 	addrs.resolveTrace = std::format(
 		"direct=0x{:X}({})|dispatch=0x{:X}({})|direct203=0x{:X}({})|direct202=0x{:X}({})",
-		directSerializeRva != 0 ? directSerializeRva : kKnownDirectProjectSerializeToHandleRva,
-		directSerializeRva != 0 ? "pattern" : "fallback",
-		dispatchRva != 0 ? dispatchRva : kKnownProjectCommandDispatchRva,
-		dispatchRva != 0 ? "pattern" : "fallback",
-		direct203Rva != 0 ? direct203Rva : kKnownProjectCommandDirect203Rva,
-		direct203Rva != 0 ? "pattern" : "fallback",
-		direct202Rva != 0 ? direct202Rva : kKnownProjectCommandDirect202Rva,
-		direct202Rva != 0 ? "pattern" : "fallback");
+		directSerializeRva,
+		directSerializeRva != 0 ? "pattern" : "missing",
+		dispatchRva,
+		dispatchRva != 0 ? "pattern" : "missing",
+		direct203Rva,
+		direct203Rva != 0 ? "pattern" : "missing",
+		direct202Rva,
+		direct202Rva != 0 ? "pattern" : "missing");
 	OutputStringToELog(std::format(
 		"[ProjectBinarySerializer] {} ok={} cold_routes_ok={}",
 		addrs.resolveTrace,

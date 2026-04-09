@@ -562,6 +562,25 @@ std::string LocalToUtf8(const std::string& text)
 	return ConvertCodePage(text, CP_ACP, CP_UTF8, 0);
 }
 
+void NormalizeJsonStringsToUtf8InPlace(nlohmann::json& value)
+{
+	if (value.is_string()) {
+		value = LocalToUtf8(value.get_ref<const std::string&>());
+		return;
+	}
+	if (value.is_array()) {
+		for (auto& item : value) {
+			NormalizeJsonStringsToUtf8InPlace(item);
+		}
+		return;
+	}
+	if (value.is_object()) {
+		for (auto& item : value.items()) {
+			NormalizeJsonStringsToUtf8InPlace(item.value());
+		}
+	}
+}
+
 std::string Utf8ToLocal(const std::string& text)
 {
 	if (text.empty()) {
@@ -1473,6 +1492,7 @@ nlohmann::json BuildPublicToolCatalog()
 			{"additionalProperties", false}
 		}}
 	});
+	NormalizeJsonStringsToUtf8InPlace(tools);
 	return tools;
 }
 
@@ -1871,6 +1891,7 @@ AIResult ExecuteTaskClaude(const std::string& systemPrompt, const std::string& i
 			{"content", nlohmann::json::array({ {{"type", "text"}, {"text", LocalToUtf8(inputText)}} })}
 		}
 	});
+	NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 	const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
 		endpoint,
@@ -1925,6 +1946,7 @@ AIResult ExecuteTaskGemini(const std::string& systemPrompt, const std::string& i
 			{"parts", nlohmann::json::array({ {{"text", LocalToUtf8(inputText)}} })}
 		}
 	});
+	NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 	const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
 		endpoint,
@@ -2009,6 +2031,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 		requestBody["tools"] = tools;
 		requestBody["tool_choice"] = { {"type", "auto"} };
 		requestBody["stream"] = false;
+		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
 			endpoint,
@@ -2155,6 +2178,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 		requestBody["generationConfig"] = { {"temperature", settings.temperature} };
 		requestBody["contents"] = contents;
 		requestBody["tools"] = tools;
+		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
 			endpoint,
@@ -2425,6 +2449,7 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 			{"content", inputTextUtf8}
 		}
 	});
+	NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 	const std::string endpoint = BuildEndpoint(settings.baseUrl);
 	const std::string headers = BuildOpenAIHeaders(settings);
@@ -2550,6 +2575,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 		requestBody["messages"] = requestMessages;
 		requestBody["tools"] = tools;
 		requestBody["tool_choice"] = "auto";
+		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		std::string requestBodyText;
 		try {

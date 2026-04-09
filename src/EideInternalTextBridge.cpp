@@ -35,11 +35,7 @@ constexpr unsigned int kEditorUiCmdSelectAll = 0x2041;
 constexpr unsigned int kEditorUiCmdCopy = 0x2043;
 constexpr unsigned int kEditorUiCmdPaste = 0x2056;
 constexpr unsigned int kEditorUiCmdDelete = VK_DELETE;
-constexpr size_t kEditorDispatchVtableIndex = 56;
 constexpr int kEditorDispatchDefaultFlags = 1;
-constexpr std::uintptr_t kFallbackEditorDispatchCommandRva = 0x4B6D70;
-constexpr std::uintptr_t kKnownEditorFormatRangeTextRva = 0x48EA10;
-constexpr std::uintptr_t kKnownEditorGetRangeCountRva = 0x4C05B0;
 constexpr std::uintptr_t kKnownClipboardTextToObjectWrapperRva = 0x4C9220;
 constexpr std::uintptr_t kKnownClipboardTextToObjectDirectRva = 0x4CB160;
 constexpr std::uintptr_t kKnownClipboardInsertObjectRva = 0x48B720;
@@ -49,7 +45,6 @@ constexpr std::uintptr_t kKnownClipboardValidateA00Rva = 0x452A00;
 constexpr std::uintptr_t kKnownClipboardValidate560Rva = 0x452560;
 constexpr std::uintptr_t kKnownClipboardValidate230Rva = 0x452230;
 constexpr std::uintptr_t kKnownClipboardCollectionFirstInvalidRva = 0x4521D0;
-constexpr std::uintptr_t kFallbackEditorPasteHandlerRva = 0x4BC830;
 constexpr std::uintptr_t kKnownGlobalSupportLibraryArrayRva = 0x5CB028;
 constexpr std::uintptr_t kKnownSupportLibraryArrayAddUniqueRva = 0x4F4830;
 constexpr std::uintptr_t kKnownClipboardMergeParsedRangeRva = 0x4DABA0;
@@ -96,7 +91,62 @@ struct NativeEditorCommandAddresses {
 	std::uintptr_t moduleBase = 0;
 	std::uintptr_t editorDispatchCommand = 0;
 	std::uintptr_t editorPasteHandler = 0;
+	std::uintptr_t editorGetRangeCount = 0;
+	std::uintptr_t editorFormatRangeText = 0;
 };
+
+std::string GetCurrentIdeExecutableNameLowerBridge()
+{
+	char buffer[MAX_PATH] = {};
+	const DWORD len = GetModuleFileNameA(nullptr, buffer, static_cast<DWORD>(sizeof(buffer)));
+	if (len == 0 || len >= sizeof(buffer)) {
+		return std::string();
+	}
+
+	std::string fullPath(buffer, buffer + len);
+	const size_t slash = fullPath.find_last_of("\\/");
+	std::string fileName = slash == std::string::npos ? fullPath : fullPath.substr(slash + 1);
+	for (char& ch : fileName) {
+		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+	}
+	return fileName;
+}
+
+bool IsVersionLockedInternalInteropSupported(std::string* outTrace = nullptr)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+
+	const std::string exeName = GetCurrentIdeExecutableNameLowerBridge();
+	const bool supported = exeName == "e571.exe";
+	if (outTrace != nullptr) {
+		*outTrace =
+			std::string("version_locked_internal_interop_") +
+			(supported ? "supported" : "unsupported") +
+			"|process=" +
+			(exeName.empty() ? std::string("unknown") : exeName);
+	}
+	return supported;
+}
+
+bool IsDirectGlobalSearchEditorResolveSupported(std::string* outTrace = nullptr)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+
+	const std::string exeName = GetCurrentIdeExecutableNameLowerBridge();
+	const bool supported = exeName == "e571.exe";
+	if (outTrace != nullptr) {
+		*outTrace =
+			std::string("direct_global_search_editor_resolve_") +
+			(supported ? "supported" : "unsupported") +
+			"|process=" +
+			(exeName.empty() ? std::string("unknown") : exeName);
+	}
+	return supported;
+}
 
 struct EditorDispatchTargetInfo {
 	std::uintptr_t rawObject = 0;
@@ -195,17 +245,21 @@ bool PopulateNativeEditorCommandAddresses(NativeEditorCommandAddresses& addrs, s
 			"8B 0D ?? ?? ?? ?? 53 56 8B F1 85 C9 74 0A 5E B8 01 00 00 00 5B C2 10 00 8B 5C 24 10 F6 C3 10 74 0A 5E B8 01 00 00 00 5B C2 10 00 8B 4C 24 0C 33 C0 8B D1 81 E2 00 00 FF 7F",
 		},
 		moduleBase);
-	if (addrs.editorDispatchCommand == 0) {
-		addrs.editorDispatchCommand = kFallbackEditorDispatchCommandRva;
-	}
 	addrs.editorPasteHandler = ResolveUniqueCodeAddressFromPatterns(
 		{
 			"6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 81 EC ?? 03 00 00 53 55 56 57 8B F9 8D 4C 24 28 89 7C 24 24 E8 ?? ?? ?? ?? 8D 4C 24 64 E8 ?? ?? ?? ?? 33 ED 8D 8C 24 BC 00 00 00 89 AC 24 ?? 03 00 00 E8 ?? ?? ?? ?? 8D 8C 24 D0 00 00 00 C6 84 24 ?? 03 00 00 01 E8 ?? ?? ?? ??",
 		},
 		moduleBase);
-	if (addrs.editorPasteHandler == 0) {
-		addrs.editorPasteHandler = kFallbackEditorPasteHandlerRva;
-	}
+	addrs.editorGetRangeCount = ResolveUniqueCodeAddressFromPatterns(
+		{
+			"83 EC 10 51 8D 4C 24 04 E8 ?? ?? ?? ?? 8D 4C 24 00 E8 ?? ?? ?? ?? 83 C4 10 C3",
+		},
+		moduleBase);
+	addrs.editorFormatRangeText = ResolveUniqueCodeAddressFromPatterns(
+		{
+			"55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 83 EC 24 53 8B 5D 0C 56 8B F1 8B 4D 08 57 3B CB 89 75 E8 0F 8F ?? ?? ?? ?? 8B 46 3C 83 F8 06 0F 84 ?? ?? ?? ?? 83 F8 07 0F 84 ?? ?? ?? ?? 83 F8 08 0F 84 ?? ?? ?? ??",
+		},
+		moduleBase);
 	addrs.ok = addrs.editorDispatchCommand != 0;
 	addrs.initialized = true;
 	return addrs.ok;
@@ -1319,6 +1373,10 @@ public:
 private:
 	void Initialize()
 	{
+		if (!IsVersionLockedInternalInteropSupported()) {
+			return;
+		}
+
 		std::memset(m_storage.data(), 0, m_storage.size());
 		const auto initFn = ResolveInternalAddress<FnThiscallVoid>(
 			m_moduleBase,
@@ -1337,6 +1395,10 @@ private:
 	void Destroy()
 	{
 		if (!m_initialized) {
+			return;
+		}
+		if (!IsVersionLockedInternalInteropSupported()) {
+			m_initialized = false;
 			return;
 		}
 
@@ -1491,6 +1553,10 @@ public:
 private:
 	void Initialize()
 	{
+		if (!IsVersionLockedInternalInteropSupported()) {
+			return;
+		}
+
 		std::memset(m_storage.data(), 0, m_storage.size());
 		const auto ctorFn = ResolveInternalAddress<int(__thiscall*)(void*)>(
 			m_moduleBase,
@@ -1511,6 +1577,10 @@ private:
 	void Destroy()
 	{
 		if (!m_initialized) {
+			return;
+		}
+		if (!IsVersionLockedInternalInteropSupported()) {
+			m_initialized = false;
 			return;
 		}
 
@@ -4558,55 +4628,31 @@ bool InvokeEditorCommandDirect(
 	}
 
 	const auto& addrs = GetNativeEditorCommandAddresses(moduleBase);
-	if (addrs.ok) {
-		const auto fn = reinterpret_cast<FnEditorDispatchCommand>(
-			addrs.editorDispatchCommand - kImageBase + moduleBase);
-		__try {
-			const int result = fn(reinterpret_cast<void*>(commandTarget), command, arg2, arg3, arg4);
-			if (outReturnValue != nullptr) {
-				*outReturnValue = result;
-			}
-			if (outInvokeMode != nullptr) {
-				*outInvokeMode = "fixed";
-			}
-			if (result != 0) {
-				return true;
-			}
+	if (!addrs.ok) {
+		if (outInvokeMode != nullptr) {
+			*outInvokeMode = "unresolved";
 		}
-		__except (EXCEPTION_EXECUTE_HANDLER) {
-			if (outThrew != nullptr) {
-				*outThrew = true;
-			}
-			if (outInvokeMode != nullptr) {
-				*outInvokeMode = "fixed_exc";
-			}
-		}
+		return false;
 	}
 
+	const auto fn = reinterpret_cast<FnEditorDispatchCommand>(
+		addrs.editorDispatchCommand - kImageBase + moduleBase);
 	__try {
-		const auto vtable = *reinterpret_cast<std::uintptr_t*>(commandTarget);
-		if (vtable != 0) {
-			const auto fn = reinterpret_cast<FnEditorDispatchCommand>(
-				*reinterpret_cast<std::uintptr_t*>(
-					vtable + kEditorDispatchVtableIndex * sizeof(std::uintptr_t)));
-			if (fn != nullptr) {
-				const int result = fn(reinterpret_cast<void*>(commandTarget), command, arg2, arg3, arg4);
-				if (outReturnValue != nullptr) {
-					*outReturnValue = result;
-				}
-				if (outInvokeMode != nullptr) {
-					*outInvokeMode = "vtbl56";
-				}
-				return result != 0;
-			}
+		const int result = fn(reinterpret_cast<void*>(commandTarget), command, arg2, arg3, arg4);
+		if (outReturnValue != nullptr) {
+			*outReturnValue = result;
 		}
+		if (outInvokeMode != nullptr) {
+			*outInvokeMode = "pattern";
+		}
+		return result != 0;
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER) {
 		if (outThrew != nullptr) {
 			*outThrew = true;
 		}
 		if (outInvokeMode != nullptr) {
-			*outInvokeMode = "vtbl56_exc";
+			*outInvokeMode = "pattern_exc";
 		}
 	}
 	return false;
@@ -4934,6 +4980,14 @@ bool CaptureCurrentSelectionClipboardPayloadAndDeserializeByEditor(
 		return false;
 	}
 
+	std::string interopTrace;
+	if (!IsVersionLockedInternalInteropSupported(&interopTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "capture_deserialize_unsupported|" + interopTrace;
+		}
+		return false;
+	}
+
 	ScopedFakeClipboard fakeClipboard;
 	if (!fakeClipboard.IsActive()) {
 		if (outTrace != nullptr) {
@@ -5024,6 +5078,14 @@ bool DeserializeClipboardPayloadToObject(
 		return false;
 	}
 
+	std::string interopTrace;
+	if (!IsVersionLockedInternalInteropSupported(&interopTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "deserialize_unsupported|" + interopTrace;
+		}
+		return false;
+	}
+
 	ScopedFakeClipboard fakeClipboard;
 	if (!fakeClipboard.IsActive()) {
 		if (outTrace != nullptr) {
@@ -5077,6 +5139,14 @@ bool BuildCustomClipboardPayloadFromPageText(
 	if (outPayload == nullptr || customFormat == 0 || newPageCode.empty()) {
 		if (outTrace != nullptr) {
 			*outTrace = "build_payload_invalid_argument";
+		}
+		return false;
+	}
+
+	std::string interopTrace;
+	if (!IsVersionLockedInternalInteropSupported(&interopTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "build_payload_unsupported|" + interopTrace;
 		}
 		return false;
 	}
@@ -5222,6 +5292,14 @@ bool PasteParsedTextObjectByEditor(
 	if (editorObject == 0 || pageCode.empty()) {
 		if (outTrace != nullptr) {
 			*outTrace = "paste_parsed_invalid_argument";
+		}
+		return false;
+	}
+
+	std::string interopTrace;
+	if (!IsVersionLockedInternalInteropSupported(&interopTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "paste_parsed_unsupported|" + interopTrace;
 		}
 		return false;
 	}
@@ -5504,19 +5582,27 @@ bool TryFormatWholePageTextDirectByEditor(
 		return false;
 	}
 
+	std::string interopTrace;
+	if (!IsVersionLockedInternalInteropSupported(&interopTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "direct_formatter_unsupported|" + interopTrace;
+		}
+		return false;
+	}
+
+	const auto& addrs = GetNativeEditorCommandAddresses(moduleBase);
 	const auto getRangeCountFn = ResolveInternalAddress<FnThiscallInt>(
 		moduleBase,
-		kKnownEditorGetRangeCountRva);
+		addrs.editorGetRangeCount);
 	const auto formatRangeTextFn = ResolveInternalAddress<FnEditorFormatRangeText>(
 		moduleBase,
-		kKnownEditorFormatRangeTextRva);
+		addrs.editorFormatRangeText);
 	if (getRangeCountFn == nullptr || formatRangeTextFn == nullptr) {
 		if (outTrace != nullptr) {
 			*outTrace =
-				"direct_formatter_resolve_failed|count=" +
-				std::to_string(reinterpret_cast<std::uintptr_t>(getRangeCountFn)) +
-				"|format=" +
-				std::to_string(reinterpret_cast<std::uintptr_t>(formatRangeTextFn));
+				"direct_formatter_unsupported"
+				"|count_rva=" + std::to_string(addrs.editorGetRangeCount) +
+				"|format_rva=" + std::to_string(addrs.editorFormatRangeText);
 		}
 		return false;
 	}
@@ -5583,6 +5669,11 @@ bool CopyWholePageTextByEditor(
 	std::string* outCode,
 	NativeRealPageAccessResult* outResult)
 {
+	AppendPageEditTraceLine(
+		"CopyWholePageTextByEditor.begin|editor=" +
+		std::to_string(editorObject) +
+		"|module_base=" +
+		std::to_string(moduleBase));
 	if (outResult != nullptr) {
 		*outResult = {};
 		outResult->editorObject = editorObject;
@@ -5603,14 +5694,17 @@ bool CopyWholePageTextByEditor(
 			moduleBase,
 			kEditorCmdSelectAll,
 			&selectTrace)) {
+		AppendPageEditTraceLine("CopyWholePageTextByEditor.select_all_failed|" + selectTrace);
 		if (outResult != nullptr) {
 			outResult->trace = "select_all_failed|" + selectTrace;
 		}
 		return false;
 	}
+	AppendPageEditTraceLine("CopyWholePageTextByEditor.after_select_all|" + selectTrace);
 
 	NativeRealPageAccessResult copyResult{};
 	if (!CopyCurrentSelectionByEditor(editorObject, moduleBase, outCode, &copyResult)) {
+		AppendPageEditTraceLine("CopyWholePageTextByEditor.copy_failed|" + copyResult.trace);
 		if (outResult != nullptr) {
 			*outResult = copyResult;
 			outResult->editorObject = editorObject;
@@ -5618,6 +5712,11 @@ bool CopyWholePageTextByEditor(
 		}
 		return false;
 	}
+	AppendPageEditTraceLine(
+		"CopyWholePageTextByEditor.after_copy|bytes=" +
+		std::to_string(outCode == nullptr ? 0 : outCode->size()) +
+		"|" +
+		copyResult.trace);
 
 	if (outResult != nullptr) {
 		*outResult = copyResult;
@@ -5627,6 +5726,9 @@ bool CopyWholePageTextByEditor(
 	}
 
 	if (outCode != nullptr && !outCode->empty()) {
+		AppendPageEditTraceLine(
+			"CopyWholePageTextByEditor.before_direct_compare|bytes=" +
+			std::to_string(outCode->size()));
 		std::string directCode;
 		std::string directTrace;
 		if (TryFormatWholePageTextDirectByEditor(editorObject, moduleBase, &directCode, &directTrace)) {
@@ -5650,11 +5752,21 @@ bool CopyWholePageTextByEditor(
 					outResult->trace += "|" + matchSummary;
 				}
 			}
+			AppendPageEditTraceLine(
+				"CopyWholePageTextByEditor.direct_compare_done|matched=" +
+				std::to_string(matched ? 1 : 0) +
+				"|mode=" + (matchMode.empty() ? std::string("none") : matchMode) +
+				"|" +
+				directTrace +
+				(matchSummary.empty() ? std::string() : ("|" + matchSummary)));
 		}
 		else if (outResult != nullptr) {
 			outResult->trace += "|direct_compare_failed|" + directTrace;
+			AppendPageEditTraceLine(
+				"CopyWholePageTextByEditor.direct_compare_failed|" + directTrace);
 		}
 	}
+	AppendPageEditTraceLine("CopyWholePageTextByEditor.success");
 	return true;
 }
 
@@ -6506,13 +6618,12 @@ bool GetRealPageCodeByProgramTreeItemData(
 	const std::string hiddenOriginalMdiTitle = WindowTextToString(hiddenOriginalMdiChildHwnd);
 	std::string hiddenResolveTrace;
 	std::string hiddenAttemptTrace;
+	std::string hiddenAttemptState;
 	std::string hiddenOriginalTrace;
 	std::string hiddenSwitchTrace;
 	std::string hiddenRestoreTrace;
 	bool hiddenNeedRestore = false;
-	const bool hiddenOriginalCaptured =
-		DebugGetMainEditorActiveEditorObject(moduleBase, &hiddenOriginalEditorObject, &hiddenOriginalTrace) &&
-		hiddenOriginalEditorObject != 0;
+	bool hiddenOriginalCaptured = false;
 	const auto restoreHiddenMdiChild = [&]() {
 		if (hiddenMainHwnd == nullptr || !IsWindow(hiddenMainHwnd) ||
 			hiddenOriginalMdiChildHwnd == nullptr || !IsWindow(hiddenOriginalMdiChildHwnd)) {
@@ -6583,133 +6694,144 @@ bool GetRealPageCodeByProgramTreeItemData(
 		restoreHiddenMdiChild();
 		hiddenNeedRestore = false;
 	};
-	if (DebugResolveEditorObjectByProgramTreeItemDataNoActivate(
-			itemData,
-			moduleBase,
-			&hiddenEditorObject,
-			nullptr,
-			nullptr,
-			nullptr,
-			&hiddenResolveTrace) &&
-		hiddenEditorObject != 0) {
-		hiddenAttemptTrace =
-			(hiddenOriginalTrace.empty() ? std::string() : ("active_before|" + hiddenOriginalTrace + "|")) +
-			(hiddenResolveTrace.empty() ? std::string("no_activate") : hiddenResolveTrace);
-
-		NativeRealPageAccessResult hiddenDirectResult{};
-		if (GetRealPageCodeByEditorObject(hiddenEditorObject, moduleBase, outCode, &hiddenDirectResult)) {
-			restoreHiddenMdiChild();
-			hiddenDirectResult.editorObject = hiddenEditorObject;
-			hiddenDirectResult.trace =
-				hiddenAttemptTrace +
-				(hiddenRestoreTrace.empty() ? std::string() : ("|post_read_restore|" + hiddenRestoreTrace)) +
-				"|no_host_swap|" +
-				hiddenDirectResult.trace;
-			if (outResult != nullptr) {
-				*outResult = std::move(hiddenDirectResult);
-			}
-			return true;
-		}
-		hiddenAttemptTrace += "|no_host_swap_read_failed|" + hiddenDirectResult.trace;
-
-		std::string directNoSwapCode;
-		std::string directNoSwapTrace;
-		if (TryFormatWholePageTextDirectByEditor(
-				hiddenEditorObject,
+	std::string hiddenSupportTrace;
+	if (IsDirectGlobalSearchEditorResolveSupported(&hiddenSupportTrace)) {
+		hiddenAttemptState = "attempt";
+		hiddenOriginalCaptured =
+			DebugGetMainEditorActiveEditorObject(moduleBase, &hiddenOriginalEditorObject, &hiddenOriginalTrace) &&
+			hiddenOriginalEditorObject != 0;
+		if (DebugResolveEditorObjectByProgramTreeItemDataNoActivate(
+				itemData,
 				moduleBase,
-				&directNoSwapCode,
-				&directNoSwapTrace) &&
-			!directNoSwapCode.empty()) {
-			restoreHiddenMdiChild();
-			if (outCode != nullptr) {
-				*outCode = std::move(directNoSwapCode);
-			}
-			if (outResult != nullptr) {
-				outResult->ok = true;
-				outResult->editorObject = hiddenEditorObject;
-				outResult->usedClipboardEmulation = false;
-				outResult->capturedCustomFormat = false;
-				outResult->textBytes = outCode == nullptr ? 0 : outCode->size();
-				outResult->trace =
+				&hiddenEditorObject,
+				nullptr,
+				nullptr,
+				nullptr,
+				&hiddenResolveTrace) &&
+			hiddenEditorObject != 0) {
+			hiddenAttemptTrace =
+				(hiddenOriginalTrace.empty() ? std::string() : ("active_before|" + hiddenOriginalTrace + "|")) +
+				(hiddenResolveTrace.empty() ? std::string("no_activate") : hiddenResolveTrace);
+
+			NativeRealPageAccessResult hiddenDirectResult{};
+			if (GetRealPageCodeByEditorObject(hiddenEditorObject, moduleBase, outCode, &hiddenDirectResult)) {
+				restoreHiddenMdiChild();
+				hiddenDirectResult.editorObject = hiddenEditorObject;
+				hiddenDirectResult.trace =
 					hiddenAttemptTrace +
 					(hiddenRestoreTrace.empty() ? std::string() : ("|post_read_restore|" + hiddenRestoreTrace)) +
-					"|no_host_swap|direct_only|" +
-					directNoSwapTrace;
+					"|no_host_swap|" +
+					hiddenDirectResult.trace;
+				if (outResult != nullptr) {
+					*outResult = std::move(hiddenDirectResult);
+				}
+				return true;
 			}
-			return true;
-		}
-		hiddenAttemptTrace += "|no_host_swap_direct_failed|" + directNoSwapTrace;
+			hiddenAttemptTrace += "|no_host_swap_read_failed|" + hiddenDirectResult.trace;
 
-		hiddenNeedRestore =
-			hiddenOriginalCaptured &&
-			hiddenOriginalEditorObject != 0 &&
-			hiddenOriginalEditorObject != hiddenEditorObject;
-		if (DebugSetMainEditorActiveEditorObject(
-				moduleBase,
-				hiddenEditorObject,
-				1,
-				nullptr,
-				&hiddenSwitchTrace)) {
-			hiddenAttemptTrace += "|host_active_swap|" + hiddenSwitchTrace;
-		}
-		else {
-			hiddenAttemptTrace +=
-				"|host_active_swap_failed|" +
-				(hiddenSwitchTrace.empty() ? std::string("set_active_editor_failed") : hiddenSwitchTrace);
-		}
-
-		NativeRealPageAccessResult hiddenResult{};
-		if (GetRealPageCodeByEditorObject(hiddenEditorObject, moduleBase, outCode, &hiddenResult)) {
-			restoreHiddenActiveEditor();
-			hiddenResult.editorObject = hiddenEditorObject;
-			hiddenResult.trace =
-				hiddenAttemptTrace +
-				(hiddenRestoreTrace.empty() ? std::string() : ("|host_active_restore|" + hiddenRestoreTrace)) +
-				"|no_activate|" +
-				hiddenResult.trace;
-			if (outResult != nullptr) {
-				*outResult = std::move(hiddenResult);
+			std::string directNoSwapCode;
+			std::string directNoSwapTrace;
+			if (TryFormatWholePageTextDirectByEditor(
+					hiddenEditorObject,
+					moduleBase,
+					&directNoSwapCode,
+					&directNoSwapTrace) &&
+				!directNoSwapCode.empty()) {
+				restoreHiddenMdiChild();
+				if (outCode != nullptr) {
+					*outCode = std::move(directNoSwapCode);
+				}
+				if (outResult != nullptr) {
+					outResult->ok = true;
+					outResult->editorObject = hiddenEditorObject;
+					outResult->usedClipboardEmulation = false;
+					outResult->capturedCustomFormat = false;
+					outResult->textBytes = outCode == nullptr ? 0 : outCode->size();
+					outResult->trace =
+						hiddenAttemptTrace +
+						(hiddenRestoreTrace.empty() ? std::string() : ("|post_read_restore|" + hiddenRestoreTrace)) +
+						"|no_host_swap|direct_only|" +
+						directNoSwapTrace;
+				}
+				return true;
 			}
-			return true;
-		}
-		hiddenAttemptTrace += "|read_failed|" + hiddenResult.trace;
+			hiddenAttemptTrace += "|no_host_swap_direct_failed|" + directNoSwapTrace;
 
-		std::string directCode;
-		std::string directTrace;
-		if (TryFormatWholePageTextDirectByEditor(
-				hiddenEditorObject,
-				moduleBase,
-				&directCode,
-				&directTrace) &&
-			!directCode.empty()) {
-			restoreHiddenActiveEditor();
-			if (outCode != nullptr) {
-				*outCode = std::move(directCode);
+			hiddenNeedRestore =
+				hiddenOriginalCaptured &&
+				hiddenOriginalEditorObject != 0 &&
+				hiddenOriginalEditorObject != hiddenEditorObject;
+			if (DebugSetMainEditorActiveEditorObject(
+					moduleBase,
+					hiddenEditorObject,
+					1,
+					nullptr,
+					&hiddenSwitchTrace)) {
+				hiddenAttemptTrace += "|host_active_swap|" + hiddenSwitchTrace;
 			}
-			if (outResult != nullptr) {
-				outResult->ok = true;
-				outResult->editorObject = hiddenEditorObject;
-				outResult->usedClipboardEmulation = false;
-				outResult->capturedCustomFormat = false;
-				outResult->textBytes = outCode == nullptr ? 0 : outCode->size();
-				outResult->trace =
+			else {
+				hiddenAttemptTrace +=
+					"|host_active_swap_failed|" +
+					(hiddenSwitchTrace.empty() ? std::string("set_active_editor_failed") : hiddenSwitchTrace);
+			}
+
+			NativeRealPageAccessResult hiddenResult{};
+			if (GetRealPageCodeByEditorObject(hiddenEditorObject, moduleBase, outCode, &hiddenResult)) {
+				restoreHiddenActiveEditor();
+				hiddenResult.editorObject = hiddenEditorObject;
+				hiddenResult.trace =
 					hiddenAttemptTrace +
 					(hiddenRestoreTrace.empty() ? std::string() : ("|host_active_restore|" + hiddenRestoreTrace)) +
-					"|no_activate|direct_only|" +
-					directTrace;
+					"|no_activate|" +
+					hiddenResult.trace;
+				if (outResult != nullptr) {
+					*outResult = std::move(hiddenResult);
+				}
+				return true;
 			}
-			return true;
+			hiddenAttemptTrace += "|read_failed|" + hiddenResult.trace;
+
+			std::string directCode;
+			std::string directTrace;
+			if (TryFormatWholePageTextDirectByEditor(
+					hiddenEditorObject,
+					moduleBase,
+					&directCode,
+					&directTrace) &&
+				!directCode.empty()) {
+				restoreHiddenActiveEditor();
+				if (outCode != nullptr) {
+					*outCode = std::move(directCode);
+				}
+				if (outResult != nullptr) {
+					outResult->ok = true;
+					outResult->editorObject = hiddenEditorObject;
+					outResult->usedClipboardEmulation = false;
+					outResult->capturedCustomFormat = false;
+					outResult->textBytes = outCode == nullptr ? 0 : outCode->size();
+					outResult->trace =
+						hiddenAttemptTrace +
+						(hiddenRestoreTrace.empty() ? std::string() : ("|host_active_restore|" + hiddenRestoreTrace)) +
+						"|no_activate|direct_only|" +
+						directTrace;
+				}
+				return true;
+			}
+			hiddenAttemptTrace += "|direct_failed|" + directTrace;
+			restoreHiddenActiveEditor();
+			if (!hiddenRestoreTrace.empty()) {
+				hiddenAttemptTrace += "|host_active_restore|" + hiddenRestoreTrace;
+			}
 		}
-		hiddenAttemptTrace += "|direct_failed|" + directTrace;
-		restoreHiddenActiveEditor();
-		if (!hiddenRestoreTrace.empty()) {
-			hiddenAttemptTrace += "|host_active_restore|" + hiddenRestoreTrace;
+		else if (!hiddenResolveTrace.empty()) {
+			hiddenAttemptTrace =
+				(hiddenOriginalTrace.empty() ? std::string() : ("active_before|" + hiddenOriginalTrace + "|")) +
+				hiddenResolveTrace;
 		}
 	}
-	else if (!hiddenResolveTrace.empty()) {
-		hiddenAttemptTrace =
-			(hiddenOriginalTrace.empty() ? std::string() : ("active_before|" + hiddenOriginalTrace + "|")) +
-			hiddenResolveTrace;
+	else {
+		hiddenAttemptState = "skipped";
+		hiddenAttemptTrace = hiddenSupportTrace;
 	}
 
 	std::uintptr_t editorObject = 0;
@@ -6721,8 +6843,12 @@ bool GetRealPageCodeByProgramTreeItemData(
 			&resolveTrace)) {
 		if (outResult != nullptr) {
 			if (!hiddenAttemptTrace.empty()) {
+				const char* const hiddenAttemptPrefix =
+					hiddenAttemptState == "skipped"
+						? "no_activate_skipped|"
+						: "no_activate_attempt|";
 				outResult->trace =
-					"no_activate_attempt|" +
+					hiddenAttemptPrefix +
 					hiddenAttemptTrace +
 					"|fallback_resolve_failed|" +
 					(resolveTrace.empty() ? std::string("resolve_editor_failed") : resolveTrace);
@@ -6738,8 +6864,12 @@ bool GetRealPageCodeByProgramTreeItemData(
 	const bool ok = GetRealPageCodeByEditorObject(editorObject, moduleBase, outCode, &localResult);
 	localResult.editorObject = editorObject;
 	if (!hiddenAttemptTrace.empty()) {
+		const char* const hiddenAttemptPrefix =
+			hiddenAttemptState == "skipped"
+				? "no_activate_skipped|"
+				: "no_activate_attempt|";
 		localResult.trace =
-			"no_activate_attempt|" +
+			hiddenAttemptPrefix +
 			hiddenAttemptTrace +
 			"|fallback|" +
 			(resolveTrace.empty() ? localResult.trace : (resolveTrace + "|" + localResult.trace));
