@@ -27,6 +27,8 @@ struct CacheState {
 CacheState g_cacheState;
 constexpr char kProjectHitTokenPrefix[] = "e2txt_project_v1:";
 
+bool IsProjectSourcePath(const std::string& sourcePath);
+
 std::string JoinTraceParts(const std::vector<std::string>& traces)
 {
 	std::string text;
@@ -177,7 +179,7 @@ std::string NormalizePathForProjectCache(const std::string& pathText)
 std::string ResolveCurrentSourcePathForProjectCache()
 {
 	std::string sourcePath = TrimAsciiCopyForProjectCache(g_nowOpenSourceFilePath);
-	if (sourcePath.empty()) {
+	if (!IsProjectSourcePath(sourcePath)) {
 		sourcePath = TrimAsciiCopyForProjectCache(GetSourceFilePath());
 	}
 
@@ -420,6 +422,12 @@ ProjectSourceCacheManager& ProjectSourceCacheManager::Instance()
 {
 	static ProjectSourceCacheManager instance;
 	return instance;
+}
+
+void ProjectSourceCacheManager::Clear()
+{
+	std::lock_guard<std::mutex> lock(g_cacheState.mutex);
+	g_cacheState.snapshot = {};
 }
 
 bool ProjectSourceCacheManager::WarmupCurrentSource(std::string* outError, std::string* outTrace)

@@ -5,13 +5,17 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstring>
 #include <format>
 #include <string>
 
 #include "Global.h"
 #include "IDEFacade.h"
 #include "Logger.h"
+#include "PageCodeCacheManager.h"
+#include "ProjectSourceCacheManager.h"
 #include "WindowHelper.h"
+#include "EideProjectBinarySerializer.h"
 
 std::string g_nowOpenSourceFilePath;
 ConfigManager g_configManager;
@@ -70,6 +74,87 @@ void OutputStringToELog(const std::string& szbuf)
 	OutputDebugStringA((line + "\n").c_str());
 	IDEFacade::Instance().AppendOutputWindowLine(line);
 	Logger::Instance().WriteGbk(line);
+}
+
+std::string NormalizeSourcePathForRuntime(const std::string& text)
+{
+	const std::string trimmed = TrimAsciiCopy(text);
+	if (trimmed.empty()) {
+		return std::string();
+	}
+
+	try {
+		std::filesystem::path path(trimmed);
+		path = path.lexically_normal();
+		if (path.is_relative()) {
+			path = std::filesystem::absolute(path);
+		}
+		path = path.lexically_normal();
+		return path.string();
+	}
+	catch (...) {
+		return trimmed;
+	}
+}
+
+bool IsProjectSourcePathForRuntime(const std::string& sourcePath)
+{
+	if (sourcePath.empty()) {
+		return false;
+	}
+
+	try {
+		std::filesystem::path path(sourcePath);
+		std::string ext = path.extension().string();
+		std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
+			return static_cast<char>(std::tolower(ch));
+		});
+		return ext == ".e";
+	}
+	catch (...) {
+		return false;
+	}
+}
+
+bool AreSameSourcePathForRuntime(const std::string& left, const std::string& right)
+{
+	if (left.empty() || right.empty()) {
+		return left.empty() && right.empty();
+	}
+	return _stricmp(left.c_str(), right.c_str()) == 0;
+}
+
+std::string DescribeSourcePathForRuntimeLog(const std::string& sourcePath)
+{
+	return sourcePath.empty() ? "<empty>" : sourcePath;
+}
+
+void HandleCurrentSourceFilePathChanged(const std::string& previousPath, const std::string& currentPath)
+{
+	e571::ProjectBinarySerializer::Instance().ClearVerifiedSerializerContext();
+	project_source_cache::ProjectSourceCacheManager::Instance().Clear();
+	PageCodeCacheManager::Instance().Clear();
+
+	OutputStringToELog(std::format(
+		"[SourceContext] source_changed old={} new={} serializer_context=cleared project_cache=cleared page_code_cache=cleared",
+		DescribeSourcePathForRuntimeLog(previousPath),
+		DescribeSourcePathForRuntimeLog(currentPath)));
+
+	if (!IsProjectSourcePathForRuntime(currentPath)) {
+		OutputStringToELog("[SourceContext] warmup skipped: current source is not an .e file");
+		return;
+	}
+
+	std::string warmupError;
+	std::string warmupTrace;
+	if (!project_source_cache::ProjectSourceCacheManager::Instance().WarmupCurrentSource(
+			&warmupError,
+			&warmupTrace)) {
+		OutputStringToELog(std::format(
+			"[SourceContext] warmup_failed error={} trace={}",
+			warmupError.empty() ? "warmup_failed" : warmupError,
+			warmupTrace));
+	}
 }
 
 uint64_t AllocateAIPerfTraceId()
@@ -145,11 +230,15 @@ void LogAIPerfCost(uint64_t traceId, const std::string& step, long long costMs, 
 
 void UpdateCurrentOpenSourceFile()
 {
-	std::string sourceFile = GetSourceFilePath();
-	if (g_nowOpenSourceFilePath != sourceFile) {
-		OutputStringToELog(sourceFile);
+	const std::string previousSourceFile = NormalizeSourcePathForRuntime(g_nowOpenSourceFilePath);
+	const std::string currentSourceFile = NormalizeSourcePathForRuntime(GetSourceFilePath());
+	if (AreSameSourcePathForRuntime(previousSourceFile, currentSourceFile)) {
+		g_nowOpenSourceFilePath = currentSourceFile;
+		return;
 	}
-	g_nowOpenSourceFilePath = sourceFile;
+
+	g_nowOpenSourceFilePath = currentSourceFile;
+	HandleCurrentSourceFilePathChanged(previousSourceFile, currentSourceFile);
 }
 
 void OutputCurrentSourceLinker()

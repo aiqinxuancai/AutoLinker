@@ -3,6 +3,7 @@
 #include <lib2.h>
 #include "PathHelper.h"
 #include <fnshare.h>
+#include <filesystem>
 #include <format>
 #include <regex>
 
@@ -33,6 +34,57 @@ std::string StripTrailingBracketAnnotations(const std::string& text)
 		stripped = next;
 	}
 	return TrimAsciiCopyLocal(stripped);
+}
+
+bool HasEideSourceFileExtension(const std::string& text)
+{
+	try {
+		std::filesystem::path path(text);
+		std::string ext = path.extension().string();
+		for (char& ch : ext) {
+			ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+		}
+		return ext == ".e" || ext == ".ec";
+	}
+	catch (...) {
+		return false;
+	}
+}
+
+bool LooksLikeAbsolutePathSegment(const std::string& text)
+{
+	if (text.size() >= 3 &&
+		std::isalpha(static_cast<unsigned char>(text[0])) != 0 &&
+		text[1] == ':' &&
+		(text[2] == '\\' || text[2] == '/')) {
+		return true;
+	}
+	return text.rfind("\\\\", 0) == 0 || text.rfind("//", 0) == 0;
+}
+
+std::string ExtractSourcePathFromWindowTitle(const std::string& title)
+{
+	static constexpr const char* kDelimiter = " - ";
+	size_t begin = 0;
+	while (begin <= title.size()) {
+		size_t end = title.find(kDelimiter, begin);
+		if (end == std::string::npos) {
+			end = title.size();
+		}
+
+		const std::string segment = StripTrailingBracketAnnotations(title.substr(begin, end - begin));
+		if (!segment.empty() &&
+			LooksLikeAbsolutePathSegment(segment) &&
+			HasEideSourceFileExtension(segment)) {
+			return segment;
+		}
+
+		if (end == title.size()) {
+			break;
+		}
+		begin = end + std::strlen(kDelimiter);
+	}
+	return std::string();
 }
 
 }
@@ -67,8 +119,7 @@ std::string GetSourceFilePath() {
 	HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
 	char buffer[256] = { 0 };
 	GetWindowText(hWnd, buffer, sizeof(buffer));
-	auto path = StripTrailingBracketAnnotations(ExtractBetweenDashes(std::string(buffer)));
-	return path;
+	return ExtractSourcePathFromWindowTitle(std::string(buffer));
 }
 
 

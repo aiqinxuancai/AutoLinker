@@ -200,6 +200,19 @@ const std::string& GetAddInMenuInfoText()
 	return kMenuInfo;
 }
 
+void RefreshSourcePathAfterWindowStateChange(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+	if (hWnd == nullptr || !IsWindow(hWnd)) {
+		return;
+	}
+
+	if (uMsg == WM_SETTEXT || uMsg == WM_MDIACTIVATE) {
+		(void)wParam;
+		(void)lParam;
+		UpdateCurrentOpenSourceFile();
+	}
+}
+
 } // namespace
 
 void ChangeVMProtectModel(bool isLib)
@@ -281,6 +294,12 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	if (uMsg == WM_INITMENUPOPUP) {
 		LRESULT result = DefSubclassProc(hWnd, uMsg, wParam, lParam);
 		FinalizeAutoLinkerPopupMenu(reinterpret_cast<HMENU>(wParam));
+		return result;
+	}
+
+	if (uMsg == WM_SETTEXT || uMsg == WM_MDIACTIVATE) {
+		LRESULT result = DefSubclassProc(hWnd, uMsg, wParam, lParam);
+		RefreshSourcePathAfterWindowStateChange(hWnd, uMsg, wParam, lParam);
 		return result;
 	}
 

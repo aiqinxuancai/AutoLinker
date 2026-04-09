@@ -198,7 +198,20 @@ std::string NormalizePathForSerializer(const std::string& pathText)
 std::string ResolveCurrentSourcePathForSerializer()
 {
 	std::string sourcePath = TrimAsciiCopyForSerializer(g_nowOpenSourceFilePath);
-	if (sourcePath.empty()) {
+	const auto isProjectSourcePath = [](const std::string& pathText) {
+		try {
+			const std::filesystem::path path(pathText);
+			std::string ext = path.extension().string();
+			for (char& ch : ext) {
+				ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+			}
+			return ext == ".e";
+		}
+		catch (...) {
+			return false;
+		}
+	};
+	if (!isProjectSourcePath(sourcePath)) {
 		sourcePath = TrimAsciiCopyForSerializer(GetSourceFilePath());
 	}
 	return NormalizePathForSerializer(sourcePath);

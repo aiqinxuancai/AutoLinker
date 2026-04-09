@@ -44,6 +44,9 @@ class ProjectSourceCacheManager {
 public:
 	static ProjectSourceCacheManager& Instance();
 
+	// 清空当前进程内已缓存的工程源码快照。
+	void Clear();
+
 	bool WarmupCurrentSource(std::string* outError = nullptr, std::string* outTrace = nullptr);
 
 	bool EnsureCurrentSourceLatest(
