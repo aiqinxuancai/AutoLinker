@@ -241,7 +241,6 @@ static auto originalTrackPopupMenuEx = TrackPopupMenuEx;
 
 #if defined(_M_IX86)
 constexpr std::uintptr_t kImageBase = 0x400000;
-constexpr std::uintptr_t kKnownProjectSerializeToFileRva = 0x44FDF0;
 constexpr const char* kProjectSerializeToFilePattern =
 	"55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 "
 	"81 EC ?? ?? ?? ?? 53 56 8B D9 57 B9 ?? ?? ?? ?? 89 65 ?? E8 ?? ?? ?? ?? "
@@ -561,15 +560,17 @@ void StartHookCreateFileA()
 				kProjectSerializeToFilePattern,
 			},
 			moduleBase);
-		originalProjectSerializeToFile = reinterpret_cast<OriginalProjectSerializeToFileFuncType>(
-			ResolveInternalAddress<void*>(
-				moduleBase,
-				projectSerializeToFileRva != 0 ? projectSerializeToFileRva : kKnownProjectSerializeToFileRva));
-		if (originalProjectSerializeToFile != nullptr) {
+		if (projectSerializeToFileRva != 0) {
+			originalProjectSerializeToFile = reinterpret_cast<OriginalProjectSerializeToFileFuncType>(
+				ResolveInternalAddress<void*>(
+					moduleBase,
+					projectSerializeToFileRva));
+		}
+		if (originalProjectSerializeToFile != nullptr && projectSerializeToFileRva != 0) {
 			OutputStringToELog(std::format(
 				"[ProjectBinarySerializer] hook serialize_to_file rva=0x{:X} via={}",
-				projectSerializeToFileRva != 0 ? projectSerializeToFileRva : kKnownProjectSerializeToFileRva,
-				projectSerializeToFileRva != 0 ? "pattern" : "fallback"));
+				projectSerializeToFileRva,
+				"pattern"));
 			DetourAttach(&(PVOID&)originalProjectSerializeToFile, MyProjectSerializeToFile);
 		}
 		else {
