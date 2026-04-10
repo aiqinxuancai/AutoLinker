@@ -191,6 +191,29 @@ bool TryHandleSilentCompileOutputPathRequest(LPOPENFILENAMEA item, std::string* 
 	return true;
 }
 
+bool IsSilentCompileOutputPathRequestOngoingForCurrentThread()
+{
+	std::lock_guard<std::mutex> lock(g_silentCompileOutputPathMutex);
+	if (!g_silentCompileOutputPathState.active && !g_silentCompileOutputPathState.consumed) {
+		return false;
+	}
+
+	const DWORD currentThreadId = GetCurrentThreadId();
+	if (g_silentCompileOutputPathState.ownerThreadId != 0 &&
+		g_silentCompileOutputPathState.ownerThreadId != currentThreadId) {
+		return false;
+	}
+
+	return true;
+}
+
+bool IsSilentCompileModulePublishPrompt(const std::string& text)
+{
+	return text.find("编译当前易模块程序到其发布版本成功") != std::string::npos &&
+		text.find("系统模块库目录") != std::string::npos &&
+		text.find("ecom") != std::string::npos;
+}
+
 } // namespace
 
 bool BeginSilentCompileOutputPathRequest(
@@ -493,6 +516,11 @@ int WINAPI MyMessageBoxA(HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType)
 {
 	const std::string caption = lpCaption != nullptr ? lpCaption : "";
 	const std::string text = lpText != nullptr ? lpText : "";
+	if (IsSilentCompileOutputPathRequestOngoingForCurrentThread() &&
+		IsSilentCompileModulePublishPrompt(text)) {
+		OutputStringToELog("auto-confirm ecom publish prompt during silent compile");
+		return IDYES;
+	}
 	if (caption.find("linker output contains too many errors or warnings") != std::string::npos) {
 		return IDNO;
 	}

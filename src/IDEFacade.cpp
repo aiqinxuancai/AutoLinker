@@ -3087,8 +3087,11 @@ bool IDEFacade::CompileWithOutputPath(
 		return false;
 	}
 
+	const bool dialogSuppressed = WasSilentCompileOutputPathRequestConsumed();
+	CancelSilentCompileOutputPathRequest();
+
 	if (outDiagnostics != nullptr) {
-		*outDiagnostics = WasSilentCompileOutputPathRequestConsumed()
+		*outDiagnostics = dialogSuppressed
 			? "compile_invoked_dialog_suppressed"
 			: "compile_invoked_dialog_pending";
 	}
