@@ -2847,11 +2847,15 @@ LRESULT CALLBACK LeftWorkAreaHostSubclassProc(
 	}
 
 	case WM_SIZE:
-	case WM_WINDOWPOSCHANGED:
+	{
+		// 先让原始过程运行以更新子控件（含标签页控件）尺寸，
+		// 再读取标签页控件的最新尺寸来重新布局聊天页。
+		const LRESULT defResult = DefSubclassProc(hWnd, uMsg, wParam, lParam);
 		if (g_leftWorkAreaHost.pageVisible) {
 			LayoutLeftWorkAreaChatPage();
 		}
-		break;
+		return defResult;
+	}
 
 	case WM_NCDESTROY:
 		g_leftWorkAreaHost.tabHwnd = nullptr;
