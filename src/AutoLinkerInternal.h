@@ -44,11 +44,6 @@ extern bool g_notifySysReady;
 // 已完成 IDE 就绪后的界面初始化。
 extern bool g_uiInitialized;
 
-// 自动模块公开信息测试指定的目标模块路径。
-extern std::string g_autoRunModulePublicInfoRequestedPath;
-
-
-
 inline constexpr UINT IDM_AUTOLINKER_CTX_COPY_FUNC = 31001;
 
 inline constexpr UINT IDM_AUTOLINKER_CTX_AI_OPTIMIZE_FUNC = 31101;
@@ -68,8 +63,6 @@ inline constexpr UINT IDM_AUTOLINKER_LINKER_MAX = 34999;
 inline constexpr UINT WM_AUTOLINKER_AI_TASK_DONE = WM_USER + 1001;
 
 inline constexpr UINT WM_AUTOLINKER_AI_APPLY_RESULT = WM_USER + 1002;
-
-inline constexpr UINT WM_AUTOLINKER_RUN_MODULE_INFO_TEST = WM_USER + 1003;
 
 
 
@@ -122,47 +115,4 @@ void RunAiTranslateSelectedTextTask();
 void RunAiAddByCurrentPageTypeTask();
 
 void TryCopyCurrentFunctionCode();
-
-
-
-void RunFnAddTabStructPassThroughTest();
-
-void RunDirectGlobalSearchKeywordTest();
-
-void RunDirectGlobalSearchLocateKeywordTest();
-
-void RunDirectGlobalSearchLocateAndDumpCurrentPageTest();
-
-void RunTreeViewProbeTest();
-
-void RunProgramTreeDirectPageDumpTest();
-
-// 测试切换到常量表页面。
-void RunProgramTreeSwitchToConstantTableTest();
-
-// 测试抓取常量表页面真实代码。
-void RunProgramTreeReadConstantTableCodeTest();
-
-// 测试导出全部页面真实代码到当前 e 文件同名 txt。
-void RunProgramTreeExportAllPageCodesTest();
-
-void RunProgramTreeListTest();
-
-void RunCurrentPageWindowProbeTest();
-
-void RunCurrentPageNameTest();
-
-void RunImportedModuleListTest();
-
-void RunFirstImportedModulePublicInfoTest();
-
-void RunFirstSupportLibraryInfoTest();
-
-void RunStaticCompileWindowsExeTest();
-
-
-
-std::filesystem::path GetAutoRunModulePublicInfoTestMarkerPath();
-
-void AutoRunModulePublicInfoTestThread(void* pParams);
 

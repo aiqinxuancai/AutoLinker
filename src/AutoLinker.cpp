@@ -32,8 +32,6 @@
 
 bool FneInit();
 
-std::string g_autoRunModulePublicInfoRequestedPath;
-
 namespace {
 
 bool g_mainWindowSubclassInstalled = false;
@@ -98,28 +96,6 @@ void ResolveCompileDebugStartAddressesForInit()
 		g_compileStartAddress));
 }
 
-std::string ReadAutoRunMarkerText(const std::filesystem::path& path)
-{
-	std::ifstream in(path, std::ios::binary);
-	if (!in.is_open()) {
-		return std::string();
-	}
-
-	in.seekg(0, std::ios::end);
-	const std::streamoff size = in.tellg();
-	if (size <= 0) {
-		return std::string();
-	}
-	in.seekg(0, std::ios::beg);
-
-	std::string text(static_cast<size_t>(size), '\0');
-	in.read(text.data(), size);
-	if (!in.good() && static_cast<size_t>(in.gcount()) != text.size()) {
-		return std::string();
-	}
-	return text;
-}
-
 struct AddInMenuEntry {
 	const char* title;
 	const char* description;
@@ -158,28 +134,11 @@ void ShowAISettingsAddIn()
 
 const auto& GetAddInMenuEntries()
 {
-	static const std::array<AddInMenuEntry, 21> kEntries = { {
+	static const std::array<AddInMenuEntry, 4> kEntries = { {
 		{ "打开项目目录", "这是个用作测试的辅助工具功能。", &OpenProjectDirectoryAddIn },
 		{ "打开AutoLinker配置目录", "这是个用作测试的辅助工具功能。", &OpenAutoLinkerConfigDirectoryAddIn },
 		{ "打开E语言目录", "这是个用作测试的辅助工具功能。", &OpenELanguageDirectoryAddIn },
-		{ "复制当前函数代码", "复制当前光标所在子程序完整代码到剪贴板。", &TryCopyCurrentFunctionCode },
 		{ "AutoLinker AI接口设置", "编辑AI接口地址、API Key、模型和提示词等配置。", &ShowAISettingsAddIn },
-		{ "FN_ADD_TAB结构传递测试", "构造ADD_TAB_INF调用FN_ADD_TAB，并打印调用前后结构体字段。", &RunFnAddTabStructPassThroughTest },
-		{ "测试整体搜索subWinHwnd", "调用direct_global_search固定搜索subWinHwnd，并输出命中结果到E输出窗口。", &RunDirectGlobalSearchKeywordTest },
-		{ "测试定位subWinHwnd首个结果", "调用direct_global_search固定搜索subWinHwnd，并跳转到首个命中位置。", &RunDirectGlobalSearchLocateKeywordTest },
-		{ "测试定位后抓取当前页代码", "先定位到subWinHwnd首个命中，再抓取当前代码页完整代码并写入AutoLinker目录。", &RunDirectGlobalSearchLocateAndDumpCurrentPageTest },
-		{ "测试枚举左侧TreeView", "枚举主窗口下所有SysTreeView32，并输出前几层节点文本与item data特征。", &RunTreeViewProbeTest },
-		{ "测试程序树按名称抓代码", "在程序树中固定查找Class_HWND，并根据tree item data直接抓取整页代码。", &RunProgramTreeDirectPageDumpTest },
-		{ "测试枚举程序树页面", "枚举程序树中所有页面节点，输出名称、类型和item data，并写入文件。", &RunProgramTreeListTest },
-		{ "测试当前页窗口与页签", "探测MDIClient当前活动子页与CCustomTabCtrl当前选中项文本，用于定位当前页名称来源。", &RunCurrentPageWindowProbeTest },
-		{ "测试获取当前页名称", "调用IDEFacade当前页名称接口，输出当前页名称、类型和来源链路。", &RunCurrentPageNameTest },
-		{ "测试枚举导入模块", "枚举当前项目导入的易模块路径。", &RunImportedModuleListTest },
-		{ "测试首个模块公开信息", "对当前项目首个导入模块执行原生公开信息抓取，并输出摘要与日志文件路径。", &RunFirstImportedModulePublicInfoTest },
-		{ "测试首个支持库公开信息", "枚举当前已选支持库，并对首个可定位文件的支持库执行GetNewInf公开信息抓取，输出摘要与日志文件路径。", &RunFirstSupportLibraryInfoTest },
-		{ "测试编译静态EXE", "调用静态编译窗口程序EXE测试，并将输出文件写入AutoLinker\\StaticCompileTest目录。", &RunStaticCompileWindowsExeTest },
-		{ "测试切换常量表...", "按程序树精确名称切换到“常量表...”页面，并输出切页后的当前页信息。", &RunProgramTreeSwitchToConstantTableTest },
-		{ "测试获取常量表...代码", "按程序树精确名称抓取“常量表...”页面真实代码，并输出摘要与日志文件路径。", &RunProgramTreeReadConstantTableCodeTest },
-		{ "测试导出全部页面代码", "枚举程序树全部页面并补抓常量表等特殊页，将真实代码汇总写入当前 e 文件同名 txt。", &RunProgramTreeExportAllPageCodesTest },
 	} };
 	return kEntries;
 }
@@ -259,10 +218,6 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	}
 	if (uMsg == WM_AUTOLINKER_AI_APPLY_RESULT) {
 		HandleAiApplyMessage(lParam);
-		return 0;
-	}
-	if (uMsg == WM_AUTOLINKER_RUN_MODULE_INFO_TEST) {
-		RunFirstImportedModulePublicInfoTest();
 		return 0;
 	}
 	if (uMsg == WM_NCDESTROY) {
@@ -448,24 +403,6 @@ bool FneInit()
 		}
 	}
 	TraceInitStep("当前工程源码解析缓存预热结束");
-
-	const auto autoRunMarker = GetAutoRunModulePublicInfoTestMarkerPath();
-	if (std::filesystem::exists(autoRunMarker)) {
-		TraceInitStep("检测到自动模块公开信息测试标记");
-		g_autoRunModulePublicInfoRequestedPath = TrimAsciiCopy(ReadAutoRunMarkerText(autoRunMarker));
-		std::error_code removeEc;
-		std::filesystem::remove(autoRunMarker, removeEc);
-		if (g_autoRunModulePublicInfoRequestedPath.empty()) {
-			OutputStringToELog("[ModulePublicInfoTest] 检测到自动测试标记，稍后执行首个导入模块公开信息测试");
-		}
-		else {
-			OutputStringToELog(std::format(
-				"[ModulePublicInfoTest] 检测到自动测试标记，稍后执行指定模块公开信息测试 path={}",
-				EscapeOneLineForLog(g_autoRunModulePublicInfoRequestedPath)));
-		}
-		_beginthread(AutoRunModulePublicInfoTestThread, 0, nullptr);
-		TraceInitStep("自动模块公开信息测试线程已启动");
-	}
 
 	TraceInitStep("开始启动版本检查线程");
 	_beginthread(FneCheckNewVersion, 0, NULL);
