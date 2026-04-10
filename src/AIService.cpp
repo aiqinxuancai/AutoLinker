@@ -908,7 +908,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "get_current_eide_info"},
-		{"description", "Get current E-language IDE instance information, including current source file path, current page info, MCP port/endpoint, process id and executable path."},
+		{"description", "Get current E-language IDE instance information, including current source file path, current page info, MCP port/endpoint, process id and executable path. Also returns project_type (one of: win_exe, win_console_exe, win_dll, ecom, unknown), project_type_label (Chinese display name), and project_supported_compile_modes (array of modes available for compile_with_output_path: always includes 'compile'; win_exe/win_console_exe/win_dll also include 'static_compile'; ecom only supports 'compile')."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", nlohmann::json::object()},
@@ -1458,7 +1458,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "compile_with_output_path"},
-		{"description", "Compile the current project with a specified output path, suppressing the IDE save-file dialog. Blocks until compile completes, then returns output_window_text (the IDE output from this compile run) and output_file_modified_after_compile (whether the artifact was created/updated). Use these fields to confirm success or diagnose errors without any extra steps. Supported targets: win_exe, win_console_exe, win_dll, ecom. Note: ecom does not support static_compile."},
+		{"description", "Compile the current project with a specified output path, suppressing the IDE save-file dialog. Blocks until compile completes, then returns output_window_text (the IDE output from this compile run) and output_file_modified_after_compile (whether the artifact was created/updated). Use these fields to confirm success or diagnose errors without any extra steps. Supported targets: win_exe, win_console_exe, win_dll, ecom. Note: ecom only supports compile (static_compile=false). For win_exe/win_console_exe/win_dll, set static_compile=true for static compile (recommended) or false for regular compile. Use get_current_eide_info to determine the correct target and available compile modes for the current project."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1629,7 +1629,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"7) 若主要想查当前工程源码并需要稳定页名与行号，优先用 search_project_source_cache。它在搜索前会先强制刷新当前工程源码缓存。只有在明确想使用 IDE 自带隐藏搜索结果时，才用 search_project_keyword。若要基于工程源码缓存命中读取代码行范围，优先用 read_project_source_cache_code；若要基于 IDE 搜索命中读取真实页代码行范围，才用 read_project_search_result_code。\n"
 		"8) search_public_code 是统一搜索，可按 target_types 选择 project、project_cache、module、support_library。默认会先刷新并搜索 project_cache，再补充 project、module、support_library。对于 project_cache 命中，后续优先用 read_project_source_cache_code；对于 project 命中，后续优先用 read_project_search_result_code。jump_to_search_result、switch_to_program_item_page、get_program_item_real_code 仍可能改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
 		"9) 通过搜索、程序树、模块公开信息、支持库公开信息拿到的代码或文本，多数只是伪代码 / 公共接口参考，不一定等于 IDE 正常编辑页。\n"
-		"10) 需要无弹窗编译时调用 compile_with_output_path。它会阻塞到编译完成后返回，结果包含 output_window_text（本次编译的 IDE 输出）和 output_file_modified_after_compile（产物文件是否已更新），无需额外步骤即可判断编译是否成功。支持模块工程编译为 ec，以及窗口程序 / 控制台程序 / DLL 的编译与静态编译。\n"
+		"10) 需要无弹窗编译时调用 compile_with_output_path。它会阻塞到编译完成后返回，结果包含 output_window_text（本次编译的 IDE 输出）和 output_file_modified_after_compile（产物文件是否已更新），无需额外步骤即可判断编译是否成功。编译前先调用 get_current_eide_info 确认 project_type 和 project_supported_compile_modes：模块（ecom）只能普通编译；窗口程序 / 控制台程序 / DLL 支持普通编译和静态编译，通常选静态编译（static_compile=true）。\n"
 		"11) 需要自动整页回写真实源码时优先使用真实页工具，不要退回伪代码工具。\n"
 		"12) 需要联网查实时信息、文档、网页摘要时调用 search_web_tavily。\n"
 		"13) 已经拿到具体文档 URL 时，优先调用 extract_web_document 读取正文；只有在需要看原始响应时再调用 fetch_url。\n"

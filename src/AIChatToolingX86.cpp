@@ -6492,6 +6492,42 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 			mainWindowTitle = title;
 		}
 
+		// 从主窗口标题解析项目（源文件）类型。
+		// 标题格式示例：
+		//   易语言5.71 - [xxx.e] - Windows窗口程序 - [程序集: ...]
+		//   KanColleEx - C:\...\KanCore56.e [无编译条件] - Windows易语言模块 - [程序集: ...]
+		struct ProjectKindInfo {
+			const char* titleKeyword;   // 标题中出现的关键字
+			const char* type;           // compile_with_output_path target 枚举值
+			const char* label;          // 中文名称
+			bool supportsStaticCompile; // 是否支持静态编译
+		};
+		static const ProjectKindInfo kProjectKinds[] = {
+			{" Windows易语言模块 ",  "ecom",            "Windows易语言模块",  false},
+			{" Windows动态链接库 ",  "win_dll",         "Windows动态链接库",  true},
+			{" Windows控制台程序 ",  "win_console_exe", "Windows控制台程序",  true},
+			{" Windows窗口程序 ",    "win_exe",         "Windows窗口程序",    true},
+		};
+
+		std::string projectType    = "unknown";
+		std::string projectTypeLabel = "\xe6\x9c\xaa\xe7\x9f\xa5"; // UTF-8: 未知
+		bool        projectSupportsStaticCompile = false;
+		for (const auto& k : kProjectKinds) {
+			if (mainWindowTitle.find(k.titleKeyword) != std::string::npos) {
+				projectType                  = k.type;
+				projectTypeLabel             = k.label;
+				projectSupportsStaticCompile = k.supportsStaticCompile;
+				break;
+			}
+		}
+
+		// 支持的编译目标及模式（供 AI 决策 compile_with_output_path 参数）。
+		nlohmann::json compileModes = nlohmann::json::array();
+		compileModes.push_back("compile");
+		if (projectSupportsStaticCompile) {
+			compileModes.push_back("static_compile");
+		}
+
 		LocalMcpServer::UpdateInstanceHints(sourceFilePath, pageName, pageType);
 
 		nlohmann::json r;
@@ -6508,6 +6544,9 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		r["current_page_type"] = LocalToUtf8Text(pageType);
 		r["page_name_trace"] = pageNameTrace;
 		r["main_window_title"] = LocalToUtf8Text(mainWindowTitle);
+		r["project_type"] = projectType;
+		r["project_type_label"] = LocalToUtf8Text(projectTypeLabel);
+		r["project_supported_compile_modes"] = compileModes;
 		r["mcp_running"] = LocalMcpServer::IsRunning();
 		r["mcp_instance_id"] = LocalMcpServer::GetInstanceId();
 		r["mcp_port"] = LocalMcpServer::GetBoundPort();
