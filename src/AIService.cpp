@@ -4,6 +4,7 @@
 #include <cctype>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <string_view>
 #include <Windows.h>
 
@@ -77,6 +78,39 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 		return text;
 	}
 	return text.substr(0, maxLen) + "...";
+}
+
+// 读取与当前源文件同目录、同名的 {stem}.AGENTS.md 项目规范文件。
+// 文件不存在时返回空串；存在时返回去除 UTF-8 BOM 后的内容（已转为本地编码）。
+std::string ReadProjectAgentsMd()
+{
+	if (AIService::Trim(g_nowOpenSourceFilePath).empty()) {
+		return {};
+	}
+	try {
+		const std::filesystem::path src(g_nowOpenSourceFilePath);
+		const std::filesystem::path agentsMdPath =
+			src.parent_path() / (src.stem().string() + ".AGENTS.md");
+		if (!std::filesystem::exists(agentsMdPath)) {
+			return {};
+		}
+		std::ifstream f(agentsMdPath, std::ios::binary);
+		if (!f.is_open()) {
+			return {};
+		}
+		std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+		// 去除 UTF-8 BOM（EF BB BF）
+		if (content.size() >= 3 &&
+			static_cast<unsigned char>(content[0]) == 0xEF &&
+			static_cast<unsigned char>(content[1]) == 0xBB &&
+			static_cast<unsigned char>(content[2]) == 0xBF) {
+			content.erase(0, 3);
+		}
+		return Utf8ToLocal(content);
+	}
+	catch (...) {
+		return {};
+	}
 }
 
 constexpr int kAiRequestRetryCount = 5;
@@ -1424,7 +1458,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "compile_with_output_path"},
-		{"description", "Start compile or static compile with a specified output path and suppress the IDE system save-file dialog. Supported targets: win_exe, win_console_exe, win_dll, ecom. Note: ecom only supports non-static compile, and final compile success still needs IDE output verification."},
+		{"description", "Compile the current project with a specified output path, suppressing the IDE save-file dialog. Blocks until compile completes, then returns output_window_text (the IDE output from this compile run) and output_file_modified_after_compile (whether the artifact was created/updated). Use these fields to confirm success or diagnose errors without any extra steps. Supported targets: win_exe, win_console_exe, win_dll, ecom. Note: ecom does not support static_compile."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1595,7 +1629,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		"7) 若主要想查当前工程源码并需要稳定页名与行号，优先用 search_project_source_cache。它在搜索前会先强制刷新当前工程源码缓存。只有在明确想使用 IDE 自带隐藏搜索结果时，才用 search_project_keyword。若要基于工程源码缓存命中读取代码行范围，优先用 read_project_source_cache_code；若要基于 IDE 搜索命中读取真实页代码行范围，才用 read_project_search_result_code。\n"
 		"8) search_public_code 是统一搜索，可按 target_types 选择 project、project_cache、module、support_library。默认会先刷新并搜索 project_cache，再补充 project、module、support_library。对于 project_cache 命中，后续优先用 read_project_source_cache_code；对于 project 命中，后续优先用 read_project_search_result_code。jump_to_search_result、switch_to_program_item_page、get_program_item_real_code 仍可能改变 IDE 当前页面，调用前要意识到页面会被切走。\n"
 		"9) 通过搜索、程序树、模块公开信息、支持库公开信息拿到的代码或文本，多数只是伪代码 / 公共接口参考，不一定等于 IDE 正常编辑页。\n"
-		"10) 需要无弹窗编译时调用 compile_with_output_path。它会指定输出路径并拦截系统保存对话框，支持模块工程编译为 ec，以及窗口程序 / 控制台程序 / DLL 的编译与静态编译；最终是否编译成功仍要结合 IDE 输出或产物确认。\n"
+		"10) 需要无弹窗编译时调用 compile_with_output_path。它会阻塞到编译完成后返回，结果包含 output_window_text（本次编译的 IDE 输出）和 output_file_modified_after_compile（产物文件是否已更新），无需额外步骤即可判断编译是否成功。支持模块工程编译为 ec，以及窗口程序 / 控制台程序 / DLL 的编译与静态编译。\n"
 		"11) 需要自动整页回写真实源码时优先使用真实页工具，不要退回伪代码工具。\n"
 		"12) 需要联网查实时信息、文档、网页摘要时调用 search_web_tavily。\n"
 		"13) 已经拿到具体文档 URL 时，优先调用 extract_web_document 读取正文；只有在需要看原始响应时再调用 fetch_url。\n"
@@ -1607,6 +1641,11 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 	if (!extraPrompt.empty()) {
 		prompt += "\n附加系统提示：\n";
 		prompt += extraPrompt;
+	}
+	const std::string agentsMd = AIService::Trim(ReadProjectAgentsMd());
+	if (!agentsMd.empty()) {
+		prompt += "\n\n项目规范（来自 .AGENTS.md）：\n";
+		prompt += agentsMd;
 	}
 	return prompt;
 }

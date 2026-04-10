@@ -3112,6 +3112,22 @@ HWND IDEFacade::FindOutputWindowHandle() const
 	return outputHwnd;
 }
 
+bool IDEFacade::GetOutputWindowText(std::string& outText) const
+{
+	HWND outputHwnd = FindOutputWindowHandle();
+	if (outputHwnd == nullptr) {
+		return false;
+	}
+	const int len = GetWindowTextLengthA(outputHwnd);
+	if (len <= 0) {
+		outText.clear();
+		return true;
+	}
+	outText.resize(static_cast<size_t>(len));
+	GetWindowTextA(outputHwnd, outText.data(), len + 1);
+	return true;
+}
+
 bool IDEFacade::AppendOutputWindowText(const std::string& text) const
 {
 	HWND outputHwnd = FindOutputWindowHandle();

@@ -165,6 +165,8 @@ public:
 	// 向 IDE 输出窗口追加文本/行文本（行文本会自动追加 CRLF）。
 	bool AppendOutputWindowText(const std::string& text) const;
 	bool AppendOutputWindowLine(const std::string& text) const;
+	// 读取 IDE 输出窗口全文（ANSI 编码，失败时返回 false）。
+	bool GetOutputWindowText(std::string& outText) const;
 
 	// ECOM 管理。
 	bool AddECOM(const std::string& filePath) const;

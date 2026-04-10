@@ -9,6 +9,7 @@
 #include <chrono>
 #include <CommCtrl.h>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -16,6 +17,7 @@
 #include <mutex>
 #include <regex>
 #include <string>
+#include <sys/stat.h>
 #include <tlhelp32.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -8220,6 +8222,11 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 			return Utf8ToLocalText(r.dump());
 		}
 
+		// 编译前：快照输出窗口文本，记录开始时间戳（用于判断产物是否刷新）。
+		std::string preOutputText;
+		IDEFacade::Instance().GetOutputWindowText(preOutputText);
+		const __time64_t compileStartTimestamp = _time64(nullptr);
+
 		std::string normalizedPath;
 		std::string diagnostics;
 		if (!IDEFacade::Instance().CompileWithOutputPath(
@@ -8236,13 +8243,41 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 			return Utf8ToLocalText(r.dump());
 		}
 
+		// 编译后：读取输出窗口，提取本次编译产生的新内容。
+		// 易语言编译为同步操作，函数返回时编译输出已写入完毕。
+		std::string postOutputText;
+		IDEFacade::Instance().GetOutputWindowText(postOutputText);
+
+		std::string newOutput;
+		if (postOutputText.size() > preOutputText.size()) {
+			// IDE 追加输出模式：只取新增部分
+			newOutput = postOutputText.substr(preOutputText.size());
+		}
+		else {
+			// IDE 清空后重写，或编译为异步（输出尚未刷新）：返回当前全部文本
+			newOutput = postOutputText;
+		}
+
+		// 检查产物文件是否在编译启动后被创建/更新，用于确认编译是否成功。
+		bool outputFileExists = false;
+		bool outputFileModifiedAfterCompile = false;
+		if (!normalizedPath.empty()) {
+			struct __stat64 fileStat = {};
+			if (_stat64(normalizedPath.c_str(), &fileStat) == 0) {
+				outputFileExists = true;
+				outputFileModifiedAfterCompile = (fileStat.st_mtime >= compileStartTimestamp - 1);
+			}
+		}
+
 		nlohmann::json r;
 		r["ok"] = true;
 		r["target"] = target;
 		r["static_compile"] = staticCompile;
 		r["output_path"] = LocalToUtf8Text(normalizedPath);
+		r["output_window_text"] = LocalToUtf8Text(newOutput);
+		r["output_file_exists"] = outputFileExists;
+		r["output_file_modified_after_compile"] = outputFileModifiedAfterCompile;
 		r["trace"] = diagnostics;
-        r["warning"] = LocalToUtf8Text("This only suppresses the system save-file dialog by injecting the requested output path. Final compile success still needs to be confirmed from IDE output or artifacts.");
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
 	}
