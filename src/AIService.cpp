@@ -80,39 +80,6 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 	return text.substr(0, maxLen) + "...";
 }
 
-// 读取与当前源文件同目录、同名的 {stem}.AGENTS.md 项目规范文件。
-// 文件不存在时返回空串；存在时返回去除 UTF-8 BOM 后的内容（已转为本地编码）。
-std::string ReadProjectAgentsMd()
-{
-	if (AIService::Trim(g_nowOpenSourceFilePath).empty()) {
-		return {};
-	}
-	try {
-		const std::filesystem::path src(g_nowOpenSourceFilePath);
-		const std::filesystem::path agentsMdPath =
-			src.parent_path() / (src.stem().string() + ".AGENTS.md");
-		if (!std::filesystem::exists(agentsMdPath)) {
-			return {};
-		}
-		std::ifstream f(agentsMdPath, std::ios::binary);
-		if (!f.is_open()) {
-			return {};
-		}
-		std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-		// 去除 UTF-8 BOM（EF BB BF）
-		if (content.size() >= 3 &&
-			static_cast<unsigned char>(content[0]) == 0xEF &&
-			static_cast<unsigned char>(content[1]) == 0xBB &&
-			static_cast<unsigned char>(content[2]) == 0xBF) {
-			content.erase(0, 3);
-		}
-		return Utf8ToLocal(content);
-	}
-	catch (...) {
-		return {};
-	}
-}
-
 constexpr int kAiRequestRetryCount = 5;
 constexpr int kAiRequestCancelledHttpStatus = 499;
 
@@ -624,6 +591,39 @@ std::string Utf8ToLocal(const std::string& text)
 		return text;
 	}
 	return ConvertCodePage(text, CP_UTF8, CP_ACP, MB_ERR_INVALID_CHARS);
+}
+
+// 读取与当前源文件同目录、同名的 {stem}.AGENTS.md 项目规范文件。
+// 文件不存在时返回空串；存在时返回去除 UTF-8 BOM 后的内容（已转为本地编码）。
+std::string ReadProjectAgentsMd()
+{
+	if (AIService::Trim(g_nowOpenSourceFilePath).empty()) {
+		return {};
+	}
+	try {
+		const std::filesystem::path src(g_nowOpenSourceFilePath);
+		const std::filesystem::path agentsMdPath =
+			src.parent_path() / (src.stem().string() + ".AGENTS.md");
+		if (!std::filesystem::exists(agentsMdPath)) {
+			return {};
+		}
+		std::ifstream f(agentsMdPath, std::ios::binary);
+		if (!f.is_open()) {
+			return {};
+		}
+		std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+		// 去除 UTF-8 BOM（EF BB BF）
+		if (content.size() >= 3 &&
+			static_cast<unsigned char>(content[0]) == 0xEF &&
+			static_cast<unsigned char>(content[1]) == 0xBB &&
+			static_cast<unsigned char>(content[2]) == 0xBF) {
+			content.erase(0, 3);
+		}
+		return Utf8ToLocal(content);
+	}
+	catch (...) {
+		return {};
+	}
 }
 
 std::string RemoveCodeFence(const std::string& text)
@@ -2945,6 +2945,12 @@ EnumWindows (到整数 (&枚举窗口过程), 0)
 	if (!extraPrompt.empty()) {
 		prompt += "\n\n用户额外系统提示：\n";
 		prompt += extraPrompt;
+	}
+
+	const std::string agentsMd = Trim(ReadProjectAgentsMd());
+	if (!agentsMd.empty()) {
+		prompt += "\n\n项目规范（来自 .AGENTS.md）：\n";
+		prompt += agentsMd;
 	}
 
 	return prompt;
