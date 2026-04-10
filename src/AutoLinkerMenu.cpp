@@ -10,6 +10,56 @@ namespace {
 bool g_isContextMenuRegistered = false;
 HMENU g_topLinkerSubMenu = NULL;
 std::unordered_map<UINT, std::string> g_topLinkerCommandMap;
+
+// 根据当前打开的源文件路径生成链接器父菜单项的显示标题（Wide 字符串）。
+// 无源文件时返回通用名；有源文件时返回"[xxxx.e]使用的链接器"。
+std::wstring GetLinkerMenuTitle()
+{
+	if (g_nowOpenSourceFilePath.empty()) {
+		return L"源文件链接器切换";
+	}
+	const auto lastSep = g_nowOpenSourceFilePath.find_last_of("\\/");
+	const std::string filenameAnsi = (lastSep != std::string::npos)
+		? g_nowOpenSourceFilePath.substr(lastSep + 1)
+		: g_nowOpenSourceFilePath;
+	if (filenameAnsi.empty()) {
+		return L"源文件链接器切换";
+	}
+	const int wlen = MultiByteToWideChar(CP_ACP, 0, filenameAnsi.c_str(), -1, nullptr, 0);
+	if (wlen <= 0) {
+		return L"源文件链接器切换";
+	}
+	std::wstring filenameW(static_cast<size_t>(wlen) - 1, L'\0');
+	MultiByteToWideChar(CP_ACP, 0, filenameAnsi.c_str(), -1, filenameW.data(), wlen);
+	return L"[" + filenameW + L"]使用的链接器";
+}
+
+// 在 hTargetMenu 中找到链接器子菜单所在的父菜单项，更新其标题与启用状态。
+// 须在 g_nowOpenSourceFilePath 已刷新后调用。
+void UpdateLinkerSubMenuParentItem(HMENU hTargetMenu)
+{
+	if (hTargetMenu == nullptr || g_topLinkerSubMenu == nullptr) {
+		return;
+	}
+	const int count = GetMenuItemCount(hTargetMenu);
+	for (int i = 0; i < count; ++i) {
+		MENUITEMINFOW mii = {};
+		mii.cbSize = sizeof(mii);
+		mii.fMask = MIIM_SUBMENU;
+		if (GetMenuItemInfoW(hTargetMenu, static_cast<UINT>(i), TRUE, &mii) &&
+			mii.hSubMenu == g_topLinkerSubMenu) {
+			std::wstring title = GetLinkerMenuTitle();
+			MENUITEMINFOW miiUpdate = {};
+			miiUpdate.cbSize = sizeof(miiUpdate);
+			miiUpdate.fMask = MIIM_STRING | MIIM_STATE;
+			miiUpdate.fState = g_nowOpenSourceFilePath.empty() ? MFS_GRAYED : MFS_ENABLED;
+			miiUpdate.dwTypeData = title.data();
+			miiUpdate.cch = static_cast<UINT>(title.size());
+			SetMenuItemInfoW(hTargetMenu, static_cast<UINT>(i), TRUE, &miiUpdate);
+			break;
+		}
+	}
+}
 }
 
 void RegisterIDEContextMenu()
@@ -203,7 +253,7 @@ void EnsureTopLinkerSubMenuAttached(HMENU hTargetMenu)
 			AppendMenuW(hTargetMenu, MF_SEPARATOR, 0, NULL);
 		}
 	}
-	AppendMenuW(hTargetMenu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(g_topLinkerSubMenu), L"链接器切换");
+	AppendMenuW(hTargetMenu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(g_topLinkerSubMenu), GetLinkerMenuTitle().c_str());
 }
 
 void RebuildTopLinkerSubMenu()
@@ -270,8 +320,10 @@ void HandleInitMenuPopup(HMENU hMenu)
 	}
 
 	if (IsCompileOrToolsTopPopup(hMenu)) {
+		UpdateCurrentOpenSourceFile();
 		EnsureTopLinkerSubMenuAttached(hMenu);
 		RebuildTopLinkerSubMenu();
+		UpdateLinkerSubMenuParentItem(hMenu);
 		return;
 	}
 
