@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <string>
 
@@ -144,6 +145,19 @@ void HandleCurrentSourceFilePathChanged(const std::string& previousPath, const s
 		OutputStringToELog("[SourceContext] warmup skipped: current source is not an .e file");
 		return;
 	}
+
+	// 检测同目录的 {stem}.AGENTS.md，存在则提示用户。
+	try {
+		const std::filesystem::path srcPath(currentPath);
+		const std::filesystem::path agentsMdPath =
+			srcPath.parent_path() / (srcPath.stem().string() + ".AGENTS.md");
+		if (std::filesystem::exists(agentsMdPath)) {
+			OutputStringToELog(std::format(
+				"[AI] 检测到项目规范文件：{} —— 已作为 AI 对话上下文自动注入",
+				agentsMdPath.filename().string()));
+		}
+	}
+	catch (...) {}
 
 	std::string warmupError;
 	std::string warmupTrace;
