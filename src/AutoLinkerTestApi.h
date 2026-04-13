@@ -35,4 +35,7 @@ AUTOLINKER_TEST_API int AutoLinkerTest_DumpLocalModulePublicInfo(const char* mod
 // 执行原生 e2txt 导出，并输出结果摘要。
 AUTOLINKER_TEST_API int AutoLinkerTest_GenerateE2Txt(const char* inputPath, const char* outputPath, char* buffer, int bufferSize);
 
+// 执行原生 txt2e 恢复，并输出结果摘要。
+AUTOLINKER_TEST_API int AutoLinkerTest_RestoreE2Txt(const char* inputPath, const char* outputPath, char* buffer, int bufferSize);
+
 }

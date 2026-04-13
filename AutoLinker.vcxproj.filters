@@ -62,6 +62,9 @@
     <ClCompile Include="src\ECOMEx.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\e2txt_restore.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\e2txt.cpp">
       <Filter>Utils</Filter>
     </ClCompile>

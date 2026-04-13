@@ -1978,9 +1978,11 @@ bool RequestConfirmationFromMainThread(
 	const std::string& content,
 	const std::string& primaryText,
 	const std::string& secondaryText,
-	bool& outAccepted)
+	bool& outAccepted,
+	bool& outSecondaryAccepted)
 {
 	outAccepted = false;
+	outSecondaryAccepted = false;
 	if (g_mainWindow == nullptr || !IsWindow(g_mainWindow)) {
 		return false;
 	}
@@ -2004,6 +2006,7 @@ bool RequestConfirmationFromMainThread(
 	}
 
 	outAccepted = request.accepted;
+	outSecondaryAccepted = request.secondaryAccepted;
 	return true;
 }
 
@@ -2565,6 +2568,7 @@ bool HandleToolDialogRequest(LPARAM lParam)
 	}
 
 	bool accepted = false;
+	bool secondaryAccepted = false;
 	if (request->kind == ToolDialogRequest::Kind::Confirmation) {
 		const AIPreviewAction action = ShowAIPreviewDialogEx(
 			g_mainWindow,
@@ -2573,11 +2577,13 @@ bool HandleToolDialogRequest(LPARAM lParam)
 			request->primaryText,
 			request->secondaryText);
 		accepted = action == AIPreviewAction::PrimaryConfirm;
+		secondaryAccepted = action == AIPreviewAction::SecondaryConfirm;
 	}
 
 	{
 		std::lock_guard<std::mutex> guard(request->mutex);
 		request->accepted = accepted;
+		request->secondaryAccepted = secondaryAccepted;
 		request->done = true;
 	}
 	request->cv.notify_one();
@@ -2624,9 +2630,10 @@ bool RequestConfirmationForTooling(
 	const std::string& content,
 	const std::string& primaryText,
 	const std::string& secondaryText,
-	bool& outAccepted)
+	bool& outAccepted,
+	bool& outSecondaryAccepted)
 {
-	return RequestConfirmationFromMainThread(title, content, primaryText, secondaryText, outAccepted);
+	return RequestConfirmationFromMainThread(title, content, primaryText, secondaryText, outAccepted, outSecondaryAccepted);
 }
 
 bool EnsureChatHostWindowCreated();

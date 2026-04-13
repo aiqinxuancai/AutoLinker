@@ -30,7 +30,8 @@ struct ToolDialogRequest {
 	std::string content;
 	std::string primaryText;
 	std::string secondaryText;
-	bool accepted = false;
+	bool accepted = false;          // 用户点击了主确认按钮。
+	bool secondaryAccepted = false; // 用户点击了次确认按钮。
 	bool done = false;
 	std::mutex mutex;
 	std::condition_variable cv;
@@ -42,10 +43,11 @@ HWND GetAIChatMainWindowForTooling();
 ConfigManager* GetAIChatConfigManagerForTooling();
 // 获取 AI 对话工具执行消息。
 UINT GetAIChatToolExecMessageForTooling();
-// 请求确认对话。
+// 请求确认对话。outSecondaryAccepted 为次确认按钮点击结果。
 bool RequestConfirmationForTooling(
 	const std::string& title,
 	const std::string& content,
 	const std::string& primaryText,
 	const std::string& secondaryText,
-	bool& outAccepted);
+	bool& outAccepted,
+	bool& outSecondaryAccepted);

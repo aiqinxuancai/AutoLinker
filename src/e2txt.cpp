@@ -346,6 +346,94 @@ std::string Quote(const std::string& text)
 	return "\"" + text + "\"";
 }
 
+constexpr const char* kTextLiteralLeftQuote = "“";
+constexpr const char* kTextLiteralRightQuote = "”";
+constexpr const char* kEscapedTextLiteralPrefix = "#e2txt_text#";
+constexpr const char* kEscapedLongTextLiteralPrefix = "#e2txt_long_text#";
+
+bool StartsWithText(const std::string& text, const std::string& prefix)
+{
+	return text.size() >= prefix.size() && text.compare(0, prefix.size(), prefix) == 0;
+}
+
+bool EndsWithText(const std::string& text, const std::string& suffix)
+{
+	return text.size() >= suffix.size() &&
+		text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+std::string StripWrappedText(const std::string& text, const std::string& left, const std::string& right)
+{
+	if (!StartsWithText(text, left) || !EndsWithText(text, right) || text.size() < left.size() + right.size()) {
+		return text;
+	}
+	return text.substr(left.size(), text.size() - left.size() - right.size());
+}
+
+char ToHexDigit(const std::uint8_t value)
+{
+	return static_cast<char>(value < 10 ? ('0' + value) : ('A' + (value - 10)));
+}
+
+bool NeedsEscapedTextLiteral(const std::string& text)
+{
+	if (StartsWithText(text, kEscapedTextLiteralPrefix) || StartsWithText(text, kEscapedLongTextLiteralPrefix)) {
+		return true;
+	}
+	for (const unsigned char ch : text) {
+		if (ch == '"' || ch == '\\' || ch == '\r' || ch == '\n' || ch == '\t' || ch < 0x20) {
+			return true;
+		}
+	}
+	return false;
+}
+
+std::string EscapeTextLiteralPayload(const std::string& text)
+{
+	std::string out;
+	out.reserve(text.size());
+	for (const unsigned char ch : text) {
+		switch (ch) {
+		case '\\':
+			out += "\\\\";
+			break;
+		case '\r':
+			out += "\\r";
+			break;
+		case '\n':
+			out += "\\n";
+			break;
+		case '\t':
+			out += "\\t";
+			break;
+		case '"':
+			out += "\\x22";
+			break;
+		default:
+			if (ch < 0x20) {
+				out += "\\x";
+				out.push_back(ToHexDigit(static_cast<std::uint8_t>((ch >> 4) & 0x0F)));
+				out.push_back(ToHexDigit(static_cast<std::uint8_t>(ch & 0x0F)));
+			}
+			else {
+				out.push_back(static_cast<char>(ch));
+			}
+			break;
+		}
+	}
+	return out;
+}
+
+std::string BuildDumpTextLiteral(const std::string& rawText, const bool isLongText)
+{
+	if (!isLongText && !NeedsEscapedTextLiteral(rawText)) {
+		return std::string(kTextLiteralLeftQuote) + rawText + kTextLiteralRightQuote;
+	}
+
+	const char* prefix = isLongText ? kEscapedLongTextLiteralPrefix : kEscapedTextLiteralPrefix;
+	return std::string(kTextLiteralLeftQuote) + prefix + EscapeTextLiteralPayload(rawText) + kTextLiteralRightQuote;
+}
+
 std::string QuoteIfNotEmpty(const std::string& text)
 {
 	const std::string trimmed = TrimAsciiCopy(text);
@@ -4061,8 +4149,10 @@ void BuildConstantPage(const ModuleSections& sections, Document& outDocument)
 			continue;
 		}
 		std::string valueText = item.valueText;
-		if (item.longText && item.textByteLength > 64) {
-			valueText = "<文本长度: " + std::to_string(item.textByteLength) + ">";
+		if (StartsWithText(valueText, kTextLiteralLeftQuote) && EndsWithText(valueText, kTextLiteralRightQuote)) {
+			valueText = BuildDumpTextLiteral(
+				StripWrappedText(valueText, kTextLiteralLeftQuote, kTextLiteralRightQuote),
+				item.longText);
 		}
 		else if (!valueText.empty() &&
 			valueText.find_first_of("eE") != std::string::npos &&

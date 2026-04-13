@@ -78,4 +78,16 @@ private:
 		std::string* outError) const;
 };
 
+// 原生 txt2e 恢复器。
+class Restorer {
+public:
+	bool ParseText(const std::string& inputPath, Document& outDocument, std::string* outError) const;
+	bool RestoreToBytes(const Document& document, std::vector<std::uint8_t>& outBytes, std::string* outError) const;
+	bool RestoreToFile(
+		const std::string& inputPath,
+		const std::string& outputPath,
+		std::string* outSummary,
+		std::string* outError) const;
+};
+
 }  // namespace e2txt

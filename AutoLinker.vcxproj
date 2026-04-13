@@ -487,6 +487,7 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='static_lib_release|x64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="src\ECOMEx.cpp" />
+    <ClCompile Include="src\e2txt_restore.cpp" />
     <ClCompile Include="src\e2txt.cpp" />
     <ClCompile Include="src\EideProjectBinarySerializer.cpp" />
     <ClCompile Include="src\IDEFacade.cpp" />

@@ -15,6 +15,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <condition_variable>
@@ -24,7 +25,12 @@
 
 #include "..\\thirdparty\\json.hpp"
 
-namespace {std::string TrimAsciiCopy(const std::string& text)
+namespace {
+
+// 当前进程 PowerShell 全允许标志，用户选择"全允许"后本次进程内跳过后续确认。
+std::atomic<bool> g_psAllowAllForProcess{false};
+
+std::string TrimAsciiCopy(const std::string& text)
 {
 	size_t begin = 0;
 	size_t end = text.size();
@@ -697,18 +703,26 @@ std::string ExecuteToolCallImpl(
 			std::to_string(timeoutSeconds) +
 			" 秒\r\n\r\n请确认该命令不会造成你不希望的本机副作用。";
 		bool accepted = false;
-		if (!RequestConfirmationForTooling(
-				LocalFromWide(L"AI PowerShell 执行确认"),
-				confirmationText,
-				LocalFromWide(L"执行"),
-				LocalFromWide(L"取消"),
-				accepted) ||
-			!accepted) {
-			nlohmann::json r;
-			r["ok"] = false;
-			r["cancelled"] = true;
-			r["error"] = "user cancelled powershell execution";
-			return Utf8ToLocalText(r.dump());
+		bool secondaryAccepted = false;
+		const bool skipConfirm = g_psAllowAllForProcess.load();
+		if (!skipConfirm) {
+			if (!RequestConfirmationForTooling(
+					LocalFromWide(L"AI PowerShell 执行确认"),
+					confirmationText,
+					LocalFromWide(L"执行"),
+					LocalFromWide(L"当前进程全允许并执行"),
+					accepted,
+					secondaryAccepted) ||
+				(!accepted && !secondaryAccepted)) {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["cancelled"] = true;
+				r["error"] = "user cancelled powershell execution";
+				return Utf8ToLocalText(r.dump());
+			}
+			if (secondaryAccepted) {
+				g_psAllowAllForProcess.store(true);
+			}
 		}
 
 		const PowerShellRunResult runResult = PowerShellToolRunner::Run(commandUtf8, workingDirectoryUtf8, timeoutSeconds, cancelCallback);

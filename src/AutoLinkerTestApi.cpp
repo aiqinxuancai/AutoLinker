@@ -142,3 +142,19 @@ extern "C" int AutoLinkerTest_GenerateE2Txt(const char* inputPath, const char* o
 
 	return CopyStringToBuffer(summary, buffer, bufferSize);
 }
+
+extern "C" int AutoLinkerTest_RestoreE2Txt(const char* inputPath, const char* outputPath, char* buffer, int bufferSize)
+{
+	if (inputPath == nullptr || outputPath == nullptr) {
+		return AUTOLINKER_TEST_STRING_INVALID_ARGUMENT;
+	}
+
+	e2txt::Restorer restorer;
+	std::string summary;
+	std::string error;
+	if (!restorer.RestoreToFile(inputPath, outputPath, &summary, &error)) {
+		return CopyStringToBuffer("restore_failed: " + error, buffer, bufferSize);
+	}
+
+	return CopyStringToBuffer(summary, buffer, bufferSize);
+}
