@@ -102,6 +102,15 @@ std::string NormalizeLineBreaksForAI(std::string text);
 std::string NormalizeRealPageCodeForLooseCompareForAI(const std::string& text);
 std::string NormalizeRealPageCodeLineForStructuralCompareForAI(const std::string& line);
 std::vector<std::string> BuildRealPageStructuralFingerprintForAI(const std::string& text);
+bool TryGetProgramItemProjectCacheCodeForAI(
+	const ProgramTreeItemInfo& item,
+	bool refreshCache,
+	std::string& outCode,
+	project_source_cache::Snapshot& outSnapshot,
+	const project_source_cache::Page*& outPage,
+	bool& outRefreshed,
+	std::string& outTrace,
+	std::string& outError);
 bool VerifyRealPageCodeMatchesForAI(
 	const std::string& expectedCode,
 	const std::string& actualCode,
@@ -779,6 +788,36 @@ void PutPageCodeCacheEntryForAI(
 	}
 }
 
+bool ShouldUseProjectCacheWriteBaseForAI(const ProgramTreeItemInfo& item)
+{
+	return item.typeKey == "const_resource";
+}
+
+bool TryReadProjectCacheCodeForAI(
+	const ProgramTreeItemInfo& item,
+	bool refreshCache,
+	std::string& outCode,
+	std::string& outTrace,
+	std::string& outError)
+{
+	outCode.clear();
+	outTrace.clear();
+	outError.clear();
+
+	project_source_cache::Snapshot snapshot{};
+	const project_source_cache::Page* page = nullptr;
+	bool refreshed = false;
+	return TryGetProgramItemProjectCacheCodeForAI(
+		item,
+		refreshCache,
+		outCode,
+		snapshot,
+		page,
+		refreshed,
+		outTrace,
+		outError);
+}
+
 bool TryReadRealPageCodeForAI(
 	const ProgramTreeItemInfo& item,
 	std::string& outCode,
@@ -857,10 +896,63 @@ bool TryResolveRealPageWriteBaseForAI(
 	outCacheRefreshed = false;
 	outError.clear();
 
+	const bool preferProjectCacheWriteBase = ShouldUseProjectCacheWriteBaseForAI(item);
 	const bool hasCache = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, outCacheEntry);
-	if (requireCache && !hasCache) {
+	if (requireCache && !hasCache && !preferProjectCacheWriteBase) {
 		outError = "page cache missing, call read_program_item_real_code or get_program_item_real_code first";
 		return false;
+	}
+
+	const std::string normalizedExpectedHash = ToLowerAsciiCopyLocal(TrimAsciiCopy(expectedBaseHash));
+
+	if (hasCache) {
+		outCacheEntry = BuildPageCodeCacheEntryForAI(item, outCacheEntry.code, &outCacheEntry);
+	}
+
+	if (preferProjectCacheWriteBase) {
+		std::string projectCacheCode;
+		std::string projectCacheTrace;
+		std::string projectCacheError;
+		if (!TryReadProjectCacheCodeForAI(item, true, projectCacheCode, projectCacheTrace, projectCacheError)) {
+			if (!projectCacheTrace.empty()) {
+				outLiveTrace = outLiveTrace.empty() ? projectCacheTrace : (outLiveTrace + "|" + projectCacheTrace);
+			}
+			outError = projectCacheError.empty() ? "get const_resource project cache code failed" : projectCacheError;
+			return false;
+		}
+
+		if (!projectCacheTrace.empty()) {
+			outLiveTrace = outLiveTrace.empty() ? projectCacheTrace : (outLiveTrace + "|" + projectCacheTrace);
+		}
+
+		const std::string projectCacheHash = BuildStableTextHashForRealCode(projectCacheCode);
+		const bool cacheSeededFromProjectCache = !hasCache;
+		const bool cacheChangedToProjectCache = hasCache && outCacheEntry.codeHash != projectCacheHash;
+
+		outCurrentCode = projectCacheCode;
+		PutPageCodeCacheEntryForAI(item, projectCacheCode, hasCache ? &outCacheEntry : nullptr, &outCacheEntry);
+		if (cacheSeededFromProjectCache || cacheChangedToProjectCache) {
+			outCacheRefreshed = true;
+		}
+
+		if (!normalizedExpectedHash.empty() && projectCacheHash != normalizedExpectedHash) {
+			outLiveTrace += "|write_base=project_cache_only|cache_refreshed=1";
+			outError = "expected_base_hash mismatch; cache refreshed to project cache code";
+			return false;
+		}
+
+		if (cacheSeededFromProjectCache) {
+			outLiveTrace += "|write_base=project_cache_only|cache_seeded=project_cache";
+		}
+		else if (cacheChangedToProjectCache) {
+			outLiveTrace += "|write_base=project_cache_only|cache_rebased=project_cache";
+		}
+		else {
+			outLiveTrace += "|write_base=project_cache_only";
+		}
+
+		outBaseCode = projectCacheCode;
+		return true;
 	}
 
 	std::string liveCode;
@@ -873,11 +965,6 @@ bool TryResolveRealPageWriteBaseForAI(
 	outLiveTrace = liveReadResult.trace;
 	outCurrentCode = liveCode;
 	const std::string liveHash = BuildStableTextHashForRealCode(liveCode);
-	const std::string normalizedExpectedHash = ToLowerAsciiCopyLocal(TrimAsciiCopy(expectedBaseHash));
-
-	if (hasCache) {
-		outCacheEntry = BuildPageCodeCacheEntryForAI(item, outCacheEntry.code, &outCacheEntry);
-	}
 
 	if (!normalizedExpectedHash.empty() && liveHash != normalizedExpectedHash) {
 		PutPageCodeCacheEntryForAI(item, liveCode, hasCache ? &outCacheEntry : nullptr, &outCacheEntry);
@@ -955,17 +1042,38 @@ bool TryWriteRealPageCodeForAI(
 		if (TryReadRealPageCodeForAI(item, recoveredCode, recoveredReadResult, recoveredReadError)) {
 			std::string recoveredVerifyMode;
 			if (VerifyRealPageCodeMatchesForAI(normalizedNewCode, recoveredCode, &recoveredVerifyMode)) {
+				std::string persistedCode = recoveredCode;
+				std::string persistedTrace = recoveredReadResult.trace;
+				if (ShouldUseProjectCacheWriteBaseForAI(item)) {
+					std::string projectCacheCode;
+					std::string projectCacheTrace;
+					std::string projectCacheError;
+					if (TryReadProjectCacheCodeForAI(item, true, projectCacheCode, projectCacheTrace, projectCacheError)) {
+						persistedCode = projectCacheCode;
+						if (!projectCacheTrace.empty()) {
+							persistedTrace += "|" + projectCacheTrace;
+						}
+						persistedTrace += "|final_code=project_cache";
+					}
+					else {
+						if (!projectCacheTrace.empty()) {
+							persistedTrace += "|" + projectCacheTrace;
+						}
+						persistedTrace += "|final_code=fallback_real_page";
+					}
+				}
+
 				PageCodeCacheEntry postSnapshotEntry;
 				const bool hasPostSnapshotEntry = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, postSnapshotEntry);
-				PutPageCodeCacheEntryForAI(item, recoveredCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
+				PutPageCodeCacheEntryForAI(item, persistedCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
 
-				outFinalCode = recoveredCode;
+				outFinalCode = persistedCode;
 				outTrace =
 					writeResult.trace +
 					"|post_failure_verify_ok_" +
 					recoveredVerifyMode +
 					"|" +
-					recoveredReadResult.trace;
+					persistedTrace;
 				outError.clear();
 				return true;
 			}
@@ -986,6 +1094,36 @@ bool TryWriteRealPageCodeForAI(
 		return false;
 	}
 
+	if (ShouldUseProjectCacheWriteBaseForAI(item)) {
+		std::string projectCacheCode;
+		std::string projectCacheTrace;
+		std::string projectCacheError;
+		if (!TryReadProjectCacheCodeForAI(item, true, projectCacheCode, projectCacheTrace, projectCacheError)) {
+			outRollbackAttempted = writeResult.rollbackAttempted;
+			outRollbackSucceeded = writeResult.rollbackSucceeded;
+			outTrace = writeResult.trace;
+			if (!projectCacheTrace.empty()) {
+				outTrace += "|" + projectCacheTrace;
+			}
+			outError = projectCacheError.empty() ? "final project cache verification failed" : projectCacheError;
+			return false;
+		}
+
+		PageCodeCacheEntry postSnapshotEntry;
+		const bool hasPostSnapshotEntry = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, postSnapshotEntry);
+		PutPageCodeCacheEntryForAI(item, projectCacheCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
+
+		outFinalCode = projectCacheCode;
+		outRollbackAttempted = writeResult.rollbackAttempted;
+		outRollbackSucceeded = writeResult.rollbackSucceeded;
+		outTrace = writeResult.trace;
+		if (!projectCacheTrace.empty()) {
+			outTrace += "|" + projectCacheTrace;
+		}
+		outTrace += "|final_code=project_cache";
+		return true;
+	}
+
 	std::string finalCode;
 	e571::NativeRealPageAccessResult finalReadResult{};
 	if (!TryReadRealPageCodeForAI(item, finalCode, finalReadResult, outError)) {
@@ -998,12 +1136,32 @@ bool TryWriteRealPageCodeForAI(
 
 	PageCodeCacheEntry postSnapshotEntry;
 	const bool hasPostSnapshotEntry = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, postSnapshotEntry);
-	PutPageCodeCacheEntryForAI(item, finalCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
+	std::string persistedCode = finalCode;
+	std::string persistedTrace = finalReadResult.trace;
+	if (ShouldUseProjectCacheWriteBaseForAI(item)) {
+		std::string projectCacheCode;
+		std::string projectCacheTrace;
+		std::string projectCacheError;
+		if (TryReadProjectCacheCodeForAI(item, true, projectCacheCode, projectCacheTrace, projectCacheError)) {
+			persistedCode = projectCacheCode;
+			if (!projectCacheTrace.empty()) {
+				persistedTrace += "|" + projectCacheTrace;
+			}
+			persistedTrace += "|final_code=project_cache";
+		}
+		else {
+			if (!projectCacheTrace.empty()) {
+				persistedTrace += "|" + projectCacheTrace;
+			}
+			persistedTrace += "|final_code=fallback_real_page";
+		}
+	}
+	PutPageCodeCacheEntryForAI(item, persistedCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
 
-	outFinalCode = finalCode;
+	outFinalCode = persistedCode;
 	outRollbackAttempted = writeResult.rollbackAttempted;
 	outRollbackSucceeded = writeResult.rollbackSucceeded;
-	outTrace = writeResult.trace + "|" + finalReadResult.trace;
+	outTrace = writeResult.trace + "|" + persistedTrace;
 	return true;
 }
 

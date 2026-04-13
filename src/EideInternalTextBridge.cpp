@@ -2757,6 +2757,16 @@ bool IsSelectionReplacePreferredProgramTreeItem(unsigned int itemData)
 	}
 }
 
+bool IsProjectCacheVerificationPreferredProgramTreeItem(unsigned int itemData)
+{
+	return (itemData >> 28) == 6;
+}
+
+bool IsActiveEditorShortcutPreferredProgramTreeItem(unsigned int itemData)
+{
+	return (itemData >> 28) == 6;
+}
+
 bool DoesProgramItemTitleMatchWindowTitle(
 	const std::string& itemText,
 	const std::string& windowTitle)
@@ -6308,6 +6318,7 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	const std::string& newPageCode,
 	const std::string* rollbackPageCode,
 	bool deleteSelectionFirst,
+	bool skipVerifyRead,
 	NativeRealPageAccessResult* outResult)
 {
 	AppendPageEditTraceLine(
@@ -6408,6 +6419,24 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 				replaceTrace;
 		}
 		return false;
+	}
+
+	if (skipVerifyRead) {
+		AppendPageEditTraceLine("ReplaceRealPageCode.verify_skipped|reason=project_cache_backed");
+		AppendPageEditTraceLine("ReplaceRealPageCode.success");
+		if (outResult != nullptr) {
+			outResult->ok = true;
+			outResult->usedClipboardEmulation = true;
+			outResult->textBytes = normalizedNewPageCode.size();
+			outResult->trace =
+				selectTrace +
+				"|" +
+				writeStrategyTrace +
+				"|" +
+				replaceTrace +
+				"|verify_skipped_project_cache";
+		}
+		return true;
 	}
 
 	std::string verifyCode;
@@ -6566,6 +6595,22 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 	}
 	if (outTrace != nullptr) {
 		outTrace->clear();
+	}
+
+	if (IsActiveEditorShortcutPreferredProgramTreeItem(itemData)) {
+		ActiveEditorObjectInfo activeInfo{};
+		if (ResolveCurrentActiveEditorObject(moduleBase, &activeInfo) &&
+			activeInfo.ok &&
+			activeInfo.rawEditorObject != 0 &&
+			activeInfo.pageType == 6) {
+			if (outEditorObject != nullptr) {
+				*outEditorObject = activeInfo.rawEditorObject;
+			}
+			if (outTrace != nullptr) {
+				*outTrace = "active_editor_shortcut|" + activeInfo.trace;
+			}
+			return true;
+		}
 	}
 
 	std::uintptr_t editorObject = 0;
@@ -7170,6 +7215,7 @@ bool ReplaceRealPageCodeByEditorObject(
 		newPageCode,
 		rollbackPageCode,
 		deleteSelectionFirst,
+		false,
 		outResult);
 }
 
@@ -7200,12 +7246,15 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 	NativeRealPageAccessResult localResult{};
 	const bool deleteSelectionFirst =
 		!IsSelectionReplacePreferredProgramTreeItem(itemData);
+	const bool skipVerifyRead =
+		IsProjectCacheVerificationPreferredProgramTreeItem(itemData);
 	const bool ok = ReplaceRealPageCodeByEditorObjectInternal(
 		editorObject,
 		moduleBase,
 		newPageCode,
 		rollbackPageCode,
 		deleteSelectionFirst,
+		skipVerifyRead,
 		&localResult);
 
 	const std::string normalizedNewPageCode = NormalizeLineBreakToCrLf(newPageCode);
@@ -7279,6 +7328,7 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 						*rollbackPageCode,
 						nullptr,
 						deleteSelectionFirst,
+						skipVerifyRead,
 						&refreshedRollbackResult)) {
 					localResult.rollbackAttempted = true;
 					localResult.rollbackSucceeded = true;
