@@ -8268,17 +8268,36 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 
 		std::string normalizedPath;
 		std::string diagnostics;
-		if (!IDEFacade::Instance().CompileWithOutputPath(
-				kind,
-				outputPath,
-				staticCompile,
-				&normalizedPath,
-				&diagnostics)) {
+		const bool compileOk = IDEFacade::Instance().CompileWithOutputPath(
+			kind,
+			outputPath,
+			staticCompile,
+			&normalizedPath,
+			&diagnostics);
+
+		// 编译完成后，读取光标所在行内容及当前程序集。
+		// 编译失败时 IDE 通常会跳转到出错行，此处内容可辅助 AI 定位问题。
+		int caretRow = -1;
+		int caretCol = -1;
+		std::string caretLineText;
+		std::string caretPageName;
+		std::string caretPageType;
+		IDEFacade::Instance().GetCaretPosition(caretRow, caretCol);
+		if (caretRow >= 0) {
+			caretLineText = IDEFacade::Instance().GetRowFullText(caretRow);
+		}
+		IDEFacade::Instance().GetCurrentPageName(caretPageName, &caretPageType);
+
+		if (!compileOk) {
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = diagnostics.empty() ? "compile_with_output_path_failed" : diagnostics;
 			r["target"] = target;
 			r["static_compile"] = staticCompile;
+			r["caret_row"] = caretRow;
+			r["caret_line_text"] = LocalToUtf8Text(caretLineText);
+			r["caret_page_name"] = LocalToUtf8Text(caretPageName);
+			r["caret_page_type"] = LocalToUtf8Text(caretPageType);
 			return Utf8ToLocalText(r.dump());
 		}
 
@@ -8317,6 +8336,10 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		r["output_file_exists"] = outputFileExists;
 		r["output_file_modified_after_compile"] = outputFileModifiedAfterCompile;
 		r["trace"] = diagnostics;
+		r["caret_row"] = caretRow;
+		r["caret_line_text"] = LocalToUtf8Text(caretLineText);
+		r["caret_page_name"] = LocalToUtf8Text(caretPageName);
+		r["caret_page_type"] = LocalToUtf8Text(caretPageType);
 		outOk = true;
 		return Utf8ToLocalText(r.dump());
 	}

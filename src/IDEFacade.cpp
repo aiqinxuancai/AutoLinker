@@ -2882,6 +2882,26 @@ bool IDEFacade::GetProgramHelp(int rowIndex, int colIndex, ProgramText& outText)
 	return RunGetPrgHelp(rowIndex, colIndex, outText);
 }
 
+std::string IDEFacade::GetRowFullText(int rowIndex, int emptyLimit) const
+{
+	std::string result;
+	int emptyRun = 0;
+	for (int col = 0; ; ++col) {
+		ProgramText cell;
+		const bool ok = RunGetPrgText(rowIndex, col, cell);
+		if (!ok || cell.text.empty()) {
+			if (++emptyRun >= emptyLimit)
+				break;
+			continue;
+		}
+		emptyRun = 0;
+		if (!result.empty())
+			result += ' ';
+		result += cell.text;
+	}
+	return result;
+}
+
 bool IDEFacade::InsertText(const std::string& text, bool asKeyboardInput) const
 {
 	return RunInsertText(text, asKeyboardInput);

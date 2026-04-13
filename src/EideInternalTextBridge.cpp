@@ -3335,6 +3335,83 @@ HWND GetActiveMdiChildWindow(HWND mainHwnd)
 	return nullptr;
 }
 
+bool TryGetProgramTreeItemClickPoint(HWND treeHwnd, HTREEITEM item, POINT* outPoint)
+{
+	if (outPoint != nullptr) {
+		outPoint->x = 0;
+		outPoint->y = 0;
+	}
+	if (treeHwnd == nullptr || !IsWindow(treeHwnd) || item == nullptr) {
+		return false;
+	}
+
+	RECT itemRect = {};
+	itemRect.left = static_cast<LONG>(reinterpret_cast<LONG_PTR>(item));
+	if (SendMessageA(treeHwnd, TVM_GETITEMRECT, TRUE, reinterpret_cast<LPARAM>(&itemRect)) == FALSE) {
+		itemRect = {};
+		itemRect.left = static_cast<LONG>(reinterpret_cast<LONG_PTR>(item));
+		if (SendMessageA(treeHwnd, TVM_GETITEMRECT, FALSE, reinterpret_cast<LPARAM>(&itemRect)) == FALSE) {
+			return false;
+		}
+	}
+
+	int width = static_cast<int>(itemRect.right - itemRect.left);
+	int height = static_cast<int>(itemRect.bottom - itemRect.top);
+	if (width <= 0) {
+		width = 2;
+	}
+	if (height <= 0) {
+		height = 2;
+	}
+
+	const int x = static_cast<int>(itemRect.left) + width / 2;
+	const int y = static_cast<int>(itemRect.top) + height / 2;
+	if (outPoint != nullptr) {
+		outPoint->x = x;
+		outPoint->y = y;
+	}
+	return true;
+}
+
+void DispatchProgramTreeItemDoubleClick(HWND treeHwnd, HTREEITEM item, std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (treeHwnd == nullptr || !IsWindow(treeHwnd) || item == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace = "tree_double_click_invalid_argument";
+		}
+		return;
+	}
+
+	POINT clickPoint = {};
+	if (!TryGetProgramTreeItemClickPoint(treeHwnd, item, &clickPoint)) {
+		if (outTrace != nullptr) {
+			*outTrace = "tree_double_click_item_rect_failed";
+		}
+		return;
+	}
+
+	const LPARAM clickPos = MAKELPARAM(clickPoint.x, clickPoint.y);
+	SendMessageA(treeHwnd, WM_MOUSEMOVE, 0, clickPos);
+	SendMessageA(treeHwnd, WM_LBUTTONDOWN, MK_LBUTTON, clickPos);
+	SendMessageA(treeHwnd, WM_LBUTTONUP, 0, clickPos);
+	PumpPendingMessages();
+	Sleep(30);
+	SendMessageA(treeHwnd, WM_LBUTTONDBLCLK, MK_LBUTTON, clickPos);
+	SendMessageA(treeHwnd, WM_LBUTTONUP, 0, clickPos);
+	PumpPendingMessages();
+	Sleep(80);
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			"tree_double_click_ok"
+			"|x=" + std::to_string(clickPoint.x) +
+			"|y=" + std::to_string(clickPoint.y);
+	}
+}
+
 bool TriggerProgramTreeItemOpenByUi(
 	HWND treeHwnd,
 	HTREEITEM item,
@@ -3354,13 +3431,16 @@ bool TriggerProgramTreeItemOpenByUi(
 	SendMessageA(treeHwnd, TVM_SELECTITEM, TVGN_CARET, reinterpret_cast<LPARAM>(item));
 	SetFocus(treeHwnd);
 	PumpPendingMessages();
-	Sleep(40);
-	DispatchSyntheticKey(treeHwnd, VK_RETURN, false);
+	std::string doubleClickTrace;
+	DispatchProgramTreeItemDoubleClick(treeHwnd, item, &doubleClickTrace);
 	PumpPendingMessages();
-	Sleep(80);
 
 	if (outTrace != nullptr) {
-		*outTrace = "tree_open_triggered";
+		*outTrace =
+			"tree_open_triggered"
+			"|method=double_click"
+			"|" +
+			doubleClickTrace;
 	}
 	return true;
 }
@@ -5775,12 +5855,52 @@ bool CopyWholePageTextByEditor(
 	NativeRealPageAccessResult copyResult{};
 	if (!CopyCurrentSelectionByEditor(editorObject, moduleBase, outCode, &copyResult)) {
 		AppendPageEditTraceLine("CopyWholePageTextByEditor.copy_failed|" + copyResult.trace);
-		if (outResult != nullptr) {
-			*outResult = copyResult;
-			outResult->editorObject = editorObject;
-			outResult->trace = selectTrace + "|" + copyResult.trace;
+		std::string resolveTrace;
+		HWND editorHwnd = ResolveEditorInputWindow(editorObject, &resolveTrace);
+		if ((editorHwnd == nullptr || !IsWindow(editorHwnd)) &&
+			!TryReadEditorWindowHandleFromObject(editorObject, &editorHwnd)) {
+			if (outResult != nullptr) {
+				*outResult = copyResult;
+				outResult->editorObject = editorObject;
+				outResult->trace = selectTrace + "|" + copyResult.trace + "|window_input_resolve_failed|" + resolveTrace;
+			}
+			return false;
 		}
-		return false;
+
+		NativeRealPageAccessResult windowResult{};
+		if (!CopyWholePageTextByEditorWindowInput(editorHwnd, outCode, &windowResult)) {
+			AppendPageEditTraceLine("CopyWholePageTextByEditor.window_input_failed|" + windowResult.trace);
+			if (outResult != nullptr) {
+				*outResult = copyResult;
+				outResult->editorObject = editorObject;
+				outResult->trace =
+					selectTrace +
+					"|" +
+					copyResult.trace +
+					"|window_input_failed|" +
+					resolveTrace +
+					"|" +
+					windowResult.trace;
+			}
+			return false;
+		}
+
+		AppendPageEditTraceLine(
+			"CopyWholePageTextByEditor.window_input_ok|bytes=" +
+			std::to_string(outCode == nullptr ? 0 : outCode->size()) +
+			"|" +
+			windowResult.trace);
+		if (outResult != nullptr) {
+			*outResult = windowResult;
+			outResult->editorObject = editorObject;
+			outResult->ok = true;
+			outResult->trace =
+				selectTrace +
+				"|copy_fallback_window_input|" +
+				resolveTrace +
+				"|" +
+				windowResult.trace;
+		}
 	}
 	AppendPageEditTraceLine(
 		"CopyWholePageTextByEditor.after_copy|bytes=" +

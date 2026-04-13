@@ -126,6 +126,8 @@ public:
 	bool GetCaretPosition(int& rowIndex, int& colIndex) const;
 	bool GetProgramText(int rowIndex, int colIndex, ProgramText& outText) const;
 	bool GetProgramHelp(int rowIndex, int colIndex, ProgramText& outText) const;
+	// 枚举指定行所有列文本，用空格拼接为完整行描述；连续 emptyLimit 次空/失败则截止。
+	std::string GetRowFullText(int rowIndex, int emptyLimit = 3) const;
 
 	// 编辑操作封装。
 	bool InsertText(const std::string& text, bool asKeyboardInput = false) const;
