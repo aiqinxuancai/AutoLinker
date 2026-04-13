@@ -1,63 +1,100 @@
-// ConfigManager.cpp
+ï»¿// ConfigManager.cpp
 #include "ConfigManager.h"
 #include "PathHelper.h"
 
-ConfigManager::ConfigManager() {
-    // »ñÈ¡µ±Ç°½ø³ÌµÄÂ·¾¶
+#include <algorithm>
+#include <cctype>
+
+namespace {
+
+// value ä¸­çš„æ¢è¡Œå’Œåæ–œæ è½¬ä¹‰ï¼ˆå­˜æ–‡ä»¶æ—¶ä½¿ç”¨ï¼‰
+static std::string EscapeConfigValue(const std::string& value)
+{
+    std::string out;
+    out.reserve(value.size());
+    for (unsigned char c : value) {
+        if      (c == '\\') out += "\\\\";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\n') out += "\\n";
+        else out.push_back(static_cast<char>(c));
+    }
+    return out;
+}
+
+// ä¸ EscapeConfigValue å¯¹åº”çš„åè½¬ä¹‰ï¼ˆè¯»æ–‡ä»¶æ—¶ä½¿ç”¨ï¼‰
+static std::string UnescapeConfigValue(const std::string& value)
+{
+    std::string out;
+    out.reserve(value.size());
+    bool esc = false;
+    for (char c : value) {
+        if (esc) {
+            if      (c == '\\') out.push_back('\\');
+            else if (c == 'r')  out.push_back('\r');
+            else if (c == 'n')  out.push_back('\n');
+            else { out.push_back('\\'); out.push_back(c); }
+            esc = false;
+        } else if (c == '\\') {
+            esc = true;
+        } else {
+            out.push_back(c);
+        }
+    }
+    if (esc) out.push_back('\\');
+    return out;
+}
+
+} // namespace
+
+ConfigManager::ConfigManager()
+{
     std::filesystem::path currentPath = GetBasePath();
-    // ´´½¨AutoLinkerÄ¿Â¼
     std::filesystem::path autoLinkerPath = currentPath / "AutoLinker";
     if (!std::filesystem::exists(autoLinkerPath)) {
         std::filesystem::create_directory(autoLinkerPath);
     }
-    // ´´½¨²¢´ò¿ªÅäÖÃÎÄ¼ş
     configFilePath = autoLinkerPath / "AutoLinker.ini";
     loadConfig();
 }
 
-std::string ConfigManager::getValue(const std::string& key) {
-
+std::string ConfigManager::getValue(const std::string& key)
+{
     std::string k = key;
-
     std::transform(k.begin(), k.end(), k.begin(),
         [](unsigned char c) { return std::tolower(c); });
-
-    if (configData.contains(k)) {
-        return configData[k];
-    }
-    return std::string();
-    
+    const auto it = configData.find(k);
+    return it != configData.end() ? it->second : std::string();
 }
 
-void ConfigManager::setValue(const std::string& key, const std::string& value) {
-    //½«key×ªÎªÂ·¾¶?
-    //std::filesystem::path p = key;
-
+void ConfigManager::setValue(const std::string& key, const std::string& value)
+{
     std::string k = key;
-
     std::transform(k.begin(), k.end(), k.begin(),
         [](unsigned char c) { return std::tolower(c); });
-
     configData[k] = value;
     saveConfig();
 }
 
-void ConfigManager::loadConfig() {
+void ConfigManager::loadConfig()
+{
     std::ifstream configFile(configFilePath);
     std::string line;
     while (std::getline(configFile, line)) {
-        size_t pos = line.find('=');
+        // å»æ‰ Windows æ¢è¡Œæ®‹ç•™çš„ \r
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        const size_t pos = line.find('=');
         if (pos != std::string::npos) {
-            std::string key = line.substr(0, pos);
-            std::string value = line.substr(pos + 1);
-            configData[key] = value;
+            std::string k = line.substr(0, pos);
+            std::string v = UnescapeConfigValue(line.substr(pos + 1));
+            configData[k] = std::move(v);
         }
     }
 }
 
-void ConfigManager::saveConfig() {
+void ConfigManager::saveConfig()
+{
     std::ofstream configFile(configFilePath);
     for (const auto& [key, value] : configData) {
-        configFile << key << '=' << value << '\n';
+        configFile << key << '=' << EscapeConfigValue(value) << '\n';
     }
 }

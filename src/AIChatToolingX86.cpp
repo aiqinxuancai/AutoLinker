@@ -944,6 +944,10 @@ bool TryWriteRealPageCodeForAI(
 		outRollbackAttempted = writeResult.rollbackAttempted;
 		outRollbackSucceeded = writeResult.rollbackSucceeded;
 		outTrace = writeResult.trace;
+		if (writeResult.rollbackAttempted && writeResult.rollbackSucceeded) {
+			outError = "replace real page code failed";
+			return false;
+		}
 
 		std::string recoveredCode;
 		e571::NativeRealPageAccessResult recoveredReadResult{};

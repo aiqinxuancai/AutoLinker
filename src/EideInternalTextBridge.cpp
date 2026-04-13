@@ -2733,6 +2733,55 @@ bool IsRecognizedEditorPageType(unsigned int pageType)
 	}
 }
 
+bool IsSelectionReplacePreferredEditorPageType(unsigned int pageType)
+{
+	switch (pageType) {
+	case 6:
+	case 7:
+	case 8:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool IsSelectionReplacePreferredProgramTreeItem(unsigned int itemData)
+{
+	switch (itemData >> 28) {
+	case 3:
+	case 4:
+	case 6:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool DoesProgramItemTitleMatchWindowTitle(
+	const std::string& itemText,
+	const std::string& windowTitle)
+{
+	if (itemText.empty() || windowTitle.empty()) {
+		return false;
+	}
+	if (windowTitle.find(itemText) != std::string::npos) {
+		return true;
+	}
+	if (itemText == "自定义数据类型" &&
+		windowTitle.find("自定义数据类型表") != std::string::npos) {
+		return true;
+	}
+	if (itemText == "Dll命令" &&
+		windowTitle.find("Dll命令定义表") != std::string::npos) {
+		return true;
+	}
+	if (itemText == "常量表..." &&
+		windowTitle.find("常量数据表") != std::string::npos) {
+		return true;
+	}
+	return false;
+}
+
 std::uintptr_t ResolveInnerEditorObjectFromFields(const std::uint32_t* fields, unsigned int* outPageType = nullptr)
 {
 	if (outPageType != nullptr) {
@@ -3501,8 +3550,7 @@ bool TryResolveProgramTreeItemEditorWindowByUi(
 		if (activeChild != nullptr && IsWindow(activeChild)) {
 			const std::string activeTitle = WindowTextToString(activeChild);
 			const bool titleMatches =
-				!itemText.empty() &&
-				activeTitle.find(itemText) != std::string::npos;
+				DoesProgramItemTitleMatchWindowTitle(itemText, activeTitle);
 			if (activeChild == activeBefore && !titleMatches) {
 				Sleep(25);
 				continue;
@@ -3603,8 +3651,7 @@ bool TryResolveProgramTreeItemEditorObjectByUi(
 		if (activeChild != nullptr && IsWindow(activeChild)) {
 			const std::string activeTitle = WindowTextToString(activeChild);
 			const bool titleMatches =
-				!itemText.empty() &&
-				activeTitle.find(itemText) != std::string::npos;
+				DoesProgramItemTitleMatchWindowTitle(itemText, activeTitle);
 			if (activeChild == activeBefore && !titleMatches) {
 				Sleep(25);
 				continue;
@@ -5855,52 +5902,12 @@ bool CopyWholePageTextByEditor(
 	NativeRealPageAccessResult copyResult{};
 	if (!CopyCurrentSelectionByEditor(editorObject, moduleBase, outCode, &copyResult)) {
 		AppendPageEditTraceLine("CopyWholePageTextByEditor.copy_failed|" + copyResult.trace);
-		std::string resolveTrace;
-		HWND editorHwnd = ResolveEditorInputWindow(editorObject, &resolveTrace);
-		if ((editorHwnd == nullptr || !IsWindow(editorHwnd)) &&
-			!TryReadEditorWindowHandleFromObject(editorObject, &editorHwnd)) {
-			if (outResult != nullptr) {
-				*outResult = copyResult;
-				outResult->editorObject = editorObject;
-				outResult->trace = selectTrace + "|" + copyResult.trace + "|window_input_resolve_failed|" + resolveTrace;
-			}
-			return false;
-		}
-
-		NativeRealPageAccessResult windowResult{};
-		if (!CopyWholePageTextByEditorWindowInput(editorHwnd, outCode, &windowResult)) {
-			AppendPageEditTraceLine("CopyWholePageTextByEditor.window_input_failed|" + windowResult.trace);
-			if (outResult != nullptr) {
-				*outResult = copyResult;
-				outResult->editorObject = editorObject;
-				outResult->trace =
-					selectTrace +
-					"|" +
-					copyResult.trace +
-					"|window_input_failed|" +
-					resolveTrace +
-					"|" +
-					windowResult.trace;
-			}
-			return false;
-		}
-
-		AppendPageEditTraceLine(
-			"CopyWholePageTextByEditor.window_input_ok|bytes=" +
-			std::to_string(outCode == nullptr ? 0 : outCode->size()) +
-			"|" +
-			windowResult.trace);
 		if (outResult != nullptr) {
-			*outResult = windowResult;
+			*outResult = copyResult;
 			outResult->editorObject = editorObject;
-			outResult->ok = true;
-			outResult->trace =
-				selectTrace +
-				"|copy_fallback_window_input|" +
-				resolveTrace +
-				"|" +
-				windowResult.trace;
+			outResult->trace = selectTrace + "|" + copyResult.trace;
 		}
+		return false;
 	}
 	AppendPageEditTraceLine(
 		"CopyWholePageTextByEditor.after_copy|bytes=" +
@@ -5964,6 +5971,7 @@ bool ReplaceWholePageByCustomClipboardPayload(
 	std::uintptr_t editorObject,
 	std::uintptr_t moduleBase,
 	const CustomClipboardPayload& payload,
+	bool deleteSelectionFirst,
 	std::string* outTrace)
 {
 	if (outTrace != nullptr) {
@@ -5989,15 +5997,20 @@ bool ReplaceWholePageByCustomClipboardPayload(
 	}
 
 	std::string deleteTrace;
-	if (!InvokeEditorCommandWithFallback(
-			editorObject,
-			moduleBase,
-			kEditorCmdDeleteSelection,
-			&deleteTrace)) {
-		if (outTrace != nullptr) {
-			*outTrace = selectTrace + "|delete_failed|" + deleteTrace;
+	if (deleteSelectionFirst) {
+		if (!InvokeEditorCommandWithFallback(
+				editorObject,
+				moduleBase,
+				kEditorCmdDeleteSelection,
+				&deleteTrace)) {
+			if (outTrace != nullptr) {
+				*outTrace = selectTrace + "|delete_failed|" + deleteTrace;
+			}
+			return false;
 		}
-		return false;
+	}
+	else {
+		deleteTrace = "delete_skipped|selection_replace";
 	}
 
 	std::string pasteTrace;
@@ -6019,6 +6032,7 @@ bool ReplaceWholePageByParsedTextObject(
 	std::uintptr_t moduleBase,
 	const std::string& pageCode,
 	const InternalClipboardObject* templateObject,
+	bool deleteSelectionFirst,
 	std::string* outTrace)
 {
 	if (outTrace != nullptr) {
@@ -6044,15 +6058,20 @@ bool ReplaceWholePageByParsedTextObject(
 	}
 
 	std::string deleteTrace;
-	if (!InvokeEditorCommandWithFallback(
-			editorObject,
-			moduleBase,
-			kEditorCmdDeleteSelection,
-			&deleteTrace)) {
-		if (outTrace != nullptr) {
-			*outTrace = selectTrace + "|delete_failed|" + deleteTrace;
+	if (deleteSelectionFirst) {
+		if (!InvokeEditorCommandWithFallback(
+				editorObject,
+				moduleBase,
+				kEditorCmdDeleteSelection,
+				&deleteTrace)) {
+			if (outTrace != nullptr) {
+				*outTrace = selectTrace + "|delete_failed|" + deleteTrace;
+			}
+			return false;
 		}
-		return false;
+	}
+	else {
+		deleteTrace = "delete_skipped|selection_replace";
 	}
 
 	std::string pasteTrace;
@@ -6073,6 +6092,7 @@ bool ReplaceWholePageByTextPaste(
 	std::uintptr_t editorObject,
 	std::uintptr_t moduleBase,
 	const std::string& pageCode,
+	bool deleteSelectionFirst,
 	std::string* outTrace)
 {
 	if (outTrace != nullptr) {
@@ -6100,15 +6120,20 @@ bool ReplaceWholePageByTextPaste(
 	}
 
 	std::string deleteTrace;
-	if (!InvokeEditorCommandWithFallback(
-			editorObject,
-			moduleBase,
-			kEditorCmdDeleteSelection,
-			&deleteTrace)) {
-		if (outTrace != nullptr) {
-			*outTrace = selectTrace + "|delete_failed|" + deleteTrace;
+	if (deleteSelectionFirst) {
+		if (!InvokeEditorCommandWithFallback(
+				editorObject,
+				moduleBase,
+				kEditorCmdDeleteSelection,
+				&deleteTrace)) {
+			if (outTrace != nullptr) {
+				*outTrace = selectTrace + "|delete_failed|" + deleteTrace;
+			}
+			return false;
 		}
-		return false;
+	}
+	else {
+		deleteTrace = "delete_skipped|selection_replace";
 	}
 
 	std::string pasteTrace;
@@ -6194,6 +6219,7 @@ bool TryRollbackRealPageCode(
 	std::uintptr_t moduleBase,
 	const CustomClipboardPayload* rollbackPayload,
 	const std::string* expectedPageCode,
+	bool deleteSelectionFirst,
 	std::string* outTrace)
 {
 	if (outTrace != nullptr) {
@@ -6216,6 +6242,7 @@ bool TryRollbackRealPageCode(
 				editorObject,
 				moduleBase,
 				*expectedPageCode,
+				deleteSelectionFirst,
 				&rollbackWriteTrace)) {
 			if (outTrace != nullptr) {
 				*outTrace = "rollback_text_paste_failed|" + rollbackWriteTrace;
@@ -6225,7 +6252,12 @@ bool TryRollbackRealPageCode(
 		rollbackWriteTrace = "rollback_text_paste|" + rollbackWriteTrace;
 	}
 	else {
-		if (!ReplaceWholePageByCustomClipboardPayload(editorObject, moduleBase, *rollbackPayload, &rollbackWriteTrace)) {
+		if (!ReplaceWholePageByCustomClipboardPayload(
+				editorObject,
+				moduleBase,
+				*rollbackPayload,
+				deleteSelectionFirst,
+				&rollbackWriteTrace)) {
 			if (outTrace != nullptr) {
 				*outTrace = "rollback_write_failed|" + rollbackWriteTrace;
 			}
@@ -6275,9 +6307,9 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	std::uintptr_t moduleBase,
 	const std::string& newPageCode,
 	const std::string* rollbackPageCode,
+	bool deleteSelectionFirst,
 	NativeRealPageAccessResult* outResult)
 {
-	(void)rollbackPageCode;
 	AppendPageEditTraceLine(
 		"ReplaceRealPageCode.begin|editor=" +
 		std::to_string(editorObject) +
@@ -6295,6 +6327,47 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	}
 
 	const std::string normalizedNewPageCode = NormalizeLineBreakToCrLf(newPageCode);
+	const bool hasRollbackPageCode =
+		rollbackPageCode != nullptr &&
+		!rollbackPageCode->empty();
+	const auto appendRollbackTrace = [&](const char* reason, std::string& targetTrace) {
+		if (outResult != nullptr) {
+			outResult->rollbackAttempted = hasRollbackPageCode;
+			outResult->rollbackSucceeded = false;
+		}
+		if (!hasRollbackPageCode) {
+			AppendPageEditTraceLine(
+				std::string("ReplaceRealPageCode.") +
+				reason +
+				"|rollback_skipped");
+			targetTrace += "|rollback_skipped";
+			return;
+		}
+
+		std::string rollbackTrace;
+		const bool rollbackOk = TryRollbackRealPageCode(
+			editorObject,
+			moduleBase,
+			nullptr,
+			rollbackPageCode,
+			deleteSelectionFirst,
+			&rollbackTrace);
+		AppendPageEditTraceLine(
+			std::string("ReplaceRealPageCode.") +
+			reason +
+			"|" +
+			(rollbackOk ? "rollback_ok|" : "rollback_failed|") +
+			rollbackTrace);
+		if (outResult != nullptr) {
+			outResult->rollbackAttempted = true;
+			outResult->rollbackSucceeded = rollbackOk;
+		}
+		targetTrace +=
+			rollbackOk
+				? "|rollback_ok|" + rollbackTrace
+				: "|rollback_failed|" + rollbackTrace;
+	};
+
 	std::string selectTrace;
 	if (!InvokeEditorCommandWithFallback(
 			editorObject,
@@ -6310,12 +6383,16 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	AppendPageEditTraceLine("ReplaceRealPageCode.after_select_all|" + selectTrace);
 
 	std::string replaceTrace;
-	const std::string writeStrategyTrace = "write_by_real_paste_handler_text";
+	const std::string writeStrategyTrace =
+		deleteSelectionFirst
+			? "write_by_real_paste_handler_text|replace_mode=delete_then_paste"
+			: "write_by_real_paste_handler_text|replace_mode=selection_paste";
 	AppendPageEditTraceLine("ReplaceRealPageCode.before_replace|" + writeStrategyTrace);
 	const bool replaceOk = ReplaceWholePageByTextPaste(
 		editorObject,
 		moduleBase,
 		normalizedNewPageCode,
+		deleteSelectionFirst,
 		&replaceTrace);
 	AppendPageEditTraceLine(
 		std::string("ReplaceRealPageCode.after_replace|ok=") +
@@ -6338,15 +6415,17 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	AppendPageEditTraceLine("ReplaceRealPageCode.before_verify_read");
 	if (!CopyWholePageTextByEditor(editorObject, moduleBase, &verifyCode, &verifyResult)) {
 		AppendPageEditTraceLine("ReplaceRealPageCode.verify_read_failed|" + verifyResult.trace);
+		std::string failureTrace =
+			selectTrace +
+			"|" +
+			writeStrategyTrace +
+			"|" +
+			replaceTrace +
+			"|verify_read_failed|" +
+			verifyResult.trace;
+		appendRollbackTrace("verify_read_failed", failureTrace);
 		if (outResult != nullptr) {
-			outResult->trace =
-				selectTrace +
-				"|" +
-				writeStrategyTrace +
-				"|" +
-				replaceTrace +
-				"|verify_read_failed|" +
-				verifyResult.trace;
+			outResult->trace = std::move(failureTrace);
 		}
 		return false;
 	}
@@ -6360,15 +6439,17 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	std::string verifySummary;
 	if (!VerifyRealPageCodeMatches(normalizedNewPageCode, verifyCode, &verifyMode, &verifySummary)) {
 		AppendPageEditTraceLine("ReplaceRealPageCode.verify_mismatch|" + verifySummary);
+		std::string failureTrace =
+			selectTrace +
+			"|" +
+			writeStrategyTrace +
+			"|" +
+			replaceTrace +
+			"|verify_mismatch|" +
+			verifySummary;
+		appendRollbackTrace("verify_mismatch", failureTrace);
 		if (outResult != nullptr) {
-			outResult->trace =
-				selectTrace +
-				"|" +
-				writeStrategyTrace +
-				"|" +
-				replaceTrace +
-				"|verify_mismatch|" +
-				verifySummary;
+			outResult->trace = std::move(failureTrace);
 		}
 		return false;
 	}
@@ -6623,8 +6704,7 @@ bool TryActivateProgramTreeItemPageByEditorObjectFallback(
 		if (activeChild != nullptr && IsWindow(activeChild)) {
 			const std::string activeTitle = WindowTextToString(activeChild);
 			const bool titleMatches =
-				!itemText.empty() &&
-				activeTitle.find(itemText) != std::string::npos;
+				DoesProgramItemTitleMatchWindowTitle(itemText, activeTitle);
 			if (activeChild == mdiChildHwnd || titleMatches) {
 				if (outTrace != nullptr) {
 					*outTrace =
@@ -6717,8 +6797,7 @@ bool OpenProgramTreeItemPageByData(
 		if (activeChild != nullptr && IsWindow(activeChild)) {
 			const std::string activeTitle = WindowTextToString(activeChild);
 			const bool titleMatches =
-				!itemText.empty() &&
-				activeTitle.find(itemText) != std::string::npos;
+				DoesProgramItemTitleMatchWindowTitle(itemText, activeTitle);
 			if (activeChild != activeBefore || titleMatches) {
 				if (outTrace != nullptr) {
 					*outTrace =
@@ -7080,11 +7159,17 @@ bool ReplaceRealPageCodeByEditorObject(
 	const std::string* rollbackPageCode,
 	NativeRealPageAccessResult* outResult)
 {
+	bool deleteSelectionFirst = true;
+	EditorDispatchTargetInfo targetInfo{};
+	if (TryResolveInnerEditorObject(editorObject, &targetInfo)) {
+		deleteSelectionFirst = !IsSelectionReplacePreferredEditorPageType(targetInfo.pageType);
+	}
 	return ReplaceRealPageCodeByEditorObjectInternal(
 		editorObject,
 		moduleBase,
 		newPageCode,
 		rollbackPageCode,
+		deleteSelectionFirst,
 		outResult);
 }
 
@@ -7113,12 +7198,109 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 	}
 
 	NativeRealPageAccessResult localResult{};
+	const bool deleteSelectionFirst =
+		!IsSelectionReplacePreferredProgramTreeItem(itemData);
 	const bool ok = ReplaceRealPageCodeByEditorObjectInternal(
 		editorObject,
 		moduleBase,
 		newPageCode,
 		rollbackPageCode,
+		deleteSelectionFirst,
 		&localResult);
+
+	const std::string normalizedNewPageCode = NormalizeLineBreakToCrLf(newPageCode);
+	const bool likelyVerifyFailure =
+		!ok &&
+		(localResult.trace.find("verify_read_failed") != std::string::npos ||
+		 localResult.trace.find("verify_mismatch") != std::string::npos);
+	if (likelyVerifyFailure) {
+		std::uintptr_t refreshedEditorObject = 0;
+		std::string refreshedResolveTrace;
+		if (ResolveEditorObjectByProgramTreeItemDataInternal(
+				itemData,
+				moduleBase,
+				&refreshedEditorObject,
+				&refreshedResolveTrace) &&
+			refreshedEditorObject != 0) {
+			std::string refreshedCode;
+			NativeRealPageAccessResult refreshedReadResult{};
+			if (GetRealPageCodeByEditorObject(
+					refreshedEditorObject,
+					moduleBase,
+					&refreshedCode,
+					&refreshedReadResult)) {
+				std::string verifyMode;
+				std::string verifySummary;
+				if (VerifyRealPageCodeMatches(
+						normalizedNewPageCode,
+						refreshedCode,
+						&verifyMode,
+						&verifySummary)) {
+					localResult = refreshedReadResult;
+					localResult.ok = true;
+					localResult.editorObject = refreshedEditorObject;
+					localResult.trace =
+						(resolveTrace.empty() ? std::string() : (resolveTrace + "|")) +
+						(refreshedResolveTrace.empty() ? std::string() : (refreshedResolveTrace + "|")) +
+						"fresh_editor_verify_ok|" +
+						verifyMode +
+						(verifySummary.empty() ? std::string() : ("|" + verifySummary)) +
+						"|" +
+						refreshedReadResult.trace;
+					if (outResult != nullptr) {
+						*outResult = std::move(localResult);
+					}
+					return true;
+				}
+
+				localResult.trace +=
+					"|fresh_editor_verify_mismatch|" +
+					refreshedResolveTrace +
+					"|" +
+					refreshedReadResult.trace +
+					(verifySummary.empty() ? std::string() : ("|" + verifySummary));
+			}
+			else {
+				localResult.trace +=
+					"|fresh_editor_read_failed|" +
+					refreshedResolveTrace +
+					"|" +
+					refreshedReadResult.trace;
+			}
+
+			const bool hasRollbackPageCode =
+				rollbackPageCode != nullptr &&
+				!rollbackPageCode->empty();
+			if (hasRollbackPageCode && !localResult.rollbackSucceeded) {
+				NativeRealPageAccessResult refreshedRollbackResult{};
+				if (ReplaceRealPageCodeByEditorObjectInternal(
+						refreshedEditorObject,
+						moduleBase,
+						*rollbackPageCode,
+						nullptr,
+						deleteSelectionFirst,
+						&refreshedRollbackResult)) {
+					localResult.rollbackAttempted = true;
+					localResult.rollbackSucceeded = true;
+					localResult.trace +=
+						"|fresh_editor_rollback_ok|" +
+						refreshedRollbackResult.trace;
+				}
+				else {
+					localResult.rollbackAttempted = true;
+					localResult.trace +=
+						"|fresh_editor_rollback_failed|" +
+						refreshedRollbackResult.trace;
+				}
+			}
+		}
+		else {
+			localResult.trace +=
+				"|fresh_editor_resolve_failed|" +
+				refreshedResolveTrace;
+		}
+	}
+
 	localResult.editorObject = editorObject;
 	localResult.trace = resolveTrace.empty() ? localResult.trace : (resolveTrace + "|" + localResult.trace);
 	if (outResult != nullptr) {
