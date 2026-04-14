@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "AutoLinkerVersion.h"
+#include "EFolderCodec.h"
 #include "EcModulePublicInfoReader.h"
 #include "PathHelper.h"
 #include "Version.h"
@@ -156,5 +157,51 @@ extern "C" int AutoLinkerTest_RestoreE2Txt(const char* inputPath, const char* ou
 		return CopyStringToBuffer("restore_failed: " + error, buffer, bufferSize);
 	}
 
+	return CopyStringToBuffer(summary, buffer, bufferSize);
+}
+
+extern "C" int AutoLinkerTest_UnpackEProject(const char* inputPath, const char* outputDir, char* buffer, int bufferSize)
+{
+	if (inputPath == nullptr || outputDir == nullptr) {
+		return AUTOLINKER_TEST_STRING_INVALID_ARGUMENT;
+	}
+
+	e2txt::Generator generator;
+	e2txt::BundleDirectoryCodec codec;
+	e2txt::ProjectBundle bundle;
+	std::string error;
+	if (!generator.GenerateBundle(inputPath, bundle, &error)) {
+		return CopyStringToBuffer("unpack_generate_failed: " + error, buffer, bufferSize);
+	}
+	if (!codec.WriteBundle(bundle, outputDir, &error)) {
+		return CopyStringToBuffer("unpack_write_failed: " + error, buffer, bufferSize);
+	}
+
+	const std::string summary =
+		"source_files=" + std::to_string(bundle.sourceFiles.size()) +
+		", form_files=" + std::to_string(bundle.formFiles.size()) +
+		", resources=" + std::to_string(bundle.resources.size()) +
+		", output=" + std::string(outputDir);
+	return CopyStringToBuffer(summary, buffer, bufferSize);
+}
+
+extern "C" int AutoLinkerTest_PackEProject(const char* inputDir, const char* outputPath, char* buffer, int bufferSize)
+{
+	if (inputDir == nullptr || outputPath == nullptr) {
+		return AUTOLINKER_TEST_STRING_INVALID_ARGUMENT;
+	}
+
+	e2txt::BundleDirectoryCodec codec;
+	e2txt::ProjectBundle bundle;
+	std::string error;
+	if (!codec.ReadBundle(inputDir, bundle, &error)) {
+		return CopyStringToBuffer("pack_read_failed: " + error, buffer, bufferSize);
+	}
+
+	e2txt::Restorer restorer;
+	std::string summary;
+	if (!restorer.RestoreBundleToFile(bundle, outputPath, &summary, &error)) {
+		return CopyStringToBuffer("pack_restore_failed: " + error, buffer, bufferSize);
+	}
 	return CopyStringToBuffer(summary, buffer, bufferSize);
 }

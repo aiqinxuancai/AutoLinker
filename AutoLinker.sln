@@ -1,4 +1,4 @@
-Microsoft Visual Studio Solution File, Format Version 12.00
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.7.34202.233
 MinimumVisualStudioVersion = 10.0.40219.1
@@ -7,6 +7,8 @@ EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "TestCore", "TestCore\TestCore.vcxproj", "{3C88A635-14E4-4094-B4BE-3F893D545C11}"
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "AutoLinkerTest", "AutoLinkerTest\AutoLinkerTest.vcxproj", "{D7DB5B5E-BC81-4510-99F7-8CA70705D415}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "EFolderCodec", "EFolderCodec\EFolderCodec.vcxproj", "{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -92,6 +94,26 @@ Global
 		{D7DB5B5E-BC81-4510-99F7-8CA70705D415}.static_lib_debug|x86.ActiveCfg = Release|Win32
 		{D7DB5B5E-BC81-4510-99F7-8CA70705D415}.static_lib_release|x64.ActiveCfg = Release|x64
 		{D7DB5B5E-BC81-4510-99F7-8CA70705D415}.static_lib_release|x86.ActiveCfg = Release|Win32
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.Debug|x64.ActiveCfg = Debug|x64
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.Debug|x64.Build.0 = Debug|x64
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.Debug|x86.ActiveCfg = Debug|Win32
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.Debug|x86.Build.0 = Debug|Win32
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.fne_debug|x64.ActiveCfg = fne_debug|x64
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.fne_debug|x64.Build.0 = fne_debug|x64
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.fne_debug|x86.ActiveCfg = fne_debug|Win32
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.fne_debug|x86.Build.0 = fne_debug|Win32
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.fne_release|x64.ActiveCfg = fne_release|x64
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.fne_release|x64.Build.0 = fne_release|x64
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.fne_release|x86.ActiveCfg = fne_release|Win32
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.fne_release|x86.Build.0 = fne_release|Win32
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.Release|x64.ActiveCfg = Release|x64
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.Release|x64.Build.0 = Release|x64
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.Release|x86.ActiveCfg = Release|Win32
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.Release|x86.Build.0 = Release|Win32
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.static_lib_debug|x64.ActiveCfg = Release|x64
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.static_lib_debug|x86.ActiveCfg = Release|Win32
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.static_lib_release|x64.ActiveCfg = Release|x64
+		{9C389F9A-0C17-4B55-9A25-6FCAA30C4C84}.static_lib_release|x86.ActiveCfg = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

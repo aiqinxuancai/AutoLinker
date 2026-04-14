@@ -43,6 +43,7 @@ constexpr std::int32_t kVarAttrArray = 0x0008;
 constexpr std::int32_t kConstPageValue = 1;
 constexpr std::int32_t kConstPageImage = 2;
 constexpr std::int32_t kConstPageSound = 3;
+constexpr std::uint32_t kSectionFolder = 0x0E007319u;
 constexpr std::uint8_t kConstTypeEmpty = 22;
 constexpr std::uint8_t kConstTypeNumber = 23;
 constexpr std::uint8_t kConstTypeBool = 24;
@@ -186,6 +187,13 @@ struct ClassPublicityInfo {
 	std::int32_t flags = 0;
 };
 
+struct IndexedEventInfo {
+	std::int32_t formId = 0;
+	std::int32_t unitId = 0;
+	std::int32_t eventId = 0;
+	std::int32_t methodId = 0;
+};
+
 struct FormInfo {
 	BlockHeader header;
 	std::int32_t unknown1 = 0;
@@ -238,6 +246,7 @@ struct ConstantInfo {
 	std::string valueText;
 	bool longText = false;
 	size_t textByteLength = 0;
+	std::vector<std::uint8_t> rawData;
 };
 
 struct ResourceSection {
@@ -246,18 +255,35 @@ struct ResourceSection {
 	std::int32_t reserve = 0;
 };
 
+struct FolderInfo {
+	std::int32_t key = 0;
+	bool expand = true;
+	std::int32_t parentKey = 0;
+	std::string name;
+	std::vector<std::int32_t> children;
+};
+
+struct FolderSectionInfo {
+	std::int32_t allocatedKey = 0;
+	std::vector<FolderInfo> folders;
+};
+
 
 struct ModuleSections {
 	bool hasSystemInfo = false;
 	bool hasUserInfo = false;
 	bool hasProgram = false;
 	bool hasResources = false;
+	bool hasEventIndices = false;
 	bool hasClassPublicity = false;
+	bool hasFolders = false;
 	RawSystemInfoSection systemInfo = {};
 	UserInfoSection userInfo;
 	ProgramSection program;
 	ResourceSection resources;
+	std::vector<IndexedEventInfo> eventIndices;
 	std::vector<ClassPublicityInfo> classPublicities;
+	FolderSectionInfo folders;
 	std::vector<std::uint8_t> ecomSectionBytes;
 };
 
@@ -265,9 +291,18 @@ std::string FormatNumberLiteral(double value);
 std::string FormatDateLiteral(double value);
 
 struct EComDependencyRecord {
+	struct DefinedIdRange {
+		std::int32_t start = 0;
+		std::int32_t count = 0;
+	};
+
+	std::int32_t infoVersion = 0;
+	std::int32_t fileSize = 0;
+	std::int64_t fileTime = 0;
 	std::string name;
 	std::string path;
 	bool reExport = false;
+	std::vector<DefinedIdRange> definedIds;
 };
 
 bool ReadFileBytes(const std::string& path, std::vector<std::uint8_t>& outBytes)
@@ -318,6 +353,11 @@ std::string RemoveTrailingNulls(std::string text)
 	return text;
 }
 
+bool StartsWith(const std::string_view text, const std::string_view prefix)
+{
+	return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
+}
+
 std::string BytesToLocalText(const std::vector<std::uint8_t>& bytes)
 {
 	if (bytes.empty()) {
@@ -350,6 +390,9 @@ constexpr const char* kTextLiteralLeftQuote = "“";
 constexpr const char* kTextLiteralRightQuote = "”";
 constexpr const char* kEscapedTextLiteralPrefix = "#e2txt_text#";
 constexpr const char* kEscapedLongTextLiteralPrefix = "#e2txt_long_text#";
+constexpr const char* kEscapedBodyLinePrefix = "#e2txt_body_line#";
+
+std::string BuildIndent(int level);
 
 bool StartsWithText(const std::string& text, const std::string& prefix)
 {
@@ -434,6 +477,40 @@ std::string BuildDumpTextLiteral(const std::string& rawText, const bool isLongTe
 	return std::string(kTextLiteralLeftQuote) + prefix + EscapeTextLiteralPayload(rawText) + kTextLiteralRightQuote;
 }
 
+bool NeedsEscapedBodyLine(const std::string& text)
+{
+	const std::string maskedPrefix = std::string("' ") + kEscapedBodyLinePrefix;
+	if (StartsWithText(text, kEscapedBodyLinePrefix) || StartsWithText(text, maskedPrefix)) {
+		return true;
+	}
+	for (const unsigned char ch : text) {
+		if (ch == '\r' || ch == '\n' || (ch < 0x20 && ch != '\t')) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void AppendRenderedBodyLine(std::vector<std::string>& outLines, const int indent, const std::string& body)
+{
+	const std::string indentText = BuildIndent(indent);
+	if (!NeedsEscapedBodyLine(body)) {
+		outLines.push_back(indentText + body);
+		return;
+	}
+
+	if (StartsWithText(body, "' ")) {
+		outLines.push_back(
+			indentText +
+			"' " +
+			kEscapedBodyLinePrefix +
+			BuildDumpTextLiteral(body.substr(2), false));
+		return;
+	}
+
+	outLines.push_back(indentText + kEscapedBodyLinePrefix + BuildDumpTextLiteral(body, false));
+}
+
 std::string QuoteIfNotEmpty(const std::string& text)
 {
 	const std::string trimmed = TrimAsciiCopy(text);
@@ -467,6 +544,11 @@ std::string BuildDefinitionLine(
 		stream << rawItems[i];
 	}
 	return stream.str();
+}
+
+bool IsTxt2EPlaceholderStruct(const DataTypeInfo& item)
+{
+	return TrimAsciiCopy(item.comment) == "txt2e placeholder" && item.members.empty();
 }
 
 std::uint32_t GetHighType(std::uint32_t value)
@@ -564,6 +646,16 @@ public:
 	}
 
 	bool ReadI32(std::int32_t& value)
+	{
+		if (m_pos + sizeof(value) > m_bytes.size()) {
+			return false;
+		}
+		std::memcpy(&value, m_bytes.data() + m_pos, sizeof(value));
+		m_pos += sizeof(value);
+		return true;
+	}
+
+	bool ReadI64(std::int64_t& value)
 	{
 		if (m_pos + sizeof(value) > m_bytes.size()) {
 			return false;
@@ -1255,11 +1347,11 @@ bool ParseConstants(std::int32_t count, const std::vector<std::uint8_t>& bytes, 
 				break;
 			}
 			case kConstTypeBool: {
-				bool value = false;
-				if (!itemReader.ReadBool(value)) {
+				std::int32_t value = 0;
+				if (!itemReader.ReadI32(value)) {
 					return false;
 				}
-				item.valueText = value ? "真" : "假";
+				item.valueText = value != 0 ? "真" : "假";
 				break;
 			}
 			case kConstTypeDate: {
@@ -1292,13 +1384,13 @@ bool ParseConstants(std::int32_t count, const std::vector<std::uint8_t>& bytes, 
 		}
 		else if (item.pageType == kConstPageImage) {
 			item.valueText = "<图片>";
-			if (!itemReader.SkipDynamicBytes()) {
+			if (!itemReader.ReadDynamicBytes(item.rawData)) {
 				return false;
 			}
 		}
 		else if (item.pageType == kConstPageSound) {
 			item.valueText = "<声音>";
-			if (!itemReader.SkipDynamicBytes()) {
+			if (!itemReader.ReadDynamicBytes(item.rawData)) {
 				return false;
 			}
 		}
@@ -1350,6 +1442,98 @@ bool ParseClassPublicitySection(const std::vector<std::uint8_t>& bytes, std::vec
 		outItems.push_back(item);
 	}
 	return true;
+}
+
+bool ParseEventIndicesSection(const std::vector<std::uint8_t>& bytes, std::vector<IndexedEventInfo>& outItems)
+{
+	outItems.clear();
+	if ((bytes.size() % 16u) != 0u) {
+		return false;
+	}
+
+	ByteReader reader(bytes);
+	while (!reader.eof()) {
+		IndexedEventInfo item;
+		if (!reader.ReadI32(item.formId) ||
+			!reader.ReadI32(item.unitId) ||
+			!reader.ReadI32(item.eventId) ||
+			!reader.ReadI32(item.methodId)) {
+			return false;
+		}
+		outItems.push_back(item);
+	}
+	return true;
+}
+
+bool ParseFolderSection(const std::vector<std::uint8_t>& bytes, FolderSectionInfo& outFolders)
+{
+	outFolders = {};
+	ByteReader reader(bytes);
+	if (!reader.ReadI32(outFolders.allocatedKey)) {
+		return false;
+	}
+
+	while (!reader.eof()) {
+		FolderInfo folder;
+		std::int32_t expandValue = 0;
+		std::int32_t childByteLength = 0;
+		if (!reader.ReadI32(expandValue) ||
+			!reader.ReadI32(folder.key) ||
+			!reader.ReadI32(folder.parentKey) ||
+			!reader.ReadDynamicText(folder.name) ||
+			!reader.ReadI32(childByteLength) ||
+			childByteLength < 0 ||
+			(childByteLength % 4) != 0) {
+			return false;
+		}
+
+		folder.expand = expandValue != 0;
+		const std::int32_t childCount = childByteLength / 4;
+		folder.children.resize(static_cast<size_t>(childCount));
+		for (std::int32_t childIndex = 0; childIndex < childCount; ++childIndex) {
+			if (!reader.ReadI32(folder.children[static_cast<size_t>(childIndex)])) {
+				return false;
+			}
+		}
+		outFolders.folders.push_back(std::move(folder));
+	}
+
+	return true;
+}
+
+void ApplyEventIndicesToForms(ModuleSections& sections)
+{
+	if (!sections.hasResources || sections.eventIndices.empty()) {
+		return;
+	}
+
+	for (const auto& item : sections.eventIndices) {
+		auto formIt = std::find_if(
+			sections.resources.forms.begin(),
+			sections.resources.forms.end(),
+			[&item](const FormInfo& form) { return form.header.dwId == item.formId; });
+		if (formIt == sections.resources.forms.end()) {
+			continue;
+		}
+
+		auto elementIt = std::find_if(
+			formIt->elements.begin(),
+			formIt->elements.end(),
+			[&item](const FormInfo::ElementInfo& element) { return element.id == item.unitId; });
+		if (elementIt == formIt->elements.end()) {
+			continue;
+		}
+
+		if (elementIt->isMenu) {
+			elementIt->clickEvent = item.methodId;
+			continue;
+		}
+
+		const auto eventPair = std::make_pair(item.eventId, item.methodId);
+		if (std::find(elementIt->events.begin(), elementIt->events.end(), eventPair) == elementIt->events.end()) {
+			elementIt->events.push_back(eventPair);
+		}
+	}
 }
 
 bool ParseUserInfoSection(const std::vector<std::uint8_t>& bytes, UserInfoSection& outUser)
@@ -1494,10 +1678,30 @@ bool ParseModuleSectionsFromBytes(
 			}
 			outSections.hasClassPublicity = true;
 		}
+		else if (sectionName == "辅助信息段1") {
+			if (!ParseEventIndicesSection(sectionBytes, outSections.eventIndices)) {
+				if (outError != nullptr) {
+					*outError = "event_indices_section_parse_failed";
+				}
+				return false;
+			}
+			outSections.hasEventIndices = true;
+		}
+		else if (sectionName == "编辑过滤器信息段") {
+			if (!ParseFolderSection(sectionBytes, outSections.folders)) {
+				if (outError != nullptr) {
+					*outError = "folder_section_parse_failed";
+				}
+				return false;
+			}
+			outSections.hasFolders = true;
+		}
 		else if (sectionName == "易模块记录段") {
 			outSections.ecomSectionBytes = std::move(sectionBytes);
 		}
 	}
+
+	ApplyEventIndicesToForms(outSections);
 
 	if (!outSections.hasProgram) {
 		if (outError != nullptr) {
@@ -1518,6 +1722,106 @@ bool ParseModuleSections(const std::string& modulePath, ModuleSections& outSecti
 		return false;
 	}
 	return ParseModuleSectionsFromBytes(bytes, outSections, outError);
+}
+
+bool CaptureNativeSectionSnapshotsInternal(
+	const std::vector<std::uint8_t>& bytes,
+	std::vector<NativeSectionSnapshot>& outSnapshots,
+	std::string* outError)
+{
+	outSnapshots.clear();
+
+	if (bytes.size() < sizeof(std::uint32_t) * 2) {
+		if (outError != nullptr) {
+			*outError = "module_file_too_small";
+		}
+		return false;
+	}
+
+	const std::uint32_t magic1 = *reinterpret_cast<const std::uint32_t*>(bytes.data());
+	if (magic1 == kMagicEncryptedSource) {
+		if (outError != nullptr) {
+			*outError = "encrypted_source_not_supported";
+		}
+		return false;
+	}
+
+	ByteReader reader(bytes);
+	std::uint32_t header1 = 0;
+	std::uint32_t header2 = 0;
+	if (!reader.ReadU32(header1) ||
+		!reader.ReadU32(header2) ||
+		header1 != kMagicFileHeader1 ||
+		header2 != kMagicFileHeader2) {
+		if (outError != nullptr) {
+			*outError = "module_file_header_invalid";
+		}
+		return false;
+	}
+
+	while (!reader.eof()) {
+		RawSectionHeader header = {};
+		RawSectionInfo info = {};
+		std::vector<std::uint8_t> blockBytes;
+		if (!reader.ReadRaw(sizeof(header), blockBytes)) {
+			break;
+		}
+		std::memcpy(&header, blockBytes.data(), sizeof(header));
+		if (header.magic != kMagicSection) {
+			if (outError != nullptr) {
+				*outError = "section_header_invalid";
+			}
+			return false;
+		}
+
+		if (!reader.ReadRaw(sizeof(info), blockBytes)) {
+			if (outError != nullptr) {
+				*outError = "section_info_read_failed";
+			}
+			return false;
+		}
+		std::memcpy(&info, blockBytes.data(), sizeof(info));
+		if (info.dataLength < 0) {
+			if (outError != nullptr) {
+				*outError = "section_length_invalid";
+			}
+			return false;
+		}
+
+		std::string sectionName;
+		if (!DecodeSectionName(info, sectionName)) {
+			if (!reader.Skip(static_cast<size_t>(info.dataLength))) {
+				if (outError != nullptr) {
+					*outError = "section_body_skip_failed";
+				}
+				return false;
+			}
+			continue;
+		}
+
+		std::vector<std::uint8_t> sectionBytes;
+		if (!reader.ReadRaw(static_cast<size_t>(info.dataLength), sectionBytes)) {
+			if (outError != nullptr) {
+				*outError = "section_body_read_failed";
+			}
+			return false;
+		}
+
+		std::uint32_t sectionKey = 0;
+		std::memcpy(&sectionKey, info.key, sizeof(sectionKey));
+		if (sectionKey == 0x07007319u) {
+			break;
+		}
+
+		NativeSectionSnapshot snapshot;
+		snapshot.key = sectionKey;
+		snapshot.name = std::move(sectionName);
+		snapshot.flags = info.flag1;
+		snapshot.data = std::move(sectionBytes);
+		outSnapshots.push_back(std::move(snapshot));
+	}
+
+	return true;
 }
 
 bool IsLikelyReadableString(const std::string& text)
@@ -1569,41 +1873,65 @@ bool ParseEComDependencies(const std::vector<std::uint8_t>& bytes, std::vector<E
 		return true;
 	}
 
-	const auto strings = ExtractReadableNullStrings(bytes);
-	for (size_t i = 0; i < strings.size(); ++i) {
-		const std::string& current = strings[i];
-		if (current.size() < 3) {
-			continue;
+	ByteReader reader(bytes);
+	const auto readInt32Array = [](ByteReader& input, std::vector<std::int32_t>& outValues) -> bool {
+		outValues.clear();
+		std::int32_t byteSize = 0;
+		if (!input.ReadI32(byteSize) || byteSize < 0 || (byteSize % 4) != 0) {
+			return false;
 		}
-		std::string lower = current;
-		std::transform(
-			lower.begin(),
-			lower.end(),
-			lower.begin(),
-			[](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-		if (!(lower.ends_with(".ec") || lower.ends_with(".ec\""))) {
-			continue;
+		outValues.resize(static_cast<size_t>(byteSize / 4));
+		for (size_t index = 0; index < outValues.size(); ++index) {
+			if (!input.ReadI32(outValues[index])) {
+				return false;
+			}
+		}
+		return true;
+	};
+
+	std::int32_t dependencyCount = 0;
+	if (!reader.ReadI32(dependencyCount) || dependencyCount < 0) {
+		return false;
+	}
+
+	outRecords.reserve(static_cast<size_t>(dependencyCount));
+	for (std::int32_t dependencyIndex = 0; dependencyIndex < dependencyCount; ++dependencyIndex) {
+		EComDependencyRecord record;
+		if (!reader.ReadI32(record.infoVersion) ||
+			record.infoVersion < 0 ||
+			record.infoVersion > 2 ||
+			!reader.ReadI32(record.fileSize) ||
+			!reader.ReadI64(record.fileTime)) {
+			return false;
 		}
 
-		EComDependencyRecord record;
-		record.path = current;
-		if (i > 0) {
-			record.name = strings[i - 1];
-			if (!record.name.empty() && record.name.back() == '.') {
-				record.name.pop_back();
+		if (record.infoVersion >= 2) {
+			std::int32_t reExportValue = 0;
+			if (!reader.ReadI32(reExportValue)) {
+				return false;
 			}
+			record.reExport = reExportValue != 0;
 		}
-		if (record.name.empty()) {
-			size_t slashPos = current.find_last_of("\\/");
-			size_t beginPos = (slashPos == std::string::npos) ? 0 : (slashPos + 1);
-			size_t endPos = current.size();
-			if (endPos >= 3 && current.substr(endPos - 3) == ".ec") {
-				endPos -= 3;
+
+		if (!reader.ReadDynamicText(record.name) || !reader.ReadDynamicText(record.path)) {
+			return false;
+		}
+
+		std::vector<std::int32_t> starts;
+		std::vector<std::int32_t> counts;
+		if (!readInt32Array(reader, starts) || !readInt32Array(reader, counts) || starts.size() != counts.size()) {
+			return false;
+		}
+
+		record.definedIds.reserve(starts.size());
+		for (size_t rangeIndex = 0; rangeIndex < starts.size(); ++rangeIndex) {
+			if (counts[rangeIndex] <= 0) {
+				continue;
 			}
-			record.name = current.substr(beginPos, endPos - beginPos);
-			if (!record.name.empty() && record.name.front() == '$') {
-				record.name.erase(record.name.begin());
-			}
+			record.definedIds.push_back(EComDependencyRecord::DefinedIdRange {
+				starts[rangeIndex],
+				counts[rangeIndex],
+			});
 		}
 		outRecords.push_back(std::move(record));
 	}
@@ -1748,6 +2076,7 @@ struct SupportTypeSymbols {
 	std::string name;
 	bool isTabControl = false;
 	std::vector<std::string> memberNames;
+	std::vector<std::string> eventNames;
 };
 
 struct SupportLibrarySymbols {
@@ -1770,9 +2099,117 @@ constexpr std::array<const char*, FIXED_WIN_UNIT_PROPERTY_COUNT> kFixedWinUnitPr
 	"鼠标指针",
 };
 
+constexpr size_t kMaxSupportLibraryStringLength = 4096;
+constexpr int kMaxSupportLibraryArrayCount = 16384;
+
+bool IsReadablePageProtection(const DWORD protect)
+{
+	if ((protect & PAGE_GUARD) != 0 || (protect & PAGE_NOACCESS) != 0) {
+		return false;
+	}
+
+	switch (protect & 0xFFu) {
+	case PAGE_READONLY:
+	case PAGE_READWRITE:
+	case PAGE_WRITECOPY:
+	case PAGE_EXECUTE_READ:
+	case PAGE_EXECUTE_READWRITE:
+	case PAGE_EXECUTE_WRITECOPY:
+		return true;
+	default:
+		return false;
+	}
+}
+
+bool IsReadableMemoryRange(const void* address, size_t size)
+{
+	if (address == nullptr) {
+		return false;
+	}
+	if (size == 0) {
+		return true;
+	}
+
+	const auto* current = static_cast<const std::uint8_t*>(address);
+	size_t remaining = size;
+	while (remaining > 0) {
+		MEMORY_BASIC_INFORMATION mbi = {};
+		if (VirtualQuery(current, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+			return false;
+		}
+		if (mbi.State != MEM_COMMIT || !IsReadablePageProtection(mbi.Protect)) {
+			return false;
+		}
+
+		const auto regionBase = static_cast<const std::uint8_t*>(mbi.BaseAddress);
+		const size_t offset = static_cast<size_t>(current - regionBase);
+		if (offset >= mbi.RegionSize) {
+			return false;
+		}
+
+		const size_t available = mbi.RegionSize - offset;
+		if (available >= remaining) {
+			return true;
+		}
+
+		current += available;
+		remaining -= available;
+	}
+
+	return true;
+}
+
+size_t GetSafeCStringLength(const char* text, const size_t maxLength)
+{
+	if (text == nullptr) {
+		return 0;
+	}
+
+#if defined(_MSC_VER)
+	size_t length = 0;
+	__try {
+		for (; length < maxLength; ++length) {
+			if (text[length] == '\0') {
+				break;
+			}
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return static_cast<size_t>(-1);
+	}
+	return length;
+#else
+	size_t index = 0;
+	for (; index < maxLength; ++index) {
+		if (text[index] == '\0') {
+			return index;
+		}
+	}
+	return index;
+#endif
+}
+
+const LIB_INFO* CallGetLibInfoSafely(const PFN_GET_LIB_INFO getInfoProc)
+{
+#if defined(_MSC_VER)
+	__try {
+		return getInfoProc == nullptr ? nullptr : getInfoProc();
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return nullptr;
+	}
+#else
+	return getInfoProc == nullptr ? nullptr : getInfoProc();
+#endif
+}
+
 std::string ReadSupportLibraryName(const char* text)
 {
-	return text == nullptr ? std::string() : std::string(text);
+	const size_t length = GetSafeCStringLength(text, kMaxSupportLibraryStringLength);
+	if (length == static_cast<size_t>(-1)) {
+		return std::string();
+	}
+	return text == nullptr ? std::string() : std::string(text, length);
 }
 
 std::vector<std::string> BuildSupportTypeMemberNames(const LIB_DATA_TYPE_INFO& dataType)
@@ -1782,7 +2219,12 @@ std::vector<std::string> BuildSupportTypeMemberNames(const LIB_DATA_TYPE_INFO& d
 		(dataType.m_dwState & LDT_WIN_UNIT) != 0 &&
 		(dataType.m_dwState & LDT_ENUM) == 0;
 	if (isWinUnit) {
-		if (dataType.m_nPropertyCount > 0 && dataType.m_pPropertyBegin != nullptr) {
+		if (dataType.m_nPropertyCount > 0 &&
+			dataType.m_nPropertyCount <= kMaxSupportLibraryArrayCount &&
+			dataType.m_pPropertyBegin != nullptr &&
+			IsReadableMemoryRange(
+				dataType.m_pPropertyBegin,
+				sizeof(UNIT_PROPERTY) * static_cast<size_t>(dataType.m_nPropertyCount))) {
 			memberNames.reserve(static_cast<size_t>(dataType.m_nPropertyCount));
 			for (int propertyIndex = 0; propertyIndex < dataType.m_nPropertyCount; ++propertyIndex) {
 				memberNames.emplace_back(ReadSupportLibraryName(dataType.m_pPropertyBegin[propertyIndex].m_szName));
@@ -1797,13 +2239,37 @@ std::vector<std::string> BuildSupportTypeMemberNames(const LIB_DATA_TYPE_INFO& d
 		return memberNames;
 	}
 
-	if (dataType.m_nElementCount > 0 && dataType.m_pElementBegin != nullptr) {
+	if (dataType.m_nElementCount > 0 &&
+		dataType.m_nElementCount <= kMaxSupportLibraryArrayCount &&
+		dataType.m_pElementBegin != nullptr &&
+		IsReadableMemoryRange(
+			dataType.m_pElementBegin,
+			sizeof(LIB_DATA_TYPE_ELEMENT) * static_cast<size_t>(dataType.m_nElementCount))) {
 		memberNames.reserve(static_cast<size_t>(dataType.m_nElementCount));
 		for (int memberIndex = 0; memberIndex < dataType.m_nElementCount; ++memberIndex) {
 			memberNames.emplace_back(ReadSupportLibraryName(dataType.m_pElementBegin[memberIndex].m_szName));
 		}
 	}
 	return memberNames;
+}
+
+std::vector<std::string> BuildSupportTypeEventNames(const LIB_DATA_TYPE_INFO& dataType)
+{
+	std::vector<std::string> eventNames;
+	if (dataType.m_nEventCount <= 0 ||
+		dataType.m_nEventCount > kMaxSupportLibraryArrayCount ||
+		dataType.m_pEventBegin == nullptr ||
+		!IsReadableMemoryRange(
+			dataType.m_pEventBegin,
+			sizeof(EVENT_INFO2) * static_cast<size_t>(dataType.m_nEventCount))) {
+		return eventNames;
+	}
+
+	eventNames.reserve(static_cast<size_t>(dataType.m_nEventCount));
+	for (int eventIndex = 0; eventIndex < dataType.m_nEventCount; ++eventIndex) {
+		eventNames.emplace_back(ReadSupportLibraryName(dataType.m_pEventBegin[eventIndex].m_szName));
+	}
+	return eventNames;
 }
 
 std::string ResolveCoreLibraryFallbackMemberName(std::int32_t typeId, std::int32_t memberId)
@@ -1914,6 +2380,9 @@ public:
 
 	std::string ResolveType(std::int32_t typeValue)
 	{
+		if (typeValue == 0) {
+			return std::string();
+		}
 		for (const auto& dataType : m_program.dataTypes) {
 			if (dataType.header.dwId == typeValue || dataType.header.dwUnk == typeValue) {
 				return TrimAsciiCopy(dataType.name);
@@ -2067,6 +2536,35 @@ public:
 
 		const std::string& name = members[static_cast<size_t>(memberId)];
 		return name.empty() ? std::string("_Lib") + std::to_string(libraryIndex) + "Type" + std::to_string(typeId) + "Mem" + std::to_string(memberId) : name;
+	}
+
+	std::string ResolveLibTypeEventName(std::int32_t typeValue, std::int32_t eventId)
+	{
+		if (!epl_system_id::IsLibDataType(typeValue)) {
+			return std::string("事件") + std::to_string(eventId);
+		}
+
+		std::int16_t libraryIndex = 0;
+		std::int16_t typeId = 0;
+		epl_system_id::DecomposeLibDataTypeId(typeValue, libraryIndex, typeId);
+		if (!EnsureSupportLibraryCacheByLibraryId(libraryIndex)) {
+			return std::string("_Lib") + std::to_string(libraryIndex) + "Type" + std::to_string(typeId) + "Event" + std::to_string(eventId);
+		}
+
+		const auto* symbols = FindSupportLibrarySymbolsByLibraryId(libraryIndex);
+		if (symbols == nullptr || typeId < 0 || static_cast<size_t>(typeId) >= symbols->dataTypes.size()) {
+			return std::string("_Lib") + std::to_string(libraryIndex) + "Type" + std::to_string(typeId) + "Event" + std::to_string(eventId);
+		}
+
+		const auto& eventNames = symbols->dataTypes[static_cast<size_t>(typeId)].eventNames;
+		if (eventId < 0 || static_cast<size_t>(eventId) >= eventNames.size()) {
+			return std::string("_Lib") + std::to_string(libraryIndex) + "Type" + std::to_string(typeId) + "Event" + std::to_string(eventId);
+		}
+
+		const std::string& name = eventNames[static_cast<size_t>(eventId)];
+		return name.empty()
+			? std::string("_Lib") + std::to_string(libraryIndex) + "Type" + std::to_string(typeId) + "Event" + std::to_string(eventId)
+			: name;
 	}
 
 	bool IsTabControlDataType(std::int32_t typeValue)
@@ -2223,21 +2721,36 @@ private:
 		if (module != nullptr) {
 			const auto* getInfoProc = reinterpret_cast<PFN_GET_LIB_INFO>(GetProcAddress(module, FUNCNAME_GET_LIB_INFO));
 			if (getInfoProc != nullptr) {
-				const auto* libInfo = getInfoProc();
-				if (libInfo != nullptr) {
-					if (libInfo->m_nCmdCount > 0 && libInfo->m_pBeginCmdInfo != nullptr) {
+				const LIB_INFO* libInfo = CallGetLibInfoSafely(getInfoProc);
+				if (libInfo != nullptr && IsReadableMemoryRange(libInfo, sizeof(LIB_INFO))) {
+					if (libInfo->m_nCmdCount > 0 &&
+						libInfo->m_nCmdCount <= kMaxSupportLibraryArrayCount &&
+						libInfo->m_pBeginCmdInfo != nullptr &&
+						IsReadableMemoryRange(
+							libInfo->m_pBeginCmdInfo,
+							sizeof(CMD_INFO) * static_cast<size_t>(libInfo->m_nCmdCount))) {
 						symbols.commandNames.reserve(static_cast<size_t>(libInfo->m_nCmdCount));
 						for (int i = 0; i < libInfo->m_nCmdCount; ++i) {
-							symbols.commandNames.emplace_back(libInfo->m_pBeginCmdInfo[i].m_szName == nullptr ? "" : libInfo->m_pBeginCmdInfo[i].m_szName);
+							symbols.commandNames.emplace_back(ReadSupportLibraryName(libInfo->m_pBeginCmdInfo[i].m_szName));
 						}
 					}
-					if (libInfo->m_nLibConstCount > 0 && libInfo->m_pLibConst != nullptr) {
+					if (libInfo->m_nLibConstCount > 0 &&
+						libInfo->m_nLibConstCount <= kMaxSupportLibraryArrayCount &&
+						libInfo->m_pLibConst != nullptr &&
+						IsReadableMemoryRange(
+							libInfo->m_pLibConst,
+							sizeof(LIB_CONST_INFO) * static_cast<size_t>(libInfo->m_nLibConstCount))) {
 						symbols.constantNames.reserve(static_cast<size_t>(libInfo->m_nLibConstCount));
 						for (int i = 0; i < libInfo->m_nLibConstCount; ++i) {
-							symbols.constantNames.emplace_back(libInfo->m_pLibConst[i].m_szName == nullptr ? "" : libInfo->m_pLibConst[i].m_szName);
+							symbols.constantNames.emplace_back(ReadSupportLibraryName(libInfo->m_pLibConst[i].m_szName));
 						}
 					}
-					if (libInfo->m_nDataTypeCount > 0 && libInfo->m_pDataType != nullptr) {
+					if (libInfo->m_nDataTypeCount > 0 &&
+						libInfo->m_nDataTypeCount <= kMaxSupportLibraryArrayCount &&
+						libInfo->m_pDataType != nullptr &&
+						IsReadableMemoryRange(
+							libInfo->m_pDataType,
+							sizeof(LIB_DATA_TYPE_INFO) * static_cast<size_t>(libInfo->m_nDataTypeCount))) {
 						symbols.dataTypes.reserve(static_cast<size_t>(libInfo->m_nDataTypeCount));
 						for (int i = 0; i < libInfo->m_nDataTypeCount; ++i) {
 							const LIB_DATA_TYPE_INFO& dataType = libInfo->m_pDataType[i];
@@ -2245,6 +2758,7 @@ private:
 							typeSymbols.name = ReadSupportLibraryName(dataType.m_szName);
 							typeSymbols.isTabControl = (dataType.m_dwState & LDT_IS_TAB_UNIT) != 0;
 							typeSymbols.memberNames = BuildSupportTypeMemberNames(dataType);
+							typeSymbols.eventNames = BuildSupportTypeEventNames(dataType);
 							symbols.dataTypes.push_back(std::move(typeSymbols));
 						}
 					}
@@ -2703,9 +3217,75 @@ bool IsImportedFunction(const FunctionInfo& functionInfo)
 	return (functionInfo.attr & 0x80) != 0;
 }
 
-bool ShouldKeepPage(const CodePageInfo& page, const std::vector<const FunctionInfo*>& functions, bool includeImportedPages)
+std::int32_t GetUserIdNum(const std::int32_t id)
+{
+	return id & epl_system_id::kMaskNum;
+}
+
+bool IsDependencyDefinedId(const std::vector<EComDependencyRecord>& records, const std::int32_t id)
+{
+	if ((id & epl_system_id::kMaskType) == 0) {
+		return false;
+	}
+
+	const std::int32_t idNum = GetUserIdNum(id);
+	for (const auto& record : records) {
+		for (const auto& range : record.definedIds) {
+			const std::int32_t startNum = GetUserIdNum(range.start);
+			if (range.count > 0 && idNum >= startNum && idNum < startNum + range.count) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+bool IsClassHidden(const ModuleSections& sections, const std::int32_t classId)
+{
+	for (const auto& item : sections.classPublicities) {
+		if (item.classId == classId) {
+			return (item.flags & 0x2) != 0;
+		}
+	}
+	return false;
+}
+
+bool IsStructHidden(const DataTypeInfo& item)
+{
+	return (item.attr & 0x2) != 0;
+}
+
+bool IsStructPublic(const DataTypeInfo& item)
+{
+	return (item.attr & 0x1) != 0;
+}
+
+bool IsDllHidden(const DllInfo& item)
+{
+	return (item.attr & 0x4) != 0;
+}
+
+bool IsGlobalHidden(const VariableInfo& item)
+{
+	return (item.attr & 0x0200) != 0;
+}
+
+bool IsConstantHidden(const ConstantInfo& item)
+{
+	return (item.attr & 0x4) != 0;
+}
+
+bool ShouldKeepPage(
+	const ModuleSections& sections,
+	const std::vector<EComDependencyRecord>& dependencyRecords,
+	const CodePageInfo& page,
+	const std::vector<const FunctionInfo*>& functions,
+	bool includeImportedPages)
 {
 	if (TrimAsciiCopy(page.name).empty() || page.name == "__HIDDEN_TEMP_MOD__") {
+		return false;
+	}
+	if (IsClassHidden(sections, page.header.dwId) || IsDependencyDefinedId(dependencyRecords, page.header.dwId)) {
 		return false;
 	}
 	if (includeImportedPages) {
@@ -3410,7 +3990,7 @@ bool ParseExpression(ByteReader& reader, std::unique_ptr<Expr>& outExpr, std::st
 			auto wrapper = std::make_unique<Expr>();
 			wrapper->kind = ExprKind::AccessArray;
 			wrapper->target = std::move(expr);
-			if (!ParseExpression(reader, wrapper->extra, outError, true)) {
+			if (!ParseExpression(reader, wrapper->extra, outError, false)) {
 				return false;
 			}
 			expr = std::move(wrapper);
@@ -3672,7 +4252,7 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 	for (const auto& statement : block.items) {
 		switch (statement.kind) {
 		case StatementKind::Expression: {
-			std::string line = BuildIndent(indent);
+			std::string line;
 			if (statement.mask) {
 				line += "' ";
 			}
@@ -3683,20 +4263,20 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 				line += statement.expression == nullptr ? "' " : "  ' ";
 				line += statement.comment;
 			}
-			outLines.push_back(line);
+			AppendRenderedBodyLine(outLines, indent, line);
 			break;
 		}
 		case StatementKind::Unexamined: {
-			std::string line = BuildIndent(indent);
+			std::string line;
 			if (statement.mask) {
 				line += "' ";
 			}
 			line += statement.unexaminedCode;
-			outLines.push_back(line);
+			AppendRenderedBodyLine(outLines, indent, line);
 			break;
 		}
 		case StatementKind::IfTrue: {
-			std::string line = BuildIndent(indent);
+			std::string line;
 			if (statement.mask) {
 				line += "' ";
 			}
@@ -3706,15 +4286,15 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 			if (!statement.comment.empty()) {
 				line += "  ' " + statement.comment;
 			}
-			outLines.push_back(line);
+			AppendRenderedBodyLine(outLines, indent, line);
 			if (statement.block != nullptr) {
 				AppendStatementLines(*statement.block, resolver, indent + 1, outLines);
 			}
-			outLines.push_back(BuildIndent(indent) + (statement.mask ? "' " : "") + ".如果真结束");
+			AppendRenderedBodyLine(outLines, indent, (statement.mask ? "' " : "") + std::string(".如果真结束"));
 			break;
 		}
 		case StatementKind::IfElse: {
-			std::string line = BuildIndent(indent);
+			std::string line;
 			if (statement.mask) {
 				line += "' ";
 			}
@@ -3724,19 +4304,19 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 			if (!statement.comment.empty()) {
 				line += "  ' " + statement.comment;
 			}
-			outLines.push_back(line);
+			AppendRenderedBodyLine(outLines, indent, line);
 			if (statement.block != nullptr) {
 				AppendStatementLines(*statement.block, resolver, indent + 1, outLines);
 			}
-			outLines.push_back(BuildIndent(indent) + (statement.mask ? "' " : "") + ".否则");
+			AppendRenderedBodyLine(outLines, indent, (statement.mask ? "' " : "") + std::string(".否则"));
 			if (statement.elseBlock != nullptr) {
 				AppendStatementLines(*statement.elseBlock, resolver, indent + 1, outLines);
 			}
-			outLines.push_back(BuildIndent(indent) + (statement.mask ? "' " : "") + ".如果结束");
+			AppendRenderedBodyLine(outLines, indent, (statement.mask ? "' " : "") + std::string(".如果结束"));
 			break;
 		}
 		case StatementKind::WhileLoop: {
-			std::string line = BuildIndent(indent);
+			std::string line;
 			if (statement.mask) {
 				line += "' ";
 			}
@@ -3746,11 +4326,11 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 			if (!statement.comment.empty()) {
 				line += "  ' " + statement.comment;
 			}
-			outLines.push_back(line);
+			AppendRenderedBodyLine(outLines, indent, line);
 			if (statement.block != nullptr) {
 				AppendStatementLines(*statement.block, resolver, indent + 1, outLines);
 			}
-			std::string endLine = BuildIndent(indent);
+			std::string endLine;
 			if (statement.maskOnEnd) {
 				endLine += "' ";
 			}
@@ -3758,11 +4338,11 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 			if (!statement.commentOnEnd.empty()) {
 				endLine += "  ' " + statement.commentOnEnd;
 			}
-			outLines.push_back(endLine);
+			AppendRenderedBodyLine(outLines, indent, endLine);
 			break;
 		}
 		case StatementKind::DoWhileLoop: {
-			std::string line = BuildIndent(indent);
+			std::string line;
 			if (statement.mask) {
 				line += "' ";
 			}
@@ -3770,11 +4350,11 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 			if (!statement.comment.empty()) {
 				line += "  ' " + statement.comment;
 			}
-			outLines.push_back(line);
+			AppendRenderedBodyLine(outLines, indent, line);
 			if (statement.block != nullptr) {
 				AppendStatementLines(*statement.block, resolver, indent + 1, outLines);
 			}
-			std::string endLine = BuildIndent(indent);
+			std::string endLine;
 			if (statement.mask) {
 				endLine += "' ";
 			}
@@ -3784,11 +4364,11 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 			if (!statement.comment.empty()) {
 				endLine += "  ' " + statement.comment;
 			}
-			outLines.push_back(endLine);
+			AppendRenderedBodyLine(outLines, indent, endLine);
 			break;
 		}
 		case StatementKind::CounterLoop: {
-			std::string line = BuildIndent(indent);
+			std::string line;
 			if (statement.mask) {
 				line += "' ";
 			}
@@ -3802,11 +4382,11 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 			if (!statement.comment.empty()) {
 				line += "  ' " + statement.comment;
 			}
-			outLines.push_back(line);
+			AppendRenderedBodyLine(outLines, indent, line);
 			if (statement.block != nullptr) {
 				AppendStatementLines(*statement.block, resolver, indent + 1, outLines);
 			}
-			std::string endLine = BuildIndent(indent);
+			std::string endLine;
 			if (statement.maskOnEnd) {
 				endLine += "' ";
 			}
@@ -3814,11 +4394,11 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 			if (!statement.commentOnEnd.empty()) {
 				endLine += "  ' " + statement.commentOnEnd;
 			}
-			outLines.push_back(endLine);
+			AppendRenderedBodyLine(outLines, indent, endLine);
 			break;
 		}
 		case StatementKind::ForLoop: {
-			std::string line = BuildIndent(indent);
+			std::string line;
 			if (statement.mask) {
 				line += "' ";
 			}
@@ -3836,11 +4416,11 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 			if (!statement.comment.empty()) {
 				line += "  ' " + statement.comment;
 			}
-			outLines.push_back(line);
+			AppendRenderedBodyLine(outLines, indent, line);
 			if (statement.block != nullptr) {
 				AppendStatementLines(*statement.block, resolver, indent + 1, outLines);
 			}
-			std::string endLine = BuildIndent(indent);
+			std::string endLine;
 			if (statement.maskOnEnd) {
 				endLine += "' ";
 			}
@@ -3848,7 +4428,7 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 			if (!statement.commentOnEnd.empty()) {
 				endLine += "  ' " + statement.commentOnEnd;
 			}
-			outLines.push_back(endLine);
+			AppendRenderedBodyLine(outLines, indent, endLine);
 			break;
 		}
 		case StatementKind::SwitchBlock: {
@@ -3857,7 +4437,7 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 			}
 			for (size_t i = 0; i < statement.switchCases.size(); ++i) {
 				const auto& caseItem = statement.switchCases[i];
-				std::string line = BuildIndent(indent);
+				std::string line;
 				if (caseItem.mask) {
 					line += "' ";
 				}
@@ -3880,16 +4460,16 @@ void AppendStatementLines(const StatementBlock& block, SymbolResolver& resolver,
 				if (!caseItem.comment.empty()) {
 					line += "  ' " + caseItem.comment;
 				}
-				outLines.push_back(line);
+				AppendRenderedBodyLine(outLines, indent, line);
 				if (caseItem.block != nullptr) {
 					AppendStatementLines(*caseItem.block, resolver, indent + 1, outLines);
 				}
 			}
-			outLines.push_back(BuildIndent(indent) + (statement.switchCases[0].mask ? "' " : "") + ".默认");
+			AppendRenderedBodyLine(outLines, indent, (statement.switchCases[0].mask ? "' " : "") + std::string(".默认"));
 			if (statement.defaultBlock != nullptr) {
 				AppendStatementLines(*statement.defaultBlock, resolver, indent + 1, outLines);
 			}
-			outLines.push_back(BuildIndent(indent) + (statement.switchCases[0].mask ? "' " : "") + ".判断结束");
+			AppendRenderedBodyLine(outLines, indent, (statement.switchCases[0].mask ? "' " : "") + std::string(".判断结束"));
 			break;
 		}
 		}
@@ -3933,11 +4513,13 @@ bool IsProgramPagePublic(const ModuleSections& sections, std::int32_t pageId)
 void BuildProgramPages(const ModuleSections& sections, const GenerateOptions& options, Document& outDocument)
 {
 	SymbolResolver resolver(sections.program, sections.resources, outDocument.sourcePath);
+	std::vector<EComDependencyRecord> dependencyRecords;
+	(void)ParseEComDependencies(sections.ecomSectionBytes, dependencyRecords);
 	bool firstProgramPage = true;
 	TraceLine("BuildProgramPages begin");
 	for (const auto& pageInfo : sections.program.codePages) {
 		const auto functions = CollectPageFunctions(sections.program, pageInfo);
-		if (!ShouldKeepPage(pageInfo, functions, options.includeImportedPages)) {
+		if (!ShouldKeepPage(sections, dependencyRecords, pageInfo, functions, options.includeImportedPages)) {
 			continue;
 		}
 		TraceLine("BuildProgramPages page=" + TrimAsciiCopy(pageInfo.name) + " funcs=" + std::to_string(functions.size()));
@@ -3960,10 +4542,13 @@ void BuildProgramPages(const ModuleSections& sections, const GenerateOptions& op
 		}
 
 		std::string baseClassName;
-		if (pageInfo.baseClass != 0 && pageInfo.baseClass != -1) {
+		if (pageInfo.baseClass == -1) {
+			baseClassName = "<对象>";
+		}
+		else if (pageInfo.baseClass != 0) {
 			baseClassName = TrimAsciiCopy(resolver.ResolveType(pageInfo.baseClass));
 		}
-		if (baseClassName == "对象") {
+		if (baseClassName == "窗口") {
 			baseClassName.clear();
 		}
 		AppendLine(page, BuildDefinitionLine(
@@ -3984,7 +4569,7 @@ void BuildProgramPages(const ModuleSections& sections, const GenerateOptions& op
 		}
 
 		for (const auto* functionInfo : functions) {
-			if (functionInfo == nullptr) {
+			if (functionInfo == nullptr || IsImportedFunction(*functionInfo)) {
 				continue;
 			}
 			try {
@@ -4049,6 +4634,8 @@ void BuildGlobalPage(const ModuleSections& sections, Document& outDocument)
 		return;
 	}
 
+	std::vector<EComDependencyRecord> dependencyRecords;
+	(void)ParseEComDependencies(sections.ecomSectionBytes, dependencyRecords);
 	SymbolResolver resolver(sections.program, sections.resources, outDocument.sourcePath);
 	Page page;
 	page.typeName = "全局变量";
@@ -4056,9 +4643,14 @@ void BuildGlobalPage(const ModuleSections& sections, Document& outDocument)
 	AppendLine(page, ".版本 2");
 	AppendLine(page, "");
 	for (const auto& item : sections.program.globals) {
+		if (IsGlobalHidden(item) || IsDependencyDefinedId(dependencyRecords, item.marker)) {
+			continue;
+		}
 		AppendLine(page, BuildGlobalVariableLine(item, resolver));
 	}
-	outDocument.pages.push_back(std::move(page));
+	if (page.lines.size() > 2) {
+		outDocument.pages.push_back(std::move(page));
+	}
 }
 
 void BuildStructPage(const ModuleSections& sections, const AnonymousTypeHints& hints, Document& outDocument)
@@ -4067,6 +4659,8 @@ void BuildStructPage(const ModuleSections& sections, const AnonymousTypeHints& h
 		return;
 	}
 
+	std::vector<EComDependencyRecord> dependencyRecords;
+	(void)ParseEComDependencies(sections.ecomSectionBytes, dependencyRecords);
 	SymbolResolver resolver(sections.program, sections.resources, outDocument.sourcePath);
 	Page page;
 	page.typeName = "自定义数据类型";
@@ -4074,6 +4668,11 @@ void BuildStructPage(const ModuleSections& sections, const AnonymousTypeHints& h
 	AppendLine(page, ".版本 2");
 	AppendLine(page, "");
 	for (const auto& item : sections.program.dataTypes) {
+		if (IsTxt2EPlaceholderStruct(item) ||
+			IsStructHidden(item) ||
+			IsDependencyDefinedId(dependencyRecords, item.header.dwId)) {
+			continue;
+		}
 		std::string typeName = TrimAsciiCopy(item.name);
 		if (typeName.empty()) {
 			if (const auto it = hints.localTypeAliases.find(item.header.dwId); it != hints.localTypeAliases.end()) {
@@ -4084,7 +4683,7 @@ void BuildStructPage(const ModuleSections& sections, const AnonymousTypeHints& h
 			"数据类型",
 			{
 				typeName,
-				(item.attr & 0x2) != 0 ? "公开" : std::string(),
+				IsStructPublic(item) ? "公开" : std::string(),
 				TrimAsciiCopy(item.comment),
 			}));
 		for (const auto& member : item.members) {
@@ -4093,7 +4692,9 @@ void BuildStructPage(const ModuleSections& sections, const AnonymousTypeHints& h
 		}
 		AppendLine(page, "");
 	}
-	outDocument.pages.push_back(std::move(page));
+	if (page.lines.size() > 2) {
+		outDocument.pages.push_back(std::move(page));
+	}
 }
 
 void BuildDllPage(const ModuleSections& sections, const AnonymousTypeHints& hints, Document& outDocument)
@@ -4102,6 +4703,8 @@ void BuildDllPage(const ModuleSections& sections, const AnonymousTypeHints& hint
 		return;
 	}
 
+	std::vector<EComDependencyRecord> dependencyRecords;
+	(void)ParseEComDependencies(sections.ecomSectionBytes, dependencyRecords);
 	SymbolResolver resolver(sections.program, sections.resources, outDocument.sourcePath);
 	Page page;
 	page.typeName = "DLL命令";
@@ -4109,6 +4712,9 @@ void BuildDllPage(const ModuleSections& sections, const AnonymousTypeHints& hint
 	AppendLine(page, ".版本 2");
 	AppendLine(page, "");
 	for (const auto& item : sections.program.dlls) {
+		if (IsDllHidden(item) || IsDependencyDefinedId(dependencyRecords, item.header.dwId)) {
+			continue;
+		}
 		const std::string dllName = TrimAsciiCopy(item.name);
 		AppendLine(page, BuildDefinitionLine(
 			"DLL命令",
@@ -4126,15 +4732,23 @@ void BuildDllPage(const ModuleSections& sections, const AnonymousTypeHints& hint
 		}
 		AppendLine(page, "");
 	}
-	outDocument.pages.push_back(std::move(page));
+	if (page.lines.size() > 2) {
+		outDocument.pages.push_back(std::move(page));
+	}
 }
 
 void BuildConstantPage(const ModuleSections& sections, Document& outDocument)
 {
+	std::vector<EComDependencyRecord> dependencyRecords;
+	(void)ParseEComDependencies(sections.ecomSectionBytes, dependencyRecords);
 	const bool hasValueConstants = std::any_of(
 		sections.resources.constants.begin(),
 		sections.resources.constants.end(),
-		[](const ConstantInfo& item) { return item.pageType == kConstPageValue; });
+		[&](const ConstantInfo& item) {
+			return item.pageType == kConstPageValue &&
+				!IsConstantHidden(item) &&
+				!IsDependencyDefinedId(dependencyRecords, item.marker);
+		});
 	if (!hasValueConstants) {
 		return;
 	}
@@ -4145,7 +4759,11 @@ void BuildConstantPage(const ModuleSections& sections, Document& outDocument)
 	AppendLine(page, ".版本 2");
 	AppendLine(page, "");
 	for (const auto& item : sections.resources.constants) {
-		if (item.pageType != kConstPageValue || item.valueText == "<图片>" || item.valueText == "<声音>") {
+		if (item.pageType != kConstPageValue ||
+			item.valueText == "<图片>" ||
+			item.valueText == "<声音>" ||
+			IsConstantHidden(item) ||
+			IsDependencyDefinedId(dependencyRecords, item.marker)) {
 			continue;
 		}
 		std::string valueText = item.valueText;
@@ -4168,6 +4786,7 @@ void BuildConstantPage(const ModuleSections& sections, Document& outDocument)
 			{
 				TrimAsciiCopy(item.name),
 				Quote(valueText),
+				std::string(),
 				(item.attr & 0x2) != 0 ? "公开" : std::string(),
 				TrimAsciiCopy(item.comment),
 			}));
@@ -4381,6 +5000,58 @@ std::vector<std::pair<std::string, std::string>> BuildFormMenuXmlAttributes(cons
 	return attributes;
 }
 
+std::string BuildQualifiedMethodName(SymbolResolver& resolver, const std::int32_t methodId)
+{
+	if (methodId == 0) {
+		return std::string();
+	}
+
+	std::string ownerName;
+	const std::string methodName = TrimAsciiCopy(resolver.ResolveUserName(methodId));
+	if (resolver.TryGetMethodOwnerName(methodId, ownerName) && !TrimAsciiCopy(ownerName).empty()) {
+		return TrimAsciiCopy(ownerName) + "::" + methodName;
+	}
+	return methodName;
+}
+
+void AppendFormControlEventXmlLines(
+	FormXml& formXml,
+	const FormInfo::ElementInfo& item,
+	const std::string& tagName,
+	const int indent,
+	SymbolResolver& resolver)
+{
+	for (const auto& [eventKey, handlerId] : item.events) {
+		std::vector<std::pair<std::string, std::string>> attributes;
+		attributes.emplace_back("索引", std::to_string(eventKey));
+		attributes.emplace_back("名称", resolver.ResolveLibTypeEventName(item.dataType, eventKey));
+		const std::string handlerName = BuildQualifiedMethodName(resolver, handlerId);
+		if (!handlerName.empty()) {
+			attributes.emplace_back("处理器", handlerName);
+		}
+		AppendXmlLine(formXml, indent, BuildXmlOpenTag(tagName + ".事件", attributes, true));
+	}
+}
+
+void AppendFormMenuEventXmlLines(
+	FormXml& formXml,
+	const FormInfo::ElementInfo& item,
+	const int indent,
+	SymbolResolver& resolver)
+{
+	if (item.clickEvent == 0) {
+		return;
+	}
+
+	std::vector<std::pair<std::string, std::string>> attributes;
+	attributes.emplace_back("名称", "单击");
+	const std::string handlerName = BuildQualifiedMethodName(resolver, item.clickEvent);
+	if (!handlerName.empty()) {
+		attributes.emplace_back("处理器", handlerName);
+	}
+	AppendXmlLine(formXml, indent, BuildXmlOpenTag("菜单.事件", attributes, true));
+}
+
 void BuildFormXmlEntries(const ModuleSections& sections, Document& outDocument)
 {
 	if (sections.resources.forms.empty()) {
@@ -4402,6 +5073,9 @@ void BuildFormXmlEntries(const ModuleSections& sections, Document& outDocument)
 			rootAttributes.insert(rootAttributes.begin() + 1, std::make_pair("备注", TrimAsciiCopy(form.comment)));
 		}
 		AppendXmlLine(formXml, 0, BuildXmlOpenTag("窗口", rootAttributes, false));
+		if (formSelf != nullptr) {
+			AppendFormControlEventXmlLines(formXml, *formSelf, "窗口", 1, resolver);
+		}
 
 		struct MenuNode {
 			const FormInfo::ElementInfo* item = nullptr;
@@ -4434,12 +5108,14 @@ void BuildFormXmlEntries(const ModuleSections& sections, Document& outDocument)
 			std::function<void(size_t, int)> renderMenu = [&](size_t nodeIndex, int indent) {
 				const MenuNode& node = menuNodes[nodeIndex];
 				const auto attributes = BuildFormMenuXmlAttributes(*node.item);
-				if (node.children.empty()) {
+				const bool hasEventBinding = node.item->clickEvent != 0;
+				if (node.children.empty() && !hasEventBinding) {
 					AppendXmlLine(formXml, indent, BuildXmlOpenTag("菜单", attributes, true));
 					return;
 				}
 
 				AppendXmlLine(formXml, indent, BuildXmlOpenTag("菜单", attributes, false));
+				AppendFormMenuEventXmlLines(formXml, *node.item, indent + 1, resolver);
 				for (const size_t childIndex : node.children) {
 					renderMenu(childIndex, indent + 1);
 				}
@@ -4495,12 +5171,14 @@ void BuildFormXmlEntries(const ModuleSections& sections, Document& outDocument)
 			const auto attributes = BuildFormControlXmlAttributes(item, true);
 			const bool isTabControl = resolver.IsTabControlDataType(item.dataType);
 			const bool hasChildren = !item.children.empty();
-			if (!hasChildren) {
+			const bool hasEventBindings = !item.events.empty();
+			if (!hasChildren && !hasEventBindings) {
 				AppendXmlLine(formXml, indent, BuildXmlOpenTag(tagName, attributes, true));
 				return;
 			}
 
 			AppendXmlLine(formXml, indent, BuildXmlOpenTag(tagName, attributes, false));
+			AppendFormControlEventXmlLines(formXml, item, tagName, indent + 1, resolver);
 			if (isTabControl) {
 				std::vector<const FormInfo::ElementInfo*> currentGroup;
 				auto flushTabGroup = [&]() {
@@ -4588,11 +5266,1005 @@ bool BuildDocumentFromSections(
 	return true;
 }
 
+std::string JoinPageLines(const std::vector<std::string>& lines)
+{
+	std::ostringstream stream;
+	for (size_t index = 0; index < lines.size(); ++index) {
+		if (index != 0) {
+			stream << "\r\n";
+		}
+		stream << lines[index];
+	}
+	return stream.str();
+}
+
+struct SnapshotVariableDef {
+	std::string name;
+	std::string typeName;
+	std::string flagsText;
+	std::string arrayText;
+	std::string comment;
+};
+
+struct SnapshotMethodDef {
+	std::string name;
+	std::string returnTypeName;
+	bool isPublic = false;
+	std::string comment;
+	std::vector<SnapshotVariableDef> params;
+	std::vector<SnapshotVariableDef> locals;
+	std::vector<std::string> bodyLines;
+};
+
+struct SnapshotClassDef {
+	std::string name;
+	std::string baseClassName;
+	bool isPublic = false;
+	std::string comment;
+	std::vector<SnapshotVariableDef> vars;
+	std::vector<SnapshotMethodDef> methods;
+};
+
+std::vector<std::string> SplitTopLevelCommaFieldsForSnapshot(const std::string& text)
+{
+	std::vector<std::string> fields;
+	std::string current;
+	bool inQuote = false;
+	for (const char ch : text) {
+		if (ch == '"') {
+			inQuote = !inQuote;
+			current.push_back(ch);
+			continue;
+		}
+		if (ch == ',' && !inQuote) {
+			fields.push_back(TrimAsciiCopy(current));
+			current.clear();
+			continue;
+		}
+		current.push_back(ch);
+	}
+	fields.push_back(TrimAsciiCopy(current));
+	return fields;
+}
+
+bool ParseDefinitionFieldsForSnapshot(
+	const std::string& line,
+	const std::string& keyword,
+	std::vector<std::string>& outFields)
+{
+	const std::string prefix = "." + keyword;
+	if (!StartsWith(line, prefix)) {
+		return false;
+	}
+	const std::string rest = TrimAsciiCopy(line.substr(prefix.size()));
+	if (rest.empty()) {
+		outFields.clear();
+		return true;
+	}
+	outFields = SplitTopLevelCommaFieldsForSnapshot(rest);
+	return true;
+}
+
+std::string GetSnapshotFieldOrEmpty(const std::vector<std::string>& fields, const size_t index)
+{
+	return index < fields.size() ? fields[index] : std::string();
+}
+
+std::string JoinSnapshotFields(const std::vector<std::string>& fields)
+{
+	std::ostringstream stream;
+	for (size_t index = 0; index < fields.size(); ++index) {
+		if (index != 0) {
+			stream << "\n";
+		}
+		stream << fields[index];
+	}
+	return stream.str();
+}
+
+std::string ComputeSnapshotVariableDigest(const SnapshotVariableDef& variable)
+{
+	std::ostringstream stream;
+	stream << "name=" << variable.name << "\n";
+	stream << "type=" << variable.typeName << "\n";
+	stream << "flags=" << variable.flagsText << "\n";
+	stream << "array=" << variable.arrayText << "\n";
+	stream << "comment=" << variable.comment;
+	return ComputeTextDigest(stream.str());
+}
+
+std::string ComputeGlobalSnapshotDigest(const VariableInfo& info, SymbolResolver& resolver)
+{
+	SnapshotVariableDef snapshot;
+	snapshot.name = TrimAsciiCopy(info.name);
+	snapshot.typeName = BuildTypeField(info, resolver);
+	snapshot.flagsText = (info.attr & 0x0100) != 0 ? "公开" : std::string();
+	snapshot.arrayText = BuildArraySuffix(info.arrayBounds);
+	snapshot.comment = TrimAsciiCopy(info.comment);
+	return ComputeSnapshotVariableDigest(snapshot);
+}
+
+std::string ComputeDllParamSnapshotDigest(
+	const VariableInfo& info,
+	const std::string& resolvedType)
+{
+	SnapshotVariableDef snapshot;
+	snapshot.name = TrimAsciiCopy(info.name);
+	snapshot.typeName = resolvedType;
+	std::vector<std::string> flags;
+	if ((info.attr & kVarAttrByRef) != 0) {
+		flags.push_back("传址");
+	}
+	if ((info.attr & kVarAttrArray) != 0) {
+		flags.push_back("数组");
+	}
+	snapshot.flagsText = JoinStrings(flags, " ");
+	snapshot.comment = TrimAsciiCopy(info.comment);
+	return ComputeSnapshotVariableDigest(snapshot);
+}
+
+std::string ComputeStructMemberSnapshotDigest(
+	const VariableInfo& info,
+	const std::string& resolvedType)
+{
+	SnapshotVariableDef snapshot;
+	snapshot.name = TrimAsciiCopy(info.name);
+	snapshot.typeName = resolvedType;
+	snapshot.flagsText = (info.attr & kVarAttrByRef) != 0 ? "传址" : std::string();
+	snapshot.arrayText = BuildArraySuffix(info.arrayBounds);
+	snapshot.comment = TrimAsciiCopy(info.comment);
+	return ComputeSnapshotVariableDigest(snapshot);
+}
+
+std::string ComputeStructSnapshotDigest(
+	const DataTypeInfo& item,
+	SymbolResolver& resolver,
+	const AnonymousTypeHints& hints)
+{
+	std::ostringstream stream;
+	stream << "name=" << TrimAsciiCopy(item.name) << "\n";
+	stream << "public=" << (IsStructPublic(item) ? 1 : 0) << "\n";
+	stream << "comment=" << TrimAsciiCopy(item.comment) << "\n";
+	stream << "members=" << item.members.size() << "\n";
+	const std::string typeName = TrimAsciiCopy(item.name);
+	for (const auto& member : item.members) {
+		stream << ComputeStructMemberSnapshotDigest(
+			member,
+			ResolveMemberTypeWithHints(member, typeName, resolver, hints)) << "\n";
+	}
+	return ComputeTextDigest(stream.str());
+}
+
+std::string BuildConstantSnapshotValueText(const ConstantInfo& item)
+{
+	std::string valueText = item.valueText;
+	if (StartsWithText(valueText, kTextLiteralLeftQuote) && EndsWithText(valueText, kTextLiteralRightQuote)) {
+		valueText = BuildDumpTextLiteral(
+			StripWrappedText(valueText, kTextLiteralLeftQuote, kTextLiteralRightQuote),
+			item.longText);
+	}
+	else if (!valueText.empty() &&
+		valueText.find_first_of("eE") != std::string::npos &&
+		valueText.find_first_not_of("0123456789+-.eE") == std::string::npos) {
+		try {
+			valueText = FormatNumberLiteral(std::stod(valueText));
+		}
+		catch (...) {
+		}
+	}
+	return valueText;
+}
+
+std::string ComputeConstantSnapshotDigest(const ConstantInfo& item)
+{
+	std::ostringstream stream;
+	stream << "name=" << TrimAsciiCopy(item.name) << "\n";
+	stream << "value=" << BuildConstantSnapshotValueText(item) << "\n";
+	stream << "longText=" << (item.longText ? 1 : 0) << "\n";
+	stream << "public=" << ((item.attr & 0x0002) != 0 ? 1 : 0) << "\n";
+	stream << "comment=" << TrimAsciiCopy(item.comment);
+	return ComputeTextDigest(stream.str());
+}
+
+std::string ComputeResourceSnapshotDigest(const ConstantInfo& item)
+{
+	const std::string dataDigest = ComputeTextDigest(std::string(
+		reinterpret_cast<const char*>(item.rawData.data()),
+		item.rawData.size()));
+	std::ostringstream stream;
+	stream << "pageType=" << item.pageType << "\n";
+	stream << "name=" << TrimAsciiCopy(item.name) << "\n";
+	stream << "public=" << ((item.attr & 0x0002) != 0 ? 1 : 0) << "\n";
+	stream << "comment=" << TrimAsciiCopy(item.comment) << "\n";
+	stream << "data=" << dataDigest;
+	return ComputeTextDigest(stream.str());
+}
+
+std::string ComputeDllSnapshotDigest(
+	const DllInfo& item,
+	SymbolResolver& resolver,
+	const AnonymousTypeHints& hints)
+{
+	std::ostringstream stream;
+	stream << "name=" << TrimAsciiCopy(item.name) << "\n";
+	stream << "return=" << TrimAsciiCopy(resolver.ResolveType(item.returnType)) << "\n";
+	stream << "file=" << item.fileName << "\n";
+	stream << "command=" << item.commandName << "\n";
+	stream << "public=" << ((item.attr & 0x2) != 0 ? 1 : 0) << "\n";
+	stream << "comment=" << TrimAsciiCopy(item.comment) << "\n";
+	stream << "params=" << item.params.size() << "\n";
+	const std::string dllName = TrimAsciiCopy(item.name);
+	for (const auto& param : item.params) {
+		stream << ComputeDllParamSnapshotDigest(
+			param,
+			ResolveDllParamTypeWithHints(param, dllName, resolver, hints)) << "\n";
+	}
+	return ComputeTextDigest(stream.str());
+}
+
+std::string ComputeSnapshotMethodDigest(const SnapshotMethodDef& method)
+{
+	std::ostringstream stream;
+	stream << "name=" << method.name << "\n";
+	stream << "return=" << method.returnTypeName << "\n";
+	stream << "public=" << (method.isPublic ? 1 : 0) << "\n";
+	stream << "comment=" << method.comment << "\n";
+	stream << "params=" << method.params.size() << "\n";
+	for (const auto& item : method.params) {
+		stream << ComputeSnapshotVariableDigest(item) << "\n";
+	}
+	stream << "locals=" << method.locals.size() << "\n";
+	for (const auto& item : method.locals) {
+		stream << ComputeSnapshotVariableDigest(item) << "\n";
+	}
+	stream << "body=";
+	bool firstBodyLine = true;
+	for (const auto& line : method.bodyLines) {
+		const std::string trimmed = TrimAsciiCopy(line);
+		if (trimmed.empty() || (!trimmed.empty() && trimmed.front() == '\'')) {
+			continue;
+		}
+		if (!firstBodyLine) {
+			stream << "\r\n";
+		}
+		firstBodyLine = false;
+		stream << line;
+	}
+	return ComputeTextDigest(stream.str());
+}
+
+std::string ComputeSnapshotClassShapeDigest(const SnapshotClassDef& snapshot)
+{
+	std::ostringstream stream;
+	stream << "name=" << snapshot.name << "\n";
+	stream << "base=" << snapshot.baseClassName << "\n";
+	stream << "public=" << (snapshot.isPublic ? 1 : 0) << "\n";
+	stream << "comment=" << snapshot.comment << "\n";
+	stream << "vars=" << snapshot.vars.size() << "\n";
+	for (const auto& item : snapshot.vars) {
+		stream << ComputeSnapshotVariableDigest(item) << "\n";
+	}
+	return ComputeTextDigest(stream.str());
+}
+
+bool TryBuildProgramPageSnapshot(const Page& page, SnapshotClassDef& outSnapshot)
+{
+	outSnapshot = {};
+
+	size_t index = 0;
+	while (index < page.lines.size() && TrimAsciiCopy(page.lines[index]) != ".版本 2") {
+		++index;
+	}
+	if (index < page.lines.size()) {
+		++index;
+	}
+	while (index < page.lines.size()) {
+		const std::string trimmed = TrimAsciiCopy(page.lines[index]);
+		if (trimmed.empty() || StartsWith(trimmed, ".支持库 ")) {
+			++index;
+			continue;
+		}
+		break;
+	}
+
+	std::vector<std::string> fields;
+	if (index >= page.lines.size() || !ParseDefinitionFieldsForSnapshot(TrimAsciiCopy(page.lines[index]), "程序集", fields)) {
+		return false;
+	}
+	outSnapshot.name = GetSnapshotFieldOrEmpty(fields, 0);
+	outSnapshot.baseClassName = GetSnapshotFieldOrEmpty(fields, 1);
+	outSnapshot.isPublic = GetSnapshotFieldOrEmpty(fields, 2) == "公开";
+	if (fields.size() > 3) {
+		std::vector<std::string> remain(fields.begin() + 3, fields.end());
+		outSnapshot.comment = JoinSnapshotFields(remain);
+	}
+	++index;
+
+	while (index < page.lines.size()) {
+		const std::string trimmed = TrimAsciiCopy(page.lines[index]);
+		if (trimmed.empty()) {
+			++index;
+			continue;
+		}
+		if (StartsWith(trimmed, ".程序集变量")) {
+			if (!ParseDefinitionFieldsForSnapshot(trimmed, "程序集变量", fields)) {
+				++index;
+				continue;
+			}
+			SnapshotVariableDef variable;
+			variable.name = GetSnapshotFieldOrEmpty(fields, 0);
+			variable.typeName = GetSnapshotFieldOrEmpty(fields, 1);
+			variable.arrayText = GetSnapshotFieldOrEmpty(fields, 3);
+			if (fields.size() > 4) {
+				std::vector<std::string> remain(fields.begin() + 4, fields.end());
+				variable.comment = JoinSnapshotFields(remain);
+			}
+			outSnapshot.vars.push_back(std::move(variable));
+			++index;
+			continue;
+		}
+		if (StartsWith(trimmed, ".子程序")) {
+			SnapshotMethodDef method;
+			ParseDefinitionFieldsForSnapshot(trimmed, "子程序", fields);
+			method.name = GetSnapshotFieldOrEmpty(fields, 0);
+			method.returnTypeName = GetSnapshotFieldOrEmpty(fields, 1);
+			method.isPublic = GetSnapshotFieldOrEmpty(fields, 2) == "公开";
+			if (fields.size() > 3) {
+				std::vector<std::string> remain(fields.begin() + 3, fields.end());
+				method.comment = JoinSnapshotFields(remain);
+			}
+			++index;
+
+			while (index < page.lines.size()) {
+				const std::string line = TrimAsciiCopy(page.lines[index]);
+				if (StartsWith(line, ".参数")) {
+					ParseDefinitionFieldsForSnapshot(line, "参数", fields);
+					SnapshotVariableDef variable;
+					variable.name = GetSnapshotFieldOrEmpty(fields, 0);
+					variable.typeName = GetSnapshotFieldOrEmpty(fields, 1);
+					variable.flagsText = GetSnapshotFieldOrEmpty(fields, 2);
+					if (fields.size() > 3) {
+						std::vector<std::string> remain(fields.begin() + 3, fields.end());
+						variable.comment = JoinSnapshotFields(remain);
+					}
+					method.params.push_back(std::move(variable));
+					++index;
+					continue;
+				}
+				if (StartsWith(line, ".局部变量")) {
+					ParseDefinitionFieldsForSnapshot(line, "局部变量", fields);
+					SnapshotVariableDef variable;
+					variable.name = GetSnapshotFieldOrEmpty(fields, 0);
+					variable.typeName = GetSnapshotFieldOrEmpty(fields, 1);
+					variable.flagsText = GetSnapshotFieldOrEmpty(fields, 2);
+					variable.arrayText = GetSnapshotFieldOrEmpty(fields, 3);
+					if (fields.size() > 4) {
+						std::vector<std::string> remain(fields.begin() + 4, fields.end());
+						variable.comment = JoinSnapshotFields(remain);
+					}
+					method.locals.push_back(std::move(variable));
+					++index;
+					continue;
+				}
+				break;
+			}
+
+			while (index < page.lines.size()) {
+				const std::string line = page.lines[index];
+				const std::string trimmedLine = TrimAsciiCopy(line);
+				if (StartsWith(trimmedLine, ".子程序")) {
+					break;
+				}
+				method.bodyLines.push_back(line);
+				++index;
+			}
+			outSnapshot.methods.push_back(std::move(method));
+			continue;
+		}
+		++index;
+	}
+	return true;
+}
+
+std::string BuildItemKey(
+	const std::string& prefix,
+	const std::string& rawName,
+	std::unordered_map<std::string, int>& counters)
+{
+	std::string logicalName = TrimAsciiCopy(rawName);
+	if (logicalName.empty()) {
+		logicalName = prefix;
+	}
+
+	const std::string baseKey = prefix + ":" + logicalName;
+	int& counter = counters[baseKey];
+	++counter;
+	if (counter == 1) {
+		return baseKey;
+	}
+	return baseKey + "#" + std::to_string(counter);
+}
+
+std::string FindCodePageNameById(const ProgramSection& program, const std::int32_t id)
+{
+	for (const auto& item : program.codePages) {
+		if (item.header.dwId == id) {
+			return item.name;
+		}
+	}
+	return std::string();
+}
+
+std::string BuildFolderKey(const std::int32_t folderKey)
+{
+	return "folder:" + std::to_string(folderKey);
+}
+
+std::string BuildRelativePath(
+	const std::unordered_map<std::int32_t, const FolderInfo*>& folderByKey,
+	const std::int32_t folderKey,
+	const std::string& baseDir,
+	const std::string& fileName)
+{
+	std::vector<std::string> parts;
+	parts.push_back(baseDir);
+
+	std::vector<std::string> folderNames;
+	std::int32_t currentKey = folderKey;
+	while (currentKey != 0) {
+		const auto it = folderByKey.find(currentKey);
+		if (it == folderByKey.end() || it->second == nullptr) {
+			break;
+		}
+		folderNames.push_back(TrimAsciiCopy(it->second->name));
+		currentKey = it->second->parentKey;
+	}
+	std::reverse(folderNames.begin(), folderNames.end());
+	for (const auto& item : folderNames) {
+		if (!item.empty()) {
+			parts.push_back(item);
+		}
+	}
+	parts.push_back(fileName);
+	return JoinStrings(parts, "/");
+}
+
+bool BuildBundleFromSections(
+	const ModuleSections& sections,
+	const std::string& sourcePath,
+	ProjectBundle& outBundle)
+{
+	Document document;
+	GenerateOptions options;
+	options.includeImportedPages = true;
+	if (!BuildDocumentFromSections(sections, sourcePath, options, document)) {
+		return false;
+	}
+
+	ProjectBundle bundle;
+	bundle.sourcePath = sourcePath;
+	bundle.projectName = document.projectName;
+	bundle.projectNameStored = sections.hasUserInfo && !TrimAsciiCopy(sections.userInfo.programName).empty();
+	bundle.versionText = document.versionText;
+	bundle.dependencies = document.dependencies;
+	bundle.nativeProgramHeader = BundleNativeProgramHeaderSnapshot{
+		sections.program.header.versionFlag1,
+		sections.program.header.unk1,
+		sections.program.header.unk2_1,
+		sections.program.header.unk2_2,
+		sections.program.header.unk2_3,
+		sections.program.header.supportLibraryInfo,
+		sections.program.header.flag1,
+		sections.program.header.flag2,
+		sections.program.header.unk3Op,
+		sections.program.header.icon,
+		sections.program.header.debugCommandLine
+	};
+	std::vector<EComDependencyRecord> dependencyRecords;
+	(void)ParseEComDependencies(sections.ecomSectionBytes, dependencyRecords);
+	const AnonymousTypeHints anonymousTypeHints = BuildAnonymousTypeHints(sections, sourcePath);
+	SymbolResolver resolver(sections.program, sections.resources, sourcePath);
+
+	std::unordered_map<std::int32_t, std::string> itemKeys;
+	std::unordered_map<std::string, int> keyCounters;
+	for (const auto& pageInfo : sections.program.codePages) {
+		const auto functions = CollectPageFunctions(sections.program, pageInfo);
+		if (!ShouldKeepPage(sections, dependencyRecords, pageInfo, functions, true)) {
+			continue;
+		}
+		itemKeys.insert_or_assign(pageInfo.header.dwId, BuildItemKey("class", pageInfo.name, keyCounters));
+	}
+	for (const auto& item : sections.program.globals) {
+		if (IsGlobalHidden(item) || IsDependencyDefinedId(dependencyRecords, item.marker)) {
+			continue;
+		}
+		itemKeys.insert_or_assign(item.marker, BuildItemKey("global", item.name, keyCounters));
+	}
+	for (const auto& item : sections.program.dataTypes) {
+		if (IsTxt2EPlaceholderStruct(item) ||
+			IsStructHidden(item) ||
+			IsDependencyDefinedId(dependencyRecords, item.header.dwId)) {
+			continue;
+		}
+		itemKeys.insert_or_assign(item.header.dwId, BuildItemKey("struct", item.name, keyCounters));
+	}
+	for (const auto& item : sections.program.dlls) {
+		if (IsDllHidden(item) || IsDependencyDefinedId(dependencyRecords, item.header.dwId)) {
+			continue;
+		}
+		itemKeys.insert_or_assign(item.header.dwId, BuildItemKey("dll", item.name, keyCounters));
+	}
+	for (const auto& item : sections.resources.constants) {
+		if (IsConstantHidden(item) || IsDependencyDefinedId(dependencyRecords, item.marker)) {
+			continue;
+		}
+		const std::string prefix = item.pageType == kConstPageImage ? "image" : (item.pageType == kConstPageSound ? "sound" : "constant");
+		itemKeys.insert_or_assign(item.marker, BuildItemKey(prefix, item.name, keyCounters));
+	}
+	for (const auto& item : sections.resources.forms) {
+		itemKeys.insert_or_assign(item.header.dwId, BuildItemKey("form", item.name, keyCounters));
+	}
+
+	std::unordered_map<std::int32_t, const FolderInfo*> folderByKey;
+	std::unordered_map<std::int32_t, std::int32_t> itemFolderKey;
+	for (const auto& folder : sections.folders.folders) {
+		folderByKey.insert_or_assign(folder.key, &folder);
+		for (const auto child : folder.children) {
+			if ((child & epl_system_id::kMaskType) != 0) {
+				itemFolderKey.insert_or_assign(child, folder.key);
+			}
+		}
+	}
+
+	size_t programPageIndex = 0;
+	size_t formXmlIndex = 0;
+	for (const auto& page : document.pages) {
+		if (page.typeName == "程序集") {
+			while (programPageIndex < sections.program.codePages.size()) {
+				const auto& candidate = sections.program.codePages[programPageIndex];
+				const auto functions = CollectPageFunctions(sections.program, candidate);
+				if (ShouldKeepPage(sections, dependencyRecords, candidate, functions, true)) {
+					break;
+				}
+				++programPageIndex;
+			}
+			if (programPageIndex >= sections.program.codePages.size()) {
+				continue;
+			}
+
+			const auto& pageInfo = sections.program.codePages[programPageIndex++];
+			const auto functions = CollectPageFunctions(sections.program, pageInfo);
+			BundleSourceFile file;
+			file.key = itemKeys[pageInfo.header.dwId];
+			file.logicalName = TrimAsciiCopy(page.name);
+			file.relativePath = BuildRelativePath(
+				folderByKey,
+				itemFolderKey.contains(pageInfo.header.dwId) ? itemFolderKey[pageInfo.header.dwId] : 0,
+				"src",
+				file.logicalName + ".txt");
+			file.content = JoinPageLines(page.lines);
+			bundle.sourceFiles.push_back(std::move(file));
+
+			SnapshotClassDef pageSnapshot;
+			const bool hasPageSnapshot = TryBuildProgramPageSnapshot(page, pageSnapshot);
+			BundleNativeSourceFileSnapshot snapshot;
+			snapshot.contentDigest = ComputeTextDigest(bundle.sourceFiles.back().content);
+			if (hasPageSnapshot) {
+				snapshot.classShapeDigest = ComputeSnapshotClassShapeDigest(pageSnapshot);
+			}
+			snapshot.classId = pageInfo.header.dwId;
+			snapshot.classMemoryAddress = pageInfo.header.dwUnk;
+			snapshot.formId = pageInfo.unk1;
+			snapshot.baseClass = pageInfo.baseClass;
+			for (const auto& pageVar : pageInfo.pageVars) {
+				snapshot.classVarIds.push_back(pageVar.marker);
+			}
+			for (const auto* functionInfo : functions) {
+				if (functionInfo == nullptr || IsImportedFunction(*functionInfo)) {
+					continue;
+				}
+				BundleNativeMethodSnapshot methodSnapshot;
+				if (hasPageSnapshot && snapshot.methods.size() < pageSnapshot.methods.size()) {
+					const auto& methodTextSnapshot = pageSnapshot.methods[snapshot.methods.size()];
+					methodSnapshot.name = methodTextSnapshot.name;
+					methodSnapshot.textDigest = ComputeSnapshotMethodDigest(methodTextSnapshot);
+				}
+				methodSnapshot.id = functionInfo->header.dwId;
+				methodSnapshot.memoryAddress = functionInfo->header.dwUnk;
+				methodSnapshot.attr = functionInfo->attr;
+				for (const auto& param : functionInfo->params) {
+					methodSnapshot.paramIds.push_back(param.marker);
+				}
+				for (const auto& local : functionInfo->locals) {
+					methodSnapshot.localIds.push_back(local.marker);
+				}
+				methodSnapshot.lineOffset = functionInfo->lineOffset;
+				methodSnapshot.blockOffset = functionInfo->blockOffset;
+				methodSnapshot.methodReference = functionInfo->methodReference;
+				methodSnapshot.variableReference = functionInfo->variableReference;
+				methodSnapshot.constantReference = functionInfo->constantReference;
+				methodSnapshot.expressionData = functionInfo->expressionData;
+				snapshot.methods.push_back(std::move(methodSnapshot));
+			}
+			bundle.nativeSourceSnapshots.push_back(std::move(snapshot));
+		}
+		else if (page.typeName == "全局变量") {
+			bundle.globalText = JoinPageLines(page.lines);
+			for (const auto& item : sections.program.globals) {
+				if (IsGlobalHidden(item) || IsDependencyDefinedId(dependencyRecords, item.marker)) {
+					continue;
+				}
+				BundleNativeGlobalSnapshot snapshot;
+				snapshot.name = TrimAsciiCopy(item.name);
+				snapshot.textDigest = ComputeGlobalSnapshotDigest(item, resolver);
+				snapshot.id = item.marker;
+				bundle.nativeGlobalSnapshots.push_back(std::move(snapshot));
+			}
+		}
+		else if (page.typeName == "自定义数据类型") {
+			bundle.dataTypeText = JoinPageLines(page.lines);
+			for (const auto& item : sections.program.dataTypes) {
+				if (IsTxt2EPlaceholderStruct(item) ||
+					IsStructHidden(item) ||
+					IsDependencyDefinedId(dependencyRecords, item.header.dwId)) {
+					continue;
+				}
+				BundleNativeStructSnapshot snapshot;
+				snapshot.name = TrimAsciiCopy(item.name);
+				snapshot.textDigest = ComputeStructSnapshotDigest(item, resolver, anonymousTypeHints);
+				snapshot.id = item.header.dwId;
+				snapshot.memoryAddress = item.header.dwUnk;
+				for (const auto& member : item.members) {
+					snapshot.memberIds.push_back(member.marker);
+				}
+				bundle.nativeStructSnapshots.push_back(std::move(snapshot));
+			}
+		}
+		else if (page.typeName == "DLL命令") {
+			bundle.dllDeclareText = JoinPageLines(page.lines);
+			for (const auto& item : sections.program.dlls) {
+				if (IsDllHidden(item) || IsDependencyDefinedId(dependencyRecords, item.header.dwId)) {
+					continue;
+				}
+				BundleNativeDllSnapshot snapshot;
+				snapshot.name = TrimAsciiCopy(item.name);
+				snapshot.textDigest = ComputeDllSnapshotDigest(item, resolver, anonymousTypeHints);
+				snapshot.id = item.header.dwId;
+				snapshot.memoryAddress = item.header.dwUnk;
+				for (const auto& param : item.params) {
+					snapshot.paramIds.push_back(param.marker);
+				}
+				bundle.nativeDllSnapshots.push_back(std::move(snapshot));
+			}
+		}
+		else if (page.typeName == "常量资源") {
+			bundle.constantText = JoinPageLines(page.lines);
+			for (const auto& item : sections.resources.constants) {
+				if (item.pageType != kConstPageValue ||
+					item.valueText == "<图片>" ||
+					item.valueText == "<声音>" ||
+					IsConstantHidden(item) ||
+					IsDependencyDefinedId(dependencyRecords, item.marker)) {
+					continue;
+				}
+				BundleNativeConstantSnapshot snapshot;
+				snapshot.name = TrimAsciiCopy(item.name);
+				snapshot.textDigest = ComputeConstantSnapshotDigest(item);
+				snapshot.id = item.marker;
+				snapshot.pageType = static_cast<std::int32_t>(item.pageType);
+				bundle.nativeConstantSnapshots.push_back(std::move(snapshot));
+			}
+		}
+	}
+
+	for (const auto& formXml : document.formXmls) {
+		if (formXmlIndex >= sections.resources.forms.size()) {
+			continue;
+		}
+
+		const auto& form = sections.resources.forms[formXmlIndex++];
+		BundleFormFile file;
+		file.key = itemKeys[form.header.dwId];
+		file.logicalName = TrimAsciiCopy(formXml.name);
+		file.relativePath = BuildRelativePath(
+			folderByKey,
+			itemFolderKey.contains(form.header.dwId) ? itemFolderKey[form.header.dwId] : 0,
+			"src",
+			file.logicalName + ".xml");
+		file.xmlText = JoinPageLines(formXml.lines);
+		bundle.formFiles.push_back(std::move(file));
+
+		const auto classKeyIt = itemKeys.find(form.unknown2);
+		if (classKeyIt != itemKeys.end()) {
+			WindowBinding binding;
+			binding.formName = TrimAsciiCopy(form.name);
+			binding.className = TrimAsciiCopy(FindCodePageNameById(sections.program, form.unknown2));
+			if (!binding.className.empty()) {
+				bundle.windowBindings.push_back(std::move(binding));
+			}
+		}
+	}
+
+	for (const auto& item : sections.resources.constants) {
+		if ((item.pageType != kConstPageImage && item.pageType != kConstPageSound) ||
+			IsConstantHidden(item) ||
+			IsDependencyDefinedId(dependencyRecords, item.marker)) {
+			continue;
+		}
+
+		BundleBinaryResource resource;
+		resource.kind = item.pageType == kConstPageImage ? BundleResourceKind::Image : BundleResourceKind::Sound;
+		resource.key = itemKeys[item.marker];
+		resource.logicalName = TrimAsciiCopy(item.name);
+		resource.relativePath = JoinStrings(
+			{
+				item.pageType == kConstPageImage ? "image" : "audio",
+				resource.logicalName + ".bin",
+			},
+			"/");
+		resource.comment = TrimAsciiCopy(item.comment);
+		resource.isPublic = (item.attr & 0x2) != 0;
+		resource.data = item.rawData;
+		bundle.resources.push_back(std::move(resource));
+
+		BundleNativeConstantSnapshot snapshot;
+		snapshot.name = TrimAsciiCopy(item.name);
+		snapshot.key = itemKeys[item.marker];
+		snapshot.textDigest = ComputeResourceSnapshotDigest(item);
+		snapshot.id = item.marker;
+		snapshot.pageType = static_cast<std::int32_t>(item.pageType);
+		bundle.nativeConstantSnapshots.push_back(std::move(snapshot));
+	}
+
+	std::unordered_set<std::string> assignedChildKeys;
+	bundle.folderAllocatedKey = sections.folders.allocatedKey;
+	for (const auto& folder : sections.folders.folders) {
+		BundleFolder bundleFolder;
+		bundleFolder.key = folder.key;
+		bundleFolder.parentKey = folder.parentKey;
+		bundleFolder.expand = folder.expand;
+		bundleFolder.name = TrimAsciiCopy(folder.name);
+		for (const auto child : folder.children) {
+			if ((child & epl_system_id::kMaskType) == 0) {
+				const std::string childKey = BuildFolderKey(child);
+				bundleFolder.childKeys.push_back(childKey);
+				assignedChildKeys.insert(childKey);
+				continue;
+			}
+			if (const auto it = itemKeys.find(child); it != itemKeys.end()) {
+				bundleFolder.childKeys.push_back(it->second);
+				assignedChildKeys.insert(it->second);
+			}
+		}
+		bundle.folders.push_back(std::move(bundleFolder));
+		if (folder.parentKey == 0) {
+			bundle.rootChildKeys.push_back(BuildFolderKey(folder.key));
+		}
+	}
+
+	const auto appendRootItemKey = [&](const std::int32_t id) {
+		const auto it = itemKeys.find(id);
+		if (it == itemKeys.end() || assignedChildKeys.contains(it->second)) {
+			return;
+		}
+		bundle.rootChildKeys.push_back(it->second);
+	};
+
+	for (const auto& item : sections.program.codePages) {
+		const auto functions = CollectPageFunctions(sections.program, item);
+		if (!ShouldKeepPage(sections, dependencyRecords, item, functions, true)) {
+			continue;
+		}
+		appendRootItemKey(item.header.dwId);
+	}
+	for (const auto& item : sections.resources.forms) {
+		appendRootItemKey(item.header.dwId);
+	}
+	for (const auto& item : sections.program.dataTypes) {
+		if (IsTxt2EPlaceholderStruct(item) ||
+			IsStructHidden(item) ||
+			IsDependencyDefinedId(dependencyRecords, item.header.dwId)) {
+			continue;
+		}
+		appendRootItemKey(item.header.dwId);
+	}
+	for (const auto& item : sections.program.dlls) {
+		if (IsDllHidden(item) || IsDependencyDefinedId(dependencyRecords, item.header.dwId)) {
+			continue;
+		}
+		appendRootItemKey(item.header.dwId);
+	}
+	for (const auto& item : sections.program.globals) {
+		if (IsGlobalHidden(item) || IsDependencyDefinedId(dependencyRecords, item.marker)) {
+			continue;
+		}
+		appendRootItemKey(item.marker);
+	}
+	for (const auto& item : sections.resources.constants) {
+		if (IsConstantHidden(item) || IsDependencyDefinedId(dependencyRecords, item.marker)) {
+			continue;
+		}
+		appendRootItemKey(item.marker);
+	}
+
+	outBundle = std::move(bundle);
+	return true;
+}
+
+class BundleDigestWriter {
+public:
+	void WriteBool(const bool value)
+	{
+		WriteU8(value ? 1 : 0);
+	}
+
+	void WriteI32(const std::int32_t value)
+	{
+		WriteRaw(&value, sizeof(value));
+	}
+
+	void WriteU64(const std::uint64_t value)
+	{
+		WriteRaw(&value, sizeof(value));
+	}
+
+	void WriteU8(const std::uint8_t value)
+	{
+		WriteRaw(&value, sizeof(value));
+	}
+
+	void WriteString(const std::string& value)
+	{
+		WriteU64(static_cast<std::uint64_t>(value.size()));
+		if (!value.empty()) {
+			WriteRaw(value.data(), value.size());
+		}
+	}
+
+	void WriteBytes(const std::vector<std::uint8_t>& value)
+	{
+		WriteU64(static_cast<std::uint64_t>(value.size()));
+		if (!value.empty()) {
+			WriteRaw(value.data(), value.size());
+		}
+	}
+
+	std::string FinishHex() const
+	{
+		std::ostringstream stream;
+		stream << std::hex << std::uppercase << std::setfill('0') << std::setw(16) << m_hash;
+		return stream.str();
+	}
+
+private:
+	void WriteRaw(const void* data, const size_t size)
+	{
+		const auto* bytes = static_cast<const std::uint8_t*>(data);
+		for (size_t index = 0; index < size; ++index) {
+			m_hash ^= bytes[index];
+			m_hash *= 1099511628211ull;
+		}
+	}
+
+	std::uint64_t m_hash = 14695981039346656037ull;
+};
+
 }  // namespace
+
+bool CaptureNativeSectionSnapshots(
+	const std::vector<std::uint8_t>& inputBytes,
+	std::vector<NativeSectionSnapshot>& outSnapshots,
+	std::string* outError)
+{
+	return CaptureNativeSectionSnapshotsInternal(inputBytes, outSnapshots, outError);
+}
+
+std::string ComputeTextDigest(const std::string& text)
+{
+	BundleDigestWriter writer;
+	writer.WriteString(text);
+	return writer.FinishHex();
+}
+
+std::string ComputeBundleDigest(const ProjectBundle& bundle)
+{
+	BundleDigestWriter writer;
+	writer.WriteString(bundle.projectName);
+	writer.WriteString(bundle.versionText);
+
+	writer.WriteU64(static_cast<std::uint64_t>(bundle.dependencies.size()));
+	for (const auto& item : bundle.dependencies) {
+		writer.WriteI32(item.kind == DependencyKind::ELib ? 0 : 1);
+		writer.WriteString(item.name);
+		writer.WriteString(item.fileName);
+		writer.WriteString(item.guid);
+		writer.WriteString(item.versionText);
+		writer.WriteString(item.path);
+		writer.WriteBool(item.reExport);
+	}
+
+	writer.WriteU64(static_cast<std::uint64_t>(bundle.sourceFiles.size()));
+	for (const auto& item : bundle.sourceFiles) {
+		writer.WriteString(item.key);
+		writer.WriteString(item.logicalName);
+		writer.WriteString(item.relativePath);
+		writer.WriteString(item.content);
+	}
+
+	writer.WriteU64(static_cast<std::uint64_t>(bundle.formFiles.size()));
+	for (const auto& item : bundle.formFiles) {
+		writer.WriteString(item.key);
+		writer.WriteString(item.logicalName);
+		writer.WriteString(item.relativePath);
+		writer.WriteString(item.xmlText);
+	}
+
+	writer.WriteString(bundle.dataTypeText);
+	writer.WriteString(bundle.dllDeclareText);
+	writer.WriteString(bundle.constantText);
+	writer.WriteString(bundle.globalText);
+
+	writer.WriteU64(static_cast<std::uint64_t>(bundle.resources.size()));
+	for (const auto& item : bundle.resources) {
+		writer.WriteI32(item.kind == BundleResourceKind::Image ? 0 : 1);
+		writer.WriteString(item.key);
+		writer.WriteString(item.logicalName);
+		writer.WriteString(item.relativePath);
+		writer.WriteString(item.comment);
+		writer.WriteBool(item.isPublic);
+		writer.WriteBytes(item.data);
+	}
+
+	writer.WriteI32(bundle.folderAllocatedKey);
+	writer.WriteU64(static_cast<std::uint64_t>(bundle.folders.size()));
+	for (const auto& item : bundle.folders) {
+		writer.WriteI32(item.key);
+		writer.WriteI32(item.parentKey);
+		writer.WriteBool(item.expand);
+		writer.WriteString(item.name);
+		writer.WriteU64(static_cast<std::uint64_t>(item.childKeys.size()));
+		for (const auto& childKey : item.childKeys) {
+			writer.WriteString(childKey);
+		}
+	}
+
+	writer.WriteU64(static_cast<std::uint64_t>(bundle.rootChildKeys.size()));
+	for (const auto& childKey : bundle.rootChildKeys) {
+		writer.WriteString(childKey);
+	}
+
+	writer.WriteU64(static_cast<std::uint64_t>(bundle.windowBindings.size()));
+	for (const auto& item : bundle.windowBindings) {
+		writer.WriteString(item.formName);
+		writer.WriteString(item.className);
+	}
+	return writer.FinishHex();
+}
 
 bool Generator::GenerateDocument(const std::string& inputPath, Document& outDocument, std::string* outError) const
 {
 	return GenerateDocumentInternal(inputPath, {}, outDocument, outError);
+}
+
+bool Generator::GenerateBundle(const std::string& inputPath, ProjectBundle& outBundle, std::string* outError) const
+{
+	if (outError != nullptr) {
+		outError->clear();
+	}
+
+	ModuleSections sections;
+	if (!ParseModuleSections(inputPath, sections, outError)) {
+		return false;
+	}
+	if (!BuildBundleFromSections(sections, inputPath, outBundle)) {
+		if (outError != nullptr && outError->empty()) {
+			*outError = "build_bundle_failed";
+		}
+		return false;
+	}
+	(void)ReadFileBytes(inputPath, outBundle.nativeSourceBytes);
+	outBundle.nativeBundleDigest = ComputeBundleDigest(outBundle);
+	return true;
 }
 
 bool Generator::GenerateDocumentFromBytes(
@@ -4631,6 +6303,31 @@ bool Generator::GenerateDocumentFromBytes(
 	}
 	TraceLine("GenerateDocumentFromBytes pages_done count=" + std::to_string(outDocument.pages.size()));
 	TraceLine("GenerateDocumentFromBytes end");
+	return true;
+}
+
+bool Generator::GenerateBundleFromBytes(
+	const std::vector<std::uint8_t>& inputBytes,
+	const std::string& sourcePath,
+	ProjectBundle& outBundle,
+	std::string* outError) const
+{
+	if (outError != nullptr) {
+		outError->clear();
+	}
+
+	ModuleSections sections;
+	if (!ParseModuleSectionsFromBytes(inputBytes, sections, outError)) {
+		return false;
+	}
+	if (!BuildBundleFromSections(sections, sourcePath, outBundle)) {
+		if (outError != nullptr && outError->empty()) {
+			*outError = "build_bundle_failed";
+		}
+		return false;
+	}
+	outBundle.nativeSourceBytes = inputBytes;
+	outBundle.nativeBundleDigest = ComputeBundleDigest(outBundle);
 	return true;
 }
 

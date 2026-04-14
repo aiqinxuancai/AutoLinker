@@ -467,6 +467,7 @@
     <ClCompile Include="src\AutoLinkerRuntime.cpp" />
     <ClCompile Include="src\AutoLinkerSupport.cpp" />
     <ClCompile Include="src\AutoLinkerTestApi.cpp" />
+    <ClCompile Include="src\EFolderCodec.cpp" />
     <ClCompile Include="src\ConfigManager.cpp" />
     <ClCompile Include="src\EcModulePublicInfoReader.cpp">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
@@ -544,6 +545,7 @@
     <ClInclude Include="src\AIChatToolingInternal.h" />
     <ClInclude Include="src\AIService.h" />
     <ClInclude Include="src\ConfigManager.h" />
+    <ClInclude Include="src\EFolderCodec.h" />
     <ClInclude Include="src\EcModulePublicInfoReader.h" />
     <ClInclude Include="src\EideInternalTextBridge.h" />
     <ClInclude Include="src\e2txt.h" />

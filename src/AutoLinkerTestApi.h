@@ -38,4 +38,10 @@ AUTOLINKER_TEST_API int AutoLinkerTest_GenerateE2Txt(const char* inputPath, cons
 // 执行原生 txt2e 恢复，并输出结果摘要。
 AUTOLINKER_TEST_API int AutoLinkerTest_RestoreE2Txt(const char* inputPath, const char* outputPath, char* buffer, int bufferSize);
 
+// 将 .e 文件完整解包到目录工程。
+AUTOLINKER_TEST_API int AutoLinkerTest_UnpackEProject(const char* inputPath, const char* outputDir, char* buffer, int bufferSize);
+
+// 将目录工程完整封装为 .e 文件。
+AUTOLINKER_TEST_API int AutoLinkerTest_PackEProject(const char* inputDir, const char* outputPath, char* buffer, int bufferSize);
+
 }
