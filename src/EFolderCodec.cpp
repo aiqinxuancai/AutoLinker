@@ -700,19 +700,56 @@ std::string DumpJson(const json& value)
 	return value.dump(2, ' ', false, json::error_handler_t::replace);
 }
 
+std::filesystem::path GetProjectMetadataDirPath(const std::filesystem::path& root)
+{
+	return root / "project";
+}
+
+std::filesystem::path GetModuleJsonPath(const std::filesystem::path& root)
+{
+	return GetProjectMetadataDirPath(root) / "模块.json";
+}
+
+std::filesystem::path GetMetaJsonPath(const std::filesystem::path& root)
+{
+	return GetProjectMetadataDirPath(root) / "_meta.json";
+}
+
 std::filesystem::path GetNativeSourceSnapshotPath(const std::filesystem::path& root)
 {
-	return root / "src" / ".native_source.bin";
+	return GetProjectMetadataDirPath(root) / ".native_source.bin";
 }
 
 std::filesystem::path GetNativeSourceMapPath(const std::filesystem::path& root)
 {
-	return root / "src" / ".native_source_map.json";
+	return GetProjectMetadataDirPath(root) / ".native_source_map.json";
 }
 
 std::filesystem::path GetNativeSymbolMapPath(const std::filesystem::path& root)
 {
-	return root / "src" / ".native_symbol_map.json";
+	return GetProjectMetadataDirPath(root) / ".native_symbol_map.json";
+}
+
+std::filesystem::path GetLegacyModuleJsonPath(const std::filesystem::path& root)
+{
+	return root / "src" / "模块.json";
+}
+
+std::filesystem::path GetLegacyMetaJsonPath(const std::filesystem::path& root)
+{
+	return root / "src" / "_meta.json";
+}
+
+bool ReadProjectJsonWithLegacyFallback(
+	const std::filesystem::path& root,
+	const std::filesystem::path& primaryPath,
+	const std::filesystem::path& legacyPath,
+	json& outJson)
+{
+	if (ReadJsonFile(primaryPath, outJson)) {
+		return true;
+	}
+	return ReadJsonFile(legacyPath, outJson);
 }
 
 std::string EncodeBase64(const std::vector<std::uint8_t>& bytes)
@@ -814,10 +851,11 @@ bool BundleDirectoryCodec::WriteBundle(const ProjectBundle& bundle, const std::s
 	}
 
 	std::unordered_set<std::string> usedRelativePaths;
-	ReserveRelativePath("src/模块.json", usedRelativePaths);
-	ReserveRelativePath("src/_meta.json", usedRelativePaths);
-	ReserveRelativePath("src/.native_source.bin", usedRelativePaths);
-	ReserveRelativePath("src/.native_source_map.json", usedRelativePaths);
+	ReserveRelativePath("project/模块.json", usedRelativePaths);
+	ReserveRelativePath("project/_meta.json", usedRelativePaths);
+	ReserveRelativePath("project/.native_source.bin", usedRelativePaths);
+	ReserveRelativePath("project/.native_source_map.json", usedRelativePaths);
+	ReserveRelativePath("project/.native_symbol_map.json", usedRelativePaths);
 	ReserveRelativePath("src/.数据类型.txt", usedRelativePaths);
 	ReserveRelativePath("src/.DLL声明.txt", usedRelativePaths);
 	ReserveRelativePath("src/.常量.txt", usedRelativePaths);
@@ -833,7 +871,7 @@ bool BundleDirectoryCodec::WriteBundle(const ProjectBundle& bundle, const std::s
 	for (const auto& dependency : bundle.dependencies) {
 		moduleJson["dependencies"].push_back(DependencyToJson(dependency));
 	}
-	if (!WriteUtf8TextFileBom(root / "src" / "模块.json", NormalizeCrLf(DumpJson(moduleJson)))) {
+	if (!WriteUtf8TextFileBom(GetModuleJsonPath(root), NormalizeCrLf(DumpJson(moduleJson)))) {
 		if (outError != nullptr) {
 			*outError = "write_module_json_failed";
 		}
@@ -1016,7 +1054,7 @@ bool BundleDirectoryCodec::WriteBundle(const ProjectBundle& bundle, const std::s
 
 	metaJson["nativeBundleDigest"] = LocalToUtf8Text(ComputeBundleDigest(persistedBundle));
 
-	if (!WriteUtf8TextFileBom(root / "src" / "_meta.json", NormalizeCrLf(DumpJson(metaJson)))) {
+	if (!WriteUtf8TextFileBom(GetMetaJsonPath(root), NormalizeCrLf(DumpJson(metaJson)))) {
 		if (outError != nullptr) {
 			*outError = "write_meta_json_failed";
 		}
@@ -1042,7 +1080,11 @@ bool BundleDirectoryCodec::ReadBundle(const std::string& inputDir, ProjectBundle
 
 	const std::filesystem::path root = std::filesystem::path(inputDir);
 	json moduleJson;
-	if (!ReadJsonFile(root / "src" / "模块.json", moduleJson)) {
+	if (!ReadProjectJsonWithLegacyFallback(
+			root,
+			GetModuleJsonPath(root),
+			GetLegacyModuleJsonPath(root),
+			moduleJson)) {
 		if (outError != nullptr) {
 			*outError = "read_module_json_failed";
 		}
@@ -1050,7 +1092,11 @@ bool BundleDirectoryCodec::ReadBundle(const std::string& inputDir, ProjectBundle
 	}
 
 	json metaJson;
-	if (!ReadJsonFile(root / "src" / "_meta.json", metaJson)) {
+	if (!ReadProjectJsonWithLegacyFallback(
+			root,
+			GetMetaJsonPath(root),
+			GetLegacyMetaJsonPath(root),
+			metaJson)) {
 		if (outError != nullptr) {
 			*outError = "read_meta_json_failed";
 		}

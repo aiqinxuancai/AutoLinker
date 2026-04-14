@@ -996,10 +996,21 @@ bool WaitForRoundtripInstance(
 	outError.clear();
 
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSeconds);
+	const auto fallbackReadyAt = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 	while (std::chrono::steady_clock::now() < deadline) {
 		outLastInstances = ScanEideInstances();
+		const IdeInstanceInfo* fallbackInstance = nullptr;
 		for (const auto& instance : outLastInstances) {
 			if (NormalizeUtf8PathTextForCompare(instance.sourceFilePath) != normalizedRoundtripPath) {
+				if (preferredProcessId != 0 && instance.processId == preferredProcessId && !instance.endpoint.empty()) {
+					fallbackInstance = &instance;
+				}
+				else if (preferredProcessId == 0 &&
+					!ignoredProcessIds.contains(instance.processId) &&
+					!instance.endpoint.empty() &&
+					fallbackInstance == nullptr) {
+					fallbackInstance = &instance;
+				}
 				continue;
 			}
 			if (preferredProcessId != 0 && instance.processId == preferredProcessId) {
@@ -1011,6 +1022,13 @@ bool WaitForRoundtripInstance(
 				return true;
 			}
 		}
+
+		if (fallbackInstance != nullptr &&
+			std::chrono::steady_clock::now() >= fallbackReadyAt) {
+			outInfo = *fallbackInstance;
+			return true;
+		}
+
 		std::this_thread::sleep_for(std::chrono::milliseconds(500));
 	}
 
@@ -1106,11 +1124,18 @@ int RunCompileEcomFile(
 	summary["opened_source_file_path"] = openedInstance.sourceFilePath;
 	summary["project_type"] = openedInstance.projectType;
 
-	if (NormalizeUtf8PathTextForCompare(openedInstance.sourceFilePath) != normalizedInputPath) {
+	const bool inputPathConfirmed =
+		NormalizeUtf8PathTextForCompare(openedInstance.sourceFilePath) == normalizedInputPath;
+	summary["opened_source_path_confirmed"] = inputPathConfirmed;
+	summary["used_instance_fallback"] =
+		openedInstance.processId == launchedProcessId && !inputPathConfirmed;
+	if (!openedInstance.sourceFilePath.empty() && !inputPathConfirmed) {
 		summary["error"] = "opened_source_path_mismatch";
 		return PrintStringResult("compile-ecom", -1, summary.dump().c_str());
 	}
-	if (openedInstance.projectType != "ecom") {
+	if (!openedInstance.projectType.empty() &&
+		openedInstance.projectType != "unknown" &&
+		openedInstance.projectType != "ecom") {
 		summary["error"] = "project_type_invalid";
 		return PrintStringResult("compile-ecom", -1, summary.dump().c_str());
 	}
@@ -1255,15 +1280,23 @@ int RunVerifyRoundTripCompile(
 	summary["opened_source_file_path"] = roundtripInstance.sourceFilePath;
 	summary["project_type"] = roundtripInstance.projectType;
 
-	if (NormalizeUtf8PathTextForCompare(roundtripInstance.sourceFilePath) != normalizedRoundtripPath) {
+	const bool roundtripPathConfirmed =
+		NormalizeUtf8PathTextForCompare(roundtripInstance.sourceFilePath) == normalizedRoundtripPath;
+	summary["opened_source_path_confirmed"] = roundtripPathConfirmed;
+	summary["used_instance_fallback"] =
+		roundtripInstance.processId == launchedProcessId && !roundtripPathConfirmed;
+	if (!roundtripInstance.sourceFilePath.empty() && !roundtripPathConfirmed) {
 		summary["error"] = "opened_source_path_mismatch";
 		return PrintStringResult("verify-roundtrip-compile", -1, summary.dump().c_str());
 	}
-	if (NormalizeUtf8PathTextForCompare(roundtripInstance.sourceFilePath) == normalizedInputPath) {
+	if (!roundtripInstance.sourceFilePath.empty() &&
+		NormalizeUtf8PathTextForCompare(roundtripInstance.sourceFilePath) == normalizedInputPath) {
 		summary["error"] = "opened_original_project_instead_of_roundtrip";
 		return PrintStringResult("verify-roundtrip-compile", -1, summary.dump().c_str());
 	}
-	if (roundtripInstance.projectType != "ecom") {
+	if (!roundtripInstance.projectType.empty() &&
+		roundtripInstance.projectType != "unknown" &&
+		roundtripInstance.projectType != "ecom") {
 		summary["error"] = "roundtrip_project_type_invalid";
 		return PrintStringResult("verify-roundtrip-compile", -1, summary.dump().c_str());
 	}
