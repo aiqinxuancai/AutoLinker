@@ -120,6 +120,7 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest module-local-dump <module-path>" << std::endl;
 	std::cout << "  AutoLinkerTest e2txt-generate <input-path> <output-path>" << std::endl;
 	std::cout << "  AutoLinkerTest e2txt-restore <input-path> <output-path>" << std::endl;
+	std::cout << "  AutoLinkerTest bundle-digest-compare <input.e> <input-dir>" << std::endl;
 }
 
 }
@@ -178,6 +179,21 @@ int main(int argc, char* argv[])
 
 		char buffer[524288] = {};
 		const int result = AutoLinkerTest_RestoreE2Txt(argv[2], argv[3], buffer, static_cast<int>(sizeof(buffer)));
+		if (result < 0) {
+			return PrintStringResult(commandName.c_str(), result, buffer);
+		}
+		std::cout << buffer << std::endl;
+		return EXIT_SUCCESS;
+	}
+
+	if (commandName == "bundle-digest-compare") {
+		if (argc != 4) {
+			PrintUsage();
+			return EXIT_FAILURE;
+		}
+
+		char buffer[524288] = {};
+		const int result = AutoLinkerTest_CompareBundleDigest(argv[2], argv[3], buffer, static_cast<int>(sizeof(buffer)));
 		if (result < 0) {
 			return PrintStringResult(commandName.c_str(), result, buffer);
 		}

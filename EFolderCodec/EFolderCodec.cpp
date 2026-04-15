@@ -206,6 +206,230 @@ bool DoPack(const std::string& inputDir, const std::string& outputPath, std::str
 	return true;
 }
 
+std::string ResourceDataDigest(const e2txt::BundleBinaryResource& resource)
+{
+	return e2txt::ComputeTextDigest(std::string(resource.data.begin(), resource.data.end()));
+}
+
+std::string BuildBundleDigestCompareText(const e2txt::ProjectBundle& fromE, const e2txt::ProjectBundle& fromDir)
+{
+	std::ostringstream stream;
+	const std::string digestFromE = e2txt::ComputeBundleDigest(fromE);
+	const std::string digestFromDir = e2txt::ComputeBundleDigest(fromDir);
+	stream
+		<< "digest_from_e=" << digestFromE << "\n"
+		<< "digest_from_dir=" << digestFromDir << "\n"
+		<< "match=" << (digestFromE == digestFromDir ? "true" : "false") << "\n";
+	if (digestFromE == digestFromDir) {
+		return stream.str();
+	}
+
+	const auto appendValueMismatch =
+		[&stream](const char* label, const std::string& left, const std::string& right) {
+			stream << "mismatch=" << label << "\n"
+				<< "left=" << left << "\n"
+				<< "right=" << right << "\n";
+		};
+
+	if (fromE.projectName != fromDir.projectName) {
+		appendValueMismatch("projectName", fromE.projectName, fromDir.projectName);
+		return stream.str();
+	}
+	if (fromE.versionText != fromDir.versionText) {
+		appendValueMismatch("versionText", fromE.versionText, fromDir.versionText);
+		return stream.str();
+	}
+	if (fromE.dependencies.size() != fromDir.dependencies.size()) {
+		stream << "mismatch=dependencies.size\nleft=" << fromE.dependencies.size()
+			<< "\nright=" << fromDir.dependencies.size() << "\n";
+		return stream.str();
+	}
+	for (size_t index = 0; index < fromE.dependencies.size(); ++index) {
+		const auto& left = fromE.dependencies[index];
+		const auto& right = fromDir.dependencies[index];
+		if (left.kind != right.kind ||
+			left.name != right.name ||
+			left.fileName != right.fileName ||
+			left.guid != right.guid ||
+			left.versionText != right.versionText ||
+			left.path != right.path ||
+			left.reExport != right.reExport) {
+			stream << "mismatch=dependencies[" << index << "]\n"
+				<< "left_name=" << left.name << "\n"
+				<< "right_name=" << right.name << "\n"
+				<< "left_file=" << left.fileName << "\n"
+				<< "right_file=" << right.fileName << "\n"
+				<< "left_guid=" << left.guid << "\n"
+				<< "right_guid=" << right.guid << "\n"
+				<< "left_version=" << left.versionText << "\n"
+				<< "right_version=" << right.versionText << "\n"
+				<< "left_path=" << left.path << "\n"
+				<< "right_path=" << right.path << "\n"
+				<< "left_reExport=" << (left.reExport ? 1 : 0) << "\n"
+				<< "right_reExport=" << (right.reExport ? 1 : 0) << "\n";
+			return stream.str();
+		}
+	}
+	if (fromE.sourceFiles.size() != fromDir.sourceFiles.size()) {
+		stream << "mismatch=sourceFiles.size\nleft=" << fromE.sourceFiles.size()
+			<< "\nright=" << fromDir.sourceFiles.size() << "\n";
+		return stream.str();
+	}
+	for (size_t index = 0; index < fromE.sourceFiles.size(); ++index) {
+		const auto& left = fromE.sourceFiles[index];
+		const auto& right = fromDir.sourceFiles[index];
+		if (left.key != right.key ||
+			left.logicalName != right.logicalName ||
+			left.relativePath != right.relativePath ||
+			left.content != right.content) {
+			stream << "mismatch=sourceFiles[" << index << "]\n"
+				<< "left_key=" << left.key << "\n"
+				<< "right_key=" << right.key << "\n"
+				<< "left_name=" << left.logicalName << "\n"
+				<< "right_name=" << right.logicalName << "\n"
+				<< "left_relative=" << left.relativePath << "\n"
+				<< "right_relative=" << right.relativePath << "\n"
+				<< "left_digest=" << e2txt::ComputeTextDigest(left.content) << "\n"
+				<< "right_digest=" << e2txt::ComputeTextDigest(right.content) << "\n";
+			return stream.str();
+		}
+	}
+	if (fromE.formFiles.size() != fromDir.formFiles.size()) {
+		stream << "mismatch=formFiles.size\nleft=" << fromE.formFiles.size()
+			<< "\nright=" << fromDir.formFiles.size() << "\n";
+		return stream.str();
+	}
+	for (size_t index = 0; index < fromE.formFiles.size(); ++index) {
+		const auto& left = fromE.formFiles[index];
+		const auto& right = fromDir.formFiles[index];
+		if (left.key != right.key ||
+			left.logicalName != right.logicalName ||
+			left.relativePath != right.relativePath ||
+			left.xmlText != right.xmlText) {
+			stream << "mismatch=formFiles[" << index << "]\n"
+				<< "left_key=" << left.key << "\n"
+				<< "right_key=" << right.key << "\n"
+				<< "left_name=" << left.logicalName << "\n"
+				<< "right_name=" << right.logicalName << "\n"
+				<< "left_relative=" << left.relativePath << "\n"
+				<< "right_relative=" << right.relativePath << "\n"
+				<< "left_digest=" << e2txt::ComputeTextDigest(left.xmlText) << "\n"
+				<< "right_digest=" << e2txt::ComputeTextDigest(right.xmlText) << "\n";
+			return stream.str();
+		}
+	}
+	if (fromE.dataTypeText != fromDir.dataTypeText) {
+		appendValueMismatch("dataTypeText.digest", e2txt::ComputeTextDigest(fromE.dataTypeText), e2txt::ComputeTextDigest(fromDir.dataTypeText));
+		return stream.str();
+	}
+	if (fromE.dllDeclareText != fromDir.dllDeclareText) {
+		appendValueMismatch("dllDeclareText.digest", e2txt::ComputeTextDigest(fromE.dllDeclareText), e2txt::ComputeTextDigest(fromDir.dllDeclareText));
+		return stream.str();
+	}
+	if (fromE.constantText != fromDir.constantText) {
+		appendValueMismatch("constantText.digest", e2txt::ComputeTextDigest(fromE.constantText), e2txt::ComputeTextDigest(fromDir.constantText));
+		return stream.str();
+	}
+	if (fromE.globalText != fromDir.globalText) {
+		appendValueMismatch("globalText.digest", e2txt::ComputeTextDigest(fromE.globalText), e2txt::ComputeTextDigest(fromDir.globalText));
+		return stream.str();
+	}
+	if (fromE.resources.size() != fromDir.resources.size()) {
+		stream << "mismatch=resources.size\nleft=" << fromE.resources.size()
+			<< "\nright=" << fromDir.resources.size() << "\n";
+		return stream.str();
+	}
+	for (size_t index = 0; index < fromE.resources.size(); ++index) {
+		const auto& left = fromE.resources[index];
+		const auto& right = fromDir.resources[index];
+		if (left.kind != right.kind ||
+			left.key != right.key ||
+			left.logicalName != right.logicalName ||
+			left.relativePath != right.relativePath ||
+			left.comment != right.comment ||
+			left.isPublic != right.isPublic ||
+			left.data != right.data) {
+			stream << "mismatch=resources[" << index << "]\n"
+				<< "left_kind=" << static_cast<int>(left.kind) << "\n"
+				<< "right_kind=" << static_cast<int>(right.kind) << "\n"
+				<< "left_key=" << left.key << "\n"
+				<< "right_key=" << right.key << "\n"
+				<< "left_name=" << left.logicalName << "\n"
+				<< "right_name=" << right.logicalName << "\n"
+				<< "left_relative=" << left.relativePath << "\n"
+				<< "right_relative=" << right.relativePath << "\n"
+				<< "left_size=" << left.data.size() << "\n"
+				<< "right_size=" << right.data.size() << "\n"
+				<< "left_digest=" << ResourceDataDigest(left) << "\n"
+				<< "right_digest=" << ResourceDataDigest(right) << "\n";
+			return stream.str();
+		}
+	}
+	if (fromE.folderAllocatedKey != fromDir.folderAllocatedKey) {
+		stream << "mismatch=folderAllocatedKey\nleft=" << fromE.folderAllocatedKey
+			<< "\nright=" << fromDir.folderAllocatedKey << "\n";
+		return stream.str();
+	}
+	if (fromE.rootChildKeys != fromDir.rootChildKeys) {
+		stream << "mismatch=rootChildKeys\nleft_count=" << fromE.rootChildKeys.size()
+			<< "\nright_count=" << fromDir.rootChildKeys.size() << "\n";
+		for (size_t index = 0; index < (std::min)(fromE.rootChildKeys.size(), fromDir.rootChildKeys.size()); ++index) {
+			if (fromE.rootChildKeys[index] != fromDir.rootChildKeys[index]) {
+				stream << "first_diff_index=" << index << "\n"
+					<< "left=" << fromE.rootChildKeys[index] << "\n"
+					<< "right=" << fromDir.rootChildKeys[index] << "\n";
+				return stream.str();
+			}
+		}
+		return stream.str();
+	}
+	if (fromE.folders.size() != fromDir.folders.size()) {
+		stream << "mismatch=folders.size\nleft=" << fromE.folders.size()
+			<< "\nright=" << fromDir.folders.size() << "\n";
+		return stream.str();
+	}
+	for (size_t index = 0; index < fromE.folders.size(); ++index) {
+		const auto& left = fromE.folders[index];
+		const auto& right = fromDir.folders[index];
+		if (left.key != right.key ||
+			left.parentKey != right.parentKey ||
+			left.expand != right.expand ||
+			left.name != right.name ||
+			left.childKeys != right.childKeys) {
+			stream << "mismatch=folders[" << index << "]\n"
+				<< "left_key=" << left.key << "\n"
+				<< "right_key=" << right.key << "\n"
+				<< "left_parent=" << left.parentKey << "\n"
+				<< "right_parent=" << right.parentKey << "\n"
+				<< "left_expand=" << (left.expand ? 1 : 0) << "\n"
+				<< "right_expand=" << (right.expand ? 1 : 0) << "\n"
+				<< "left_name=" << left.name << "\n"
+				<< "right_name=" << right.name << "\n";
+			return stream.str();
+		}
+	}
+	if (fromE.windowBindings.size() != fromDir.windowBindings.size()) {
+		stream << "mismatch=windowBindings.size\nleft=" << fromE.windowBindings.size()
+			<< "\nright=" << fromDir.windowBindings.size() << "\n";
+		return stream.str();
+	}
+	for (size_t index = 0; index < fromE.windowBindings.size(); ++index) {
+		const auto& left = fromE.windowBindings[index];
+		const auto& right = fromDir.windowBindings[index];
+		if (left.formName != right.formName || left.className != right.className) {
+			stream << "mismatch=windowBindings[" << index << "]\n"
+				<< "left_form=" << left.formName << "\n"
+				<< "right_form=" << right.formName << "\n"
+				<< "left_class=" << left.className << "\n"
+				<< "right_class=" << right.className << "\n";
+			return stream.str();
+		}
+	}
+
+	stream << "mismatch=unknown\n";
+	return stream.str();
+}
+
 int RunUnpack(const char* inputPath, const char* outputDir)
 {
 	std::string summary;
@@ -224,6 +448,23 @@ int RunPack(const char* inputDir, const char* outputPath)
 		return PrintStringResult("pack", -1, error.c_str());
 	}
 	return PrintStringResult("pack", 0, summary.c_str());
+}
+
+int RunCompareBundle(const char* inputPath, const char* inputDir)
+{
+	e2txt::Generator generator;
+	e2txt::BundleDirectoryCodec codec;
+	e2txt::ProjectBundle bundleFromE;
+	e2txt::ProjectBundle bundleFromDir;
+	std::string error;
+	if (!generator.GenerateBundle(inputPath, bundleFromE, &error)) {
+		return PrintStringResult("compare-bundle", -1, error.c_str());
+	}
+	if (!codec.ReadBundle(inputDir, bundleFromDir, &error)) {
+		return PrintStringResult("compare-bundle", -1, error.c_str());
+	}
+	const std::string summary = BuildBundleDigestCompareText(bundleFromE, bundleFromDir);
+	return PrintStringResult("compare-bundle", 0, summary.c_str());
 }
 
 int RunRoundTrip(const char* inputPath, const char* workDir, const char* outputPath)
@@ -1338,6 +1579,7 @@ void PrintUsage()
 	std::cout << "EFolderCodec commands:" << std::endl;
 	std::cout << "  EFolderCodec unpack <input.e> <output-dir>" << std::endl;
 	std::cout << "  EFolderCodec pack <input-dir> <output.e>" << std::endl;
+	std::cout << "  EFolderCodec compare-bundle <input.e> <input-dir>" << std::endl;
 	std::cout << "  EFolderCodec roundtrip <input.e> <work-dir> <output.e>" << std::endl;
 	std::cout << "  EFolderCodec verify-roundtrip <input.e> <work-dir> <output.e>" << std::endl;
 	std::cout << "  EFolderCodec compile-ecom <input.e> <output.ec> [--eide-path <e5.95.exe>] [--open-timeout-seconds <n>]" << std::endl;
@@ -1367,6 +1609,13 @@ int main(int argc, char* argv[])
 			return EXIT_FAILURE;
 		}
 		return RunPack(argv[2], argv[3]);
+	}
+	if (command == "compare-bundle") {
+		if (argc != 4) {
+			PrintUsage();
+			return EXIT_FAILURE;
+		}
+		return RunCompareBundle(argv[2], argv[3]);
 	}
 	if (command == "roundtrip") {
 		if (argc != 5) {

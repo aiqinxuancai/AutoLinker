@@ -44,4 +44,7 @@ AUTOLINKER_TEST_API int AutoLinkerTest_UnpackEProject(const char* inputPath, con
 // 将目录工程完整封装为 .e 文件。
 AUTOLINKER_TEST_API int AutoLinkerTest_PackEProject(const char* inputDir, const char* outputPath, char* buffer, int bufferSize);
 
+// 对比原始 .e 与目录工程读回后的 BundleDigest，并输出首个失配点。
+AUTOLINKER_TEST_API int AutoLinkerTest_CompareBundleDigest(const char* inputPath, const char* inputDir, char* buffer, int bufferSize);
+
 }

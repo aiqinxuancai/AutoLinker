@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "..\thirdparty\json.hpp"
@@ -229,6 +230,20 @@ std::string ToLowerAscii(std::string text)
 		return static_cast<char>(std::tolower(ch));
 	});
 	return text;
+}
+
+std::string TrimAsciiCopy(std::string text)
+{
+	size_t begin = 0;
+	while (begin < text.size() && static_cast<unsigned char>(text[begin]) <= 0x20) {
+		++begin;
+	}
+
+	size_t end = text.size();
+	while (end > begin && static_cast<unsigned char>(text[end - 1]) <= 0x20) {
+		--end;
+	}
+	return text.substr(begin, end - begin);
 }
 
 std::string TrimWindowsFileName(std::string text)
@@ -832,6 +847,317 @@ std::vector<std::uint8_t> DecodeBase64(const std::string& text)
 	return out;
 }
 
+std::string NormalizeRelativePathKey(const std::filesystem::path& path)
+{
+	return ToLowerAscii(path.lexically_normal().generic_string());
+}
+
+std::string NormalizeRelativePathKey(const std::string& pathText)
+{
+	return NormalizeRelativePathKey(std::filesystem::path(pathText));
+}
+
+bool AppendUniqueKey(std::vector<std::string>& keys, const std::string& key)
+{
+	if (key.empty()) {
+		return false;
+	}
+	if (std::find(keys.begin(), keys.end(), key) != keys.end()) {
+		return false;
+	}
+	keys.push_back(key);
+	return true;
+}
+
+std::string BuildFolderKey(const std::int32_t folderKey)
+{
+	return "folder:" + std::to_string(folderKey);
+}
+
+std::string BuildBundleItemKey(
+	const std::string& prefix,
+	const std::string& rawName,
+	std::unordered_map<std::string, int>& counters)
+{
+	std::string logicalName = TrimAsciiCopy(rawName);
+	if (logicalName.empty()) {
+		logicalName = prefix;
+	}
+
+	const std::string baseKey = prefix + ":" + logicalName;
+	int& counter = counters[baseKey];
+	++counter;
+	if (counter == 1) {
+		return baseKey;
+	}
+	return baseKey + "#" + std::to_string(counter);
+}
+
+void ObserveBundleItemKeyBase(
+	const std::string& prefix,
+	const std::string& rawName,
+	std::unordered_map<std::string, int>& counters)
+{
+	std::string logicalName = TrimAsciiCopy(rawName);
+	if (logicalName.empty()) {
+		logicalName = prefix;
+	}
+	++counters[prefix + ":" + logicalName];
+}
+
+bool IsReservedBundleSourceFile(const std::filesystem::path& relativePath)
+{
+	const std::string normalized = NormalizeRelativePathKey(relativePath);
+	static const std::unordered_set<std::string> kReserved = {
+		"src/.数据类型.txt",
+		"src/.dll声明.txt",
+		"src/.常量.txt",
+		"src/.全局变量.txt",
+	};
+	return kReserved.contains(normalized);
+}
+
+bool IsAutoDiscoverableSourceTextPath(const std::filesystem::path& relativePath)
+{
+	const std::string normalized = NormalizeRelativePathKey(relativePath);
+	if (!normalized.starts_with("src/")) {
+		return false;
+	}
+	if (ToLowerAscii(relativePath.extension().generic_string()) != ".txt") {
+		return false;
+	}
+	if (IsReservedBundleSourceFile(relativePath)) {
+		return false;
+	}
+
+	const std::string fileName = relativePath.filename().generic_string();
+	return !fileName.empty() && fileName.front() != '.';
+}
+
+BundleFolder* FindFolderByKey(std::vector<BundleFolder>& folders, const std::int32_t key)
+{
+	for (auto& folder : folders) {
+		if (folder.key == key) {
+			return &folder;
+		}
+	}
+	return nullptr;
+}
+
+BundleFolder* FindFolderByParentAndName(
+	std::vector<BundleFolder>& folders,
+	const std::int32_t parentKey,
+	const std::string& name)
+{
+	for (auto& folder : folders) {
+		if (folder.parentKey == parentKey && folder.name == name) {
+			return &folder;
+		}
+	}
+	return nullptr;
+}
+
+bool ContainsAssignedTreeKey(
+	const std::vector<BundleFolder>& folders,
+	const std::vector<std::string>& rootChildKeys,
+	const std::string& key)
+{
+	if (std::find(rootChildKeys.begin(), rootChildKeys.end(), key) != rootChildKeys.end()) {
+		return true;
+	}
+
+	for (const auto& folder : folders) {
+		if (std::find(folder.childKeys.begin(), folder.childKeys.end(), key) != folder.childKeys.end()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+std::int32_t GetMaxExistingFolderKey(const std::vector<BundleFolder>& folders)
+{
+	std::int32_t maxKey = 0;
+	for (const auto& folder : folders) {
+		maxKey = (std::max)(maxKey, folder.key);
+		maxKey = (std::max)(maxKey, folder.parentKey);
+	}
+	return maxKey;
+}
+
+std::int32_t EnsureFolderPath(
+	const std::vector<std::string>& segments,
+	std::vector<BundleFolder>& folders,
+	std::vector<std::string>& rootChildKeys,
+	std::int32_t& folderAllocatedKey)
+{
+	std::int32_t nextFolderKey = (std::max)(folderAllocatedKey, GetMaxExistingFolderKey(folders));
+	std::int32_t parentKey = 0;
+	for (const auto& rawSegment : segments) {
+		const std::string segment = TrimAsciiCopy(rawSegment);
+		if (segment.empty()) {
+			continue;
+		}
+
+		BundleFolder* existing = FindFolderByParentAndName(folders, parentKey, segment);
+		if (existing != nullptr) {
+			parentKey = existing->key;
+			continue;
+		}
+
+		BundleFolder created;
+		created.key = nextFolderKey + 1;
+		created.parentKey = parentKey;
+		created.expand = true;
+		created.name = segment;
+		nextFolderKey = created.key;
+		folderAllocatedKey = created.key;
+		folders.push_back(created);
+
+		if (parentKey == 0) {
+			AppendUniqueKey(rootChildKeys, BuildFolderKey(created.key));
+		}
+		else if (BundleFolder* parent = FindFolderByKey(folders, parentKey); parent != nullptr) {
+			AppendUniqueKey(parent->childKeys, BuildFolderKey(created.key));
+		}
+
+		parentKey = created.key;
+	}
+
+	return parentKey;
+}
+
+std::vector<std::string> GetFolderSegmentsFromRelativePath(const std::string& relativePath)
+{
+	std::vector<std::string> segments;
+	std::filesystem::path path(relativePath);
+	bool skippedSrc = false;
+	for (const auto& part : path.parent_path()) {
+		const std::string segment = part.generic_string();
+		if (segment.empty() || segment == "/" || segment == "\\") {
+			continue;
+		}
+		if (!skippedSrc) {
+			skippedSrc = true;
+			if (ToLowerAscii(segment) == "src") {
+				continue;
+			}
+		}
+		segments.push_back(segment);
+	}
+	return segments;
+}
+
+void AttachSourceFileToTree(
+	const BundleSourceFile& file,
+	std::vector<BundleFolder>& folders,
+	std::vector<std::string>& rootChildKeys,
+	std::int32_t& folderAllocatedKey)
+{
+	if (file.key.empty() || ContainsAssignedTreeKey(folders, rootChildKeys, file.key)) {
+		return;
+	}
+
+	const std::vector<std::string> folderSegments = GetFolderSegmentsFromRelativePath(
+		file.relativePath.empty() ? NormalizeSourceRelativePathForWrite(file) : file.relativePath);
+	if (folderSegments.empty()) {
+		AppendUniqueKey(rootChildKeys, file.key);
+		return;
+	}
+
+	const std::int32_t folderKey = EnsureFolderPath(folderSegments, folders, rootChildKeys, folderAllocatedKey);
+	if (folderKey == 0) {
+		AppendUniqueKey(rootChildKeys, file.key);
+		return;
+	}
+
+	if (BundleFolder* folder = FindFolderByKey(folders, folderKey); folder != nullptr) {
+		AppendUniqueKey(folder->childKeys, file.key);
+	}
+	else {
+		AppendUniqueKey(rootChildKeys, file.key);
+	}
+}
+
+bool ReadAutoDiscoveredSourceFiles(
+	const std::filesystem::path& root,
+	ProjectBundle& bundle,
+	std::string* outError)
+{
+	const std::filesystem::path sourceRoot = root / "src";
+	std::error_code ec;
+	if (!std::filesystem::exists(sourceRoot, ec) || ec) {
+		return !ec;
+	}
+
+	std::unordered_set<std::string> knownRelativePaths;
+	std::unordered_map<std::string, int> sourceKeyCounters;
+	for (const auto& file : bundle.sourceFiles) {
+		knownRelativePaths.insert(NormalizeRelativePathKey(
+			file.relativePath.empty() ? NormalizeSourceRelativePathForWrite(file) : file.relativePath));
+		ObserveBundleItemKeyBase("class", file.logicalName, sourceKeyCounters);
+	}
+
+	for (const auto& file : bundle.sourceFiles) {
+		AttachSourceFileToTree(file, bundle.folders, bundle.rootChildKeys, bundle.folderAllocatedKey);
+	}
+
+	std::vector<std::filesystem::path> pendingRelativePaths;
+	for (std::filesystem::recursive_directory_iterator it(sourceRoot, ec), end; it != end; it.increment(ec)) {
+		if (ec) {
+			if (outError != nullptr) {
+				*outError = "enumerate_source_files_failed";
+			}
+			return false;
+		}
+		if (!it->is_regular_file()) {
+			continue;
+		}
+
+		const std::filesystem::path relativePath = std::filesystem::relative(it->path(), root, ec);
+		if (ec) {
+			if (outError != nullptr) {
+				*outError = "relative_source_path_failed";
+			}
+			return false;
+		}
+		if (!IsAutoDiscoverableSourceTextPath(relativePath)) {
+			continue;
+		}
+
+		const std::string relativeKey = NormalizeRelativePathKey(relativePath);
+		if (knownRelativePaths.contains(relativeKey)) {
+			continue;
+		}
+		pendingRelativePaths.push_back(relativePath);
+	}
+
+	std::sort(
+		pendingRelativePaths.begin(),
+		pendingRelativePaths.end(),
+		[](const std::filesystem::path& left, const std::filesystem::path& right) {
+			return NormalizeRelativePathKey(left) < NormalizeRelativePathKey(right);
+		});
+
+	for (const auto& relativePath : pendingRelativePaths) {
+		BundleSourceFile file;
+		file.logicalName = relativePath.stem().string();
+		file.relativePath = relativePath.generic_string();
+		file.key = BuildBundleItemKey("class", file.logicalName, sourceKeyCounters);
+		if (!ReadTextFileUtf8ToLocal(root / relativePath, file.content)) {
+			if (outError != nullptr) {
+				*outError = "read_auto_discovered_source_file_failed";
+			}
+			return false;
+		}
+
+		knownRelativePaths.insert(NormalizeRelativePathKey(relativePath));
+		bundle.sourceFiles.push_back(std::move(file));
+		AttachSourceFileToTree(bundle.sourceFiles.back(), bundle.folders, bundle.rootChildKeys, bundle.folderAllocatedKey);
+	}
+
+	return true;
+}
+
 }  // namespace
 
 bool BundleDirectoryCodec::WriteBundle(const ProjectBundle& bundle, const std::string& outputDir, std::string* outError) const
@@ -1233,6 +1559,10 @@ bool BundleDirectoryCodec::ReadBundle(const std::string& inputDir, ProjectBundle
 		if (outError != nullptr) {
 			*outError = "read_audio_list_failed";
 		}
+		return false;
+	}
+
+	if (!ReadAutoDiscoveredSourceFiles(root, bundle, outError)) {
 		return false;
 	}
 
