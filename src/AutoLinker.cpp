@@ -123,12 +123,12 @@ void OpenELanguageDirectoryAddIn()
 void ShowAISettingsAddIn()
 {
 	AISettings settings = {};
-	AIService::LoadSettings(g_configManager, settings);
+	AIService::LoadSettings(g_aiJsonConfig, &g_configManager, settings);
 	if (!ShowAIConfigDialog(g_hwnd, settings)) {
 		OutputStringToELog("AI配置已取消");
 		return;
 	}
-	AIService::SaveSettings(g_configManager, settings);
+	AIService::SaveSettings(g_aiJsonConfig, settings);
 	OutputStringToELog("AI配置已保存");
 }
 
@@ -380,7 +380,7 @@ bool FneInit()
 	OutputCurrentSourceLinker();
 	TraceInitStep("当前源码链接器信息输出完成");
 	TraceInitStep("开始初始化 AI Chat");
-	AIChatFeature::Initialize(g_hwnd, &g_configManager);
+	AIChatFeature::Initialize(g_hwnd, &g_configManager, &g_aiJsonConfig);
 	TraceInitStep("AI Chat 初始化完成");
 	TraceInitStep("开始初始化 Local MCP");
 	LocalMcpServer::Initialize();

@@ -252,7 +252,7 @@ void OutputMultiline(const std::string& title, const std::string& body)
 
 bool EnsureAISettingsReady(AISettings& settings)
 {
-	AIService::LoadSettings(g_configManager, settings);
+	AIService::LoadSettings(g_aiJsonConfig, &g_configManager, settings);
 	std::string missing;
 	if (AIService::HasRequiredSettings(settings, missing)) {
 		return true;
@@ -263,7 +263,7 @@ bool EnsureAISettingsReady(AISettings& settings)
 		OutputStringToELog("AI配置已取消，本次操作终止");
 		return false;
 	}
-	AIService::SaveSettings(g_configManager, settings);
+	AIService::SaveSettings(g_aiJsonConfig, settings);
 	OutputStringToELog("AI配置已保存");
 	return true;
 }

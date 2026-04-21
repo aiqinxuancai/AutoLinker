@@ -770,8 +770,9 @@ std::string ExecuteToolCallImpl(
 
 		AISettings settings = {};
 		std::string tavilyApiKey;
+		AIJsonConfig* aiJsonConfig  = GetAIChatAIJsonConfigForTooling();
 		ConfigManager* configManager = GetAIChatConfigManagerForTooling();
-		if (configManager != nullptr && AIService::LoadSettings(*configManager, settings)) {
+		if (aiJsonConfig != nullptr && AIService::LoadSettings(*aiJsonConfig, configManager, settings)) {
 			tavilyApiKey = LocalToUtf8Text(settings.tavilyApiKey);
 		}
 

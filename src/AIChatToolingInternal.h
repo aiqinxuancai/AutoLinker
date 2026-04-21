@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 
+class AIJsonConfig;
 class ConfigManager;
 
 // 主线程工具执行请求。
@@ -41,6 +42,8 @@ struct ToolDialogRequest {
 HWND GetAIChatMainWindowForTooling();
 // 获取 AI 对话配置管理器。
 ConfigManager* GetAIChatConfigManagerForTooling();
+// 获取 AI JSON 配置。
+AIJsonConfig* GetAIChatAIJsonConfigForTooling();
 // 获取 AI 对话工具执行消息。
 UINT GetAIChatToolExecMessageForTooling();
 // 请求确认对话。outSecondaryAccepted 为次确认按钮点击结果。

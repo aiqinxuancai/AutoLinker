@@ -27,6 +27,7 @@
 #include "..\\thirdparty\\WebView2.h"
 
 #include "AIConfigDialog.h"
+#include "AIJsonConfig.h"
 #include "AIService.h"
 #include "ConfigManager.h"
 #include "AIChatTooling.h"
@@ -155,6 +156,7 @@ struct ChatHistoryGarbage {
 
 HWND g_mainWindow = nullptr;
 ConfigManager* g_configManager = nullptr;
+AIJsonConfig* g_aiJsonConfig = nullptr;
 HWND g_chatDialog = nullptr;
 bool g_chatTabAdded = false;
 enum class ChatHostMode {
@@ -1953,11 +1955,11 @@ void AppendStreamingAssistantDelta(unsigned long long requestId, const std::stri
 
 bool EnsureChatSettingsReady(AISettings& settings)
 {
-	if (g_configManager == nullptr) {
+	if (g_configManager == nullptr || g_aiJsonConfig == nullptr) {
 		return false;
 	}
 
-	AIService::LoadSettings(*g_configManager, settings);
+	AIService::LoadSettings(*g_aiJsonConfig, g_configManager, settings);
 	std::string missing;
 	if (AIService::HasRequiredSettings(settings, missing)) {
 		return true;
@@ -1968,7 +1970,7 @@ bool EnsureChatSettingsReady(AISettings& settings)
         OutputStringToELog("[AI Chat] AI config cancelled");
 		return false;
 	}
-	AIService::SaveSettings(*g_configManager, settings);
+	AIService::SaveSettings(*g_aiJsonConfig, settings);
     OutputStringToELog("[AI Chat] AI config saved");
 	return true;
 }
@@ -2620,6 +2622,11 @@ ConfigManager* GetAIChatConfigManagerForTooling()
 	return g_configManager;
 }
 
+AIJsonConfig* GetAIChatAIJsonConfigForTooling()
+{
+	return g_aiJsonConfig;
+}
+
 UINT GetAIChatToolExecMessageForTooling()
 {
 	return g_msgAIChatToolExec;
@@ -3047,10 +3054,11 @@ void FocusChatInputControl()
 }
 
 namespace AIChatFeature {
-void Initialize(HWND mainWindow, ConfigManager* configManager)
+void Initialize(HWND mainWindow, ConfigManager* configManager, AIJsonConfig* aiJsonConfig)
 {
 	g_mainWindow = mainWindow;
 	g_configManager = configManager;
+	g_aiJsonConfig = aiJsonConfig;
 	g_msgAIChatDone = RegisterWindowMessageA("AutoLinker.AIChat.Done");
 	g_msgAIChatToolDialog = RegisterWindowMessageA("AutoLinker.AIChat.ToolDialog");
 	g_msgAIChatToolExec = RegisterWindowMessageA("AutoLinker.AIChat.ToolExec");

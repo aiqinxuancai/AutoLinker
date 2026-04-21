@@ -3,11 +3,12 @@
 #include <Windows.h>
 #include <string>
 
+class AIJsonConfig;
 class ConfigManager;
 
 namespace AIChatFeature {
 
-void Initialize(HWND mainWindow, ConfigManager* configManager);
+void Initialize(HWND mainWindow, ConfigManager* configManager, AIJsonConfig* aiJsonConfig);
 void Shutdown();
 void EnsureTabCreated();
 void ActivateTab();

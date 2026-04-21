@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+class AIJsonConfig;
 class ConfigManager;
 class HttpRequestCancellation;
 
@@ -71,8 +72,10 @@ struct AIChatResult {
 
 class AIService {
 public:
-	static bool LoadSettings(ConfigManager& config, AISettings& outSettings);
-	static void SaveSettings(ConfigManager& config, const AISettings& settings);
+	// 从 JSON 配置加载 AI 设置，若 JSON 无数据且 iniConfig 非空则自动从 INI 迁移。
+	static bool LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig, AISettings& outSettings);
+	// 将 AI 设置保存到 JSON 配置。
+	static void SaveSettings(AIJsonConfig& jsonConfig, const AISettings& settings);
 	static bool HasRequiredSettings(const AISettings& settings, std::string& outMissingField);
 	static AIProtocolType ParseProtocolType(const std::string& text);
 	static std::string ProtocolTypeToString(AIProtocolType protocolType);

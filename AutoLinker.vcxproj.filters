@@ -53,6 +53,9 @@
     <ClCompile Include="src\ConfigManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\AIJsonConfig.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\EcModulePublicInfoReader.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -194,6 +197,9 @@
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIService.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AIJsonConfig.h">
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\ConfigManager.h">

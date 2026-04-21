@@ -10,6 +10,7 @@
 
 #include "..\\thirdparty\\json.hpp"
 
+#include "AIJsonConfig.h"
 #include "ConfigManager.h"
 #include "Global.h"
 #include "IDEFacade.h"
@@ -2322,17 +2323,49 @@ AIChatResult ExecuteChatWithToolsGemini(
 }
 } // namespace
 
-bool AIService::LoadSettings(ConfigManager& config, AISettings& outSettings)
+bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig, AISettings& outSettings)
 {
 	outSettings = {};
-	outSettings.protocolType = ParseProtocolType(config.getValue("ai.protocol_type"));
-	outSettings.baseUrl = config.getValue("ai.base_url");
-	outSettings.apiKey = config.getValue("ai.api_key");
-	outSettings.model = config.getValue("ai.model");
-	outSettings.extraSystemPrompt = config.getValue("ai.system_prompt_extra");
-	outSettings.tavilyApiKey = config.getValue("ai.tavily_api_key");
 
-	const std::string timeoutValue = config.getValue("ai.timeout_ms");
+	// 若 JSON 无数据，尝试从 INI 迁移 AI 相关配置
+	if (!jsonConfig.hasAnyData() && iniConfig != nullptr) {
+		const std::string iniApiKey  = iniConfig->getValue("ai.api_key");
+		const std::string iniBaseUrl = iniConfig->getValue("ai.base_url");
+		if (!iniApiKey.empty() || !iniBaseUrl.empty()) {
+			// INI 键名到 JSON 键名的映射（去掉 "ai." 前缀）
+			const std::pair<const char*, const char*> mapping[] = {
+				{ "protocol_type",      "ai.protocol_type"        },
+				{ "base_url",           "ai.base_url"             },
+				{ "api_key",            "ai.api_key"              },
+				{ "model",              "ai.model"                },
+				{ "system_prompt_extra","ai.system_prompt_extra"  },
+				{ "tavily_api_key",     "ai.tavily_api_key"       },
+				{ "timeout_ms",         "ai.timeout_ms"           },
+				{ "max_tool_rounds",    "ai.max_tool_rounds"      },
+				{ "temperature",        "ai.temperature"          },
+			};
+			std::map<std::string, std::string> toMigrate;
+			for (const auto& [jsonKey, iniKey] : mapping) {
+				const std::string val = iniConfig->getValue(iniKey);
+				if (!val.empty()) {
+					toMigrate[jsonKey] = val;
+				}
+			}
+			if (!toMigrate.empty()) {
+				jsonConfig.setValues(toMigrate);
+			}
+		}
+	}
+
+	// 从 JSON 读取设置（getValueLocal 将 UTF-8 转换为本地编码供 AISettings 使用）
+	outSettings.protocolType     = ParseProtocolType(jsonConfig.getValue("protocol_type"));
+	outSettings.baseUrl          = jsonConfig.getValueLocal("base_url");
+	outSettings.apiKey           = jsonConfig.getValueLocal("api_key");
+	outSettings.model            = jsonConfig.getValueLocal("model");
+	outSettings.extraSystemPrompt= jsonConfig.getValueLocal("system_prompt_extra");
+	outSettings.tavilyApiKey     = jsonConfig.getValueLocal("tavily_api_key");
+
+	const std::string timeoutValue = jsonConfig.getValue("timeout_ms");
 	if (!timeoutValue.empty()) {
 		try {
 			outSettings.timeoutMs = (std::max)(1000, std::stoi(timeoutValue));
@@ -2342,7 +2375,7 @@ bool AIService::LoadSettings(ConfigManager& config, AISettings& outSettings)
 		}
 	}
 
-	const std::string temperatureValue = config.getValue("ai.temperature");
+	const std::string temperatureValue = jsonConfig.getValue("temperature");
 	if (!temperatureValue.empty()) {
 		try {
 			outSettings.temperature = std::stod(temperatureValue);
@@ -2352,7 +2385,7 @@ bool AIService::LoadSettings(ConfigManager& config, AISettings& outSettings)
 		}
 	}
 
-	const std::string maxToolRoundsValue = config.getValue("ai.max_tool_rounds");
+	const std::string maxToolRoundsValue = jsonConfig.getValue("max_tool_rounds");
 	if (!maxToolRoundsValue.empty()) {
 		try {
 			outSettings.maxToolRounds = (std::clamp)(std::stoi(maxToolRoundsValue), 4, 64);
@@ -2365,17 +2398,19 @@ bool AIService::LoadSettings(ConfigManager& config, AISettings& outSettings)
 	return true;
 }
 
-void AIService::SaveSettings(ConfigManager& config, const AISettings& settings)
+void AIService::SaveSettings(AIJsonConfig& jsonConfig, const AISettings& settings)
 {
-	config.setValue("ai.protocol_type", ProtocolTypeToString(settings.protocolType));
-	config.setValue("ai.base_url", settings.baseUrl);
-	config.setValue("ai.api_key", settings.apiKey);
-	config.setValue("ai.model", settings.model);
-	config.setValue("ai.system_prompt_extra", settings.extraSystemPrompt);
-	config.setValue("ai.tavily_api_key", settings.tavilyApiKey);
-	config.setValue("ai.timeout_ms", std::to_string(settings.timeoutMs));
-	config.setValue("ai.max_tool_rounds", std::to_string((std::clamp)(settings.maxToolRounds, 4, 64)));
-	config.setValue("ai.temperature", std::format("{:.2f}", settings.temperature));
+	jsonConfig.setValues({
+		{ "protocol_type",       ProtocolTypeToString(settings.protocolType) },
+		{ "base_url",            settings.baseUrl                            },
+		{ "api_key",             settings.apiKey                             },
+		{ "model",               settings.model                              },
+		{ "system_prompt_extra", settings.extraSystemPrompt                  },
+		{ "tavily_api_key",      settings.tavilyApiKey                       },
+		{ "timeout_ms",          std::to_string(settings.timeoutMs)          },
+		{ "max_tool_rounds",     std::to_string((std::clamp)(settings.maxToolRounds, 4, 64)) },
+		{ "temperature",         std::format("{:.2f}", settings.temperature) },
+	});
 }
 
 bool AIService::HasRequiredSettings(const AISettings& settings, std::string& outMissingField)

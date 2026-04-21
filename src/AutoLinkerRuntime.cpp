@@ -10,6 +10,7 @@
 #include <format>
 #include <string>
 
+#include "AIJsonConfig.h"
 #include "Global.h"
 #include "IDEFacade.h"
 #include "Logger.h"
@@ -20,6 +21,7 @@
 
 std::string g_nowOpenSourceFilePath;
 ConfigManager g_configManager;
+AIJsonConfig g_aiJsonConfig;
 LinkerManager g_linkerManager;
 ModelManager g_modelManager;
 HWND g_hwnd = NULL;

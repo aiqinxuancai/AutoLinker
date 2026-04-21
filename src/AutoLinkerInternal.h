@@ -14,6 +14,8 @@
 
 
 
+#include "AIJsonConfig.h"
+
 #include "ConfigManager.h"
 
 #include "LinkerManager.h"
@@ -27,6 +29,8 @@
 extern std::string g_nowOpenSourceFilePath;
 
 extern ConfigManager g_configManager;
+
+extern AIJsonConfig g_aiJsonConfig;
 
 extern LinkerManager g_linkerManager;
 
