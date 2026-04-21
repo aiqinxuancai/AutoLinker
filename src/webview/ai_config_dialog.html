@@ -1,0 +1,629 @@
+﻿<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light only">
+<style>
+html, body {
+	margin: 0;
+	padding: 0;
+	background: #f4f6f8;
+	color: #1f2937;
+	font: 14px/1.5 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	height: 100%;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	padding: 0;
+}
+
+h1 {
+	margin: 0 0 4px;
+	font-size: 19px;
+	font-weight: 700;
+}
+
+h2 {
+	margin: 0 0 14px;
+	font-size: 11px;
+	font-weight: 700;
+	color: #6b7280;
+	text-transform: uppercase;
+	letter-spacing: .06em;
+}
+
+p {
+	margin: 0 0 10px;
+	color: #4b5563;
+}
+
+.wrap {
+	width: 100%;
+	min-height: 100vh;
+	display: flex;
+	flex-direction: column;
+}
+
+.hero {
+	padding: 14px 22px 12px;
+	background: #fff;
+	border-bottom: 1px solid #e5e7eb;
+}
+
+.hero p {
+	margin: 2px 0 0;
+	font-size: 12px;
+	color: #9ca3af;
+}
+
+.content {
+	flex: 1;
+}
+
+.grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+}
+
+.panel {
+	background: #fff;
+	padding: 20px 22px;
+	min-width: 0;
+}
+
+.panel + .panel {
+	border-left: 1px solid #e5e7eb;
+}
+
+.row {
+	margin-bottom: 13px;
+}
+
+.row label {
+	display: block;
+	margin-bottom: 5px;
+	font-size: 11px;
+	font-weight: 700;
+	color: #6b7280;
+	text-transform: uppercase;
+	letter-spacing: .06em;
+}
+
+.input,
+.textarea {
+	width: 100%;
+	border: 1px solid #d1d5db;
+	border-radius: 7px;
+	padding: 8px 11px;
+	background: #fff;
+	font: 14px/1.5 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	color: #111827;
+	outline: none;
+	transition: border-color .15s, box-shadow .15s;
+}
+
+.select {
+	width: 100%;
+	border: 1px solid #d1d5db;
+	border-radius: 7px;
+	padding: 8px 28px 8px 11px;
+	background: #fff;
+	font: 14px/1.5 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	color: #111827;
+	outline: none;
+	cursor: pointer;
+	-webkit-appearance: none;
+	appearance: none;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%236b7280' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C%2Fsvg%3E");
+	background-repeat: no-repeat;
+	background-position: right 10px center;
+	background-size: 10px 6px;
+	transition: border-color .15s, box-shadow .15s;
+}
+
+.input:focus,
+.select:focus,
+.textarea:focus {
+	border-color: #3b82f6;
+	box-shadow: 0 0 0 3px rgba(59, 130, 246, .12);
+}
+
+.textarea {
+	min-height: 130px;
+	resize: vertical;
+}
+
+.inline {
+	display: flex;
+	gap: 6px;
+	align-items: stretch;
+}
+
+.inline > .input,
+.inline > .select {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 10px;
+	align-items: center;
+	padding: 14px 22px;
+	border-top: 1px solid #e5e7eb;
+	background: #fff;
+}
+
+.btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	white-space: nowrap;
+	border: 1px solid #d1d5db;
+	background: #f9fafb;
+	border-radius: 7px;
+	padding: 8px 14px;
+	cursor: pointer;
+	font: 600 13px/1 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	color: #374151;
+	flex-shrink: 0;
+	transition: background .12s, border-color .12s;
+}
+
+.btn:hover {
+	background: #f3f4f6;
+	border-color: #9ca3af;
+}
+
+.btn.primary {
+	background: #1d4ed8;
+	border-color: #1d4ed8;
+	color: #fff;
+}
+
+.btn.primary:hover {
+	background: #1e40af;
+	border-color: #1e40af;
+}
+
+.btn.accent {
+	background: #ea580c;
+	border-color: #ea580c;
+	color: #fff;
+}
+
+.btn.accent:hover {
+	background: #c2410c;
+	border-color: #c2410c;
+}
+
+.btn:disabled {
+	opacity: .4;
+	cursor: not-allowed;
+	pointer-events: none;
+}
+
+.tip {
+	font-size: 12px;
+	color: #9ca3af;
+	margin-top: 5px;
+}
+
+.code {
+	font-family: Consolas, "Courier New", monospace;
+	background: #f1f5f9;
+	border-radius: 4px;
+	padding: 1px 5px;
+	font-size: 13px;
+}
+
+.divider {
+	height: 1px;
+	background: #f3f4f6;
+	margin: 14px 0;
+}
+
+.cmb {
+	position: relative;
+	display: flex;
+}
+
+.cmb > .input {
+	border-radius: 7px 0 0 7px;
+	border-right: 0;
+	flex: 1;
+	min-width: 0;
+}
+
+.cmb > .input:focus {
+	border-color: #3b82f6;
+	box-shadow: 0 0 0 3px rgba(59, 130, 246, .12);
+}
+
+.cmb-arrow {
+	border: 1px solid #d1d5db;
+	border-radius: 0 7px 7px 0;
+	background: #f9fafb;
+	padding: 0 11px;
+	cursor: pointer;
+	color: #6b7280;
+	font-size: 11px;
+	flex-shrink: 0;
+}
+
+.cmb-arrow:hover {
+	background: #f1f5f9;
+	border-color: #9ca3af;
+}
+
+.cmb-menu {
+	position: absolute;
+	top: calc(100% + 3px);
+	left: 0;
+	right: 0;
+	background: #fff;
+	border: 1px solid #d1d5db;
+	border-radius: 8px;
+	max-height: 185px;
+	overflow-y: auto;
+	z-index: 200;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, .1);
+}
+
+.cmb-item {
+	padding: 8px 12px;
+	cursor: pointer;
+	font: 14px/1.4 "Microsoft YaHei UI", sans-serif;
+	color: #1f2937;
+}
+
+.cmb-item:hover {
+	background: #eff6ff;
+	color: #1d4ed8;
+}
+
+.cmb-item:first-child {
+	border-radius: 8px 8px 0 0;
+}
+
+.cmb-item:last-child {
+	border-radius: 0 0 8px 8px;
+}
+
+.cmb-item:only-child {
+	border-radius: 8px;
+}
+
+@media (max-width: 860px) {
+	.grid {
+		grid-template-columns: 1fr;
+	}
+
+	.panel + .panel {
+		border-left: 0;
+		border-top: 1px solid #e5e7eb;
+	}
+
+	.footer {
+		flex-direction: column-reverse;
+		align-items: stretch;
+	}
+
+	.footer .btn {
+		width: 100%;
+	}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+	<div class="hero">
+		<h1>AutoLinker AI &#x8BBE;&#x7F6E;</h1>
+		<p>&#x7EDF;&#x4E00;&#x914D;&#x7F6E;&#x4E3B;&#x6A21;&#x578B;&#x53C2;&#x6570;&#x548C; Tavily &#x8054;&#x7F51;&#x641C;&#x7D22;&#x5BC6;&#x94A5;&#x3002;&#x4FDD;&#x5B58;&#x65F6;&#x7531;&#x5BBF;&#x4E3B;&#x7A0B;&#x5E8F;&#x5B8C;&#x6210;&#x6700;&#x7EC8;&#x6821;&#x9A8C;&#x3002;</p>
+	</div>
+	<div class="content">
+		<div class="grid">
+			<div class="panel">
+				<h2>&#x4E3B;&#x6A21;&#x578B;</h2>
+				<div class="row">
+					<label for="protocol">Protocol</label>
+					<select id="protocol" class="select">
+						<option value="OpenAI">OpenAI</option>
+						<option value="Gemini">Gemini</option>
+						<option value="Claude">Claude</option>
+					</select>
+				</div>
+				<div class="row">
+					<label for="baseUrl">Base URL</label>
+					<input id="baseUrl" class="input" placeholder="https://right.codes/codex">
+				</div>
+				<div class="row">
+					<label for="apiKey">API Key</label>
+					<div class="inline">
+						<input id="apiKey" class="input" type="password" placeholder="&#x4E3B;&#x6A21;&#x578B; API Key">
+						<button id="toggleApiKey" class="btn" type="button">&#x663E;&#x793A;</button>
+					</div>
+				</div>
+				<div class="row">
+					<label for="model">Model</label>
+					<div class="cmb" id="modelCmb">
+						<input id="model" class="input" placeholder="&#x4F8B;&#x5982; gpt-5.2-medium" autocomplete="off">
+						<button id="modelArrow" class="cmb-arrow" type="button" tabindex="-1">&#x25BE;</button>
+						<div id="modelMenu" class="cmb-menu" style="display:none"></div>
+					</div>
+				</div>
+				<div class="row">
+					<label for="extraPrompt">System Prompt</label>
+					<textarea id="extraPrompt" class="textarea" placeholder="&#x9644;&#x52A0;&#x7CFB;&#x7EDF;&#x63D0;&#x793A;&#x8BCD;"></textarea>
+				</div>
+				<div class="divider"></div>
+				<div class="row">
+					<label for="platformSelect">&#x5E73;&#x53F0;&#x9884;&#x8BBE;</label>
+					<div class="inline">
+						<select id="platformSelect" class="select">
+							<option value="">&#x81EA;&#x5B9A;&#x4E49;</option>
+							<option value="right">Right</option>
+							<option value="deepseek">DeepSeek</option>
+							<option value="zhipu">&#x667A;&#x8C31;</option>
+							<option value="qwen">&#x5343;&#x95EE;</option>
+							<option value="kimi">Kimi</option>
+							<option value="doubao">&#x8C46;&#x5305;</option>
+							<option value="minimax">MiniMax</option>
+							<option value="aihubmix">aihubmix</option>
+							<option value="siliconflow">&#x7845;&#x57FA;&#x6D41;&#x52A8;</option>
+							<option value="openai">OpenAI</option>
+							<option value="claude">Claude</option>
+							<option value="gemini">Gemini</option>
+						</select>
+						<button id="openPlatformBtn" class="btn accent" type="button" disabled>&#x6253;&#x5F00;&#x5B98;&#x7F51;</button>
+					</div>
+					<p class="tip">&#x9009;&#x62E9;&#x5E73;&#x53F0;&#x81EA;&#x52A8;&#x586B;&#x5165;&#x534F;&#x8BAE;&#x548C;&#x5730;&#x5740;</p>
+				</div>
+			</div>
+			<div class="panel">
+				<h2>Tavily &#x8054;&#x7F51;&#x641C;&#x7D22;</h2>
+				<div class="row">
+					<label for="tavilyApiKey">Tavily API Key</label>
+					<div class="inline">
+						<input id="tavilyApiKey" class="input" type="password" placeholder="&#x7528;&#x4E8E; search_web_tavily">
+						<button id="toggleTavilyKey" class="btn" type="button">&#x663E;&#x793A;</button>
+					</div>
+				</div>
+				<p>&#x8FD9;&#x4E2A; Key &#x4EC5;&#x4F9B; <span class="code">search_web_tavily</span> &#x5DE5;&#x5177;&#x4F7F;&#x7528;&#xFF0C;&#x4E0D;&#x5F71;&#x54CD;&#x4E3B;&#x6A21;&#x578B;&#x914D;&#x7F6E;&#x3002;</p>
+				<p class="tip">PowerShell &#x547D;&#x4EE4;&#x6267;&#x884C;&#x5DE5;&#x5177;&#x4ECD;&#x7136;&#x4F1A;&#x9010;&#x6B21;&#x5F39;&#x7A97;&#x786E;&#x8BA4;&#x3002;</p>
+			</div>
+		</div>
+	</div>
+	<div class="footer">
+		<button id="cancelBtn" class="btn" type="button">&#x53D6;&#x6D88;</button>
+		<button id="saveBtn" class="btn primary" type="button">&#x4FDD;&#x5B58;&#x5E76;&#x7EE7;&#x7EED;</button>
+	</div>
+</div>
+<script>
+const initialSettings = {
+	protocolType: "OpenAI",
+	baseUrl: "",
+	apiKey: "",
+	model: "",
+	extraPrompt: "",
+	tavilyApiKey: ""
+};
+
+function $(id) {
+	return document.getElementById(id);
+}
+
+function post(payload) {
+	if (window.chrome && window.chrome.webview) {
+		window.chrome.webview.postMessage(JSON.stringify(payload));
+	}
+}
+
+function setField(id, value) {
+	const el = $(id);
+	if (el) {
+		el.value = value || "";
+	}
+}
+
+function toggleSecret(id, btnId) {
+	const input = $(id);
+	const btn = $(btnId);
+	if (!input || !btn) {
+		return;
+	}
+	const next = input.type === "password" ? "text" : "password";
+	input.type = next;
+	btn.textContent = next === "password" ? "\u663E\u793A" : "\u9690\u85CF";
+}
+
+function collect() {
+	return {
+		protocol_type: $("protocol").value || "OpenAI",
+		base_url: $("baseUrl").value || "",
+		api_key: $("apiKey").value || "",
+		model: $("model").value || "",
+		extra_system_prompt: $("extraPrompt").value || "",
+		tavily_api_key: $("tavilyApiKey").value || ""
+	};
+}
+
+function validate(data) {
+	if (!data.base_url.trim() || !data.api_key.trim() || !data.model.trim()) {
+		alert("baseUrl / apiKey / model \u4E0D\u80FD\u4E3A\u7A7A\u3002");
+		return false;
+	}
+	return true;
+}
+
+function applyInitial(settings) {
+	const next = settings || initialSettings;
+	var protocol = $("protocol");
+	if (protocol) {
+		protocol.value = "OpenAI";
+		var desired = next.protocolType || "OpenAI";
+		protocol.value = desired;
+		if (!protocol.value) {
+			protocol.selectedIndex = 0;
+		}
+	}
+	setField("baseUrl", next.baseUrl);
+	setField("apiKey", next.apiKey);
+	setField("model", next.model);
+	setField("extraPrompt", next.extraPrompt);
+	setField("tavilyApiKey", next.tavilyApiKey);
+}
+
+window.autolinkerApplySettings = function(settings) {
+	applyInitial(settings);
+};
+
+window.autolinkerFocusPrimary = function() {
+	if ($("baseUrl")) {
+		$("baseUrl").focus();
+	}
+};
+
+$("toggleApiKey").addEventListener("click", function() {
+	toggleSecret("apiKey", "toggleApiKey");
+});
+
+$("toggleTavilyKey").addEventListener("click", function() {
+	toggleSecret("tavilyApiKey", "toggleTavilyKey");
+});
+
+var _modelMenuOpen = false;
+var _platformUrl = "";
+
+function hideModelMenu() {
+	var m = $("modelMenu");
+	if (m) {
+		m.style.display = "none";
+	}
+	_modelMenuOpen = false;
+}
+
+function showModelMenu() {
+	var m = $("modelMenu");
+	if (!m || !m.children.length) {
+		return;
+	}
+	m.style.display = "block";
+	_modelMenuOpen = true;
+}
+
+function updateModelMenu(models) {
+	var m = $("modelMenu");
+	if (!m) {
+		return;
+	}
+	m.innerHTML = "";
+	if (!models || !models.length) {
+		hideModelMenu();
+		return;
+	}
+	models.forEach(function(name) {
+		var d = document.createElement("div");
+		d.className = "cmb-item";
+		d.textContent = name;
+		d.addEventListener("mousedown", function(e) {
+			e.preventDefault();
+			$("model").value = name;
+			hideModelMenu();
+		});
+		m.appendChild(d);
+	});
+}
+
+$("modelArrow").addEventListener("click", function(e) {
+	e.stopPropagation();
+	if (_modelMenuOpen) {
+		hideModelMenu();
+	} else {
+		showModelMenu();
+	}
+});
+
+$("model").addEventListener("focus", function() {
+	showModelMenu();
+});
+
+$("model").addEventListener("blur", function() {
+	setTimeout(hideModelMenu, 150);
+});
+
+document.addEventListener("click", function(e) {
+	var c = $("modelCmb");
+	if (c && !c.contains(e.target)) {
+		hideModelMenu();
+	}
+});
+
+var PLATFORMS = {
+	right: { protocol: "OpenAI", baseUrl: "https://right.codes/codex", website: "https://right.codes/register?aff=3dc87885", models: ["gpt-5.2-medium", "gpt-5.4-mini", "claude-sonnet-4.5", "gemini-2.5-pro"] },
+	deepseek: { protocol: "OpenAI", baseUrl: "https://api.deepseek.com/v1", website: "https://platform.deepseek.com", models: ["deepseek-chat", "deepseek-reasoner"] },
+	zhipu: { protocol: "OpenAI", baseUrl: "https://open.bigmodel.cn/api/paas/v4", website: "https://open.bigmodel.cn", models: ["glm-4-plus", "glm-4-air", "glm-z1-airx", "glm-4-long"] },
+	qwen: { protocol: "OpenAI", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", website: "https://dashscope.console.aliyun.com", models: ["qwen-max", "qwen-plus", "qwen-turbo", "qwq-plus"] },
+	kimi: { protocol: "OpenAI", baseUrl: "https://api.moonshot.cn/v1", website: "https://platform.moonshot.cn", models: ["moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k", "kimi-latest"] },
+	doubao: { protocol: "OpenAI", baseUrl: "https://ark.cn-beijing.volces.com/api/v3", website: "https://console.volcengine.com/ark", models: ["doubao-pro-32k", "doubao-lite-32k", "doubao-1-5-pro-256k"] },
+	minimax: { protocol: "OpenAI", baseUrl: "https://api.minimax.chat/v1", website: "https://platform.minimax.chat", models: ["MiniMax-Text-01", "abab6.5s-chat"] },
+	aihubmix: { protocol: "OpenAI", baseUrl: "https://aihubmix.com/v1", website: "https://aihubmix.com/?aff=eeX5", models: ["gpt-4o", "claude-sonnet-4.5", "gemini-2.5-pro"] },
+	siliconflow: { protocol: "OpenAI", baseUrl: "https://api.siliconflow.cn/v1", website: "https://cloud.siliconflow.cn/i/Oezhkra7", models: ["Qwen/Qwen3-235B-A22B", "deepseek-ai/DeepSeek-V3", "deepseek-ai/DeepSeek-R1"] },
+	openai: { protocol: "OpenAI", baseUrl: "https://api.openai.com/v1", website: "https://platform.openai.com", models: ["gpt-4o", "gpt-4.1", "o3", "o4-mini"] },
+	claude: { protocol: "Claude", baseUrl: "https://api.anthropic.com", website: "https://console.anthropic.com", models: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"] },
+	gemini: { protocol: "Gemini", baseUrl: "https://generativelanguage.googleapis.com", website: "https://aistudio.google.com", models: ["gemini-2.5-pro", "gemini-2.0-flash", "gemini-1.5-pro"] }
+};
+
+function onPlatformChange() {
+	var pid = $("platformSelect").value;
+	var p = PLATFORMS[pid];
+	var btn = $("openPlatformBtn");
+	if (!p) {
+		_platformUrl = "";
+		if (btn) {
+			btn.disabled = true;
+		}
+		updateModelMenu([]);
+		return;
+	}
+	_platformUrl = p.website;
+	$("protocol").value = p.protocol;
+	if (!$("protocol").value) {
+		$("protocol").selectedIndex = 0;
+	}
+	$("baseUrl").value = p.baseUrl;
+	updateModelMenu(p.models);
+	if (btn) {
+		btn.disabled = false;
+	}
+}
+
+$("platformSelect").addEventListener("change", onPlatformChange);
+
+$("openPlatformBtn").addEventListener("click", function() {
+	if (_platformUrl) {
+		post({ action: "open_url", url: _platformUrl });
+	}
+});
+
+$("cancelBtn").addEventListener("click", function() {
+	post({ action: "cancel" });
+});
+
+$("saveBtn").addEventListener("click", function() {
+	const data = collect();
+	if (!validate(data)) {
+		return;
+	}
+	post({ action: "save", data: data });
+});
+
+applyInitial(initialSettings);
+</script>
+</body>
+</html>

@@ -1143,11 +1143,7 @@ void Initialize()
 	g_pageTypeHint.clear();
 
 	// 打开 MCP 日志文件（每次启动覆盖）
-	const std::filesystem::path logDir =
-		std::filesystem::path(GetBasePath()) / "AutoLinker";
-	std::error_code ec;
-	std::filesystem::create_directories(logDir, ec);
-	Logger::Instance().Open((logDir / "autolinker.log").string());
+	Logger::Instance().Open(GetAutoLinkerLogFilePath("autolinker.log").string());
 
 	g_serverThread = std::thread(ServerThreadMain);
 }

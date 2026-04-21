@@ -596,7 +596,7 @@ std::vector<std::string> SplitSupportLibraryTokens(const std::string& rawText)
 
 void TraceLine(const std::string& text)
 {
-	std::ofstream out("e2txt_trace.log", std::ios::app | std::ios::binary);
+	std::ofstream out(GetAutoLinkerLogFilePath("e2txt_trace.log"), std::ios::app | std::ios::binary);
 	if (!out.is_open()) {
 		return;
 	}

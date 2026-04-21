@@ -1,4 +1,6 @@
-#include "resource.h"
+﻿#include "resource.h"
 
 IDI_APP_ICON ICON "..\\res\\icon.ico"
-
+IDR_HTML_AI_CHAT_HISTORY HTML "webview\\ai_chat_history.html"
+IDR_HTML_AI_CONFIG_DIALOG HTML "webview\\ai_config_dialog.html"
+IDR_HTML_AI_PREVIEW_DIALOG HTML "webview\\ai_preview_dialog.html"

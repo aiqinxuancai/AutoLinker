@@ -1,4 +1,6 @@
-#pragma once
+﻿#pragma once
 
 #define IDI_APP_ICON 101
-
+#define IDR_HTML_AI_CHAT_HISTORY 201
+#define IDR_HTML_AI_CONFIG_DIALOG 202
+#define IDR_HTML_AI_PREVIEW_DIALOG 203

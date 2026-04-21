@@ -45,10 +45,7 @@ constexpr const char* kCompileStartPattern =
 
 std::filesystem::path GetInitTraceLogPath()
 {
-	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
-	std::error_code ec;
-	std::filesystem::create_directories(dir, ec);
-	return dir / "startup_init_last.log";
+	return GetAutoLinkerLogFilePath("startup_init_last.log");
 }
 
 void TraceInitStep(const std::string& step)

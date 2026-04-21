@@ -116,6 +116,9 @@
     <ClCompile Include="src\ProjectSourceCacheManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\ResourceTextLoader.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\StringHelper.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -281,6 +284,9 @@
     <ClInclude Include="src\native_module_public_info.hpp" />
     <ClInclude Include="src\PowerShellToolRunner.h" />
     <ClInclude Include="src\RealPageCodeToolSupport.h" />
+    <ClInclude Include="src\ResourceTextLoader.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
     <ClInclude Include="src\TavilyClient.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -307,6 +313,15 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="src\AutoLinker.def" />
+    <None Include="src\webview\ai_chat_history.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\ai_config_dialog.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\ai_preview_dialog.html">
+      <Filter>AI</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="src\AutoLinker.rc">

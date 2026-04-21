@@ -17,10 +17,7 @@ std::mutex g_aiRoundtripLogMutex;
 
 std::filesystem::path GetAIRoundtripLogPath()
 {
-	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
-	std::error_code ec;
-	std::filesystem::create_directories(dir, ec);
-	return dir / "ai_roundtrip_last.log";
+	return GetAutoLinkerLogFilePath("ai_roundtrip_last.log");
 }
 
 bool IsValidUtf8ForLog(const std::string& text)

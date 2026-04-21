@@ -517,6 +517,7 @@
     <ClCompile Include="src\PageCodeCacheManager.cpp" />
     <ClCompile Include="src\ProjectSourceCacheManager.cpp" />
     <ClCompile Include="src\RealPageCodeToolSupport.cpp" />
+    <ClCompile Include="src\ResourceTextLoader.cpp" />
     <ClCompile Include="src\PowerShellToolRunner.cpp" />
     <ClCompile Include="src\StringHelper.cpp" />
     <ClCompile Include="src\TavilyClient.cpp" />
@@ -570,6 +571,7 @@
     <ClInclude Include="src\ProjectSourceCacheManager.h" />
     <ClInclude Include="src\PowerShellToolRunner.h" />
     <ClInclude Include="src\RealPageCodeToolSupport.h" />
+    <ClInclude Include="src\ResourceTextLoader.h" />
     <ClInclude Include="src\resource.h" />
     <ClInclude Include="src\StringHelper.h" />
     <ClInclude Include="src\TavilyClient.h" />
@@ -582,6 +584,9 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="src\AutoLinker.def" />
+    <None Include="src\webview\ai_chat_history.html" />
+    <None Include="src\webview\ai_config_dialog.html" />
+    <None Include="src\webview\ai_preview_dialog.html" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

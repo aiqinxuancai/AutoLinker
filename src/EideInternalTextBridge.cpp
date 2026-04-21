@@ -18,6 +18,7 @@
 
 #include "Global.h"
 #include "MemFind.h"
+#include "PathHelper.h"
 #include "RealPageCodeToolSupport.h"
 #include "WindowHelper.h"
 #include "direct_global_search_debug.hpp"
@@ -365,17 +366,11 @@ void AppendPageEditTraceLine(const std::string& text)
 {
 	std::lock_guard<std::mutex> lock(g_pageEditTraceMutex);
 
-	char tempPath[MAX_PATH + 1] = {};
-	DWORD pathLen = ::GetTempPathA(MAX_PATH, tempPath);
-	if (pathLen == 0 || pathLen > MAX_PATH) {
-		return;
-	}
-
 	SYSTEMTIME st{};
 	::GetLocalTime(&st);
 
 	std::ofstream out(
-		std::string(tempPath) + "AutoLinker_page_edit_trace.log",
+		GetAutoLinkerLogFilePath("AutoLinker_page_edit_trace.log"),
 		std::ios::out | std::ios::app | std::ios::binary);
 	if (!out.is_open()) {
 		return;

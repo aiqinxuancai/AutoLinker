@@ -12,6 +12,7 @@
 #include "..\\thirdparty\\WebView2.h"
 
 #include "Global.h"
+#include "ResourceTextLoader.h"
 
 #pragma comment(lib, "comctl32.lib")
 #if defined _M_IX86
@@ -29,8 +30,9 @@ constexpr int IDC_CFG_API_KEY = 1002;
 constexpr int IDC_CFG_MODEL = 1003;
 constexpr int IDC_CFG_EXTRA_PROMPT = 1004;
 constexpr int IDC_CFG_GET_KEY_LINK = 1005;
-constexpr int IDC_CFG_FILL_RIGHT_CODES = 1006;
+constexpr int IDC_CFG_FILL_RIGHT_CODES = 1006; // 保留以备兼容，实际已被 IDC_CFG_PLATFORM_PRESET 取代
 constexpr int IDC_CFG_TAVILY_API_KEY = 1007;
+constexpr int IDC_CFG_PLATFORM_PRESET = 1008;
 constexpr int IDC_CFG_SAVE = 1;
 constexpr int IDC_CFG_CANCEL = 2;
 
@@ -480,6 +482,7 @@ struct AIConfigDialogContext {
 	HWND hTavilyApiKey = nullptr;
 	HWND hExtraPrompt = nullptr;
 	HWND hGetKeyLink = nullptr;
+	HWND hPlatformCombo = nullptr;
 };
 
 struct AIConfigWebViewDialogContext {
@@ -607,31 +610,11 @@ std::string BuildAIConfigWebViewSettingsJson(const AISettings& settings)
 
 std::string BuildAIConfigWebViewShellHtml()
 {
-	std::string html;
-	html.reserve(7000);
-	html += "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light only\">";
-	html += "<style>";
-	html += "html,body{margin:0;padding:0;background:#f4f6f8;color:#1f2937;font:14px/1.5 'Microsoft YaHei UI','Segoe UI',sans-serif;height:100%;}";
-	html += "*{box-sizing:border-box;} body{padding:0;} h1{margin:0 0 8px 0;font-size:22px;} h2{margin:0 0 10px 0;font-size:16px;} p{margin:0 0 10px 0;color:#4b5563;} .wrap{width:100%;min-height:100vh;margin:0;} .hero{padding:18px 20px 12px 20px;background:#eef3f8;border-bottom:1px solid #d7dce2;} .content{padding:0;} .grid{display:grid;grid-template-columns:1fr 1fr;gap:0;} .panel{background:#fff;border:0;padding:18px 20px;min-width:0;} .panel + .panel{border-left:1px solid #d7dce2;} .row{margin-bottom:12px;} .row label{display:block;margin-bottom:6px;font-weight:700;color:#374151;} .input,.select,.textarea{width:100%;border:1px solid #c7d0da;border-radius:8px;padding:9px 10px;background:#fff;font:14px/1.5 'Microsoft YaHei UI','Segoe UI',sans-serif;color:#111827;} .textarea{min-height:140px;resize:vertical;} .inline{display:flex;gap:8px;align-items:center;} .inline .input{flex:1 1 auto;} .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;} .footer{display:flex;justify-content:flex-end;gap:10px;align-items:center;padding:16px 20px;border-top:1px solid #d7dce2;background:#fff;} .btn{border:1px solid #bfc8d4;background:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font:600 13px/1 'Microsoft YaHei UI','Segoe UI',sans-serif;} .btn.primary{background:#1565c0;border-color:#1565c0;color:#fff;} .btn.secondary{background:#eb6c2d;border-color:#eb6c2d;color:#fff;} .tip{font-size:12px;color:#6b7280;} .code{font-family:Consolas,'Courier New',monospace;background:#eef2f7;border-radius:4px;padding:1px 5px;} @media (max-width:900px){.hero{padding:16px;} .grid{grid-template-columns:1fr;} .panel{padding:16px;} .panel + .panel{border-left:0;border-top:1px solid #d7dce2;} .footer{padding:16px;flex-direction:column-reverse;align-items:stretch;} .footer .btn{width:100%;}}";
-	html += "</style></head><body><div class='wrap'><div class='hero'><h1>AutoLinker AI &#x8BBE;&#x7F6E;</h1><p>&#x7EDF;&#x4E00;&#x914D;&#x7F6E;&#x4E3B;&#x6A21;&#x578B;&#x53C2;&#x6570;&#x548C; Tavily &#x8054;&#x7F51;&#x641C;&#x7D22;&#x5BC6;&#x94A5;&#x3002;&#x4FDD;&#x5B58;&#x65F6;&#x7531;&#x5BBF;&#x4E3B;&#x7A0B;&#x5E8F;&#x5B8C;&#x6210;&#x6700;&#x7EC8;&#x6821;&#x9A8C;&#x3002;</p></div><div class='content'><div class='grid'><div class='panel'><h2>&#x4E3B;&#x6A21;&#x578B;</h2><div class='row'><label for='protocol'>Protocol</label><select id='protocol' class='select'><option value='OpenAI'>OpenAI</option><option value='Gemini'>Gemini</option><option value='Claude'>Claude</option></select></div><div class='row'><label for='baseUrl'>Base URL</label><input id='baseUrl' class='input' placeholder='https://right.codes/codex' /></div><div class='row'><label for='apiKey'>API Key</label><div class='inline'><input id='apiKey' class='input' type='password' placeholder='&#x4E3B;&#x6A21;&#x578B; API Key' /><button id='toggleApiKey' class='btn' type='button'>&#x663E;&#x793A;</button></div></div><div class='row'><label for='model'>Model</label><input id='model' class='input' placeholder='&#x4F8B;&#x5982; gpt-5.2-medium' /></div><div class='row'><label for='extraPrompt'>System Prompt</label><textarea id='extraPrompt' class='textarea' placeholder='&#x9644;&#x52A0;&#x7CFB;&#x7EDF;&#x63D0;&#x793A;&#x8BCD;'></textarea></div><div class='btns'><button id='fillRightCodes' class='btn secondary' type='button'>&#x4E00;&#x952E;&#x586B;&#x5165; right.codes</button><button id='openRightCodes' class='btn' type='button'>&#x6253;&#x5F00; right.codes</button></div><p class='tip'>&#x4E3B;&#x6A21;&#x578B;&#x914D;&#x7F6E;&#x4E3A;&#x7A7A;&#x65F6;&#x65E0;&#x6CD5;&#x5F00;&#x59CB; AI &#x5BF9;&#x8BDD;&#x3002;</p></div>";
-	html += "<div class='panel'><h2>Tavily &#x8054;&#x7F51;&#x641C;&#x7D22;</h2><div class='row'><label for='tavilyApiKey'>Tavily API Key</label><div class='inline'><input id='tavilyApiKey' class='input' type='password' placeholder='&#x7528;&#x4E8E; search_web_tavily' /><button id='toggleTavilyKey' class='btn' type='button'>&#x663E;&#x793A;</button></div></div><p>&#x8FD9;&#x4E2A; Key &#x4EC5;&#x4F9B; <span class='code'>search_web_tavily</span> &#x5DE5;&#x5177;&#x4F7F;&#x7528;&#xFF0C;&#x4E0D;&#x5F71;&#x54CD;&#x4E3B;&#x6A21;&#x578B;&#x914D;&#x7F6E;&#x3002;</p><p class='tip'>PowerShell &#x547D;&#x4EE4;&#x6267;&#x884C;&#x5DE5;&#x5177;&#x4ECD;&#x7136;&#x4F1A;&#x9010;&#x6B21;&#x5F39;&#x7A97;&#x786E;&#x8BA4;&#x3002;</p></div></div></div><div class='footer'><button id='cancelBtn' class='btn' type='button'>&#x53D6;&#x6D88;</button><button id='saveBtn' class='btn primary' type='button'>&#x4FDD;&#x5B58;&#x5E76;&#x7EE7;&#x7EED;</button></div></div><script>";
-	html += "const initialSettings={protocolType:'OpenAI',baseUrl:'',apiKey:'',model:'',extraPrompt:'',tavilyApiKey:''};";
-	html += "function $(id){return document.getElementById(id);} function post(payload){if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify(payload));}}";
-	html += "function setField(id,value){const el=$(id); if(el){el.value=value||'';}}";
-	html += "function toggleSecret(id,btnId){const input=$(id),btn=$(btnId); if(!input||!btn){return;} const next=input.type==='password'?'text':'password'; input.type=next; btn.textContent=next==='password'?'\\u663E\\u793A':'\\u9690\\u85CF';}";
-	html += "function collect(){return {protocol_type:$('protocol').value||'OpenAI',base_url:$('baseUrl').value||'',api_key:$('apiKey').value||'',model:$('model').value||'',extra_system_prompt:$('extraPrompt').value||'',tavily_api_key:$('tavilyApiKey').value||''};}";
-	html += "function validate(data){if(!data.base_url.trim()||!data.api_key.trim()||!data.model.trim()){alert('baseUrl / apiKey / model \\u4E0D\\u80FD\\u4E3A\\u7A7A\\u3002'); return false;} return true;}";
-	html += "function applyInitial(settings){const next=settings||initialSettings; var protocol=$('protocol'); if(protocol){protocol.value='OpenAI'; var desired=next.protocolType||'OpenAI'; protocol.value=desired; if(!protocol.value){protocol.selectedIndex=0;}} setField('baseUrl',next.baseUrl);setField('apiKey',next.apiKey);setField('model',next.model);setField('extraPrompt',next.extraPrompt);setField('tavilyApiKey',next.tavilyApiKey);}";
-	html += "window.autolinkerApplySettings=function(settings){applyInitial(settings);};";
-	html += "window.autolinkerFocusPrimary=function(){if($('baseUrl')){$('baseUrl').focus();}};";
-	html += "$('toggleApiKey').addEventListener('click',function(){toggleSecret('apiKey','toggleApiKey');}); $('toggleTavilyKey').addEventListener('click',function(){toggleSecret('tavilyApiKey','toggleTavilyKey');});";
-	html += "$('fillRightCodes').addEventListener('click',function(){$('protocol').value='OpenAI';$('baseUrl').value='https://right.codes/codex';$('model').value='gpt-5.2-medium';$('apiKey').focus();});";
-	html += "$('openRightCodes').addEventListener('click',function(){post({action:'open_right_codes'});});";
-	html += "$('cancelBtn').addEventListener('click',function(){post({action:'cancel'});});";
-	html += "$('saveBtn').addEventListener('click',function(){const data=collect(); if(!validate(data)){return;} post({action:'save',data:data});});";
-	html += "applyInitial(initialSettings);";
-	html += "</script></body></html>";
-	return html;
+	std::string html = LoadUtf8HtmlResourceText(IDR_HTML_AI_CONFIG_DIALOG);
+	if (!html.empty()) {
+		return html;
+	}
+	return "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>Config shell resource missing.</body></html>";
 }
 
 void LayoutAIConfigWebViewDialog(HWND hWnd, AIConfigWebViewDialogContext* ctx)
@@ -724,9 +707,19 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			hGetKeyLink = ctx->hGetKeyLink;
 		}
 
-		HWND hFillRightCodes = CreateWindowW(L"BUTTON", L"\u4E00\u952E\u586B\u5165 right.codes",
-			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-			430, 142, 190, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_FILL_RIGHT_CODES), nullptr, nullptr);
+		ctx->hPlatformCombo = CreateWindowExW(0, L"COMBOBOX", nullptr,
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+			430, 142, 190, 280, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PLATFORM_PRESET), nullptr, nullptr);
+		// 填入平台列表
+		static const wchar_t* kPlatformNames[] = {
+			L"（平台预设）", L"Right", L"DeepSeek", L"\u667A\u8C31", L"\u5343\u95EE",
+			L"Kimi", L"\u8C46\u5305", L"MiniMax", L"aihubmix",
+			L"\u7845\u57FA\u6D41\u52A8", L"OpenAI", L"Claude", L"Gemini"
+		};
+		for (const wchar_t* name : kPlatformNames) {
+			SendMessageW(ctx->hPlatformCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
+		}
+		SendMessageW(ctx->hPlatformCombo, CB_SETCURSEL, 0, 0);
 
 		HWND hTavilyApiKeyLabel = CreateWindowA("STATIC", "Tavily API Key:", WS_CHILD | WS_VISIBLE,
 			16, 182, 100, 20, hWnd, nullptr, nullptr, nullptr);
@@ -753,7 +746,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			hModelLabel,
 			hTavilyApiKeyLabel,
 			ctx->hGetKeyLink,
-			hFillRightCodes,
+			ctx->hPlatformCombo,
 			hExtraPromptLabel,
 			ctx->hBaseUrl,
 			ctx->hApiKey,
@@ -799,11 +792,34 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			return 0;
 		}
 
-		if (id == IDC_CFG_FILL_RIGHT_CODES) {
-			PopulateProtocolCombo(ctx->hProtocol, AIProtocolType::OpenAI);
-			SetWindowTextA(ctx->hBaseUrl, "https://right.codes/codex");
-			SetWindowTextA(ctx->hModel, "gpt-5.2-medium");
-			SetFocus(ctx->hApiKey);
+		if (id == IDC_CFG_PLATFORM_PRESET && HIWORD(wParam) == CBN_SELCHANGE) {
+			// 与 WebView2 中 PLATFORMS 数组保持相同顺序（索引 0 = 自定义）
+			struct PlatformPreset {
+				const char* baseUrl;
+				AIProtocolType protocol;
+			};
+			static const PlatformPreset kPresets[] = {
+				{ nullptr, AIProtocolType::OpenAI },                                            // 0: 自定义
+				{ "https://right.codes/codex",                         AIProtocolType::OpenAI },  // Right
+				{ "https://api.deepseek.com/v1",                       AIProtocolType::OpenAI },  // DeepSeek
+				{ "https://open.bigmodel.cn/api/paas/v4",              AIProtocolType::OpenAI },  // 智谱
+				{ "https://dashscope.aliyuncs.com/compatible-mode/v1", AIProtocolType::OpenAI },  // 千问
+				{ "https://api.moonshot.cn/v1",                        AIProtocolType::OpenAI },  // Kimi
+				{ "https://ark.cn-beijing.volces.com/api/v3",          AIProtocolType::OpenAI },  // 豆包
+				{ "https://api.minimax.chat/v1",                       AIProtocolType::OpenAI },  // MiniMax
+				{ "https://aihubmix.com/v1",                           AIProtocolType::OpenAI },  // aihubmix
+				{ "https://api.siliconflow.cn/v1",                     AIProtocolType::OpenAI },  // 硅基流动
+				{ "https://api.openai.com/v1",                         AIProtocolType::OpenAI },  // OpenAI
+				{ "https://api.anthropic.com",                         AIProtocolType::Claude  },  // Claude
+				{ "https://generativelanguage.googleapis.com",         AIProtocolType::Gemini  },  // Gemini
+			};
+			const int sel = static_cast<int>(SendMessageW(ctx->hPlatformCombo, CB_GETCURSEL, 0, 0));
+			if (sel > 0 && sel < static_cast<int>(std::size(kPresets))) {
+				const auto& p = kPresets[sel];
+				PopulateProtocolCombo(ctx->hProtocol, p.protocol);
+				SetWindowTextA(ctx->hBaseUrl, p.baseUrl);
+				SetFocus(ctx->hApiKey);
+			}
 			return 0;
 		}
 		if (id == IDC_CFG_GET_KEY_LINK && HIWORD(wParam) == STN_CLICKED) {
@@ -982,8 +998,12 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 											else if (action == "cancel") {
 												DestroyWindow(hWnd);
 											}
-											else if (action == "open_right_codes") {
-												ShellExecuteA(hWnd, "open", "https://right.codes/register?aff=3dc87885", nullptr, nullptr, SW_SHOWNORMAL);
+											else if (action == "open_url") {
+												const std::string openUrl = payload.value("url", "");
+												if (!openUrl.empty() &&
+													(openUrl.rfind("https://", 0) == 0 || openUrl.rfind("http://", 0) == 0)) {
+													ShellExecuteA(hWnd, "open", openUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+												}
 											}
 										}
 										catch (...) {
@@ -1164,26 +1184,11 @@ std::string BuildAIPreviewWebViewPayloadJson(const AIPreviewWebViewDialogContext
 
 std::string BuildAIPreviewWebViewShellHtml()
 {
-	std::string html;
-	html.reserve(5200);
-	html += "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light only\">";
-	html += "<style>";
-	html += "html,body{margin:0;padding:0;background:#f4f6f8;color:#1f2937;font:14px/1.5 'Microsoft YaHei UI','Segoe UI',sans-serif;height:100%;}";
-	html += "*{box-sizing:border-box;} body{padding:0;} h1{margin:0 0 8px 0;font-size:22px;} p{margin:0;color:#4b5563;} .wrap{min-height:100vh;display:flex;flex-direction:column;} .hero{padding:18px 20px 12px 20px;background:#eef3f8;border-bottom:1px solid #d7dce2;} .panel{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;padding:18px 20px;background:#fff;} .toolbar{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap;} .badge{display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:#e7eef7;color:#35506b;font:600 12px/1 'Microsoft YaHei UI','Segoe UI',sans-serif;} .tip{font-size:12px;color:#6b7280;} .viewer{flex:1 1 auto;min-height:260px;margin:0;padding:16px;border:1px solid #d7dce2;border-radius:12px;background:#fbfcfe;color:#111827;font:13px/1.6 Consolas,'Courier New',monospace;white-space:pre;overflow:auto;tab-size:4;} .footer{display:flex;justify-content:flex-end;gap:10px;align-items:center;padding:16px 20px;border-top:1px solid #d7dce2;background:#fff;} .btn{border:1px solid #bfc8d4;background:#fff;border-radius:8px;padding:8px 14px;cursor:pointer;font:600 13px/1 'Microsoft YaHei UI','Segoe UI',sans-serif;} .btn.primary{background:#1565c0;border-color:#1565c0;color:#fff;} .btn.secondary{background:#eb6c2d;border-color:#eb6c2d;color:#fff;} .btn[hidden]{display:none!important;} @media (max-width:900px){.hero{padding:16px;} .panel{padding:16px;} .viewer{min-height:220px;padding:14px;} .footer{padding:16px;flex-direction:column-reverse;align-items:stretch;} .footer .btn{width:100%;}}";
-	html += "</style></head><body><div class='wrap'><div class='hero'><h1 id='dialogTitle'>AutoLinker AI &#x786E;&#x8BA4;</h1><p id='dialogSubtitle'>&#x8BF7;&#x786E;&#x8BA4;&#x4EE5;&#x4E0B;&#x5185;&#x5BB9;&#xFF0C;&#x786E;&#x8BA4;&#x540E;&#x5C06;&#x7EE7;&#x7EED;&#x6267;&#x884C;&#x3002;</p></div><div class='panel'><div class='toolbar'><span class='badge'>&#x53EA;&#x8BFB;&#x9884;&#x89C8;</span><span class='tip'>&#x5185;&#x5BB9;&#x4F1A;&#x4FDD;&#x7559;&#x539F;&#x59CB;&#x6362;&#x884C;&#x4E0E;&#x7F29;&#x8FDB;&#x3002;</span></div><pre id='contentView' class='viewer'></pre></div><div class='footer'><button id='cancelBtn' class='btn' type='button'>&#x53D6;&#x6D88;</button><button id='secondaryBtn' class='btn secondary' type='button' hidden>&#x6B21;&#x8981;&#x64CD;&#x4F5C;</button><button id='primaryBtn' class='btn primary' type='button'>&#x786E;&#x5B9A;</button></div></div><script>";
-	html += "const initialPreview={title:'',content:'',primaryText:'\\u786E\\u5B9A',secondaryText:''};";
-	html += "function $(id){return document.getElementById(id);} function post(payload){if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify(payload));}}";
-	html += "function setText(id,value){const el=$(id); if(el){el.textContent=value||'';}}";
-	html += "function applyPreview(preview){const next=preview||initialPreview; setText('dialogTitle',next.title||'AutoLinker AI Preview'); setText('dialogSubtitle',next.secondaryText?'\\u8BF7\\u786E\\u8BA4\\u4EE5\\u4E0B\\u5185\\u5BB9\\uFF0C\\u53EF\\u4EE5\\u9009\\u62E9\\u4E0D\\u540C\\u7684\\u540E\\u7EED\\u52A8\\u4F5C\\u3002':'\\u8BF7\\u786E\\u8BA4\\u4EE5\\u4E0B\\u5185\\u5BB9\\uFF0C\\u786E\\u8BA4\\u540E\\u5C06\\u7EE7\\u7EED\\u6267\\u884C\\u3002'); setText('contentView',next.content||''); const primary=$('primaryBtn'); if(primary){primary.textContent=next.primaryText||'\\u786E\\u5B9A';} const secondary=$('secondaryBtn'); if(secondary){const hasSecondary=!!(next.secondaryText&&next.secondaryText.length); secondary.hidden=!hasSecondary; if(hasSecondary){secondary.textContent=next.secondaryText;}}}";
-	html += "window.autolinkerApplyPreview=function(preview){applyPreview(preview);};";
-	html += "window.autolinkerFocusPrimary=function(){if($('primaryBtn')){$('primaryBtn').focus();}};";
-	html += "$('primaryBtn').addEventListener('click',function(){post({action:'primary'});});";
-	html += "$('secondaryBtn').addEventListener('click',function(){post({action:'secondary'});});";
-	html += "$('cancelBtn').addEventListener('click',function(){post({action:'cancel'});});";
-	html += "document.addEventListener('keydown',function(evt){if(evt.key==='Escape'){evt.preventDefault(); post({action:'cancel'}); return;} if(evt.key==='Enter'&&!evt.shiftKey&&!evt.ctrlKey&&!evt.altKey&&!evt.metaKey){evt.preventDefault(); post({action:'primary'});}});";
-	html += "applyPreview(initialPreview);";
-	html += "</script></body></html>";
-	return html;
+	std::string html = LoadUtf8HtmlResourceText(IDR_HTML_AI_PREVIEW_DIALOG);
+	if (!html.empty()) {
+		return html;
+	}
+	return "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>Preview shell resource missing.</body></html>";
 }
 
 void LayoutAIPreviewWebViewDialog(HWND hWnd, AIPreviewWebViewDialogContext* ctx)

@@ -36,6 +36,7 @@
 #include "IDEFacade.h"
 #include "PathHelper.h"
 #include "ProjectSourceCacheManager.h"
+#include "ResourceTextLoader.h"
 #include "WinINetUtil.h"
 #include "resource.h"
 #include "..\\elib\\lib2.h"
@@ -1804,61 +1805,11 @@ std::string BuildHistoryHtmlLocked(const AIChatSessionState& state)
 
 std::string BuildHistoryWebViewShellHtml()
 {
-	std::string html;
-	html.reserve(4200);
-	html += "<!doctype html><html><head><meta charset=\"utf-8\"><style>";
-	html += "html,body{margin:0;padding:0;background:#ffffff;color:#222;font:13px/1.6 'Microsoft YaHei UI','Segoe UI',sans-serif;}";
-	html += "body{padding:0;}";
-	html += ".layout{display:flex;flex-direction:column;height:100vh;box-sizing:border-box;}";
-	html += ".history{flex:1 1 auto;overflow:auto;padding:10px 10px 8px 10px;box-sizing:border-box;}";
-	html += "#chat-root{min-height:100%;}";
-	html += ".composer{flex:0 0 auto;border-top:1px solid #d9d9d9;background:#fbfbfb;padding:8px 10px 10px 10px;box-sizing:border-box;}";
-	html += ".actions{display:flex;justify-content:space-between;align-items:flex-end;gap:8px;}";
-	html += ".left-actions,.right-actions{display:flex;align-items:center;gap:8px;}";
-	html += ".right-actions{margin-left:auto;}";
-	html += ".input-wrap{display:flex;flex-direction:column;gap:8px;}";
-	html += "#chat-input{width:100%;min-height:58px;max-height:160px;resize:vertical;box-sizing:border-box;border:1px solid #cfcfcf;border-radius:6px;padding:8px 10px;font:13px/1.5 'Microsoft YaHei UI','Segoe UI',sans-serif;outline:none;background:#fff;}";
-	html += "#chat-input:focus{border-color:#7aa7e0;box-shadow:0 0 0 2px rgba(64,127,214,.12);}";
-	html += ".btn{border:1px solid #c8c8c8;background:#fff;border-radius:6px;padding:6px 12px;font:12px 'Microsoft YaHei UI','Segoe UI',sans-serif;cursor:pointer;}";
-	html += ".btn.primary{background:#0b63c9;border-color:#0b63c9;color:#fff;}";
-	html += ".btn:disabled{opacity:.55;cursor:default;}";
-	html += ".hint{font-size:12px;color:#6b6b6b;}";
-	html += ".msg{border:1px solid #d8d8d8;border-radius:6px;padding:8px 10px;margin:0 0 10px 0;box-sizing:border-box;overflow:hidden;}";
-	html += ".msg.user{background:#f7fbff;border-color:#c8ddf5;}";
-	html += ".msg.assistant{background:#ffffff;border-color:#d8d8d8;}";
-	html += ".msg.tool{background:#fbfbfb;border-color:#dddddd;}";
-	html += ".msg.system{background:#fff9e8;border-color:#ecd9a1;}";
-	html += ".role{font-size:12px;font-weight:700;color:#5a5a5a;margin-bottom:6px;}";
-	html += ".body{overflow-wrap:anywhere;word-break:break-word;}";
-	html += ".body p,.body ul,.body pre,.body h1,.body h2,.body h3,.body h4,.body h5,.body h6{margin:0 0 8px 0;}";
-	html += ".body ul{padding-left:20px;}";
-	html += ".body code{font-family:Consolas,'Courier New',monospace;background:#f2f2f2;border-radius:4px;padding:1px 4px;overflow-wrap:anywhere;word-break:break-word;}";
-	html += ".body .code-block{position:relative;margin:0 0 8px 0;}";
-	html += ".body .code-copy-btn{position:absolute;top:8px;right:8px;z-index:1;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:1px solid #d0d7de;background:#ffffff;color:#57606a;border-radius:6px;padding:0;cursor:pointer;box-shadow:0 1px 2px rgba(31,35,40,.06);}";
-	html += ".body .code-copy-btn:hover{background:#f3f4f6;color:#24292f;}";
-	html += ".body .code-copy-btn:active{background:#e9ebef;}";
-	html += ".body .code-copy-btn svg{width:15px;height:15px;fill:currentColor;pointer-events:none;}";
-	html += ".body .code-copy-btn.copied{background:#e7f6ec;border-color:#9dd3ae;color:#146c2e;}";
-	html += ".body .code-copy-btn.failed{background:#fff1f0;border-color:#ffb3ad;color:#c62828;}";
-	html += ".body pre{overflow:auto;background:#f6f8fa;border-radius:6px;padding:42px 10px 10px 10px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;}";
-	html += ".body pre code{background:transparent;padding:0;border-radius:0;}";
-	html += ".body a{color:#0b63c9;text-decoration:none;}";
-	html += ".body a:hover{text-decoration:underline;}";
-	html += "</style></head><body><div class=\"layout\"><div id=\"history-scroll\" class=\"history\"><div id=\"chat-root\"></div></div><div class=\"composer\"><div class=\"input-wrap\"><textarea id=\"chat-input\" placeholder=\"输入消息，Enter 发送，Ctrl+Enter 换行\"></textarea><div class=\"actions\"><div class=\"left-actions\"><button id=\"clear-btn\" class=\"btn\" type=\"button\">清空历史会话</button></div><div class=\"right-actions\"><button id=\"send-btn\" class=\"btn primary\" type=\"button\">发送</button><button id=\"stop-btn\" class=\"btn\" type=\"button\" style=\"display:none;\">停止</button></div></div></div></div></div><script>";
-	html += "window.autolinkerSetChatHtml=function(html){var root=document.getElementById('chat-root');var scroll=document.getElementById('history-scroll');if(root){root.innerHTML=html||'';if(scroll){scroll.scrollTop=scroll.scrollHeight;}}};";
-	html += "window.autolinkerSetBusy=function(busy,stopRequested){var send=document.getElementById('send-btn');var stop=document.getElementById('stop-btn');var clear=document.getElementById('clear-btn');var input=document.getElementById('chat-input');var isBusy=!!busy;var isStopping=!!stopRequested;if(send){send.disabled=isBusy;send.style.display=isBusy?'none':'';}if(stop){stop.disabled=!isBusy||isStopping;stop.textContent=isStopping?'停止中...':'停止';stop.style.display=isBusy?'':'none';}if(clear){clear.disabled=isBusy;}if(input){input.disabled=isBusy;}};";
-	html += "window.autolinkerClearInput=function(){var input=document.getElementById('chat-input');if(input){input.value='';input.focus();}};";
-	html += "window.autolinkerFocusInput=function(){var input=document.getElementById('chat-input');if(input){input.focus();}};";
-	html += "(function(){var input=document.getElementById('chat-input');var send=document.getElementById('send-btn');var stop=document.getElementById('stop-btn');var clear=document.getElementById('clear-btn');";
-	html += "function post(obj){if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify(obj));}}";
-	html += "function setCopyState(btn,state){if(!btn){return;}var copied=state==='copied';var failed=state==='failed';btn.classList.toggle('copied',copied);btn.classList.toggle('failed',failed);var title='复制代码';if(copied){title='已复制';}else if(failed){title='复制失败';}btn.setAttribute('title',title);btn.setAttribute('aria-label',title);if(btn._copyTimer){clearTimeout(btn._copyTimer);}if(state!=='idle'){btn._copyTimer=setTimeout(function(){btn.classList.remove('copied');btn.classList.remove('failed');btn.setAttribute('title','复制代码');btn.setAttribute('aria-label','复制代码');btn._copyTimer=0;},1600);}}";
-	html += "function copyCode(btn){if(!btn){return;}var block=btn.closest('.code-block');var code=block?block.querySelector('code'):null;var text=code?(code.textContent||''):'';if(!text){setCopyState(btn,'failed');return;}if(window.chrome&&window.chrome.webview){post({action:'copy_code',text:text});setCopyState(btn,'copied');return;}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(function(){setCopyState(btn,'copied');},function(){setCopyState(btn,'failed');});return;}setCopyState(btn,'failed');}";
-	html += "function doSend(){if(!input||input.disabled){return;} post({action:'submit',text:input.value||''});}";
-	html += "function doStop(){post({action:'stop'});} if(send){send.addEventListener('click',doSend);} if(stop){stop.addEventListener('click',doStop);} if(clear){clear.addEventListener('click',function(){post({action:'clear'});});}";
-	html += "document.addEventListener('click',function(e){var btn=e.target&&e.target.closest?e.target.closest('.code-copy-btn'):null;if(!btn){return;}e.preventDefault();copyCode(btn);});";
-	html += "if(input){input.addEventListener('keydown',function(e){if(e.key==='Enter'&&!e.ctrlKey){e.preventDefault();doSend();}}); setTimeout(function(){input.focus();},0);}})();";
-	html += "</script></body></html>";
-	return html;
+	std::string html = LoadUtf8HtmlResourceText(IDR_HTML_AI_CHAT_HISTORY);
+	if (!html.empty()) {
+		return html;
+	}
+	return "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>WebView shell resource missing.</body></html>";
 }
 
 std::string BuildHistoryTextLocked(const AIChatSessionState& state)

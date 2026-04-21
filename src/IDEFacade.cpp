@@ -218,10 +218,7 @@ std::mutex g_codeFetchLogMutex;
 
 std::filesystem::path GetCodeFetchLogPath()
 {
-	std::filesystem::path dir = std::filesystem::path(GetBasePath()) / "AutoLinker";
-	std::error_code ec;
-	std::filesystem::create_directories(dir, ec);
-	return dir / "ai_code_fetch_last.log";
+	return GetAutoLinkerLogFilePath("ai_code_fetch_last.log");
 }
 
 std::string EscapeOneLine(std::string text)
