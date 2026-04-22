@@ -538,15 +538,20 @@ void PopulateProtocolCombo(HWND hCombo, AIProtocolType selected)
 	}
 
 	SendMessageA(hCombo, CB_RESETCONTENT, 0, 0);
-	const int idxOpenAI = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("OpenAI")));
+	const int idxOpenAI = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("OpenAI Chat")));
+	const int idxOpenAIResponses = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("OpenAI Responses")));
 	const int idxGemini = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Gemini")));
 	const int idxClaude = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Claude")));
 	SendMessageA(hCombo, CB_SETITEMDATA, idxOpenAI, static_cast<LPARAM>(AIProtocolType::OpenAI));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxOpenAIResponses, static_cast<LPARAM>(AIProtocolType::OpenAIResponses));
 	SendMessageA(hCombo, CB_SETITEMDATA, idxGemini, static_cast<LPARAM>(AIProtocolType::Gemini));
 	SendMessageA(hCombo, CB_SETITEMDATA, idxClaude, static_cast<LPARAM>(AIProtocolType::Claude));
 
 	int selectedIndex = idxOpenAI;
-	if (selected == AIProtocolType::Gemini) {
+	if (selected == AIProtocolType::OpenAIResponses) {
+		selectedIndex = idxOpenAIResponses;
+	}
+	else if (selected == AIProtocolType::Gemini) {
 		selectedIndex = idxGemini;
 	}
 	else if (selected == AIProtocolType::Claude) {
@@ -568,6 +573,8 @@ AIProtocolType GetSelectedProtocol(HWND hCombo)
 
 	const LRESULT data = SendMessageA(hCombo, CB_GETITEMDATA, selected, 0);
 	switch (static_cast<AIProtocolType>(data)) {
+	case AIProtocolType::OpenAIResponses:
+		return AIProtocolType::OpenAIResponses;
 	case AIProtocolType::Gemini:
 		return AIProtocolType::Gemini;
 	case AIProtocolType::Claude:
@@ -809,7 +816,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 				{ "https://api.minimax.chat/v1",                       AIProtocolType::OpenAI },  // MiniMax
 				{ "https://aihubmix.com/v1",                           AIProtocolType::OpenAI },  // aihubmix
 				{ "https://api.siliconflow.cn/v1",                     AIProtocolType::OpenAI },  // 硅基流动
-				{ "https://api.openai.com/v1",                         AIProtocolType::OpenAI },  // OpenAI
+				{ "https://api.openai.com/v1",                         AIProtocolType::OpenAIResponses },  // OpenAI
 				{ "https://api.anthropic.com",                         AIProtocolType::Claude  },  // Claude
 				{ "https://generativelanguage.googleapis.com",         AIProtocolType::Gemini  },  // Gemini
 			};

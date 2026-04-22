@@ -333,9 +333,10 @@ p {
 				<div class="row">
 					<label for="protocol">Protocol</label>
 					<select id="protocol" class="select">
-						<option value="OpenAI">OpenAI</option>
-						<option value="Gemini">Gemini</option>
-						<option value="Claude">Claude</option>
+						<option value="openai">OpenAI Chat</option>
+						<option value="openai_responses">OpenAI Responses</option>
+						<option value="gemini">Gemini</option>
+						<option value="claude">Claude</option>
 					</select>
 				</div>
 				<div class="row">
@@ -406,7 +407,7 @@ p {
 </div>
 <script>
 const initialSettings = {
-	protocolType: "OpenAI",
+	protocolType: "openai",
 	baseUrl: "",
 	apiKey: "",
 	model: "",
@@ -444,7 +445,7 @@ function toggleSecret(id, btnId) {
 
 function collect() {
 	return {
-		protocol_type: $("protocol").value || "OpenAI",
+		protocol_type: $("protocol").value || "openai",
 		base_url: $("baseUrl").value || "",
 		api_key: $("apiKey").value || "",
 		model: $("model").value || "",
@@ -465,8 +466,8 @@ function applyInitial(settings) {
 	const next = settings || initialSettings;
 	var protocol = $("protocol");
 	if (protocol) {
-		protocol.value = "OpenAI";
-		var desired = next.protocolType || "OpenAI";
+		protocol.value = "openai";
+		var desired = next.protocolType || "openai";
 		protocol.value = desired;
 		if (!protocol.value) {
 			protocol.selectedIndex = 0;
@@ -565,18 +566,18 @@ document.addEventListener("click", function(e) {
 });
 
 var PLATFORMS = {
-	right: { protocol: "OpenAI", baseUrl: "https://right.codes/codex", website: "https://right.codes/register?aff=3dc87885", models: ["gpt-5.3-codex", "gpt-5.2"] },
-	deepseek: { protocol: "OpenAI", baseUrl: "https://api.deepseek.com/v1", website: "https://platform.deepseek.com", models: ["deepseek-chat", "deepseek-reasoner"] },
-	zhipu: { protocol: "OpenAI", baseUrl: "https://open.bigmodel.cn/api/paas/v4", website: "https://open.bigmodel.cn", models: ["glm-5.1", "glm-5", "glm-5-turbo", "glm-4.7"] },
-	qwen: { protocol: "OpenAI", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", website: "https://dashscope.console.aliyun.com", models: ["qwen3.6-plus", "qwen3.5-plus", "qwen3-max", "qwen3-coder-plus"] },
-	kimi: { protocol: "OpenAI", baseUrl: "https://api.moonshot.cn/v1", website: "https://platform.moonshot.cn", models: ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-thinking-turbo", "moonshot-v1-128k"] },
-	doubao: { protocol: "OpenAI", baseUrl: "https://ark.cn-beijing.volces.com/api/v3", website: "https://console.volcengine.com/ark", models: ["doubao-seed-1.8", "doubao-seed-1.6-thinking", "doubao-seed-1.6", "doubao-seed-1.6-flash"] },
-	minimax: { protocol: "OpenAI", baseUrl: "https://api.minimax.chat/v1", website: "https://platform.minimax.chat", models: ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed"] },
-	aihubmix: { protocol: "OpenAI", baseUrl: "https://aihubmix.com/v1", website: "https://aihubmix.com/?aff=eeX5", models: ["gpt-5.4", "claude-opus-4-7", "claude-sonnet-4-6", "gemini-3.1-pro-preview", "grok-4"] },
-	siliconflow: { protocol: "OpenAI", baseUrl: "https://api.siliconflow.cn/v1", website: "https://cloud.siliconflow.cn/i/Oezhkra7", models: ["deepseek-ai/DeepSeek-V3.2", "deepseek-ai/DeepSeek-R1", "Qwen/Qwen3-Coder-480B-A35B-Instruct", "Pro/zai-org/GLM-4.7"] },
-	openai: { protocol: "OpenAI", baseUrl: "https://api.openai.com/v1", website: "https://platform.openai.com", models: ["gpt-5.2", "gpt-5.2-codex", "gpt-5-mini", "gpt-5-nano"] },
-	claude: { protocol: "Claude", baseUrl: "https://api.anthropic.com", website: "https://console.anthropic.com", models: ["claude-opus-4-7", "claude-sonnet-4-6", "claude-3-5-haiku-latest"] },
-	gemini: { protocol: "Gemini", baseUrl: "https://generativelanguage.googleapis.com", website: "https://aistudio.google.com", models: ["gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash"] }
+	right: { protocol: "openai", baseUrl: "https://right.codes/codex", website: "https://right.codes/register?aff=3dc87885", models: ["gpt-5.3-codex", "gpt-5.2"] },
+	deepseek: { protocol: "openai", baseUrl: "https://api.deepseek.com/v1", website: "https://platform.deepseek.com", models: ["deepseek-chat", "deepseek-reasoner"] },
+	zhipu: { protocol: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4", website: "https://open.bigmodel.cn", models: ["glm-5.1", "glm-5", "glm-5-turbo", "glm-4.7"] },
+	qwen: { protocol: "openai", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", website: "https://dashscope.console.aliyun.com", models: ["qwen3.6-plus", "qwen3.5-plus", "qwen3-max", "qwen3-coder-plus"] },
+	kimi: { protocol: "openai", baseUrl: "https://api.moonshot.cn/v1", website: "https://platform.moonshot.cn", models: ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-thinking-turbo", "moonshot-v1-128k"] },
+	doubao: { protocol: "openai", baseUrl: "https://ark.cn-beijing.volces.com/api/v3", website: "https://console.volcengine.com/ark", models: ["doubao-seed-1.8", "doubao-seed-1.6-thinking", "doubao-seed-1.6", "doubao-seed-1.6-flash"] },
+	minimax: { protocol: "openai", baseUrl: "https://api.minimax.chat/v1", website: "https://platform.minimax.chat", models: ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed"] },
+	aihubmix: { protocol: "openai", baseUrl: "https://aihubmix.com/v1", website: "https://aihubmix.com/?aff=eeX5", models: ["gpt-5.4", "claude-opus-4-7", "claude-sonnet-4-6", "gemini-3.1-pro-preview", "grok-4"] },
+	siliconflow: { protocol: "openai", baseUrl: "https://api.siliconflow.cn/v1", website: "https://cloud.siliconflow.cn/i/Oezhkra7", models: ["deepseek-ai/DeepSeek-V3.2", "deepseek-ai/DeepSeek-R1", "Qwen/Qwen3-Coder-480B-A35B-Instruct", "Pro/zai-org/GLM-4.7"] },
+	openai: { protocol: "openai_responses", baseUrl: "https://api.openai.com/v1", website: "https://platform.openai.com", models: ["gpt-5.2", "gpt-5.2-codex", "gpt-5-mini", "gpt-5-nano"] },
+	claude: { protocol: "claude", baseUrl: "https://api.anthropic.com", website: "https://console.anthropic.com", models: ["claude-opus-4-7", "claude-sonnet-4-6", "claude-3-5-haiku-latest"] },
+	gemini: { protocol: "gemini", baseUrl: "https://generativelanguage.googleapis.com", website: "https://aistudio.google.com", models: ["gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-2.5-pro", "gemini-2.5-flash"] }
 };
 
 function onPlatformChange() {

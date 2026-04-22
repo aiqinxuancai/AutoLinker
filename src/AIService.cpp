@@ -1548,6 +1548,21 @@ nlohmann::json BuildChatToolDefinitions()
 	return tools;
 }
 
+nlohmann::json BuildResponsesToolDefinitions()
+{
+	const nlohmann::json catalog = BuildPublicToolCatalog();
+	nlohmann::json tools = nlohmann::json::array();
+	for (const auto& item : catalog) {
+		tools.push_back({
+			{"type", "function"},
+			{"name", item.value("name", "")},
+			{"description", item.value("description", "")},
+			{"parameters", item.contains("inputSchema") ? item["inputSchema"] : nlohmann::json::object()}
+		});
+	}
+	return tools;
+}
+
 std::string BuildChatSystemPrompt(const AISettings& settings)
 {
 	std::string projectName;
@@ -1707,6 +1722,23 @@ std::string BuildClaudeEndpoint(const std::string& baseUrl)
 	return url + "/v1/messages";
 }
 
+std::string BuildOpenAIResponsesEndpoint(const std::string& baseUrl)
+{
+	std::string url = AIService::Trim(baseUrl);
+	while (!url.empty() && url.back() == '/') {
+		url.pop_back();
+	}
+
+	url = ReplaceSuffixIfPresent(url, "/chat/completions", "/responses");
+	if (EndsWithInsensitive(url, "/responses")) {
+		return url;
+	}
+	if (EndsWithInsensitive(url, "/v1")) {
+		return url + "/responses";
+	}
+	return url + "/v1/responses";
+}
+
 std::string BuildGeminiEndpoint(const std::string& baseUrl, const std::string& model, bool stream)
 {
 	std::string url = AIService::Trim(baseUrl);
@@ -1846,6 +1878,38 @@ std::string ExtractGeminiTextUtf8(const nlohmann::json& parsed)
 	return textUtf8;
 }
 
+std::string ExtractResponsesTextUtf8(const nlohmann::json& parsed)
+{
+	if (parsed.contains("output_text") && parsed["output_text"].is_string()) {
+		return parsed["output_text"].get<std::string>();
+	}
+	if (!parsed.contains("output") || !parsed["output"].is_array()) {
+		return std::string();
+	}
+
+	std::string textUtf8;
+	for (const auto& item : parsed["output"]) {
+		if (!item.is_object() || item.value("type", std::string()) != "message") {
+			continue;
+		}
+		if (!item.contains("content") || !item["content"].is_array()) {
+			continue;
+		}
+		for (const auto& contentItem : item["content"]) {
+			if (!contentItem.is_object()) {
+				continue;
+			}
+			const std::string contentType = contentItem.value("type", std::string());
+			if ((contentType == "output_text" || contentType == "text") &&
+				contentItem.contains("text") &&
+				contentItem["text"].is_string()) {
+				textUtf8 += contentItem["text"].get<std::string>();
+			}
+		}
+	}
+	return textUtf8;
+}
+
 struct ClaudeToolCall {
 	std::string id;
 	std::string name;
@@ -1853,6 +1917,13 @@ struct ClaudeToolCall {
 };
 
 struct GeminiToolCall {
+	std::string name;
+	std::string argumentsUtf8;
+};
+
+struct ResponsesToolCall {
+	std::string itemId;
+	std::string callId;
 	std::string name;
 	std::string argumentsUtf8;
 };
@@ -1913,6 +1984,80 @@ std::vector<GeminiToolCall> ExtractGeminiToolCalls(const nlohmann::json& parsed)
 		calls.push_back(std::move(call));
 	}
 	return calls;
+}
+
+std::vector<ResponsesToolCall> ExtractResponsesToolCalls(const nlohmann::json& parsed)
+{
+	std::vector<ResponsesToolCall> calls;
+	if (!parsed.contains("output") || !parsed["output"].is_array()) {
+		return calls;
+	}
+
+	for (const auto& item : parsed["output"]) {
+		if (!item.is_object() || item.value("type", std::string()) != "function_call") {
+			continue;
+		}
+
+		ResponsesToolCall call;
+		if (item.contains("id") && item["id"].is_string()) {
+			call.itemId = item["id"].get<std::string>();
+		}
+		if (item.contains("call_id") && item["call_id"].is_string()) {
+			call.callId = item["call_id"].get<std::string>();
+		}
+		if (item.contains("name") && item["name"].is_string()) {
+			call.name = item["name"].get<std::string>();
+		}
+		if (item.contains("arguments") && item["arguments"].is_string()) {
+			call.argumentsUtf8 = item["arguments"].get<std::string>();
+		}
+		calls.push_back(std::move(call));
+	}
+	return calls;
+}
+
+std::string BuildResponsesInstructions(
+	const std::vector<AIChatMessage>& contextMessages,
+	const AISettings& settings)
+{
+	std::string instructionsUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings));
+	for (const AIChatMessage& msg : contextMessages) {
+		if (ToLowerAsciiCopy(AIService::Trim(msg.role)) != "system") {
+			continue;
+		}
+		const std::string contentUtf8 = LocalToUtf8(msg.content);
+		if (contentUtf8.empty()) {
+			continue;
+		}
+		if (!instructionsUtf8.empty()) {
+			instructionsUtf8 += "\n\n";
+		}
+		instructionsUtf8 += contentUtf8;
+	}
+	return instructionsUtf8;
+}
+
+nlohmann::json BuildResponsesTextMessage(const std::string& role, const std::string& textUtf8)
+{
+	return {
+		{"role", role},
+		{"content", nlohmann::json::array({
+			{
+				{"type", "input_text"},
+				{"text", textUtf8}
+			}
+		})}
+	};
+}
+
+void AppendResponsesOutputItemsToInput(const nlohmann::json& parsed, nlohmann::json& input)
+{
+	if (!input.is_array() || !parsed.contains("output") || !parsed["output"].is_array()) {
+		return;
+	}
+	for (const auto& item : parsed["output"]) {
+		input.push_back(item);
+	}
 }
 
 AIResult ExecuteTaskClaude(const std::string& systemPrompt, const std::string& inputText, const AISettings& settings)
@@ -2020,6 +2165,57 @@ AIResult ExecuteTaskGemini(const std::string& systemPrompt, const std::string& i
 	}
 	catch (const std::exception& ex) {
 		result.error = std::string("Failed to parse Gemini response: ") + ex.what();
+		return result;
+	}
+}
+
+AIResult ExecuteTaskOpenAIResponses(const std::string& systemPrompt, const std::string& inputText, const AISettings& settings)
+{
+	AIResult result = {};
+	const std::string endpoint = BuildOpenAIResponsesEndpoint(settings.baseUrl);
+
+	nlohmann::json requestBody;
+	requestBody["model"] = LocalToUtf8(settings.model);
+	requestBody["temperature"] = settings.temperature;
+	requestBody["instructions"] = LocalToUtf8(systemPrompt);
+	requestBody["input"] = nlohmann::json::array({
+		BuildResponsesTextMessage("user", LocalToUtf8(inputText))
+	});
+	requestBody["stream"] = false;
+	NormalizeJsonStringsToUtf8InPlace(requestBody);
+
+	const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
+		endpoint,
+		requestBody.dump(),
+		BuildOpenAIHeaders(settings),
+		settings.timeoutMs,
+		false,
+		false,
+		"openai-responses-task");
+	result.httpStatus = statusCode;
+	if (statusCode < 200 || statusCode >= 300) {
+		result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+		return result;
+	}
+
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(responseBody);
+		const std::string errUtf8 = ParseErrorMessageUtf8(parsed);
+		if (!errUtf8.empty()) {
+			result.error = Utf8ToLocal(errUtf8);
+			return result;
+		}
+		const std::string textUtf8 = ExtractResponsesTextUtf8(parsed);
+		if (textUtf8.empty()) {
+			result.error = "Responses API response content is empty";
+			return result;
+		}
+		result.ok = true;
+		result.content = Utf8ToLocal(textUtf8);
+		return result;
+	}
+	catch (const std::exception& ex) {
+		result.error = std::string("Failed to parse Responses API response: ") + ex.what();
 		return result;
 	}
 }
@@ -2321,6 +2517,132 @@ AIChatResult ExecuteChatWithToolsGemini(
 	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
 	return result;
 }
+
+AIChatResult ExecuteChatWithToolsOpenAIResponses(
+	const std::vector<AIChatMessage>& contextMessages,
+	const AISettings& settings,
+	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
+	const std::function<void(const std::string& deltaText)>& streamCallback,
+	const std::function<bool()>& cancelCallback,
+	HttpRequestCancellation* cancelContext)
+{
+	AIChatResult result = {};
+	const std::string endpoint = BuildOpenAIResponsesEndpoint(settings.baseUrl);
+	const nlohmann::json tools = BuildResponsesToolDefinitions();
+
+	nlohmann::json input = nlohmann::json::array();
+	for (const AIChatMessage& msg : contextMessages) {
+		const std::string role = ToLowerAsciiCopy(AIService::Trim(msg.role));
+		if (role != "user" && role != "assistant") {
+			continue;
+		}
+		input.push_back(BuildResponsesTextMessage(role, LocalToUtf8(msg.content)));
+	}
+
+	const std::string instructionsUtf8 = BuildResponsesInstructions(contextMessages, settings);
+	const int maxToolRounds = GetMaxToolRounds(settings);
+	for (int round = 0; round < maxToolRounds; ++round) {
+		if (IsCancelRequested(cancelCallback, cancelContext)) {
+			return MarkChatResultCancelled(std::move(result));
+		}
+
+		nlohmann::json requestBody;
+		requestBody["model"] = LocalToUtf8(settings.model);
+		requestBody["temperature"] = settings.temperature;
+		requestBody["instructions"] = instructionsUtf8;
+		requestBody["input"] = input;
+		requestBody["tools"] = tools;
+		requestBody["stream"] = false;
+		NormalizeJsonStringsToUtf8InPlace(requestBody);
+
+		const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
+			endpoint,
+			requestBody.dump(),
+			BuildOpenAIHeaders(settings),
+			settings.timeoutMs,
+			false,
+			false,
+			"openai-responses-chat",
+			cancelCallback,
+			cancelContext);
+		result.httpStatus = statusCode;
+		if (IsCancelRequested(cancelCallback, cancelContext) || statusCode == kAiRequestCancelledHttpStatus) {
+			return MarkChatResultCancelled(std::move(result));
+		}
+		if (statusCode < 200 || statusCode >= 300) {
+			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+			return result;
+		}
+
+		nlohmann::json parsed;
+		try {
+			parsed = nlohmann::json::parse(responseBody);
+		}
+		catch (const std::exception& ex) {
+			result.error = std::string("Failed to parse Responses API response: ") + ex.what();
+			return result;
+		}
+
+		const std::string errUtf8 = ParseErrorMessageUtf8(parsed);
+		if (!errUtf8.empty()) {
+			result.error = Utf8ToLocal(errUtf8);
+			return result;
+		}
+
+		const std::vector<ResponsesToolCall> toolCalls = ExtractResponsesToolCalls(parsed);
+		const std::string textUtf8 = ExtractResponsesTextUtf8(parsed);
+		if (toolCalls.empty()) {
+			if (textUtf8.empty()) {
+				result.error = "Responses API response content is empty";
+				return result;
+			}
+			result.ok = true;
+			result.content = Utf8ToLocal(textUtf8);
+			if (streamCallback) {
+				streamCallback(result.content);
+			}
+			return result;
+		}
+
+		AppendResponsesOutputItemsToInput(parsed, input);
+
+		for (size_t i = 0; i < toolCalls.size(); ++i) {
+			const ResponsesToolCall& call = toolCalls[i];
+			const std::string callId = call.callId.empty()
+				? std::format("call_auto_round{}_{}", round + 1, i + 1)
+				: call.callId;
+
+			bool toolOk = false;
+			std::string toolResultLocal;
+			if (toolCallback) {
+				toolResultLocal = toolCallback(call.name, call.argumentsUtf8, toolOk);
+			}
+			else {
+				toolResultLocal = R"({"ok":false,"error":"tool callback not set"})";
+			}
+			const CompactToolResultPayload compactPayload = BuildCompactToolResultPayload(call.name, toolResultLocal);
+
+			AIChatToolEvent evt = {};
+			evt.name = call.name;
+			evt.argumentsJson = Utf8ToLocal(call.argumentsUtf8);
+			evt.resultJson = toolResultLocal;
+			evt.ok = toolOk;
+			result.toolEvents.push_back(std::move(evt));
+			if (IsCancelRequested(cancelCallback, cancelContext)) {
+				return MarkChatResultCancelled(std::move(result), Utf8ToLocal(textUtf8));
+			}
+
+			input.push_back({
+				{"type", "function_call_output"},
+				{"call_id", callId},
+				{"output", compactPayload.textUtf8}
+			});
+		}
+	}
+
+	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
+	return result;
+}
 } // namespace
 
 bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig, AISettings& outSettings)
@@ -2434,6 +2756,9 @@ bool AIService::HasRequiredSettings(const AISettings& settings, std::string& out
 AIProtocolType AIService::ParseProtocolType(const std::string& text)
 {
 	const std::string v = ToLowerAsciiCopy(Trim(text));
+	if (v == "openai_responses" || v == "openai-responses" || v == "openai responses" || v == "responses" || v == "openairesponses") {
+		return AIProtocolType::OpenAIResponses;
+	}
 	if (v == "gemini") {
 		return AIProtocolType::Gemini;
 	}
@@ -2446,6 +2771,8 @@ AIProtocolType AIService::ParseProtocolType(const std::string& text)
 std::string AIService::ProtocolTypeToString(AIProtocolType protocolType)
 {
 	switch (protocolType) {
+	case AIProtocolType::OpenAIResponses:
+		return "openai_responses";
 	case AIProtocolType::Gemini:
 		return "gemini";
 	case AIProtocolType::Claude:
@@ -2459,6 +2786,8 @@ std::string AIService::ProtocolTypeToString(AIProtocolType protocolType)
 std::string AIService::ProtocolTypeDisplayName(AIProtocolType protocolType)
 {
 	switch (protocolType) {
+	case AIProtocolType::OpenAIResponses:
+		return "OpenAI Responses";
 	case AIProtocolType::Gemini:
 		return "Gemini";
 	case AIProtocolType::Claude:
@@ -2503,6 +2832,9 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 	}
 	if (settings.protocolType == AIProtocolType::Gemini) {
 		return ExecuteTaskGemini(systemPrompt, inputText, settings);
+	}
+	if (settings.protocolType == AIProtocolType::OpenAIResponses) {
+		return ExecuteTaskOpenAIResponses(systemPrompt, inputText, settings);
 	}
 
 	const std::string modelUtf8 = LocalToUtf8(settings.model);
@@ -2613,6 +2945,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 	}
 	if (settings.protocolType == AIProtocolType::Gemini) {
 		return ExecuteChatWithToolsGemini(contextMessages, settings, toolCallback, streamCallback, cancelCallback, cancelContext);
+	}
+	if (settings.protocolType == AIProtocolType::OpenAIResponses) {
+		return ExecuteChatWithToolsOpenAIResponses(contextMessages, settings, toolCallback, streamCallback, cancelCallback, cancelContext);
 	}
 
 	const std::string endpoint = BuildEndpoint(settings.baseUrl);
@@ -2835,6 +3170,7 @@ std::string AIService::BuildEndpoint(const std::string& baseUrl)
 	while (!url.empty() && url.back() == '/') {
 		url.pop_back();
 	}
+	url = ReplaceSuffixIfPresent(url, "/responses", "/chat/completions");
 	if (EndsWithInsensitive(url, "/chat/completions")) {
 		return url;
 	}

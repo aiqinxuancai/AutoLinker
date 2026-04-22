@@ -21,7 +21,8 @@ enum class AITaskKind {
 enum class AIProtocolType {
 	OpenAI = 0,
 	Gemini = 1,
-	Claude = 2
+	Claude = 2,
+	OpenAIResponses = 3
 };
 
 // AI 设置。
