@@ -2817,6 +2817,112 @@ std::string AIService::BuildTaskDisplayName(AITaskKind kind)
 	}
 }
 
+AIResult AIService::TestConnection(const AISettings& settings)
+{
+	AIResult result = {};
+	std::string missingField;
+	if (!HasRequiredSettings(settings, missingField)) {
+		result.error = "AI settings missing: " + missingField;
+		return result;
+	}
+
+	const std::string systemPrompt = "你是一个 API 连通性测试助手。请只返回 OK。";
+	const std::string inputText = "请只返回 OK。";
+	if (settings.protocolType == AIProtocolType::Claude) {
+		return ExecuteTaskClaude(systemPrompt, inputText, settings);
+	}
+	if (settings.protocolType == AIProtocolType::Gemini) {
+		return ExecuteTaskGemini(systemPrompt, inputText, settings);
+	}
+	if (settings.protocolType == AIProtocolType::OpenAIResponses) {
+		return ExecuteTaskOpenAIResponses(systemPrompt, inputText, settings);
+	}
+
+	const std::string modelUtf8 = LocalToUtf8(settings.model);
+	const std::string systemPromptUtf8 = LocalToUtf8(systemPrompt);
+	const std::string inputTextUtf8 = LocalToUtf8(inputText);
+
+	nlohmann::json requestBody;
+	requestBody["model"] = modelUtf8;
+	requestBody["temperature"] = 0;
+	requestBody["stream"] = false;
+	requestBody["messages"] = nlohmann::json::array({
+		{
+			{"role", "system"},
+			{"content", systemPromptUtf8}
+		},
+		{
+			{"role", "user"},
+			{"content", inputTextUtf8}
+		}
+	});
+	NormalizeJsonStringsToUtf8InPlace(requestBody);
+
+	const std::string endpoint = BuildEndpoint(settings.baseUrl);
+	const std::string headers = BuildOpenAIHeaders(settings);
+
+	std::string requestBodyText;
+	try {
+		requestBodyText = requestBody.dump();
+	}
+	catch (const std::exception& ex) {
+		result.error = std::string("Failed to build AI request JSON: ") + ex.what();
+		return result;
+	}
+
+	const auto [responseBody, statusCode] =
+		PerformPostRequestWithRetry(endpoint, requestBodyText, headers, settings.timeoutMs, false, false, "openai-test");
+	result.httpStatus = statusCode;
+
+	if (statusCode < 200 || statusCode >= 300) {
+		result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+		return result;
+	}
+
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(responseBody);
+		if (parsed.contains("choices") && parsed["choices"].is_array() && !parsed["choices"].empty()) {
+			const nlohmann::json& choice = parsed["choices"][0];
+			if (choice.contains("message") && choice["message"].contains("content")) {
+				if (choice["message"]["content"].is_string()) {
+					result.ok = true;
+					result.content = Utf8ToLocal(choice["message"]["content"].get<std::string>());
+					return result;
+				}
+				if (choice["message"]["content"].is_array()) {
+					std::string merged;
+					for (const auto& item : choice["message"]["content"]) {
+						if (item.is_string()) {
+							merged += item.get<std::string>();
+							continue;
+						}
+						if (item.is_object() && item.contains("text") && item["text"].is_string()) {
+							merged += item["text"].get<std::string>();
+						}
+					}
+					if (!merged.empty()) {
+						result.ok = true;
+						result.content = Utf8ToLocal(merged);
+						return result;
+					}
+				}
+			}
+		}
+
+		if (parsed.contains("error") && parsed["error"].contains("message") && parsed["error"]["message"].is_string()) {
+			result.error = Utf8ToLocal(parsed["error"]["message"].get<std::string>());
+			return result;
+		}
+
+		result.error = "AI response does not match expected chat/completions schema";
+	}
+	catch (const std::exception& ex) {
+		result.error = std::string("Failed to parse AI response: ") + ex.what();
+	}
+
+	return result;
+}
+
 AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, const AISettings& settings)
 {
 	AIResult result = {};

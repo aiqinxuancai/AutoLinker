@@ -401,6 +401,7 @@ p {
 		</div>
 	</div>
 	<div class="footer">
+		<button id="testBtn" class="btn accent" type="button">测试连通性</button>
 		<button id="cancelBtn" class="btn" type="button">&#x53D6;&#x6D88;</button>
 		<button id="saveBtn" class="btn primary" type="button">&#x4FDD;&#x5B58;&#x5E76;&#x7EE7;&#x7EED;</button>
 	</div>
@@ -480,8 +481,28 @@ function applyInitial(settings) {
 	setField("tavilyApiKey", next.tavilyApiKey);
 }
 
+function setTestBusy(isBusy) {
+	var btn = $("testBtn");
+	if (!btn) {
+		return;
+	}
+	btn.disabled = !!isBusy;
+	btn.textContent = isBusy ? "测试中..." : "测试连通性";
+}
+
 window.autolinkerApplySettings = function(settings) {
 	applyInitial(settings);
+};
+
+window.autolinkerSetTestBusy = function(isBusy) {
+	setTestBusy(!!isBusy);
+};
+
+window.autolinkerShowTestResult = function(payload) {
+	if (!payload) {
+		return;
+	}
+	alert(payload.message || (payload.ok ? "连通性测试成功。" : "连通性测试失败。"));
 };
 
 window.autolinkerFocusPrimary = function() {
@@ -614,6 +635,14 @@ $("openPlatformBtn").addEventListener("click", function() {
 
 $("cancelBtn").addEventListener("click", function() {
 	post({ action: "cancel" });
+});
+
+$("testBtn").addEventListener("click", function() {
+	const data = collect();
+	if (!validate(data)) {
+		return;
+	}
+	post({ action: "test_connection", data: data });
 });
 
 $("saveBtn").addEventListener("click", function() {

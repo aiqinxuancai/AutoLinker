@@ -81,6 +81,8 @@ public:
 	static AIProtocolType ParseProtocolType(const std::string& text);
 	static std::string ProtocolTypeToString(AIProtocolType protocolType);
 	static std::string ProtocolTypeDisplayName(AIProtocolType protocolType);
+	// 测试当前 AI 配置的接口连通性。
+	static AIResult TestConnection(const AISettings& settings);
 	static std::string BuildTaskDisplayName(AITaskKind kind);
 	static AIResult ExecuteTask(AITaskKind kind, const std::string& inputText, const AISettings& settings);
 	static AIChatResult ExecuteChatWithTools(

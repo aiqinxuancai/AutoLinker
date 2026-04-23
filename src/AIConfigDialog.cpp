@@ -5,12 +5,14 @@
 #include <array>
 #include <CommCtrl.h>
 #include <format>
+#include <new>
 #include <Shellapi.h>
 #include <wrl.h>
 
 #include "..\\thirdparty\\json.hpp"
 #include "..\\thirdparty\\WebView2.h"
 
+#include "AIService.h"
 #include "Global.h"
 #include "ResourceTextLoader.h"
 
@@ -33,6 +35,7 @@ constexpr int IDC_CFG_GET_KEY_LINK = 1005;
 constexpr int IDC_CFG_FILL_RIGHT_CODES = 1006; // 保留以备兼容，实际已被 IDC_CFG_PLATFORM_PRESET 取代
 constexpr int IDC_CFG_TAVILY_API_KEY = 1007;
 constexpr int IDC_CFG_PLATFORM_PRESET = 1008;
+constexpr int IDC_CFG_TEST_CONNECTION = 1009;
 constexpr int IDC_CFG_SAVE = 1;
 constexpr int IDC_CFG_CANCEL = 2;
 
@@ -46,6 +49,7 @@ constexpr int IDC_INPUT_OK = 1;
 constexpr int IDC_INPUT_CANCEL = 2;
 constexpr UINT_PTR kAIConfigWebViewInitTimerId = 0xAC01;
 constexpr UINT kAIConfigWebViewInitTimeoutMs = 12000;
+constexpr UINT WM_AUTOLINKER_AI_CONFIG_TEST_DONE = WM_APP + 301;
 constexpr UINT_PTR kAIPreviewWebViewInitTimerId = 0xAC02;
 constexpr UINT kAIPreviewWebViewInitTimeoutMs = 12000;
 
@@ -475,6 +479,7 @@ struct AIConfigDialogContext {
 	AISettings* settings = nullptr;
 	bool accepted = false;
 	bool useNativeLink = false;
+	bool testInFlight = false;
 	HWND hProtocol = nullptr;
 	HWND hBaseUrl = nullptr;
 	HWND hApiKey = nullptr;
@@ -483,6 +488,7 @@ struct AIConfigDialogContext {
 	HWND hExtraPrompt = nullptr;
 	HWND hGetKeyLink = nullptr;
 	HWND hPlatformCombo = nullptr;
+	HWND hTestConnection = nullptr;
 };
 
 struct AIConfigWebViewDialogContext {
@@ -490,11 +496,23 @@ struct AIConfigWebViewDialogContext {
 	bool accepted = false;
 	bool fallbackRequested = false;
 	bool webViewReady = false;
+	bool testInFlight = false;
 	HWND hHost = nullptr;
 	HWND hLoading = nullptr;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
+};
+
+struct AIConfigConnectionTestRequest {
+	HWND dialogHwnd = nullptr;
+	AISettings settings;
+	bool forWebView = false;
+};
+
+struct AIConfigConnectionTestResult {
+	bool forWebView = false;
+	AIResult result;
 };
 
 struct AIPreviewWebViewDialogContext {
@@ -601,6 +619,129 @@ HFONT GetLinkFont()
 		s_linkFont = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
 	}
 	return s_linkFont;
+}
+
+AISettings ReadAISettingsFromNativeDialog(AIConfigDialogContext* ctx)
+{
+	AISettings next = {};
+	if (ctx == nullptr || ctx->settings == nullptr) {
+		return next;
+	}
+
+	next = *ctx->settings;
+	next.protocolType = GetSelectedProtocol(ctx->hProtocol);
+	next.baseUrl = GetEditTextA(ctx->hBaseUrl);
+	next.apiKey = GetEditTextA(ctx->hApiKey);
+	next.model = GetEditTextA(ctx->hModel);
+	next.tavilyApiKey = GetEditTextA(ctx->hTavilyApiKey);
+	next.extraSystemPrompt = GetEditTextA(ctx->hExtraPrompt);
+	return next;
+}
+
+bool ValidateAISettingsForConnection(HWND hWnd, const AISettings& settings)
+{
+	if (AIService::Trim(settings.baseUrl).empty() ||
+		AIService::Trim(settings.apiKey).empty() ||
+		AIService::Trim(settings.model).empty()) {
+		MessageBoxA(hWnd, "baseUrl / apiKey / model cannot be empty.", "AI Config", MB_ICONWARNING | MB_OK);
+		return false;
+	}
+	return true;
+}
+
+std::string BuildAIConnectionTestMessage(const AIResult& result)
+{
+	if (result.ok) {
+		std::string message = "连通性测试成功。";
+		if (result.httpStatus > 0) {
+			message += "\nHTTP: " + std::to_string(result.httpStatus);
+		}
+		const std::string trimmed = AIService::Trim(result.content);
+		if (!trimmed.empty()) {
+			message += "\n模型返回：";
+			message += trimmed;
+		}
+		return message;
+	}
+
+	std::string message = "连通性测试失败。";
+	if (result.httpStatus > 0) {
+		message += "\nHTTP: " + std::to_string(result.httpStatus);
+	}
+	if (!result.error.empty()) {
+		message += "\n错误：";
+		message += result.error;
+	}
+	return message;
+}
+
+void SetAIConfigNativeTestBusy(AIConfigDialogContext* ctx, bool busy)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	ctx->testInFlight = busy;
+	if (ctx->hTestConnection != nullptr) {
+		SetWindowTextA(ctx->hTestConnection, busy ? "测试中..." : "测试连通性");
+		EnableWindow(ctx->hTestConnection, busy ? FALSE : TRUE);
+	}
+}
+
+DWORD WINAPI AIConfigConnectionTestWorkerProc(LPVOID param)
+{
+	AIConfigConnectionTestRequest* request = reinterpret_cast<AIConfigConnectionTestRequest*>(param);
+	if (request == nullptr) {
+		return 0;
+	}
+
+	AIConfigConnectionTestResult* result = new (std::nothrow) AIConfigConnectionTestResult();
+	if (result == nullptr) {
+		delete request;
+		return 0;
+	}
+
+	result->forWebView = request->forWebView;
+	try {
+		result->result = AIService::TestConnection(request->settings);
+	}
+	catch (const std::exception& ex) {
+		result->result.ok = false;
+		result->result.error = std::string("connection test exception: ") + ex.what();
+	}
+	catch (...) {
+		result->result.ok = false;
+		result->result.error = "connection test unknown exception";
+	}
+
+	const HWND hWnd = request->dialogHwnd;
+	delete request;
+	if (hWnd == nullptr || !PostMessageA(hWnd, WM_AUTOLINKER_AI_CONFIG_TEST_DONE, 0, reinterpret_cast<LPARAM>(result))) {
+		delete result;
+	}
+	return 0;
+}
+
+bool StartAIConfigConnectionTest(HWND hWnd, const AISettings& settings, bool forWebView)
+{
+	AIConfigConnectionTestRequest* request = new (std::nothrow) AIConfigConnectionTestRequest();
+	if (request == nullptr) {
+		MessageBoxA(hWnd, "无法启动连通性测试线程。", "AI Config", MB_ICONERROR | MB_OK);
+		return false;
+	}
+
+	request->dialogHwnd = hWnd;
+	request->settings = settings;
+	request->forWebView = forWebView;
+
+	const HANDLE workerHandle = CreateThread(nullptr, 0, AIConfigConnectionTestWorkerProc, request, 0, nullptr);
+	if (workerHandle == nullptr) {
+		delete request;
+		MessageBoxA(hWnd, "无法启动连通性测试线程。", "AI Config", MB_ICONERROR | MB_OK);
+		return false;
+	}
+
+	CloseHandle(workerHandle);
+	return true;
 }
 
 std::string BuildAIConfigWebViewSettingsJson(const AISettings& settings)
@@ -740,12 +881,14 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
 			120, 216, 500, 150, hWnd, reinterpret_cast<HMENU>(IDC_CFG_EXTRA_PROMPT), nullptr, nullptr);
 
+		ctx->hTestConnection = CreateWindowW(L"BUTTON", L"\u6D4B\u8BD5\u8FDE\u901A\u6027", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+			300, 382, 110, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_TEST_CONNECTION), nullptr, nullptr);
 		HWND hSave = CreateWindowW(L"BUTTON", L"\u4FDD\u5B58\u5E76\u7EE7\u7EED", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
 			420, 382, 100, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_SAVE), nullptr, nullptr);
 		HWND hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
 			530, 382, 90, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_CANCEL), nullptr, nullptr);
 
-		std::array<HWND, 16> controls = {
+		std::array<HWND, 17> controls = {
 			hProtocolLabel,
 			ctx->hProtocol,
 			hBaseUrlLabel,
@@ -760,6 +903,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			ctx->hModel,
 			ctx->hTavilyApiKey,
 			ctx->hExtraPrompt,
+			ctx->hTestConnection,
 			hSave,
 			hCancel
 		};
@@ -780,22 +924,30 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		}
 
 		if (id == IDC_CFG_SAVE) {
-			AISettings next = *ctx->settings;
-			next.protocolType = GetSelectedProtocol(ctx->hProtocol);
-			next.baseUrl = GetEditTextA(ctx->hBaseUrl);
-			next.apiKey = GetEditTextA(ctx->hApiKey);
-			next.model = GetEditTextA(ctx->hModel);
-			next.tavilyApiKey = GetEditTextA(ctx->hTavilyApiKey);
-			next.extraSystemPrompt = GetEditTextA(ctx->hExtraPrompt);
-
-			if (next.baseUrl.empty() || next.apiKey.empty() || next.model.empty()) {
-				MessageBoxA(hWnd, "baseUrl / apiKey / model cannot be empty.", "AI Config", MB_ICONWARNING | MB_OK);
+			AISettings next = ReadAISettingsFromNativeDialog(ctx);
+			if (!ValidateAISettingsForConnection(hWnd, next)) {
 				return 0;
 			}
 
 			*ctx->settings = next;
 			ctx->accepted = true;
 			DestroyWindow(hWnd);
+			return 0;
+		}
+
+		if (id == IDC_CFG_TEST_CONNECTION) {
+			if (ctx->testInFlight) {
+				return 0;
+			}
+
+			const AISettings next = ReadAISettingsFromNativeDialog(ctx);
+			if (!ValidateAISettingsForConnection(hWnd, next)) {
+				return 0;
+			}
+			if (!StartAIConfigConnectionTest(hWnd, next, false)) {
+				return 0;
+			}
+			SetAIConfigNativeTestBusy(ctx, true);
 			return 0;
 		}
 
@@ -862,6 +1014,20 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		break;
 	}
 
+	case WM_AUTOLINKER_AI_CONFIG_TEST_DONE: {
+		AIConfigConnectionTestResult* result = reinterpret_cast<AIConfigConnectionTestResult*>(lParam);
+		if (ctx == nullptr || result == nullptr) {
+			delete result;
+			return 0;
+		}
+
+		SetAIConfigNativeTestBusy(ctx, false);
+		const std::string message = BuildAIConnectionTestMessage(result->result);
+		MessageBoxA(hWnd, message.c_str(), "AI Config", (result->result.ok ? MB_ICONINFORMATION : MB_ICONERROR) | MB_OK);
+		delete result;
+		return 0;
+	}
+
 	case WM_CLOSE:
 		DestroyWindow(hWnd);
 		return 0;
@@ -872,22 +1038,27 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 	return DefWindowProcA(hWnd, uMsg, wParam, lParam);
 }
 
-bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* ctx, const nlohmann::json& data)
+AISettings ReadAISettingsFromWebPayload(const AISettings& current, const nlohmann::json& data)
 {
-	if (ctx == nullptr || ctx->settings == nullptr) {
-		return false;
-	}
-
-	AISettings next = *ctx->settings;
+	AISettings next = current;
 	next.protocolType = AIService::ParseProtocolType(data.value("protocol_type", AIService::ProtocolTypeToString(next.protocolType)));
 	next.baseUrl = Utf8ToLocalText(data.value("base_url", ""));
 	next.apiKey = Utf8ToLocalText(data.value("api_key", ""));
 	next.model = Utf8ToLocalText(data.value("model", ""));
 	next.extraSystemPrompt = Utf8ToLocalText(data.value("extra_system_prompt", ""));
 	next.tavilyApiKey = Utf8ToLocalText(data.value("tavily_api_key", ""));
+	return next;
+}
 
-	if (AIService::Trim(next.baseUrl).empty() || AIService::Trim(next.apiKey).empty() || AIService::Trim(next.model).empty()) {
-		MessageBoxA(hWnd, "baseUrl / apiKey / model cannot be empty.", "AI Config", MB_ICONWARNING | MB_OK);
+bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* ctx, const nlohmann::json& data)
+{
+	if (ctx == nullptr || ctx->settings == nullptr) {
+		return false;
+	}
+
+	AISettings next = ReadAISettingsFromWebPayload(*ctx->settings, data);
+
+	if (!ValidateAISettingsForConnection(hWnd, next)) {
 		return false;
 	}
 
@@ -903,6 +1074,38 @@ void ExecuteAIConfigWebViewScript(AIConfigWebViewDialogContext* ctx, const std::
 		return;
 	}
 	ctx->webView->ExecuteScript(script.c_str(), nullptr);
+}
+
+void SetAIConfigWebViewTestBusy(AIConfigWebViewDialogContext* ctx, bool busy)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	ctx->testInFlight = busy;
+	ExecuteAIConfigWebViewScript(ctx, busy
+		? L"window.autolinkerSetTestBusy(true);"
+		: L"window.autolinkerSetTestBusy(false);");
+}
+
+void ShowAIConfigWebViewTestResult(AIConfigWebViewDialogContext* ctx, const AIResult& result)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+
+	nlohmann::json payload;
+	payload["ok"] = result.ok;
+	payload["message"] = LocalToUtf8Text(BuildAIConnectionTestMessage(result));
+
+	const std::wstring payloadJsonWide = Utf8ToWide(payload.dump());
+	if (payloadJsonWide.empty()) {
+		return;
+	}
+
+	std::wstring script = L"window.autolinkerShowTestResult(JSON.parse('";
+	script += EscapeJsSingleQuotedWide(payloadJsonWide);
+	script += L"'));";
+	ExecuteAIConfigWebViewScript(ctx, script);
 }
 
 void ApplyAIConfigWebViewSettings(AIConfigWebViewDialogContext* ctx)
@@ -1001,6 +1204,15 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 											const std::string action = payload.value("action", "");
 											if (action == "save" && payload.contains("data") && payload["data"].is_object()) {
 												TryApplyAISettingsFromWebPayload(hWnd, messageCtx, payload["data"]);
+											}
+											else if (action == "test_connection" && payload.contains("data") && payload["data"].is_object()) {
+												if (!messageCtx->testInFlight) {
+													const AISettings next = ReadAISettingsFromWebPayload(*messageCtx->settings, payload["data"]);
+													if (ValidateAISettingsForConnection(hWnd, next) &&
+														StartAIConfigConnectionTest(hWnd, next, true)) {
+														SetAIConfigWebViewTestBusy(messageCtx, true);
+													}
+												}
 											}
 											else if (action == "cancel") {
 												DestroyWindow(hWnd);
@@ -1158,6 +1370,19 @@ LRESULT CALLBACK AIConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, 
 			return 0;
 		}
 		break;
+
+	case WM_AUTOLINKER_AI_CONFIG_TEST_DONE: {
+		AIConfigConnectionTestResult* result = reinterpret_cast<AIConfigConnectionTestResult*>(lParam);
+		if (ctx == nullptr || result == nullptr) {
+			delete result;
+			return 0;
+		}
+
+		SetAIConfigWebViewTestBusy(ctx, false);
+		ShowAIConfigWebViewTestResult(ctx, result->result);
+		delete result;
+		return 0;
+	}
 
 	case WM_CLOSE:
 		DestroyWindow(hWnd);
