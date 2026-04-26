@@ -17,6 +17,7 @@
 #include "ECOMEx.h"
 #include "EideProjectBinarySerializer.h"
 #include "Global.h"
+#include "HeadlessCompileRunner.h"
 #include "IDEFacade.h"
 #include "MemFind.h"
 #include "PathHelper.h"
@@ -34,6 +35,9 @@ struct SilentCompileOutputPathState {
 
 std::mutex g_silentCompileOutputPathMutex;
 SilentCompileOutputPathState g_silentCompileOutputPathState;
+std::mutex g_detourHookMutex;
+bool g_messageBoxHookInstalled = false;
+bool g_fullHookInstalled = false;
 
 constexpr auto kSilentCompileOutputPathTimeout = std::chrono::seconds(30);
 
@@ -259,6 +263,7 @@ static auto originalCreateFileA = CreateFileA;
 static auto originalGetSaveFileNameA = GetSaveFileNameA;
 static auto originalCreateProcessA = CreateProcessA;
 static auto originalMessageBoxA = MessageBoxA;
+static auto originalMessageBoxW = MessageBoxW;
 static auto originalTrackPopupMenu = TrackPopupMenu;
 static auto originalTrackPopupMenuEx = TrackPopupMenuEx;
 
@@ -522,12 +527,29 @@ int WINAPI MyMessageBoxA(HWND hWnd, LPCSTR lpText, LPCSTR lpCaption, UINT uType)
 		return IDYES;
 	}
 	if (caption.find("linker output contains too many errors or warnings") != std::string::npos) {
+		HeadlessCompileRunner::ReportIdeMessageBoxA(caption, text, uType);
 		return IDNO;
 	}
 	if (text.find("linker output contains too many errors or warnings") != std::string::npos) {
+		HeadlessCompileRunner::ReportIdeMessageBoxA(caption, text, uType);
 		return IDNO;
 	}
+	if (HeadlessCompileRunner::HasHeadlessCompileRequest()) {
+		HeadlessCompileRunner::ReportIdeMessageBoxA(caption, text, uType);
+		return HeadlessCompileRunner::GetMessageBoxAutoResponse(uType);
+	}
 	return originalMessageBoxA(hWnd, lpText, lpCaption, uType);
+}
+
+int WINAPI MyMessageBoxW(HWND hWnd, LPCWSTR lpText, LPCWSTR lpCaption, UINT uType)
+{
+	const std::wstring caption = lpCaption != nullptr ? lpCaption : L"";
+	const std::wstring text = lpText != nullptr ? lpText : L"";
+	if (HeadlessCompileRunner::HasHeadlessCompileRequest()) {
+		HeadlessCompileRunner::ReportIdeMessageBoxW(caption, text, uType);
+		return HeadlessCompileRunner::GetMessageBoxAutoResponse(uType);
+	}
+	return originalMessageBoxW(hWnd, lpText, lpCaption, uType);
 }
 
 BOOL WINAPI MyTrackPopupMenu(
@@ -557,13 +579,22 @@ BOOL WINAPI MyTrackPopupMenuEx(
 
 void StartHookCreateFileA()
 {
+	std::lock_guard<std::mutex> lock(g_detourHookMutex);
+	if (g_fullHookInstalled) {
+		return;
+	}
+
 	DetourRestoreAfterWith();
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
 	DetourAttach(&(PVOID&)originalCreateFileA, MyCreateFileA);
 	DetourAttach(&(PVOID&)originalGetSaveFileNameA, MyGetSaveFileNameA);
 	DetourAttach(&(PVOID&)originalCreateProcessA, MyCreateProcessA);
-	DetourAttach(&(PVOID&)originalMessageBoxA, MyMessageBoxA);
+	const bool attachMessageBoxHooks = !g_messageBoxHookInstalled;
+	if (attachMessageBoxHooks) {
+		DetourAttach(&(PVOID&)originalMessageBoxA, MyMessageBoxA);
+		DetourAttach(&(PVOID&)originalMessageBoxW, MyMessageBoxW);
+	}
 	DetourAttach(&(PVOID&)originalTrackPopupMenu, MyTrackPopupMenu);
 	DetourAttach(&(PVOID&)originalTrackPopupMenuEx, MyTrackPopupMenuEx);
 
@@ -607,5 +638,36 @@ void StartHookCreateFileA()
 	}
 #endif
 
-	DetourTransactionCommit();
+	const LONG error = DetourTransactionCommit();
+	if (error == NO_ERROR) {
+		g_fullHookInstalled = true;
+		if (attachMessageBoxHooks) {
+			g_messageBoxHookInstalled = true;
+		}
+	}
+	else {
+		OutputStringToELog(std::format("hook transaction failed, error={}", error));
+	}
+}
+
+void StartHeadlessMessageBoxHook()
+{
+	if (!HeadlessCompileRunner::HasHeadlessCompileRequest()) {
+		return;
+	}
+
+	std::lock_guard<std::mutex> lock(g_detourHookMutex);
+	if (g_messageBoxHookInstalled) {
+		return;
+	}
+
+	DetourRestoreAfterWith();
+	DetourTransactionBegin();
+	DetourUpdateThread(GetCurrentThread());
+	DetourAttach(&(PVOID&)originalMessageBoxA, MyMessageBoxA);
+	DetourAttach(&(PVOID&)originalMessageBoxW, MyMessageBoxW);
+	const LONG error = DetourTransactionCommit();
+	if (error == NO_ERROR) {
+		g_messageBoxHookInstalled = true;
+	}
 }

@@ -52,6 +52,8 @@ typedef void(* OriginalCompilerFunction)();
 
 void StartHookCreateFileA();
 
+void StartHeadlessMessageBoxHook();
+
 
 
 void ChangeVMProtectModel(bool isLib);

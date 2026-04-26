@@ -212,27 +212,19 @@ url = "http://127.0.0.1:19207/mcp"
 
 ### 无头命令行编译
 
-AutoLinker 支持命令行静默编译：e.exe 打开工程并加载 AutoLinker 后，会隐藏 IDE 主窗口，自动调用 `compile_with_output_path`，写出结果 JSON，并按编译结果退出进程。
-
-推荐用环境变量传递请求，避免易语言 IDE 把未知命令行参数当作文件处理：
+推荐使用 `AutoLinkerTest headless-compile` 启动 e.exe。启动器会写入一次性请求文件、枚举并关闭 IDE 启动期 `MessageBox`，AutoLinker 加载后隐藏 IDE、自动调用 `compile_with_output_path`，并把成功/失败、IDE 输出、错误位置和结果 JSON 输出到控制台。
 
 ```powershell
-$env:AUTOLINKER_HEADLESS_COMPILE='{"enabled":true,"target":"auto","static_compile":true,"output_path":"D:\\demo\\build\\demo.exe","result_path":"D:\\demo\\build\\compile-result.json","startup_timeout_seconds":120}'
-& "C:\Users\aiqin\OneDrive\e5.6\e571.exe" "D:\demo\demo.e"
+.\bin\fne_release\AutoLinkerTest.exe headless-compile `
+  "C:\Users\aiqin\OneDrive\e5.6\e571.exe" `
+  "D:\demo\demo.e" `
+  "D:\demo\build\demo.exe" `
+  --target auto --static `
+  --result "D:\demo\build\compile-result.json" `
+  --timeout 120
 ```
 
-也可以使用命令行参数：
-
-```powershell
-& "C:\Users\aiqin\OneDrive\e5.6\e571.exe" "D:\demo\demo.e" `
-  --autolinker-headless-compile `
-  --autolinker-target auto `
-  --autolinker-static `
-  --autolinker-output "D:\demo\build\demo.exe" `
-  --autolinker-result "D:\demo\build\compile-result.json"
-```
-
-`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`static_compile=true` 仅适用于 EXE/DLL，易模块只支持普通编译。默认结果文件会写到 `e\AutoLinker\Log\headless_compile_last.json`。该模式是无人工交互的静默编译；由于 AutoLinker 是 FNE，隐藏窗口发生在 IDE 加载支持库之后。
+`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL，易模块只支持普通编译。结果默认同时写到 `e\AutoLinker\Log\headless_compile_last.json`。FNE 内部只能处理 AutoLinker 加载后的弹窗；启动器的父进程窗口枚举用于捕获 `.e` 加载失败、缺少支持库、缺少易模块等更早期错误，并会分别输出 `support_libraries` 和 `list_items`。其他后续 MsgBox 会自动关闭并以 `kind=info` 记录。
 
 ### ⭐搜索参数示例
 
