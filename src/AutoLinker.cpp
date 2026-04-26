@@ -17,6 +17,7 @@
 #include "AIConfigDialog.h"
 #include "ECOMEx.h"
 #include "Global.h"
+#include "HeadlessCompileRunner.h"
 #include "IDEFacade.h"
 #include "LocalMcpServer.h"
 #include "Logger.h"
@@ -324,6 +325,7 @@ bool FneInit()
 
 	TraceInitStep("进入 FneInit");
 	OutputStringToELog("开始初始化");
+	const bool headlessCompileMode = HeadlessCompileRunner::HasHeadlessCompileRequest();
 
 	if (!g_notifySysReady) {
 		TraceInitStep("系统通知接口尚未就绪，初始化终止");
@@ -345,6 +347,7 @@ bool FneInit()
 		OutputStringToELog("主窗口句柄无效");
 		return false;
 	}
+	HeadlessCompileRunner::ApplyInitialWindowState(g_hwnd);
 	TraceInitStep(std::format(
 		"主窗口句柄有效 hwnd={}",
 		static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(g_hwnd))));
@@ -386,8 +389,10 @@ bool FneInit()
 	TraceInitStep("开始安装文件与编译相关 Hook");
 	StartHookCreateFileA();
 	TraceInitStep("文件与编译相关 Hook 安装完成");
-	TraceInitStep("开始预热当前工程源码解析缓存");
-	{
+	TraceInitStep("检查无头编译请求");
+	HeadlessCompileRunner::StartIfRequested();
+	if (!headlessCompileMode) {
+		TraceInitStep("开始预热当前工程源码解析缓存");
 		std::string warmupError;
 		std::string warmupTrace;
 		if (!project_source_cache::ProjectSourceCacheManager::Instance().WarmupCurrentSource(
@@ -398,12 +403,20 @@ bool FneInit()
 				warmupError.empty() ? "warmup_failed" : warmupError,
 				warmupTrace));
 		}
+		TraceInitStep("当前工程源码解析缓存预热结束");
 	}
-	TraceInitStep("当前工程源码解析缓存预热结束");
+	else {
+		TraceInitStep("无头编译模式：跳过工程源码解析缓存预热");
+	}
 
-	TraceInitStep("开始启动版本检查线程");
-	_beginthread(FneCheckNewVersion, 0, NULL);
-	TraceInitStep("版本检查线程已启动");
+	if (!headlessCompileMode) {
+		TraceInitStep("开始启动版本检查线程");
+		_beginthread(FneCheckNewVersion, 0, NULL);
+		TraceInitStep("版本检查线程已启动");
+	}
+	else {
+		TraceInitStep("无头编译模式：跳过版本检查线程");
+	}
 	g_uiInitialized = true;
 	TraceInitStep("FneInit 完成");
 	OutputStringToELog("初始化完成");

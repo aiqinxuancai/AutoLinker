@@ -210,6 +210,30 @@ url = "http://127.0.0.1:19207/mcp"
 | 联网 | `fetch_url` | 抓取指定 URL 原始文本响应 |
 | 联网 | `extract_web_document` | 提取网页正文与链接摘要 |
 
+### 无头命令行编译
+
+AutoLinker 支持命令行静默编译：e.exe 打开工程并加载 AutoLinker 后，会隐藏 IDE 主窗口，自动调用 `compile_with_output_path`，写出结果 JSON，并按编译结果退出进程。
+
+推荐用环境变量传递请求，避免易语言 IDE 把未知命令行参数当作文件处理：
+
+```powershell
+$env:AUTOLINKER_HEADLESS_COMPILE='{"enabled":true,"target":"auto","static_compile":true,"output_path":"D:\\demo\\build\\demo.exe","result_path":"D:\\demo\\build\\compile-result.json","startup_timeout_seconds":120}'
+& "C:\Users\aiqin\OneDrive\e5.6\e571.exe" "D:\demo\demo.e"
+```
+
+也可以使用命令行参数：
+
+```powershell
+& "C:\Users\aiqin\OneDrive\e5.6\e571.exe" "D:\demo\demo.e" `
+  --autolinker-headless-compile `
+  --autolinker-target auto `
+  --autolinker-static `
+  --autolinker-output "D:\demo\build\demo.exe" `
+  --autolinker-result "D:\demo\build\compile-result.json"
+```
+
+`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`static_compile=true` 仅适用于 EXE/DLL，易模块只支持普通编译。默认结果文件会写到 `e\AutoLinker\Log\headless_compile_last.json`。该模式是无人工交互的静默编译；由于 AutoLinker 是 FNE，隐藏窗口发生在 IDE 加载支持库之后。
+
 ### ⭐搜索参数示例
 
 `search_project_source_cache`、`search_public_code`、`search_available_module_public_code`、`search_module_public_code`、`search_support_library_public_code` 这几个工具使用相同的 `keyword / keywords / keyword_mode / regex` 搜索规则，下面是可直接照抄的示例：

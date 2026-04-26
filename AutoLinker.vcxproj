@@ -492,6 +492,7 @@
     <ClCompile Include="src\e2txt_restore.cpp" />
     <ClCompile Include="src\e2txt.cpp" />
     <ClCompile Include="src\EideProjectBinarySerializer.cpp" />
+    <ClCompile Include="src\HeadlessCompileRunner.cpp" />
     <ClCompile Include="src\IDEFacade.cpp" />
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\MemFind.cpp" />
@@ -556,6 +557,7 @@
     <ClInclude Include="src\direct_global_search.hpp" />
     <ClInclude Include="src\ECOMEx.h" />
     <ClInclude Include="src\Global.h" />
+    <ClInclude Include="src\HeadlessCompileRunner.h" />
     <ClInclude Include="src\IDEFacade.h" />
     <ClInclude Include="src\InlineHook.h" />
     <ClInclude Include="src\LinkerManager.h" />

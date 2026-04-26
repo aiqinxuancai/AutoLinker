@@ -74,6 +74,9 @@
     <ClCompile Include="src\EideProjectBinarySerializer.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\HeadlessCompileRunner.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\IDEFacade.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -224,6 +227,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\Global.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\HeadlessCompileRunner.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\IDEFacade.h">
