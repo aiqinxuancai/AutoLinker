@@ -246,6 +246,21 @@ body {
 .body a:hover {
 	text-decoration: underline;
 }
+
+.ai-config-callout .body p:last-child {
+	margin-bottom: 0;
+}
+
+.inline-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 10px;
+}
+
+.muted {
+	color: #6b7280;
+}
 </style>
 </head>
 <body>
@@ -414,6 +429,12 @@ window.autolinkerFocusInput = function() {
 	}
 
 	document.addEventListener("click", function(e) {
+		var actionBtn = e.target && e.target.closest ? e.target.closest("[data-chat-action='open_settings']") : null;
+		if (actionBtn) {
+			e.preventDefault();
+			post({ action: "open_settings" });
+			return;
+		}
 		var btn = e.target && e.target.closest ? e.target.closest(".code-copy-btn") : null;
 		if (!btn) {
 			return;

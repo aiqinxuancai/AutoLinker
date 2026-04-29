@@ -61,6 +61,7 @@ constexpr UINT WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT = WM_APP + 204;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_SUBMIT = WM_APP + 205;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_CLEAR = WM_APP + 206;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_STOP = WM_APP + 207;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_OPEN_SETTINGS = WM_APP + 208;
 constexpr UINT_PTR kHistoryWebViewFlushTimerId = 0xA17;
 
 constexpr int IDC_AI_CHAT_HISTORY = 2101;
@@ -68,6 +69,7 @@ constexpr int IDC_AI_CHAT_INPUT = 2102;
 constexpr int IDC_AI_CHAT_SEND = 32553;
 constexpr int IDC_AI_CHAT_CLEAR_HISTORY = 32554;
 constexpr int IDC_AI_CHAT_STOP = 32555;
+constexpr int IDC_AI_CHAT_OPEN_SETTINGS = 32556;
 
 constexpr UINT_PTR kEditSubclassId = 1;
 constexpr UINT_PTR kActionControlSubclassId = 2;
@@ -78,6 +80,7 @@ constexpr DWORD_PTR kEditFlagSubmitOnEnter = 1;
 constexpr UINT_PTR kActionSubmit = 1;
 constexpr UINT_PTR kActionClear = 2;
 constexpr UINT_PTR kActionStop = 3;
+constexpr UINT_PTR kActionOpenSettings = 4;
 
 enum class SessionRole {
 	System,
@@ -127,6 +130,7 @@ struct ChatDialogContext {
 	HWND hSend = nullptr;
 	HWND hStop = nullptr;
 	HWND hClearHistory = nullptr;
+	HWND hOpenSettings = nullptr;
 	int inputRowsVisible = 1;
 	bool webViewDesired = false;
 	bool webViewReady = false;
@@ -226,7 +230,10 @@ void RequestClearChatHistoryAsync();
 void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text);
 void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatStopUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx);
 bool IsStopRequestedLocked(const AIChatSessionState& state);
+std::string DescribeMissingChatSettingField(const std::string& missingField);
+bool QueryChatSettingsState(AISettings& outSettings, std::string* outMissingField = nullptr);
 
 std::string GetWindowTextCopyLocalA(HWND hWnd)
 {
@@ -925,6 +932,10 @@ void PostChatAction(HWND hWnd, UINT_PTR action)
 		OutputStringToELog("[AI Chat][UI] click action: stop");
 		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_STOP, 0, 0);
 	}
+	else if (action == kActionOpenSettings) {
+		OutputStringToELog("[AI Chat][UI] click action: open_settings");
+		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_OPEN_SETTINGS, 0, 0);
+	}
 	else {
 		OutputStringToELog("[AI Chat][UI] click action: submit");
 		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_SUBMIT, 0, 0);
@@ -1033,6 +1044,9 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		if (ctx->hClearHistory != nullptr) {
 			ShowWindow(ctx->hClearHistory, SW_HIDE);
 		}
+		if (ctx->hOpenSettings != nullptr) {
+			ShowWindow(ctx->hOpenSettings, SW_HIDE);
+		}
 		if (ctx->hInput != nullptr) {
 			ShowWindow(ctx->hInput, SW_HIDE);
 		}
@@ -1053,6 +1067,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int inputHeightDouble = 54;
 	const int sendWidth = 92;
 	const int clearHistoryWidth = 98;
+	const int openSettingsWidth = 108;
 	const int inputRowsVisible = ctx->inputRowsVisible >= 2 ? 2 : 1;
 	const int inputHeight = inputRowsVisible >= 2 ? inputHeightDouble : inputHeightSingle;
 
@@ -1077,6 +1092,9 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	if (ctx->hClearHistory != nullptr) {
 		ShowWindow(ctx->hClearHistory, SW_SHOW);
 		MoveWindow(ctx->hClearHistory, margin, actionRowY, clearHistoryWidth, actionRowHeight, TRUE);
+	}
+	if (ctx->hOpenSettings != nullptr) {
+		MoveWindow(ctx->hOpenSettings, margin + clearHistoryWidth + gap, actionRowY, openSettingsWidth, actionRowHeight, TRUE);
 	}
 	if (ctx->hInput != nullptr) {
 		ShowWindow(ctx->hInput, SW_SHOW);
@@ -1268,6 +1286,9 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												}
 												else if (action == "stop") {
 													HandleChatStopUi(hWnd, msgCtx);
+												}
+												else if (action == "open_settings") {
+													HandleChatOpenSettingsUi(hWnd, msgCtx);
 												}
 											}
 											catch (...) {
@@ -1737,7 +1758,10 @@ bool IsStopRequestedLocked(const AIChatSessionState& state)
 		state.cancellation->IsCancelled();
 }
 
-std::string BuildHistoryHtmlLocked(const AIChatSessionState& state)
+std::string BuildHistoryHtmlLocked(
+	const AIChatSessionState& state,
+	bool settingsReady,
+	const std::string& missingField)
 {
 	auto appendMessageCard = [](std::string& html, SessionRole role, const std::string& roleText, const std::string& content, bool renderMarkdown) {
 		std::string roleClass = "system";
@@ -1757,9 +1781,40 @@ std::string BuildHistoryHtmlLocked(const AIChatSessionState& state)
 		html += renderMarkdown ? RenderMarkdownToHtml(content) : RenderPlainTextToHtml(content);
 		html += "</div></section>";
 	};
+	auto appendRawCard = [](std::string& html, SessionRole role, const std::string& roleText, const std::string& bodyHtml) {
+		std::string roleClass = "system";
+		switch (role)
+		{
+		case SessionRole::User: roleClass = "user"; break;
+		case SessionRole::Assistant: roleClass = "assistant"; break;
+		case SessionRole::Tool: roleClass = "tool"; break;
+		default: break;
+		}
+
+		html += "<section class=\"msg ";
+		html += roleClass;
+		html += " ai-config-callout\"><div class=\"role\">";
+		html += EscapeHtml(roleText);
+		html += "</div><div class=\"body\">";
+		html += bodyHtml;
+		html += "</div></section>";
+	};
 
 	std::string body;
 	body.reserve(4096);
+	if (!settingsReady) {
+		std::string calloutHtml;
+		calloutHtml += "<p>";
+		calloutHtml += EscapeHtml(LocalFromWide(L"AI 配置未完成，当前无法发起对话。"));
+		calloutHtml += "</p><p class=\"muted\">";
+		calloutHtml += EscapeHtml(
+			LocalFromWide(L"缺少必填项：") + DescribeMissingChatSettingField(missingField) +
+			LocalFromWide(L"。请先完成 Key / 接口 / 模型配置。"));
+		calloutHtml += "</p><div class=\"inline-actions\"><button class=\"btn primary ai-config-btn\" type=\"button\" data-chat-action=\"open_settings\">";
+		calloutHtml += EscapeHtml(LocalFromWide(L"前往设置 Key"));
+		calloutHtml += "</button></div>";
+		appendRawCard(body, SessionRole::System, LocalFromWide(L"系统"), calloutHtml);
+	}
 	for (const auto& msg : state.messages) {
 		appendMessageCard(
 			body,
@@ -1812,9 +1867,18 @@ std::string BuildHistoryWebViewShellHtml()
 	return "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>WebView shell resource missing.</body></html>";
 }
 
-std::string BuildHistoryTextLocked(const AIChatSessionState& state)
+std::string BuildHistoryTextLocked(
+	const AIChatSessionState& state,
+	bool settingsReady,
+	const std::string& missingField)
 {
 	std::string text;
+	if (!settingsReady) {
+		text += "[" + LocalFromWide(L"系统") + "]\r\n";
+		text += LocalFromWide(L"AI 配置未完成，当前无法发起对话。") + "\r\n";
+		text += LocalFromWide(L"缺少必填项：") + DescribeMissingChatSettingField(missingField) +
+			LocalFromWide(L"。请点击“配置 AI Key”完成设置。") + "\r\n\r\n";
+	}
 	for (const auto& msg : state.messages) {
 		text += "[";
 		text += RoleLabel(msg.role);
@@ -1870,6 +1934,39 @@ bool RequestStopCurrentChat()
 	return started;
 }
 
+std::string DescribeMissingChatSettingField(const std::string& missingField)
+{
+	if (missingField == "apiKey") {
+		return LocalFromWide(L"API Key");
+	}
+	if (missingField == "baseUrl") {
+		return LocalFromWide(L"接口地址");
+	}
+	if (missingField == "model") {
+		return LocalFromWide(L"模型");
+	}
+	return LocalFromWide(L"AI 配置");
+}
+
+bool QueryChatSettingsState(AISettings& outSettings, std::string* outMissingField)
+{
+	outSettings = {};
+	if (g_configManager == nullptr || g_aiJsonConfig == nullptr) {
+		if (outMissingField != nullptr) {
+			*outMissingField = "configUnavailable";
+		}
+		return false;
+	}
+
+	AIService::LoadSettings(*g_aiJsonConfig, g_configManager, outSettings);
+	std::string missingField;
+	const bool ready = AIService::HasRequiredSettings(outSettings, missingField);
+	if (outMissingField != nullptr) {
+		*outMissingField = missingField;
+	}
+	return ready;
+}
+
 void RecoverInFlightIfNeeded(const std::string& reason)
 {
 	std::lock_guard<std::mutex> guard(g_session.mutex);
@@ -1906,23 +2003,18 @@ void AppendStreamingAssistantDelta(unsigned long long requestId, const std::stri
 
 bool EnsureChatSettingsReady(AISettings& settings)
 {
-	if (g_configManager == nullptr || g_aiJsonConfig == nullptr) {
-		return false;
-	}
-
-	AIService::LoadSettings(*g_aiJsonConfig, g_configManager, settings);
 	std::string missing;
-	if (AIService::HasRequiredSettings(settings, missing)) {
+	if (QueryChatSettingsState(settings, &missing)) {
 		return true;
 	}
 
-    OutputStringToELog("[AI Chat] AI settings missing, opening config dialog");
+	OutputStringToELog("[AI Chat] AI settings missing, opening config dialog");
 	if (!ShowAIConfigDialog(g_mainWindow, settings)) {
-        OutputStringToELog("[AI Chat] AI config cancelled");
+		OutputStringToELog("[AI Chat] AI config cancelled");
 		return false;
 	}
 	AIService::SaveSettings(*g_aiJsonConfig, settings);
-    OutputStringToELog("[AI Chat] AI config saved");
+	OutputStringToELog("[AI Chat] AI config saved");
 	return true;
 }
 
@@ -2152,6 +2244,39 @@ void HandleChatStopUi(HWND hWnd, ChatDialogContext* ctx)
 	RefreshChatDialog(hWnd);
 }
 
+void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	AISettings settings = {};
+	std::string missingField;
+	QueryChatSettingsState(settings, &missingField);
+	OutputStringToELog("[AI Chat] open config dialog from chat page");
+	if (!ShowAIConfigDialog(g_mainWindow != nullptr ? g_mainWindow : hWnd, settings)) {
+		OutputStringToELog("[AI Chat] AI config cancelled from chat page");
+		if (ctx != nullptr) {
+			if (ctx->webViewDesired) {
+				FocusWebViewInput(ctx);
+			}
+			else if (ctx->hInput != nullptr) {
+				SetFocus(ctx->hInput);
+			}
+		}
+		return;
+	}
+	if (g_aiJsonConfig != nullptr) {
+		AIService::SaveSettings(*g_aiJsonConfig, settings);
+	}
+	OutputStringToELog("[AI Chat] AI config saved from chat page");
+	RefreshChatDialog(hWnd);
+	if (ctx != nullptr) {
+		if (ctx->webViewDesired) {
+			FocusWebViewInput(ctx);
+		}
+		else if (ctx->hInput != nullptr) {
+			SetFocus(ctx->hInput);
+		}
+	}
+}
+
 void ClearChatHistory()
 {
 	std::vector<SessionMessage> oldMessages;
@@ -2291,6 +2416,9 @@ void RefreshChatDialog(HWND hWnd)
 		return;
 	}
 
+	AISettings currentSettings = {};
+	std::string missingField;
+	const bool settingsReady = QueryChatSettingsState(currentSettings, &missingField);
 	std::string history;
 	std::string historyHtml;
 	bool inFlight = false;
@@ -2302,9 +2430,9 @@ void RefreshChatDialog(HWND hWnd)
 			g_session.cancellation.reset();
 			g_session.streamingAssistantPreview.clear();
 		}
-		history = BuildHistoryTextLocked(g_session);
+		history = BuildHistoryTextLocked(g_session, settingsReady, missingField);
 		if (ctx->webViewDesired) {
-			historyHtml = BuildHistoryHtmlLocked(g_session);
+			historyHtml = BuildHistoryHtmlLocked(g_session, settingsReady, missingField);
 		}
 		inFlight = g_session.requestInFlight;
 		stopRequested = IsStopRequestedLocked(g_session);
@@ -2318,6 +2446,10 @@ void RefreshChatDialog(HWND hWnd)
 	const bool nativeComposerVisible = !ctx->webViewContentReady;
 	if (ctx->hClearHistory != nullptr) {
 		EnableWindow(ctx->hClearHistory, inFlight ? FALSE : TRUE);
+	}
+	if (ctx->hOpenSettings != nullptr) {
+		ShowWindow(ctx->hOpenSettings, settingsReady ? SW_HIDE : SW_SHOW);
+		EnableWindow(ctx->hOpenSettings, inFlight ? FALSE : TRUE);
 	}
 	if (ctx->hSend != nullptr) {
 		EnableWindow(ctx->hSend, inFlight ? FALSE : TRUE);
@@ -2369,6 +2501,9 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hClearHistory = CreateWindowW(L"STATIC", L"\u6e05\u7a7a\u5386\u53f2\u4f1a\u8bdd",
 			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			14, 442, 106, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_HISTORY), nullptr, nullptr);
+		ctx->hOpenSettings = CreateWindowW(L"STATIC", L"\u914d\u7f6e AI Key",
+			WS_CHILD | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
+			126, 442, 108, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_OPEN_SETTINGS), nullptr, nullptr);
 		ctx->hInput = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
 			14, 476, 652, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_INPUT), nullptr, nullptr);
@@ -2381,6 +2516,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 
 		SetDefaultFont(ctx->hHistory);
 		SetDefaultFont(ctx->hClearHistory);
+		SetDefaultFont(ctx->hOpenSettings);
 		SetDefaultFont(ctx->hInput);
 		SetDefaultFont(ctx->hSend);
 		SetDefaultFont(ctx->hStop);
@@ -2389,6 +2525,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		InstallChatActionControl(ctx->hSend, kActionSubmit);
 		InstallChatActionControl(ctx->hStop, kActionStop);
 		InstallChatActionControl(ctx->hClearHistory, kActionClear);
+		InstallChatActionControl(ctx->hOpenSettings, kActionOpenSettings);
 		ctx->inputRowsVisible = 1;
 		LayoutAIChatDialog(hWnd, ctx);
 		SyncHistoryPresentation(ctx);
@@ -2426,7 +2563,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 	case WM_CTLCOLORSTATIC:
 		if (ctx != nullptr) {
 			HWND hStatic = reinterpret_cast<HWND>(lParam);
-			if (hStatic != ctx->hClearHistory && hStatic != ctx->hSend && hStatic != ctx->hStop) {
+			if (hStatic != ctx->hClearHistory && hStatic != ctx->hOpenSettings && hStatic != ctx->hSend && hStatic != ctx->hStop) {
 				break;
 			}
 			HDC hdc = reinterpret_cast<HDC>(wParam);
@@ -2484,6 +2621,10 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		if (ctx != nullptr) {
 			HandleChatStopUi(hWnd, ctx);
 		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_OPEN_SETTINGS:
+		HandleChatOpenSettingsUi(hWnd, ctx);
 		return 0;
 
 	case WM_AUTOLINKER_AI_CHAT_REFRESH:
