@@ -8463,6 +8463,35 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 			return Utf8ToLocalText(r.dump());
 		}
 
+		if (diagnostics == "compile_invoked_dialog_pending") {
+			const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+			while (std::chrono::steady_clock::now() < waitDeadline) {
+				MSG msg = {};
+				while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+					TranslateMessage(&msg);
+					DispatchMessageW(&msg);
+				}
+
+				if (WasSilentCompileOutputPathRequestConsumed()) {
+					diagnostics = "compile_invoked_dialog_suppressed";
+					break;
+				}
+				if (!IsSilentCompileOutputPathRequestActive()) {
+					break;
+				}
+
+				if (!normalizedPath.empty()) {
+					struct __stat64 pendingFileStat = {};
+					if (_stat64(normalizedPath.c_str(), &pendingFileStat) == 0 &&
+						pendingFileStat.st_mtime >= compileStartTimestamp - 1) {
+						break;
+					}
+				}
+				Sleep(20);
+			}
+			CancelSilentCompileOutputPathRequest();
+		}
+
 		// 编译后：读取输出窗口，提取本次编译产生的新内容。
 		// 易语言编译为同步操作，函数返回时编译输出已写入完毕。
 		std::string postOutputText;

@@ -259,6 +259,16 @@ bool WasSilentCompileOutputPathRequestConsumed()
 	return g_silentCompileOutputPathState.consumed;
 }
 
+bool IsSilentCompileOutputPathRequestActive()
+{
+	std::lock_guard<std::mutex> lock(g_silentCompileOutputPathMutex);
+	if (!g_silentCompileOutputPathState.active) {
+		return false;
+	}
+	const auto now = std::chrono::steady_clock::now();
+	return now - g_silentCompileOutputPathState.createdAt <= kSilentCompileOutputPathTimeout;
+}
+
 static auto originalCreateFileA = CreateFileA;
 static auto originalGetSaveFileNameA = GetSaveFileNameA;
 static auto originalCreateProcessA = CreateProcessA;

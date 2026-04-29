@@ -420,6 +420,26 @@ void PrintHeadlessSummary(const nlohmann::json& result)
 			out << "[IDE output]" << std::endl << outputText << std::endl;
 		}
 	}
+	if (result.contains("compile_dialogs") && result["compile_dialogs"].is_array()) {
+		for (const auto& row : result["compile_dialogs"]) {
+			if (row.value("type", std::string()) != "compile_output_target") {
+				continue;
+			}
+			const std::string mode = row.value("mode", std::string());
+			out << (mode == "pending"
+				? "[AutoLinkerLauncher] compile output target dialog pending"
+				: "[AutoLinkerLauncher] compile output target auto-suppressed")
+				<< std::endl;
+			const std::string target = row.value("target", std::string());
+			if (!target.empty()) {
+				out << "dialog_target: " << target << std::endl;
+			}
+			const std::string outputPath = row.value("output_path", std::string());
+			if (!outputPath.empty()) {
+				out << "dialog_output_path: " << outputPath << std::endl;
+			}
+		}
+	}
 	const auto printBoxes = [](const nlohmann::json& boxes, const char* label) {
 		if (!boxes.is_array()) {
 			return;
@@ -505,6 +525,8 @@ int RunHeadlessCompile(int argc, char* argv[])
 
 	nlohmann::json request = {
 		{"enabled", true},
+		{"launcher_pid", GetCurrentProcessId()},
+		{"launcher_name", "AutoLinkerTest.exe"},
 		{"target", options.target},
 		{"static_compile", options.staticCompile},
 		{"output_path", options.outputPath},

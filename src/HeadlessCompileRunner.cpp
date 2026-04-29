@@ -8,12 +8,14 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <format>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <tlhelp32.h>
 #include <unordered_set>
 #include <vector>
 
@@ -250,6 +252,52 @@ void AddCapturedMessageBoxesToResult(nlohmann::json& result)
 	const nlohmann::json boxes = BuildCapturedIdeMessageBoxesJson();
 	if (!boxes.empty()) {
 		result["ide_message_boxes"] = boxes;
+	}
+}
+
+nlohmann::json BuildCompileDialogsJson(const nlohmann::json& compileResult)
+{
+	nlohmann::json rows = nlohmann::json::array();
+	if (!compileResult.is_object()) {
+		return rows;
+	}
+
+	const std::string trace = compileResult.value("trace", std::string());
+	if (trace == "compile_invoked_dialog_suppressed") {
+		rows.push_back({
+			{"kind", "info"},
+			{"type", "compile_output_target"},
+			{"mode", "auto_suppressed"},
+			{"target", compileResult.value("target", std::string())},
+			{"static_compile", compileResult.value("static_compile", false)},
+			{"output_path", compileResult.value("output_path", std::string())},
+			{"trace", trace}
+		});
+	}
+	else if (trace == "compile_invoked_dialog_pending") {
+		rows.push_back({
+			{"kind", "warning"},
+			{"type", "compile_output_target"},
+			{"mode", "pending"},
+			{"target", compileResult.value("target", std::string())},
+			{"static_compile", compileResult.value("static_compile", false)},
+			{"output_path", compileResult.value("output_path", std::string())},
+			{"trace", trace}
+		});
+	}
+
+	return rows;
+}
+
+void AddCompileDialogsToResult(nlohmann::json& result)
+{
+	if (!result.contains("compile_result") || !result["compile_result"].is_object()) {
+		return;
+	}
+
+	const nlohmann::json rows = BuildCompileDialogsJson(result["compile_result"]);
+	if (!rows.empty()) {
+		result["compile_dialogs"] = rows;
 	}
 }
 
@@ -1044,6 +1092,49 @@ bool WriteTextFileUtf8(const std::filesystem::path& path, const std::string& tex
 	}
 }
 
+std::string GetFileNameLowerUtf8(const std::wstring& path)
+{
+	const std::filesystem::path fsPath(path);
+	std::wstring name = fsPath.filename().wstring();
+	for (wchar_t& ch : name) {
+		ch = static_cast<wchar_t>(std::towlower(ch));
+	}
+	return WideToUtf8(name);
+}
+
+bool IsHeadlessLauncherAlive(const nlohmann::json& json)
+{
+	if (!json.contains("launcher_pid") || !json["launcher_pid"].is_number_integer()) {
+		return true;
+	}
+
+	const DWORD launcherPid = json["launcher_pid"].get<DWORD>();
+	if (launcherPid == 0) {
+		return false;
+	}
+
+	HANDLE processHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, launcherPid);
+	if (processHandle == nullptr) {
+		return false;
+	}
+
+	DWORD exitCode = 0;
+	const bool stillActive = GetExitCodeProcess(processHandle, &exitCode) != FALSE && exitCode == STILL_ACTIVE;
+	bool nameMatches = true;
+	if (stillActive && json.contains("launcher_name") && json["launcher_name"].is_string()) {
+		wchar_t processPath[MAX_PATH] = {};
+		DWORD processPathLen = static_cast<DWORD>(std::size(processPath));
+		if (QueryFullProcessImageNameW(processHandle, 0, processPath, &processPathLen) != FALSE) {
+			std::string expectedName = ToLowerAsciiCopyLocal(json["launcher_name"].get<std::string>());
+			std::string actualName = GetFileNameLowerUtf8(std::wstring(processPath, processPathLen));
+			nameMatches = expectedName.empty() || actualName == expectedName;
+		}
+	}
+
+	CloseHandle(processHandle);
+	return stillActive && nameMatches;
+}
+
 void ApplyRequestFile(HeadlessCompileRequest& request)
 {
 	const std::filesystem::path path = GetRequestFilePath();
@@ -1053,10 +1144,18 @@ void ApplyRequestFile(HeadlessCompileRequest& request)
 	}
 
 	try {
-		ApplyJsonRequest(nlohmann::json::parse(text), request);
+		const nlohmann::json json = nlohmann::json::parse(text);
+		if (!IsHeadlessLauncherAlive(json)) {
+			std::error_code ec;
+			std::filesystem::remove(path, ec);
+			return;
+		}
+		ApplyJsonRequest(json, request);
 	}
 	catch (...) {
-		request.enabled = true;
+		std::error_code ec;
+		std::filesystem::remove(path, ec);
+		return;
 	}
 
 	std::error_code ec;
@@ -1156,6 +1255,29 @@ void PrintHeadlessResultToConsole(const HeadlessCompileRequest& request, const n
 			}
 		}
 		PrintCompileOutputToConsole(compileResult, stderrOutput);
+	}
+
+	if (result.contains("compile_dialogs") && result["compile_dialogs"].is_array()) {
+		for (const auto& row : result["compile_dialogs"]) {
+			if (row.value("type", std::string()) != "compile_output_target") {
+				continue;
+			}
+			const std::string mode = row.value("mode", std::string());
+			const bool pending = mode == "pending";
+			WriteHeadlessConsoleLine(
+				pending
+					? "[AutoLinker][Headless] compile output target dialog pending"
+					: "[AutoLinker][Headless] compile output target auto-suppressed",
+				pending);
+			const std::string target = row.value("target", std::string());
+			if (!target.empty()) {
+				WriteHeadlessConsoleLine("dialog_target: " + target, pending);
+			}
+			const std::string outputPath = row.value("output_path", std::string());
+			if (!outputPath.empty()) {
+				WriteHeadlessConsoleLine("dialog_output_path: " + outputPath, pending);
+			}
+		}
 	}
 
 	if (result.contains("ide_message_boxes") && result["ide_message_boxes"].is_array()) {
@@ -1325,6 +1447,7 @@ void FinishHeadlessRun(const HeadlessCompileRequest& request, nlohmann::json res
 	g_finishRequested.store(true);
 	result["exit_code"] = exitCode;
 	AddCapturedMessageBoxesToResult(result);
+	AddCompileDialogsToResult(result);
 	if (!result.value("ok", false)) {
 		AddCompileErrorLocationToResult(result);
 	}
@@ -1427,7 +1550,10 @@ void HeadlessWorkerMain()
 	}
 
 	if (!IsCompileArtifactUpdated(compileResult)) {
-		result["error"] = "compile_invoked_but_output_file_not_updated";
+		const std::string compileTrace = compileResult.value("trace", std::string());
+		result["error"] = compileTrace == "compile_invoked_dialog_pending"
+			? "compile_output_target_dialog_pending"
+			: "compile_invoked_but_output_file_not_updated";
 		FinishHeadlessRun(request, std::move(result), 1);
 		return;
 	}

@@ -224,7 +224,7 @@ url = "http://127.0.0.1:19207/mcp"
   --timeout 120
 ```
 
-`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL，易模块只支持普通编译。结果默认同时写到 `e\AutoLinker\Log\headless_compile_last.json`。FNE 内部只能处理 AutoLinker 加载后的弹窗；启动器的父进程窗口枚举用于捕获 `.e` 加载失败、缺少支持库、缺少易模块等更早期错误，并会分别输出 `support_libraries` 和 `list_items`。其他后续 MsgBox 会自动关闭并以 `kind=info` 记录。
+`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL，易模块只支持普通编译。结果默认同时写到 `e\AutoLinker\Log\headless_compile_last.json`。FNE 内部只能处理 AutoLinker 加载后的弹窗；启动器的父进程窗口枚举用于捕获 `.e` 加载失败、缺少支持库、缺少易模块等更早期错误，并会分别输出 `support_libraries` 和 `list_items`。IDE 编译链路里的输出目标选择会被自动抑制，并以 `compile_dialogs` 输出。其他后续 MsgBox 会自动关闭并以 `kind=info` 记录。
 
 ### ⭐搜索参数示例
 

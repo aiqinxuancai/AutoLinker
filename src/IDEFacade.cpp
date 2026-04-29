@@ -3105,7 +3105,9 @@ bool IDEFacade::CompileWithOutputPath(
 	}
 
 	const bool dialogSuppressed = WasSilentCompileOutputPathRequestConsumed();
-	CancelSilentCompileOutputPathRequest();
+	if (dialogSuppressed) {
+		CancelSilentCompileOutputPathRequest();
+	}
 
 	if (outDiagnostics != nullptr) {
 		*outDiagnostics = dialogSuppressed

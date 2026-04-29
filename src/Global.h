@@ -43,6 +43,7 @@ bool BeginSilentCompileOutputPathRequest(
 
 void CancelSilentCompileOutputPathRequest();
 bool WasSilentCompileOutputPathRequestConsumed();
+bool IsSilentCompileOutputPathRequestActive();
 
 // 获取 WebView2 用户数据目录。
 std::wstring GetWebView2UserDataFolderPath();
