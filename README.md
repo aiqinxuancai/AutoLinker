@@ -210,7 +210,7 @@ url = "http://127.0.0.1:19207/mcp"
 | 联网 | `fetch_url` | 抓取指定 URL 原始文本响应 |
 | 联网 | `extract_web_document` | 提取网页正文与链接摘要 |
 
-### 无头命令行编译
+### ⭐无头命令行编译
 
 推荐使用 `AutoLinkerTest headless-compile` 启动 e.exe。启动器会写入一次性请求文件、枚举并关闭 IDE 启动期 `MessageBox`，AutoLinker 加载后隐藏 IDE、自动调用 `compile_with_output_path`，并把成功/失败、IDE 输出、错误位置和结果 JSON 输出到控制台。
 
@@ -225,43 +225,6 @@ url = "http://127.0.0.1:19207/mcp"
 ```
 
 `target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL，易模块只支持普通编译。结果默认同时写到 `e\AutoLinker\Log\headless_compile_last.json`。FNE 内部只能处理 AutoLinker 加载后的弹窗；启动器的父进程窗口枚举用于捕获 `.e` 加载失败、缺少支持库、缺少易模块等更早期错误，并会分别输出 `support_libraries` 和 `list_items`。IDE 编译链路里的输出目标选择会被自动抑制，并以 `compile_dialogs` 输出。其他后续 MsgBox 会自动关闭并以 `kind=info` 记录。
-
-### ⭐搜索参数示例
-
-`search_project_source_cache`、`search_public_code`、`search_available_module_public_code`、`search_module_public_code`、`search_support_library_public_code` 这几个工具使用相同的 `keyword / keywords / keyword_mode / regex` 搜索规则，下面是可直接照抄的示例：
-
-单关键字字面量搜索：
-
-```json
-{"keyword":".子程序 初始化"}
-```
-
-多关键字 AND，同一行同时包含全部关键字：
-
-```json
-{"keywords":[".子程序","初始化"],"keyword_mode":"all"}
-```
-
-多关键字 OR，命中任意一个关键字即可：
-
-```json
-{"keywords":["初始化","创建"],"keyword_mode":"any"}
-```
-
-使用正则 OR：
-
-```json
-{"regex":"初始化|创建"}
-```
-
-注意：`{"keyword":"初始化|创建"}` 不会按“或”处理，而是去搜索字面量 `初始化|创建`。如果要做 OR，请使用 `keywords + keyword_mode=\"any\"` 或 `regex`。
-
-其他搜索工具的差异：
-
-- `search_project_keyword` 走 IDE 自带隐藏搜索，只支持单关键字，不支持多关键字或正则。
-- `search_program_item_real_code` 支持 `keyword + use_regex=false` 的单关键字搜索，或 `keyword + use_regex=true` 的单正则搜索；它不支持 `keywords` 数组。
-
----
 
 ## 其他功能
 
