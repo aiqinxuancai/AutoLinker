@@ -210,6 +210,9 @@ url = "http://127.0.0.1:19207/mcp"
 | 联网 | `fetch_url` | 抓取指定 URL 原始文本响应 |
 | 联网 | `extract_web_document` | 提取网页正文与链接摘要 |
 
+
+## 其他功能
+
 ### ⭐无头命令行编译
 
 推荐使用 `AutoLinkerTest headless-compile` 启动 e.exe。启动器会写入一次性请求文件、枚举并关闭 IDE 启动期 `MessageBox`，AutoLinker 加载后隐藏 IDE、自动调用 `compile_with_output_path`，并把成功/失败、IDE 输出、错误位置和结果 JSON 输出到控制台。
@@ -226,7 +229,6 @@ url = "http://127.0.0.1:19207/mcp"
 
 `target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL，易模块只支持普通编译。结果默认同时写到 `e\AutoLinker\Log\headless_compile_last.json`。FNE 内部只能处理 AutoLinker 加载后的弹窗；启动器的父进程窗口枚举用于捕获 `.e` 加载失败、缺少支持库、缺少易模块等更早期错误，并会分别输出 `support_libraries` 和 `list_items`。IDE 编译链路里的输出目标选择会被自动抑制，并以 `compile_dialogs` 输出。其他后续 MsgBox 会自动关闭并以 `kind=info` 记录。
 
-## 其他功能
 
 ### ⭐重写核心库函数
 此功能可用现代C++方法替换核心库函数，大幅**提升函数性能**，同时也可**防针对e函数特征的破解**以及**免杀**的效果。同理你也可以覆盖第三方库的函数，比如特殊功能支持库等等。
