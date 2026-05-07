@@ -229,6 +229,19 @@ url = "http://127.0.0.1:19207/mcp"
 
 `target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL，易模块只支持普通编译。结果默认同时写到 `e\AutoLinker\Log\headless_compile_last.json`。FNE 内部只能处理 AutoLinker 加载后的弹窗；启动器的父进程窗口枚举用于捕获 `.e` 加载失败、缺少支持库、缺少易模块等更早期错误，并会分别输出 `support_libraries` 和 `list_items`。IDE 编译链路里的输出目标选择会被自动抑制，并以 `compile_dialogs` 输出。其他后续 MsgBox 会自动关闭并以 `kind=info` 记录。
 
+也可以直接启动易语言主程序，无需 `AutoLinkerTest.exe`：
+
+```powershell
+"C:\Users\aiqin\OneDrive\e5.6\e571.exe" `
+  "D:\demo\demo.e" `
+  --autolinker-headless-compile `
+  --autolinker-output "D:\demo\build\demo.exe" `
+  --autolinker-target auto `
+  --autolinker-result "D:\demo\build\compile-result.json"
+```
+
+直接传参只负责无头编译；如果还要处理启动早期弹窗，继续用 `AutoLinkerTest headless-compile`。
+
 
 ### ⭐重写核心库函数
 此功能可用现代C++方法替换核心库函数，大幅**提升函数性能**，同时也可**防针对e函数特征的破解**以及**免杀**的效果。同理你也可以覆盖第三方库的函数，比如特殊功能支持库等等。
