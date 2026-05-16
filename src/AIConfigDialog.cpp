@@ -36,6 +36,8 @@ constexpr int IDC_CFG_FILL_RIGHT_CODES = 1006; // 保留以备兼容，实际已
 constexpr int IDC_CFG_TAVILY_API_KEY = 1007;
 constexpr int IDC_CFG_PLATFORM_PRESET = 1008;
 constexpr int IDC_CFG_TEST_CONNECTION = 1009;
+constexpr int IDC_CFG_THINKING_LEVEL = 1010;
+constexpr int IDC_CFG_CUSTOM_HEADERS = 1011;
 constexpr int IDC_CFG_SAVE = 1;
 constexpr int IDC_CFG_CANCEL = 2;
 
@@ -484,8 +486,10 @@ struct AIConfigDialogContext {
 	HWND hBaseUrl = nullptr;
 	HWND hApiKey = nullptr;
 	HWND hModel = nullptr;
+	HWND hThinkingLevel = nullptr;
 	HWND hTavilyApiKey = nullptr;
 	HWND hExtraPrompt = nullptr;
+	HWND hCustomHeaders = nullptr;
 	HWND hGetKeyLink = nullptr;
 	HWND hPlatformCombo = nullptr;
 	HWND hTestConnection = nullptr;
@@ -602,6 +606,66 @@ AIProtocolType GetSelectedProtocol(HWND hCombo)
 		return AIProtocolType::OpenAI;
 	}
 }
+
+void PopulateThinkingLevelCombo(HWND hCombo, AIThinkingLevel selected)
+{
+	if (hCombo == nullptr) {
+		return;
+	}
+
+	SendMessageA(hCombo, CB_RESETCONTENT, 0, 0);
+	const int idxOff = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("关闭")));
+	const int idxLow = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("低")));
+	const int idxMedium = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("中")));
+	const int idxHigh = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("高")));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxOff, static_cast<LPARAM>(AIThinkingLevel::Off));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxLow, static_cast<LPARAM>(AIThinkingLevel::Low));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxMedium, static_cast<LPARAM>(AIThinkingLevel::Medium));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxHigh, static_cast<LPARAM>(AIThinkingLevel::High));
+
+	int selectedIndex = idxOff;
+	switch (selected) {
+	case AIThinkingLevel::Low:
+		selectedIndex = idxLow;
+		break;
+	case AIThinkingLevel::Medium:
+		selectedIndex = idxMedium;
+		break;
+	case AIThinkingLevel::High:
+		selectedIndex = idxHigh;
+		break;
+	case AIThinkingLevel::Off:
+	default:
+		selectedIndex = idxOff;
+		break;
+	}
+	SendMessageA(hCombo, CB_SETCURSEL, selectedIndex, 0);
+}
+
+AIThinkingLevel GetSelectedThinkingLevel(HWND hCombo)
+{
+	if (hCombo == nullptr) {
+		return AIThinkingLevel::Off;
+	}
+
+	const int selected = static_cast<int>(SendMessageA(hCombo, CB_GETCURSEL, 0, 0));
+	if (selected == CB_ERR) {
+		return AIThinkingLevel::Off;
+	}
+
+	const LRESULT data = SendMessageA(hCombo, CB_GETITEMDATA, selected, 0);
+	switch (static_cast<AIThinkingLevel>(data)) {
+	case AIThinkingLevel::Low:
+		return AIThinkingLevel::Low;
+	case AIThinkingLevel::Medium:
+		return AIThinkingLevel::Medium;
+	case AIThinkingLevel::High:
+		return AIThinkingLevel::High;
+	case AIThinkingLevel::Off:
+	default:
+		return AIThinkingLevel::Off;
+	}
+}
 HFONT GetLinkFont()
 {
 	static HFONT s_linkFont = nullptr;
@@ -630,11 +694,13 @@ AISettings ReadAISettingsFromNativeDialog(AIConfigDialogContext* ctx)
 
 	next = *ctx->settings;
 	next.protocolType = GetSelectedProtocol(ctx->hProtocol);
+	next.thinkingLevel = GetSelectedThinkingLevel(ctx->hThinkingLevel);
 	next.baseUrl = GetEditTextA(ctx->hBaseUrl);
 	next.apiKey = GetEditTextA(ctx->hApiKey);
 	next.model = GetEditTextA(ctx->hModel);
 	next.tavilyApiKey = GetEditTextA(ctx->hTavilyApiKey);
 	next.extraSystemPrompt = GetEditTextA(ctx->hExtraPrompt);
+	next.customHeadersText = GetEditTextA(ctx->hCustomHeaders);
 	return next;
 }
 
@@ -644,6 +710,11 @@ bool ValidateAISettingsForConnection(HWND hWnd, const AISettings& settings)
 		AIService::Trim(settings.apiKey).empty() ||
 		AIService::Trim(settings.model).empty()) {
 		MessageBoxA(hWnd, "baseUrl / apiKey / model cannot be empty.", "AI Config", MB_ICONWARNING | MB_OK);
+		return false;
+	}
+	std::string headerError;
+	if (!AIService::ValidateCustomHeadersText(settings.customHeadersText, headerError)) {
+		MessageBoxA(hWnd, headerError.c_str(), "AI Config", MB_ICONWARNING | MB_OK);
 		return false;
 	}
 	return true;
@@ -748,10 +819,12 @@ std::string BuildAIConfigWebViewSettingsJson(const AISettings& settings)
 {
 	nlohmann::json initialSettings;
 	initialSettings["protocolType"] = AIService::ProtocolTypeToString(settings.protocolType);
+	initialSettings["thinkingLevel"] = AIService::ThinkingLevelToString(settings.thinkingLevel);
 	initialSettings["baseUrl"] = LocalToUtf8Text(settings.baseUrl);
 	initialSettings["apiKey"] = LocalToUtf8Text(settings.apiKey);
 	initialSettings["model"] = LocalToUtf8Text(settings.model);
 	initialSettings["extraPrompt"] = LocalToUtf8Text(settings.extraSystemPrompt);
+	initialSettings["customHeaders"] = LocalToUtf8Text(settings.customHeadersText);
 	initialSettings["tavilyApiKey"] = LocalToUtf8Text(settings.tavilyApiKey);
 	return initialSettings.dump();
 }
@@ -835,12 +908,19 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
 			120, 116, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_MODEL), nullptr, nullptr);
 
+		HWND hThinkingLabel = CreateWindowA("STATIC", "Thinking:", WS_CHILD | WS_VISIBLE,
+			16, 152, 100, 20, hWnd, nullptr, nullptr, nullptr);
+		ctx->hThinkingLevel = CreateWindowExA(0, "COMBOBOX", "",
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+			120, 150, 180, 220, hWnd, reinterpret_cast<HMENU>(IDC_CFG_THINKING_LEVEL), nullptr, nullptr);
+		PopulateThinkingLevelCombo(ctx->hThinkingLevel, ctx->settings->thinkingLevel);
+
 		const std::wstring getKeyLinkText =
 			L"<a href=\"https://right.codes/register?aff=3dc87885\">从转发平台获取Key</a>";
 		HWND hGetKeyLink = CreateWindowExW(0, L"SysLink",
 			getKeyLinkText.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-			120, 146, 240, 22, hWnd, reinterpret_cast<HMENU>(IDC_CFG_GET_KEY_LINK), nullptr, nullptr);
+			330, 150, 240, 22, hWnd, reinterpret_cast<HMENU>(IDC_CFG_GET_KEY_LINK), nullptr, nullptr);
 		if (hGetKeyLink != nullptr) {
 			ctx->useNativeLink = true;
 			ctx->hGetKeyLink = hGetKeyLink;
@@ -851,13 +931,13 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 				L"STATIC",
 				L"\u4ECE\u8F6C\u53D1\u5E73\u53F0\u83B7\u53D6Key",
 				WS_CHILD | WS_VISIBLE | WS_TABSTOP | SS_NOTIFY,
-				120, 146, 240, 22, hWnd, reinterpret_cast<HMENU>(IDC_CFG_GET_KEY_LINK), nullptr, nullptr);
+				330, 150, 240, 22, hWnd, reinterpret_cast<HMENU>(IDC_CFG_GET_KEY_LINK), nullptr, nullptr);
 			hGetKeyLink = ctx->hGetKeyLink;
 		}
 
 		ctx->hPlatformCombo = CreateWindowExW(0, L"COMBOBOX", nullptr,
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
-			430, 142, 190, 280, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PLATFORM_PRESET), nullptr, nullptr);
+			430, 178, 190, 280, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PLATFORM_PRESET), nullptr, nullptr);
 		// 填入平台列表
 		static const wchar_t* kPlatformNames[] = {
 			L"（平台预设）", L"Right", L"DeepSeek", L"\u667A\u8C31", L"\u5343\u95EE",
@@ -870,39 +950,49 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		SendMessageW(ctx->hPlatformCombo, CB_SETCURSEL, 0, 0);
 
 		HWND hTavilyApiKeyLabel = CreateWindowA("STATIC", "Tavily API Key:", WS_CHILD | WS_VISIBLE,
-			16, 182, 100, 20, hWnd, nullptr, nullptr, nullptr);
+			16, 214, 100, 20, hWnd, nullptr, nullptr, nullptr);
 		ctx->hTavilyApiKey = CreateWindowExA(0, "EDIT", ctx->settings->tavilyApiKey.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD,
-			120, 180, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_TAVILY_API_KEY), nullptr, nullptr);
+			120, 212, 500, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_TAVILY_API_KEY), nullptr, nullptr);
 
 		HWND hExtraPromptLabel = CreateWindowA("STATIC", "System Prompt:", WS_CHILD | WS_VISIBLE,
-			16, 216, 140, 20, hWnd, nullptr, nullptr, nullptr);
-		ctx->hExtraPrompt = CreateWindowExA(0, "EDIT", ctx->settings->extraSystemPrompt.c_str(),
+			16, 248, 140, 20, hWnd, nullptr, nullptr, nullptr);
+		ctx->hExtraPrompt = CreateWindowExA(0, "EDIT", NormalizeMultilineForEdit(ctx->settings->extraSystemPrompt).c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
-			120, 216, 500, 150, hWnd, reinterpret_cast<HMENU>(IDC_CFG_EXTRA_PROMPT), nullptr, nullptr);
+			120, 248, 500, 110, hWnd, reinterpret_cast<HMENU>(IDC_CFG_EXTRA_PROMPT), nullptr, nullptr);
+
+		HWND hCustomHeadersLabel = CreateWindowA("STATIC", "Custom Headers:", WS_CHILD | WS_VISIBLE,
+			16, 368, 140, 20, hWnd, nullptr, nullptr, nullptr);
+		ctx->hCustomHeaders = CreateWindowExA(0, "EDIT", NormalizeMultilineForEdit(ctx->settings->customHeadersText).c_str(),
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
+			120, 368, 500, 100, hWnd, reinterpret_cast<HMENU>(IDC_CFG_CUSTOM_HEADERS), nullptr, nullptr);
 
 		ctx->hTestConnection = CreateWindowW(L"BUTTON", L"\u6D4B\u8BD5\u8FDE\u901A\u6027", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-			300, 382, 110, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_TEST_CONNECTION), nullptr, nullptr);
+			300, 486, 110, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_TEST_CONNECTION), nullptr, nullptr);
 		HWND hSave = CreateWindowW(L"BUTTON", L"\u4FDD\u5B58\u5E76\u7EE7\u7EED", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-			420, 382, 100, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_SAVE), nullptr, nullptr);
+			420, 486, 100, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_SAVE), nullptr, nullptr);
 		HWND hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-			530, 382, 90, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_CANCEL), nullptr, nullptr);
+			530, 486, 90, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_CANCEL), nullptr, nullptr);
 
-		std::array<HWND, 17> controls = {
+		std::array<HWND, 21> controls = {
 			hProtocolLabel,
 			ctx->hProtocol,
 			hBaseUrlLabel,
 			hApiKeyLabel,
 			hModelLabel,
+			hThinkingLabel,
 			hTavilyApiKeyLabel,
 			ctx->hGetKeyLink,
 			ctx->hPlatformCombo,
 			hExtraPromptLabel,
+			hCustomHeadersLabel,
 			ctx->hBaseUrl,
 			ctx->hApiKey,
 			ctx->hModel,
+			ctx->hThinkingLevel,
 			ctx->hTavilyApiKey,
 			ctx->hExtraPrompt,
+			ctx->hCustomHeaders,
 			ctx->hTestConnection,
 			hSave,
 			hCancel
@@ -1042,10 +1132,12 @@ AISettings ReadAISettingsFromWebPayload(const AISettings& current, const nlohman
 {
 	AISettings next = current;
 	next.protocolType = AIService::ParseProtocolType(data.value("protocol_type", AIService::ProtocolTypeToString(next.protocolType)));
+	next.thinkingLevel = AIService::ParseThinkingLevel(data.value("thinking_level", AIService::ThinkingLevelToString(next.thinkingLevel)));
 	next.baseUrl = Utf8ToLocalText(data.value("base_url", ""));
 	next.apiKey = Utf8ToLocalText(data.value("api_key", ""));
 	next.model = Utf8ToLocalText(data.value("model", ""));
 	next.extraSystemPrompt = Utf8ToLocalText(data.value("extra_system_prompt", ""));
+	next.customHeadersText = Utf8ToLocalText(data.value("custom_headers", ""));
 	next.tavilyApiKey = Utf8ToLocalText(data.value("tavily_api_key", ""));
 	return next;
 }
@@ -2018,7 +2110,7 @@ bool ShowAIConfigDialogNative(HWND owner, AISettings& ioSettings)
 		wc.lpszClassName,
 		"AutoLinker AI Config",
 		WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-		CW_USEDEFAULT, CW_USEDEFAULT, 650, 464,
+		CW_USEDEFAULT, CW_USEDEFAULT, 650, 560,
 		owner,
 		nullptr,
 		wc.hInstance,

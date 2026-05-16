@@ -359,8 +359,22 @@ p {
 					</div>
 				</div>
 				<div class="row">
+					<label for="thinkingLevel">Thinking Level</label>
+					<select id="thinkingLevel" class="select">
+						<option value="off">&#x5173;&#x95ED;</option>
+						<option value="low">&#x4F4E;</option>
+						<option value="medium">&#x4E2D;</option>
+						<option value="high">&#x9AD8;</option>
+					</select>
+				</div>
+				<div class="row">
 					<label for="extraPrompt">System Prompt</label>
 					<textarea id="extraPrompt" class="textarea" placeholder="&#x9644;&#x52A0;&#x7CFB;&#x7EDF;&#x63D0;&#x793A;&#x8BCD;"></textarea>
+				</div>
+				<div class="row">
+					<label for="customHeaders">Custom Headers</label>
+					<textarea id="customHeaders" class="textarea" placeholder="Authorization: Bearer xxx&#10;X-Provider: custom"></textarea>
+					<p class="tip">&#x6BCF;&#x884C;&#x4E00;&#x4E2A; Header: Value&#xFF0C;&#x53EF;&#x8986;&#x76D6;&#x5185;&#x7F6E;&#x8BF7;&#x6C42;&#x5934;</p>
 				</div>
 				<div class="divider"></div>
 				<div class="row">
@@ -409,10 +423,12 @@ p {
 <script>
 const initialSettings = {
 	protocolType: "openai",
+	thinkingLevel: "off",
 	baseUrl: "",
 	apiKey: "",
 	model: "",
 	extraPrompt: "",
+	customHeaders: "",
 	tavilyApiKey: ""
 };
 
@@ -447,17 +463,38 @@ function toggleSecret(id, btnId) {
 function collect() {
 	return {
 		protocol_type: $("protocol").value || "openai",
+		thinking_level: $("thinkingLevel").value || "off",
 		base_url: $("baseUrl").value || "",
 		api_key: $("apiKey").value || "",
 		model: $("model").value || "",
 		extra_system_prompt: $("extraPrompt").value || "",
+		custom_headers: $("customHeaders").value || "",
 		tavily_api_key: $("tavilyApiKey").value || ""
 	};
+}
+
+function validateCustomHeaders(headerText) {
+	var lines = (headerText || "").split(/\r?\n/);
+	for (var i = 0; i < lines.length; ++i) {
+		var line = lines[i].trim();
+		if (!line) {
+			continue;
+		}
+		var colon = line.indexOf(":");
+		if (colon <= 0) {
+			alert("Custom Headers 第 " + (i + 1) + " 行格式无效，需要 Header: Value。");
+			return false;
+		}
+	}
+	return true;
 }
 
 function validate(data) {
 	if (!data.base_url.trim() || !data.api_key.trim() || !data.model.trim()) {
 		alert("baseUrl / apiKey / model \u4E0D\u80FD\u4E3A\u7A7A\u3002");
+		return false;
+	}
+	if (!validateCustomHeaders(data.custom_headers || "")) {
 		return false;
 	}
 	return true;
@@ -474,10 +511,12 @@ function applyInitial(settings) {
 			protocol.selectedIndex = 0;
 		}
 	}
+	setField("thinkingLevel", next.thinkingLevel || "off");
 	setField("baseUrl", next.baseUrl);
 	setField("apiKey", next.apiKey);
 	setField("model", next.model);
 	setField("extraPrompt", next.extraPrompt);
+	setField("customHeaders", next.customHeaders);
 	setField("tavilyApiKey", next.tavilyApiKey);
 }
 

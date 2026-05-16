@@ -441,6 +441,11 @@ struct CompactToolResultPayload {
 	nlohmann::json jsonValue = nlohmann::json::object();
 };
 
+struct HttpHeaderEntry {
+	std::string name;
+	std::string value;
+};
+
 CompactToolResultPayload BuildCompactToolResultPayload(const std::string& toolName, const std::string& toolResultLocal)
 {
 	CompactToolResultPayload payload;
@@ -474,6 +479,311 @@ CompactToolResultPayload BuildCompactToolResultPayload(const std::string& toolNa
 int GetMaxToolRounds(const AISettings& settings)
 {
 	return (std::clamp)(settings.maxToolRounds, 4, 64);
+}
+
+bool IsValidHttpHeaderName(std::string_view name)
+{
+	if (name.empty()) {
+		return false;
+	}
+
+	for (const unsigned char ch : name) {
+		if (ch <= 32 || ch >= 127 || ch == ':') {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool ParseCustomHeadersTextInternal(
+	const std::string& headerText,
+	std::vector<HttpHeaderEntry>& outHeaders,
+	std::string& outError)
+{
+	outHeaders.clear();
+	outError.clear();
+
+	size_t lineStart = 0;
+	int lineNumber = 1;
+	while (lineStart <= headerText.size()) {
+		size_t lineEnd = headerText.find_first_of("\r\n", lineStart);
+		std::string line = lineEnd == std::string::npos
+			? headerText.substr(lineStart)
+			: headerText.substr(lineStart, lineEnd - lineStart);
+		if (lineEnd != std::string::npos && headerText[lineEnd] == '\r' &&
+			lineEnd + 1 < headerText.size() && headerText[lineEnd + 1] == '\n') {
+			lineStart = lineEnd + 2;
+		}
+		else if (lineEnd != std::string::npos) {
+			lineStart = lineEnd + 1;
+		}
+		else {
+			lineStart = headerText.size() + 1;
+		}
+
+		const std::string trimmedLine = AIService::Trim(line);
+		if (trimmedLine.empty()) {
+			++lineNumber;
+			continue;
+		}
+
+		const size_t colonPos = trimmedLine.find(':');
+		if (colonPos == std::string::npos) {
+			outError = std::format("custom header line {} missing ':' separator", lineNumber);
+			return false;
+		}
+
+		const std::string name = AIService::Trim(trimmedLine.substr(0, colonPos));
+		if (!IsValidHttpHeaderName(name)) {
+			outError = std::format("custom header line {} has invalid header name", lineNumber);
+			return false;
+		}
+
+		outHeaders.push_back({
+			name,
+			AIService::Trim(trimmedLine.substr(colonPos + 1))
+		});
+		++lineNumber;
+	}
+
+	return true;
+}
+
+void UpsertHeaderEntry(
+	std::vector<HttpHeaderEntry>& headers,
+	const std::string& name,
+	const std::string& value)
+{
+	const std::string loweredName = ToLowerAsciiCopy(name);
+	for (auto& entry : headers) {
+		if (ToLowerAsciiCopy(entry.name) == loweredName) {
+			entry.name = name;
+			entry.value = value;
+			return;
+		}
+	}
+	headers.push_back({ name, value });
+}
+
+std::string BuildMergedHeaders(
+	const std::vector<HttpHeaderEntry>& baseHeaders,
+	const AISettings& settings)
+{
+	std::vector<HttpHeaderEntry> merged = baseHeaders;
+	std::vector<HttpHeaderEntry> customHeaders;
+	std::string parseError;
+	if (!ParseCustomHeadersTextInternal(settings.customHeadersText, customHeaders, parseError)) {
+		return std::string();
+	}
+
+	for (const auto& entry : customHeaders) {
+		UpsertHeaderEntry(merged, entry.name, entry.value);
+	}
+
+	std::string serialized;
+	for (const auto& entry : merged) {
+		serialized += entry.name;
+		serialized += ": ";
+		serialized += entry.value;
+		serialized += "\r\n";
+	}
+	return serialized;
+}
+
+bool ValidateRequestSettings(const AISettings& settings, std::string& outError)
+{
+	std::string missingField;
+	if (!AIService::HasRequiredSettings(settings, missingField)) {
+		outError = "AI settings missing: " + missingField;
+		return false;
+	}
+
+	if (!AIService::ValidateCustomHeadersText(settings.customHeadersText, outError)) {
+		return false;
+	}
+
+	outError.clear();
+	return true;
+}
+
+bool ContainsAsciiInsensitive(std::string_view text, std::string_view needle)
+{
+	if (needle.empty()) {
+		return true;
+	}
+	return ToLowerAsciiCopy(text).find(ToLowerAsciiCopy(needle)) != std::string::npos;
+}
+
+bool IsDeepSeekCompatibleSettings(const AISettings& settings)
+{
+	return ContainsAsciiInsensitive(settings.baseUrl, "deepseek") ||
+		ContainsAsciiInsensitive(settings.model, "deepseek");
+}
+
+bool IsGemini25Model(std::string_view model)
+{
+	return ContainsAsciiInsensitive(model, "gemini-2.5");
+}
+
+bool IsGemini25ProModel(std::string_view model)
+{
+	return IsGemini25Model(model) && ContainsAsciiInsensitive(model, "pro");
+}
+
+bool IsGemini3Model(std::string_view model)
+{
+	return ContainsAsciiInsensitive(model, "gemini-3");
+}
+
+bool IsGemini3FlashModel(std::string_view model)
+{
+	return IsGemini3Model(model) && ContainsAsciiInsensitive(model, "flash");
+}
+
+std::string GetOpenAIReasoningEffort(AIThinkingLevel level)
+{
+	switch (level) {
+	case AIThinkingLevel::Low:
+		return "low";
+	case AIThinkingLevel::Medium:
+		return "medium";
+	case AIThinkingLevel::High:
+		return "high";
+	case AIThinkingLevel::Off:
+	default:
+		return "none";
+	}
+}
+
+int GetClaudeThinkingBudget(AIThinkingLevel level)
+{
+	switch (level) {
+	case AIThinkingLevel::Low:
+		return 1024;
+	case AIThinkingLevel::Medium:
+		return 4096;
+	case AIThinkingLevel::High:
+		return 8192;
+	case AIThinkingLevel::Off:
+	default:
+		return 0;
+	}
+}
+
+int GetGemini25ThinkingBudget(const AISettings& settings)
+{
+	switch (settings.thinkingLevel) {
+	case AIThinkingLevel::Off:
+		return IsGemini25ProModel(settings.model) ? 128 : 0;
+	case AIThinkingLevel::Low:
+		return 1024;
+	case AIThinkingLevel::Medium:
+		return 4096;
+	case AIThinkingLevel::High:
+	default:
+		return -1;
+	}
+}
+
+std::string GetGemini3ThinkingLevel(const AISettings& settings)
+{
+	if (IsGemini3FlashModel(settings.model)) {
+		switch (settings.thinkingLevel) {
+		case AIThinkingLevel::Off:
+			return "minimal";
+		case AIThinkingLevel::Low:
+			return "low";
+		case AIThinkingLevel::Medium:
+			return "medium";
+		case AIThinkingLevel::High:
+		default:
+			return "high";
+		}
+	}
+
+	switch (settings.thinkingLevel) {
+	case AIThinkingLevel::High:
+		return "high";
+	case AIThinkingLevel::Off:
+	case AIThinkingLevel::Low:
+	case AIThinkingLevel::Medium:
+	default:
+		return "low";
+	}
+}
+
+void EnsureDeepSeekAssistantMessageCompat(nlohmann::json& message)
+{
+	if (!message.is_object()) {
+		return;
+	}
+
+	if (!message.contains("tool_calls") || !message["tool_calls"].is_array() || message["tool_calls"].empty()) {
+		return;
+	}
+
+	if (!message.contains("content") || message["content"].is_null()) {
+		message["content"] = "";
+	}
+}
+
+void ApplyThinkingConfigToOpenAIChatRequest(nlohmann::json& requestBody, const AISettings& settings)
+{
+	if (IsDeepSeekCompatibleSettings(settings)) {
+		if (settings.thinkingLevel == AIThinkingLevel::Off) {
+			requestBody["thinking"] = {
+				{"type", "disabled"}
+			};
+			return;
+		}
+
+		requestBody["thinking"] = {
+			{"type", "enabled"}
+		};
+		requestBody["reasoning_effort"] = settings.thinkingLevel == AIThinkingLevel::High ? "max" : "high";
+		return;
+	}
+
+	requestBody["reasoning_effort"] = GetOpenAIReasoningEffort(settings.thinkingLevel);
+}
+
+void ApplyThinkingConfigToOpenAIResponsesRequest(nlohmann::json& requestBody, const AISettings& settings)
+{
+	requestBody["reasoning"] = {
+		{"effort", GetOpenAIReasoningEffort(settings.thinkingLevel)}
+	};
+}
+
+void ApplyThinkingConfigToClaudeRequest(nlohmann::json& requestBody, const AISettings& settings)
+{
+	const int budget = GetClaudeThinkingBudget(settings.thinkingLevel);
+	if (budget <= 0) {
+		return;
+	}
+
+	requestBody["thinking"] = {
+		{"type", "enabled"},
+		{"budget_tokens", budget}
+	};
+}
+
+void ApplyThinkingConfigToGeminiRequest(nlohmann::json& requestBody, const AISettings& settings)
+{
+	nlohmann::json thinkingConfig = nlohmann::json::object();
+	if (IsGemini25Model(settings.model)) {
+		thinkingConfig["thinkingBudget"] = GetGemini25ThinkingBudget(settings);
+	}
+	else if (IsGemini3Model(settings.model)) {
+		thinkingConfig["thinkingLevel"] = GetGemini3ThinkingLevel(settings);
+	}
+	else {
+		thinkingConfig["thinkingBudget"] = settings.thinkingLevel == AIThinkingLevel::High ? -1 : 1024;
+	}
+
+	if (!requestBody.contains("generationConfig") || !requestBody["generationConfig"].is_object()) {
+		requestBody["generationConfig"] = nlohmann::json::object();
+	}
+	requestBody["generationConfig"]["thinkingConfig"] = std::move(thinkingConfig);
 }
 
 std::string BuildToolRoundsExceededError(int maxToolRounds, const std::vector<AIChatToolEvent>& toolEvents)
@@ -1770,22 +2080,26 @@ std::string BuildGeminiEndpoint(const std::string& baseUrl, const std::string& m
 
 std::string BuildOpenAIHeaders(const AISettings& settings)
 {
-	return
-		"Content-Type: application/json\r\n"
-		"Authorization: Bearer " + settings.apiKey + "\r\n";
+	return BuildMergedHeaders({
+		{ "Content-Type", "application/json" },
+		{ "Authorization", "Bearer " + settings.apiKey }
+	}, settings);
 }
 
 std::string BuildClaudeHeaders(const AISettings& settings)
 {
-	return
-		"Content-Type: application/json\r\n"
-		"x-api-key: " + settings.apiKey + "\r\n"
-		"anthropic-version: 2023-06-01\r\n";
+	return BuildMergedHeaders({
+		{ "Content-Type", "application/json" },
+		{ "x-api-key", settings.apiKey },
+		{ "anthropic-version", "2023-06-01" }
+	}, settings);
 }
 
-std::string BuildJsonHeadersOnly()
+std::string BuildJsonHeadersOnly(const AISettings& settings)
 {
-	return "Content-Type: application/json\r\n";
+	return BuildMergedHeaders({
+		{ "Content-Type", "application/json" }
+	}, settings);
 }
 
 nlohmann::json BuildClaudeTools()
@@ -2063,6 +2377,11 @@ void AppendResponsesOutputItemsToInput(const nlohmann::json& parsed, nlohmann::j
 AIResult ExecuteTaskClaude(const std::string& systemPrompt, const std::string& inputText, const AISettings& settings)
 {
 	AIResult result = {};
+	std::string validationError;
+	if (!ValidateRequestSettings(settings, validationError)) {
+		result.error = validationError;
+		return result;
+	}
 	const std::string endpoint = BuildClaudeEndpoint(settings.baseUrl);
 
 	nlohmann::json requestBody;
@@ -2076,6 +2395,7 @@ AIResult ExecuteTaskClaude(const std::string& systemPrompt, const std::string& i
 			{"content", nlohmann::json::array({ {{"type", "text"}, {"text", LocalToUtf8(inputText)}} })}
 		}
 	});
+	ApplyThinkingConfigToClaudeRequest(requestBody, settings);
 	NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 	const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
@@ -2117,6 +2437,11 @@ AIResult ExecuteTaskClaude(const std::string& systemPrompt, const std::string& i
 AIResult ExecuteTaskGemini(const std::string& systemPrompt, const std::string& inputText, const AISettings& settings)
 {
 	AIResult result = {};
+	std::string validationError;
+	if (!ValidateRequestSettings(settings, validationError)) {
+		result.error = validationError;
+		return result;
+	}
 	std::string endpoint = BuildGeminiEndpoint(settings.baseUrl, LocalToUtf8(settings.model), false);
 	endpoint = AppendQueryParam(endpoint, "key", settings.apiKey);
 
@@ -2131,12 +2456,13 @@ AIResult ExecuteTaskGemini(const std::string& systemPrompt, const std::string& i
 			{"parts", nlohmann::json::array({ {{"text", LocalToUtf8(inputText)}} })}
 		}
 	});
+	ApplyThinkingConfigToGeminiRequest(requestBody, settings);
 	NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 	const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
 		endpoint,
 		requestBody.dump(),
-		BuildJsonHeadersOnly(),
+		BuildJsonHeadersOnly(settings),
 		settings.timeoutMs,
 		false,
 		false,
@@ -2172,6 +2498,11 @@ AIResult ExecuteTaskGemini(const std::string& systemPrompt, const std::string& i
 AIResult ExecuteTaskOpenAIResponses(const std::string& systemPrompt, const std::string& inputText, const AISettings& settings)
 {
 	AIResult result = {};
+	std::string validationError;
+	if (!ValidateRequestSettings(settings, validationError)) {
+		result.error = validationError;
+		return result;
+	}
 	const std::string endpoint = BuildOpenAIResponsesEndpoint(settings.baseUrl);
 
 	nlohmann::json requestBody;
@@ -2182,6 +2513,7 @@ AIResult ExecuteTaskOpenAIResponses(const std::string& systemPrompt, const std::
 		BuildResponsesTextMessage("user", LocalToUtf8(inputText))
 	});
 	requestBody["stream"] = false;
+	ApplyThinkingConfigToOpenAIResponsesRequest(requestBody, settings);
 	NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 	const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
@@ -2229,6 +2561,11 @@ AIChatResult ExecuteChatWithToolsClaude(
 	HttpRequestCancellation* cancelContext)
 {
 	AIChatResult result = {};
+	std::string validationError;
+	if (!ValidateRequestSettings(settings, validationError)) {
+		result.error = validationError;
+		return result;
+	}
 	const std::string endpoint = BuildClaudeEndpoint(settings.baseUrl);
 	const nlohmann::json tools = BuildClaudeTools();
 
@@ -2267,6 +2604,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 		requestBody["tools"] = tools;
 		requestBody["tool_choice"] = { {"type", "auto"} };
 		requestBody["stream"] = false;
+		ApplyThinkingConfigToClaudeRequest(requestBody, settings);
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
@@ -2377,6 +2715,11 @@ AIChatResult ExecuteChatWithToolsGemini(
 	HttpRequestCancellation* cancelContext)
 {
 	AIChatResult result = {};
+	std::string validationError;
+	if (!ValidateRequestSettings(settings, validationError)) {
+		result.error = validationError;
+		return result;
+	}
 	std::string endpoint = BuildGeminiEndpoint(settings.baseUrl, LocalToUtf8(settings.model), false);
 	endpoint = AppendQueryParam(endpoint, "key", settings.apiKey);
 	const nlohmann::json tools = BuildGeminiTools();
@@ -2414,12 +2757,13 @@ AIChatResult ExecuteChatWithToolsGemini(
 		requestBody["generationConfig"] = { {"temperature", settings.temperature} };
 		requestBody["contents"] = contents;
 		requestBody["tools"] = tools;
+		ApplyThinkingConfigToGeminiRequest(requestBody, settings);
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
 			endpoint,
 			requestBody.dump(),
-			BuildJsonHeadersOnly(),
+			BuildJsonHeadersOnly(settings),
 			settings.timeoutMs,
 			false,
 			false,
@@ -2527,6 +2871,11 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 	HttpRequestCancellation* cancelContext)
 {
 	AIChatResult result = {};
+	std::string validationError;
+	if (!ValidateRequestSettings(settings, validationError)) {
+		result.error = validationError;
+		return result;
+	}
 	const std::string endpoint = BuildOpenAIResponsesEndpoint(settings.baseUrl);
 	const nlohmann::json tools = BuildResponsesToolDefinitions();
 
@@ -2553,6 +2902,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		requestBody["input"] = input;
 		requestBody["tools"] = tools;
 		requestBody["stream"] = false;
+		ApplyThinkingConfigToOpenAIResponsesRequest(requestBody, settings);
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
@@ -2657,10 +3007,12 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 			// INI 键名到 JSON 键名的映射（去掉 "ai." 前缀）
 			const std::pair<const char*, const char*> mapping[] = {
 				{ "protocol_type",      "ai.protocol_type"        },
+				{ "thinking_level",     "ai.thinking_level"       },
 				{ "base_url",           "ai.base_url"             },
 				{ "api_key",            "ai.api_key"              },
 				{ "model",              "ai.model"                },
 				{ "system_prompt_extra","ai.system_prompt_extra"  },
+				{ "custom_headers",     "ai.custom_headers"       },
 				{ "tavily_api_key",     "ai.tavily_api_key"       },
 				{ "timeout_ms",         "ai.timeout_ms"           },
 				{ "max_tool_rounds",    "ai.max_tool_rounds"      },
@@ -2681,10 +3033,12 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 
 	// 从 JSON 读取设置（getValueLocal 将 UTF-8 转换为本地编码供 AISettings 使用）
 	outSettings.protocolType     = ParseProtocolType(jsonConfig.getValue("protocol_type"));
+	outSettings.thinkingLevel    = ParseThinkingLevel(jsonConfig.getValue("thinking_level"));
 	outSettings.baseUrl          = jsonConfig.getValueLocal("base_url");
 	outSettings.apiKey           = jsonConfig.getValueLocal("api_key");
 	outSettings.model            = jsonConfig.getValueLocal("model");
 	outSettings.extraSystemPrompt= jsonConfig.getValueLocal("system_prompt_extra");
+	outSettings.customHeadersText= jsonConfig.getValueLocal("custom_headers");
 	outSettings.tavilyApiKey     = jsonConfig.getValueLocal("tavily_api_key");
 
 	const std::string timeoutValue = jsonConfig.getValue("timeout_ms");
@@ -2724,10 +3078,12 @@ void AIService::SaveSettings(AIJsonConfig& jsonConfig, const AISettings& setting
 {
 	jsonConfig.setValues({
 		{ "protocol_type",       ProtocolTypeToString(settings.protocolType) },
+		{ "thinking_level",      ThinkingLevelToString(settings.thinkingLevel) },
 		{ "base_url",            settings.baseUrl                            },
 		{ "api_key",             settings.apiKey                             },
 		{ "model",               settings.model                              },
 		{ "system_prompt_extra", settings.extraSystemPrompt                  },
+		{ "custom_headers",      settings.customHeadersText                  },
 		{ "tavily_api_key",      settings.tavilyApiKey                       },
 		{ "timeout_ms",          std::to_string(settings.timeoutMs)          },
 		{ "max_tool_rounds",     std::to_string((std::clamp)(settings.maxToolRounds, 4, 64)) },
@@ -2751,6 +3107,57 @@ bool AIService::HasRequiredSettings(const AISettings& settings, std::string& out
 	}
 	outMissingField.clear();
 	return true;
+}
+
+AIThinkingLevel AIService::ParseThinkingLevel(const std::string& text)
+{
+	const std::string v = ToLowerAsciiCopy(Trim(text));
+	if (v == "low") {
+		return AIThinkingLevel::Low;
+	}
+	if (v == "medium" || v == "med") {
+		return AIThinkingLevel::Medium;
+	}
+	if (v == "high") {
+		return AIThinkingLevel::High;
+	}
+	return AIThinkingLevel::Off;
+}
+
+std::string AIService::ThinkingLevelToString(AIThinkingLevel thinkingLevel)
+{
+	switch (thinkingLevel) {
+	case AIThinkingLevel::Low:
+		return "low";
+	case AIThinkingLevel::Medium:
+		return "medium";
+	case AIThinkingLevel::High:
+		return "high";
+	case AIThinkingLevel::Off:
+	default:
+		return "off";
+	}
+}
+
+std::string AIService::ThinkingLevelDisplayName(AIThinkingLevel thinkingLevel)
+{
+	switch (thinkingLevel) {
+	case AIThinkingLevel::Low:
+		return "低";
+	case AIThinkingLevel::Medium:
+		return "中";
+	case AIThinkingLevel::High:
+		return "高";
+	case AIThinkingLevel::Off:
+	default:
+		return "关闭";
+	}
+}
+
+bool AIService::ValidateCustomHeadersText(const std::string& headerText, std::string& outError)
+{
+	std::vector<HttpHeaderEntry> headers;
+	return ParseCustomHeadersTextInternal(headerText, headers, outError);
 }
 
 AIProtocolType AIService::ParseProtocolType(const std::string& text)
@@ -2820,9 +3227,9 @@ std::string AIService::BuildTaskDisplayName(AITaskKind kind)
 AIResult AIService::TestConnection(const AISettings& settings)
 {
 	AIResult result = {};
-	std::string missingField;
-	if (!HasRequiredSettings(settings, missingField)) {
-		result.error = "AI settings missing: " + missingField;
+	std::string validationError;
+	if (!ValidateRequestSettings(settings, validationError)) {
+		result.error = validationError;
 		return result;
 	}
 
@@ -2856,6 +3263,7 @@ AIResult AIService::TestConnection(const AISettings& settings)
 			{"content", inputTextUtf8}
 		}
 	});
+	ApplyThinkingConfigToOpenAIChatRequest(requestBody, settings);
 	NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 	const std::string endpoint = BuildEndpoint(settings.baseUrl);
@@ -2926,9 +3334,9 @@ AIResult AIService::TestConnection(const AISettings& settings)
 AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, const AISettings& settings)
 {
 	AIResult result = {};
-	std::string missingField;
-	if (!HasRequiredSettings(settings, missingField)) {
-		result.error = "AI settings missing: " + missingField;
+	std::string validationError;
+	if (!ValidateRequestSettings(settings, validationError)) {
+		result.error = validationError;
 		return result;
 	}
 
@@ -2961,6 +3369,7 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 			{"content", inputTextUtf8}
 		}
 	});
+	ApplyThinkingConfigToOpenAIChatRequest(requestBody, settings);
 	NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 	const std::string endpoint = BuildEndpoint(settings.baseUrl);
@@ -3037,9 +3446,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 	HttpRequestCancellation* cancelContext)
 {
 	AIChatResult result = {};
-	std::string missingField;
-	if (!HasRequiredSettings(settings, missingField)) {
-		result.error = "AI settings missing: " + missingField;
+	std::string validationError;
+	if (!ValidateRequestSettings(settings, validationError)) {
+		result.error = validationError;
 		return result;
 	}
 	if (IsCancelRequested(cancelCallback, cancelContext)) {
@@ -3089,7 +3498,10 @@ AIChatResult AIService::ExecuteChatWithTools(
 		requestBody["stream"] = true;
 		requestBody["messages"] = requestMessages;
 		requestBody["tools"] = tools;
-		requestBody["tool_choice"] = "auto";
+		if (!IsDeepSeekCompatibleSettings(settings)) {
+			requestBody["tool_choice"] = "auto";
+		}
+		ApplyThinkingConfigToOpenAIChatRequest(requestBody, settings);
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		std::string requestBodyText;
@@ -3171,6 +3583,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 
 		// Tool-call path.
 		if (message.contains("tool_calls") && message["tool_calls"].is_array() && !message["tool_calls"].empty()) {
+			if (IsDeepSeekCompatibleSettings(settings)) {
+				EnsureDeepSeekAssistantMessageCompat(message);
+			}
 			requestMessages.push_back(message);
 
 			for (const auto& toolCall : message["tool_calls"]) {

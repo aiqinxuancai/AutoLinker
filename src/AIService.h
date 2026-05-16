@@ -25,13 +25,23 @@ enum class AIProtocolType {
 	OpenAIResponses = 3
 };
 
+// AI 思考等级。
+enum class AIThinkingLevel {
+	Off = 0,
+	Low = 1,
+	Medium = 2,
+	High = 3
+};
+
 // AI 设置。
 struct AISettings {
 	AIProtocolType protocolType = AIProtocolType::OpenAI;
+	AIThinkingLevel thinkingLevel = AIThinkingLevel::Off;
 	std::string baseUrl;
 	std::string apiKey;
 	std::string model;
 	std::string extraSystemPrompt;
+	std::string customHeadersText;
 	std::string tavilyApiKey;
 	int timeoutMs = 120000;
 	// 工具调用最大轮数。
@@ -81,6 +91,11 @@ public:
 	static AIProtocolType ParseProtocolType(const std::string& text);
 	static std::string ProtocolTypeToString(AIProtocolType protocolType);
 	static std::string ProtocolTypeDisplayName(AIProtocolType protocolType);
+	static AIThinkingLevel ParseThinkingLevel(const std::string& text);
+	static std::string ThinkingLevelToString(AIThinkingLevel thinkingLevel);
+	static std::string ThinkingLevelDisplayName(AIThinkingLevel thinkingLevel);
+	// 校验自定义请求头多行文本格式。
+	static bool ValidateCustomHeadersText(const std::string& headerText, std::string& outError);
 	// 测试当前 AI 配置的接口连通性。
 	static AIResult TestConnection(const AISettings& settings);
 	static std::string BuildTaskDisplayName(AITaskKind kind);
