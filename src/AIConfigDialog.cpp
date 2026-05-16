@@ -1330,7 +1330,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			static const PlatformPreset kPresets[] = {
 				{ nullptr, AIProtocolType::OpenAI },                                            // 0: 自定义
 				{ "https://right.codes/codex",                         AIProtocolType::OpenAI },  // Right
-				{ "https://api.deepseek.com/v1",                       AIProtocolType::OpenAI },  // DeepSeek
+				{ "https://api.deepseek.com",                          AIProtocolType::OpenAI },  // DeepSeek
 				{ "https://open.bigmodel.cn/api/paas/v4",              AIProtocolType::OpenAI },  // 智谱
 				{ "https://dashscope.aliyuncs.com/compatible-mode/v1", AIProtocolType::OpenAI },  // 千问
 				{ "https://api.moonshot.cn/v1",                        AIProtocolType::OpenAI },  // Kimi

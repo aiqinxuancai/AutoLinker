@@ -9,10 +9,13 @@
 #include <thread>
 #include <vector>
 #include <Windows.h>
+#include <winhttp.h>
 
 #include "..\\thirdparty\\json.hpp"
 
 #include "..\\src\\AutoLinkerTestApi.h"
+
+#pragma comment(lib, "winhttp.lib")
 
 namespace {
 
@@ -387,6 +390,290 @@ std::string ReadTextFile(const std::filesystem::path& path)
 	return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
+std::wstring Utf8ToWideStrict(const std::string& text)
+{
+	if (text.empty()) {
+		return std::wstring();
+	}
+	const int size = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+	if (size <= 0) {
+		return std::wstring();
+	}
+	std::wstring wide(static_cast<size_t>(size), L'\0');
+	if (MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), size) <= 0) {
+		return std::wstring();
+	}
+	return wide;
+}
+
+struct SimpleHttpResult {
+	bool ok = false;
+	int httpStatus = 0;
+	std::string bodyUtf8;
+	std::string error;
+};
+
+bool IsValidUtf8(const std::string& text)
+{
+	if (text.empty()) {
+		return true;
+	}
+	return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0) > 0;
+}
+
+std::string LocalToUtf8(const std::string& text)
+{
+	if (text.empty() || IsValidUtf8(text)) {
+		return text;
+	}
+
+	const int wideLen = MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+	if (wideLen <= 0) {
+		return text;
+	}
+
+	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+	if (MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), wide.data(), wideLen) <= 0) {
+		return text;
+	}
+
+	const int utf8Len = WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideLen, nullptr, 0, nullptr, nullptr);
+	if (utf8Len <= 0) {
+		return text;
+	}
+
+	std::string utf8(static_cast<size_t>(utf8Len), '\0');
+	if (WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideLen, utf8.data(), utf8Len, nullptr, nullptr) <= 0) {
+		return text;
+	}
+	return utf8;
+}
+
+size_t ClampUtf8PrefixBoundary(const std::string& text, size_t maxBytes)
+{
+	size_t end = (std::min)(maxBytes, text.size());
+	while (end > 0 && end < text.size() &&
+		(static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) {
+		--end;
+	}
+	return end;
+}
+
+std::string TruncateUtf8(const std::string& text, size_t maxBytes)
+{
+	if (text.size() <= maxBytes) {
+		return text;
+	}
+	return text.substr(0, ClampUtf8PrefixBoundary(text, maxBytes));
+}
+
+std::string DumpJsonCompactSafe(const nlohmann::json& value)
+{
+	return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+std::string DumpJsonPrettySafe(const nlohmann::json& value)
+{
+	return value.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+void AppendTraceLine(const std::filesystem::path& path, const std::string& line)
+{
+	std::error_code ec;
+	const std::filesystem::path parent = path.parent_path();
+	if (!parent.empty()) {
+		std::filesystem::create_directories(parent, ec);
+	}
+
+	std::ofstream out(path, std::ios::binary | std::ios::app);
+	if (!out.is_open()) {
+		return;
+	}
+	out << line << "\r\n";
+}
+
+bool ParseHttpUrl(const std::string& urlUtf8, std::wstring& host, std::wstring& pathAndQuery, INTERNET_PORT& port, bool& useHttps)
+{
+	useHttps = false;
+	port = INTERNET_DEFAULT_HTTPS_PORT;
+	const std::wstring url = Utf8ToWideStrict(urlUtf8);
+	if (url.empty()) {
+		return false;
+	}
+	URL_COMPONENTSW uc = {};
+	uc.dwStructSize = sizeof(uc);
+	uc.dwSchemeLength = static_cast<DWORD>(-1);
+	uc.dwHostNameLength = static_cast<DWORD>(-1);
+	uc.dwUrlPathLength = static_cast<DWORD>(-1);
+	uc.dwExtraInfoLength = static_cast<DWORD>(-1);
+	std::wstring mutableUrl = url;
+	if (!WinHttpCrackUrl(mutableUrl.data(), static_cast<DWORD>(mutableUrl.size()), 0, &uc)) {
+		return false;
+	}
+	useHttps = uc.nScheme == INTERNET_SCHEME_HTTPS;
+	port = uc.nPort;
+	if (uc.lpszHostName != nullptr && uc.dwHostNameLength > 0) {
+		host.assign(uc.lpszHostName, uc.dwHostNameLength);
+	}
+	if (uc.lpszUrlPath != nullptr && uc.dwUrlPathLength > 0) {
+		pathAndQuery.assign(uc.lpszUrlPath, uc.dwUrlPathLength);
+	}
+	if (uc.lpszExtraInfo != nullptr && uc.dwExtraInfoLength > 0) {
+		pathAndQuery.append(uc.lpszExtraInfo, uc.dwExtraInfoLength);
+	}
+	if (pathAndQuery.empty()) {
+		pathAndQuery = L"/";
+	}
+	return !host.empty();
+}
+
+SimpleHttpResult PerformJsonRequest(
+	const std::string& methodUtf8,
+	const std::string& urlUtf8,
+	const std::string& bodyUtf8,
+	const std::vector<std::pair<std::string, std::string>>& headers)
+{
+	SimpleHttpResult result;
+	std::wstring host;
+	std::wstring pathAndQuery;
+	INTERNET_PORT port = INTERNET_DEFAULT_HTTPS_PORT;
+	bool useHttps = false;
+	if (!ParseHttpUrl(urlUtf8, host, pathAndQuery, port, useHttps)) {
+		result.error = "parse url failed";
+		return result;
+	}
+
+	const std::wstring methodWide = Utf8ToWideStrict(methodUtf8);
+	HINTERNET hSession = WinHttpOpen(L"AutoLinkerTest/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+	if (hSession == nullptr) {
+		result.error = "WinHttpOpen failed";
+		return result;
+	}
+	WinHttpSetTimeouts(hSession, 30000, 30000, 180000, 180000);
+
+	HINTERNET hConnect = WinHttpConnect(hSession, host.c_str(), port, 0);
+	if (hConnect == nullptr) {
+		result.error = "WinHttpConnect failed";
+		WinHttpCloseHandle(hSession);
+		return result;
+	}
+	HINTERNET hRequest = WinHttpOpenRequest(
+		hConnect,
+		methodWide.c_str(),
+		pathAndQuery.c_str(),
+		nullptr,
+		WINHTTP_NO_REFERER,
+		WINHTTP_DEFAULT_ACCEPT_TYPES,
+		useHttps ? WINHTTP_FLAG_SECURE : 0);
+	if (hRequest == nullptr) {
+		result.error = "WinHttpOpenRequest failed";
+		WinHttpCloseHandle(hConnect);
+		WinHttpCloseHandle(hSession);
+		return result;
+	}
+
+	std::wstring headerText;
+	for (const auto& kv : headers) {
+		headerText += Utf8ToWideStrict(kv.first + ": " + kv.second + "\r\n");
+	}
+	const BOOL sent = WinHttpSendRequest(
+		hRequest,
+		headerText.empty() ? WINHTTP_NO_ADDITIONAL_HEADERS : headerText.c_str(),
+		headerText.empty() ? 0 : static_cast<DWORD>(headerText.size()),
+		bodyUtf8.empty() ? WINHTTP_NO_REQUEST_DATA : const_cast<char*>(bodyUtf8.data()),
+		static_cast<DWORD>(bodyUtf8.size()),
+		static_cast<DWORD>(bodyUtf8.size()),
+		0);
+	if (!sent || !WinHttpReceiveResponse(hRequest, nullptr)) {
+		result.error = "send/receive failed";
+		WinHttpCloseHandle(hRequest);
+		WinHttpCloseHandle(hConnect);
+		WinHttpCloseHandle(hSession);
+		return result;
+	}
+
+	DWORD statusCode = 0;
+	DWORD size = sizeof(statusCode);
+	WinHttpQueryHeaders(
+		hRequest,
+		WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+		WINHTTP_HEADER_NAME_BY_INDEX,
+		&statusCode,
+		&size,
+		WINHTTP_NO_HEADER_INDEX);
+	result.httpStatus = static_cast<int>(statusCode);
+
+	std::string response;
+	for (;;) {
+		DWORD available = 0;
+		if (!WinHttpQueryDataAvailable(hRequest, &available) || available == 0) {
+			break;
+		}
+		std::string chunk(static_cast<size_t>(available), '\0');
+		DWORD read = 0;
+		if (!WinHttpReadData(hRequest, chunk.data(), available, &read) || read == 0) {
+			break;
+		}
+		chunk.resize(static_cast<size_t>(read));
+		response += chunk;
+	}
+
+	result.ok = result.httpStatus >= 200 && result.httpStatus < 300;
+	result.bodyUtf8 = response;
+	WinHttpCloseHandle(hRequest);
+	WinHttpCloseHandle(hConnect);
+	WinHttpCloseHandle(hSession);
+	return result;
+}
+
+SimpleHttpResult PerformJsonPost(
+	const std::string& urlUtf8,
+	const std::string& bodyUtf8,
+	const std::vector<std::pair<std::string, std::string>>& headers)
+{
+	return PerformJsonRequest("POST", urlUtf8, bodyUtf8, headers);
+}
+
+std::string PerformSimpleGetText(const std::string& urlUtf8, int maxBytes, std::string& outError)
+{
+	outError.clear();
+	const SimpleHttpResult response = PerformJsonRequest("GET", urlUtf8, "", {});
+	if (!response.ok) {
+		outError = response.error.empty()
+			? ("http_status=" + std::to_string(response.httpStatus))
+			: response.error;
+		return std::string();
+	}
+	if (static_cast<int>(response.bodyUtf8.size()) <= maxBytes) {
+		return response.bodyUtf8;
+	}
+	return TruncateUtf8(response.bodyUtf8, static_cast<size_t>(maxBytes));
+}
+
+bool ExtractToolTargetUrl(const nlohmann::json& toolCall, std::string& outUrl)
+{
+	outUrl.clear();
+	if (!toolCall.is_object() ||
+		!toolCall.contains("function") ||
+		!toolCall["function"].is_object() ||
+		!toolCall["function"].contains("arguments") ||
+		!toolCall["function"]["arguments"].is_string()) {
+		return false;
+	}
+
+	try {
+		const nlohmann::json args = nlohmann::json::parse(toolCall["function"]["arguments"].get<std::string>());
+		if (!args.is_object() || !args.contains("url") || !args["url"].is_string()) {
+			return false;
+		}
+		outUrl = args["url"].get<std::string>();
+		return !outUrl.empty();
+	}
+	catch (...) {
+		return false;
+	}
+}
+
 void PrintHeadlessSummary(const nlohmann::json& result)
 {
 	const bool ok = result.value("ok", false);
@@ -736,6 +1023,320 @@ int RunVersionCompare(const std::string& left, const std::string& right)
 	return EXIT_SUCCESS;
 }
 
+int RunDeepSeekModelIntegrationTest(int argc, char* argv[])
+{
+	if (argc < 4) {
+		PrintUsage();
+		return EXIT_FAILURE;
+	}
+
+	const char* apiKey = argv[2];
+	const char* model = argv[3];
+	const char* baseUrl = "https://api.deepseek.com";
+	std::string outputPath;
+	for (int i = 4; i < argc; ++i) {
+		const std::string arg = argv[i];
+		if (arg == "--out" && i + 1 < argc) {
+			outputPath = argv[++i];
+		}
+		else if (std::string(baseUrl) == "https://api.deepseek.com") {
+			baseUrl = argv[i];
+		}
+		else {
+			PrintUsage();
+			return EXIT_FAILURE;
+		}
+	}
+
+	const std::filesystem::path tracePath = std::filesystem::current_path() / "temp" / "deepseek_run_trace.log";
+	AppendTraceLine(tracePath, "run:start");
+
+	try {
+		auto postChat = [&](const nlohmann::json& messages) -> nlohmann::json {
+			AppendTraceLine(tracePath, "post_chat:begin");
+			nlohmann::json body = {
+				{"model", LocalToUtf8(std::string(model))},
+				{"stream", false},
+				{"temperature", 0},
+				{"messages", messages},
+				{"thinking", {
+					{"type", "enabled"}
+				}},
+				{"reasoning_effort", "high"},
+				{"tools", nlohmann::json::array({
+					{
+						{"type", "function"},
+						{"function", {
+							{"name", "fetch_url"},
+							{"description", "Fetch a URL and return plain text body."},
+							{"parameters", {
+								{"type", "object"},
+								{"properties", {
+									{"url", {{"type", "string"}}}
+								}},
+								{"required", nlohmann::json::array({"url"})},
+								{"additionalProperties", false}
+							}}
+						}}
+					},
+					{
+						{"type", "function"},
+						{"function", {
+							{"name", "extract_web_document"},
+							{"description", "Fetch a URL and return a shortened readable text excerpt."},
+							{"parameters", {
+								{"type", "object"},
+								{"properties", {
+									{"url", {{"type", "string"}}}
+								}},
+								{"required", nlohmann::json::array({"url"})},
+								{"additionalProperties", false}
+							}}
+						}}
+					}
+				})}
+			};
+			const std::string requestBody = DumpJsonCompactSafe(body);
+			AppendTraceLine(tracePath, "post_chat:request_ready bytes=" + std::to_string(requestBody.size()));
+			SimpleHttpResult response = PerformJsonPost(
+				std::string(baseUrl) + "/chat/completions",
+				requestBody,
+				{
+					{"Content-Type", "application/json"},
+					{"Authorization", std::string("Bearer ") + apiKey}
+				});
+			AppendTraceLine(
+				tracePath,
+				"post_chat:response status=" + std::to_string(response.httpStatus) +
+				" ok=" + std::to_string(response.ok ? 1 : 0) +
+				" body_bytes=" + std::to_string(response.bodyUtf8.size()));
+			nlohmann::json r = {
+				{"http_status", response.httpStatus},
+				{"ok", response.ok},
+				{"error", response.error},
+				{"body_utf8", response.bodyUtf8}
+			};
+			if (!response.bodyUtf8.empty()) {
+				try {
+					r["parsed"] = nlohmann::json::parse(response.bodyUtf8);
+				}
+				catch (const std::exception& ex) {
+					r["parse_error"] = ex.what();
+				}
+			}
+			return r;
+		};
+
+		nlohmann::json report = {
+			{"provider", "deepseek"},
+			{"model", model},
+			{"base_url", baseUrl}
+		};
+
+		AppendTraceLine(tracePath, "step:test_connection");
+		const nlohmann::json connectionMessages = nlohmann::json::array({
+			{{"role", "system"}, {"content", "You are a connectivity test assistant. Reply with OK only."}},
+			{{"role", "user"}, {"content", "Reply with OK only."}}
+		});
+		const nlohmann::json connectionResult = postChat(connectionMessages);
+		report["test_connection"] = connectionResult;
+		if (!connectionResult.value("ok", false)) {
+			report["ok"] = false;
+			const std::string text = DumpJsonPrettySafe(report);
+			std::cout << text << std::endl;
+			return EXIT_FAILURE;
+		}
+
+		AppendTraceLine(tracePath, "step:simple_task");
+		const nlohmann::json simpleMessages = nlohmann::json::array({
+			{{"role", "user"}, {"content", LocalToUtf8("只回答这四个汉字：测试通过")}}
+		});
+		const nlohmann::json simpleTaskResult = postChat(simpleMessages);
+		report["simple_task"] = simpleTaskResult;
+		if (!simpleTaskResult.value("ok", false)) {
+			report["ok"] = false;
+			const std::string text = DumpJsonPrettySafe(report);
+			std::cout << text << std::endl;
+			return EXIT_FAILURE;
+		}
+
+		AppendTraceLine(tracePath, "step:tool_chat");
+		nlohmann::json toolMessages = nlohmann::json::array({
+			{{"role", "user"}, {"content", LocalToUtf8("You must call fetch_url on https://api-docs.deepseek.com/quick_start/rate_limit and then call extract_web_document on https://api-docs.deepseek.com/guides/thinking_mode . After both tools finish, reply in one Chinese line exactly in this format: 限速页已读；思考页已读；工具数=N。")}}
+		});
+
+		nlohmann::json toolEvents = nlohmann::json::array();
+		nlohmann::json finalAssistantMessage = nlohmann::json::object();
+		bool toolChatOk = false;
+		int toolRoundCount = 0;
+		for (; toolRoundCount < 8; ++toolRoundCount) {
+			AppendTraceLine(tracePath, "step:tool_chat_round" + std::to_string(toolRoundCount + 1));
+			const nlohmann::json roundResult = postChat(toolMessages);
+			report[std::format("tool_chat_round{}", toolRoundCount + 1)] = roundResult;
+			if (!roundResult.value("ok", false)) {
+				break;
+			}
+
+			nlohmann::json assistantMessage = nlohmann::json::object();
+			if (roundResult.contains("parsed")) {
+				const auto& parsed = roundResult["parsed"];
+				if (parsed.contains("choices") && parsed["choices"].is_array() && !parsed["choices"].empty()) {
+					assistantMessage = parsed["choices"][0].value("message", nlohmann::json::object());
+				}
+			}
+			if (assistantMessage.contains("content") && assistantMessage["content"].is_null()) {
+				assistantMessage["content"] = "";
+			}
+			if (assistantMessage.contains("reasoning_content") && assistantMessage["reasoning_content"].is_null()) {
+				assistantMessage["reasoning_content"] = "";
+			}
+
+			finalAssistantMessage = assistantMessage;
+			if (!assistantMessage.contains("tool_calls") || !assistantMessage["tool_calls"].is_array() || assistantMessage["tool_calls"].empty()) {
+				toolChatOk = true;
+				break;
+			}
+
+			toolMessages.push_back(assistantMessage);
+			for (const auto& toolCall : assistantMessage["tool_calls"]) {
+				if (!toolCall.is_object()) {
+					continue;
+				}
+
+				const std::string toolName =
+					toolCall.contains("function") && toolCall["function"].contains("name") && toolCall["function"]["name"].is_string()
+					? toolCall["function"]["name"].get<std::string>()
+					: std::string();
+				const std::string callId = toolCall.value("id", std::string());
+				std::string targetUrl;
+				ExtractToolTargetUrl(toolCall, targetUrl);
+
+				std::string toolResultText;
+				std::string toolError;
+				if (toolName == "fetch_url") {
+					toolResultText = PerformSimpleGetText(targetUrl, 262144, toolError);
+				}
+				else if (toolName == "extract_web_document") {
+					toolResultText = PerformSimpleGetText(targetUrl, 32768, toolError);
+					if (toolResultText.size() > 4000) {
+						toolResultText = TruncateUtf8(toolResultText, 4000);
+					}
+				}
+				else {
+					toolError = "unsupported tool";
+				}
+
+				nlohmann::json toolPayload = {
+					{"ok", toolError.empty()},
+					{"tool_name", toolName},
+					{"url", targetUrl},
+					{"text", toolResultText},
+					{"error", toolError}
+				};
+				toolEvents.push_back(toolPayload);
+				toolMessages.push_back({
+					{"role", "tool"},
+					{"tool_call_id", callId},
+					{"name", toolName},
+					{"content", DumpJsonCompactSafe(toolPayload)}
+				});
+			}
+		}
+		report["tool_events"] = toolEvents;
+		report["tool_chat_ok"] = toolChatOk;
+		report["tool_chat_round_count"] = toolRoundCount + (toolChatOk ? 1 : 0);
+
+		AppendTraceLine(tracePath, "step:followup_chat");
+		nlohmann::json followupMessages = toolMessages;
+		if (!finalAssistantMessage.empty()) {
+			followupMessages.push_back(finalAssistantMessage);
+		}
+		followupMessages.push_back({
+			{"role", "user"},
+			{"content", LocalToUtf8("只回答：上一轮你实际调用了几个工具？输出阿拉伯数字。")}
+		});
+		const nlohmann::json followupResult = postChat(followupMessages);
+		report["followup_chat"] = followupResult;
+
+		bool reasoningContentSeen = false;
+		const auto scanReasoningSeen = [&reasoningContentSeen](const nlohmann::json& node) {
+			if (!node.is_object()) {
+				return;
+			}
+			if (node.contains("parsed")) {
+				const auto& parsed = node["parsed"];
+				if (parsed.contains("choices") && parsed["choices"].is_array() && !parsed["choices"].empty()) {
+					const auto& message = parsed["choices"][0]["message"];
+					if (message.contains("reasoning_content") && message["reasoning_content"].is_string() &&
+						!message["reasoning_content"].get<std::string>().empty()) {
+						reasoningContentSeen = true;
+					}
+				}
+			}
+		};
+		for (int round = 1; round <= toolRoundCount + 1; ++round) {
+			const std::string key = std::format("tool_chat_round{}", round);
+			if (report.contains(key)) {
+				scanReasoningSeen(report[key]);
+			}
+		}
+		scanReasoningSeen(followupResult);
+		report["reasoning_content_seen"] = reasoningContentSeen;
+
+		report["ok"] =
+			connectionResult.value("ok", false) &&
+			simpleTaskResult.value("ok", false) &&
+			toolChatOk &&
+			followupResult.value("ok", false) &&
+			toolEvents.size() >= 2;
+
+		const std::string text = DumpJsonPrettySafe(report);
+		if (!outputPath.empty()) {
+			std::error_code ec;
+			const std::filesystem::path outputFsPath = MakePathFromText(outputPath);
+			const std::filesystem::path parent = outputFsPath.parent_path();
+			if (!parent.empty()) {
+				std::filesystem::create_directories(parent, ec);
+			}
+			std::ofstream out(outputFsPath, std::ios::binary | std::ios::trunc);
+			if (!out.is_open()) {
+				std::cerr << "deepseek-model-test failed: cannot open output file: " << outputPath << std::endl;
+				return EXIT_FAILURE;
+			}
+			out.write(text.data(), static_cast<std::streamsize>(text.size()));
+		}
+		std::cout << text << std::endl;
+		AppendTraceLine(tracePath, "run:done ok=" + std::to_string(report.value("ok", false) ? 1 : 0));
+		return report.value("ok", false) ? EXIT_SUCCESS : EXIT_FAILURE;
+	}
+	catch (const std::exception& ex) {
+		AppendTraceLine(tracePath, std::string("run:exception ") + ex.what());
+		nlohmann::json errorReport = {
+			{"provider", "deepseek"},
+			{"model", model},
+			{"base_url", baseUrl},
+			{"ok", false},
+			{"error", std::string("exception: ") + ex.what()}
+		};
+		const std::string text = DumpJsonPrettySafe(errorReport);
+		std::cerr << text << std::endl;
+		return EXIT_FAILURE;
+	}
+	catch (...) {
+		AppendTraceLine(tracePath, "run:exception unknown");
+		nlohmann::json errorReport = {
+			{"provider", "deepseek"},
+			{"model", model},
+			{"base_url", baseUrl},
+			{"ok", false},
+			{"error", "unknown exception"}
+		};
+		const std::string text = DumpJsonPrettySafe(errorReport);
+		std::cerr << text << std::endl;
+		return EXIT_FAILURE;
+	}
+}
+
 int RunStringCommand(const std::string& commandName, const std::string& input)
 {
 	char buffer[524288] = {};
@@ -778,6 +1379,7 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest e2txt-generate <input-path> <output-path>" << std::endl;
 	std::cout << "  AutoLinkerTest e2txt-restore <input-path> <output-path>" << std::endl;
 	std::cout << "  AutoLinkerTest bundle-digest-compare <input.e> <input-dir>" << std::endl;
+	std::cout << "  AutoLinkerTest deepseek-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest headless-compile <e.exe> <input.e> <output> [--target auto|win_exe|win_console_exe|win_dll|ecom] [--static] [--result path] [--timeout seconds]" << std::endl;
 }
 
@@ -792,6 +1394,9 @@ int main(int argc, char* argv[])
 	const std::string commandName = argv[1];
 	if (commandName == "headless-compile") {
 		return RunHeadlessCompile(argc, argv);
+	}
+	if (commandName == "deepseek-model-test") {
+		return RunDeepSeekModelIntegrationTest(argc, argv);
 	}
 
 	if (commandName == "version-compare") {
@@ -815,7 +1420,13 @@ int main(int argc, char* argv[])
 			PrintUsage();
 			return EXIT_FAILURE;
 		}
-		return RunStringCommand(commandName, "");
+		char buffer[524288] = {};
+		const int result = AutoLinkerTest_GetVersionText(buffer, static_cast<int>(sizeof(buffer)));
+		if (result < 0) {
+			return PrintStringResult(commandName.c_str(), result, buffer);
+		}
+		std::cout << buffer << std::endl;
+		return EXIT_SUCCESS;
 	}
 
 	if (commandName == "e2txt-generate") {

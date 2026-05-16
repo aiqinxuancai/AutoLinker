@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 
+#include "..\\thirdparty\\json.hpp"
+
+#include "AIChatTooling.h"
+#include "AIService.h"
 #include "AutoLinkerVersion.h"
 #include "EFolderCodec.h"
 #include "EcModulePublicInfoReader.h"
@@ -299,6 +303,28 @@ std::string BuildBundleDigestCompareText(const e2txt::ProjectBundle& fromE, cons
 	return text;
 }
 
+std::string BuildDeepSeekToolArgumentsJson(const std::string& toolName)
+{
+	if (toolName == "fetch_url") {
+		return R"({"url":"https://api-docs.deepseek.com/quick_start/rate_limit","timeout_seconds":30,"max_bytes":262144})";
+	}
+	if (toolName == "extract_web_document") {
+		return R"({"url":"https://api-docs.deepseek.com/guides/thinking_mode","timeout_seconds":30,"max_bytes":262144})";
+	}
+	return "{}";
+}
+
+nlohmann::json BuildDeepSeekIntegrationResultJson(const AISettings& settings)
+{
+	return {
+		{"provider", "deepseek"},
+		{"model", settings.model},
+		{"base_url", settings.baseUrl},
+		{"thinking_level", AIService::ThinkingLevelToString(settings.thinkingLevel)},
+		{"protocol", AIService::ProtocolTypeToString(settings.protocolType)}
+	};
+}
+
 }
 
 extern "C" bool AutoLinkerTest_CompareVersion(const char* left, const char* right, int* outResult)
@@ -466,4 +492,240 @@ extern "C" int AutoLinkerTest_CompareBundleDigest(const char* inputPath, const c
 		return CopyStringToBuffer("read_bundle_failed: " + error, buffer, bufferSize);
 	}
 	return CopyStringToBuffer(BuildBundleDigestCompareText(bundleFromE, bundleFromDir), buffer, bufferSize);
+}
+
+extern "C" int AutoLinkerTest_RunDeepSeekModelIntegrationTest(
+	const char* apiKey,
+	const char* model,
+	const char* baseUrl,
+	char* buffer,
+	int bufferSize)
+{
+	if (apiKey == nullptr || model == nullptr) {
+		return AUTOLINKER_TEST_STRING_INVALID_ARGUMENT;
+	}
+
+	std::string step = "init";
+	try {
+		AISettings settings = {};
+		settings.protocolType = AIProtocolType::OpenAI;
+		settings.thinkingLevel = AIThinkingLevel::High;
+		settings.baseUrl = (baseUrl != nullptr && baseUrl[0] != '\0') ? baseUrl : "https://api.deepseek.com";
+		settings.apiKey = apiKey;
+		settings.model = model;
+		settings.timeoutMs = 180000;
+		settings.maxToolRounds = 8;
+		settings.temperature = 0;
+
+		nlohmann::json report = BuildDeepSeekIntegrationResultJson(settings);
+		report["step"] = step;
+
+		step = "test_connection";
+		report["step"] = step;
+		const AIResult connectionResult = AIService::TestConnection(settings);
+		report["test_connection"] = {
+			{"ok", connectionResult.ok},
+			{"http_status", connectionResult.httpStatus},
+			{"content", connectionResult.content},
+			{"error", connectionResult.error}
+		};
+		if (!connectionResult.ok) {
+			report["ok"] = false;
+			return CopyStringToBuffer(report.dump(2), buffer, bufferSize);
+		}
+
+		step = "simple_task";
+		report["step"] = step;
+		const AIResult simpleTaskResult = AIService::ExecuteTask(
+			AITaskKind::TranslateText,
+			"只返回这四个字符：测试通过",
+			settings);
+		report["simple_task"] = {
+			{"ok", simpleTaskResult.ok},
+			{"http_status", simpleTaskResult.httpStatus},
+			{"content", simpleTaskResult.content},
+			{"error", simpleTaskResult.error}
+		};
+		if (!simpleTaskResult.ok) {
+			report["ok"] = false;
+			return CopyStringToBuffer(report.dump(2), buffer, bufferSize);
+		}
+
+		step = "tool_chat";
+		report["step"] = step;
+		std::vector<AIChatMessage> contextMessages;
+		contextMessages.push_back({
+			"user",
+			"你必须先后调用两个工具：先 fetch_url 读取 https://api-docs.deepseek.com/quick_start/rate_limit ，再 extract_web_document 读取 https://api-docs.deepseek.com/guides/thinking_mode 。完成后仅用一行中文回答，格式必须是：限速页已读；思考页已读；工具数=N。",
+			"",
+			""
+		});
+
+		std::vector<std::string> streamedDeltas;
+		const AIChatResult toolChatResult = AIService::ExecuteChatWithTools(
+			contextMessages,
+			settings,
+			[](const std::string& toolName, const std::string&, bool& outOk) -> std::string {
+				const std::string actualArgs = BuildDeepSeekToolArgumentsJson(toolName);
+				return ExecuteToolCall(toolName, actualArgs, outOk, false);
+			},
+			[&streamedDeltas](const std::string& deltaText) {
+				if (!deltaText.empty()) {
+					streamedDeltas.push_back(deltaText);
+				}
+			});
+
+		nlohmann::json toolEvents = nlohmann::json::array();
+		for (const auto& evt : toolChatResult.toolEvents) {
+			toolEvents.push_back({
+				{"name", evt.name},
+				{"arguments_json", evt.argumentsJson},
+				{"result_json", evt.resultJson},
+				{"ok", evt.ok}
+			});
+		}
+		report["tool_chat"] = {
+			{"ok", toolChatResult.ok},
+			{"cancelled", toolChatResult.cancelled},
+			{"http_status", toolChatResult.httpStatus},
+			{"content", toolChatResult.content},
+			{"reasoning_content_present", !toolChatResult.reasoningContent.empty()},
+			{"reasoning_content_size", toolChatResult.reasoningContent.size()},
+			{"error", toolChatResult.error},
+			{"tool_events", std::move(toolEvents)},
+			{"stream_chunk_count", streamedDeltas.size()},
+			{"hidden_context_message_count", toolChatResult.contextPrefixRawMessagesUtf8.size()}
+		};
+		if (!toolChatResult.ok) {
+			report["ok"] = false;
+			return CopyStringToBuffer(report.dump(2), buffer, bufferSize);
+		}
+
+		step = "followup_chat";
+		report["step"] = step;
+		std::vector<AIChatMessage> followupMessages;
+		followupMessages.push_back(contextMessages.front());
+		for (const auto& rawMessageJsonUtf8 : toolChatResult.contextPrefixRawMessagesUtf8) {
+			nlohmann::json parsed;
+			try {
+				parsed = nlohmann::json::parse(rawMessageJsonUtf8);
+			}
+			catch (...) {
+				continue;
+			}
+			if (!parsed.is_object()) {
+				continue;
+			}
+
+			const std::string role = parsed.value("role", std::string());
+			if (role == "assistant") {
+				followupMessages.push_back({
+					"assistant",
+					parsed.value("content", std::string()),
+					parsed.value("reasoning_content", std::string()),
+					rawMessageJsonUtf8
+				});
+			}
+			else if (role == "tool") {
+				followupMessages.push_back({
+					"tool",
+					parsed.value("content", std::string()),
+					"",
+					rawMessageJsonUtf8
+				});
+			}
+		}
+		followupMessages.push_back({
+			"assistant",
+			toolChatResult.content,
+			toolChatResult.reasoningContent,
+			""
+		});
+		followupMessages.push_back({
+			"user",
+			"只回答：上一轮你实际调用了几个工具？输出阿拉伯数字。",
+			"",
+			""
+		});
+
+		const AIChatResult followupResult = AIService::ExecuteChatWithTools(
+			followupMessages,
+			settings,
+			[](const std::string& toolName, const std::string&, bool& outOk) -> std::string {
+				const std::string actualArgs = BuildDeepSeekToolArgumentsJson(toolName);
+				return ExecuteToolCall(toolName, actualArgs, outOk, false);
+			});
+		report["followup_chat"] = {
+			{"ok", followupResult.ok},
+			{"cancelled", followupResult.cancelled},
+			{"http_status", followupResult.httpStatus},
+			{"content", followupResult.content},
+			{"reasoning_content_present", !followupResult.reasoningContent.empty()},
+			{"reasoning_content_size", followupResult.reasoningContent.size()},
+			{"error", followupResult.error},
+			{"tool_event_count", followupResult.toolEvents.size()}
+		};
+
+		report["ok"] =
+			connectionResult.ok &&
+			simpleTaskResult.ok &&
+			toolChatResult.ok &&
+			followupResult.ok &&
+			toolChatResult.toolEvents.size() >= 2;
+		return CopyStringToBuffer(report.dump(2), buffer, bufferSize);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json report = {
+			{"ok", false},
+			{"provider", "deepseek"},
+			{"model", model},
+			{"base_url", (baseUrl != nullptr && baseUrl[0] != '\0') ? baseUrl : "https://api.deepseek.com"},
+			{"step", step},
+			{"error", std::string("exception: ") + ex.what()}
+		};
+		return CopyStringToBuffer(report.dump(2), buffer, bufferSize);
+	}
+	catch (...) {
+		nlohmann::json report = {
+			{"ok", false},
+			{"provider", "deepseek"},
+			{"model", model},
+			{"base_url", (baseUrl != nullptr && baseUrl[0] != '\0') ? baseUrl : "https://api.deepseek.com"},
+			{"step", step},
+			{"error", "unknown exception"}
+		};
+		return CopyStringToBuffer(report.dump(2), buffer, bufferSize);
+	}
+}
+
+extern "C" int AutoLinkerTest_RunDeepSeekConnectionOnly(
+	const char* apiKey,
+	const char* model,
+	const char* baseUrl,
+	char* buffer,
+	int bufferSize)
+{
+	if (apiKey == nullptr || model == nullptr) {
+		return AUTOLINKER_TEST_STRING_INVALID_ARGUMENT;
+	}
+
+	AISettings settings = {};
+	settings.protocolType = AIProtocolType::OpenAI;
+	settings.thinkingLevel = AIThinkingLevel::High;
+	settings.baseUrl = (baseUrl != nullptr && baseUrl[0] != '\0') ? baseUrl : "https://api.deepseek.com";
+	settings.apiKey = apiKey;
+	settings.model = model;
+	settings.timeoutMs = 180000;
+	settings.temperature = 0;
+
+	const AIResult connectionResult = AIService::TestConnection(settings);
+	nlohmann::json report = BuildDeepSeekIntegrationResultJson(settings);
+	report["ok"] = connectionResult.ok;
+	report["test_connection"] = {
+		{"ok", connectionResult.ok},
+		{"http_status", connectionResult.httpStatus},
+		{"content", connectionResult.content},
+		{"error", connectionResult.error}
+	};
+	return CopyStringToBuffer(report.dump(2), buffer, bufferSize);
 }

@@ -93,6 +93,9 @@ struct SessionMessage {
 	SessionRole role = SessionRole::System;
 	std::string content;
 	bool includeInContext = true;
+	bool visibleInHistory = true;
+	std::string reasoningContent;
+	std::string rawMessageJsonUtf8;
 };
 
 struct AIChatRequestCancellation {
@@ -1684,7 +1687,7 @@ void CompactHistoryLocked(AIChatSessionState& state)
 	summaryAppend.reserve(2048);
 	for (size_t i = 0; i < cutCount; ++i) {
 		const auto& msg = state.messages[i];
-		if (!msg.includeInContext) {
+		if (!msg.includeInContext || !msg.visibleInHistory) {
 			continue;
 		}
 
@@ -1723,7 +1726,9 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 	if (!TrimAsciiCopy(state.rollingSummary).empty()) {
 		out.push_back(AIChatMessage{
 			"system",
-			LocalFromWide(L"\u5386\u53f2\u6458\u8981\uff08\u81ea\u52a8\u538b\u7f29\uff09\uff1a\n") + state.rollingSummary
+			LocalFromWide(L"\u5386\u53f2\u6458\u8981\uff08\u81ea\u52a8\u538b\u7f29\uff09\uff1a\n") + state.rollingSummary,
+			"",
+			""
 		});
 	}
 
@@ -1746,7 +1751,7 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 		else if (msg.role == SessionRole::Assistant) {
 			role = "assistant";
 		}
-		out.push_back(AIChatMessage{ role, msg.content });
+		out.push_back(AIChatMessage{ role, msg.content, msg.reasoningContent, msg.rawMessageJsonUtf8 });
 	}
 	return out;
 }
@@ -1816,6 +1821,9 @@ std::string BuildHistoryHtmlLocked(
 		appendRawCard(body, SessionRole::System, LocalFromWide(L"系统"), calloutHtml);
 	}
 	for (const auto& msg : state.messages) {
+		if (!msg.visibleInHistory) {
+			continue;
+		}
 		appendMessageCard(
 			body,
 			msg.role,
@@ -1980,7 +1988,10 @@ void RecoverInFlightIfNeeded(const std::string& reason)
 	g_session.messages.push_back(SessionMessage{
 		SessionRole::System,
 		"Chat request auto-recovered: " + reason,
-		false
+		false,
+		true,
+		"",
+		""
 	});
 }
 
@@ -2151,7 +2162,7 @@ bool StartChatRequest(const std::string& userInput)
 			return false;
 		}
 
-		g_session.messages.push_back(SessionMessage{ SessionRole::User, trimmed, true });
+		g_session.messages.push_back(SessionMessage{ SessionRole::User, trimmed, true, true, "", "" });
 		CompactHistoryLocked(g_session);
 
 		request->requestId = g_session.nextRequestId++;
@@ -2171,7 +2182,7 @@ bool StartChatRequest(const std::string& userInput)
 		g_session.activeRequestId = 0;
 		g_session.cancellation.reset();
 		g_session.streamingAssistantPreview.clear();
-        g_session.messages.push_back(SessionMessage{ SessionRole::System, "Failed to start background chat task.", false });
+        g_session.messages.push_back(SessionMessage{ SessionRole::System, "Failed to start background chat task.", false, true, "", "" });
 		PostRefreshDialog();
 		return false;
 	}
@@ -2363,7 +2374,51 @@ void HandleChatTaskDone(LPARAM lParam)
 				line.resize(1200);
 				line += "...";
 			}
-			g_session.messages.push_back(SessionMessage{ SessionRole::Tool, line, false });
+			g_session.messages.push_back(SessionMessage{ SessionRole::Tool, line, false, true, "", "" });
+		}
+
+		for (const auto& rawMessageJsonUtf8 : result->chatResult.contextPrefixRawMessagesUtf8) {
+			nlohmann::json parsedMessage;
+			try {
+				parsedMessage = nlohmann::json::parse(rawMessageJsonUtf8);
+			}
+			catch (...) {
+				continue;
+			}
+
+			if (!parsedMessage.is_object()) {
+				continue;
+			}
+
+			const std::string role = ToLowerAsciiCopySimple(AIService::Trim(parsedMessage.value("role", "")));
+			if (role == "assistant") {
+				std::string contentLocal;
+				if (parsedMessage.contains("content") && parsedMessage["content"].is_string()) {
+					contentLocal = NormalizeCodeForEIDE(parsedMessage["content"].get<std::string>());
+				}
+				std::string reasoningUtf8;
+				if (parsedMessage.contains("reasoning_content") && parsedMessage["reasoning_content"].is_string()) {
+					reasoningUtf8 = parsedMessage["reasoning_content"].get<std::string>();
+				}
+				g_session.messages.push_back(SessionMessage{
+					SessionRole::Assistant,
+					contentLocal,
+					true,
+					false,
+					reasoningUtf8,
+					rawMessageJsonUtf8
+				});
+			}
+			else if (role == "tool") {
+				g_session.messages.push_back(SessionMessage{
+					SessionRole::Tool,
+					"",
+					true,
+					false,
+					"",
+					rawMessageJsonUtf8
+				});
+			}
 		}
 
 		if (result->chatResult.cancelled) {
@@ -2372,7 +2427,10 @@ void HandleChatTaskDone(LPARAM lParam)
 				g_session.messages.push_back(SessionMessage{
 					SessionRole::Assistant,
 					partial,
-					true
+					true,
+					true,
+					result->chatResult.reasoningContent,
+					""
 				});
 			}
 			g_session.messages.push_back(SessionMessage{
@@ -2380,21 +2438,27 @@ void HandleChatTaskDone(LPARAM lParam)
 				TrimAsciiCopy(partial).empty()
 					? LocalFromWide(L"已停止本次 AI 对话。")
 					: LocalFromWide(L"已停止本次 AI 对话，已保留已生成内容。"),
-				false
+				false,
+				true,
+				"",
+				""
 			});
 		}
 		else if (result->chatResult.ok) {
 			g_session.messages.push_back(SessionMessage{
 				SessionRole::Assistant,
 				NormalizeCodeForEIDE(result->chatResult.content),
-				true
+				true,
+				true,
+				result->chatResult.reasoningContent,
+				""
 			});
 		}
 		else {
 			const std::string err = result->chatResult.error.empty()
 				? LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25")
 				: (LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25: ") + result->chatResult.error);
-			g_session.messages.push_back(SessionMessage{ SessionRole::System, err, false });
+			g_session.messages.push_back(SessionMessage{ SessionRole::System, err, false, true, "", "" });
 			OutputStringToELog("[" + LocalFromWide(L"AI\u5bf9\u8bdd") + "]" + err);
 		}
 

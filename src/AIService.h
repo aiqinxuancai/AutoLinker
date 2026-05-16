@@ -61,6 +61,8 @@ struct AIResult {
 struct AIChatMessage {
 	std::string role;   // "system" | "user" | "assistant"
 	std::string content;
+	std::string reasoningContent;
+	std::string rawMessageJsonUtf8;
 };
 
 // AI 工具调用事件。
@@ -76,9 +78,11 @@ struct AIChatResult {
 	bool ok = false;
 	bool cancelled = false;
 	std::string content;
+	std::string reasoningContent;
 	std::string error;
 	int httpStatus = 0;
 	std::vector<AIChatToolEvent> toolEvents;
+	std::vector<std::string> contextPrefixRawMessagesUtf8;
 };
 
 class AIService {

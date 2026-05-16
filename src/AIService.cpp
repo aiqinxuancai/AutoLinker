@@ -640,6 +640,19 @@ bool IsGemini3FlashModel(std::string_view model)
 	return IsGemini3Model(model) && ContainsAsciiInsensitive(model, "flash");
 }
 
+bool IsClaudeMythosPreviewModel(std::string_view model)
+{
+	return ContainsAsciiInsensitive(model, "claude-mythos-preview");
+}
+
+bool IsClaudeAdaptiveThinkingModel(std::string_view model)
+{
+	return IsClaudeMythosPreviewModel(model) ||
+		ContainsAsciiInsensitive(model, "claude-opus-4-7") ||
+		ContainsAsciiInsensitive(model, "claude-opus-4-6") ||
+		ContainsAsciiInsensitive(model, "claude-sonnet-4-6");
+}
+
 std::string GetOpenAIReasoningEffort(AIThinkingLevel level)
 {
 	switch (level) {
@@ -652,6 +665,21 @@ std::string GetOpenAIReasoningEffort(AIThinkingLevel level)
 	case AIThinkingLevel::Off:
 	default:
 		return "none";
+	}
+}
+
+std::string GetClaudeEffort(AIThinkingLevel level)
+{
+	switch (level) {
+	case AIThinkingLevel::Low:
+		return "low";
+	case AIThinkingLevel::Medium:
+		return "medium";
+	case AIThinkingLevel::High:
+		return "high";
+	case AIThinkingLevel::Off:
+	default:
+		return std::string();
 	}
 }
 
@@ -718,12 +746,11 @@ void EnsureDeepSeekAssistantMessageCompat(nlohmann::json& message)
 		return;
 	}
 
-	if (!message.contains("tool_calls") || !message["tool_calls"].is_array() || message["tool_calls"].empty()) {
-		return;
-	}
-
 	if (!message.contains("content") || message["content"].is_null()) {
 		message["content"] = "";
+	}
+	if (message.contains("reasoning_content") && message["reasoning_content"].is_null()) {
+		message["reasoning_content"] = "";
 	}
 }
 
@@ -756,6 +783,27 @@ void ApplyThinkingConfigToOpenAIResponsesRequest(nlohmann::json& requestBody, co
 
 void ApplyThinkingConfigToClaudeRequest(nlohmann::json& requestBody, const AISettings& settings)
 {
+	if (IsClaudeAdaptiveThinkingModel(settings.model)) {
+		const std::string effort = GetClaudeEffort(settings.thinkingLevel);
+		if (effort.empty()) {
+			if (!IsClaudeMythosPreviewModel(settings.model)) {
+				requestBody["thinking"] = {
+					{"type", "disabled"}
+				};
+			}
+			return;
+		}
+
+		requestBody["thinking"] = {
+			{"type", "adaptive"}
+		};
+		if (!requestBody.contains("output_config") || !requestBody["output_config"].is_object()) {
+			requestBody["output_config"] = nlohmann::json::object();
+		}
+		requestBody["output_config"]["effort"] = effort;
+		return;
+	}
+
 	const int budget = GetClaudeThinkingBudget(settings.thinkingLevel);
 	if (budget <= 0) {
 		return;
@@ -1010,6 +1058,7 @@ struct ChatStreamParseState {
 	bool sawDataEvent = false;
 	std::string pendingLine;
 	std::string mergedUtf8;
+	std::string reasoningContentUtf8;
 	std::vector<StreamToolCallState> toolCalls;
 	std::string parseError;
 };
@@ -1072,6 +1121,10 @@ bool ProcessStreamDataPayload(
 		if (streamCallback) {
 			streamCallback(Utf8ToLocal(deltaContentUtf8));
 		}
+	}
+
+	if (delta.contains("reasoning_content") && delta["reasoning_content"].is_string()) {
+		state.reasoningContentUtf8 += delta["reasoning_content"].get<std::string>();
 	}
 
 	if (!delta.contains("tool_calls") || !delta["tool_calls"].is_array()) {
@@ -1173,6 +1226,9 @@ nlohmann::json BuildAssistantMessageFromStreamState(const ChatStreamParseState& 
 
 	if (!state.toolCalls.empty()) {
 		message["content"] = state.mergedUtf8;
+		if (!state.reasoningContentUtf8.empty()) {
+			message["reasoning_content"] = state.reasoningContentUtf8;
+		}
 		message["tool_calls"] = nlohmann::json::array();
 		for (size_t i = 0; i < state.toolCalls.size(); ++i) {
 			const auto& call = state.toolCalls[i];
@@ -1193,7 +1249,24 @@ nlohmann::json BuildAssistantMessageFromStreamState(const ChatStreamParseState& 
 	}
 
 	message["content"] = state.mergedUtf8;
+	if (!state.reasoningContentUtf8.empty()) {
+		message["reasoning_content"] = state.reasoningContentUtf8;
+	}
 	return message;
+}
+
+bool TryParseRawChatMessageJson(const std::string& rawMessageJsonUtf8, nlohmann::json& outMessage)
+{
+	if (AIService::Trim(rawMessageJsonUtf8).empty()) {
+		return false;
+	}
+	try {
+		outMessage = nlohmann::json::parse(rawMessageJsonUtf8);
+		return outMessage.is_object();
+	}
+	catch (...) {
+		return false;
+	}
 }
 
 nlohmann::json BuildPublicToolCatalog()
@@ -3476,13 +3549,34 @@ AIChatResult AIService::ExecuteChatWithTools(
 	});
 	for (const AIChatMessage& msg : contextMessages) {
 		const std::string role = ToLowerAsciiCopy(Trim(msg.role));
-		if (role != "system" && role != "user" && role != "assistant") {
+		if (role != "system" && role != "user" && role != "assistant" && role != "tool") {
 			continue;
 		}
-		requestMessages.push_back({
-			{"role", role},
-			{"content", LocalToUtf8(msg.content)}
-		});
+		nlohmann::json requestMessage;
+		if ((role == "assistant" || role == "tool") && TryParseRawChatMessageJson(msg.rawMessageJsonUtf8, requestMessage)) {
+			requestMessage["role"] = role;
+			if (!requestMessage.contains("content") || requestMessage["content"].is_null()) {
+				requestMessage["content"] = LocalToUtf8(msg.content);
+			}
+			if (role == "assistant" &&
+				!msg.reasoningContent.empty() &&
+				(!requestMessage.contains("reasoning_content") || !requestMessage["reasoning_content"].is_string())) {
+				requestMessage["reasoning_content"] = msg.reasoningContent;
+			}
+		}
+		else {
+			requestMessage = {
+				{"role", role},
+				{"content", LocalToUtf8(msg.content)}
+			};
+			if (role == "assistant" && !msg.reasoningContent.empty()) {
+				requestMessage["reasoning_content"] = msg.reasoningContent;
+			}
+		}
+		if (role == "assistant" && IsDeepSeekCompatibleSettings(settings)) {
+			EnsureDeepSeekAssistantMessageCompat(requestMessage);
+		}
+		requestMessages.push_back(std::move(requestMessage));
 	}
 
 	const nlohmann::json tools = BuildChatToolDefinitions();
@@ -3586,6 +3680,11 @@ AIChatResult AIService::ExecuteChatWithTools(
 			if (IsDeepSeekCompatibleSettings(settings)) {
 				EnsureDeepSeekAssistantMessageCompat(message);
 			}
+			try {
+				result.contextPrefixRawMessagesUtf8.push_back(message.dump());
+			}
+			catch (...) {
+			}
 			requestMessages.push_back(message);
 
 			for (const auto& toolCall : message["tool_calls"]) {
@@ -3630,12 +3729,18 @@ AIChatResult AIService::ExecuteChatWithTools(
 					return MarkChatResultCancelled(std::move(result), Utf8ToLocal(streamState.mergedUtf8));
 				}
 
-				requestMessages.push_back({
+				nlohmann::json toolMessage = {
 					{"role", "tool"},
 					{"tool_call_id", callId},
 					{"name", toolName},
 					{"content", compactPayload.textUtf8}
-				});
+				};
+				try {
+					result.contextPrefixRawMessagesUtf8.push_back(toolMessage.dump());
+				}
+				catch (...) {
+				}
+				requestMessages.push_back(std::move(toolMessage));
 			}
 			continue;
 		}
@@ -3655,6 +3760,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 
 		result.ok = true;
 		result.content = Utf8ToLocal(mergedUtf8);
+		if (message.contains("reasoning_content") && message["reasoning_content"].is_string()) {
+			result.reasoningContent = message["reasoning_content"].get<std::string>();
+		}
 		return result;
 	}
 
