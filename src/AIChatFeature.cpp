@@ -2009,11 +2009,10 @@ bool EnsureChatSettingsReady(AISettings& settings)
 	}
 
 	OutputStringToELog("[AI Chat] AI settings missing, opening config dialog");
-	if (!ShowAIConfigDialog(g_mainWindow, settings)) {
+	if (!ShowAIConfigDialog(g_mainWindow, *g_aiJsonConfig, settings)) {
 		OutputStringToELog("[AI Chat] AI config cancelled");
 		return false;
 	}
-	AIService::SaveSettings(*g_aiJsonConfig, settings);
 	OutputStringToELog("[AI Chat] AI config saved");
 	return true;
 }
@@ -2250,7 +2249,7 @@ void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx)
 	std::string missingField;
 	QueryChatSettingsState(settings, &missingField);
 	OutputStringToELog("[AI Chat] open config dialog from chat page");
-	if (!ShowAIConfigDialog(g_mainWindow != nullptr ? g_mainWindow : hWnd, settings)) {
+	if (!ShowAIConfigDialog(g_mainWindow != nullptr ? g_mainWindow : hWnd, *g_aiJsonConfig, settings)) {
 		OutputStringToELog("[AI Chat] AI config cancelled from chat page");
 		if (ctx != nullptr) {
 			if (ctx->webViewDesired) {
@@ -2261,9 +2260,6 @@ void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx)
 			}
 		}
 		return;
-	}
-	if (g_aiJsonConfig != nullptr) {
-		AIService::SaveSettings(*g_aiJsonConfig, settings);
 	}
 	OutputStringToELog("[AI Chat] AI config saved from chat page");
 	RefreshChatDialog(hWnd);

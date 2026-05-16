@@ -10,6 +10,14 @@
 #include <filesystem>
 #include <map>
 #include <string>
+#include <vector>
+
+// AI 配置组快照。
+struct AIJsonConfigProfileSnapshot {
+    std::string id;
+    std::string name;
+    std::map<std::string, std::string> values;
+};
 
 class AIJsonConfig {
 public:
@@ -33,13 +41,32 @@ public:
     // 是否存在指定键。
     bool hasKey(const std::string& key) const;
 
+    // 获取全部配置组（本地编码）。
+    std::vector<AIJsonConfigProfileSnapshot> getProfilesLocal() const;
+
+    // 获取当前活动配置组 ID。
+    std::string getActiveProfileId() const;
+
+    // 替换全部配置组并设置活动组。
+    bool replaceProfiles(const std::vector<AIJsonConfigProfileSnapshot>& profiles, const std::string& activeProfileId);
+
 private:
+    // 内部存储的 UTF-8 配置组。
+    struct StoredProfile {
+        std::string id;
+        std::string name;
+        std::map<std::string, std::string> values;
+    };
+
     void load();
     void save() const;
+    StoredProfile* findActiveProfile();
+    const StoredProfile* findActiveProfile() const;
+    void ensureWritableProfile();
 
     std::filesystem::path m_filePath;
-    // 内部值均为 UTF-8 编码
-    std::map<std::string, std::string> m_data;
+    std::string m_activeProfileId;
+    std::vector<StoredProfile> m_profiles;
 };
 
 #endif // AI_JSON_CONFIG_H

@@ -74,10 +74,47 @@ AIJsonConfig::AIJsonConfig()
     load();
 }
 
+AIJsonConfig::StoredProfile* AIJsonConfig::findActiveProfile()
+{
+    for (auto& profile : m_profiles) {
+        if (profile.id == m_activeProfileId) {
+            return &profile;
+        }
+    }
+    return nullptr;
+}
+
+const AIJsonConfig::StoredProfile* AIJsonConfig::findActiveProfile() const
+{
+    for (const auto& profile : m_profiles) {
+        if (profile.id == m_activeProfileId) {
+            return &profile;
+        }
+    }
+    return nullptr;
+}
+
+void AIJsonConfig::ensureWritableProfile()
+{
+    if (findActiveProfile() != nullptr) {
+        return;
+    }
+
+    StoredProfile profile;
+    profile.id = "default";
+    profile.name = "默认";
+    m_profiles.push_back(profile);
+    m_activeProfileId = profile.id;
+}
+
 std::string AIJsonConfig::getValue(const std::string& key) const
 {
-    const auto it = m_data.find(key);
-    return it != m_data.end() ? it->second : std::string();
+    const StoredProfile* active = findActiveProfile();
+    if (active == nullptr) {
+        return std::string();
+    }
+    const auto it = active->values.find(key);
+    return it != active->values.end() ? it->second : std::string();
 }
 
 std::string AIJsonConfig::getValueLocal(const std::string& key) const
@@ -87,31 +124,99 @@ std::string AIJsonConfig::getValueLocal(const std::string& key) const
 
 void AIJsonConfig::setValue(const std::string& key, const std::string& localValue)
 {
-    m_data[key] = LocalToUtf8(localValue);
+    ensureWritableProfile();
+    StoredProfile* active = findActiveProfile();
+    if (active == nullptr) {
+        return;
+    }
+    active->values[key] = LocalToUtf8(localValue);
     save();
 }
 
 void AIJsonConfig::setValues(const std::map<std::string, std::string>& localPairs)
 {
+    ensureWritableProfile();
+    StoredProfile* active = findActiveProfile();
+    if (active == nullptr) {
+        return;
+    }
     for (const auto& [k, v] : localPairs) {
-        m_data[k] = LocalToUtf8(v);
+        active->values[k] = LocalToUtf8(v);
     }
     save();
 }
 
 bool AIJsonConfig::hasAnyData() const
 {
-    return !m_data.empty();
+    const StoredProfile* active = findActiveProfile();
+    return active != nullptr && !active->values.empty();
 }
 
 bool AIJsonConfig::hasKey(const std::string& key) const
 {
-    return m_data.count(key) > 0;
+    const StoredProfile* active = findActiveProfile();
+    return active != nullptr && active->values.count(key) > 0;
+}
+
+std::vector<AIJsonConfigProfileSnapshot> AIJsonConfig::getProfilesLocal() const
+{
+    std::vector<AIJsonConfigProfileSnapshot> snapshots;
+    snapshots.reserve(m_profiles.size());
+    for (const auto& profile : m_profiles) {
+        AIJsonConfigProfileSnapshot snapshot;
+        snapshot.id = Utf8ToLocal(profile.id);
+        snapshot.name = Utf8ToLocal(profile.name);
+        for (const auto& [key, value] : profile.values) {
+            snapshot.values[key] = Utf8ToLocal(value);
+        }
+        snapshots.push_back(std::move(snapshot));
+    }
+    return snapshots;
+}
+
+std::string AIJsonConfig::getActiveProfileId() const
+{
+    return Utf8ToLocal(m_activeProfileId);
+}
+
+bool AIJsonConfig::replaceProfiles(const std::vector<AIJsonConfigProfileSnapshot>& profiles, const std::string& activeProfileId)
+{
+    std::vector<StoredProfile> nextProfiles;
+    nextProfiles.reserve(profiles.size());
+    bool foundActive = false;
+    for (const auto& profile : profiles) {
+        const std::string idUtf8 = LocalToUtf8(profile.id);
+        const std::string nameUtf8 = LocalToUtf8(profile.name);
+        if (idUtf8.empty() || nameUtf8.empty()) {
+            return false;
+        }
+
+        StoredProfile stored;
+        stored.id = idUtf8;
+        stored.name = nameUtf8;
+        for (const auto& [key, value] : profile.values) {
+            stored.values[key] = LocalToUtf8(value);
+        }
+        if (idUtf8 == LocalToUtf8(activeProfileId)) {
+            foundActive = true;
+        }
+        nextProfiles.push_back(std::move(stored));
+    }
+
+    if (nextProfiles.empty() || !foundActive) {
+        return false;
+    }
+
+    m_profiles = std::move(nextProfiles);
+    m_activeProfileId = LocalToUtf8(activeProfileId);
+    save();
+    return true;
 }
 
 void AIJsonConfig::load()
 {
-    m_data.clear();
+    m_profiles.clear();
+    m_activeProfileId.clear();
     if (!std::filesystem::exists(m_filePath)) {
         return;
     }
@@ -125,14 +230,50 @@ void AIJsonConfig::load()
         if (j.is_discarded() || !j.is_object()) {
             return;
         }
+
+        if (j.contains("profiles") && j["profiles"].is_array()) {
+            for (const auto& item : j["profiles"]) {
+                if (!item.is_object()) {
+                    continue;
+                }
+
+                StoredProfile profile;
+                if (item.contains("id") && item["id"].is_string()) {
+                    profile.id = item["id"].get<std::string>();
+                }
+                if (item.contains("name") && item["name"].is_string()) {
+                    profile.name = item["name"].get<std::string>();
+                }
+                if (item.contains("values") && item["values"].is_object()) {
+                    for (const auto& [key, val] : item["values"].items()) {
+                        profile.values[key] = val.is_string() ? val.get<std::string>() : val.dump();
+                    }
+                }
+                if (!profile.id.empty() && !profile.name.empty()) {
+                    m_profiles.push_back(std::move(profile));
+                }
+            }
+            if (j.contains("active_profile_id") && j["active_profile_id"].is_string()) {
+                m_activeProfileId = j["active_profile_id"].get<std::string>();
+            }
+            if (findActiveProfile() == nullptr && !m_profiles.empty()) {
+                m_activeProfileId = m_profiles.front().id;
+            }
+            return;
+        }
+
+        StoredProfile legacyProfile;
+        legacyProfile.id = "default";
+        legacyProfile.name = "默认";
         for (const auto& [key, val] : j.items()) {
             if (val.is_string()) {
-                // JSON 文件内部始终存储 UTF-8
-                m_data[key] = val.get<std::string>();
+                legacyProfile.values[key] = val.get<std::string>();
             } else {
-                m_data[key] = val.dump();
+                legacyProfile.values[key] = val.dump();
             }
         }
+        m_profiles.push_back(std::move(legacyProfile));
+        m_activeProfileId = "default";
     } catch (...) {
         // 忽略解析错误，保持空数据
     }
@@ -142,9 +283,17 @@ void AIJsonConfig::save() const
 {
     try {
         nlohmann::json j = nlohmann::json::object();
-        for (const auto& [key, value] : m_data) {
-            // m_data 内部值均为 UTF-8，可安全写入 JSON
-            j[key] = value;
+        j["active_profile_id"] = m_activeProfileId;
+        j["profiles"] = nlohmann::json::array();
+        for (const auto& profile : m_profiles) {
+            nlohmann::json item = nlohmann::json::object();
+            item["id"] = profile.id;
+            item["name"] = profile.name;
+            item["values"] = nlohmann::json::object();
+            for (const auto& [key, value] : profile.values) {
+                item["values"][key] = value;
+            }
+            j["profiles"].push_back(std::move(item));
         }
         // 先生成序列化内容，再打开文件，避免 dump 失败时留下空文件
         const std::string dumped = j.dump(4);

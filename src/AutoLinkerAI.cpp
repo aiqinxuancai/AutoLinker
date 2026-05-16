@@ -259,11 +259,10 @@ bool EnsureAISettingsReady(AISettings& settings)
 	}
 
 	OutputStringToELog("AI配置缺失，准备打开配置窗口");
-	if (!ShowAIConfigDialog(g_hwnd, settings)) {
+	if (!ShowAIConfigDialog(g_hwnd, g_aiJsonConfig, settings)) {
 		OutputStringToELog("AI配置已取消，本次操作终止");
 		return false;
 	}
-	AIService::SaveSettings(g_aiJsonConfig, settings);
 	OutputStringToELog("AI配置已保存");
 	return true;
 }
