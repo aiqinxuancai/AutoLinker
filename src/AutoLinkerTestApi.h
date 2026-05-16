@@ -63,4 +63,20 @@ AUTOLINKER_TEST_API int AutoLinkerTest_RunDeepSeekConnectionOnly(
 	char* buffer,
 	int bufferSize);
 
+// 对指定 OpenAI Chat Completions 模型执行连通性、普通对话、多轮工具调用集成测试，并输出 JSON 结果。
+AUTOLINKER_TEST_API int AutoLinkerTest_RunOpenAIChatIntegrationTest(
+	const char* apiKey,
+	const char* model,
+	const char* baseUrl,
+	char* buffer,
+	int bufferSize);
+
+// 对指定 OpenAI Responses 模型执行连通性、普通对话、多轮工具调用集成测试，并输出 JSON 结果。
+AUTOLINKER_TEST_API int AutoLinkerTest_RunOpenAIResponsesIntegrationTest(
+	const char* apiKey,
+	const char* model,
+	const char* baseUrl,
+	char* buffer,
+	int bufferSize);
+
 }

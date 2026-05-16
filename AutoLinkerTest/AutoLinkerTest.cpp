@@ -1337,6 +1337,69 @@ int RunDeepSeekModelIntegrationTest(int argc, char* argv[])
 	}
 }
 
+int RunOpenAIIntegrationCommand(
+	int argc,
+	char* argv[],
+	bool useResponsesProtocol)
+{
+	if (argc < 4) {
+		PrintUsage();
+		return EXIT_FAILURE;
+	}
+
+	const char* apiKey = argv[2];
+	const char* model = argv[3];
+	const char* baseUrl = "https://api.openai.com/v1";
+	std::string outputPath;
+	std::vector<char> buffer(2 * 1024 * 1024);
+	for (int i = 4; i < argc; ++i) {
+		const std::string arg = argv[i];
+		if (arg == "--out" && i + 1 < argc) {
+			outputPath = argv[++i];
+		}
+		else if (std::string(baseUrl) == "https://api.openai.com/v1") {
+			baseUrl = argv[i];
+		}
+		else {
+			PrintUsage();
+			return EXIT_FAILURE;
+		}
+	}
+
+	const int result = useResponsesProtocol
+		? AutoLinkerTest_RunOpenAIResponsesIntegrationTest(apiKey, model, baseUrl, buffer.data(), static_cast<int>(buffer.size()))
+		: AutoLinkerTest_RunOpenAIChatIntegrationTest(apiKey, model, baseUrl, buffer.data(), static_cast<int>(buffer.size()));
+	if (result < 0) {
+		return PrintStringResult(useResponsesProtocol ? "openai-responses-test" : "openai-chat-test", result, buffer.data());
+	}
+
+	const std::string text(buffer.data(), static_cast<size_t>(result));
+	if (!outputPath.empty()) {
+		std::error_code ec;
+		const std::filesystem::path outputFsPath = MakePathFromText(outputPath);
+		const std::filesystem::path parent = outputFsPath.parent_path();
+		if (!parent.empty()) {
+			std::filesystem::create_directories(parent, ec);
+		}
+		std::ofstream out(outputFsPath, std::ios::binary | std::ios::trunc);
+		if (!out.is_open()) {
+			std::cerr << (useResponsesProtocol ? "openai-responses-test" : "openai-chat-test")
+				<< " failed: cannot open output file: " << outputPath << std::endl;
+			return EXIT_FAILURE;
+		}
+		out.write(text.data(), static_cast<std::streamsize>(text.size()));
+	}
+
+	std::cout << text << std::endl;
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(text);
+		return parsed.value("ok", false) ? EXIT_SUCCESS : EXIT_FAILURE;
+	}
+	catch (...) {
+		return EXIT_FAILURE;
+	}
+}
+
 int RunStringCommand(const std::string& commandName, const std::string& input)
 {
 	char buffer[524288] = {};
@@ -1380,6 +1443,8 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest e2txt-restore <input-path> <output-path>" << std::endl;
 	std::cout << "  AutoLinkerTest bundle-digest-compare <input.e> <input-dir>" << std::endl;
 	std::cout << "  AutoLinkerTest deepseek-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
+	std::cout << "  AutoLinkerTest openai-chat-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
+	std::cout << "  AutoLinkerTest openai-responses-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest headless-compile <e.exe> <input.e> <output> [--target auto|win_exe|win_console_exe|win_dll|ecom] [--static] [--result path] [--timeout seconds]" << std::endl;
 }
 
@@ -1397,6 +1462,12 @@ int main(int argc, char* argv[])
 	}
 	if (commandName == "deepseek-model-test") {
 		return RunDeepSeekModelIntegrationTest(argc, argv);
+	}
+	if (commandName == "openai-chat-test") {
+		return RunOpenAIIntegrationCommand(argc, argv, false);
+	}
+	if (commandName == "openai-responses-test") {
+		return RunOpenAIIntegrationCommand(argc, argv, true);
 	}
 
 	if (commandName == "version-compare") {

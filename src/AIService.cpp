@@ -472,7 +472,7 @@ CompactToolResultPayload BuildCompactToolResultPayload(const std::string& toolNa
 		};
 	}
 
-	payload.textUtf8 = payload.jsonValue.dump();
+	payload.textUtf8 = payload.jsonValue.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	return payload;
 }
 
@@ -651,6 +651,25 @@ bool IsClaudeAdaptiveThinkingModel(std::string_view model)
 		ContainsAsciiInsensitive(model, "claude-opus-4-7") ||
 		ContainsAsciiInsensitive(model, "claude-opus-4-6") ||
 		ContainsAsciiInsensitive(model, "claude-sonnet-4-6");
+}
+
+bool IsOpenAIGpt5Model(std::string_view model)
+{
+	return ContainsAsciiInsensitive(model, "gpt-5");
+}
+
+void ApplyOpenAITemperatureIfSupported(nlohmann::json& requestBody, const AISettings& settings)
+{
+	if (IsOpenAIGpt5Model(settings.model)) {
+		return;
+	}
+	requestBody["temperature"] = settings.temperature;
+}
+
+bool ShouldSkipOpenAIChatReasoningForToolUse(const AISettings& settings)
+{
+	return !IsDeepSeekCompatibleSettings(settings) &&
+		IsOpenAIGpt5Model(settings.model);
 }
 
 std::string GetOpenAIReasoningEffort(AIThinkingLevel level)
@@ -2403,6 +2422,30 @@ std::vector<ResponsesToolCall> ExtractResponsesToolCalls(const nlohmann::json& p
 	return calls;
 }
 
+bool IsResponsesInputItem(const nlohmann::json& item)
+{
+	if (!item.is_object()) {
+		return false;
+	}
+	const std::string type = item.value("type", std::string());
+	return type == "message" || type == "reasoning" || type == "function_call" || type == "function_call_output";
+}
+
+bool TryGetResponsesPreviousResponseId(const nlohmann::json& item, std::string& outResponseId)
+{
+	if (!item.is_object()) {
+		return false;
+	}
+	if (item.value("type", std::string()) != "previous_response_ref") {
+		return false;
+	}
+	if (!item.contains("response_id") || !item["response_id"].is_string()) {
+		return false;
+	}
+	outResponseId = item["response_id"].get<std::string>();
+	return !outResponseId.empty();
+}
+
 std::string BuildResponsesInstructions(
 	const std::vector<AIChatMessage>& contextMessages,
 	const AISettings& settings)
@@ -2426,11 +2469,14 @@ std::string BuildResponsesInstructions(
 
 nlohmann::json BuildResponsesTextMessage(const std::string& role, const std::string& textUtf8)
 {
+	const std::string contentType = ToLowerAsciiCopy(role) == "assistant"
+		? "output_text"
+		: "input_text";
 	return {
 		{"role", role},
 		{"content", nlohmann::json::array({
 			{
-				{"type", "input_text"},
+				{"type", contentType},
 				{"text", textUtf8}
 			}
 		})}
@@ -2580,7 +2626,7 @@ AIResult ExecuteTaskOpenAIResponses(const std::string& systemPrompt, const std::
 
 	nlohmann::json requestBody;
 	requestBody["model"] = LocalToUtf8(settings.model);
-	requestBody["temperature"] = settings.temperature;
+	ApplyOpenAITemperatureIfSupported(requestBody, settings);
 	requestBody["instructions"] = LocalToUtf8(systemPrompt);
 	requestBody["input"] = nlohmann::json::array({
 		BuildResponsesTextMessage("user", LocalToUtf8(inputText))
@@ -2953,9 +2999,27 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 	const nlohmann::json tools = BuildResponsesToolDefinitions();
 
 	nlohmann::json input = nlohmann::json::array();
+	std::string previousResponseId;
+	bool skipAssistantEchoAfterPreviousResponse = false;
 	for (const AIChatMessage& msg : contextMessages) {
 		const std::string role = ToLowerAsciiCopy(AIService::Trim(msg.role));
+		nlohmann::json rawInputItem;
+		if (TryParseRawChatMessageJson(msg.rawMessageJsonUtf8, rawInputItem)) {
+			if (TryGetResponsesPreviousResponseId(rawInputItem, previousResponseId)) {
+				input = nlohmann::json::array();
+				skipAssistantEchoAfterPreviousResponse = true;
+				continue;
+			}
+			if (IsResponsesInputItem(rawInputItem)) {
+				input.push_back(std::move(rawInputItem));
+				continue;
+			}
+		}
 		if (role != "user" && role != "assistant") {
+			continue;
+		}
+		if (skipAssistantEchoAfterPreviousResponse && role == "assistant") {
+			skipAssistantEchoAfterPreviousResponse = false;
 			continue;
 		}
 		input.push_back(BuildResponsesTextMessage(role, LocalToUtf8(msg.content)));
@@ -2970,9 +3034,12 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 
 		nlohmann::json requestBody;
 		requestBody["model"] = LocalToUtf8(settings.model);
-		requestBody["temperature"] = settings.temperature;
+		ApplyOpenAITemperatureIfSupported(requestBody, settings);
 		requestBody["instructions"] = instructionsUtf8;
 		requestBody["input"] = input;
+		if (!previousResponseId.empty()) {
+			requestBody["previous_response_id"] = previousResponseId;
+		}
 		requestBody["tools"] = tools;
 		requestBody["stream"] = false;
 		ApplyThinkingConfigToOpenAIResponsesRequest(requestBody, settings);
@@ -3018,6 +3085,16 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			if (textUtf8.empty()) {
 				result.error = "Responses API response content is empty";
 				return result;
+			}
+			if (parsed.contains("id") && parsed["id"].is_string()) {
+				try {
+					result.contextPrefixRawMessagesUtf8.push_back(nlohmann::json{
+						{"type", "previous_response_ref"},
+						{"response_id", parsed["id"].get<std::string>()}
+					}.dump());
+				}
+				catch (...) {
+				}
 			}
 			result.ok = true;
 			result.content = Utf8ToLocal(textUtf8);
@@ -3324,7 +3401,9 @@ AIResult AIService::TestConnection(const AISettings& settings)
 
 	nlohmann::json requestBody;
 	requestBody["model"] = modelUtf8;
-	requestBody["temperature"] = 0;
+	if (!IsOpenAIGpt5Model(settings.model)) {
+		requestBody["temperature"] = 0;
+	}
 	requestBody["stream"] = false;
 	requestBody["messages"] = nlohmann::json::array({
 		{
@@ -3430,7 +3509,7 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 
 	nlohmann::json requestBody;
 	requestBody["model"] = modelUtf8;
-	requestBody["temperature"] = settings.temperature;
+	ApplyOpenAITemperatureIfSupported(requestBody, settings);
 	requestBody["stream"] = false;
 	requestBody["messages"] = nlohmann::json::array({
 		{
@@ -3588,14 +3667,16 @@ AIChatResult AIService::ExecuteChatWithTools(
 		}
 		nlohmann::json requestBody;
 		requestBody["model"] = LocalToUtf8(settings.model);
-		requestBody["temperature"] = settings.temperature;
+		ApplyOpenAITemperatureIfSupported(requestBody, settings);
 		requestBody["stream"] = true;
 		requestBody["messages"] = requestMessages;
 		requestBody["tools"] = tools;
 		if (!IsDeepSeekCompatibleSettings(settings)) {
 			requestBody["tool_choice"] = "auto";
 		}
-		ApplyThinkingConfigToOpenAIChatRequest(requestBody, settings);
+		if (!ShouldSkipOpenAIChatReasoningForToolUse(settings)) {
+			ApplyThinkingConfigToOpenAIChatRequest(requestBody, settings);
+		}
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		std::string requestBodyText;

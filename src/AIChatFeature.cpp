@@ -1751,6 +1751,9 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 		else if (msg.role == SessionRole::Assistant) {
 			role = "assistant";
 		}
+		else if (msg.role == SessionRole::Tool) {
+			role = "tool";
+		}
 		out.push_back(AIChatMessage{ role, msg.content, msg.reasoningContent, msg.rawMessageJsonUtf8 });
 	}
 	return out;
@@ -2391,6 +2394,7 @@ void HandleChatTaskDone(LPARAM lParam)
 			}
 
 			const std::string role = ToLowerAsciiCopySimple(AIService::Trim(parsedMessage.value("role", "")));
+			const std::string itemType = ToLowerAsciiCopySimple(AIService::Trim(parsedMessage.value("type", "")));
 			if (role == "assistant") {
 				std::string contentLocal;
 				if (parsedMessage.contains("content") && parsedMessage["content"].is_string()) {
@@ -2410,6 +2414,16 @@ void HandleChatTaskDone(LPARAM lParam)
 				});
 			}
 			else if (role == "tool") {
+				g_session.messages.push_back(SessionMessage{
+					SessionRole::Tool,
+					"",
+					true,
+					false,
+					"",
+					rawMessageJsonUtf8
+				});
+			}
+			else if (!itemType.empty()) {
 				g_session.messages.push_back(SessionMessage{
 					SessionRole::Tool,
 					"",
