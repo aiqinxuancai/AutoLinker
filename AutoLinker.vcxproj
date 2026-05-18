@@ -508,6 +508,7 @@
     </ClCompile>
     <ClCompile Include="src\AIConfigDialog.cpp" />
     <ClCompile Include="src\AIChatFeature.cpp" />
+    <ClCompile Include="src\AIChatSessionStore.cpp" />
     <ClCompile Include="src\AIChatTooling.cpp" />
     <ClCompile Include="src\AIChatToolingX86.cpp" />
     <ClCompile Include="src\AIService.cpp" />
@@ -544,6 +545,7 @@
     <ClInclude Include="src\AutoLinkerVersion.h" />
     <ClInclude Include="src\AIConfigDialog.h" />
     <ClInclude Include="src\AIChatFeature.h" />
+    <ClInclude Include="src\AIChatSessionStore.h" />
     <ClInclude Include="src\AIChatTooling.h" />
     <ClInclude Include="src\AIChatToolingInternal.h" />
     <ClInclude Include="src\AIService.h" />

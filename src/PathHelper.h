@@ -4,28 +4,33 @@
 #include <string>
 #include <vector>
 #include <Windows.h>
-// 鑾峰彇褰撳墠涓荤▼搴忔墍鍦ㄧ洰褰曘€?
+
+// 获取当前主程序（易语言IDE）所在目录路径。
 std::string GetBasePath();
-// 鑾峰彇 AutoLinker 宸ヤ綔鐩綍璺緞銆?
+
+// 获取 AutoLinker 工作目录路径（主程序目录/AutoLinker）。
 std::filesystem::path GetAutoLinkerDirectoryPath();
-// 鑾峰彇 AutoLinker 鏃ュ織鐩綍璺緞锛屽涓嶅瓨鍦ㄤ細鑷姩鍒涘缓銆?
+
+// 获取 AutoLinker 日志目录路径，若目录不存在则自动创建。
 std::filesystem::path GetAutoLinkerLogDirectoryPath();
-// 鑾峰彇 AutoLinker 鏃ュ織鏂囦欢瀹屾暣璺緞銆?
+
+// 获取指定名称的日志文件完整路径。
 std::filesystem::path GetAutoLinkerLogFilePath(const std::string& fileName);
-// 鎻愬彇涓や釜鐭í绾夸箣闂寸殑鏂囨湰銆?
+
+// 获取 AI 会话存储根目录路径，若不存在则自动创建。
+std::filesystem::path GetAutoLinkerSessionRootDirectoryPath();
+
+// 将文本清洗为合法的文件名/目录名片段，替换 Windows 非法字符为下划线。
+std::string SanitizePathComponentForStorage(const std::string& text);
+
+// 从文本中提取首对" - "分隔符之间的内容；找不到则返回空字符串。
 std::string ExtractBetweenDashes(const std::string& text);
-/// <summary>
-/// 鏌ユ壘瀛楄妭搴忓垪鍦ㄦ枃浠朵腑鐨勫亸绉汇€?
-/// </summary>
-/// <param name="filename"></param>
-/// <param name="search_bytes"></param>
-/// <returns></returns>
+
+// 在文件中搜索指定字节序列，返回首次出现的字节偏移量；未找到则返回 std::nullopt。
 std::optional<size_t> FindByteInFile(const std::string& filename, const std::vector<char>& search_bytes);
-/// <summary>
-/// 鑾峰彇 /out: 瀵瑰簲鐨勮緭鍑烘枃浠跺悕銆?
-/// </summary>
-/// <param name="s"></param>
-/// <returns></returns>
+
+// 从链接器命令行中解析 /out:"..." 参数，返回输出文件名（不含目录）。
 std::string GetLinkerCommandOutFileName(const std::string& s);
-// 鑾峰彇鍛戒护琛屼腑鐨?krnln 闈欐€佸簱璺緞銆?
+
+// 从链接器命令行中提取 krnln 静态库的完整路径。
 std::string GetLinkerCommandKrnlnFileName(const std::string& s);

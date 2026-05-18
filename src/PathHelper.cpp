@@ -23,6 +23,46 @@ std::filesystem::path GetAutoLinkerLogDirectoryPath() {
 std::filesystem::path GetAutoLinkerLogFilePath(const std::string& fileName) {
     return GetAutoLinkerLogDirectoryPath() / fileName;
 }
+std::filesystem::path GetAutoLinkerSessionRootDirectoryPath() {
+    std::filesystem::path dir = GetAutoLinkerDirectoryPath() / "Session";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
+std::string SanitizePathComponentForStorage(const std::string& text) {
+    std::string sanitized;
+    sanitized.reserve(text.size());
+    for (char ch : text) {
+        switch (ch) {
+        case '<':
+        case '>':
+        case ':':
+        case '"':
+        case '/':
+        case '\\':
+        case '|':
+        case '?':
+        case '*':
+            sanitized.push_back('_');
+            break;
+        default:
+            if (static_cast<unsigned char>(ch) < 32) {
+                sanitized.push_back('_');
+            }
+            else {
+                sanitized.push_back(ch);
+            }
+            break;
+        }
+    }
+    while (!sanitized.empty() && (sanitized.back() == ' ' || sanitized.back() == '.')) {
+        sanitized.pop_back();
+    }
+    if (sanitized.empty()) {
+        return "Unnamed";
+    }
+    return sanitized;
+}
 std::string ExtractBetweenDashes(const std::string& text) {
     std::string delimiter = " - ";
     // 鎵惧埌绗竴涓? - "鐨勪綅缃?

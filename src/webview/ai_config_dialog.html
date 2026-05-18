@@ -218,6 +218,16 @@ p {
 	margin-top: 5px;
 }
 
+.endpoint-preview {
+	word-break: break-all;
+}
+
+.endpoint-preview .code {
+	display: inline-block;
+	max-width: 100%;
+	white-space: normal;
+}
+
 .code {
 	font-family: Consolas, "Courier New", monospace;
 	background: #f1f5f9;
@@ -356,6 +366,7 @@ p {
 				<div class="row">
 					<label for="baseUrl">Base URL</label>
 					<input id="baseUrl" class="input" placeholder="https://right.codes/codex">
+					<p id="endpointPreview" class="tip endpoint-preview">最终请求 URL：<span class="code">-</span></p>
 				</div>
 				<div class="row">
 					<label for="apiKey">API Key</label>
@@ -471,6 +482,117 @@ function setField(id, value) {
 	}
 }
 
+function trimText(value) {
+	return (value || "").trim();
+}
+
+function endsWithInsensitive(text, suffix) {
+	return text.toLowerCase().slice(-suffix.length) === suffix.toLowerCase();
+}
+
+function replaceSuffixIfPresent(text, suffix, replacement) {
+	if (!suffix) {
+		return text;
+	}
+	if (!endsWithInsensitive(text, suffix)) {
+		return text;
+	}
+	return text.slice(0, text.length - suffix.length) + replacement;
+}
+
+function trimTrailingSlashes(url) {
+	while (url && url.charAt(url.length - 1) === "/") {
+		url = url.slice(0, -1);
+	}
+	return url;
+}
+
+function buildOpenAIChatEndpoint(baseUrl) {
+	var url = trimTrailingSlashes(trimText(baseUrl));
+	url = replaceSuffixIfPresent(url, "/responses", "/chat/completions");
+	if (endsWithInsensitive(url, "/chat/completions")) {
+		return url;
+	}
+	if (endsWithInsensitive(url, "/v1")) {
+		return url + "/chat/completions";
+	}
+	return url + "/v1/chat/completions";
+}
+
+function buildOpenAIResponsesEndpoint(baseUrl) {
+	var url = trimTrailingSlashes(trimText(baseUrl));
+	url = replaceSuffixIfPresent(url, "/chat/completions", "/responses");
+	if (endsWithInsensitive(url, "/responses")) {
+		return url;
+	}
+	if (endsWithInsensitive(url, "/v1")) {
+		return url + "/responses";
+	}
+	return url + "/v1/responses";
+}
+
+function buildClaudeEndpoint(baseUrl) {
+	var url = trimTrailingSlashes(trimText(baseUrl));
+	if (endsWithInsensitive(url, "/v1/messages")) {
+		return url;
+	}
+	if (endsWithInsensitive(url, "/v1")) {
+		return url + "/messages";
+	}
+	return url + "/v1/messages";
+}
+
+function buildGeminiEndpoint(baseUrl, model) {
+	var url = trimTrailingSlashes(trimText(baseUrl));
+	var suffix = ":generateContent";
+	var otherSuffix = ":streamGenerateContent";
+	var modelText = trimText(model) || "{model}";
+	url = replaceSuffixIfPresent(url, otherSuffix, suffix);
+	if (endsWithInsensitive(url, suffix)) {
+		return url + "?key=<api-key>";
+	}
+	if (url.indexOf("/models/") >= 0) {
+		return url + suffix + "?key=<api-key>";
+	}
+	if (endsWithInsensitive(url, "/v1beta") || endsWithInsensitive(url, "/v1")) {
+		return url + "/models/" + encodeURIComponent(modelText) + suffix + "?key=<api-key>";
+	}
+	return url + "/v1beta/models/" + encodeURIComponent(modelText) + suffix + "?key=<api-key>";
+}
+
+function buildRequestTargetUrl(protocolType, baseUrl, model) {
+	var url = trimText(baseUrl);
+	if (!url) {
+		return "-";
+	}
+	switch (protocolType) {
+	case "claude":
+		return buildClaudeEndpoint(url);
+	case "gemini":
+		return buildGeminiEndpoint(url, model);
+	case "openai_responses":
+		return buildOpenAIResponsesEndpoint(url);
+	case "openai":
+	default:
+		return buildOpenAIChatEndpoint(url);
+	}
+}
+
+function updateEndpointPreview() {
+	var preview = $("endpointPreview");
+	if (!preview) {
+		return;
+	}
+	var codeEl = preview.querySelector(".code");
+	if (!codeEl) {
+		return;
+	}
+	codeEl.textContent = buildRequestTargetUrl(
+		$("protocol") ? $("protocol").value : "openai",
+		$("baseUrl") ? $("baseUrl").value : "",
+		$("model") ? $("model").value : "");
+}
+
 function cloneProfile(profile) {
 	return {
 		id: profile.id,
@@ -543,6 +665,7 @@ function applyProfileToForm(profile) {
 	setField("extraPrompt", profile.extraPrompt);
 	setField("customHeaders", profile.customHeaders);
 	setField("tavilyApiKey", profile.tavilyApiKey);
+	updateEndpointPreview();
 }
 
 function buildPayload() {
@@ -659,6 +782,10 @@ $("toggleTavilyKey").addEventListener("click", function() {
 	toggleSecret("tavilyApiKey", "toggleTavilyKey");
 });
 
+$("protocol").addEventListener("change", updateEndpointPreview);
+$("baseUrl").addEventListener("input", updateEndpointPreview);
+$("model").addEventListener("input", updateEndpointPreview);
+
 $("profileSelect").addEventListener("change", function() {
 	saveCurrentFormToActiveProfile();
 	_activeProfileId = $("profileSelect").value || _activeProfileId;
@@ -758,6 +885,7 @@ function updateModelMenu(models) {
 			e.preventDefault();
 			$("model").value = name;
 			hideModelMenu();
+			updateEndpointPreview();
 		});
 		m.appendChild(d);
 	});
@@ -821,6 +949,7 @@ function onPlatformChange() {
 	}
 	$("baseUrl").value = p.baseUrl;
 	updateModelMenu(p.models);
+	updateEndpointPreview();
 	if (btn) {
 		btn.disabled = false;
 	}

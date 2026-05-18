@@ -11,6 +11,7 @@
 #include <string>
 
 #include "AIJsonConfig.h"
+#include "AIChatFeature.h"
 #include "Global.h"
 #include "IDEFacade.h"
 #include "Logger.h"
@@ -145,6 +146,7 @@ void HandleCurrentSourceFilePathChanged(const std::string& previousPath, const s
 
 	if (!IsProjectSourcePathForRuntime(currentPath)) {
 		OutputStringToELog("[SourceContext] warmup skipped: current source is not an .e file");
+		AIChatFeature::OnCurrentSourceFilePathChanged(previousPath, currentPath);
 		return;
 	}
 
@@ -171,6 +173,7 @@ void HandleCurrentSourceFilePathChanged(const std::string& previousPath, const s
 			warmupError.empty() ? "warmup_failed" : warmupError,
 			warmupTrace));
 	}
+	AIChatFeature::OnCurrentSourceFilePathChanged(previousPath, currentPath);
 }
 
 uint64_t AllocateAIPerfTraceId()

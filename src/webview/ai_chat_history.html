@@ -39,6 +39,7 @@ body {
 	background: #fbfbfb;
 	padding: 8px 10px 10px 10px;
 	box-sizing: border-box;
+	position: relative;
 }
 
 .actions {
@@ -97,6 +98,22 @@ body {
 	background: #0b63c9;
 	border-color: #0b63c9;
 	color: #fff;
+}
+
+.icon-btn {
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.icon-btn svg {
+	width: 16px;
+	height: 16px;
+	fill: currentColor;
+	pointer-events: none;
 }
 
 .btn:disabled {
@@ -261,6 +278,66 @@ body {
 .muted {
 	color: #6b7280;
 }
+
+.session-menu {
+	position: absolute;
+	left: 10px;
+	bottom: 58px;
+	width: 320px;
+	max-height: 280px;
+	overflow: auto;
+	background: #fff;
+	border: 1px solid #d6d6d6;
+	border-radius: 8px;
+	box-shadow: 0 10px 28px rgba(15, 23, 42, .14);
+	padding: 6px;
+	box-sizing: border-box;
+	z-index: 10;
+}
+
+.session-menu[hidden] {
+	display: none;
+}
+
+.session-item,
+.session-empty {
+	display: block;
+	width: 100%;
+	text-align: left;
+	border: 0;
+	background: transparent;
+	border-radius: 6px;
+	padding: 8px;
+	box-sizing: border-box;
+}
+
+.session-item {
+	cursor: pointer;
+}
+
+.session-item:hover {
+	background: #f3f6fb;
+}
+
+.session-item-time {
+	font-size: 11px;
+	color: #6b7280;
+	margin-bottom: 3px;
+}
+
+.session-item-title {
+	font-size: 12px;
+	color: #1f2937;
+	line-height: 1.45;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.session-empty {
+	font-size: 12px;
+	color: #6b7280;
+}
 </style>
 </head>
 <body>
@@ -273,13 +350,23 @@ body {
 			<textarea id="chat-input" placeholder="&#x8F93;&#x5165;&#x6D88;&#x606F;&#xFF0C;Enter &#x53D1;&#x9001;&#xFF0C;Ctrl+Enter &#x6362;&#x884C;"></textarea>
 			<div class="actions">
 				<div class="left-actions">
-					<button id="clear-btn" class="btn" type="button">&#x6E05;&#x7A7A;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;</button>
+					<button id="clear-btn" class="btn icon-btn" type="button" title="&#x6E05;&#x7A7A;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;" aria-label="&#x6E05;&#x7A7A;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;">
+						<svg viewBox="0 0 24 24" aria-hidden="true">
+							<path d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v8h-2V9zm4 0h2v8h-2V9zM7 9h2v8H7V9zm1 11h8c1.1 0 2-.9 2-2V8H6v10c0 1.1.9 2 2 2z"></path>
+						</svg>
+					</button>
+					<button id="restore-btn" class="btn icon-btn" type="button" title="&#x6062;&#x590D;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;" aria-label="&#x6062;&#x590D;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;">
+						<svg viewBox="0 0 24 24" aria-hidden="true">
+							<path d="M12 5a7 7 0 1 1-6.57 9.42h2.13A5 5 0 1 0 7 12H3l3.2-3.2L9 11H7a5 5 0 1 0 5-5z"></path>
+						</svg>
+					</button>
 				</div>
 				<div class="right-actions">
 					<button id="send-btn" class="btn primary" type="button">&#x53D1;&#x9001;</button>
 					<button id="stop-btn" class="btn" type="button" style="display:none;">&#x505C;&#x6B62;</button>
 				</div>
 			</div>
+			<div id="session-menu" class="session-menu" hidden></div>
 		</div>
 	</div>
 </div>
@@ -299,6 +386,7 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	var send = document.getElementById("send-btn");
 	var stop = document.getElementById("stop-btn");
 	var clear = document.getElementById("clear-btn");
+	var restore = document.getElementById("restore-btn");
 	var input = document.getElementById("chat-input");
 	var isBusy = !!busy;
 	var isStopping = !!stopRequested;
@@ -314,8 +402,17 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	if (clear) {
 		clear.disabled = isBusy;
 	}
+	if (restore) {
+		restore.disabled = isBusy;
+	}
 	if (input) {
 		input.disabled = isBusy;
+	}
+	if (isBusy) {
+		var sessionMenu = document.getElementById("session-menu");
+		if (sessionMenu) {
+			sessionMenu.hidden = true;
+		}
 	}
 };
 
@@ -339,6 +436,9 @@ window.autolinkerFocusInput = function() {
 	var send = document.getElementById("send-btn");
 	var stop = document.getElementById("stop-btn");
 	var clear = document.getElementById("clear-btn");
+	var restore = document.getElementById("restore-btn");
+	var sessionMenu = document.getElementById("session-menu");
+	var recentSessions = [];
 
 	function post(obj) {
 		if (window.chrome && window.chrome.webview) {
@@ -377,6 +477,50 @@ window.autolinkerFocusInput = function() {
 			}, 1600);
 		}
 	}
+
+	function escapeHtml(text) {
+		return String(text || "")
+			.replace(/&/g, "&amp;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;")
+			.replace(/\"/g, "&quot;")
+			.replace(/'/g, "&#39;");
+	}
+
+	function hideSessionMenu() {
+		if (sessionMenu) {
+			sessionMenu.hidden = true;
+			sessionMenu.innerHTML = "";
+		}
+	}
+
+	function renderSessionMenu() {
+		if (!sessionMenu) {
+			return;
+		}
+		if (!recentSessions || !recentSessions.length) {
+			sessionMenu.innerHTML = '<div class="session-empty">&#x6682;&#x65E0;&#x6700;&#x8FD1;&#x4F1A;&#x8BDD;</div>';
+			return;
+		}
+		var html = "";
+		for (var i = 0; i < recentSessions.length; i++) {
+			var item = recentSessions[i] || {};
+			html += '<button class="session-item" type="button" data-session-id="' + escapeHtml(item.sessionId || "") + '">';
+			html += '<div class="session-item-time">' + escapeHtml(item.updatedAt || "") + '</div>';
+			html += '<div class="session-item-title">' + escapeHtml(item.title || "") + '</div>';
+			html += '</button>';
+		}
+		sessionMenu.innerHTML = html;
+	}
+
+	window.autolinkerHideSessionMenu = hideSessionMenu;
+	window.autolinkerShowSessionMenu = function(items) {
+		recentSessions = Array.isArray(items) ? items : [];
+		renderSessionMenu();
+		if (sessionMenu) {
+			sessionMenu.hidden = false;
+		}
+	};
 
 	function copyCode(btn) {
 		if (!btn) {
@@ -424,11 +568,28 @@ window.autolinkerFocusInput = function() {
 	}
 	if (clear) {
 		clear.addEventListener("click", function() {
+			hideSessionMenu();
 			post({ action: "clear" });
+		});
+	}
+	if (restore) {
+		restore.addEventListener("click", function() {
+			if (sessionMenu && !sessionMenu.hidden) {
+				hideSessionMenu();
+				return;
+			}
+			post({ action: "show_sessions" });
 		});
 	}
 
 	document.addEventListener("click", function(e) {
+		var sessionBtn = e.target && e.target.closest ? e.target.closest(".session-item") : null;
+		if (sessionBtn) {
+			e.preventDefault();
+			hideSessionMenu();
+			post({ action: "restore_session", sessionId: sessionBtn.getAttribute("data-session-id") || "" });
+			return;
+		}
 		var actionBtn = e.target && e.target.closest ? e.target.closest("[data-chat-action='open_settings']") : null;
 		if (actionBtn) {
 			e.preventDefault();
@@ -441,6 +602,17 @@ window.autolinkerFocusInput = function() {
 		}
 		e.preventDefault();
 		copyCode(btn);
+	});
+
+	document.addEventListener("mousedown", function(e) {
+		if (!sessionMenu || sessionMenu.hidden) {
+			return;
+		}
+		var insideMenu = sessionMenu.contains(e.target);
+		var onRestoreBtn = restore && restore.contains && restore.contains(e.target);
+		if (!insideMenu && !onRestoreBtn) {
+			hideSessionMenu();
+		}
 	});
 
 	if (input) {

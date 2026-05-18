@@ -8,6 +8,7 @@
 #include <CommCtrl.h>
 #include <condition_variable>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -28,6 +29,7 @@
 
 #include "AIConfigDialog.h"
 #include "AIJsonConfig.h"
+#include "AIChatSessionStore.h"
 #include "AIService.h"
 #include "ConfigManager.h"
 #include "AIChatTooling.h"
@@ -62,6 +64,7 @@ constexpr UINT WM_AUTOLINKER_AI_CHAT_SUBMIT = WM_APP + 205;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_CLEAR = WM_APP + 206;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_STOP = WM_APP + 207;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_OPEN_SETTINGS = WM_APP + 208;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_RESTORE_LAST = WM_APP + 209;
 constexpr UINT_PTR kHistoryWebViewFlushTimerId = 0xA17;
 
 constexpr int IDC_AI_CHAT_HISTORY = 2101;
@@ -70,6 +73,7 @@ constexpr int IDC_AI_CHAT_SEND = 32553;
 constexpr int IDC_AI_CHAT_CLEAR_HISTORY = 32554;
 constexpr int IDC_AI_CHAT_STOP = 32555;
 constexpr int IDC_AI_CHAT_OPEN_SETTINGS = 32556;
+constexpr int IDC_AI_CHAT_RESTORE_SESSION = 32557;
 
 constexpr UINT_PTR kEditSubclassId = 1;
 constexpr UINT_PTR kActionControlSubclassId = 2;
@@ -81,6 +85,7 @@ constexpr UINT_PTR kActionSubmit = 1;
 constexpr UINT_PTR kActionClear = 2;
 constexpr UINT_PTR kActionStop = 3;
 constexpr UINT_PTR kActionOpenSettings = 4;
+constexpr UINT_PTR kActionRestoreSession = 5;
 
 enum class SessionRole {
 	System,
@@ -120,6 +125,11 @@ struct AIChatSessionState {
 	std::vector<SessionMessage> messages;
 	std::string rollingSummary;
 	std::string streamingAssistantPreview;
+	std::string activeSessionId;
+	std::filesystem::path activeSessionFilePath;
+	std::string sourceFilePathLocal;
+	std::string sourceFileNameLocal;
+	long long createdAtUnixMs = 0;
 	bool requestInFlight = false;
 	unsigned long long activeRequestId = 0;
 	unsigned long long nextRequestId = 1;
@@ -133,6 +143,7 @@ struct ChatDialogContext {
 	HWND hSend = nullptr;
 	HWND hStop = nullptr;
 	HWND hClearHistory = nullptr;
+	HWND hRestoreSession = nullptr;
 	HWND hOpenSettings = nullptr;
 	int inputRowsVisible = 1;
 	bool webViewDesired = false;
@@ -140,6 +151,7 @@ struct ChatDialogContext {
 	bool webViewContentReady = false;
 	bool webViewFlushScheduled = false;
 	std::string pendingHistoryHtml;
+	std::vector<AIChatStoredSessionListEntry> lastSessionMenuEntries;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
@@ -234,9 +246,19 @@ void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& te
 void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatStopUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatRestoreSessionUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatShowRecentSessionsUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatRestoreSessionByIdUi(HWND hWnd, ChatDialogContext* ctx, const std::string& sessionId);
+bool ConfirmClearChatHistoryIfNeeded(HWND owner);
+bool ConfirmRestoreChatHistoryIfNeeded(HWND owner);
+std::vector<AIChatStoredSessionListEntry> LoadRecentChatSessionsForCurrentSource();
+bool TryRestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry& selected);
+bool TryPromptAndRestoreRecentChatSession(HWND hWnd);
 bool IsStopRequestedLocked(const AIChatSessionState& state);
 std::string DescribeMissingChatSettingField(const std::string& missingField);
 bool QueryChatSettingsState(AISettings& outSettings, std::string* outMissingField = nullptr);
+void PostRefreshDialog();
+std::wstring WideFromUtf8Text(const std::string& text);
 
 std::string GetWindowTextCopyLocalA(HWND hWnd)
 {
@@ -831,6 +853,64 @@ std::string Utf8ToLocalText(const std::string& text)
 	return ConvertCodePage(text, CP_UTF8, CP_ACP, MB_ERR_INVALID_CHARS);
 }
 
+long long GetCurrentUnixTimeMsForChat()
+{
+	const auto now = std::chrono::system_clock::now();
+	return static_cast<long long>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count());
+}
+
+std::string FormatUnixTimeLocalForChat(long long unixMs)
+{
+	if (unixMs <= 0) {
+		return std::string();
+	}
+
+	const time_t unixSeconds = static_cast<time_t>(unixMs / 1000);
+	std::tm localTm = {};
+	if (localtime_s(&localTm, &unixSeconds) != 0) {
+		return std::string();
+	}
+
+	char buffer[64] = {};
+	if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &localTm) == 0) {
+		return std::string();
+	}
+	return buffer;
+}
+
+std::string GetCurrentChatSourceFilePathLocal()
+{
+	try {
+		if (TrimAsciiCopy(g_nowOpenSourceFilePath).empty()) {
+			return std::string();
+		}
+		std::filesystem::path path(g_nowOpenSourceFilePath);
+		path = path.lexically_normal();
+		if (path.is_relative()) {
+			path = std::filesystem::absolute(path);
+		}
+		return path.lexically_normal().string();
+	}
+	catch (...) {
+		return TrimAsciiCopy(g_nowOpenSourceFilePath);
+	}
+}
+
+std::string GetCurrentChatSourceFileNameLocal()
+{
+	const std::string path = GetCurrentChatSourceFilePathLocal();
+	if (path.empty()) {
+		return std::string();
+	}
+	try {
+		return std::filesystem::path(path).filename().string();
+	}
+	catch (...) {
+		return path;
+	}
+}
+
 HFONT GetDialogFont()
 {
 	static HFONT s_dialogFont = nullptr;
@@ -854,6 +934,217 @@ void SetDefaultFont(HWND hWnd)
 	if (hWnd != nullptr) {
 		SendMessageA(hWnd, WM_SETFONT, reinterpret_cast<WPARAM>(GetDialogFont()), TRUE);
 	}
+}
+
+AIChatStoredSession BuildStoredSessionFromLockedState(const AIChatSessionState& state)
+{
+	AIChatStoredSession stored = {};
+	stored.schemaVersion = 1;
+	stored.sessionId = state.activeSessionId;
+	stored.sourceFileNameLocal = state.sourceFileNameLocal;
+	stored.sourceFilePathHintLocal = state.sourceFilePathLocal;
+	stored.createdAtUnixMs = state.createdAtUnixMs;
+	stored.updatedAtUnixMs = GetCurrentUnixTimeMsForChat();
+	stored.createdAtDisplayLocal = FormatUnixTimeLocalForChat(stored.createdAtUnixMs);
+	stored.updatedAtDisplayLocal = FormatUnixTimeLocalForChat(stored.updatedAtUnixMs);
+	stored.rollingSummaryLocal = state.rollingSummary;
+	stored.sessionFilePath = state.activeSessionFilePath;
+	for (const auto& message : state.messages) {
+		AIChatStoredMessage row = {};
+		switch (message.role)
+		{
+		case SessionRole::User:
+			row.role = "user";
+			break;
+		case SessionRole::Assistant:
+			row.role = "assistant";
+			break;
+		case SessionRole::Tool:
+			row.role = "tool";
+			break;
+		default:
+			row.role = "system";
+			break;
+		}
+		row.contentLocal = message.content;
+		row.includeInContext = message.includeInContext;
+		row.visibleInHistory = message.visibleInHistory;
+		row.reasoningContentUtf8 = message.reasoningContent;
+		row.rawMessageJsonUtf8 = message.rawMessageJsonUtf8;
+		stored.messages.push_back(std::move(row));
+	}
+	return stored;
+}
+
+SessionRole ParseStoredMessageRole(const std::string& role)
+{
+	if (_stricmp(role.c_str(), "user") == 0) {
+		return SessionRole::User;
+	}
+	if (_stricmp(role.c_str(), "assistant") == 0) {
+		return SessionRole::Assistant;
+	}
+	if (_stricmp(role.c_str(), "tool") == 0) {
+		return SessionRole::Tool;
+	}
+	return SessionRole::System;
+}
+
+void EnsureChatSessionBindingLocked(AIChatSessionState& state)
+{
+	const std::string currentSourcePath = GetCurrentChatSourceFilePathLocal();
+	const std::string currentSourceName = GetCurrentChatSourceFileNameLocal();
+	if (state.sourceFilePathLocal.empty()) {
+		state.sourceFilePathLocal = currentSourcePath;
+	}
+	if (state.sourceFileNameLocal.empty()) {
+		state.sourceFileNameLocal = currentSourceName;
+	}
+	if (!state.activeSessionId.empty()) {
+		if (state.activeSessionFilePath.empty()) {
+			state.activeSessionFilePath = ResolveAIChatSessionFilePath(state.sourceFilePathLocal, state.activeSessionId);
+		}
+		return;
+	}
+
+	state.activeSessionId = CreateAIChatSessionId();
+	state.createdAtUnixMs = GetCurrentUnixTimeMsForChat();
+	if (state.sourceFilePathLocal.empty()) {
+		state.sourceFilePathLocal = currentSourcePath;
+	}
+	if (state.sourceFileNameLocal.empty()) {
+		state.sourceFileNameLocal = currentSourceName;
+	}
+	state.activeSessionFilePath = ResolveAIChatSessionFilePath(state.sourceFilePathLocal, state.activeSessionId);
+}
+
+bool HasAnyChatHistoryLocked(const AIChatSessionState& state)
+{
+	return !state.messages.empty() ||
+		!TrimAsciiCopy(state.rollingSummary).empty() ||
+		!TrimAsciiCopy(state.streamingAssistantPreview).empty();
+}
+
+bool PersistChatSessionSnapshotLocked(AIChatSessionState& state)
+{
+	if (!HasAnyChatHistoryLocked(state)) {
+		return true;
+	}
+	EnsureChatSessionBindingLocked(state);
+
+	std::string saveError;
+	const AIChatStoredSession stored = BuildStoredSessionFromLockedState(state);
+	const bool ok = SaveAIChatStoredSession(stored, &saveError);
+	if (!ok) {
+		OutputStringToELog("[AI Chat][Session] save failed: " + saveError);
+	}
+	return ok;
+}
+
+void SaveChatSessionSnapshotNow()
+{
+	AIChatStoredSession stored = {};
+	bool shouldSave = false;
+
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!HasAnyChatHistoryLocked(g_session)) {
+			return;
+		}
+		EnsureChatSessionBindingLocked(g_session);
+		stored = BuildStoredSessionFromLockedState(g_session);
+		shouldSave = true;
+	}
+	if (!shouldSave) {
+		return;
+	}
+
+	std::string saveError;
+	if (!SaveAIChatStoredSession(stored, &saveError)) {
+		OutputStringToELog("[AI Chat][Session] save failed: " + saveError);
+	}
+}
+
+bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
+{
+	std::lock_guard<std::mutex> guard(g_session.mutex);
+	if (g_session.requestInFlight) {
+		return false;
+	}
+
+	g_session.messages.clear();
+	g_session.rollingSummary = stored.rollingSummaryLocal;
+	g_session.streamingAssistantPreview.clear();
+	g_session.activeSessionId = stored.sessionId;
+	g_session.activeSessionFilePath = stored.sessionFilePath;
+	g_session.sourceFilePathLocal = stored.sourceFilePathHintLocal.empty()
+		? GetCurrentChatSourceFilePathLocal()
+		: stored.sourceFilePathHintLocal;
+	g_session.sourceFileNameLocal = stored.sourceFileNameLocal.empty()
+		? GetCurrentChatSourceFileNameLocal()
+		: stored.sourceFileNameLocal;
+	g_session.createdAtUnixMs = stored.createdAtUnixMs;
+	g_session.requestInFlight = false;
+	g_session.activeRequestId = 0;
+	g_session.cancellation.reset();
+	g_session.nextRequestId = 1;
+
+	for (const auto& row : stored.messages) {
+		g_session.messages.push_back(SessionMessage{
+			ParseStoredMessageRole(row.role),
+			row.contentLocal,
+			row.includeInContext,
+			row.visibleInHistory,
+			row.reasoningContentUtf8,
+			row.rawMessageJsonUtf8
+		});
+	}
+	return true;
+}
+
+void ResetChatSessionBindingLocked(AIChatSessionState& state)
+{
+	state.activeSessionId.clear();
+	state.activeSessionFilePath.clear();
+	state.sourceFilePathLocal = GetCurrentChatSourceFilePathLocal();
+	state.sourceFileNameLocal = GetCurrentChatSourceFileNameLocal();
+	state.createdAtUnixMs = 0;
+}
+
+void RebindChatSessionToCurrentSourceIfNeeded()
+{
+	const std::string currentSourcePath = GetCurrentChatSourceFilePathLocal();
+	std::string previousSourcePath;
+	bool hadHistory = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (g_session.requestInFlight) {
+			return;
+		}
+		if (_stricmp(g_session.sourceFilePathLocal.c_str(), currentSourcePath.c_str()) == 0) {
+			if (g_session.sourceFileNameLocal.empty()) {
+				g_session.sourceFileNameLocal = GetCurrentChatSourceFileNameLocal();
+			}
+			return;
+		}
+		previousSourcePath = g_session.sourceFilePathLocal;
+		hadHistory = HasAnyChatHistoryLocked(g_session);
+		if (hadHistory) {
+			PersistChatSessionSnapshotLocked(g_session);
+		}
+		g_session.messages.clear();
+		g_session.rollingSummary.clear();
+		g_session.streamingAssistantPreview.clear();
+		ResetChatSessionBindingLocked(g_session);
+	}
+	if (!previousSourcePath.empty() || !currentSourcePath.empty()) {
+		OutputStringToELog(std::format(
+			"[AI Chat][Session] source rebind old={} new={} history_reset={}",
+			previousSourcePath.empty() ? "<empty>" : previousSourcePath,
+			currentSourcePath.empty() ? "<empty>" : currentSourcePath,
+			hadHistory ? 1 : 0));
+	}
+	PostRefreshDialog();
 }
 
 void ScrollEditToBottom(HWND hEdit)
@@ -938,6 +1229,10 @@ void PostChatAction(HWND hWnd, UINT_PTR action)
 	else if (action == kActionOpenSettings) {
 		OutputStringToELog("[AI Chat][UI] click action: open_settings");
 		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_OPEN_SETTINGS, 0, 0);
+	}
+	else if (action == kActionRestoreSession) {
+		OutputStringToELog("[AI Chat][UI] click action: restore_session");
+		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_RESTORE_LAST, 0, 0);
 	}
 	else {
 		OutputStringToELog("[AI Chat][UI] click action: submit");
@@ -1047,6 +1342,9 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		if (ctx->hClearHistory != nullptr) {
 			ShowWindow(ctx->hClearHistory, SW_HIDE);
 		}
+		if (ctx->hRestoreSession != nullptr) {
+			ShowWindow(ctx->hRestoreSession, SW_HIDE);
+		}
 		if (ctx->hOpenSettings != nullptr) {
 			ShowWindow(ctx->hOpenSettings, SW_HIDE);
 		}
@@ -1069,7 +1367,8 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int inputHeightSingle = 30;
 	const int inputHeightDouble = 54;
 	const int sendWidth = 92;
-	const int clearHistoryWidth = 98;
+	const int clearHistoryWidth = 26;
+	const int restoreHistoryWidth = 26;
 	const int openSettingsWidth = 108;
 	const int inputRowsVisible = ctx->inputRowsVisible >= 2 ? 2 : 1;
 	const int inputHeight = inputRowsVisible >= 2 ? inputHeightDouble : inputHeightSingle;
@@ -1096,8 +1395,12 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		ShowWindow(ctx->hClearHistory, SW_SHOW);
 		MoveWindow(ctx->hClearHistory, margin, actionRowY, clearHistoryWidth, actionRowHeight, TRUE);
 	}
+	if (ctx->hRestoreSession != nullptr) {
+		ShowWindow(ctx->hRestoreSession, SW_SHOW);
+		MoveWindow(ctx->hRestoreSession, margin + clearHistoryWidth + gap, actionRowY, restoreHistoryWidth, actionRowHeight, TRUE);
+	}
 	if (ctx->hOpenSettings != nullptr) {
-		MoveWindow(ctx->hOpenSettings, margin + clearHistoryWidth + gap, actionRowY, openSettingsWidth, actionRowHeight, TRUE);
+		MoveWindow(ctx->hOpenSettings, margin + clearHistoryWidth + gap + restoreHistoryWidth + gap, actionRowY, openSettingsWidth, actionRowHeight, TRUE);
 	}
 	if (ctx->hInput != nullptr) {
 		ShowWindow(ctx->hInput, SW_SHOW);
@@ -1161,6 +1464,45 @@ void ClearWebViewInput(ChatDialogContext* ctx)
 void FocusWebViewInput(ChatDialogContext* ctx)
 {
 	ExecuteWebViewScript(ctx, L"window.autolinkerFocusInput();");
+}
+
+void HideWebViewSessionMenu(ChatDialogContext* ctx)
+{
+	ExecuteWebViewScript(ctx, L"window.autolinkerHideSessionMenu();");
+}
+
+void ShowWebViewSessionMenu(ChatDialogContext* ctx, const std::vector<AIChatStoredSessionListEntry>& entries)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+
+	nlohmann::json payload = nlohmann::json::array();
+	for (const auto& entry : entries) {
+		payload.push_back({
+			{"sessionId", entry.sessionId},
+			{"title", LocalToUtf8Text(entry.titleLocal)},
+			{"updatedAt", LocalToUtf8Text(entry.updatedAtDisplayLocal)}
+		});
+	}
+
+	std::wstring script = L"window.autolinkerShowSessionMenu(";
+	script += WideFromUtf8Text(payload.dump());
+	script += L");";
+	ExecuteWebViewScript(ctx, script);
+}
+
+const AIChatStoredSessionListEntry* FindSessionMenuEntryById(const ChatDialogContext* ctx, const std::string& sessionId)
+{
+	if (ctx == nullptr) {
+		return nullptr;
+	}
+	for (const auto& entry : ctx->lastSessionMenuEntries) {
+		if (_stricmp(entry.sessionId.c_str(), sessionId.c_str()) == 0) {
+			return &entry;
+		}
+	}
+	return nullptr;
 }
 
 void UpdateHistoryWebViewHtml(ChatDialogContext* ctx, const std::string& htmlLocal)
@@ -1286,6 +1628,15 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												}
 												else if (action == "clear") {
 													HandleChatClearUi(hWnd, msgCtx);
+												}
+												else if (action == "show_sessions") {
+													HandleChatShowRecentSessionsUi(hWnd, msgCtx);
+												}
+												else if (action == "restore_session") {
+													const std::string sessionId = payload.contains("sessionId") && payload["sessionId"].is_string()
+														? payload["sessionId"].get<std::string>()
+														: std::string();
+													HandleChatRestoreSessionByIdUi(hWnd, msgCtx, sessionId);
 												}
 												else if (action == "stop") {
 													HandleChatStopUi(hWnd, msgCtx);
@@ -1759,6 +2110,22 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 	return out;
 }
 
+std::wstring WideFromUtf8Text(const std::string& text)
+{
+	if (text.empty()) {
+		return std::wstring();
+	}
+	const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+	if (size <= 0) {
+		return WideFromLocal(Utf8ToLocalText(text));
+	}
+	std::wstring out(static_cast<size_t>(size), L'\0');
+	if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), out.data(), size) <= 0) {
+		return WideFromLocal(Utf8ToLocalText(text));
+	}
+	return out;
+}
+
 bool IsStopRequestedLocked(const AIChatSessionState& state)
 {
 	return state.requestInFlight &&
@@ -1980,22 +2347,29 @@ bool QueryChatSettingsState(AISettings& outSettings, std::string* outMissingFiel
 
 void RecoverInFlightIfNeeded(const std::string& reason)
 {
-	std::lock_guard<std::mutex> guard(g_session.mutex);
-	if (!g_session.requestInFlight) {
-		return;
+	bool recovered = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight) {
+			return;
+		}
+		g_session.requestInFlight = false;
+		g_session.activeRequestId = 0;
+		g_session.cancellation.reset();
+		g_session.streamingAssistantPreview.clear();
+		g_session.messages.push_back(SessionMessage{
+			SessionRole::System,
+			"Chat request auto-recovered: " + reason,
+			false,
+			true,
+			"",
+			""
+		});
+		recovered = true;
 	}
-	g_session.requestInFlight = false;
-	g_session.activeRequestId = 0;
-	g_session.cancellation.reset();
-	g_session.streamingAssistantPreview.clear();
-	g_session.messages.push_back(SessionMessage{
-		SessionRole::System,
-		"Chat request auto-recovered: " + reason,
-		false,
-		true,
-		"",
-		""
-	});
+	if (recovered) {
+		SaveChatSessionSnapshotNow();
+	}
 }
 
 void AppendStreamingAssistantDelta(unsigned long long requestId, const std::string& deltaLocalText)
@@ -2147,6 +2521,7 @@ bool StartChatRequest(const std::string& userInput)
 	if (trimmed.empty()) {
 		return false;
 	}
+	RebindChatSessionToCurrentSourceIfNeeded();
 
 	AISettings settings = {};
 	if (!EnsureChatSettingsReady(settings)) {
@@ -2165,6 +2540,9 @@ bool StartChatRequest(const std::string& userInput)
 			return false;
 		}
 
+		g_session.sourceFilePathLocal = GetCurrentChatSourceFilePathLocal();
+		g_session.sourceFileNameLocal = GetCurrentChatSourceFileNameLocal();
+		EnsureChatSessionBindingLocked(g_session);
 		g_session.messages.push_back(SessionMessage{ SessionRole::User, trimmed, true, true, "", "" });
 		CompactHistoryLocked(g_session);
 
@@ -2177,6 +2555,7 @@ bool StartChatRequest(const std::string& userInput)
 		g_session.activeRequestId = request->requestId;
 		g_session.cancellation = request->cancellation;
 	}
+	SaveChatSessionSnapshotNow();
 
 	const uintptr_t threadId = _beginthread(RunAIChatWorker, 0, request.get());
 	if (threadId == static_cast<uintptr_t>(-1L)) {
@@ -2187,6 +2566,7 @@ bool StartChatRequest(const std::string& userInput)
 		g_session.streamingAssistantPreview.clear();
         g_session.messages.push_back(SessionMessage{ SessionRole::System, "Failed to start background chat task.", false, true, "", "" });
 		PostRefreshDialog();
+		SaveChatSessionSnapshotNow();
 		return false;
 	}
 
@@ -2200,6 +2580,7 @@ void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& te
 	if (ctx == nullptr) {
 		return;
 	}
+	HideWebViewSessionMenu(ctx);
 
 	const std::string trimmed = TrimAsciiCopy(text);
 	if (trimmed.empty()) {
@@ -2234,6 +2615,16 @@ void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx)
 	if (ctx == nullptr) {
 		return;
 	}
+	HideWebViewSessionMenu(ctx);
+	if (!ConfirmClearChatHistoryIfNeeded(hWnd)) {
+		if (ctx->webViewDesired) {
+			FocusWebViewInput(ctx);
+		}
+		else if (ctx->hInput != nullptr) {
+			SetFocus(ctx->hInput);
+		}
+		return;
+	}
 	if (!ctx->webViewDesired && ctx->hHistory != nullptr) {
 		SetWindowTextA(ctx->hHistory, "");
 	}
@@ -2246,6 +2637,44 @@ void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx)
 		SetFocus(ctx->hInput);
 	}
 	(void)hWnd;
+}
+
+void HandleChatRestoreSessionUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	(void)ctx;
+	TryPromptAndRestoreRecentChatSession(hWnd);
+}
+
+void HandleChatShowRecentSessionsUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	RebindChatSessionToCurrentSourceIfNeeded();
+	const std::vector<AIChatStoredSessionListEntry> sessions = LoadRecentChatSessionsForCurrentSource();
+	if (ctx != nullptr) {
+		ctx->lastSessionMenuEntries = sessions;
+	}
+	if (ctx != nullptr && ctx->webViewDesired && ctx->webViewContentReady) {
+		ShowWebViewSessionMenu(ctx, sessions);
+		return;
+	}
+	if (sessions.empty()) {
+		MessageBoxA(hWnd, "当前项目暂无历史会话。", "AI Chat", MB_ICONINFORMATION | MB_OK);
+		return;
+	}
+	TryPromptAndRestoreRecentChatSession(hWnd);
+}
+
+void HandleChatRestoreSessionByIdUi(HWND hWnd, ChatDialogContext* ctx, const std::string& sessionId)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	const AIChatStoredSessionListEntry* entry = FindSessionMenuEntryById(ctx, sessionId);
+	if (entry == nullptr) {
+		MessageBoxA(hWnd, "未找到对应的历史会话。", "AI Chat", MB_ICONWARNING | MB_OK);
+		return;
+	}
+	HideWebViewSessionMenu(ctx);
+	TryRestoreStoredChatSessionEntry(hWnd, *entry);
 }
 
 void HandleChatStopUi(HWND hWnd, ChatDialogContext* ctx)
@@ -2287,15 +2716,153 @@ void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx)
 	}
 }
 
+bool ConfirmClearChatHistoryIfNeeded(HWND owner)
+{
+	bool needConfirm = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (g_session.requestInFlight) {
+			return false;
+		}
+		needConfirm = HasAnyChatHistoryLocked(g_session);
+	}
+	if (!needConfirm) {
+		return true;
+	}
+
+	return ShowAIPreviewDialogEx(
+		owner != nullptr ? owner : g_mainWindow,
+		LocalFromWide(L"清空历史会话"),
+		LocalFromWide(L"确认清空当前 AI 对话历史？清空后下次发送将自动开启一个新会话。"),
+		LocalFromWide(L"清空"),
+		std::string()) == AIPreviewAction::PrimaryConfirm;
+}
+
+bool ConfirmRestoreChatHistoryIfNeeded(HWND owner)
+{
+	bool needConfirm = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		needConfirm = HasAnyChatHistoryLocked(g_session);
+	}
+	if (!needConfirm) {
+		return true;
+	}
+
+	return ShowAIPreviewDialogEx(
+		owner != nullptr ? owner : g_mainWindow,
+		LocalFromWide(L"恢复历史会话"),
+		LocalFromWide(L"当前已有对话，恢复历史会话将覆盖当前内容，是否继续？"),
+		LocalFromWide(L"覆盖恢复"),
+		std::string()) == AIPreviewAction::PrimaryConfirm;
+}
+
+std::vector<AIChatStoredSessionListEntry> LoadRecentChatSessionsForCurrentSource()
+{
+	const std::string sourceFilePath = GetCurrentChatSourceFilePathLocal();
+	return ListRecentAIChatStoredSessions(sourceFilePath, 10);
+}
+
+bool TryRestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry& selected)
+{
+	if (!ConfirmRestoreChatHistoryIfNeeded(hWnd)) {
+		return false;
+	}
+
+	AIChatStoredSession stored;
+	std::string loadError;
+	if (!LoadAIChatStoredSession(selected.sessionFilePath, stored, &loadError)) {
+		MessageBoxA(hWnd, ("恢复会话失败: " + loadError).c_str(), "AI Chat", MB_ICONERROR | MB_OK);
+		return false;
+	}
+
+	if (!ReplaceChatSessionStateFromStoredSession(stored)) {
+		MessageBoxA(hWnd, "当前有进行中的 AI 请求，暂时无法恢复会话。", "AI Chat", MB_ICONWARNING | MB_OK);
+		return false;
+	}
+
+	RefreshChatDialog(g_chatDialog != nullptr ? g_chatDialog : hWnd);
+	auto* dialogCtx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(
+		g_chatDialog != nullptr ? g_chatDialog : hWnd,
+		GWLP_USERDATA));
+	if (dialogCtx != nullptr && dialogCtx->webViewDesired) {
+		FocusWebViewInput(dialogCtx);
+	}
+	else if (dialogCtx != nullptr && dialogCtx->hInput != nullptr) {
+		SetFocus(dialogCtx->hInput);
+	}
+	return true;
+}
+
+bool TryPromptAndRestoreRecentChatSession(HWND hWnd)
+{
+	RebindChatSessionToCurrentSourceIfNeeded();
+
+	const std::vector<AIChatStoredSessionListEntry> sessions = LoadRecentChatSessionsForCurrentSource();
+	if (sessions.empty()) {
+		MessageBoxA(hWnd, "当前项目暂无历史会话。", "AI Chat", MB_ICONINFORMATION | MB_OK);
+		return false;
+	}
+
+	HMENU menu = CreatePopupMenu();
+	if (menu == nullptr) {
+		return false;
+	}
+
+	constexpr UINT kRestoreSessionMenuBase = 47000;
+	for (size_t i = 0; i < sessions.size(); ++i) {
+		std::string text = sessions[i].updatedAtDisplayLocal;
+		if (text.empty()) {
+			text = "未知时间";
+		}
+		text += "  ";
+		text += sessions[i].titleLocal.empty() ? "未命名会话" : sessions[i].titleLocal;
+		AppendMenuA(menu, MF_STRING, kRestoreSessionMenuBase + static_cast<UINT>(i), text.c_str());
+	}
+
+	RECT anchor = {};
+	auto* ctx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+	if (ctx != nullptr && ctx->hRestoreSession != nullptr && IsWindow(ctx->hRestoreSession)) {
+		GetWindowRect(ctx->hRestoreSession, &anchor);
+	}
+	else if (g_chatDialog != nullptr && IsWindow(g_chatDialog)) {
+		GetWindowRect(g_chatDialog, &anchor);
+	}
+	const int command = TrackPopupMenu(
+		menu,
+		TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
+		anchor.left,
+		anchor.bottom + 4,
+		0,
+		g_chatDialog != nullptr ? g_chatDialog : hWnd,
+		nullptr);
+	DestroyMenu(menu);
+
+	if (command < static_cast<int>(kRestoreSessionMenuBase) ||
+		command >= static_cast<int>(kRestoreSessionMenuBase + sessions.size())) {
+		return false;
+	}
+	return TryRestoreStoredChatSessionEntry(
+		hWnd,
+		sessions[static_cast<size_t>(command - kRestoreSessionMenuBase)]);
+}
+
 void ClearChatHistory()
 {
 	std::vector<SessionMessage> oldMessages;
 	std::string oldSummary;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (HasAnyChatHistoryLocked(g_session)) {
+			PersistChatSessionSnapshotLocked(g_session);
+		}
 		oldMessages.swap(g_session.messages);
 		oldSummary.swap(g_session.rollingSummary);
 		g_session.streamingAssistantPreview.clear();
+		g_session.requestInFlight = false;
+		g_session.activeRequestId = 0;
+		g_session.cancellation.reset();
+		ResetChatSessionBindingLocked(g_session);
 	}
 }
 
@@ -2304,21 +2871,9 @@ void RequestClearChatHistoryAsync()
 	if (g_clearHistoryInProgress.exchange(true)) {
 		return;
 	}
-
-	const uintptr_t tid = _beginthread(
-		[](void*) {
-			ClearChatHistory();
-			g_clearHistoryInProgress = false;
-			PostRefreshDialog();
-		},
-		0,
-		nullptr);
-	if (tid == static_cast<uintptr_t>(-1L)) {
-		// Thread creation failed: fall back to synchronous clear.
-		ClearChatHistory();
-		g_clearHistoryInProgress = false;
-		PostRefreshDialog();
-	}
+	ClearChatHistory();
+	g_clearHistoryInProgress = false;
+	PostRefreshDialog();
 }
 
 void RefreshProjectSourceCacheAfterChatTurn()
@@ -2480,11 +3035,14 @@ void HandleChatTaskDone(LPARAM lParam)
 	}
 
 	PostRefreshDialog();
+	SaveChatSessionSnapshotNow();
 	RefreshProjectSourceCacheAfterChatTurn();
 }
 
 void RefreshChatDialog(HWND hWnd)
 {
+	RebindChatSessionToCurrentSourceIfNeeded();
+
 	auto* ctx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
 	if (ctx == nullptr) {
 		return;
@@ -2520,6 +3078,9 @@ void RefreshChatDialog(HWND hWnd)
 	const bool nativeComposerVisible = !ctx->webViewContentReady;
 	if (ctx->hClearHistory != nullptr) {
 		EnableWindow(ctx->hClearHistory, inFlight ? FALSE : TRUE);
+	}
+	if (ctx->hRestoreSession != nullptr) {
+		EnableWindow(ctx->hRestoreSession, inFlight ? FALSE : TRUE);
 	}
 	if (ctx->hOpenSettings != nullptr) {
 		ShowWindow(ctx->hOpenSettings, settingsReady ? SW_HIDE : SW_SHOW);
@@ -2572,9 +3133,12 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 				nullptr,
 				nullptr);
 		}
-		ctx->hClearHistory = CreateWindowW(L"STATIC", L"\u6e05\u7a7a\u5386\u53f2\u4f1a\u8bdd",
+		ctx->hClearHistory = CreateWindowW(L"STATIC", L"\u2715",
 			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
-			14, 442, 106, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_HISTORY), nullptr, nullptr);
+			14, 442, 26, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_HISTORY), nullptr, nullptr);
+		ctx->hRestoreSession = CreateWindowW(L"STATIC", L"\u21BB",
+			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
+			44, 442, 26, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_RESTORE_SESSION), nullptr, nullptr);
 		ctx->hOpenSettings = CreateWindowW(L"STATIC", L"\u914d\u7f6e AI Key",
 			WS_CHILD | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			126, 442, 108, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_OPEN_SETTINGS), nullptr, nullptr);
@@ -2590,6 +3154,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 
 		SetDefaultFont(ctx->hHistory);
 		SetDefaultFont(ctx->hClearHistory);
+		SetDefaultFont(ctx->hRestoreSession);
 		SetDefaultFont(ctx->hOpenSettings);
 		SetDefaultFont(ctx->hInput);
 		SetDefaultFont(ctx->hSend);
@@ -2599,6 +3164,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		InstallChatActionControl(ctx->hSend, kActionSubmit);
 		InstallChatActionControl(ctx->hStop, kActionStop);
 		InstallChatActionControl(ctx->hClearHistory, kActionClear);
+		InstallChatActionControl(ctx->hRestoreSession, kActionRestoreSession);
 		InstallChatActionControl(ctx->hOpenSettings, kActionOpenSettings);
 		ctx->inputRowsVisible = 1;
 		LayoutAIChatDialog(hWnd, ctx);
@@ -2637,7 +3203,11 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 	case WM_CTLCOLORSTATIC:
 		if (ctx != nullptr) {
 			HWND hStatic = reinterpret_cast<HWND>(lParam);
-			if (hStatic != ctx->hClearHistory && hStatic != ctx->hOpenSettings && hStatic != ctx->hSend && hStatic != ctx->hStop) {
+			if (hStatic != ctx->hClearHistory &&
+				hStatic != ctx->hRestoreSession &&
+				hStatic != ctx->hOpenSettings &&
+				hStatic != ctx->hSend &&
+				hStatic != ctx->hStop) {
 				break;
 			}
 			HDC hdc = reinterpret_cast<HDC>(wParam);
@@ -2699,6 +3269,12 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 
 	case WM_AUTOLINKER_AI_CHAT_OPEN_SETTINGS:
 		HandleChatOpenSettingsUi(hWnd, ctx);
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_RESTORE_LAST:
+		if (ctx != nullptr) {
+			HandleChatRestoreSessionUi(hWnd, ctx);
+		}
 		return 0;
 
 	case WM_AUTOLINKER_AI_CHAT_REFRESH:
@@ -3288,6 +3864,13 @@ void ActivateTab()
 void OpenDialog()
 {
 	ActivateTab();
+}
+
+void OnCurrentSourceFilePathChanged(const std::string& previousPath, const std::string& currentPath)
+{
+	(void)previousPath;
+	(void)currentPath;
+	RebindChatSessionToCurrentSourceIfNeeded();
 }
 
 bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)

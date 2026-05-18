@@ -95,6 +95,9 @@
     <ClCompile Include="src\AIChatFeature.cpp">
       <Filter>AI</Filter>
     </ClCompile>
+    <ClCompile Include="src\AIChatSessionStore.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
     <ClCompile Include="src\AIChatTooling.cpp">
       <Filter>AI</Filter>
     </ClCompile>
@@ -194,6 +197,9 @@
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIChatFeature.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AIChatSessionStore.h">
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIChatTooling.h">
