@@ -2945,6 +2945,27 @@ AIChatResult ExecuteChatWithToolsClaude(
 			systemUtf8 += LocalToUtf8(msg.content);
 			continue;
 		}
+
+		nlohmann::json rawMessage;
+		if (TryParseRawChatMessageJson(msg.rawMessageJsonUtf8, rawMessage)) {
+			std::string rawRole;
+			if (rawMessage.contains("role") && rawMessage["role"].is_string()) {
+				rawRole = ToLowerAsciiCopy(AIService::Trim(rawMessage["role"].get<std::string>()));
+			}
+			if ((rawRole == "user" || rawRole == "assistant") && rawMessage.contains("content")) {
+				rawMessage["role"] = rawRole;
+				messages.push_back(std::move(rawMessage));
+				continue;
+			}
+			if (rawRole == "tool" && rawMessage.contains("content")) {
+				messages.push_back({
+					{"role", "user"},
+					{"content", rawMessage["content"]}
+				});
+				continue;
+			}
+		}
+
 		if (role != "user" && role != "assistant") {
 			continue;
 		}
@@ -3024,10 +3045,16 @@ AIChatResult ExecuteChatWithToolsClaude(
 		}
 
 		if (parsed.contains("content") && parsed["content"].is_array()) {
-			messages.push_back({
+			nlohmann::json assistantMessage = {
 				{"role", "assistant"},
 				{"content", parsed["content"]}
-			});
+			};
+			try {
+				result.contextPrefixRawMessagesUtf8.push_back(assistantMessage.dump());
+			}
+			catch (...) {
+			}
+			messages.push_back(std::move(assistantMessage));
 		}
 
 		for (size_t i = 0; i < toolCalls.size(); ++i) {
@@ -3056,15 +3083,25 @@ AIChatResult ExecuteChatWithToolsClaude(
 				return MarkChatResultCancelled(std::move(result));
 			}
 
+			nlohmann::json toolResultContent = nlohmann::json::array({
+				{
+					{"type", "tool_result"},
+					{"tool_use_id", callId},
+					{"content", compactPayload.textUtf8}
+				}
+			});
+			nlohmann::json rawToolMessage = {
+				{"role", "tool"},
+				{"content", toolResultContent}
+			};
+			try {
+				result.contextPrefixRawMessagesUtf8.push_back(rawToolMessage.dump());
+			}
+			catch (...) {
+			}
 			messages.push_back({
 				{"role", "user"},
-				{"content", nlohmann::json::array({
-					{
-						{"type", "tool_result"},
-						{"tool_use_id", callId},
-						{"content", compactPayload.textUtf8}
-					}
-				})}
+				{"content", std::move(toolResultContent)}
 			});
 		}
 	}
