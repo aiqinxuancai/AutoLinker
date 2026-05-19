@@ -2999,15 +2999,12 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 	const nlohmann::json tools = BuildResponsesToolDefinitions();
 
 	nlohmann::json input = nlohmann::json::array();
-	std::string previousResponseId;
-	bool skipAssistantEchoAfterPreviousResponse = false;
 	for (const AIChatMessage& msg : contextMessages) {
 		const std::string role = ToLowerAsciiCopy(AIService::Trim(msg.role));
 		nlohmann::json rawInputItem;
 		if (TryParseRawChatMessageJson(msg.rawMessageJsonUtf8, rawInputItem)) {
-			if (TryGetResponsesPreviousResponseId(rawInputItem, previousResponseId)) {
-				input = nlohmann::json::array();
-				skipAssistantEchoAfterPreviousResponse = true;
+			std::string ignoredResponseId;
+			if (TryGetResponsesPreviousResponseId(rawInputItem, ignoredResponseId)) {
 				continue;
 			}
 			if (IsResponsesInputItem(rawInputItem)) {
@@ -3016,10 +3013,6 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			}
 		}
 		if (role != "user" && role != "assistant") {
-			continue;
-		}
-		if (skipAssistantEchoAfterPreviousResponse && role == "assistant") {
-			skipAssistantEchoAfterPreviousResponse = false;
 			continue;
 		}
 		input.push_back(BuildResponsesTextMessage(role, LocalToUtf8(msg.content)));
@@ -3037,9 +3030,6 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		ApplyOpenAITemperatureIfSupported(requestBody, settings);
 		requestBody["instructions"] = instructionsUtf8;
 		requestBody["input"] = input;
-		if (!previousResponseId.empty()) {
-			requestBody["previous_response_id"] = previousResponseId;
-		}
 		requestBody["tools"] = tools;
 		requestBody["stream"] = false;
 		ApplyThinkingConfigToOpenAIResponsesRequest(requestBody, settings);
@@ -3086,16 +3076,6 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 				result.error = "Responses API response content is empty";
 				return result;
 			}
-			if (parsed.contains("id") && parsed["id"].is_string()) {
-				try {
-					result.contextPrefixRawMessagesUtf8.push_back(nlohmann::json{
-						{"type", "previous_response_ref"},
-						{"response_id", parsed["id"].get<std::string>()}
-					}.dump());
-				}
-				catch (...) {
-				}
-			}
 			result.ok = true;
 			result.content = Utf8ToLocal(textUtf8);
 			if (streamCallback) {
@@ -3105,6 +3085,18 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		}
 
 		AppendResponsesOutputItemsToInput(parsed, input);
+		if (parsed.contains("output") && parsed["output"].is_array()) {
+			for (const auto& item : parsed["output"]) {
+				if (!IsResponsesInputItem(item)) {
+					continue;
+				}
+				try {
+					result.contextPrefixRawMessagesUtf8.push_back(item.dump());
+				}
+				catch (...) {
+				}
+			}
+		}
 
 		for (size_t i = 0; i < toolCalls.size(); ++i) {
 			const ResponsesToolCall& call = toolCalls[i];
@@ -3132,11 +3124,17 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 				return MarkChatResultCancelled(std::move(result), Utf8ToLocal(textUtf8));
 			}
 
-			input.push_back({
+			nlohmann::json toolOutputItem = {
 				{"type", "function_call_output"},
 				{"call_id", callId},
 				{"output", compactPayload.textUtf8}
-			});
+			};
+			input.push_back(toolOutputItem);
+			try {
+				result.contextPrefixRawMessagesUtf8.push_back(toolOutputItem.dump());
+			}
+			catch (...) {
+			}
 		}
 	}
 

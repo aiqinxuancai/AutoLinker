@@ -328,10 +328,10 @@ nlohmann::json BuildDeepSeekIntegrationResultJson(const AISettings& settings)
 std::string BuildOpenAIToolArgumentsJson(const std::string& toolName)
 {
 	if (toolName == "fetch_url") {
-		return R"({"url":"https://platform.openai.com/docs/api-reference/chat/create-chat-completion","timeout_seconds":30,"max_bytes":262144})";
+		return R"({"url":"https://developers.openai.com/api/docs/api-reference/chat/create-chat-completion","timeout_seconds":30,"max_bytes":262144})";
 	}
 	if (toolName == "extract_web_document") {
-		return R"({"url":"https://platform.openai.com/docs/api-reference/responses/create?api-mode=responses","timeout_seconds":30,"max_bytes":262144})";
+		return R"({"url":"https://developers.openai.com/api/docs/api-reference/responses/create","timeout_seconds":30,"max_bytes":262144})";
 	}
 	return "{}";
 }
@@ -490,7 +490,7 @@ int RunOpenAIIntegrationTestInternal(
 		std::vector<AIChatMessage> contextMessages;
 		contextMessages.push_back({
 			"user",
-			"你必须先后调用两个工具：先 fetch_url 读取 https://platform.openai.com/docs/api-reference/chat/create-chat-completion ，再 extract_web_document 读取 https://platform.openai.com/docs/api-reference/responses/create?api-mode=responses 。完成后仅用一行中文回答，格式必须是：Chat页已读；Responses页已读；工具数=N。",
+			"你必须先后调用两个工具：先 fetch_url 读取 https://developers.openai.com/api/docs/api-reference/chat/create-chat-completion ，再 extract_web_document 读取 https://developers.openai.com/api/docs/api-reference/responses/create 。完成后仅用一行中文回答，格式必须是：Chat页已读；Responses页已读；工具数=N。",
 			"",
 			""
 		});
