@@ -347,6 +347,28 @@ nlohmann::json BuildOpenAIIntegrationResultJson(const AISettings& settings)
 	};
 }
 
+std::string BuildGeminiToolArgumentsJson(const std::string& toolName)
+{
+	if (toolName == "fetch_url") {
+		return R"({"url":"https://ai.google.dev/gemini-api/docs/models/gemini","timeout_seconds":30,"max_bytes":4096})";
+	}
+	if (toolName == "extract_web_document") {
+		return R"({"url":"https://ai.google.dev/gemini-api/docs/function-calling","timeout_seconds":30,"max_bytes":4096})";
+	}
+	return "{}";
+}
+
+nlohmann::json BuildGeminiIntegrationResultJson(const AISettings& settings)
+{
+	return {
+		{"provider", "gemini"},
+		{"model", settings.model},
+		{"base_url", settings.baseUrl},
+		{"thinking_level", AIService::ThinkingLevelToString(settings.thinkingLevel)},
+		{"protocol", AIService::ProtocolTypeToString(settings.protocolType)}
+	};
+}
+
 std::string ExtractMessageContentText(const nlohmann::json& parsed)
 {
 	if (!parsed.is_object() || !parsed.contains("content")) {
@@ -596,6 +618,186 @@ int RunOpenAIIntegrationTestInternal(
 			{"model", model},
 			{"base_url", (baseUrl != nullptr && baseUrl[0] != '\0') ? baseUrl : defaultBaseUrl},
 			{"protocol", protocolType == AIProtocolType::OpenAIResponses ? "openai_responses" : "openai"},
+			{"step", step},
+			{"error", "unknown exception"}
+		};
+		return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
+	}
+}
+
+int RunGeminiIntegrationTestInternal(
+	const char* apiKey,
+	const char* model,
+	const char* baseUrl,
+	char* buffer,
+	int bufferSize)
+{
+	if (apiKey == nullptr || model == nullptr) {
+		return AUTOLINKER_TEST_STRING_INVALID_ARGUMENT;
+	}
+
+	const char* defaultBaseUrl = "https://generativelanguage.googleapis.com";
+	std::string step = "init";
+	try {
+		AISettings settings = {};
+		settings.protocolType = AIProtocolType::Gemini;
+		settings.thinkingLevel = AIThinkingLevel::Off;
+		settings.baseUrl = (baseUrl != nullptr && baseUrl[0] != '\0') ? baseUrl : defaultBaseUrl;
+		settings.apiKey = apiKey;
+		settings.model = model;
+		settings.timeoutMs = 180000;
+		settings.maxToolRounds = 8;
+		settings.temperature = 0;
+
+		nlohmann::json report = BuildGeminiIntegrationResultJson(settings);
+		report["step"] = step;
+
+		step = "test_connection";
+		report["step"] = step;
+		const AIResult connectionResult = AIService::TestConnection(settings);
+		report["test_connection"] = {
+			{"ok", connectionResult.ok},
+			{"http_status", connectionResult.httpStatus},
+			{"content", connectionResult.content},
+			{"error", connectionResult.error}
+		};
+		if (!connectionResult.ok) {
+			report["ok"] = false;
+			return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
+		}
+
+		step = "simple_task";
+		report["step"] = step;
+		const AIResult simpleTaskResult = AIService::ExecuteTask(
+			AITaskKind::TranslateText,
+			"只返回这四个字符：测试通过",
+			settings);
+		report["simple_task"] = {
+			{"ok", simpleTaskResult.ok},
+			{"http_status", simpleTaskResult.httpStatus},
+			{"content", simpleTaskResult.content},
+			{"error", simpleTaskResult.error}
+		};
+		if (!simpleTaskResult.ok) {
+			report["ok"] = false;
+			return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
+		}
+
+		step = "tool_chat";
+		report["step"] = step;
+		std::vector<AIChatMessage> contextMessages;
+		contextMessages.push_back({
+			"user",
+			"你必须先后调用两个工具：先 fetch_url 读取 https://ai.google.dev/gemini-api/docs/models/gemini ，再 extract_web_document 读取 https://ai.google.dev/gemini-api/docs/function-calling 。完成后仅用一行中文回答，格式必须是：模型页已读；函数调用页已读；工具数=N。",
+			"",
+			""
+		});
+
+		std::vector<std::string> streamedDeltas;
+		const AIChatResult toolChatResult = AIService::ExecuteChatWithTools(
+			contextMessages,
+			settings,
+			[](const std::string& toolName, const std::string&, bool& outOk) -> std::string {
+				const std::string actualArgs = BuildGeminiToolArgumentsJson(toolName);
+				return ExecuteToolCall(toolName, actualArgs, outOk, false);
+			},
+			[&streamedDeltas](const std::string& deltaText) {
+				if (!deltaText.empty()) {
+					streamedDeltas.push_back(deltaText);
+				}
+			});
+
+		nlohmann::json toolEvents = nlohmann::json::array();
+		bool allToolEventsOk = true;
+		for (const auto& evt : toolChatResult.toolEvents) {
+			allToolEventsOk = allToolEventsOk && evt.ok;
+			toolEvents.push_back({
+				{"name", evt.name},
+				{"arguments_json", evt.argumentsJson},
+				{"result_json", evt.resultJson},
+				{"ok", evt.ok}
+			});
+		}
+		report["tool_chat"] = {
+			{"ok", toolChatResult.ok},
+			{"cancelled", toolChatResult.cancelled},
+			{"http_status", toolChatResult.httpStatus},
+			{"content", toolChatResult.content},
+			{"reasoning_content_present", !toolChatResult.reasoningContent.empty()},
+			{"reasoning_content_size", toolChatResult.reasoningContent.size()},
+			{"error", toolChatResult.error},
+			{"tool_events", std::move(toolEvents)},
+			{"all_tool_events_ok", allToolEventsOk},
+			{"stream_chunk_count", streamedDeltas.size()},
+			{"hidden_context_message_count", toolChatResult.contextPrefixRawMessagesUtf8.size()}
+		};
+		if (!toolChatResult.ok) {
+			report["ok"] = false;
+			return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
+		}
+
+		step = "followup_chat";
+		report["step"] = step;
+		std::vector<AIChatMessage> followupMessages = BuildFollowupMessagesFromChatResult(contextMessages, toolChatResult);
+		followupMessages.push_back({
+			"assistant",
+			toolChatResult.content,
+			toolChatResult.reasoningContent,
+			""
+		});
+		followupMessages.push_back({
+			"user",
+			"只回答：上一轮你实际调用了几个工具？输出阿拉伯数字。",
+			"",
+			""
+		});
+
+		const AIChatResult followupResult = AIService::ExecuteChatWithTools(
+			followupMessages,
+			settings,
+			[](const std::string& toolName, const std::string&, bool& outOk) -> std::string {
+				const std::string actualArgs = BuildGeminiToolArgumentsJson(toolName);
+				return ExecuteToolCall(toolName, actualArgs, outOk, false);
+			});
+		report["followup_chat"] = {
+			{"ok", followupResult.ok},
+			{"cancelled", followupResult.cancelled},
+			{"http_status", followupResult.httpStatus},
+			{"content", followupResult.content},
+			{"reasoning_content_present", !followupResult.reasoningContent.empty()},
+			{"reasoning_content_size", followupResult.reasoningContent.size()},
+			{"error", followupResult.error},
+			{"tool_event_count", followupResult.toolEvents.size()}
+		};
+
+		report["ok"] =
+			connectionResult.ok &&
+			simpleTaskResult.ok &&
+			toolChatResult.ok &&
+			followupResult.ok &&
+			toolChatResult.toolEvents.size() >= 2 &&
+			allToolEventsOk;
+		return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json report = {
+			{"ok", false},
+			{"provider", "gemini"},
+			{"model", model},
+			{"base_url", (baseUrl != nullptr && baseUrl[0] != '\0') ? baseUrl : defaultBaseUrl},
+			{"protocol", "gemini"},
+			{"step", step},
+			{"error", std::string("exception: ") + ex.what()}
+		};
+		return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
+	}
+	catch (...) {
+		nlohmann::json report = {
+			{"ok", false},
+			{"provider", "gemini"},
+			{"model", model},
+			{"base_url", (baseUrl != nullptr && baseUrl[0] != '\0') ? baseUrl : defaultBaseUrl},
+			{"protocol", "gemini"},
 			{"step", step},
 			{"error", "unknown exception"}
 		};
@@ -1033,6 +1235,21 @@ extern "C" int AutoLinkerTest_RunOpenAIResponsesIntegrationTest(
 {
 	return RunOpenAIIntegrationTestInternal(
 		AIProtocolType::OpenAIResponses,
+		apiKey,
+		model,
+		baseUrl,
+		buffer,
+		bufferSize);
+}
+
+extern "C" int AutoLinkerTest_RunGeminiIntegrationTest(
+	const char* apiKey,
+	const char* model,
+	const char* baseUrl,
+	char* buffer,
+	int bufferSize)
+{
+	return RunGeminiIntegrationTestInternal(
 		apiKey,
 		model,
 		baseUrl,

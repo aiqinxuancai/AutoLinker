@@ -1950,6 +1950,213 @@ nlohmann::json BuildChatToolDefinitions()
 	return tools;
 }
 
+nlohmann::json FindToolCatalogItemByName(const nlohmann::json& catalog, const std::string& name)
+{
+	for (const auto& item : catalog) {
+		if (item.is_object() && item.value("name", std::string()) == name) {
+			return item;
+		}
+	}
+	return nlohmann::json::object();
+}
+
+void AddUniqueToolName(std::vector<std::string>& names, const char* name)
+{
+	if (name == nullptr || *name == '\0') {
+		return;
+	}
+	if (std::find(names.begin(), names.end(), name) == names.end()) {
+		names.emplace_back(name);
+	}
+}
+
+std::string TruncateGeminiDescription(const std::string& text)
+{
+	if (text.size() <= 240) {
+		return text;
+	}
+	return text.substr(0, 240);
+}
+
+nlohmann::json SanitizeGeminiSchema(const nlohmann::json& schema)
+{
+	if (!schema.is_object()) {
+		return nlohmann::json::object();
+	}
+
+	nlohmann::json out = nlohmann::json::object();
+	if (schema.contains("type") && schema["type"].is_string()) {
+		out["type"] = schema["type"];
+	}
+	if (schema.contains("description") && schema["description"].is_string()) {
+		out["description"] = TruncateGeminiDescription(schema["description"].get<std::string>());
+	}
+	if (schema.contains("enum") && schema["enum"].is_array()) {
+		out["enum"] = schema["enum"];
+	}
+	if (schema.contains("required") && schema["required"].is_array()) {
+		out["required"] = schema["required"];
+	}
+	if (schema.contains("format") && schema["format"].is_string()) {
+		out["format"] = schema["format"];
+	}
+	if (schema.contains("nullable") && schema["nullable"].is_boolean()) {
+		out["nullable"] = schema["nullable"];
+	}
+	if (schema.contains("items") && schema["items"].is_object()) {
+		out["items"] = SanitizeGeminiSchema(schema["items"]);
+	}
+	if (schema.contains("properties") && schema["properties"].is_object()) {
+		nlohmann::json properties = nlohmann::json::object();
+		for (auto it = schema["properties"].begin(); it != schema["properties"].end(); ++it) {
+			properties[it.key()] = SanitizeGeminiSchema(it.value());
+		}
+		out["properties"] = std::move(properties);
+	}
+	return out;
+}
+
+std::string CollectGeminiToolRoutingText(const std::vector<AIChatMessage>& contextMessages)
+{
+	std::string text;
+	for (const AIChatMessage& msg : contextMessages) {
+		if (!text.empty()) {
+			text.push_back('\n');
+		}
+		text += msg.role;
+		text.push_back(':');
+		text += msg.content;
+		if (!msg.rawMessageJsonUtf8.empty()) {
+			text.push_back('\n');
+			text += msg.rawMessageJsonUtf8;
+		}
+	}
+	return text;
+}
+
+bool ContainsAnyText(const std::string& text, std::initializer_list<std::string_view> needles)
+{
+	for (std::string_view needle : needles) {
+		if (needle.empty()) {
+			continue;
+		}
+		if (text.find(needle) != std::string::npos || ContainsAsciiInsensitive(text, needle)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+std::vector<std::string> SelectGeminiToolNames(const std::vector<AIChatMessage>& contextMessages, bool minimal)
+{
+	const std::string text = CollectGeminiToolRoutingText(contextMessages);
+	std::vector<std::string> names;
+
+	const auto addCoreReadTools = [&names]() {
+		AddUniqueToolName(names, "get_current_eide_info");
+		AddUniqueToolName(names, "get_current_page_info");
+		AddUniqueToolName(names, "get_current_page_code");
+	};
+	const auto addProgramReadTools = [&names]() {
+		AddUniqueToolName(names, "list_program_items");
+		AddUniqueToolName(names, "get_program_item_real_code");
+		AddUniqueToolName(names, "read_program_item_real_code");
+	};
+	const auto addSearchTools = [&names]() {
+		AddUniqueToolName(names, "search_project_source_cache");
+		AddUniqueToolName(names, "read_project_source_cache_code");
+		AddUniqueToolName(names, "search_public_code");
+	};
+	const auto addEditTools = [&names]() {
+		AddUniqueToolName(names, "edit_program_item_code");
+		AddUniqueToolName(names, "multi_edit_program_item_code");
+		AddUniqueToolName(names, "diff_program_item_code");
+		AddUniqueToolName(names, "insert_program_item_code_block");
+	};
+	const auto addWebTools = [&names]() {
+		AddUniqueToolName(names, "fetch_url");
+		AddUniqueToolName(names, "extract_web_document");
+	};
+
+	if (ContainsAnyText(text, { "fetch_url", "extract_web_document", "http://", "https://", "URL", "url", "网页", "文档", "联网" })) {
+		addWebTools();
+	}
+	if (ContainsAnyText(text, { "search_web_tavily", "搜索网页", "公网", "最新", "官网" })) {
+		AddUniqueToolName(names, "search_web_tavily");
+		addWebTools();
+	}
+	if (ContainsAnyText(text, { "compile_with_output_path", "编译", "构建", "build", "MSBuild" })) {
+		AddUniqueToolName(names, "get_current_eide_info");
+		AddUniqueToolName(names, "compile_with_output_path");
+	}
+	if (ContainsAnyText(text, { "search_project_source_cache", "search_public_code", "搜索", "查找", "查询", "keyword", "regex" })) {
+		addSearchTools();
+	}
+	if (ContainsAnyText(text, { "修改", "写入", "替换", "编辑", "新增", "删除", "重构", "edit_", "write_", "insert_" })) {
+		addCoreReadTools();
+		addProgramReadTools();
+		addSearchTools();
+		addEditTools();
+	}
+	if (ContainsAnyText(text, { "模块", "ECOM", ".ec", "module" })) {
+		AddUniqueToolName(names, "list_imported_modules");
+		AddUniqueToolName(names, "get_module_public_info");
+		AddUniqueToolName(names, "search_module_public_code");
+		AddUniqueToolName(names, "read_module_public_code");
+	}
+	if (ContainsAnyText(text, { "支持库", "support library", ".fne", ".fnr" })) {
+		AddUniqueToolName(names, "list_support_libraries");
+		AddUniqueToolName(names, "get_support_library_info");
+		AddUniqueToolName(names, "search_support_library_public_code");
+		AddUniqueToolName(names, "read_support_library_public_code");
+	}
+	if (ContainsAnyText(text, { "PowerShell", "powershell", "命令行", "执行命令" })) {
+		AddUniqueToolName(names, "run_powershell_command");
+	}
+	if (ContainsAnyText(text, { "MCP", "实例", "端口", "转发" })) {
+		AddUniqueToolName(names, "list_local_mcp_instances");
+		AddUniqueToolName(names, "call_local_mcp_instance_tool");
+	}
+
+	if (names.empty()) {
+		addCoreReadTools();
+		addProgramReadTools();
+		addSearchTools();
+		AddUniqueToolName(names, "compile_with_output_path");
+	}
+	if (!minimal) {
+		AddUniqueToolName(names, "get_current_eide_info");
+		AddUniqueToolName(names, "get_current_page_info");
+	}
+
+	const size_t maxTools = minimal ? 6u : 12u;
+	if (names.size() > maxTools) {
+		names.resize(maxTools);
+	}
+	return names;
+}
+
+nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>& contextMessages, bool minimal)
+{
+	const nlohmann::json catalog = BuildPublicToolCatalog();
+	const std::vector<std::string> selectedNames = SelectGeminiToolNames(contextMessages, minimal);
+	nlohmann::json declarations = nlohmann::json::array();
+	for (const std::string& name : selectedNames) {
+		const nlohmann::json item = FindToolCatalogItemByName(catalog, name);
+		if (!item.is_object() || item.empty()) {
+			continue;
+		}
+		declarations.push_back({
+			{"name", item.value("name", "")},
+			{"description", TruncateGeminiDescription(item.value("description", ""))},
+			{"parameters", item.contains("inputSchema") ? SanitizeGeminiSchema(item["inputSchema"]) : nlohmann::json::object()}
+		});
+	}
+	return declarations.empty()
+		? nlohmann::json::array()
+		: nlohmann::json::array({ {{"functionDeclarations", declarations}} });
+}
+
 nlohmann::json BuildResponsesToolDefinitions()
 {
 	const nlohmann::json catalog = BuildPublicToolCatalog();
@@ -2064,6 +2271,33 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 	if (!agentsMd.empty()) {
 		prompt += "\n\n项目规范（来自 .AGENTS.md）：\n";
 		prompt += agentsMd;
+	}
+	return prompt;
+}
+
+std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal)
+{
+	std::string prompt =
+		"你是 AutoLinker 内置的易语言项目助手。\n"
+		"回答要直接、准确，优先使用已提供的工具获取工程上下文。\n"
+		"不要臆测当前页面、模块、支持库或源码内容。\n"
+		"如果需要读取网页或文档，优先调用 extract_web_document；需要原始响应时调用 fetch_url。\n"
+		"如果工具不可用或调用失败，说明限制并基于已有信息继续。\n"
+		"只输出对用户有用的结果，不输出内部推理过程。\n";
+
+	if (!minimal) {
+		prompt +=
+			"\n易语言要点：\n"
+			"- .版本、.子程序、.参数、.局部变量、.如果 等是易语言指令。\n"
+			"- 单引号 ' 开头表示注释；真/假 是布尔值。\n"
+			"- 赋值常写作 `变量 ＝ 值`，不要写成 C/C++ 风格。\n"
+			"- 修改代码前先读取真实源码；编译前先确认项目类型。\n";
+	}
+
+	const std::string extraPrompt = AIService::Trim(settings.extraSystemPrompt);
+	if (!extraPrompt.empty()) {
+		prompt += "\n附加系统提示：\n";
+		prompt += extraPrompt.size() > 1200 ? extraPrompt.substr(0, 1200) : extraPrompt;
 	}
 	return prompt;
 }
@@ -2223,8 +2457,8 @@ nlohmann::json BuildGeminiTools()
 		const nlohmann::json& fn = tool["function"];
 		declarations.push_back({
 			{"name", fn.value("name", "")},
-			{"description", fn.value("description", "")},
-			{"parameters", fn.value("parameters", nlohmann::json::object())}
+			{"description", TruncateGeminiDescription(fn.value("description", ""))},
+			{"parameters", SanitizeGeminiSchema(fn.value("parameters", nlohmann::json::object()))}
 		});
 	}
 	return nlohmann::json::array({ {{"functionDeclarations", declarations}} });
@@ -2277,6 +2511,9 @@ std::string ExtractGeminiTextUtf8(const nlohmann::json& parsed)
 	}
 	std::string textUtf8;
 	for (const auto& part : content["parts"]) {
+		if (part.is_object() && part.value("thought", false)) {
+			continue;
+		}
 		if (part.is_object() && part.contains("text") && part["text"].is_string()) {
 			textUtf8 += part["text"].get<std::string>();
 		}
@@ -2314,6 +2551,17 @@ std::string ExtractResponsesTextUtf8(const nlohmann::json& parsed)
 		}
 	}
 	return textUtf8;
+}
+
+bool IsGeminiResourceExhaustedResponse(int statusCode, const std::string& responseBody)
+{
+	if (statusCode != 429 && statusCode != 500 && statusCode != 503) {
+		return false;
+	}
+	const std::string lower = ToLowerAsciiCopy(responseBody);
+	return lower.find("resource has been exhausted") != std::string::npos ||
+		lower.find("quota") != std::string::npos ||
+		lower.find("exhausted") != std::string::npos;
 }
 
 struct ClaudeToolCall {
@@ -2841,9 +3089,10 @@ AIChatResult ExecuteChatWithToolsGemini(
 	}
 	std::string endpoint = BuildGeminiEndpoint(settings.baseUrl, LocalToUtf8(settings.model), false);
 	endpoint = AppendQueryParam(endpoint, "key", settings.apiKey);
-	const nlohmann::json tools = BuildGeminiTools();
+	nlohmann::json tools = BuildGeminiTools(contextMessages, false);
 
-	std::string systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings));
+	bool degradedRequestMode = false;
+	std::string systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, degradedRequestMode));
 	nlohmann::json contents = nlohmann::json::array();
 	for (const AIChatMessage& msg : contextMessages) {
 		const std::string role = ToLowerAsciiCopy(AIService::Trim(msg.role));
@@ -2875,7 +3124,9 @@ AIChatResult ExecuteChatWithToolsGemini(
 		};
 		requestBody["generationConfig"] = { {"temperature", settings.temperature} };
 		requestBody["contents"] = contents;
-		requestBody["tools"] = tools;
+		if (tools.is_array() && !tools.empty()) {
+			requestBody["tools"] = tools;
+		}
 		ApplyThinkingConfigToGeminiRequest(requestBody, settings);
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
@@ -2894,6 +3145,13 @@ AIChatResult ExecuteChatWithToolsGemini(
 			return MarkChatResultCancelled(std::move(result));
 		}
 		if (statusCode < 200 || statusCode >= 300) {
+			if (!degradedRequestMode && IsGeminiResourceExhaustedResponse(statusCode, responseBody)) {
+				degradedRequestMode = true;
+				systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, degradedRequestMode));
+				tools = BuildGeminiTools(contextMessages, true);
+				--round;
+				continue;
+			}
 			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
 			return result;
 		}
