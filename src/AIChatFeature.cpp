@@ -1399,7 +1399,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int sendWidth = 92;
 	const int clearHistoryWidth = 26;
 	const int restoreHistoryWidth = 26;
-	const int openSettingsWidth = 108;
+	const int openSettingsWidth = 26;
 	const int clearConfirmApplyWidth = 52;
 	const int clearConfirmCancelWidth = 52;
 	const int inputRowsVisible = ctx->inputRowsVisible >= 2 ? 2 : 1;
@@ -1433,9 +1433,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		MoveWindow(ctx->hRestoreSession, margin + clearHistoryWidth + gap, actionRowY, restoreHistoryWidth, actionRowHeight, TRUE);
 	}
 	if (ctx->hOpenSettings != nullptr) {
-		if (showClearConfirm) {
-			ShowWindow(ctx->hOpenSettings, SW_HIDE);
-		}
+		ShowWindow(ctx->hOpenSettings, showClearConfirm ? SW_HIDE : SW_SHOW);
 		MoveWindow(ctx->hOpenSettings, margin + clearHistoryWidth + gap + restoreHistoryWidth + gap, actionRowY, openSettingsWidth, actionRowHeight, TRUE);
 	}
 	if (ctx->hClearConfirmText != nullptr) {
@@ -1761,7 +1759,7 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 													HandleChatStopUi(hWnd, msgCtx);
 												}
 												else if (action == "open_settings") {
-													HandleChatOpenSettingsUi(hWnd, msgCtx);
+													PostMessageA(hWnd, WM_AUTOLINKER_AI_CHAT_OPEN_SETTINGS, 0, 0);
 												}
 											}
 											catch (...) {
@@ -2374,7 +2372,7 @@ std::string BuildHistoryTextLocked(
 		text += "[" + LocalFromWide(L"系统") + "]\r\n";
 		text += LocalFromWide(L"AI 配置未完成，当前无法发起对话。") + "\r\n";
 		text += LocalFromWide(L"缺少必填项：") + DescribeMissingChatSettingField(missingField) +
-			LocalFromWide(L"。请点击“配置 AI Key”完成设置。") + "\r\n\r\n";
+			LocalFromWide(L"\u3002\u8bf7\u70b9\u51fb\u8bbe\u7f6e\u6309\u94ae\u5b8c\u6210\u8bbe\u7f6e\u3002") + "\r\n\r\n";
 	}
 	for (const auto& msg : state.messages) {
 		text += "[";
@@ -3224,7 +3222,6 @@ void RefreshChatDialog(HWND hWnd)
 		EnableWindow(ctx->hRestoreSession, inFlight ? FALSE : TRUE);
 	}
 	if (ctx->hOpenSettings != nullptr) {
-		ShowWindow(ctx->hOpenSettings, settingsReady ? SW_HIDE : SW_SHOW);
 		EnableWindow(ctx->hOpenSettings, inFlight ? FALSE : TRUE);
 	}
 	if (ctx->hClearConfirmApply != nullptr) {
@@ -3289,9 +3286,9 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hRestoreSession = CreateWindowW(L"STATIC", L"\u21BB",
 			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			44, 442, 26, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_RESTORE_SESSION), nullptr, nullptr);
-		ctx->hOpenSettings = CreateWindowW(L"STATIC", L"\u914d\u7f6e AI Key",
-			WS_CHILD | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
-			126, 442, 108, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_OPEN_SETTINGS), nullptr, nullptr);
+		ctx->hOpenSettings = CreateWindowW(L"STATIC", L"\u2699",
+			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
+			76, 442, 26, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_OPEN_SETTINGS), nullptr, nullptr);
 		ctx->hClearConfirmText = CreateWindowW(L"STATIC", L"\u786e\u8ba4\u6e05\u7a7a\u5f53\u524d AI \u5bf9\u8bdd\uff1f\u6e05\u7a7a\u540e\u5c06\u5f00\u542f\u65b0\u4f1a\u8bdd\u3002",
 			WS_CHILD | SS_LEFT | SS_CENTERIMAGE,
 			14, 442, 540, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_CONFIRM_TEXT), nullptr, nullptr);
