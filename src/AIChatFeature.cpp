@@ -16,6 +16,7 @@
 #include <mutex>
 #include <new>
 #include <process.h>
+#include <Shellapi.h>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -49,6 +50,7 @@
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "shell32.lib")
 #if defined _M_IX86
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='x86' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #elif defined _M_X64
@@ -79,6 +81,7 @@ constexpr int IDC_AI_CHAT_RESTORE_SESSION = 32557;
 constexpr int IDC_AI_CHAT_CLEAR_CONFIRM_TEXT = 32558;
 constexpr int IDC_AI_CHAT_CLEAR_CONFIRM_APPLY = 32559;
 constexpr int IDC_AI_CHAT_CLEAR_CONFIRM_CANCEL = 32560;
+constexpr int IDC_AI_CHAT_MCP_GUIDE_LINK = 32561;
 
 constexpr UINT_PTR kEditSubclassId = 1;
 constexpr UINT_PTR kActionControlSubclassId = 2;
@@ -93,6 +96,9 @@ constexpr UINT_PTR kActionOpenSettings = 4;
 constexpr UINT_PTR kActionRestoreSession = 5;
 constexpr UINT_PTR kActionClearConfirm = 6;
 constexpr UINT_PTR kActionClearCancel = 7;
+
+constexpr const char* kChatMcpGuideUrl =
+	"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE";
 
 enum class SessionRole {
 	System,
@@ -155,6 +161,7 @@ struct ChatDialogContext {
 	HWND hClearConfirmText = nullptr;
 	HWND hClearConfirmApply = nullptr;
 	HWND hClearConfirmCancel = nullptr;
+	HWND hMcpGuideLink = nullptr;
 	int inputRowsVisible = 1;
 	bool clearConfirmVisible = false;
 	bool webViewDesired = false;
@@ -1369,6 +1376,9 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		if (ctx->hOpenSettings != nullptr) {
 			ShowWindow(ctx->hOpenSettings, SW_HIDE);
 		}
+		if (ctx->hMcpGuideLink != nullptr) {
+			ShowWindow(ctx->hMcpGuideLink, SW_HIDE);
+		}
 		if (ctx->hClearConfirmText != nullptr) {
 			ShowWindow(ctx->hClearConfirmText, SW_HIDE);
 		}
@@ -1394,6 +1404,8 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int bottomMargin = 4;
 	const int gap = 6;
 	const int actionRowHeight = 22;
+	const int mcpGuideHeight = 18;
+	const int mcpGuideGap = 2;
 	const int inputHeightSingle = 30;
 	const int inputHeightDouble = 54;
 	const int sendWidth = 92;
@@ -1410,7 +1422,8 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int inputWidth = (std::max)(80, contentWidth - sendWidth - gap);
 	const int sendX = margin + inputWidth + gap;
 	const int inputY = clientHeight - bottomMargin - inputHeight;
-	const int actionRowY = inputY - gap - actionRowHeight;
+	const int mcpGuideY = inputY - mcpGuideGap - mcpGuideHeight;
+	const int actionRowY = mcpGuideY - gap - actionRowHeight;
 	const int historyY = margin;
 	const int historyHeight = (std::max)(80, actionRowY - gap - historyY);
 
@@ -1462,6 +1475,10 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 			clearConfirmCancelWidth,
 			actionRowHeight,
 			TRUE);
+	}
+	if (ctx->hMcpGuideLink != nullptr) {
+		ShowWindow(ctx->hMcpGuideLink, SW_SHOW);
+		MoveWindow(ctx->hMcpGuideLink, margin, mcpGuideY, contentWidth, mcpGuideHeight, TRUE);
 	}
 	if (ctx->hInput != nullptr) {
 		ShowWindow(ctx->hInput, SW_SHOW);
@@ -1525,6 +1542,11 @@ void ClearWebViewInput(ChatDialogContext* ctx)
 void FocusWebViewInput(ChatDialogContext* ctx)
 {
 	ExecuteWebViewScript(ctx, L"window.autolinkerFocusInput();");
+}
+
+void OpenChatMcpGuideUrl(HWND owner)
+{
+	ShellExecuteA(owner != nullptr ? owner : g_mainWindow, "open", kChatMcpGuideUrl, nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 void FocusChatComposerInput(ChatDialogContext* ctx)
@@ -1760,6 +1782,14 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												}
 												else if (action == "open_settings") {
 													PostMessageA(hWnd, WM_AUTOLINKER_AI_CHAT_OPEN_SETTINGS, 0, 0);
+												}
+												else if (action == "open_url") {
+													const std::string url = payload.contains("url") && payload["url"].is_string()
+														? payload["url"].get<std::string>()
+														: std::string();
+													if (_stricmp(url.c_str(), kChatMcpGuideUrl) == 0) {
+														OpenChatMcpGuideUrl(hWnd);
+													}
 												}
 											}
 											catch (...) {
@@ -3298,6 +3328,16 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hClearConfirmCancel = CreateWindowW(L"STATIC", L"\u53d6\u6d88",
 			WS_CHILD | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			618, 442, 52, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_CONFIRM_CANCEL), nullptr, nullptr);
+		ctx->hMcpGuideLink = CreateWindowExW(
+			0,
+			L"SysLink",
+			L"<a href=\"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE\">\u63a8\u8350\u7528Codex\u8fde\u63a5MCP</a>",
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+			14, 468, 652, 20,
+			hWnd,
+			reinterpret_cast<HMENU>(IDC_AI_CHAT_MCP_GUIDE_LINK),
+			nullptr,
+			nullptr);
 		ctx->hInput = CreateWindowExA(WS_EX_CLIENTEDGE, "EDIT", "",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL | WS_VSCROLL,
 			14, 476, 652, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_INPUT), nullptr, nullptr);
@@ -3315,6 +3355,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		SetDefaultFont(ctx->hClearConfirmText);
 		SetDefaultFont(ctx->hClearConfirmApply);
 		SetDefaultFont(ctx->hClearConfirmCancel);
+		SetDefaultFont(ctx->hMcpGuideLink);
 		SetDefaultFont(ctx->hInput);
 		SetDefaultFont(ctx->hSend);
 		SetDefaultFont(ctx->hStop);
@@ -3360,6 +3401,17 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 			}
 		}
 		break;
+
+	case WM_NOTIFY: {
+		const auto* hdr = reinterpret_cast<const NMHDR*>(lParam);
+		if (hdr != nullptr &&
+			hdr->idFrom == IDC_AI_CHAT_MCP_GUIDE_LINK &&
+			(hdr->code == NM_CLICK || hdr->code == NM_RETURN)) {
+			OpenChatMcpGuideUrl(hWnd);
+			return 0;
+		}
+		break;
+	}
 
 	case WM_CTLCOLORSTATIC:
 		if (ctx != nullptr) {

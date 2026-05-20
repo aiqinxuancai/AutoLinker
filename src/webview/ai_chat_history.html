@@ -66,6 +66,21 @@ body {
 	gap: 8px;
 }
 
+.mcp-guide {
+	font-size: 12px;
+	line-height: 1.35;
+	text-align: left;
+}
+
+.mcp-guide a {
+	color: #0b63c9;
+	text-decoration: none;
+}
+
+.mcp-guide a:hover {
+	text-decoration: underline;
+}
+
 #chat-input {
 	width: 100%;
 	min-height: 58px;
@@ -386,6 +401,9 @@ body {
 	</div>
 	<div class="composer">
 		<div class="input-wrap">
+			<div class="mcp-guide">
+				<a class="mcp-guide-link" href="https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE">&#x63A8;&#x8350;&#x7528;Codex&#x8FDE;&#x63A5;MCP</a>
+			</div>
 			<textarea id="chat-input" placeholder="&#x8F93;&#x5165;&#x6D88;&#x606F;&#xFF0C;Enter &#x53D1;&#x9001;&#xFF0C;Ctrl+Enter &#x6362;&#x884C;"></textarea>
 			<div id="clear-confirm" class="clear-confirm" hidden>
 				<div class="clear-confirm-text">&#x786E;&#x8BA4;&#x6E05;&#x7A7A;&#x5F53;&#x524D; AI &#x5BF9;&#x8BDD;&#xFF1F;&#x6E05;&#x7A7A;&#x540E;&#x5C06;&#x5F00;&#x542F;&#x65B0;&#x4F1A;&#x8BDD;&#x3002;</div>
@@ -695,6 +713,12 @@ window.autolinkerFocusInput = function() {
 			e.preventDefault();
 			hideSessionMenu();
 			post({ action: "restore_session", sessionId: sessionBtn.getAttribute("data-session-id") || "" });
+			return;
+		}
+		var mcpGuideLink = e.target && e.target.closest ? e.target.closest(".mcp-guide-link") : null;
+		if (mcpGuideLink) {
+			e.preventDefault();
+			post({ action: "open_url", url: mcpGuideLink.getAttribute("href") || "" });
 			return;
 		}
 		var actionBtn = e.target && e.target.closest ? e.target.closest("[data-chat-action='open_settings']") : null;
