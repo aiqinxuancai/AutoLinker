@@ -50,7 +50,7 @@ API Key 就是一串密钥，相当于你访问 AI 服务的"账号密码"。
 你按 token 付费，成本极低（相比官方 API 可低 10 倍以上）
 ```
 
-这也是为什么同样是 GPT-4 / Claude，通过某些中转站调用的价格会比官方 API 便宜很多，本质上是在消耗会员订阅的额度。
+这也是为什么同样是 GPT-5.5 / Claude Opus 4.7，通过某些中转站调用的价格会比官方 API 便宜很多，本质上是在消耗会员订阅的额度。
 
 > 📌 **协议注意：** 逆向 Codex 等工具的中转站，其 GPT 接口通常走的是 **OpenAI Responses** 协议（即 `/responses` 端点），而非普通的 Chat 协议（`/chat/completions`）。配置时 Protocol 应选 `OpenAI Responses`，而不是默认的 `OpenAI Chat`，否则可能调用失败或功能不完整。Right 等主流逆向中转站已在平台预设中正确配置，直接选预设即可。
 
@@ -79,7 +79,7 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 | 模型名 | 特点 |
 |---|---|
-| `gpt-5.3-codex` | 代码能力强，适合编程辅助 |
+| `gpt-5.5` | 长上下文能力强，适合编程 |
 | `deepseek-chat` | 国内模型，价格实惠 |
 | `claude-sonnet-4-6` | 擅长理解和写作 |
 
