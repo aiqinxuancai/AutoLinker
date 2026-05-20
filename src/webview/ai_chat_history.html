@@ -275,6 +275,45 @@ body {
 	margin-top: 10px;
 }
 
+.clear-confirm {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	border: 1px solid #f0c6c1;
+	background: #fff7f6;
+	border-radius: 6px;
+	padding: 7px 8px;
+	box-sizing: border-box;
+}
+
+.clear-confirm[hidden] {
+	display: none;
+}
+
+.clear-confirm-text {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-size: 12px;
+	color: #374151;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+}
+
+.clear-confirm-actions {
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-left: auto;
+}
+
+.btn.danger {
+	background: #b42318;
+	border-color: #b42318;
+	color: #fff;
+}
+
 .muted {
 	color: #6b7280;
 }
@@ -348,6 +387,13 @@ body {
 	<div class="composer">
 		<div class="input-wrap">
 			<textarea id="chat-input" placeholder="&#x8F93;&#x5165;&#x6D88;&#x606F;&#xFF0C;Enter &#x53D1;&#x9001;&#xFF0C;Ctrl+Enter &#x6362;&#x884C;"></textarea>
+			<div id="clear-confirm" class="clear-confirm" hidden>
+				<div class="clear-confirm-text">&#x786E;&#x8BA4;&#x6E05;&#x7A7A;&#x5F53;&#x524D; AI &#x5BF9;&#x8BDD;&#xFF1F;&#x6E05;&#x7A7A;&#x540E;&#x5C06;&#x5F00;&#x542F;&#x65B0;&#x4F1A;&#x8BDD;&#x3002;</div>
+				<div class="clear-confirm-actions">
+					<button id="clear-confirm-btn" class="btn danger" type="button">&#x6E05;&#x7A7A;</button>
+					<button id="clear-cancel-btn" class="btn" type="button">&#x53D6;&#x6D88;</button>
+				</div>
+			</div>
 			<div class="actions">
 				<div class="left-actions">
 					<button id="clear-btn" class="btn icon-btn" type="button" title="&#x6E05;&#x7A7A;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;" aria-label="&#x6E05;&#x7A7A;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;">
@@ -387,6 +433,7 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	var stop = document.getElementById("stop-btn");
 	var clear = document.getElementById("clear-btn");
 	var restore = document.getElementById("restore-btn");
+	var clearConfirm = document.getElementById("clear-confirm");
 	var input = document.getElementById("chat-input");
 	var isBusy = !!busy;
 	var isStopping = !!stopRequested;
@@ -413,6 +460,9 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 		if (sessionMenu) {
 			sessionMenu.hidden = true;
 		}
+		if (clearConfirm) {
+			clearConfirm.hidden = true;
+		}
 	}
 };
 
@@ -437,6 +487,9 @@ window.autolinkerFocusInput = function() {
 	var stop = document.getElementById("stop-btn");
 	var clear = document.getElementById("clear-btn");
 	var restore = document.getElementById("restore-btn");
+	var clearConfirm = document.getElementById("clear-confirm");
+	var clearConfirmBtn = document.getElementById("clear-confirm-btn");
+	var clearCancelBtn = document.getElementById("clear-cancel-btn");
 	var sessionMenu = document.getElementById("session-menu");
 	var recentSessions = [];
 
@@ -494,6 +547,23 @@ window.autolinkerFocusInput = function() {
 		}
 	}
 
+	function hideClearConfirm() {
+		if (clearConfirm) {
+			clearConfirm.hidden = true;
+		}
+	}
+
+	function showClearConfirm() {
+		hideSessionMenu();
+		if (!clearConfirm) {
+			return;
+		}
+		clearConfirm.hidden = false;
+		if (clearConfirmBtn) {
+			clearConfirmBtn.focus();
+		}
+	}
+
 	function renderSessionMenu() {
 		if (!sessionMenu) {
 			return;
@@ -514,7 +584,10 @@ window.autolinkerFocusInput = function() {
 	}
 
 	window.autolinkerHideSessionMenu = hideSessionMenu;
+	window.autolinkerHideClearConfirm = hideClearConfirm;
+	window.autolinkerShowClearConfirm = showClearConfirm;
 	window.autolinkerShowSessionMenu = function(items) {
+		hideClearConfirm();
 		recentSessions = Array.isArray(items) ? items : [];
 		renderSessionMenu();
 		if (sessionMenu) {
@@ -553,6 +626,7 @@ window.autolinkerFocusInput = function() {
 		if (!input || input.disabled) {
 			return;
 		}
+		hideClearConfirm();
 		post({ action: "submit", text: input.value || "" });
 	}
 
@@ -572,8 +646,24 @@ window.autolinkerFocusInput = function() {
 			post({ action: "clear" });
 		});
 	}
+	if (clearConfirmBtn) {
+		clearConfirmBtn.addEventListener("click", function() {
+			hideClearConfirm();
+			post({ action: "clear_confirmed" });
+		});
+	}
+	if (clearCancelBtn) {
+		clearCancelBtn.addEventListener("click", function() {
+			hideClearConfirm();
+			post({ action: "clear_cancel" });
+			if (input) {
+				input.focus();
+			}
+		});
+	}
 	if (restore) {
 		restore.addEventListener("click", function() {
+			hideClearConfirm();
 			if (sessionMenu && !sessionMenu.hidden) {
 				hideSessionMenu();
 				return;
@@ -593,6 +683,7 @@ window.autolinkerFocusInput = function() {
 		var actionBtn = e.target && e.target.closest ? e.target.closest("[data-chat-action='open_settings']") : null;
 		if (actionBtn) {
 			e.preventDefault();
+			hideClearConfirm();
 			post({ action: "open_settings" });
 			return;
 		}
@@ -612,6 +703,12 @@ window.autolinkerFocusInput = function() {
 		var onRestoreBtn = restore && restore.contains && restore.contains(e.target);
 		if (!insideMenu && !onRestoreBtn) {
 			hideSessionMenu();
+		}
+	});
+
+	document.addEventListener("keydown", function(e) {
+		if (e.key === "Escape") {
+			hideClearConfirm();
 		}
 	});
 
