@@ -99,6 +99,8 @@ constexpr UINT_PTR kActionClearCancel = 7;
 
 constexpr const char* kChatMcpGuideUrl =
 	"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE";
+constexpr const char* kChatAgentWhitepaperUrl =
+	"https://github.com/aiqinxuancai/Awesome-E-Agent";
 
 enum class SessionRole {
 	System,
@@ -1404,7 +1406,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int bottomMargin = 4;
 	const int gap = 6;
 	const int actionRowHeight = 22;
-	const int mcpGuideHeight = 18;
+	const int mcpGuideHeight = 36;
 	const int mcpGuideGap = 2;
 	const int inputHeightSingle = 30;
 	const int inputHeightDouble = 54;
@@ -1544,9 +1546,18 @@ void FocusWebViewInput(ChatDialogContext* ctx)
 	ExecuteWebViewScript(ctx, L"window.autolinkerFocusInput();");
 }
 
-void OpenChatMcpGuideUrl(HWND owner)
+bool IsAllowedChatExternalUrl(const std::string& url)
 {
-	ShellExecuteA(owner != nullptr ? owner : g_mainWindow, "open", kChatMcpGuideUrl, nullptr, nullptr, SW_SHOWNORMAL);
+	return _stricmp(url.c_str(), kChatMcpGuideUrl) == 0 ||
+		_stricmp(url.c_str(), kChatAgentWhitepaperUrl) == 0;
+}
+
+void OpenChatExternalUrl(HWND owner, const std::string& url)
+{
+	if (!IsAllowedChatExternalUrl(url)) {
+		return;
+	}
+	ShellExecuteA(owner != nullptr ? owner : g_mainWindow, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
 void FocusChatComposerInput(ChatDialogContext* ctx)
@@ -1787,9 +1798,7 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 													const std::string url = payload.contains("url") && payload["url"].is_string()
 														? payload["url"].get<std::string>()
 														: std::string();
-													if (_stricmp(url.c_str(), kChatMcpGuideUrl) == 0) {
-														OpenChatMcpGuideUrl(hWnd);
-													}
+													OpenChatExternalUrl(hWnd, url);
 												}
 											}
 											catch (...) {
@@ -3331,9 +3340,10 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hMcpGuideLink = CreateWindowExW(
 			0,
 			L"SysLink",
-			L"<a href=\"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE\">\u63a8\u8350\u7528Codex\u8fde\u63a5MCP</a>",
+			L"<a href=\"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE\">\u63a8\u8350\u7528Codex\u8fde\u63a5MCP</a>\r\n"
+			L"<a href=\"https://github.com/aiqinxuancai/Awesome-E-Agent\">\u5fc5\u8bfb\uff1a\u6613\u8bed\u8a00 \u00d7 AI Agent \u5b9e\u8df5\u767d\u76ae\u4e66</a>",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-			14, 468, 652, 20,
+			14, 468, 652, 36,
 			hWnd,
 			reinterpret_cast<HMENU>(IDC_AI_CHAT_MCP_GUIDE_LINK),
 			nullptr,
@@ -3407,7 +3417,9 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		if (hdr != nullptr &&
 			hdr->idFrom == IDC_AI_CHAT_MCP_GUIDE_LINK &&
 			(hdr->code == NM_CLICK || hdr->code == NM_RETURN)) {
-			OpenChatMcpGuideUrl(hWnd);
+			const auto* link = reinterpret_cast<const NMLINK*>(lParam);
+			const std::string url = link != nullptr ? Utf8FromWide(link->item.szUrl) : std::string();
+			OpenChatExternalUrl(hWnd, url);
 			return 0;
 		}
 		break;
