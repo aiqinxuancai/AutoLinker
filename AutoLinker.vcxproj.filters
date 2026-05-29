@@ -50,6 +50,9 @@
     <ClCompile Include="src\AutoLinkerTestApi.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\EPackagerIntegration.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\ConfigManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -215,6 +218,9 @@
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\ConfigManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\EPackagerIntegration.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\EcModulePublicInfoReader.h">

@@ -3,6 +3,7 @@
 #include <unordered_map>
 #include <string>
 #include "AIService.h"
+#include "EPackagerIntegration.h"
 #include "Global.h"
 #include "IDEFacade.h"
 
@@ -198,6 +199,62 @@ bool EnsureTopLinkerSubMenu()
 	return true;
 }
 
+bool IsMenuSeparator(HMENU hMenu, int index)
+{
+	if (hMenu == NULL || index < 0) {
+		return false;
+	}
+	UINT state = GetMenuState(hMenu, static_cast<UINT>(index), MF_BYPOSITION);
+	return state != 0xFFFFFFFF && (state & MF_SEPARATOR) == MF_SEPARATOR;
+}
+
+void TrimTrailingSeparators(HMENU hMenu)
+{
+	if (hMenu == NULL) {
+		return;
+	}
+	for (;;) {
+		const int count = GetMenuItemCount(hMenu);
+		if (count <= 0 || !IsMenuSeparator(hMenu, count - 1)) {
+			return;
+		}
+		DeleteMenu(hMenu, static_cast<UINT>(count - 1), MF_BYPOSITION);
+	}
+}
+
+void RemoveExistingTopMenuExtensions(HMENU hTargetMenu)
+{
+	if (hTargetMenu == NULL) {
+		return;
+	}
+
+	for (int i = GetMenuItemCount(hTargetMenu) - 1; i >= 0; --i) {
+		MENUITEMINFOW mii = {};
+		mii.cbSize = sizeof(mii);
+		mii.fMask = MIIM_SUBMENU | MIIM_ID;
+
+		bool removeThis = false;
+		if (GetMenuItemInfoW(hTargetMenu, static_cast<UINT>(i), TRUE, &mii)) {
+			if (mii.hSubMenu == g_topLinkerSubMenu || mii.wID == IDM_AUTOLINKER_UNPACK_SOURCE) {
+				removeThis = true;
+			}
+		}
+		if (!removeThis) {
+			std::wstring title = GetMenuTitleW(hTargetMenu, static_cast<UINT>(i), MF_BYPOSITION);
+			if (title.find(L"链接器切换") != std::wstring::npos ||
+				title.find(L"使用的链接器") != std::wstring::npos ||
+				title.find(L"反编译到目录") != std::wstring::npos) {
+				removeThis = true;
+			}
+		}
+		if (removeThis) {
+			DeleteMenu(hTargetMenu, static_cast<UINT>(i), MF_BYPOSITION);
+		}
+	}
+
+	TrimTrailingSeparators(hTargetMenu);
+}
+
 void EnsureTopLinkerSubMenuAttached(HMENU hTargetMenu)
 {
 	if (hTargetMenu == NULL) {
@@ -207,44 +264,7 @@ void EnsureTopLinkerSubMenuAttached(HMENU hTargetMenu)
 		return;
 	}
 
-	bool alreadyAttached = false;
-	int attachedIndex = -1;
-	for (int i = GetMenuItemCount(hTargetMenu) - 1; i >= 0; --i) {
-		MENUITEMINFOW mii = {};
-		mii.cbSize = sizeof(mii);
-		mii.fMask = MIIM_SUBMENU;
-		bool removeThis = false;
-		if (GetMenuItemInfoW(hTargetMenu, static_cast<UINT>(i), TRUE, &mii) && mii.hSubMenu == g_topLinkerSubMenu) {
-			alreadyAttached = true;
-			attachedIndex = i;
-			continue;
-		}
-		if (!removeThis) {
-			std::wstring title = GetMenuTitleW(hTargetMenu, static_cast<UINT>(i), MF_BYPOSITION);
-			if (title.find(L"链接器切换") != std::wstring::npos) {
-				removeThis = true;
-			}
-		}
-		if (removeThis) {
-			DeleteMenu(hTargetMenu, static_cast<UINT>(i), MF_BYPOSITION);
-			if (i > 0) {
-				UINT prevState = GetMenuState(hTargetMenu, static_cast<UINT>(i - 1), MF_BYPOSITION);
-				if (prevState != 0xFFFFFFFF && (prevState & MF_SEPARATOR) == MF_SEPARATOR) {
-					DeleteMenu(hTargetMenu, static_cast<UINT>(i - 1), MF_BYPOSITION);
-				}
-			}
-		}
-	}
-
-	if (alreadyAttached) {
-		if (attachedIndex > 0) {
-			UINT prevState = GetMenuState(hTargetMenu, static_cast<UINT>(attachedIndex - 1), MF_BYPOSITION);
-			if (prevState == 0xFFFFFFFF || (prevState & MF_SEPARATOR) != MF_SEPARATOR) {
-				InsertMenuW(hTargetMenu, static_cast<UINT>(attachedIndex), MF_BYPOSITION | MF_SEPARATOR, 0, NULL);
-			}
-		}
-		return;
-	}
+	RemoveExistingTopMenuExtensions(hTargetMenu);
 
 	int count = GetMenuItemCount(hTargetMenu);
 	if (count > 0) {
@@ -254,6 +274,8 @@ void EnsureTopLinkerSubMenuAttached(HMENU hTargetMenu)
 		}
 	}
 	AppendMenuW(hTargetMenu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(g_topLinkerSubMenu), GetLinkerMenuTitle().c_str());
+	UINT unpackFlags = MF_STRING | (EPackagerIntegration::CanUnpackCurrentSource() ? MF_ENABLED : MF_GRAYED);
+	AppendMenuW(hTargetMenu, unpackFlags, IDM_AUTOLINKER_UNPACK_SOURCE, EPackagerIntegration::BuildUnpackMenuTitle().c_str());
 }
 
 void RebuildTopLinkerSubMenu()
@@ -292,6 +314,11 @@ void RebuildTopLinkerSubMenu()
 
 bool HandleTopLinkerMenuCommand(UINT cmd)
 {
+	if (cmd == IDM_AUTOLINKER_UNPACK_SOURCE) {
+		EPackagerIntegration::RunCurrentSourceUnpackToDirectory();
+		return true;
+	}
+
 	auto it = g_topLinkerCommandMap.find(cmd);
 	if (it == g_topLinkerCommandMap.end()) {
 		return false;
