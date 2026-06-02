@@ -143,7 +143,13 @@ bool ContainsRetryableTransportHint(const std::string& responseBody)
 
 bool ShouldRetryAiHttpRequest(int statusCode, const std::string& responseBody)
 {
-	return IsRetryableHttpStatus(statusCode) || ContainsRetryableTransportHint(responseBody);
+	if (IsSuccessfulHttpStatus(statusCode) || statusCode == kAiRequestCancelledHttpStatus) {
+		return false;
+	}
+	if (statusCode == 0) {
+		return responseBody.empty() || ContainsRetryableTransportHint(responseBody);
+	}
+	return IsRetryableHttpStatus(statusCode);
 }
 
 DWORD ComputeAiRetryDelayMs(int retryIndex)
