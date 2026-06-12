@@ -393,6 +393,48 @@ body {
 	font-size: 12px;
 	color: #6b7280;
 }
+
+.page-msgbox {
+	position: absolute;
+	left: 10px;
+	right: 10px;
+	bottom: 58px;
+	max-width: 480px;
+	margin: 0 auto;
+	background: #fff;
+	border: 1px solid #d6d6d6;
+	border-radius: 8px;
+	box-shadow: 0 12px 30px rgba(15, 23, 42, .18);
+	padding: 10px;
+	box-sizing: border-box;
+	z-index: 12;
+}
+
+.page-msgbox[hidden] {
+	display: none;
+}
+
+.page-msgbox-title {
+	font-size: 13px;
+	font-weight: 700;
+	color: #1f2937;
+	margin-bottom: 4px;
+}
+
+.page-msgbox-text {
+	font-size: 12px;
+	line-height: 1.45;
+	color: #374151;
+	overflow-wrap: anywhere;
+	word-break: break-word;
+}
+
+.page-msgbox-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 10px;
+}
 </style>
 </head>
 <body>
@@ -438,6 +480,14 @@ body {
 				</div>
 			</div>
 			<div id="session-menu" class="session-menu" hidden></div>
+			<div id="restore-confirm" class="page-msgbox" role="alertdialog" aria-labelledby="restore-confirm-title" aria-describedby="restore-confirm-text" hidden>
+				<div id="restore-confirm-title" class="page-msgbox-title">&#x6062;&#x590D;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;</div>
+				<div id="restore-confirm-text" class="page-msgbox-text">&#x5F53;&#x524D;&#x5DF2;&#x6709;&#x5BF9;&#x8BDD;&#xFF0C;&#x6062;&#x590D;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;&#x5C06;&#x8986;&#x76D6;&#x5F53;&#x524D;&#x5185;&#x5BB9;&#xFF0C;&#x662F;&#x5426;&#x7EE7;&#x7EED;&#xFF1F;</div>
+				<div class="page-msgbox-actions">
+					<button id="restore-confirm-btn" class="btn danger" type="button">&#x8986;&#x76D6;&#x6062;&#x590D;</button>
+					<button id="restore-cancel-btn" class="btn" type="button">&#x53D6;&#x6D88;</button>
+				</div>
+			</div>
 		</div>
 	</div>
 </div>
@@ -460,6 +510,7 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	var restore = document.getElementById("restore-btn");
 	var settings = document.getElementById("settings-btn");
 	var clearConfirm = document.getElementById("clear-confirm");
+	var restoreConfirm = document.getElementById("restore-confirm");
 	var input = document.getElementById("chat-input");
 	var isBusy = !!busy;
 	var isStopping = !!stopRequested;
@@ -492,6 +543,9 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 		if (clearConfirm) {
 			clearConfirm.hidden = true;
 		}
+		if (restoreConfirm) {
+			restoreConfirm.hidden = true;
+		}
 	}
 };
 
@@ -520,6 +574,9 @@ window.autolinkerFocusInput = function() {
 	var clearConfirm = document.getElementById("clear-confirm");
 	var clearConfirmBtn = document.getElementById("clear-confirm-btn");
 	var clearCancelBtn = document.getElementById("clear-cancel-btn");
+	var restoreConfirm = document.getElementById("restore-confirm");
+	var restoreConfirmBtn = document.getElementById("restore-confirm-btn");
+	var restoreCancelBtn = document.getElementById("restore-cancel-btn");
 	var sessionMenu = document.getElementById("session-menu");
 	var recentSessions = [];
 
@@ -583,14 +640,33 @@ window.autolinkerFocusInput = function() {
 		}
 	}
 
+	function hideRestoreConfirm() {
+		if (restoreConfirm) {
+			restoreConfirm.hidden = true;
+		}
+	}
+
 	function showClearConfirm() {
 		hideSessionMenu();
+		hideRestoreConfirm();
 		if (!clearConfirm) {
 			return;
 		}
 		clearConfirm.hidden = false;
 		if (clearConfirmBtn) {
 			clearConfirmBtn.focus();
+		}
+	}
+
+	function showRestoreConfirm() {
+		hideSessionMenu();
+		hideClearConfirm();
+		if (!restoreConfirm) {
+			return;
+		}
+		restoreConfirm.hidden = false;
+		if (restoreConfirmBtn) {
+			restoreConfirmBtn.focus();
 		}
 	}
 
@@ -615,9 +691,12 @@ window.autolinkerFocusInput = function() {
 
 	window.autolinkerHideSessionMenu = hideSessionMenu;
 	window.autolinkerHideClearConfirm = hideClearConfirm;
+	window.autolinkerHideRestoreConfirm = hideRestoreConfirm;
 	window.autolinkerShowClearConfirm = showClearConfirm;
+	window.autolinkerShowRestoreConfirm = showRestoreConfirm;
 	window.autolinkerShowSessionMenu = function(items) {
 		hideClearConfirm();
+		hideRestoreConfirm();
 		recentSessions = Array.isArray(items) ? items : [];
 		renderSessionMenu();
 		if (sessionMenu) {
@@ -657,6 +736,7 @@ window.autolinkerFocusInput = function() {
 			return;
 		}
 		hideClearConfirm();
+		hideRestoreConfirm();
 		post({ action: "submit", text: input.value || "" });
 	}
 
@@ -673,19 +753,37 @@ window.autolinkerFocusInput = function() {
 	if (clear) {
 		clear.addEventListener("click", function() {
 			hideSessionMenu();
+			hideRestoreConfirm();
 			post({ action: "clear" });
 		});
 	}
 	if (clearConfirmBtn) {
 		clearConfirmBtn.addEventListener("click", function() {
 			hideClearConfirm();
+			hideRestoreConfirm();
 			post({ action: "clear_confirmed" });
 		});
 	}
 	if (clearCancelBtn) {
 		clearCancelBtn.addEventListener("click", function() {
 			hideClearConfirm();
+			hideRestoreConfirm();
 			post({ action: "clear_cancel" });
+			if (input) {
+				input.focus();
+			}
+		});
+	}
+	if (restoreConfirmBtn) {
+		restoreConfirmBtn.addEventListener("click", function() {
+			hideRestoreConfirm();
+			post({ action: "restore_confirmed" });
+		});
+	}
+	if (restoreCancelBtn) {
+		restoreCancelBtn.addEventListener("click", function() {
+			hideRestoreConfirm();
+			post({ action: "restore_cancel" });
 			if (input) {
 				input.focus();
 			}
@@ -694,6 +792,7 @@ window.autolinkerFocusInput = function() {
 	if (restore) {
 		restore.addEventListener("click", function() {
 			hideClearConfirm();
+			hideRestoreConfirm();
 			if (sessionMenu && !sessionMenu.hidden) {
 				hideSessionMenu();
 				return;
@@ -705,6 +804,7 @@ window.autolinkerFocusInput = function() {
 		settings.addEventListener("click", function() {
 			hideSessionMenu();
 			hideClearConfirm();
+			hideRestoreConfirm();
 			post({ action: "open_settings" });
 		});
 	}
@@ -727,6 +827,7 @@ window.autolinkerFocusInput = function() {
 		if (actionBtn) {
 			e.preventDefault();
 			hideClearConfirm();
+			hideRestoreConfirm();
 			post({ action: "open_settings" });
 			return;
 		}
@@ -751,6 +852,11 @@ window.autolinkerFocusInput = function() {
 
 	document.addEventListener("keydown", function(e) {
 		if (e.key === "Escape") {
+			if (restoreConfirm && !restoreConfirm.hidden) {
+				hideRestoreConfirm();
+				post({ action: "restore_cancel" });
+				return;
+			}
 			hideClearConfirm();
 		}
 	});

@@ -69,6 +69,8 @@ constexpr UINT WM_AUTOLINKER_AI_CHAT_OPEN_SETTINGS = WM_APP + 208;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_RESTORE_LAST = WM_APP + 209;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_CLEAR_CONFIRMED = WM_APP + 210;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_CLEAR_CANCEL = WM_APP + 211;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_RESTORE_CONFIRMED = WM_APP + 212;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_RESTORE_CANCEL = WM_APP + 213;
 constexpr UINT_PTR kHistoryWebViewFlushTimerId = 0xA17;
 
 constexpr int IDC_AI_CHAT_HISTORY = 2101;
@@ -166,11 +168,14 @@ struct ChatDialogContext {
 	HWND hMcpGuideLink = nullptr;
 	int inputRowsVisible = 1;
 	bool clearConfirmVisible = false;
+	bool restoreConfirmVisible = false;
+	bool hasPendingRestoreSession = false;
 	bool webViewDesired = false;
 	bool webViewReady = false;
 	bool webViewContentReady = false;
 	bool webViewFlushScheduled = false;
 	std::string pendingHistoryHtml;
+	AIChatStoredSessionListEntry pendingRestoreSession;
 	std::vector<AIChatStoredSessionListEntry> lastSessionMenuEntries;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
@@ -271,9 +276,11 @@ void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatRestoreSessionUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatShowRecentSessionsUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatRestoreSessionByIdUi(HWND hWnd, ChatDialogContext* ctx, const std::string& sessionId);
-bool ConfirmRestoreChatHistoryIfNeeded(HWND owner);
+void HandleChatRestoreSessionConfirmedUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatRestoreSessionCancelUi(HWND hWnd, ChatDialogContext* ctx);
 std::vector<AIChatStoredSessionListEntry> LoadRecentChatSessionsForCurrentSource();
-bool TryRestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry& selected);
+bool BeginRestoreStoredChatSessionUi(HWND hWnd, ChatDialogContext* ctx, const AIChatStoredSessionListEntry& selected);
+bool RestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry& selected);
 bool TryPromptAndRestoreRecentChatSession(HWND hWnd);
 bool IsStopRequestedLocked(const AIChatSessionState& state);
 std::string DescribeMissingChatSettingField(const std::string& missingField);
@@ -1244,12 +1251,26 @@ void PostChatAction(HWND hWnd, UINT_PTR action)
 		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_CLEAR, 0, 0);
 	}
 	else if (action == kActionClearConfirm) {
-		OutputStringToELog("[AI Chat][UI] click action: clear_confirmed");
-		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_CLEAR_CONFIRMED, 0, 0);
+		auto* ctx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(hParent, GWLP_USERDATA));
+		if (ctx != nullptr && ctx->restoreConfirmVisible) {
+			OutputStringToELog("[AI Chat][UI] click action: restore_confirmed");
+			PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_RESTORE_CONFIRMED, 0, 0);
+		}
+		else {
+			OutputStringToELog("[AI Chat][UI] click action: clear_confirmed");
+			PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_CLEAR_CONFIRMED, 0, 0);
+		}
 	}
 	else if (action == kActionClearCancel) {
-		OutputStringToELog("[AI Chat][UI] click action: clear_cancel");
-		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_CLEAR_CANCEL, 0, 0);
+		auto* ctx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(hParent, GWLP_USERDATA));
+		if (ctx != nullptr && ctx->restoreConfirmVisible) {
+			OutputStringToELog("[AI Chat][UI] click action: restore_cancel");
+			PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_RESTORE_CANCEL, 0, 0);
+		}
+		else {
+			OutputStringToELog("[AI Chat][UI] click action: clear_cancel");
+			PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_CLEAR_CANCEL, 0, 0);
+		}
 	}
 	else if (action == kActionStop) {
 		OutputStringToELog("[AI Chat][UI] click action: stop");
@@ -1334,6 +1355,30 @@ void InstallChatActionControl(HWND hControl, UINT_PTR action)
 	}
 }
 
+bool HasVisibleInlineConfirm(const ChatDialogContext* ctx)
+{
+	return ctx != nullptr && (ctx->clearConfirmVisible || ctx->restoreConfirmVisible);
+}
+
+void UpdateNativeInlineConfirmText(ChatDialogContext* ctx)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	if (ctx->hClearConfirmText != nullptr) {
+		SetWindowTextW(
+			ctx->hClearConfirmText,
+			ctx->restoreConfirmVisible
+				? L"\u5f53\u524d\u5df2\u6709\u5bf9\u8bdd\uff0c\u6062\u590d\u5386\u53f2\u4f1a\u8bdd\u5c06\u8986\u76d6\u5f53\u524d\u5185\u5bb9\uff0c\u662f\u5426\u7ee7\u7eed\uff1f"
+				: L"\u786e\u8ba4\u6e05\u7a7a\u5f53\u524d AI \u5bf9\u8bdd\uff1f\u6e05\u7a7a\u540e\u5c06\u5f00\u542f\u65b0\u4f1a\u8bdd\u3002");
+	}
+	if (ctx->hClearConfirmApply != nullptr) {
+		SetWindowTextW(
+			ctx->hClearConfirmApply,
+			ctx->restoreConfirmVisible ? L"\u8986\u76d6\u6062\u590d" : L"\u6e05\u7a7a");
+	}
+}
+
 void ApplyMinTrackSize(HWND hWnd, MINMAXINFO* mmi, int minClientWidth, int minClientHeight)
 {
 	if (hWnd == nullptr || mmi == nullptr) {
@@ -1361,6 +1406,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 
 	if (ctx->webViewContentReady && ctx->hHistoryHost != nullptr) {
 		ctx->clearConfirmVisible = false;
+		ctx->restoreConfirmVisible = false;
 		if (ctx->hHistory != nullptr) {
 			MoveWindow(ctx->hHistory, 0, 0, (std::max)(120, clientWidth), (std::max)(80, clientHeight), TRUE);
 		}
@@ -1414,11 +1460,11 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int clearHistoryWidth = 26;
 	const int restoreHistoryWidth = 26;
 	const int openSettingsWidth = 26;
-	const int clearConfirmApplyWidth = 52;
+	const int clearConfirmApplyWidth = ctx->restoreConfirmVisible ? 72 : 52;
 	const int clearConfirmCancelWidth = 52;
 	const int inputRowsVisible = ctx->inputRowsVisible >= 2 ? 2 : 1;
 	const int inputHeight = inputRowsVisible >= 2 ? inputHeightDouble : inputHeightSingle;
-	const bool showClearConfirm = ctx->clearConfirmVisible;
+	const bool showInlineConfirm = HasVisibleInlineConfirm(ctx);
 
 	const int contentWidth = (std::max)(120, clientWidth - margin * 2);
 	const int inputWidth = (std::max)(80, contentWidth - sendWidth - gap);
@@ -1440,26 +1486,27 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		}
 	}
 	if (ctx->hClearHistory != nullptr) {
-		ShowWindow(ctx->hClearHistory, showClearConfirm ? SW_HIDE : SW_SHOW);
+		ShowWindow(ctx->hClearHistory, showInlineConfirm ? SW_HIDE : SW_SHOW);
 		MoveWindow(ctx->hClearHistory, margin, actionRowY, clearHistoryWidth, actionRowHeight, TRUE);
 	}
 	if (ctx->hRestoreSession != nullptr) {
-		ShowWindow(ctx->hRestoreSession, showClearConfirm ? SW_HIDE : SW_SHOW);
+		ShowWindow(ctx->hRestoreSession, showInlineConfirm ? SW_HIDE : SW_SHOW);
 		MoveWindow(ctx->hRestoreSession, margin + clearHistoryWidth + gap, actionRowY, restoreHistoryWidth, actionRowHeight, TRUE);
 	}
 	if (ctx->hOpenSettings != nullptr) {
-		ShowWindow(ctx->hOpenSettings, showClearConfirm ? SW_HIDE : SW_SHOW);
+		ShowWindow(ctx->hOpenSettings, showInlineConfirm ? SW_HIDE : SW_SHOW);
 		MoveWindow(ctx->hOpenSettings, margin + clearHistoryWidth + gap + restoreHistoryWidth + gap, actionRowY, openSettingsWidth, actionRowHeight, TRUE);
 	}
+	UpdateNativeInlineConfirmText(ctx);
 	if (ctx->hClearConfirmText != nullptr) {
 		const int textWidth = (std::max)(
 			120,
 			contentWidth - clearConfirmApplyWidth - clearConfirmCancelWidth - gap * 2);
-		ShowWindow(ctx->hClearConfirmText, showClearConfirm ? SW_SHOW : SW_HIDE);
+		ShowWindow(ctx->hClearConfirmText, showInlineConfirm ? SW_SHOW : SW_HIDE);
 		MoveWindow(ctx->hClearConfirmText, margin, actionRowY, textWidth, actionRowHeight, TRUE);
 	}
 	if (ctx->hClearConfirmApply != nullptr) {
-		ShowWindow(ctx->hClearConfirmApply, showClearConfirm ? SW_SHOW : SW_HIDE);
+		ShowWindow(ctx->hClearConfirmApply, showInlineConfirm ? SW_SHOW : SW_HIDE);
 		MoveWindow(
 			ctx->hClearConfirmApply,
 			margin + contentWidth - clearConfirmApplyWidth - clearConfirmCancelWidth - gap,
@@ -1469,7 +1516,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 			TRUE);
 	}
 	if (ctx->hClearConfirmCancel != nullptr) {
-		ShowWindow(ctx->hClearConfirmCancel, showClearConfirm ? SW_SHOW : SW_HIDE);
+		ShowWindow(ctx->hClearConfirmCancel, showInlineConfirm ? SW_SHOW : SW_HIDE);
 		MoveWindow(
 			ctx->hClearConfirmCancel,
 			margin + contentWidth - clearConfirmCancelWidth,
@@ -1584,6 +1631,26 @@ bool QueryClearChatHistoryAvailability(bool& needConfirm)
 	return true;
 }
 
+bool QueryRestoreChatSessionAvailability(bool& needConfirm)
+{
+	needConfirm = false;
+	std::lock_guard<std::mutex> guard(g_session.mutex);
+	if (g_session.requestInFlight) {
+		return false;
+	}
+	needConfirm = HasAnyChatHistoryLocked(g_session);
+	return true;
+}
+
+void ClearPendingRestoreSession(ChatDialogContext* ctx)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	ctx->hasPendingRestoreSession = false;
+	ctx->pendingRestoreSession = AIChatStoredSessionListEntry();
+}
+
 void HideClearChatConfirmInPage(ChatDialogContext* ctx)
 {
 	if (ctx == nullptr) {
@@ -1593,17 +1660,55 @@ void HideClearChatConfirmInPage(ChatDialogContext* ctx)
 	ExecuteWebViewScript(ctx, L"window.autolinkerHideClearConfirm();");
 }
 
+void HideRestoreChatConfirmInPage(ChatDialogContext* ctx, bool clearPending)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	ctx->restoreConfirmVisible = false;
+	ExecuteWebViewScript(ctx, L"window.autolinkerHideRestoreConfirm();");
+	if (clearPending) {
+		ClearPendingRestoreSession(ctx);
+	}
+}
+
+void HideChatConfirmInPage(ChatDialogContext* ctx)
+{
+	HideClearChatConfirmInPage(ctx);
+	HideRestoreChatConfirmInPage(ctx, true);
+}
+
 void ShowClearChatConfirmInPage(HWND hWnd, ChatDialogContext* ctx)
 {
 	if (ctx == nullptr) {
 		return;
 	}
+	HideRestoreChatConfirmInPage(ctx, true);
 	if (ctx->webViewDesired && ctx->webViewContentReady) {
 		ExecuteWebViewScript(ctx, L"window.autolinkerShowClearConfirm();");
 		return;
 	}
 
 	ctx->clearConfirmVisible = true;
+	LayoutAIChatDialog(hWnd, ctx);
+	if (ctx->hClearConfirmApply != nullptr) {
+		SetFocus(ctx->hClearConfirmApply);
+	}
+}
+
+void ShowRestoreChatConfirmInPage(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	HideClearChatConfirmInPage(ctx);
+	if (ctx->webViewDesired && ctx->webViewContentReady) {
+		ExecuteWebViewScript(ctx, L"window.autolinkerShowRestoreConfirm();");
+		return;
+	}
+
+	ctx->restoreConfirmVisible = true;
+	UpdateNativeInlineConfirmText(ctx);
 	LayoutAIChatDialog(hWnd, ctx);
 	if (ctx->hClearConfirmApply != nullptr) {
 		SetFocus(ctx->hClearConfirmApply);
@@ -1778,6 +1883,12 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												}
 												else if (action == "clear_cancel") {
 													HandleChatClearCancelUi(hWnd, msgCtx);
+												}
+												else if (action == "restore_confirmed") {
+													HandleChatRestoreSessionConfirmedUi(hWnd, msgCtx);
+												}
+												else if (action == "restore_cancel") {
+													HandleChatRestoreSessionCancelUi(hWnd, msgCtx);
 												}
 												else if (action == "show_sessions") {
 													HandleChatShowRecentSessionsUi(hWnd, msgCtx);
@@ -2737,7 +2848,7 @@ void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& te
 		return;
 	}
 	HideWebViewSessionMenu(ctx);
-	HideClearChatConfirmInPage(ctx);
+	HideChatConfirmInPage(ctx);
 	LayoutAIChatDialog(hWnd, ctx);
 
 	const std::string trimmed = TrimAsciiCopy(text);
@@ -2771,7 +2882,7 @@ void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx)
 	HideWebViewSessionMenu(ctx);
 	bool needConfirm = false;
 	if (!QueryClearChatHistoryAvailability(needConfirm)) {
-		HideClearChatConfirmInPage(ctx);
+		HideChatConfirmInPage(ctx);
 		LayoutAIChatDialog(hWnd, ctx);
 		FocusChatComposerInput(ctx);
 		return;
@@ -2790,7 +2901,7 @@ void HandleChatClearConfirmedUi(HWND hWnd, ChatDialogContext* ctx)
 		return;
 	}
 	HideWebViewSessionMenu(ctx);
-	HideClearChatConfirmInPage(ctx);
+	HideChatConfirmInPage(ctx);
 	LayoutAIChatDialog(hWnd, ctx);
 
 	bool needConfirm = false;
@@ -2813,7 +2924,7 @@ void HandleChatClearCancelUi(HWND hWnd, ChatDialogContext* ctx)
 	if (ctx == nullptr) {
 		return;
 	}
-	HideClearChatConfirmInPage(ctx);
+	HideChatConfirmInPage(ctx);
 	RefreshChatDialog(hWnd);
 	LayoutAIChatDialog(hWnd, ctx);
 	FocusChatComposerInput(ctx);
@@ -2822,7 +2933,7 @@ void HandleChatClearCancelUi(HWND hWnd, ChatDialogContext* ctx)
 void HandleChatRestoreSessionUi(HWND hWnd, ChatDialogContext* ctx)
 {
 	if (ctx != nullptr) {
-		HideClearChatConfirmInPage(ctx);
+		HideChatConfirmInPage(ctx);
 		LayoutAIChatDialog(hWnd, ctx);
 	}
 	TryPromptAndRestoreRecentChatSession(hWnd);
@@ -2832,7 +2943,7 @@ void HandleChatShowRecentSessionsUi(HWND hWnd, ChatDialogContext* ctx)
 {
 	RebindChatSessionToCurrentSourceIfNeeded();
 	if (ctx != nullptr) {
-		HideClearChatConfirmInPage(ctx);
+		HideChatConfirmInPage(ctx);
 		LayoutAIChatDialog(hWnd, ctx);
 	}
 	const std::vector<AIChatStoredSessionListEntry> sessions = LoadRecentChatSessionsForCurrentSource();
@@ -2861,9 +2972,9 @@ void HandleChatRestoreSessionByIdUi(HWND hWnd, ChatDialogContext* ctx, const std
 		return;
 	}
 	HideWebViewSessionMenu(ctx);
-	HideClearChatConfirmInPage(ctx);
+	HideChatConfirmInPage(ctx);
 	LayoutAIChatDialog(hWnd, ctx);
-	TryRestoreStoredChatSessionEntry(hWnd, *entry);
+	BeginRestoreStoredChatSessionUi(hWnd, ctx, *entry);
 }
 
 void HandleChatStopUi(HWND hWnd, ChatDialogContext* ctx)
@@ -2871,7 +2982,7 @@ void HandleChatStopUi(HWND hWnd, ChatDialogContext* ctx)
 	if (ctx == nullptr) {
 		return;
 	}
-	HideClearChatConfirmInPage(ctx);
+	HideChatConfirmInPage(ctx);
 	LayoutAIChatDialog(hWnd, ctx);
 	RequestStopCurrentChat();
 	RefreshChatDialog(hWnd);
@@ -2883,7 +2994,7 @@ void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx)
 	std::string missingField;
 	QueryChatSettingsState(settings, &missingField);
 	if (ctx != nullptr) {
-		HideClearChatConfirmInPage(ctx);
+		HideChatConfirmInPage(ctx);
 		LayoutAIChatDialog(hWnd, ctx);
 	}
 	OutputStringToELog("[AI Chat] open config dialog from chat page");
@@ -2911,37 +3022,62 @@ void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx)
 	}
 }
 
-bool ConfirmRestoreChatHistoryIfNeeded(HWND owner)
-{
-	bool needConfirm = false;
-	{
-		std::lock_guard<std::mutex> guard(g_session.mutex);
-		needConfirm = HasAnyChatHistoryLocked(g_session);
-	}
-	if (!needConfirm) {
-		return true;
-	}
-
-	return ShowAIPreviewDialogEx(
-		owner != nullptr ? owner : g_mainWindow,
-		LocalFromWide(L"恢复历史会话"),
-		LocalFromWide(L"当前已有对话，恢复历史会话将覆盖当前内容，是否继续？"),
-		LocalFromWide(L"覆盖恢复"),
-		std::string()) == AIPreviewAction::PrimaryConfirm;
-}
-
 std::vector<AIChatStoredSessionListEntry> LoadRecentChatSessionsForCurrentSource()
 {
 	const std::string sourceFilePath = GetCurrentChatSourceFilePathLocal();
 	return ListRecentAIChatStoredSessions(sourceFilePath, 10);
 }
 
-bool TryRestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry& selected)
+bool BeginRestoreStoredChatSessionUi(HWND hWnd, ChatDialogContext* ctx, const AIChatStoredSessionListEntry& selected)
 {
-	if (!ConfirmRestoreChatHistoryIfNeeded(hWnd)) {
+	bool needConfirm = false;
+	if (!QueryRestoreChatSessionAvailability(needConfirm)) {
+		MessageBoxA(hWnd, "当前有进行中的 AI 请求，暂时无法恢复会话。", "AI Chat", MB_ICONWARNING | MB_OK);
+		return false;
+	}
+	if (needConfirm) {
+		if (ctx == nullptr) {
+			return false;
+		}
+		ctx->pendingRestoreSession = selected;
+		ctx->hasPendingRestoreSession = true;
+		ShowRestoreChatConfirmInPage(hWnd, ctx);
 		return false;
 	}
 
+	return RestoreStoredChatSessionEntry(hWnd, selected);
+}
+
+void HandleChatRestoreSessionConfirmedUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx == nullptr || !ctx->hasPendingRestoreSession) {
+		if (ctx != nullptr) {
+			HideRestoreChatConfirmInPage(ctx, true);
+			LayoutAIChatDialog(hWnd, ctx);
+			FocusChatComposerInput(ctx);
+		}
+		return;
+	}
+
+	const AIChatStoredSessionListEntry selected = ctx->pendingRestoreSession;
+	HideRestoreChatConfirmInPage(ctx, true);
+	LayoutAIChatDialog(hWnd, ctx);
+	RestoreStoredChatSessionEntry(hWnd, selected);
+}
+
+void HandleChatRestoreSessionCancelUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	HideRestoreChatConfirmInPage(ctx, true);
+	RefreshChatDialog(hWnd);
+	LayoutAIChatDialog(hWnd, ctx);
+	FocusChatComposerInput(ctx);
+}
+
+bool RestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry& selected)
+{
 	AIChatStoredSession stored;
 	std::string loadError;
 	if (!LoadAIChatStoredSession(selected.sessionFilePath, stored, &loadError)) {
@@ -3015,8 +3151,9 @@ bool TryPromptAndRestoreRecentChatSession(HWND hWnd)
 		command >= static_cast<int>(kRestoreSessionMenuBase + sessions.size())) {
 		return false;
 	}
-	return TryRestoreStoredChatSessionEntry(
+	return BeginRestoreStoredChatSessionUi(
 		hWnd,
+		ctx,
 		sessions[static_cast<size_t>(command - kRestoreSessionMenuBase)]);
 }
 
@@ -3079,6 +3216,75 @@ void RefreshProjectSourceCacheAfterChatTurn()
 #endif
 }
 
+std::string BuildToolEventHistoryLine(const AIChatToolEvent& evt)
+{
+	std::string line =
+		LocalFromWide(L"\u8c03\u7528 ") + evt.name +
+		LocalFromWide(L"\uff0c\u8fd4\u56de\uff1a") + evt.resultJson;
+	if (line.size() > 1200) {
+		line.resize(1200);
+		line += "...";
+	}
+	return line;
+}
+
+std::string BuildToolEventSummaryLine(const std::vector<AIChatToolEvent>& events)
+{
+	std::string line = LocalFromWide(L"\u672c\u8f6e\u5171\u8c03\u7528\u5de5\u5177 ") +
+		std::to_string(events.size()) +
+		LocalFromWide(L" \u6b21\uff0c\u5df2\u4fdd\u7559\u6458\u8981\u3002\u6700\u8fd1\u5de5\u5177\uff1a");
+	const size_t keepCount = (std::min)(events.size(), static_cast<size_t>(5));
+	const size_t begin = events.size() - keepCount;
+	for (size_t i = begin; i < events.size(); ++i) {
+		if (i > begin) {
+			line += ", ";
+		}
+		line += events[i].name.empty() ? "<unknown>" : events[i].name;
+		line += events[i].ok ? "(ok)" : "(failed)";
+	}
+	if (begin > 0) {
+		line += LocalFromWide(L"\uff08\u524d\u9762 ");
+		line += std::to_string(begin);
+		line += LocalFromWide(L" \u6b21\u5df2\u7701\u7565\uff09");
+	}
+	return line;
+}
+
+void AppendToolEventHistoryMessagesLocked(AIChatSessionState& state, const AIChatResult& chatResult)
+{
+	if (chatResult.toolEvents.empty()) {
+		return;
+	}
+
+	const bool shouldSummarize =
+		chatResult.toolRoundsExceeded ||
+		chatResult.cancelled ||
+		!chatResult.ok ||
+		chatResult.toolEvents.size() > 16;
+	if (shouldSummarize && chatResult.toolEvents.size() > 8) {
+		state.messages.push_back(SessionMessage{
+			SessionRole::Tool,
+			BuildToolEventSummaryLine(chatResult.toolEvents),
+			false,
+			true,
+			"",
+			""
+		});
+		return;
+	}
+
+	for (const auto& evt : chatResult.toolEvents) {
+		state.messages.push_back(SessionMessage{
+			SessionRole::Tool,
+			BuildToolEventHistoryLine(evt),
+			false,
+			true,
+			"",
+			""
+		});
+	}
+}
+
 void HandleChatTaskDone(LPARAM lParam)
 {
 	std::unique_ptr<AIChatAsyncResult> result(reinterpret_cast<AIChatAsyncResult*>(lParam));
@@ -3097,69 +3303,62 @@ void HandleChatTaskDone(LPARAM lParam)
 		g_session.cancellation.reset();
 		g_session.streamingAssistantPreview.clear();
 
-		for (const auto& evt : result->chatResult.toolEvents) {
-			std::string line =
-				LocalFromWide(L"\u8c03\u7528 ") + evt.name +
-				LocalFromWide(L"\uff0c\u8fd4\u56de\uff1a") + evt.resultJson;
-			if (line.size() > 1200) {
-				line.resize(1200);
-				line += "...";
-			}
-			g_session.messages.push_back(SessionMessage{ SessionRole::Tool, line, false, true, "", "" });
-		}
+		AppendToolEventHistoryMessagesLocked(g_session, result->chatResult);
 
-		for (const auto& rawMessageJsonUtf8 : result->chatResult.contextPrefixRawMessagesUtf8) {
-			nlohmann::json parsedMessage;
-			try {
-				parsedMessage = nlohmann::json::parse(rawMessageJsonUtf8);
-			}
-			catch (...) {
-				continue;
-			}
-
-			if (!parsedMessage.is_object()) {
-				continue;
-			}
-
-			const std::string role = ToLowerAsciiCopySimple(AIService::Trim(parsedMessage.value("role", "")));
-			const std::string itemType = ToLowerAsciiCopySimple(AIService::Trim(parsedMessage.value("type", "")));
-			if (role == "assistant") {
-				std::string contentLocal;
-				if (parsedMessage.contains("content") && parsedMessage["content"].is_string()) {
-					contentLocal = NormalizeCodeForEIDE(parsedMessage["content"].get<std::string>());
+		if (result->chatResult.ok) {
+			for (const auto& rawMessageJsonUtf8 : result->chatResult.contextPrefixRawMessagesUtf8) {
+				nlohmann::json parsedMessage;
+				try {
+					parsedMessage = nlohmann::json::parse(rawMessageJsonUtf8);
 				}
-				std::string reasoningUtf8;
-				if (parsedMessage.contains("reasoning_content") && parsedMessage["reasoning_content"].is_string()) {
-					reasoningUtf8 = parsedMessage["reasoning_content"].get<std::string>();
+				catch (...) {
+					continue;
 				}
-				g_session.messages.push_back(SessionMessage{
-					SessionRole::Assistant,
-					contentLocal,
-					true,
-					false,
-					reasoningUtf8,
-					rawMessageJsonUtf8
-				});
-			}
-			else if (role == "tool") {
-				g_session.messages.push_back(SessionMessage{
-					SessionRole::Tool,
-					"",
-					true,
-					false,
-					"",
-					rawMessageJsonUtf8
-				});
-			}
-			else if (!itemType.empty()) {
-				g_session.messages.push_back(SessionMessage{
-					SessionRole::Tool,
-					"",
-					true,
-					false,
-					"",
-					rawMessageJsonUtf8
-				});
+
+				if (!parsedMessage.is_object()) {
+					continue;
+				}
+
+				const std::string role = ToLowerAsciiCopySimple(AIService::Trim(parsedMessage.value("role", "")));
+				const std::string itemType = ToLowerAsciiCopySimple(AIService::Trim(parsedMessage.value("type", "")));
+				if (role == "assistant") {
+					std::string contentLocal;
+					if (parsedMessage.contains("content") && parsedMessage["content"].is_string()) {
+						contentLocal = NormalizeCodeForEIDE(parsedMessage["content"].get<std::string>());
+					}
+					std::string reasoningUtf8;
+					if (parsedMessage.contains("reasoning_content") && parsedMessage["reasoning_content"].is_string()) {
+						reasoningUtf8 = parsedMessage["reasoning_content"].get<std::string>();
+					}
+					g_session.messages.push_back(SessionMessage{
+						SessionRole::Assistant,
+						contentLocal,
+						true,
+						false,
+						reasoningUtf8,
+						rawMessageJsonUtf8
+					});
+				}
+				else if (role == "tool") {
+					g_session.messages.push_back(SessionMessage{
+						SessionRole::Tool,
+						"",
+						true,
+						false,
+						"",
+						rawMessageJsonUtf8
+					});
+				}
+				else if (!itemType.empty()) {
+					g_session.messages.push_back(SessionMessage{
+						SessionRole::Tool,
+						"",
+						true,
+						false,
+						"",
+						rawMessageJsonUtf8
+					});
+				}
 			}
 		}
 
@@ -3197,9 +3396,16 @@ void HandleChatTaskDone(LPARAM lParam)
 			});
 		}
 		else {
-			const std::string err = result->chatResult.error.empty()
-				? LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25")
-				: (LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25: ") + result->chatResult.error);
+			std::string err;
+			if (result->chatResult.toolRoundsExceeded) {
+				err = LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25: ") + result->chatResult.error +
+					LocalFromWide(L"\u3002\u5df2\u4fdd\u7559\u5f53\u524d\u4f1a\u8bdd\u548c\u672c\u8f6e\u7528\u6237\u8f93\u5165\uff0c\u4e0b\u6b21\u53d1\u9001\u4f1a\u7ee7\u7eed\u5e26\u5165\u3002\u53ef\u5728 AI Key \u8bbe\u7f6e\u4e2d\u8c03\u9ad8\u6700\u5927\u5de5\u5177\u8f6e\u6570\uff0c\u6216\u8865\u5145\u66f4\u660e\u786e\u7684\u505c\u6b62\u6761\u4ef6\u3002");
+			}
+			else {
+				err = result->chatResult.error.empty()
+					? LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25")
+					: (LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25: ") + result->chatResult.error);
+			}
 			g_session.messages.push_back(SessionMessage{ SessionRole::System, err, false, true, "", "" });
 			OutputStringToELog("[" + LocalFromWide(L"AI\u5bf9\u8bdd") + "]" + err);
 		}
@@ -3243,9 +3449,9 @@ void RefreshChatDialog(HWND hWnd)
 		stopRequested = IsStopRequestedLocked(g_session);
 	}
 
-	const bool hideClearConfirmForBusy = inFlight && ctx->clearConfirmVisible;
-	if (hideClearConfirmForBusy) {
-		ctx->clearConfirmVisible = false;
+	const bool hideInlineConfirmForBusy = inFlight && HasVisibleInlineConfirm(ctx);
+	if (hideInlineConfirmForBusy) {
+		HideChatConfirmInPage(ctx);
 	}
 
 	SetWindowTextA(ctx->hHistory, history.c_str());
@@ -3279,7 +3485,7 @@ void RefreshChatDialog(HWND hWnd)
 		ShowWindow(ctx->hStop, (nativeComposerVisible && inFlight) ? SW_SHOW : SW_HIDE);
 	}
 	UpdateWebViewComposerState(ctx, inFlight, stopRequested);
-	if (hideClearConfirmForBusy) {
+	if (hideInlineConfirmForBusy) {
 		LayoutAIChatDialog(hWnd, ctx);
 	}
 }
@@ -3502,6 +3708,18 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 	case WM_AUTOLINKER_AI_CHAT_CLEAR_CANCEL:
 		if (ctx != nullptr) {
 			HandleChatClearCancelUi(hWnd, ctx);
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_RESTORE_CONFIRMED:
+		if (ctx != nullptr) {
+			HandleChatRestoreSessionConfirmedUi(hWnd, ctx);
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_RESTORE_CANCEL:
+		if (ctx != nullptr) {
+			HandleChatRestoreSessionCancelUi(hWnd, ctx);
 		}
 		return 0;
 

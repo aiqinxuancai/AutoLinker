@@ -83,6 +83,9 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 
 constexpr int kAiRequestRetryCount = 5;
 constexpr int kAiRequestCancelledHttpStatus = 499;
+constexpr int kMinToolRounds = 4;
+constexpr int kDefaultMaxToolRounds = 64;
+constexpr int kMaxToolRoundsLimit = 128;
 
 bool IsCancelRequested(
 	const std::function<bool()>& cancelCallback,
@@ -484,7 +487,7 @@ CompactToolResultPayload BuildCompactToolResultPayload(const std::string& toolNa
 
 int GetMaxToolRounds(const AISettings& settings)
 {
-	return (std::clamp)(settings.maxToolRounds, 4, 64);
+	return (std::clamp)(settings.maxToolRounds, kMinToolRounds, kMaxToolRoundsLimit);
 }
 
 bool IsValidHttpHeaderName(std::string_view name)
@@ -3112,6 +3115,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 		}
 	}
 
+	result.toolRoundsExceeded = true;
 	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
 	return result;
 }
@@ -3278,6 +3282,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 		}
 	}
 
+	result.toolRoundsExceeded = true;
 	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
 	return result;
 }
@@ -3439,6 +3444,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		}
 	}
 
+	result.toolRoundsExceeded = true;
 	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
 	return result;
 }
@@ -3513,10 +3519,10 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 	const std::string maxToolRoundsValue = jsonConfig.getValue("max_tool_rounds");
 	if (!maxToolRoundsValue.empty()) {
 		try {
-			outSettings.maxToolRounds = (std::clamp)(std::stoi(maxToolRoundsValue), 4, 64);
+			outSettings.maxToolRounds = (std::clamp)(std::stoi(maxToolRoundsValue), kMinToolRounds, kMaxToolRoundsLimit);
 		}
 		catch (...) {
-			outSettings.maxToolRounds = 48;
+			outSettings.maxToolRounds = kDefaultMaxToolRounds;
 		}
 	}
 
@@ -3535,7 +3541,7 @@ void AIService::SaveSettings(AIJsonConfig& jsonConfig, const AISettings& setting
 		{ "custom_headers",      settings.customHeadersText                  },
 		{ "tavily_api_key",      settings.tavilyApiKey                       },
 		{ "timeout_ms",          std::to_string(settings.timeoutMs)          },
-		{ "max_tool_rounds",     std::to_string((std::clamp)(settings.maxToolRounds, 4, 64)) },
+		{ "max_tool_rounds",     std::to_string(GetMaxToolRounds(settings)) },
 		{ "temperature",         std::format("{:.2f}", settings.temperature) },
 	});
 }
@@ -4146,6 +4152,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 		return result;
 	}
 
+	result.toolRoundsExceeded = true;
 	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
 	return result;
 }

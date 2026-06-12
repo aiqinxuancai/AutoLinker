@@ -393,6 +393,11 @@ p {
 					</select>
 				</div>
 				<div class="row">
+					<label for="maxToolRounds">Max Tool Rounds</label>
+					<input id="maxToolRounds" class="input" type="number" min="4" max="128" step="1" value="64">
+					<p class="tip">&#x5DE5;&#x5177;&#x8C03;&#x7528;&#x6700;&#x5927;&#x8F6E;&#x6570;&#xFF0C;&#x8D85;&#x8FC7;&#x540E;&#x4F1A;&#x4E2D;&#x6B62;&#x672C;&#x8F6E;&#x5BF9;&#x8BDD;&#x4EE5;&#x907F;&#x514D;&#x5FAA;&#x73AF;&#x8C03;&#x7528;</p>
+				</div>
+				<div class="row">
 					<label for="extraPrompt">System Prompt</label>
 					<textarea id="extraPrompt" class="textarea" placeholder="&#x9644;&#x52A0;&#x7CFB;&#x7EDF;&#x63D0;&#x793A;&#x8BCD;"></textarea>
 				</div>
@@ -456,6 +461,7 @@ const initialSettings = {
 		baseUrl: "",
 		apiKey: "",
 		model: "",
+		maxToolRounds: 64,
 		extraPrompt: "",
 		customHeaders: "",
 		tavilyApiKey: ""
@@ -484,6 +490,14 @@ function setField(id, value) {
 
 function trimText(value) {
 	return (value || "").trim();
+}
+
+function normalizeMaxToolRounds(value) {
+	var n = parseInt(value, 10);
+	if (!isFinite(n)) {
+		n = 64;
+	}
+	return Math.max(4, Math.min(128, n));
 }
 
 function endsWithInsensitive(text, suffix) {
@@ -602,6 +616,7 @@ function cloneProfile(profile) {
 		baseUrl: profile.baseUrl || "",
 		apiKey: profile.apiKey || "",
 		model: profile.model || "",
+		maxToolRounds: normalizeMaxToolRounds(profile.maxToolRounds),
 		extraPrompt: profile.extraPrompt || "",
 		customHeaders: profile.customHeaders || "",
 		tavilyApiKey: profile.tavilyApiKey || ""
@@ -627,6 +642,7 @@ function saveCurrentFormToActiveProfile() {
 	current.baseUrl = $("baseUrl").value || "";
 	current.apiKey = $("apiKey").value || "";
 	current.model = $("model").value || "";
+	current.maxToolRounds = normalizeMaxToolRounds($("maxToolRounds").value);
 	current.extraPrompt = $("extraPrompt").value || "";
 	current.customHeaders = $("customHeaders").value || "";
 	current.tavilyApiKey = $("tavilyApiKey").value || "";
@@ -662,6 +678,7 @@ function applyProfileToForm(profile) {
 	setField("baseUrl", profile.baseUrl);
 	setField("apiKey", profile.apiKey);
 	setField("model", profile.model);
+	setField("maxToolRounds", String(normalizeMaxToolRounds(profile.maxToolRounds)));
 	setField("extraPrompt", profile.extraPrompt);
 	setField("customHeaders", profile.customHeaders);
 	setField("tavilyApiKey", profile.tavilyApiKey);
@@ -726,6 +743,7 @@ function validate(data) {
 		alert("baseUrl / apiKey / model \u4E0D\u80FD\u4E3A\u7A7A\u3002");
 		return false;
 	}
+	current.maxToolRounds = normalizeMaxToolRounds(current.maxToolRounds);
 	if (!validateCustomHeaders(current.customHeaders || "")) {
 		return false;
 	}
@@ -807,6 +825,7 @@ $("addProfileBtn").addEventListener("click", function() {
 		baseUrl: "",
 		apiKey: "",
 		model: "",
+		maxToolRounds: 64,
 		extraPrompt: "",
 		customHeaders: "",
 		tavilyApiKey: ""

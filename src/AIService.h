@@ -45,7 +45,7 @@ struct AISettings {
 	std::string tavilyApiKey;
 	int timeoutMs = 120000;
 	// 工具调用最大轮数。
-	int maxToolRounds = 48;
+	int maxToolRounds = 64;
 	double temperature = 0.2;
 };
 
@@ -77,6 +77,8 @@ struct AIChatToolEvent {
 struct AIChatResult {
 	bool ok = false;
 	bool cancelled = false;
+	// 工具调用超过上限，用于上层避免保存未完成的工具链上下文。
+	bool toolRoundsExceeded = false;
 	std::string content;
 	std::string reasoningContent;
 	std::string error;
