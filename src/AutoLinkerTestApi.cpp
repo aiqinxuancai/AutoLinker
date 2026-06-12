@@ -492,7 +492,6 @@ int RunOpenAIIntegrationTestInternal(
 		settings.apiKey = apiKey;
 		settings.model = model;
 		settings.timeoutMs = 180000;
-		settings.maxToolRounds = 8;
 		settings.temperature = 0;
 
 		nlohmann::json report = BuildOpenAIIntegrationResultJson(settings);
@@ -668,7 +667,6 @@ int RunGeminiIntegrationTestInternal(
 		settings.apiKey = apiKey;
 		settings.model = model;
 		settings.timeoutMs = 180000;
-		settings.maxToolRounds = 8;
 		settings.temperature = 0;
 
 		nlohmann::json report = BuildGeminiIntegrationResultJson(settings);
@@ -848,7 +846,6 @@ int RunClaudeIntegrationTestInternal(
 		settings.apiKey = apiKey;
 		settings.model = model;
 		settings.timeoutMs = 180000;
-		settings.maxToolRounds = 8;
 		settings.temperature = 0;
 
 		nlohmann::json report = BuildClaudeIntegrationResultJson(settings);
@@ -1199,7 +1196,6 @@ extern "C" int AutoLinkerTest_RunDeepSeekModelIntegrationTest(
 		settings.apiKey = apiKey;
 		settings.model = model;
 		settings.timeoutMs = 180000;
-		settings.maxToolRounds = 8;
 		settings.temperature = 0;
 
 		nlohmann::json report = BuildDeepSeekIntegrationResultJson(settings);

@@ -44,8 +44,6 @@ struct AISettings {
 	std::string customHeadersText;
 	std::string tavilyApiKey;
 	int timeoutMs = 120000;
-	// 工具调用最大轮数。
-	int maxToolRounds = 64;
 	double temperature = 0.2;
 };
 

@@ -58,14 +58,6 @@ constexpr UINT kAIConfigWebViewInitTimeoutMs = 12000;
 constexpr UINT WM_AUTOLINKER_AI_CONFIG_TEST_DONE = WM_APP + 301;
 constexpr UINT_PTR kAIPreviewWebViewInitTimerId = 0xAC02;
 constexpr UINT kAIPreviewWebViewInitTimeoutMs = 12000;
-constexpr int kMinToolRounds = 4;
-constexpr int kDefaultMaxToolRounds = 64;
-constexpr int kMaxToolRoundsLimit = 128;
-
-int NormalizeMaxToolRounds(int value)
-{
-	return (std::clamp)(value, kMinToolRounds, kMaxToolRoundsLimit);
-}
 
 HMODULE GetCurrentModuleHandle()
 {
@@ -659,9 +651,6 @@ void ApplyProfileValuesToSettings(const std::map<std::string, std::string>& valu
 	if (const auto it = values.find("timeout_ms"); it != values.end()) {
 		try { settings.timeoutMs = (std::max)(1000, std::stoi(it->second)); } catch (...) {}
 	}
-	if (const auto it = values.find("max_tool_rounds"); it != values.end()) {
-		try { settings.maxToolRounds = NormalizeMaxToolRounds(std::stoi(it->second)); } catch (...) {}
-	}
 	if (const auto it = values.find("temperature"); it != values.end()) {
 		try { settings.temperature = std::stod(it->second); } catch (...) {}
 	}
@@ -679,7 +668,6 @@ std::map<std::string, std::string> BuildProfileValuesFromSettings(const AISettin
 		{ "custom_headers", settings.customHeadersText },
 		{ "tavily_api_key", settings.tavilyApiKey },
 		{ "timeout_ms", std::to_string(settings.timeoutMs) },
-		{ "max_tool_rounds", std::to_string(NormalizeMaxToolRounds(settings.maxToolRounds)) },
 		{ "temperature", std::format("{:.2f}", settings.temperature) }
 	};
 }
@@ -1001,7 +989,6 @@ std::string BuildAIConfigWebViewSettingsJson(const std::vector<AIConfigProfileEn
 		item["baseUrl"] = LocalToUtf8Text(profile.settings.baseUrl);
 		item["apiKey"] = LocalToUtf8Text(profile.settings.apiKey);
 		item["model"] = LocalToUtf8Text(profile.settings.model);
-		item["maxToolRounds"] = NormalizeMaxToolRounds(profile.settings.maxToolRounds);
 		item["extraPrompt"] = LocalToUtf8Text(profile.settings.extraSystemPrompt);
 		item["customHeaders"] = LocalToUtf8Text(profile.settings.customHeadersText);
 		item["tavilyApiKey"] = LocalToUtf8Text(profile.settings.tavilyApiKey);
@@ -1425,19 +1412,6 @@ AISettings ReadAISettingsFromWebProfilePayload(const AISettings& current, const 
 	next.baseUrl = Utf8ToLocalText(data.value("baseUrl", ""));
 	next.apiKey = Utf8ToLocalText(data.value("apiKey", ""));
 	next.model = Utf8ToLocalText(data.value("model", ""));
-	if (data.contains("maxToolRounds")) {
-		try {
-			if (data["maxToolRounds"].is_number_integer()) {
-				next.maxToolRounds = NormalizeMaxToolRounds(data["maxToolRounds"].get<int>());
-			}
-			else if (data["maxToolRounds"].is_string()) {
-				next.maxToolRounds = NormalizeMaxToolRounds(std::stoi(data["maxToolRounds"].get<std::string>()));
-			}
-		}
-		catch (...) {
-			next.maxToolRounds = kDefaultMaxToolRounds;
-		}
-	}
 	next.extraSystemPrompt = Utf8ToLocalText(data.value("extraPrompt", ""));
 	next.customHeadersText = Utf8ToLocalText(data.value("customHeaders", ""));
 	next.tavilyApiKey = Utf8ToLocalText(data.value("tavilyApiKey", ""));

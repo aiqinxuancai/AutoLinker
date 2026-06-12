@@ -83,9 +83,7 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 
 constexpr int kAiRequestRetryCount = 5;
 constexpr int kAiRequestCancelledHttpStatus = 499;
-constexpr int kMinToolRounds = 4;
-constexpr int kDefaultMaxToolRounds = 64;
-constexpr int kMaxToolRoundsLimit = 128;
+constexpr int kMaxToolRounds = 128;
 
 bool IsCancelRequested(
 	const std::function<bool()>& cancelCallback,
@@ -483,11 +481,6 @@ CompactToolResultPayload BuildCompactToolResultPayload(const std::string& toolNa
 
 	payload.textUtf8 = payload.jsonValue.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	return payload;
-}
-
-int GetMaxToolRounds(const AISettings& settings)
-{
-	return (std::clamp)(settings.maxToolRounds, kMinToolRounds, kMaxToolRoundsLimit);
 }
 
 bool IsValidHttpHeaderName(std::string_view name)
@@ -2986,7 +2979,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 		});
 	}
 
-	const int maxToolRounds = GetMaxToolRounds(settings);
+	const int maxToolRounds = kMaxToolRounds;
 	for (int round = 0; round < maxToolRounds; ++round) {
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return MarkChatResultCancelled(std::move(result));
@@ -3159,7 +3152,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 		});
 	}
 
-	const int maxToolRounds = GetMaxToolRounds(settings);
+	const int maxToolRounds = kMaxToolRounds;
 	for (int round = 0; round < maxToolRounds; ++round) {
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return MarkChatResultCancelled(std::move(result));
@@ -3325,7 +3318,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 	}
 
 	const std::string instructionsUtf8 = BuildResponsesInstructions(contextMessages, settings);
-	const int maxToolRounds = GetMaxToolRounds(settings);
+	const int maxToolRounds = kMaxToolRounds;
 	for (int round = 0; round < maxToolRounds; ++round) {
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return MarkChatResultCancelled(std::move(result));
@@ -3470,7 +3463,6 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 				{ "custom_headers",     "ai.custom_headers"       },
 				{ "tavily_api_key",     "ai.tavily_api_key"       },
 				{ "timeout_ms",         "ai.timeout_ms"           },
-				{ "max_tool_rounds",    "ai.max_tool_rounds"      },
 				{ "temperature",        "ai.temperature"          },
 			};
 			std::map<std::string, std::string> toMigrate;
@@ -3516,16 +3508,6 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 		}
 	}
 
-	const std::string maxToolRoundsValue = jsonConfig.getValue("max_tool_rounds");
-	if (!maxToolRoundsValue.empty()) {
-		try {
-			outSettings.maxToolRounds = (std::clamp)(std::stoi(maxToolRoundsValue), kMinToolRounds, kMaxToolRoundsLimit);
-		}
-		catch (...) {
-			outSettings.maxToolRounds = kDefaultMaxToolRounds;
-		}
-	}
-
 	return true;
 }
 
@@ -3541,7 +3523,6 @@ void AIService::SaveSettings(AIJsonConfig& jsonConfig, const AISettings& setting
 		{ "custom_headers",      settings.customHeadersText                  },
 		{ "tavily_api_key",      settings.tavilyApiKey                       },
 		{ "timeout_ms",          std::to_string(settings.timeoutMs)          },
-		{ "max_tool_rounds",     std::to_string(GetMaxToolRounds(settings)) },
 		{ "temperature",         std::format("{:.2f}", settings.temperature) },
 	});
 }
@@ -3964,7 +3945,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 	}
 
 	const nlohmann::json tools = BuildChatToolDefinitions();
-	const int maxToolRounds = GetMaxToolRounds(settings);
+	const int maxToolRounds = kMaxToolRounds;
 
 	for (int round = 0; round < maxToolRounds; ++round) {
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
