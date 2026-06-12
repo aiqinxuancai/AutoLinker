@@ -110,6 +110,12 @@
     <ClCompile Include="src\AIService.cpp">
       <Filter>AI</Filter>
     </ClCompile>
+    <ClCompile Include="src\WorkspaceMirror.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\WorkspaceFileTools.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
     <ClCompile Include="src\LocalMcpInstanceRegistry.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -215,6 +221,12 @@
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIJsonConfig.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\WorkspaceMirror.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\WorkspaceFileTools.h">
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\ConfigManager.h">

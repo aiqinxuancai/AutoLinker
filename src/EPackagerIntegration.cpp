@@ -70,14 +70,6 @@ struct LatestReleaseInfo {
 	std::string downloadUrl;
 };
 
-struct ProcessRunResult {
-	bool ok = false;
-	DWORD exitCode = 0;
-	std::string stdOutBytes;
-	std::string stdErrBytes;
-	std::string error;
-};
-
 struct UnpackRequest {
 	std::filesystem::path originalSourcePath;
 	std::filesystem::path snapshotPath;
@@ -247,7 +239,7 @@ std::filesystem::path BuildCurrentProjectSnapshotPath(const std::filesystem::pat
 	return BuildCurrentProjectSnapshotRoot() / fileName;
 }
 
-bool WriteCurrentProjectSnapshot(
+bool WriteCurrentProjectSnapshotImpl(
 	const std::filesystem::path& snapshotPath,
 	size_t& outBytesWritten,
 	std::string& outTrace,
@@ -297,7 +289,7 @@ bool ShouldRemoveSnapshotRoot(const std::filesystem::path& snapshotRoot)
 	return _wcsnicmp(rootText.c_str(), allowedText.c_str(), allowedText.size()) == 0;
 }
 
-void CleanupSnapshotRoot(const std::filesystem::path& snapshotRoot)
+void CleanupSnapshotRootImpl(const std::filesystem::path& snapshotRoot)
 {
 	if (!ShouldRemoveSnapshotRoot(snapshotRoot)) {
 		return;
@@ -379,7 +371,7 @@ void ReadPipeToBytes(HANDLE pipe, std::string* output)
 	}
 }
 
-ProcessRunResult RunProcessAndCapture(
+ProcessRunResult RunProcessAndCaptureImpl(
 	const std::filesystem::path& exePath,
 	const std::vector<std::wstring>& args,
 	const std::filesystem::path& workingDirectory)
@@ -610,7 +602,7 @@ std::string DetectInstalledVersion(const std::filesystem::path& exePath)
 		return std::string();
 	}
 
-	ProcessRunResult result = RunProcessAndCapture(exePath, { L"version" }, exePath.parent_path());
+	ProcessRunResult result = RunProcessAndCaptureImpl(exePath, { L"version" }, exePath.parent_path());
 	std::string text = BytesToLocalText(result.stdOutBytes);
 	if (!result.stdErrBytes.empty()) {
 		text += "\n";
@@ -773,7 +765,7 @@ bool DownloadAndInstallTool(const LatestReleaseInfo& info, std::string& outError
 	return true;
 }
 
-bool EnsureToolReady(std::filesystem::path& outToolPath, std::string& outError)
+bool EnsureToolReadyImpl(std::filesystem::path& outToolPath, std::string& outError)
 {
 	const std::filesystem::path toolPath = GetEPackagerExePath();
 	const bool toolExists = std::filesystem::exists(toolPath);
@@ -947,22 +939,22 @@ void UnpackWorker(void* param)
 		std::filesystem::create_directories(unpackDir, ec);
 		if (ec) {
 			OutputStringToELog("[e-packager] 创建输出目录失败：" + ec.message());
-			CleanupSnapshotRoot(snapshotRoot);
+			CleanupSnapshotRootImpl(snapshotRoot);
 			g_unpackTaskRunning.store(false);
 			return;
 		}
 
 		std::filesystem::path toolPath;
 		std::string error;
-		if (!EnsureToolReady(toolPath, error)) {
+		if (!EnsureToolReadyImpl(toolPath, error)) {
 			OutputStringToELog("[e-packager] " + error);
-			CleanupSnapshotRoot(snapshotRoot);
+			CleanupSnapshotRootImpl(snapshotRoot);
 			g_unpackTaskRunning.store(false);
 			return;
 		}
 
 		OutputStringToELog("[e-packager] 输出目录：" + LocalPathString(unpackDir));
-		ProcessRunResult result = RunProcessAndCapture(
+		ProcessRunResult result = RunProcessAndCaptureImpl(
 			toolPath,
 			{ L"unpack", snapshotPath.wstring(), unpackDir.wstring() },
 			toolPath.parent_path());
@@ -974,28 +966,79 @@ void UnpackWorker(void* param)
 				"[e-packager] 反编译失败，exitCode={} {}",
 				result.exitCode,
 				result.error));
-			CleanupSnapshotRoot(snapshotRoot);
+			CleanupSnapshotRootImpl(snapshotRoot);
 			g_unpackTaskRunning.store(false);
 			return;
 		}
 
 		OutputStringToELog("[e-packager] 反编译完成");
-		CleanupSnapshotRoot(snapshotRoot);
+		CleanupSnapshotRootImpl(snapshotRoot);
 		OpenDirectoryInExplorer(unpackDir);
 	}
 	catch (const std::exception& ex) {
 		OutputStringToELog(std::string("[e-packager] 反编译异常：") + ex.what());
-		CleanupSnapshotRoot(snapshotRoot);
+		CleanupSnapshotRootImpl(snapshotRoot);
 	}
 	catch (...) {
 		OutputStringToELog("[e-packager] 反编译发生未知异常");
-		CleanupSnapshotRoot(snapshotRoot);
+		CleanupSnapshotRootImpl(snapshotRoot);
 	}
 
 	g_unpackTaskRunning.store(false);
 }
 
 } // namespace
+
+bool GetCurrentSourcePath(std::filesystem::path& outSourcePath, std::string& outError)
+{
+	outSourcePath.clear();
+	outError.clear();
+	UpdateCurrentOpenSourceFile();
+	if (g_nowOpenSourceFilePath.empty()) {
+		outError = "当前没有打开易语言源码文件";
+		return false;
+	}
+
+	outSourcePath = PathFromLocal(g_nowOpenSourceFilePath);
+	const std::wstring ext = outSourcePath.extension().wstring();
+	if (_wcsicmp(ext.c_str(), L".e") != 0) {
+		outError = "当前打开的不是 .e 源码文件";
+		return false;
+	}
+	return true;
+}
+
+std::filesystem::path BuildCurrentProjectSnapshotPathForSource(const std::filesystem::path& sourcePath)
+{
+	return BuildCurrentProjectSnapshotPath(sourcePath);
+}
+
+bool WriteCurrentProjectSnapshot(
+	const std::filesystem::path& snapshotPath,
+	size_t& outBytesWritten,
+	std::string& outTrace,
+	std::string& outError)
+{
+	return WriteCurrentProjectSnapshotImpl(snapshotPath, outBytesWritten, outTrace, outError);
+}
+
+void CleanupSnapshotRoot(const std::filesystem::path& snapshotRoot)
+{
+	CleanupSnapshotRootImpl(snapshotRoot);
+}
+
+bool EnsureToolReady(std::filesystem::path& outToolPath, std::string& outError)
+{
+	return EnsureToolReadyImpl(outToolPath, outError);
+}
+
+ProcessRunResult RunProcessAndCapture(
+	const std::filesystem::path& exePath,
+	const std::vector<std::wstring>& args,
+	const std::filesystem::path& workingDirectory)
+{
+	return RunProcessAndCaptureImpl(exePath, args, workingDirectory);
+}
 
 std::wstring BuildUnpackMenuTitle()
 {
@@ -1038,14 +1081,14 @@ void RunCurrentSourceUnpackToDirectory()
 	size_t snapshotBytes = 0;
 	std::string snapshotTrace;
 	std::string snapshotError;
-	if (!WriteCurrentProjectSnapshot(snapshotPath, snapshotBytes, snapshotTrace, snapshotError)) {
+	if (!WriteCurrentProjectSnapshotImpl(snapshotPath, snapshotBytes, snapshotTrace, snapshotError)) {
 		g_unpackTaskRunning.store(false);
 		OutputStringToELog("[e-packager] 内存快照导出失败：" + snapshotError);
 		if (!snapshotTrace.empty()) {
 			OutputStringToELog("[e-packager] 快照导出诊断：" + snapshotTrace);
 		}
 		OutputStringToELog("[e-packager] 不会替用户保存源文件，请先触发一次 IDE 自动备份或打开工程后再试");
-		CleanupSnapshotRoot(snapshotPath.parent_path());
+		CleanupSnapshotRootImpl(snapshotPath.parent_path());
 		return;
 	}
 
@@ -1066,7 +1109,7 @@ void RunCurrentSourceUnpackToDirectory()
 	if (_beginthread(UnpackWorker, 0, request) == static_cast<uintptr_t>(-1)) {
 		delete request;
 		g_unpackTaskRunning.store(false);
-		CleanupSnapshotRoot(snapshotPath.parent_path());
+		CleanupSnapshotRootImpl(snapshotPath.parent_path());
 		OutputStringToELog("[e-packager] 启动后台反编译任务失败");
 		return;
 	}

@@ -26,6 +26,7 @@
 #include "PathHelper.h"
 #include "ProjectSourceCacheManager.h"
 #include "Version.h"
+#include "WorkspaceMirror.h"
 #include "WinINetUtil.h"
 #include "WindowHelper.h"
 
@@ -220,6 +221,7 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	if (uMsg == WM_NCDESTROY) {
 		LocalMcpServer::Shutdown();
 		AIChatFeature::Shutdown();
+		WorkspaceMirror::ResetAndCleanup();
 		g_mainWindowSubclassInstalled = false;
 		RemoveWindowSubclass(hWnd, MainWindowSubclassProc, uIdSubclass);
 		return DefSubclassProc(hWnd, uMsg, wParam, lParam);

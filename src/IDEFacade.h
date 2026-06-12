@@ -44,13 +44,6 @@ public:
 		Ecom
 	};
 
-	// 代码文本查询结果（对应 FN_GET_PRG_TEXT / FN_GET_PRG_HELP）。
-	struct ProgramText {
-		std::string text;
-		int type = 0;
-		bool isTitle = false;
-	};
-
 	// 子程序代码块信息（按当前页扫描得到）。
 	struct FunctionBlock {
 		std::string name;
@@ -112,8 +105,6 @@ public:
 	bool RunClipSetEprgData(const std::vector<uint8_t>& data) const;
 	bool RunGetCaretRowIndex(int& rowIndex) const;
 	bool RunGetCaretColIndex(int& colIndex) const;
-	bool RunGetPrgText(int rowIndex, int colIndex, ProgramText& outText) const;
-	bool RunGetPrgHelp(int rowIndex, int colIndex, ProgramText& outText) const;
 	bool RunGetNumEcom(int& count) const;
 	bool RunGetEcomFileName(int index, std::string& path) const;
 	bool RunGetNumLib(int& count) const;
@@ -124,10 +115,8 @@ public:
 	bool IsFunctionEnabled(INT code) const;
 	ActiveWindowType GetActiveWindowType() const;
 	bool GetCaretPosition(int& rowIndex, int& colIndex) const;
-	bool GetProgramText(int rowIndex, int colIndex, ProgramText& outText) const;
-	bool GetProgramHelp(int rowIndex, int colIndex, ProgramText& outText) const;
-	// 枚举指定行所有列文本，用空格拼接为完整行描述；连续 emptyLimit 次空/失败则截止。
-	std::string GetRowFullText(int rowIndex, int emptyLimit = 3) const;
+	// 从当前页整页复制文本中读取指定行描述。
+	std::string GetRowFullText(int rowIndex) const;
 
 	// 编辑操作封装。
 	bool InsertText(const std::string& text, bool asKeyboardInput = false) const;
@@ -223,8 +212,6 @@ public:
 
 private:
 	IDEFacade() = default;
-	// 内部工具：读取代码项文本。
-	bool ReadProgramLikeText(INT functionCode, int rowIndex, int colIndex, ProgramText& outText) const;
 	// 内部工具：构建当前页快照并拆分函数块。
 	bool BuildCurrentPageSnapshot(PageCodeSnapshot& outSnapshot) const;
 	// 内部工具：按名称查找函数块。
@@ -234,7 +221,6 @@ private:
 	// 内部工具：基于当前光标定位函数的起止行（含首尾行）。
 	bool LocateCurrentFunctionRowRange(int& outStartRow, int& outEndRow, std::string* outDiagnostics = nullptr) const;
 	// 内部工具：选择行范围并替换选中代码。
-	bool TranslateProgramRowRangeToBlockRange(int startProgramRow, int endProgramRow, int& outStartBlockRow, int& outEndBlockRow) const;
 	bool SelectRowRange(int startRow, int endRow) const;
 	bool ReplaceSelectedRowsText(const std::string& text, bool preCompile) const;
 	// 内部工具：函数名规范化与文本整理。

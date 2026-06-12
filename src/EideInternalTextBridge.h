@@ -57,6 +57,9 @@ bool OpenProgramTreeItemPageByData(
 	unsigned int itemData,
 	std::string* outTrace = nullptr);
 
+// 从程序树激活一个普通代码页，用于需要当前活动编辑器对象的内部操作预热。
+bool ActivateFirstCodeProgramTreePage(std::string* outTrace = nullptr);
+
 // 按编辑器对象整页覆盖真实源码。
 bool ReplaceRealPageCodeByEditorObject(
 	std::uintptr_t editorObject,

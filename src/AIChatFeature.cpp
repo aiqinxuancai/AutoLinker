@@ -40,6 +40,7 @@
 #include "PathHelper.h"
 #include "ProjectSourceCacheManager.h"
 #include "ResourceTextLoader.h"
+#include "WorkspaceMirror.h"
 #include "WinINetUtil.h"
 #include "resource.h"
 #include "..\\elib\\lib2.h"
@@ -1165,6 +1166,7 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 		g_session.streamingAssistantPreview.clear();
 		ResetChatSessionBindingLocked(g_session);
 	}
+	WorkspaceMirror::ResetAndCleanup();
 	if (!previousSourcePath.empty() || !currentSourcePath.empty()) {
 		OutputStringToELog(std::format(
 			"[AI Chat][Session] source rebind old={} new={} history_reset={}",
@@ -1173,6 +1175,18 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 			hadHistory ? 1 : 0));
 	}
 	PostRefreshDialog();
+}
+
+void PrepareWorkspaceMirrorForChat()
+{
+	std::string error;
+	if (WorkspaceMirror::EnsureMirrorFresh(error)) {
+		OutputStringToELog("[WorkspaceMirror] chat workspace mirror prepared");
+		return;
+	}
+	if (!TrimAsciiCopy(error).empty()) {
+		OutputStringToELog("[WorkspaceMirror] prepare chat workspace mirror failed: " + error);
+	}
 }
 
 void ScrollEditToBottom(HWND hEdit)
@@ -2789,6 +2803,7 @@ bool StartChatRequest(const std::string& userInput)
 		return false;
 	}
 	RebindChatSessionToCurrentSourceIfNeeded();
+	PrepareWorkspaceMirrorForChat();
 
 	AISettings settings = {};
 	if (!EnsureChatSettingsReady(settings)) {
@@ -3174,6 +3189,7 @@ void ClearChatHistory()
 		g_session.cancellation.reset();
 		ResetChatSessionBindingLocked(g_session);
 	}
+	WorkspaceMirror::ResetAndCleanup();
 }
 
 void RequestClearChatHistoryAsync()
@@ -4332,6 +4348,7 @@ void OnCurrentSourceFilePathChanged(const std::string& previousPath, const std::
 {
 	(void)previousPath;
 	(void)currentPath;
+	WorkspaceMirror::ResetAndCleanup();
 	RebindChatSessionToCurrentSourceIfNeeded();
 }
 

@@ -513,6 +513,12 @@
     <ClCompile Include="src\AIChatTooling.cpp" />
     <ClCompile Include="src\AIChatToolingX86.cpp" />
     <ClCompile Include="src\AIService.cpp" />
+    <ClCompile Include="src\WorkspaceMirror.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="src\WorkspaceFileTools.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="src\LocalMcpInstanceRegistry.cpp" />
     <ClCompile Include="src\Logger.cpp" />
     <ClCompile Include="src\LocalMcpServer.cpp" />
@@ -551,6 +557,8 @@
     <ClInclude Include="src\AIChatToolingInternal.h" />
     <ClInclude Include="src\AIService.h" />
     <ClInclude Include="src\AIJsonConfig.h" />
+    <ClInclude Include="src\WorkspaceMirror.h" />
+    <ClInclude Include="src\WorkspaceFileTools.h" />
     <ClInclude Include="src\ConfigManager.h" />
     <ClInclude Include="src\EPackagerIntegration.h" />
     <ClInclude Include="src\EFolderCodec.h" />

@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <format>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <regex>
@@ -35,6 +36,8 @@
 #include "PathHelper.h"
 #include "ProjectSourceCacheManager.h"
 #include "RealPageCodeToolSupport.h"
+#include "WorkspaceFileTools.h"
+#include "WorkspaceMirror.h"
 #include "WindowHelper.h"
 #if defined(_M_IX86)
 #include "direct_global_search_debug.hpp"
@@ -115,6 +118,11 @@ bool VerifyRealPageCodeMatchesForAI(
 	const std::string& expectedCode,
 	const std::string& actualCode,
 	std::string* outMode);
+void PutPageCodeCacheEntryForAI(
+	const ProgramTreeItemInfo& item,
+	const std::string& code,
+	const PageCodeCacheEntry* existingEntry,
+	PageCodeCacheEntry* outSavedEntry);
 
 static std::string TrimAsciiCopy(const std::string& text)
 {
@@ -495,6 +503,7 @@ HTREEITEM FindTreeItemByExactTextRecursiveForAI(
 
 bool TryFindProgramTreeItemByExactNameForAI(
 	const std::string& targetName,
+	const std::string& typeKey,
 	ProgramTreeItemInfo& outItem,
 	std::string* outError = nullptr)
 {
@@ -541,7 +550,7 @@ bool TryFindProgramTreeItemByExactNameForAI(
 	outItem.itemData = static_cast<unsigned int>(itemData);
 	outItem.image = image;
 	outItem.selectedImage = selectedImage;
-	outItem.typeKey = "const_resource";
+	outItem.typeKey = typeKey;
 	outItem.typeName = GetProgramTreeTypeName(outItem.typeKey);
 	return true;
 }
@@ -554,10 +563,23 @@ void AppendSpecialProgramTreeItemsForAI(std::vector<ProgramTreeItemInfo>& outIte
 		seenItemData.insert(item.itemData);
 	}
 
-	ProgramTreeItemInfo constantTableItem;
-	if (TryFindProgramTreeItemByExactNameForAI(kProgramTreeConstantTablePageNameForAI, constantTableItem) &&
-		seenItemData.insert(constantTableItem.itemData).second) {
-		outItems.push_back(std::move(constantTableItem));
+	struct SpecialItemSpec {
+		const char* name;
+		const char* typeKey;
+	};
+	static constexpr SpecialItemSpec kSpecialItems[] = {
+		{ kProgramTreeGlobalVariablePageNameForAI, "global_var" },
+		{ kProgramTreeUserDataTypePageNameForAI, "user_data_type" },
+		{ kProgramTreeDllCommandPageNameForAI, "dll_command" },
+		{ kProgramTreeConstantTablePageNameForAI, "const_resource" },
+	};
+
+	for (const auto& spec : kSpecialItems) {
+		ProgramTreeItemInfo item;
+		if (TryFindProgramTreeItemByExactNameForAI(spec.name, spec.typeKey, item) &&
+			seenItemData.insert(item.itemData).second) {
+			outItems.push_back(std::move(item));
+		}
 	}
 }
 
@@ -788,9 +810,332 @@ void PutPageCodeCacheEntryForAI(
 	}
 }
 
-bool ShouldUseProjectCacheWriteBaseForAI(const ProgramTreeItemInfo& item)
+bool IsFixedTableProgramItemForAI(const ProgramTreeItemInfo& item)
 {
-	return item.typeKey == "const_resource";
+	return item.typeKey == "global_var" ||
+		item.typeKey == "user_data_type" ||
+		item.typeKey == "dll_command" ||
+		item.typeKey == "const_resource";
+}
+
+std::string JoinLinesWithCrLfForAI(const std::vector<std::string>& lines)
+{
+	std::string text;
+	for (size_t i = 0; i < lines.size(); ++i) {
+		if (i != 0) {
+			text += "\r\n";
+		}
+		text += lines[i];
+	}
+	return text;
+}
+
+std::string ExtractConstResourceNameForAI(const std::string& line)
+{
+	const std::string trimmed = TrimAsciiCopy(line);
+	const std::string directive = ".常量";
+	if (trimmed.rfind(directive, 0) != 0) {
+		return std::string();
+	}
+
+	std::string remain = TrimAsciiCopy(trimmed.substr(directive.size()));
+	const size_t comma = remain.find(',');
+	if (comma != std::string::npos) {
+		remain = remain.substr(0, comma);
+	}
+	return TrimAsciiCopy(remain);
+}
+
+bool TryReadWorkspaceMirrorTextLocalForAI(
+	const std::string& filePathUtf8,
+	std::string& outTextLocal,
+	std::string& outError)
+{
+	outTextLocal.clear();
+	outError.clear();
+
+	std::filesystem::path fullPath;
+	std::string relativePath;
+	if (!WorkspaceMirror::ResolveFilePath(filePathUtf8, fullPath, relativePath, outError)) {
+		return false;
+	}
+
+	try {
+		std::ifstream in(fullPath, std::ios::binary);
+		if (!in.is_open()) {
+			outError = "open workspace mirror file failed: " + relativePath;
+			return false;
+		}
+		std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		if (bytes.size() >= 3 &&
+			static_cast<unsigned char>(bytes[0]) == 0xEF &&
+			static_cast<unsigned char>(bytes[1]) == 0xBB &&
+			static_cast<unsigned char>(bytes[2]) == 0xBF) {
+			bytes.erase(0, 3);
+		}
+		outTextLocal = NormalizeRealCodeLineBreaksToCrLf(Utf8ToLocalText(bytes));
+		return true;
+	}
+	catch (const std::exception& ex) {
+		outError = std::string("read workspace mirror file exception: ") + ex.what();
+		return false;
+	}
+}
+
+std::string MergeConstResourceLongTextPlaceholdersForAI(
+	const std::string& targetCode,
+	const std::string& fullConstCode)
+{
+	std::unordered_map<std::string, std::string> fullLineByName;
+	for (const std::string& line : SplitLinesCopyForAI(NormalizeLineBreaksForAI(fullConstCode))) {
+		if (line.find("<文本长度:") != std::string::npos) {
+			continue;
+		}
+		const std::string name = ExtractConstResourceNameForAI(line);
+		if (!name.empty()) {
+			fullLineByName[name] = line;
+		}
+	}
+	if (fullLineByName.empty()) {
+		return targetCode;
+	}
+
+	std::vector<std::string> targetLines = SplitLinesCopyForAI(NormalizeLineBreaksForAI(targetCode));
+	bool changed = false;
+	for (std::string& line : targetLines) {
+		if (line.find("<文本长度:") == std::string::npos) {
+			continue;
+		}
+		const std::string name = ExtractConstResourceNameForAI(line);
+		const auto it = fullLineByName.find(name);
+		if (it != fullLineByName.end()) {
+			line = it->second;
+			changed = true;
+		}
+	}
+	return changed ? JoinLinesWithCrLfForAI(targetLines) : targetCode;
+}
+
+bool OpenFixedTablePageForAI(const ProgramTreeItemInfo& item, std::string& outTrace)
+{
+	outTrace.clear();
+
+	IDEFacade::ViewTab tab = IDEFacade::ViewTab::ConstResource;
+	if (item.typeKey == "global_var") {
+		tab = IDEFacade::ViewTab::GlobalVar;
+	}
+	else if (item.typeKey == "user_data_type") {
+		tab = IDEFacade::ViewTab::DataType;
+	}
+	else if (item.typeKey == "dll_command") {
+		tab = IDEFacade::ViewTab::DllCommand;
+	}
+	else if (item.typeKey == "const_resource") {
+		tab = IDEFacade::ViewTab::ConstResource;
+	}
+	else {
+		outTrace = "not_fixed_table";
+		return false;
+	}
+
+	OutputStringToELog("[AutoLinker][FixedTable] open fixed table by tab: " + item.typeKey);
+	if (IDEFacade::Instance().OpenViewTab(tab)) {
+		outTrace = "open_fixed_table_tab_ok|" + item.typeKey;
+		return true;
+	}
+
+	outTrace = "open_fixed_table_tab_failed|" + item.typeKey;
+	return false;
+}
+
+bool TryGetCurrentPageCodeLocalForAI(
+	std::string& outCode,
+	std::string& outTrace,
+	int maxAttempts = 10,
+	DWORD waitMs = 50)
+{
+	outCode.clear();
+	outTrace.clear();
+	for (int attempt = 0; attempt < maxAttempts; ++attempt) {
+		std::string pageCodeUtf8;
+		if (IDEFacade::Instance().GetCurrentPageCode(pageCodeUtf8)) {
+			outCode = NormalizeRealCodeLineBreaksToCrLf(Utf8ToLocalText(pageCodeUtf8));
+			outTrace = "copy_current_page_ok|attempt=" + std::to_string(attempt + 1);
+			return true;
+		}
+		Sleep(waitMs);
+	}
+	outTrace = "copy_current_page_failed_after_retries|attempts=" + std::to_string(maxAttempts);
+	return false;
+}
+
+bool TryReadFixedTableRealPageCodeForAI(
+	const ProgramTreeItemInfo& item,
+	std::string& outCode,
+	std::string& outTrace,
+	std::string& outError)
+{
+	outCode.clear();
+	outTrace.clear();
+	outError.clear();
+
+	auto copyCurrentPage = [&](const std::string& openTrace) -> bool {
+		std::string copyTrace;
+		if (!TryGetCurrentPageCodeLocalForAI(outCode, copyTrace, 6, 40)) {
+			outTrace = openTrace + "|copy_current_fixed_table_page_failed|" + copyTrace;
+			outError = "copy fixed table page code failed";
+			return false;
+		}
+		outTrace = openTrace + "|copy_current_fixed_table_page_ok|" + copyTrace;
+		outError.clear();
+		return true;
+	};
+
+	std::string lastTrace;
+	std::string lastError;
+	for (int attempt = 0; attempt < 3; ++attempt) {
+		std::string openTrace;
+		if (OpenFixedTablePageForAI(item, openTrace) && copyCurrentPage(openTrace)) {
+			return true;
+		}
+		lastTrace = outTrace.empty() ? openTrace : outTrace;
+		lastError = outError;
+		Sleep(30);
+	}
+
+	outTrace = lastTrace + "|fixed_table_copy_failed_no_tree_fallback";
+	outError = lastError.empty() ? "copy fixed table page code failed" : lastError;
+	return false;
+}
+
+bool TryWriteFixedTableRealPageCodeByPasteForAI(
+	const ProgramTreeItemInfo& item,
+	const std::string& baseCode,
+	const std::string& newCode,
+	std::string& outFinalCode,
+	std::string& outTrace,
+	std::string& outError)
+{
+	outFinalCode.clear();
+	outTrace.clear();
+	outError.clear();
+
+	std::string openTrace;
+	if (!OpenFixedTablePageForAI(item, openTrace)) {
+		outTrace = openTrace;
+		outError = "open fixed table page failed";
+		return false;
+	}
+
+	const std::string normalizedBaseCode = NormalizeRealCodeLineBreaksToCrLf(baseCode);
+	const std::string normalizedNewCode = NormalizeRealCodeLineBreaksToCrLf(newCode);
+	const std::string preparedExpectedCode = NormalizeRealCodeLineBreaksToCrLf(
+		PrepareAssemblyVariablesForRealPageWrite(normalizedNewCode));
+	auto pasteCurrentPage = [&](const std::string& currentOpenTrace) -> bool {
+		const bool pasteReportedOk = IDEFacade::Instance().ReplaceCurrentPageCode(normalizedNewCode, false);
+
+		std::string verifyCode;
+		std::string verifyCopyTrace;
+		if (TryGetCurrentPageCodeLocalForAI(verifyCode, verifyCopyTrace, 10, 50)) {
+			std::string verifyMode;
+			if (!VerifyRealPageCodeMatchesForAI(preparedExpectedCode, verifyCode, &verifyMode)) {
+				const bool pageChanged =
+					BuildStableTextHashForRealCode(verifyCode) !=
+					BuildStableTextHashForRealCode(normalizedBaseCode);
+				if (pageChanged) {
+					outFinalCode = verifyCode;
+					outTrace = currentOpenTrace +
+						(pasteReportedOk ? "|paste_current_fixed_table_page_ok" : "|paste_current_fixed_table_page_reported_failed") +
+						"|verify_mismatch_but_page_changed";
+					outError.clear();
+					return true;
+				}
+				outTrace = currentOpenTrace +
+					(pasteReportedOk ? "|paste_current_fixed_table_page_ok" : "|paste_current_fixed_table_page_reported_failed") +
+					"|verify_mismatch";
+				outError = pasteReportedOk
+					? "fixed table paste verification mismatch"
+					: "paste fixed table page code failed and verification mismatch";
+				outFinalCode = verifyCode;
+				return false;
+			}
+			outFinalCode = verifyCode;
+			outTrace = currentOpenTrace +
+				(pasteReportedOk ? "|paste_current_fixed_table_page_ok" : "|paste_current_fixed_table_page_reported_failed") +
+				"|verify_ok_" + verifyMode +
+				"|" +
+				verifyCopyTrace;
+			outError.clear();
+			return true;
+		}
+
+		if (pasteReportedOk) {
+			outFinalCode = normalizedNewCode;
+			outTrace = currentOpenTrace + "|paste_current_fixed_table_page_ok|verify_copy_failed_final_code=write_target|" + verifyCopyTrace;
+			outError.clear();
+			return true;
+		}
+
+		outTrace = currentOpenTrace + "|paste_current_fixed_table_page_failed|verify_copy_failed|" + verifyCopyTrace;
+		outError = "paste fixed table page code failed";
+		return false;
+	};
+
+	std::string lastTrace;
+	std::string lastError;
+	for (int attempt = 0; attempt < 3; ++attempt) {
+		std::string attemptOpenTrace = openTrace;
+		if (attempt > 0) {
+			if (!OpenFixedTablePageForAI(item, attemptOpenTrace)) {
+				lastTrace = attemptOpenTrace;
+				lastError = "open fixed table page failed";
+				Sleep(30);
+				continue;
+			}
+		}
+		if (pasteCurrentPage(attemptOpenTrace + "|attempt=" + std::to_string(attempt + 1))) {
+			return true;
+		}
+		lastTrace = outTrace;
+		lastError = outError;
+		Sleep(30);
+	}
+
+	outTrace = lastTrace + "|fixed_table_paste_failed_after_retries";
+	outError = lastError.empty() ? "paste fixed table page code failed" : lastError;
+	return false;
+}
+
+bool OpenRegularProgramItemPageForRealPageCopyForAI(
+	const ProgramTreeItemInfo& item,
+	std::string& outTrace,
+	std::string& outError)
+{
+	outTrace.clear();
+	outError.clear();
+
+	std::string openTrace;
+	if (!e571::OpenProgramTreeItemPageByData(item.itemData, &openTrace)) {
+		outTrace = openTrace.empty() ? "open_program_item_page_failed" : openTrace;
+		outError = "open program item page failed";
+		return false;
+	}
+
+	std::string currentName;
+	std::string currentType;
+	std::string currentTrace;
+	const bool currentOk = IDEFacade::Instance().GetCurrentPageName(
+		currentName,
+		&currentType,
+		&currentTrace);
+	outTrace =
+		"open_program_item_page_by_data|" +
+		openTrace +
+		"|current_page_ok=" + std::to_string(currentOk ? 1 : 0) +
+		"|current_page_name=" + currentName +
+		"|current_page_type=" + currentType +
+		"|current_page_trace=" + currentTrace;
+	return true;
 }
 
 bool TryReadProjectCacheCodeForAI(
@@ -828,17 +1173,58 @@ bool TryReadRealPageCodeForAI(
 	outAccessResult = {};
 	outError.clear();
 
-	if (!e571::GetRealPageCodeByProgramTreeItemData(
-			item.itemData,
-			GetCurrentProcessImageBaseForAI(),
-			&outCode,
-			&outAccessResult)) {
-		outError = "get real page code failed";
-		return false;
+	if (IsFixedTableProgramItemForAI(item)) {
+		std::string trace;
+		if (!TryReadFixedTableRealPageCodeForAI(item, outCode, trace, outError)) {
+			outAccessResult.trace = trace;
+			return false;
+		}
+		outAccessResult.ok = true;
+		outAccessResult.usedClipboardEmulation = true;
+		outAccessResult.capturedCustomFormat = false;
+		outAccessResult.textBytes = outCode.size();
+		outAccessResult.trace = trace + "|real_page_read=whole_page_copy";
+		return true;
 	}
 
-	outCode = NormalizeRealCodeLineBreaksToCrLf(outCode);
-	return true;
+	std::string lastTrace;
+	std::string lastError;
+	for (int attempt = 0; attempt < 3; ++attempt) {
+		std::string openTrace;
+		std::string openError;
+		if (!OpenRegularProgramItemPageForRealPageCopyForAI(item, openTrace, openError)) {
+			lastTrace = openTrace;
+			lastError = openError;
+			Sleep(30);
+			continue;
+		}
+
+		std::string copyTrace;
+		if (TryGetCurrentPageCodeLocalForAI(outCode, copyTrace, 6, 40)) {
+			outAccessResult.ok = true;
+			outAccessResult.usedClipboardEmulation = true;
+			outAccessResult.capturedCustomFormat = false;
+			outAccessResult.textBytes = outCode.size();
+			outAccessResult.trace =
+				openTrace +
+				"|attempt=" + std::to_string(attempt + 1) +
+				"|real_page_read=whole_page_copy|" +
+				copyTrace;
+			return true;
+		}
+
+		lastTrace =
+			openTrace +
+			"|attempt=" + std::to_string(attempt + 1) +
+			"|" +
+			copyTrace;
+		lastError = "copy current page code failed";
+		Sleep(30);
+	}
+
+	outAccessResult.trace = lastTrace;
+	outError = lastError.empty() ? "copy current page code failed" : lastError;
+	return false;
 }
 
 bool TryLoadRealPageCodeForReadForAI(
@@ -896,10 +1282,10 @@ bool TryResolveRealPageWriteBaseForAI(
 	outCacheRefreshed = false;
 	outError.clear();
 
-	const bool preferProjectCacheWriteBase = ShouldUseProjectCacheWriteBaseForAI(item);
+	const bool isFixedTableWriteBase = IsFixedTableProgramItemForAI(item);
 	const bool hasCache = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, outCacheEntry);
-	if (requireCache && !hasCache && !preferProjectCacheWriteBase) {
-		outError = "page cache missing, call read_program_item_real_code or get_program_item_real_code first";
+	if (requireCache && !hasCache && !isFixedTableWriteBase) {
+		outError = "page cache missing, call read_file first or retry the edit after the real page cache is refreshed";
 		return false;
 	}
 
@@ -909,50 +1295,47 @@ bool TryResolveRealPageWriteBaseForAI(
 		outCacheEntry = BuildPageCodeCacheEntryForAI(item, outCacheEntry.code, &outCacheEntry);
 	}
 
-	if (preferProjectCacheWriteBase) {
-		std::string projectCacheCode;
-		std::string projectCacheTrace;
-		std::string projectCacheError;
-		if (!TryReadProjectCacheCodeForAI(item, true, projectCacheCode, projectCacheTrace, projectCacheError)) {
-			if (!projectCacheTrace.empty()) {
-				outLiveTrace = outLiveTrace.empty() ? projectCacheTrace : (outLiveTrace + "|" + projectCacheTrace);
+	if (isFixedTableWriteBase) {
+		std::string fixedTableCode;
+		std::string fixedTableTrace;
+		std::string fixedTableError;
+		if (TryReadFixedTableRealPageCodeForAI(item, fixedTableCode, fixedTableTrace, fixedTableError)) {
+			std::string writeBaseCode = fixedTableCode;
+			if (item.typeKey == "const_resource") {
+				std::string mirrorConstCode;
+				std::string mirrorConstError;
+				if (TryReadWorkspaceMirrorTextLocalForAI("src/.常量.txt", mirrorConstCode, mirrorConstError)) {
+					writeBaseCode = NormalizeRealCodeLineBreaksToCrLf(
+						MergeConstResourceLongTextPlaceholdersForAI(fixedTableCode, mirrorConstCode));
+					fixedTableTrace += "|const_long_text_placeholders_merged_from_mirror";
+				}
+				else {
+					fixedTableTrace += "|const_long_text_mirror_merge_failed:" + mirrorConstError;
+				}
 			}
-			outError = projectCacheError.empty() ? "get const_resource project cache code failed" : projectCacheError;
-			return false;
-		}
 
-		if (!projectCacheTrace.empty()) {
-			outLiveTrace = outLiveTrace.empty() ? projectCacheTrace : (outLiveTrace + "|" + projectCacheTrace);
+			outLiveTrace = fixedTableTrace + "|write_base=fixed_table_real_copy";
+			outCurrentCode = writeBaseCode;
+			const std::string fixedTableHash = BuildStableTextHashForRealCode(writeBaseCode);
+			const bool cacheSeeded = !hasCache;
+			const bool cacheChanged = hasCache && outCacheEntry.codeHash != fixedTableHash;
+			PutPageCodeCacheEntryForAI(item, writeBaseCode, hasCache ? &outCacheEntry : nullptr, &outCacheEntry);
+			outCacheRefreshed = cacheSeeded || cacheChanged;
+			if (!normalizedExpectedHash.empty() && fixedTableHash != normalizedExpectedHash) {
+				outError = "expected_base_hash mismatch; cache refreshed to fixed table real page code";
+				return false;
+			}
+			outBaseCode = writeBaseCode;
+			return true;
 		}
-
-		const std::string projectCacheHash = BuildStableTextHashForRealCode(projectCacheCode);
-		const bool cacheSeededFromProjectCache = !hasCache;
-		const bool cacheChangedToProjectCache = hasCache && outCacheEntry.codeHash != projectCacheHash;
-
-		outCurrentCode = projectCacheCode;
-		PutPageCodeCacheEntryForAI(item, projectCacheCode, hasCache ? &outCacheEntry : nullptr, &outCacheEntry);
-		if (cacheSeededFromProjectCache || cacheChangedToProjectCache) {
-			outCacheRefreshed = true;
+		if (!fixedTableTrace.empty()) {
+			outLiveTrace = fixedTableTrace;
 		}
-
-		if (!normalizedExpectedHash.empty() && projectCacheHash != normalizedExpectedHash) {
-			outLiveTrace += "|write_base=project_cache_only|cache_refreshed=1";
-			outError = "expected_base_hash mismatch; cache refreshed to project cache code";
-			return false;
+		if (!fixedTableError.empty()) {
+			outLiveTrace += "|fixed_table_real_copy_failed:" + fixedTableError;
 		}
-
-		if (cacheSeededFromProjectCache) {
-			outLiveTrace += "|write_base=project_cache_only|cache_seeded=project_cache";
-		}
-		else if (cacheChangedToProjectCache) {
-			outLiveTrace += "|write_base=project_cache_only|cache_rebased=project_cache";
-		}
-		else {
-			outLiveTrace += "|write_base=project_cache_only";
-		}
-
-		outBaseCode = projectCacheCode;
-		return true;
+		outError = fixedTableError.empty() ? "copy fixed table real page failed" : fixedTableError;
+		return false;
 	}
 
 	std::string liveCode;
@@ -1020,148 +1403,90 @@ bool TryWriteRealPageCodeForAI(
 
 	const std::string normalizedBaseCode = NormalizeRealCodeLineBreaksToCrLf(baseCode);
 	const std::string normalizedNewCode = NormalizeRealCodeLineBreaksToCrLf(newCode);
+	const std::string preparedExpectedCode = NormalizeRealCodeLineBreaksToCrLf(
+		PrepareAssemblyVariablesForRealPageWrite(normalizedNewCode));
 
-	e571::NativeRealPageAccessResult writeResult{};
-	if (!e571::ReplaceRealPageCodeByProgramTreeItemData(
-			item.itemData,
-			GetCurrentProcessImageBaseForAI(),
-			normalizedNewCode,
-			&normalizedBaseCode,
-			&writeResult)) {
-		outRollbackAttempted = writeResult.rollbackAttempted;
-		outRollbackSucceeded = writeResult.rollbackSucceeded;
-		outTrace = writeResult.trace;
-		if (writeResult.rollbackAttempted && writeResult.rollbackSucceeded) {
-			outError = "replace real page code failed";
-			return false;
-		}
-
-		std::string recoveredCode;
-		e571::NativeRealPageAccessResult recoveredReadResult{};
-		std::string recoveredReadError;
-		if (TryReadRealPageCodeForAI(item, recoveredCode, recoveredReadResult, recoveredReadError)) {
-			std::string recoveredVerifyMode;
-			if (VerifyRealPageCodeMatchesForAI(normalizedNewCode, recoveredCode, &recoveredVerifyMode)) {
-				std::string persistedCode = recoveredCode;
-				std::string persistedTrace = recoveredReadResult.trace;
-				if (ShouldUseProjectCacheWriteBaseForAI(item)) {
-					std::string projectCacheCode;
-					std::string projectCacheTrace;
-					std::string projectCacheError;
-					if (TryReadProjectCacheCodeForAI(item, true, projectCacheCode, projectCacheTrace, projectCacheError)) {
-						persistedCode = projectCacheCode;
-						if (!projectCacheTrace.empty()) {
-							persistedTrace += "|" + projectCacheTrace;
-						}
-						persistedTrace += "|final_code=project_cache";
-					}
-					else {
-						if (!projectCacheTrace.empty()) {
-							persistedTrace += "|" + projectCacheTrace;
-						}
-						persistedTrace += "|final_code=fallback_real_page";
-					}
-				}
-
-				PageCodeCacheEntry postSnapshotEntry;
-				const bool hasPostSnapshotEntry = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, postSnapshotEntry);
-				PutPageCodeCacheEntryForAI(item, persistedCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
-
-				outFinalCode = persistedCode;
-				outTrace =
-					writeResult.trace +
-					"|post_failure_verify_ok_" +
-					recoveredVerifyMode +
-					"|" +
-					persistedTrace;
-				outError.clear();
-				return true;
+	if (IsFixedTableProgramItemForAI(item)) {
+		std::string fixedTableFinalCode;
+		if (!TryWriteFixedTableRealPageCodeByPasteForAI(
+				item,
+				normalizedBaseCode,
+				normalizedNewCode,
+				fixedTableFinalCode,
+				outTrace,
+				outError)) {
+			if (outError.empty()) {
+				outError = "paste fixed table page code failed";
 			}
-
-			outTrace =
-				writeResult.trace +
-				"|post_failure_verify_mismatch|" +
-				recoveredReadResult.trace;
-		}
-		else if (!recoveredReadError.empty()) {
-			outTrace =
-				writeResult.trace +
-				"|post_failure_verify_read_failed|" +
-				recoveredReadResult.trace;
-		}
-
-		outError = "replace real page code failed";
-		return false;
-	}
-
-	if (ShouldUseProjectCacheWriteBaseForAI(item)) {
-		std::string projectCacheCode;
-		std::string projectCacheTrace;
-		std::string projectCacheError;
-		if (!TryReadProjectCacheCodeForAI(item, true, projectCacheCode, projectCacheTrace, projectCacheError)) {
-			outRollbackAttempted = writeResult.rollbackAttempted;
-			outRollbackSucceeded = writeResult.rollbackSucceeded;
-			outTrace = writeResult.trace;
-			if (!projectCacheTrace.empty()) {
-				outTrace += "|" + projectCacheTrace;
-			}
-			outError = projectCacheError.empty() ? "final project cache verification failed" : projectCacheError;
 			return false;
 		}
 
 		PageCodeCacheEntry postSnapshotEntry;
 		const bool hasPostSnapshotEntry = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, postSnapshotEntry);
-		PutPageCodeCacheEntryForAI(item, projectCacheCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
+		PutPageCodeCacheEntryForAI(item, fixedTableFinalCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
 
-		outFinalCode = projectCacheCode;
-		outRollbackAttempted = writeResult.rollbackAttempted;
-		outRollbackSucceeded = writeResult.rollbackSucceeded;
-		outTrace = writeResult.trace;
-		if (!projectCacheTrace.empty()) {
-			outTrace += "|" + projectCacheTrace;
-		}
-		outTrace += "|final_code=project_cache";
+		outFinalCode = fixedTableFinalCode;
+		outTrace += "|write_by_fixed_table_page_paste|final_code=real_copy";
 		return true;
 	}
 
-	std::string finalCode;
-	e571::NativeRealPageAccessResult finalReadResult{};
-	if (!TryReadRealPageCodeForAI(item, finalCode, finalReadResult, outError)) {
-		outRollbackAttempted = writeResult.rollbackAttempted;
-		outRollbackSucceeded = writeResult.rollbackSucceeded;
-		outTrace = writeResult.trace + "|" + finalReadResult.trace;
-		outError = "final real page verification failed";
+	std::string openTrace;
+	std::string openError;
+	if (!OpenRegularProgramItemPageForRealPageCopyForAI(item, openTrace, openError)) {
+		outTrace = openTrace;
+		outError = openError.empty() ? "open program item page failed" : openError;
+		return false;
+	}
+
+	const bool pasteReportedOk = IDEFacade::Instance().ReplaceCurrentPageCode(normalizedNewCode, false);
+	std::string verifyCode;
+	std::string verifyCopyTrace;
+	const bool verifyReadOk = TryGetCurrentPageCodeLocalForAI(verifyCode, verifyCopyTrace, 12, 50);
+	std::string verifyMode;
+	const bool verifyOk =
+		verifyReadOk &&
+		VerifyRealPageCodeMatchesForAI(preparedExpectedCode, verifyCode, &verifyMode);
+	const std::string writeTrace =
+		openTrace +
+		"|write_by_whole_page_copy_paste" +
+		"|paste_reported_ok=" + std::to_string(pasteReportedOk ? 1 : 0) +
+		"|verify_read_ok=" + std::to_string(verifyReadOk ? 1 : 0) +
+		"|" +
+		verifyCopyTrace +
+		(verifyOk ? ("|verify_ok_" + verifyMode) : std::string("|verify_failed"));
+
+	if (!pasteReportedOk || !verifyOk) {
+		outRollbackAttempted = true;
+		const bool rollbackPasteOk = IDEFacade::Instance().ReplaceCurrentPageCode(normalizedBaseCode, false);
+		std::string rollbackVerifyCode;
+		std::string rollbackCopyTrace;
+		const bool rollbackReadOk = TryGetCurrentPageCodeLocalForAI(rollbackVerifyCode, rollbackCopyTrace, 12, 50);
+		std::string rollbackVerifyMode;
+		outRollbackSucceeded =
+			rollbackPasteOk &&
+			rollbackReadOk &&
+			VerifyRealPageCodeMatchesForAI(normalizedBaseCode, rollbackVerifyCode, &rollbackVerifyMode);
+		outFinalCode = rollbackReadOk ? rollbackVerifyCode : verifyCode;
+		outTrace =
+			writeTrace +
+			"|rollback_attempted=1" +
+			"|rollback_paste_ok=" + std::to_string(rollbackPasteOk ? 1 : 0) +
+			"|rollback_verify_read_ok=" + std::to_string(rollbackReadOk ? 1 : 0) +
+			"|" +
+			rollbackCopyTrace +
+			(outRollbackSucceeded ? ("|rollback_verify_ok_" + rollbackVerifyMode) : std::string("|rollback_verify_failed"));
+		outError = !pasteReportedOk
+			? "whole page paste failed"
+			: "whole page paste verification mismatch";
 		return false;
 	}
 
 	PageCodeCacheEntry postSnapshotEntry;
 	const bool hasPostSnapshotEntry = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, postSnapshotEntry);
-	std::string persistedCode = finalCode;
-	std::string persistedTrace = finalReadResult.trace;
-	if (ShouldUseProjectCacheWriteBaseForAI(item)) {
-		std::string projectCacheCode;
-		std::string projectCacheTrace;
-		std::string projectCacheError;
-		if (TryReadProjectCacheCodeForAI(item, true, projectCacheCode, projectCacheTrace, projectCacheError)) {
-			persistedCode = projectCacheCode;
-			if (!projectCacheTrace.empty()) {
-				persistedTrace += "|" + projectCacheTrace;
-			}
-			persistedTrace += "|final_code=project_cache";
-		}
-		else {
-			if (!projectCacheTrace.empty()) {
-				persistedTrace += "|" + projectCacheTrace;
-			}
-			persistedTrace += "|final_code=fallback_real_page";
-		}
-	}
-	PutPageCodeCacheEntryForAI(item, persistedCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
+	PutPageCodeCacheEntryForAI(item, verifyCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
 
-	outFinalCode = persistedCode;
-	outRollbackAttempted = writeResult.rollbackAttempted;
-	outRollbackSucceeded = writeResult.rollbackSucceeded;
-	outTrace = writeResult.trace + "|" + persistedTrace;
+	outFinalCode = verifyCode;
+	outTrace = writeTrace;
 	return true;
 }
 
@@ -3198,7 +3523,7 @@ bool TryGetProgramItemProjectCacheCodeForAI(
 	}
 
 	outCode = NormalizeRealCodeLineBreaksToCrLf(JoinRealCodeLines(page->lines));
-	if (outCode.empty()) {
+	if (outCode.empty() && !IsFixedTableProgramItemForAI(item)) {
 		outError = "project cache page code is empty";
 		outTrace =
 			(snapshotTrace.empty() ? std::string() : (snapshotTrace + "|")) +
@@ -6533,9 +6858,252 @@ std::string BuildReadProjectSearchResultCodeJsonOnMainThread(const std::string& 
 	return Utf8ToLocalText(r.dump());
 }
 
+bool TryReadMappedRealPageCodeForAI(
+	const WorkspaceMirror::ProgramItemRef& item,
+	std::string& outCode,
+	std::string& outCodeHash,
+	std::string& outTrace,
+	std::string& outError);
+
+std::string ExecuteFileMappedRealPageToolForAI(
+	const std::string& publicToolName,
+	const std::string& legacyToolName,
+	const std::string& argumentsJson,
+	bool invalidateOnWrite,
+	bool& outOk)
+{
+	outOk = false;
+
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return Utf8ToLocalText(r.dump());
+	}
+
+	if (!args.contains("file_path") || !args["file_path"].is_string()) {
+		return R"({"ok":false,"error":"file_path is required"})";
+	}
+
+	const std::string filePathUtf8 = args["file_path"].get<std::string>();
+	WorkspaceMirror::ProgramItemRef item;
+	std::string error;
+	if (!WorkspaceMirror::ResolveFileToProgramItem(filePathUtf8, item, error)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = error.empty() ? "resolve file_path failed" : error;
+		r["file_path"] = filePathUtf8;
+		return Utf8ToLocalText(r.dump());
+	}
+
+	nlohmann::json legacyArgs = args;
+	legacyArgs.erase("file_path");
+	legacyArgs["page_name"] = LocalToUtf8Text(item.pageNameLocal);
+	if (!item.kind.empty()) {
+		legacyArgs["kind"] = item.kind;
+	}
+	if (publicToolName == "diff_file" &&
+		!legacyArgs.contains("new_code") &&
+		legacyArgs.contains("full_code") &&
+		legacyArgs["full_code"].is_string()) {
+		legacyArgs["new_code"] = legacyArgs["full_code"];
+		legacyArgs.erase("full_code");
+	}
+
+	if (!item.fixedTable && (publicToolName == "edit_file" || publicToolName == "multi_edit_file")) {
+		std::string realCode;
+		std::string realCodeHash;
+		std::string readTrace;
+		std::string readError;
+		if (!TryReadMappedRealPageCodeForAI(item, realCode, realCodeHash, readTrace, readError)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = readError.empty() ? "read real IDE page before edit failed" : readError;
+			r["tool"] = publicToolName;
+			r["file_path"] = filePathUtf8;
+			r["mapped_page_name"] = LocalToUtf8Text(item.pageNameLocal);
+			r["mapped_kind"] = item.kind;
+			r["trace"] = LocalToUtf8Text(readTrace);
+			return Utf8ToLocalText(r.dump());
+		}
+	}
+
+	const std::string legacyResultLocal = ExecuteToolCallOnMainThread(legacyToolName, legacyArgs.dump(), outOk);
+	nlohmann::json result;
+	bool parsed = false;
+	try {
+		result = nlohmann::json::parse(LocalToUtf8Text(legacyResultLocal));
+		parsed = result.is_object();
+	}
+	catch (...) {
+		parsed = false;
+	}
+	if (!parsed) {
+		if (outOk && invalidateOnWrite) {
+			WorkspaceMirror::InvalidateMirror();
+		}
+		return legacyResultLocal;
+	}
+
+	result["tool"] = publicToolName;
+	result["file_path"] = filePathUtf8;
+	result["mapped_page_name"] = LocalToUtf8Text(item.pageNameLocal);
+	result["mapped_kind"] = item.kind;
+
+	const bool ok = result.value("ok", false);
+	const bool noChanges = result.value("no_changes", false);
+	if (item.fixedTable && ok && result.contains("code_kind")) {
+		result["code_kind"] = "fixed_table_real_page_paste";
+	}
+	if (ok && invalidateOnWrite && !noChanges) {
+		WorkspaceMirror::InvalidateMirror();
+		result["workspace_mirror_invalidated"] = true;
+
+		if (item.fixedTable) {
+			result["code_kind"] = "fixed_table_real_page_paste";
+			result["post_write_real_page_refreshed"] = true;
+		}
+		else {
+			std::string refreshedCode;
+			std::string refreshedCodeHash;
+			std::string refreshedTrace;
+			std::string refreshedError;
+			if (TryReadMappedRealPageCodeForAI(item, refreshedCode, refreshedCodeHash, refreshedTrace, refreshedError)) {
+				result["code"] = LocalToUtf8Text(refreshedCode);
+				result["code_hash"] = refreshedCodeHash.empty()
+					? result.value("code_hash", std::string())
+					: refreshedCodeHash;
+				result["code_kind"] = "real_source";
+				result["post_write_real_read_refreshed"] = true;
+				result["post_write_real_read_trace"] = LocalToUtf8Text(refreshedTrace);
+			}
+		}
+	}
+
+	if (!ok &&
+		!item.fixedTable &&
+		(publicToolName == "edit_file" || publicToolName == "multi_edit_file") &&
+		!result.contains("code")) {
+		std::string realCode;
+		std::string realCodeHash;
+		std::string readTrace;
+		std::string readError;
+		if (TryReadMappedRealPageCodeForAI(item, realCode, realCodeHash, readTrace, readError)) {
+			result["real_code"] = LocalToUtf8Text(realCode);
+			result["real_code_hash"] = realCodeHash;
+			result["real_code_trace"] = LocalToUtf8Text(readTrace);
+			result["real_code_note"] = "old_text matching is performed against this real IDE page text";
+		}
+	}
+
+	return Utf8ToLocalText(result.dump());
+}
+
+bool TryReadMappedRealPageCodeForAI(
+	const WorkspaceMirror::ProgramItemRef& item,
+	std::string& outCode,
+	std::string& outCodeHash,
+	std::string& outTrace,
+	std::string& outError)
+{
+	outCode.clear();
+	outCodeHash.clear();
+	outTrace.clear();
+	outError.clear();
+
+	ProgramTreeItemInfo programItem;
+	if (!TryGetProgramItemByNameForAI(item.pageNameLocal, item.kind, programItem, outError)) {
+		if (outError.empty()) {
+			outError = "program item lookup failed";
+		}
+		return false;
+	}
+
+	e571::NativeRealPageAccessResult accessResult{};
+	if (!TryReadRealPageCodeForAI(programItem, outCode, accessResult, outError)) {
+		outTrace = accessResult.trace;
+		if (outError.empty()) {
+			outError = "copy real page code failed";
+		}
+		return false;
+	}
+
+	PageCodeCacheEntry cacheEntry;
+	PutPageCodeCacheEntryForAI(programItem, outCode, nullptr, &cacheEntry);
+	outCodeHash = cacheEntry.codeHash;
+	outTrace = accessResult.trace;
+	return true;
+}
+
+bool IsRemovedLegacyToolNameForAI(const std::string& toolName)
+{
+	static const std::unordered_set<std::string> kRemovedTools = {
+		"get_current_page_code",
+		"get_program_item_project_cache_code",
+		"get_program_item_real_code",
+		"read_program_item_real_code",
+		"search_program_item_real_code",
+		"list_program_item_symbols",
+		"get_symbol_real_code",
+		"edit_symbol_real_code",
+		"insert_program_item_code_block",
+		"list_imported_modules",
+		"search_available_module_public_code",
+		"add_module_to_project",
+		"list_support_libraries",
+		"get_support_library_info",
+		"search_public_code",
+		"search_support_library_public_code",
+		"read_support_library_public_code",
+		"get_module_public_info",
+		"search_module_public_code",
+		"read_module_public_code",
+		"list_program_items",
+		"switch_to_program_item_page",
+		"search_project_keyword",
+		"read_project_search_result_code",
+		"refresh_project_source_cache",
+		"search_project_source_cache",
+		"read_project_source_cache_code",
+		"jump_to_search_result",
+	};
+	return kRemovedTools.find(toolName) != kRemovedTools.end();
+}
+
 std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
 {
 	outOk = false;
+
+	if (WorkspaceFileTools::CanHandleTool(toolName)) {
+		return WorkspaceFileTools::ExecuteTool(toolName, argumentsJson, outOk);
+	}
+
+	if (toolName == "edit_file") {
+		return ExecuteFileMappedRealPageToolForAI(toolName, "edit_program_item_code", argumentsJson, true, outOk);
+	}
+	if (toolName == "multi_edit_file") {
+		return ExecuteFileMappedRealPageToolForAI(toolName, "multi_edit_program_item_code", argumentsJson, true, outOk);
+	}
+	if (toolName == "write_file") {
+		return ExecuteFileMappedRealPageToolForAI(toolName, "write_program_item_real_code", argumentsJson, true, outOk);
+	}
+	if (toolName == "diff_file") {
+		return ExecuteFileMappedRealPageToolForAI(toolName, "diff_program_item_code", argumentsJson, false, outOk);
+	}
+	if (toolName == "restore_file_snapshot") {
+		return ExecuteFileMappedRealPageToolForAI(toolName, "restore_program_item_code_snapshot", argumentsJson, true, outOk);
+	}
+
+	if (IsRemovedLegacyToolNameForAI(toolName)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "unknown tool: " + toolName;
+		return Utf8ToLocalText(r.dump());
+	}
 
 	if (toolName == "get_current_page_code") {
 		const std::string sourceFilePath = RefreshCurrentSourceFilePathForAI();
@@ -7267,7 +7835,11 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 			return Utf8ToLocalText(r.dump());
 		}
 
-		const std::string normalizedFullCode = NormalizeRealCodeLineBreaksToCrLf(fullCode);
+		std::string preparedFullCode = fullCode;
+		if (item.typeKey == "const_resource") {
+			preparedFullCode = MergeConstResourceLongTextPlaceholdersForAI(preparedFullCode, baseCode);
+		}
+		const std::string normalizedFullCode = NormalizeRealCodeLineBreaksToCrLf(preparedFullCode);
 		if (BuildStableTextHashForRealCode(normalizedFullCode) == BuildStableTextHashForRealCode(baseCode)) {
 			nlohmann::json r;
 			r["ok"] = true;
@@ -7363,7 +7935,24 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		PageCodeCacheEntry cacheEntry;
 		bool fromCache = false;
 		std::string trace;
-		if (!TryLoadRealPageCodeForReadForAI(item, refreshCache, baseCode, cacheEntry, fromCache, trace, error)) {
+		if (refreshCache || IsFixedTableProgramItemForAI(item)) {
+			std::string currentCode;
+			bool cacheRefreshed = false;
+			if (!TryResolveRealPageWriteBaseForAI(item, std::string(), false, baseCode, cacheEntry, trace, currentCode, cacheRefreshed, error)) {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["error"] = error.empty() ? "read real page code failed" : error;
+				r["trace"] = LocalToUtf8Text(trace);
+				r["cache_refreshed"] = cacheRefreshed;
+				if (!currentCode.empty()) {
+					r["code"] = LocalToUtf8Text(currentCode);
+					r["code_hash"] = BuildStableTextHashForRealCode(currentCode);
+				}
+				return Utf8ToLocalText(r.dump());
+			}
+			fromCache = false;
+		}
+		else if (!TryLoadRealPageCodeForReadForAI(item, false, baseCode, cacheEntry, fromCache, trace, error)) {
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "read real page code failed" : error;
@@ -8542,3 +9131,5 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 }
 
 #endif
+
+

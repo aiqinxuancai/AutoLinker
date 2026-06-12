@@ -3378,6 +3378,51 @@ HTREEITEM FindProgramTreeItemByDataRecursive(
 	return nullptr;
 }
 
+HTREEITEM FindFirstCodeProgramTreeItemRecursive(
+	HWND treeHwnd,
+	HTREEITEM firstItem,
+	int depth,
+	int maxDepth,
+	std::string* outItemText,
+	unsigned int* outItemData)
+{
+	if (treeHwnd == nullptr || firstItem == nullptr || depth > maxDepth) {
+		return nullptr;
+	}
+
+	for (HTREEITEM item = firstItem; item != nullptr; item = GetTreeNextItemInternal(treeHwnd, item, TVGN_NEXT)) {
+		unsigned int itemData = 0;
+		std::string itemText;
+		int childCount = 0;
+		if (!QueryTreeItemInfoInternal(treeHwnd, item, &itemText, &itemData, &childCount)) {
+			continue;
+		}
+
+		if ((itemData >> 28) == 1u) {
+			if (outItemText != nullptr) {
+				*outItemText = itemText;
+			}
+			if (outItemData != nullptr) {
+				*outItemData = itemData;
+			}
+			return item;
+		}
+
+		if (depth < maxDepth && childCount > 0) {
+			if (HTREEITEM foundItem = FindFirstCodeProgramTreeItemRecursive(
+					treeHwnd,
+					GetTreeNextItemInternal(treeHwnd, item, TVGN_CHILD),
+					depth + 1,
+					maxDepth,
+					outItemText,
+					outItemData)) {
+				return foundItem;
+			}
+		}
+	}
+	return nullptr;
+}
+
 HWND GetActiveMdiChildWindow(HWND mainHwnd)
 {
 	for (HWND mdiHwnd : CollectChildWindowsByClassName(mainHwnd, "MDIClient")) {
@@ -6904,6 +6949,92 @@ bool GetRealPageCodeByEditorObject(
 		return true;
 	}
 
+	return false;
+}
+
+bool ActivateFirstCodeProgramTreePage(std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+
+	const std::uintptr_t moduleBase =
+		reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+	if (moduleBase == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = "activate_first_code_module_base_invalid";
+		}
+		return false;
+	}
+
+	std::string treeTrace;
+	const HWND treeHwnd = FindProgramDataTreeViewWindow(&treeTrace);
+	if (treeHwnd == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace = treeTrace.empty() ? "program_tree_unavailable" : treeTrace;
+		}
+		return false;
+	}
+
+	const HTREEITEM rootItem = GetTreeNextItemInternal(treeHwnd, nullptr, TVGN_ROOT);
+	const HTREEITEM firstChild = GetTreeNextItemInternal(treeHwnd, rootItem, TVGN_CHILD);
+	std::string itemText;
+	unsigned int itemData = 0;
+	const HTREEITEM item = FindFirstCodeProgramTreeItemRecursive(
+		treeHwnd,
+		firstChild,
+		0,
+		8,
+		&itemText,
+		&itemData);
+	if (item == nullptr || itemData == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = treeTrace + "|first_code_item_not_found";
+		}
+		return false;
+	}
+
+	std::string openTrace;
+	if (!TriggerProgramTreeItemOpenByUi(treeHwnd, item, &openTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = treeTrace + "|" + openTrace;
+		}
+		return false;
+	}
+
+	for (int attempt = 0; attempt < 60; ++attempt) {
+		PumpPendingMessages();
+		ActiveEditorObjectInfo activeInfo{};
+		if (ResolveCurrentActiveEditorObject(moduleBase, &activeInfo) &&
+			activeInfo.ok &&
+			activeInfo.rawEditorObject != 0) {
+			if (outTrace != nullptr) {
+				*outTrace =
+					treeTrace +
+					"|" +
+					openTrace +
+					"|activate_first_code_ok|item=" +
+					itemText +
+					"|item_data=" +
+					std::to_string(itemData) +
+					"|" +
+					activeInfo.trace;
+			}
+			return true;
+		}
+		Sleep(25);
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			treeTrace +
+			"|" +
+			openTrace +
+			"|activate_first_code_resolve_active_failed|item=" +
+			itemText +
+			"|item_data=" +
+			std::to_string(itemData);
+	}
 	return false;
 }
 

@@ -1071,91 +1071,29 @@ bool ProjectBinarySerializer::SerializeCurrentProject(
 		}
 
 		if (outError != nullptr) {
-			std::vector<unsigned char> activeEditorBytes;
-			std::string activeEditorError;
-			std::string activeEditorTrace;
-			if (TrySerializeCurrentProjectFromActiveEditorSerializerField(
-					addrs,
-					activeEditorBytes,
-					&activeEditorError,
-					&activeEditorTrace)) {
-				outBytes = std::move(activeEditorBytes);
-				if (outTrace != nullptr) {
-					*outTrace =
-						"serialize_ok"
-						"|route=active_editor_serializer_field"
-						"|direct=" + std::to_string(reinterpret_cast<std::uintptr_t>(addrs.directSerializeToHandle)) +
-						"|serializer_this=" + std::to_string(reinterpret_cast<std::uintptr_t>(serializerThis)) +
-						"|source=" + serializerSourcePath +
-						"|direct_error=" + directError +
-						"|" +
-						activeEditorTrace;
-				}
-				return true;
-			}
-
 			*outError = directError.empty()
 				? "serialize current project handle failed"
 				: "direct serializer failed: " + directError;
-			if (!activeEditorError.empty()) {
-				*outError += " | active_editor_probe: " + activeEditorError;
-			}
 		}
 		if (outTrace != nullptr) {
-			std::vector<unsigned char> activeEditorBytes;
-			std::string activeEditorError;
-			std::string activeEditorTrace;
-			(void)TrySerializeCurrentProjectFromActiveEditorSerializerField(
-				addrs,
-				activeEditorBytes,
-				&activeEditorError,
-				&activeEditorTrace);
 			*outTrace =
 				"serialize_call_failed"
 				"|direct=" + std::to_string(reinterpret_cast<std::uintptr_t>(addrs.directSerializeToHandle)) +
 				"|serializer_this=" + std::to_string(reinterpret_cast<std::uintptr_t>(serializerThis)) +
 				"|source=" + serializerSourcePath +
-				"|direct_error=" + directError +
-				"|active_editor_error=" + activeEditorError +
-				"|" +
-				activeEditorTrace;
+				"|direct_error=" + directError;
 		}
 		return false;
 	}
 
-	std::vector<unsigned char> activeEditorBytes;
-	std::string activeEditorError;
-	std::string activeEditorTrace;
-	if (TrySerializeCurrentProjectFromActiveEditorSerializerField(
-			addrs,
-			activeEditorBytes,
-			&activeEditorError,
-			&activeEditorTrace)) {
-		outBytes = std::move(activeEditorBytes);
-		if (outTrace != nullptr) {
-			*outTrace =
-				"serialize_ok"
-				"|route=active_editor_serializer_field"
-				"|context_reason=" + serializerContextReason +
-				"|" +
-				activeEditorTrace;
-		}
-		return true;
-	}
-
 	if (outError != nullptr) {
-		*outError = activeEditorError.empty()
-			? "project serializer context unavailable"
-			: activeEditorError;
+		*outError = "project serializer context unavailable";
 	}
 	if (outTrace != nullptr) {
 		*outTrace =
 			"serializer_context_unavailable"
 			"|direct=" + std::to_string(reinterpret_cast<std::uintptr_t>(addrs.directSerializeToHandle)) +
-			"|reason=" + serializerContextReason +
-			"|active_editor_error=" + activeEditorError +
-			"|" +
-			activeEditorTrace;
+			"|reason=" + serializerContextReason;
 	}
 	return false;
 #endif
