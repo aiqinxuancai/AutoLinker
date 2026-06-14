@@ -397,13 +397,29 @@ bool RequestToolExecutionFromMainThread(
 	ToolExecutionRequest request;
 	request.toolName = toolName;
 	request.argumentsJson = argumentsJson;
-	if (PostMessage(mainWindow, toolExecMessage, 0, reinterpret_cast<LPARAM>(&request)) == FALSE) {
+
+	const auto dispatchStart = std::chrono::steady_clock::now();
+	const DWORD mainThreadId = GetWindowThreadProcessId(mainWindow, nullptr);
+	if (mainThreadId != 0 && mainThreadId == GetCurrentThreadId()) {
+		request.resultJson = ExecuteToolCallOnMainThread(request.toolName, request.argumentsJson, request.ok);
+		request.done = true;
+	}
+	else {
+		// 工具调用必须在主线程操作 IDE，但不能使用 PostMessage 排队，否则繁忙 UI 消息队列会让本地编辑空等几十秒。
+		SendMessage(mainWindow, toolExecMessage, 0, reinterpret_cast<LPARAM>(&request));
+	}
+
+	if (!request.done) {
 		return false;
 	}
 
-	std::unique_lock<std::mutex> lock(request.mutex);
-	if (!request.cv.wait_for(lock, std::chrono::minutes(20), [&request]() { return request.done; })) {
-		return false;
+	const double dispatchMs = std::chrono::duration<double, std::milli>(
+		std::chrono::steady_clock::now() - dispatchStart).count();
+	if (dispatchMs >= 1000.0) {
+		LogInternalToolCallLine(std::format(
+			"main_thread_dispatch_slow tool={} elapsed_ms={:.1f}",
+			toolName.empty() ? "unknown_tool" : toolName,
+			dispatchMs));
 	}
 
 	outResultJson = request.resultJson;

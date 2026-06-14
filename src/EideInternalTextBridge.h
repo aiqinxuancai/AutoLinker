@@ -16,6 +16,7 @@ struct NativeRealPageAccessResult {
 	bool rollbackAttempted = false;
 	bool rollbackSucceeded = false;
 	size_t textBytes = 0;
+	std::string pageCode;
 	std::string trace;
 };
 
