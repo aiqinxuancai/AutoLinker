@@ -347,3 +347,8 @@ healthchecksdb
 
 
 temp/
+
+# AutoLinker 运行期/测试产物
+.temp/
+*.bak
+test_a_autolinker*.exe

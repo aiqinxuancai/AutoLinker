@@ -83,7 +83,7 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 
 constexpr int kAiRequestRetryCount = 5;
 constexpr int kAiRequestCancelledHttpStatus = 499;
-constexpr int kMaxToolRounds = 128;
+constexpr int kMaxToolRounds = 256;
 
 bool IsCancelRequested(
 	const std::function<bool()>& cancelCallback,
