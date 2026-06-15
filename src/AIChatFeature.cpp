@@ -2298,47 +2298,88 @@ std::string RenderMarkdownToHtml(const std::string& markdown)
 
 void CompactHistoryLocked(AIChatSessionState& state)
 {
+	auto cleanupInvisibleContextMessages = [&state]() {
+		const size_t keepInvisibleCount = 24;
+		size_t trailingInvisibleCount = 0;
+		for (auto it = state.messages.rbegin(); it != state.messages.rend(); ++it) {
+			if (it->visibleInHistory || it->includeInContext) {
+				continue;
+			}
+			++trailingInvisibleCount;
+			if (trailingInvisibleCount > keepInvisibleCount) {
+				it->content.clear();
+				it->reasoningContent.clear();
+				it->rawMessageJsonUtf8.clear();
+			}
+		}
+		state.messages.erase(
+			std::remove_if(
+				state.messages.begin(),
+				state.messages.end(),
+				[](const SessionMessage& msg) {
+					return !msg.visibleInHistory &&
+						!msg.includeInContext &&
+						msg.content.empty() &&
+						msg.reasoningContent.empty() &&
+						msg.rawMessageJsonUtf8.empty();
+				}),
+			state.messages.end());
+	};
+
 	size_t contextChars = 0;
+	size_t contextCount = 0;
 	for (const auto& message : state.messages) {
 		if (message.includeInContext) {
 			contextChars += message.content.size();
+			++contextCount;
 		}
 	}
 
-	if (state.messages.size() <= 40 && contextChars <= 24000) {
+	if (contextCount <= 40 && contextChars <= 24000) {
+		cleanupInvisibleContextMessages();
 		return;
 	}
 
-	const size_t keepCount = (std::min)(state.messages.size(), static_cast<size_t>(24));
-	const size_t cutCount = state.messages.size() - keepCount;
-	if (cutCount == 0) {
+	const size_t keepContextCount = (std::min)(contextCount, static_cast<size_t>(24));
+	const size_t compactContextCount = contextCount - keepContextCount;
+	if (compactContextCount == 0) {
 		return;
 	}
 
 	std::string summaryAppend;
 	summaryAppend.reserve(2048);
-	for (size_t i = 0; i < cutCount; ++i) {
-		const auto& msg = state.messages[i];
-		if (!msg.includeInContext || !msg.visibleInHistory) {
+	size_t compactedCount = 0;
+	for (auto& msg : state.messages) {
+		if (!msg.includeInContext) {
 			continue;
 		}
 
-		std::string line = TrimAsciiCopy(msg.content);
-		if (line.size() > 120) {
-			line.resize(120);
-			line += "...";
+		if (compactedCount < compactContextCount) {
+			if (msg.visibleInHistory) {
+				std::string line = TrimAsciiCopy(msg.content);
+				if (line.size() > 120) {
+					line.resize(120);
+					line += "...";
+				}
+				if (summaryAppend.size() <= 4000) {
+					summaryAppend += "[";
+					summaryAppend += RoleLabel(msg.role);
+					summaryAppend += "] ";
+					summaryAppend += line;
+					summaryAppend += "\n";
+				}
+			}
+			msg.includeInContext = false;
+			msg.reasoningContent.clear();
+			msg.rawMessageJsonUtf8.clear();
+			++compactedCount;
 		}
-		summaryAppend += "[";
-		summaryAppend += RoleLabel(msg.role);
-		summaryAppend += "] ";
-		summaryAppend += line;
-		summaryAppend += "\n";
-		if (summaryAppend.size() > 4000) {
+
+		if (compactedCount >= compactContextCount) {
 			break;
 		}
 	}
 
-	state.messages.erase(state.messages.begin(), state.messages.begin() + static_cast<std::ptrdiff_t>(cutCount));
 	if (!summaryAppend.empty()) {
 		if (!state.rollingSummary.empty()) {
 			state.rollingSummary += "\n";
@@ -2348,6 +2389,8 @@ void CompactHistoryLocked(AIChatSessionState& state)
 			state.rollingSummary.erase(0, state.rollingSummary.size() - 12000);
 		}
 	}
+
+	cleanupInvisibleContextMessages();
 }
 
 std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& state)
@@ -2539,6 +2582,9 @@ std::string BuildHistoryTextLocked(
 			LocalFromWide(L"\u3002\u8bf7\u70b9\u51fb\u8bbe\u7f6e\u6309\u94ae\u5b8c\u6210\u8bbe\u7f6e\u3002") + "\r\n\r\n";
 	}
 	for (const auto& msg : state.messages) {
+		if (!msg.visibleInHistory) {
+			continue;
+		}
 		text += "[";
 		text += RoleLabel(msg.role);
 		text += "]\r\n";
