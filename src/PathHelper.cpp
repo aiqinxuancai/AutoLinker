@@ -1,10 +1,85 @@
 ﻿#include "PathHelper.h"
 #include <algorithm>
+#include <chrono>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <regex>
+#include <string>
 #include <vector>
+
+namespace {
+
+constexpr int kDefaultLogRetentionDays = 3;
+
+std::filesystem::path GetAutoLinkerLogDirectoryPathRaw() {
+    return GetAutoLinkerDirectoryPath() / "Log";
+}
+
+std::string ToLowerAsciiForPath(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return text;
+}
+
+bool IsProcessScopedLogFileName(const std::string& fileName) {
+    const std::filesystem::path path(fileName);
+    return ToLowerAsciiForPath(path.extension().string()) == ".log";
+}
+
+std::filesystem::path AddCurrentProcessIdToLogFileName(const std::string& fileName) {
+    const std::filesystem::path path(fileName);
+    if (!IsProcessScopedLogFileName(fileName)) {
+        return path;
+    }
+
+    const std::string pidSuffix = "_pid" + std::to_string(GetCurrentProcessId());
+    return path.parent_path() / (path.stem().string() + pidSuffix + path.extension().string());
+}
+
+void CleanupOldAutoLinkerLogFilesInDirectory(const std::filesystem::path& dir, int retentionDays) {
+    if (retentionDays <= 0) {
+        retentionDays = kDefaultLogRetentionDays;
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(dir, ec) || !std::filesystem::is_directory(dir, ec)) {
+        return;
+    }
+
+    const auto cutoff =
+        std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * retentionDays);
+    for (std::filesystem::directory_iterator it(dir, ec), end; it != end && !ec; it.increment(ec)) {
+        std::error_code fileEc;
+        const auto& entry = *it;
+        if (!entry.is_regular_file(fileEc) || fileEc) {
+            continue;
+        }
+        if (ToLowerAsciiForPath(entry.path().extension().string()) != ".log") {
+            continue;
+        }
+
+        const auto lastWriteTime = entry.last_write_time(fileEc);
+        if (fileEc || lastWriteTime >= cutoff) {
+            continue;
+        }
+
+        std::filesystem::remove(entry.path(), fileEc);
+    }
+}
+
+void EnsureOldLogCleanupOnce(const std::filesystem::path& dir) {
+    static std::once_flag s_cleanupOnce;
+    std::call_once(s_cleanupOnce, [&dir]() {
+        CleanupOldAutoLinkerLogFilesInDirectory(dir, kDefaultLogRetentionDays);
+    });
+}
+
+} // namespace
+
 std::string GetBasePath() {
     char buffer[MAX_PATH];
     GetModuleFileName(NULL, buffer, MAX_PATH);
@@ -15,13 +90,23 @@ std::filesystem::path GetAutoLinkerDirectoryPath() {
     return std::filesystem::path(GetBasePath()) / "AutoLinker";
 }
 std::filesystem::path GetAutoLinkerLogDirectoryPath() {
-    std::filesystem::path dir = GetAutoLinkerDirectoryPath() / "Log";
+    std::filesystem::path dir = GetAutoLinkerLogDirectoryPathRaw();
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
+    EnsureOldLogCleanupOnce(dir);
     return dir;
 }
 std::filesystem::path GetAutoLinkerLogFilePath(const std::string& fileName) {
-    return GetAutoLinkerLogDirectoryPath() / fileName;
+    return GetAutoLinkerLogDirectoryPath() / AddCurrentProcessIdToLogFileName(fileName);
+}
+void CleanupOldAutoLinkerLogFiles(int retentionDays) {
+    const std::filesystem::path dir = GetAutoLinkerLogDirectoryPathRaw();
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) {
+        return;
+    }
+    CleanupOldAutoLinkerLogFilesInDirectory(dir, retentionDays);
 }
 std::filesystem::path GetAutoLinkerSessionRootDirectoryPath() {
     std::filesystem::path dir = GetAutoLinkerDirectoryPath() / "Session";
@@ -65,24 +150,24 @@ std::string SanitizePathComponentForStorage(const std::string& text) {
 }
 std::string ExtractBetweenDashes(const std::string& text) {
     std::string delimiter = " - ";
-    // 鎵惧埌绗竴涓? - "鐨勪綅缃?
+    // 找到第一个 " - " 的位置。
     size_t start = text.find(delimiter);
     if (start == std::string::npos) {
-        // 娌℃湁鎵惧埌" - "锛岃繑鍥炵┖瀛楃涓?
+        // 没有找到分隔符，返回空字符串。
         return "";
     }
     start += delimiter.length();
-    // 浠?start 浣嶇疆寮€濮嬫壘鍒扮浜屼釜" - "鐨勪綅缃?
+    // 从 start 位置开始查找第二个 " - "。
     size_t end = text.find(delimiter, start);
     if (end == std::string::npos) {
-        // 娌℃湁鎵惧埌绗簩涓? - "锛岃繑鍥炵┖瀛楃涓?
+        // 没有找到第二个分隔符，返回空字符串。
         return "";
     }
-    // 鍙栧嚭涓や釜" - "涔嬮棿鐨勫瓧绗︿覆
+    // 取出两个分隔符之间的字符串。
     return text.substr(start, end - start);
 }
 /// <summary>
-/// 鏌ユ壘瀛楄妭搴忓垪鍦ㄦ枃浠朵腑鐨勫亸绉汇€?
+/// 查找字节序列在文件中的偏移。
 /// </summary>
 /// <param name="filename"></param>
 /// <param name="search_bytes"></param>
@@ -97,7 +182,7 @@ std::optional<size_t> FindByteInFile(const std::string& filename, const std::vec
     return std::nullopt;
 }
 /// <summary>
-/// 鑾峰彇 /out: 瀵瑰簲鐨勮緭鍑烘枃浠跺悕銆?
+/// 获取 /out: 对应的输出文件名。
 /// </summary>
 /// <param name="s"></param>
 /// <returns></returns>
@@ -113,7 +198,7 @@ std::string GetLinkerCommandOutFileName(const std::string& s) {
         return "";
     }
 }
-// 浠庡懡浠よ鏂囨湰涓彁鍙栧寘鍚壒瀹氱洰鏍囩殑瀹屾暣璺緞銆?
+// 从命令行文本中提取包含特定目标的完整路径。
 std::string ExtractPathFromCommand(const std::string& commandLine, const std::string& target) {
     std::string foundPath;
     size_t pos = commandLine.find(target);

@@ -14,8 +14,11 @@ std::filesystem::path GetAutoLinkerDirectoryPath();
 // 获取 AutoLinker 日志目录路径，若目录不存在则自动创建。
 std::filesystem::path GetAutoLinkerLogDirectoryPath();
 
-// 获取指定名称的日志文件完整路径。
+// 获取指定名称的日志文件完整路径；.log 文件会自动追加当前进程 PID，避免多实例互相覆盖。
 std::filesystem::path GetAutoLinkerLogFilePath(const std::string& fileName);
+
+// 清理日志目录中最后写入时间早于指定天数的 .log 文件。
+void CleanupOldAutoLinkerLogFiles(int retentionDays = 3);
 
 // 获取 AI 会话存储根目录路径，若不存在则自动创建。
 std::filesystem::path GetAutoLinkerSessionRootDirectoryPath();
