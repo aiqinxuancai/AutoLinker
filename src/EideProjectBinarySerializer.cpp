@@ -1051,6 +1051,7 @@ bool ProjectBinarySerializer::SerializeCurrentProject(
 		serializerThis,
 		serializerSourcePath,
 		&serializerContextReason);
+	std::string directTrace;
 	if (hasVerifiedContext) {
 		const HGLOBAL handle = CallDirectSerializeProjectToHandleSafe(
 			addrs.directSerializeToHandle,
@@ -1070,30 +1071,50 @@ bool ProjectBinarySerializer::SerializeCurrentProject(
 			return true;
 		}
 
-		if (outError != nullptr) {
-			*outError = directError.empty()
-				? "serialize current project handle failed"
-				: "direct serializer failed: " + directError;
-		}
+		directTrace =
+			"direct_call_failed"
+			"|serializer_this=" + std::to_string(reinterpret_cast<std::uintptr_t>(serializerThis)) +
+			"|source=" + serializerSourcePath +
+			"|direct_error=" + (directError.empty() ? std::string("unknown") : directError);
+	}
+	else {
+		directTrace =
+			"direct_context_unavailable"
+			"|reason=" + serializerContextReason;
+	}
+
+	// 回退：从活动编辑器对象的序列化器字段（索引 23）直接取序列化器对象，走 direct 序列化。
+	// 这是 5.71/e5.95 时代验证过的“免保存读取工程内存”路线：无需 serializerThis 被 hook 捕获、
+	// 无需写盘、不依赖懒创建的命令对象单例。被后续重构从调用链摘除，此处接回。
+	std::vector<unsigned char> fieldBytes;
+	std::string fieldError;
+	std::string fieldTrace;
+	if (TrySerializeCurrentProjectFromActiveEditorSerializerField(
+			addrs,
+			fieldBytes,
+			&fieldError,
+			&fieldTrace)) {
+		outBytes = std::move(fieldBytes);
 		if (outTrace != nullptr) {
 			*outTrace =
-				"serialize_call_failed"
-				"|direct=" + std::to_string(reinterpret_cast<std::uintptr_t>(addrs.directSerializeToHandle)) +
-				"|serializer_this=" + std::to_string(reinterpret_cast<std::uintptr_t>(serializerThis)) +
-				"|source=" + serializerSourcePath +
-				"|direct_error=" + directError;
+				"serialize_ok"
+				"|route=active_editor_serializer_field"
+				"|fallback_from=" + directTrace +
+				"|" + fieldTrace;
 		}
-		return false;
+		return true;
 	}
 
 	if (outError != nullptr) {
-		*outError = "project serializer context unavailable";
+		*outError = fieldError.empty()
+			? "project serializer context unavailable"
+			: fieldError;
 	}
 	if (outTrace != nullptr) {
 		*outTrace =
-			"serializer_context_unavailable"
-			"|direct=" + std::to_string(reinterpret_cast<std::uintptr_t>(addrs.directSerializeToHandle)) +
-			"|reason=" + serializerContextReason;
+			"serialize_failed"
+			"|direct=" + directTrace +
+			"|field=" + (fieldTrace.empty() ? std::string("unavailable") : fieldTrace);
 	}
 	return false;
 #endif

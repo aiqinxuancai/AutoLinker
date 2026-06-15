@@ -330,7 +330,10 @@ std::string TruncateMcpLogText(const std::string& text, size_t maxChars = 180)
 
 std::string FormatMcpLogJson(const nlohmann::json& value)
 {
-	return TruncateMcpLogText(SanitizeSingleLineText(value.dump()), 180);
+	// 与 DumpJsonSafe 同策略：error_handler=replace，避免日志路径因非法 UTF-8 抛异常。
+	return TruncateMcpLogText(
+		SanitizeSingleLineText(value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)),
+		180);
 }
 
 std::string FormatMcpLogText(const std::string& value)
@@ -666,6 +669,13 @@ void SendHttpResponse(
 	}
 }
 
+// 安全序列化 JSON 为字符串：ensure_ascii=false 保留中文可读，error_handler=replace 遇非法 UTF-8
+// 用 U+FFFD 替换而非抛 type_error.316，避免外部非法输入经 .dump() 抛异常导致线程/进程崩溃。
+std::string DumpJsonSafe(const nlohmann::json& value)
+{
+	return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
 nlohmann::json BuildJsonRpcError(const nlohmann::json& id, int code, const std::string& message)
 {
 	return {
@@ -793,7 +803,7 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 				{"message", std::string("parse error: ") + ex.what()}
 			});
 		}
-		outBody = BuildJsonRpcError(nullptr, -32700, std::string("parse error: ") + ex.what()).dump();
+		outBody = DumpJsonSafe(BuildJsonRpcError(nullptr, -32700, std::string("parse error: ") + ex.what()));
 		return true;
 	}
 
@@ -808,7 +818,7 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 				{"message", "request must be a JSON object"}
 			});
 		}
-		outBody = BuildJsonRpcError(nullptr, -32600, "request must be a JSON object").dump();
+		outBody = DumpJsonSafe(BuildJsonRpcError(nullptr, -32600, "request must be a JSON object"));
 		return true;
 	}
 
@@ -820,7 +830,7 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 				{"message", "method is required"}
 			});
 		}
-		outBody = BuildJsonRpcError(id, -32600, "method is required").dump();
+		outBody = DumpJsonSafe(BuildJsonRpcError(id, -32600, "method is required"));
 		return true;
 	}
 
@@ -842,7 +852,7 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 		if (outLogContext != nullptr) {
 			outLogContext->responseDisplay = FormatMcpLogJson(result);
 		}
-		outBody = BuildJsonRpcResult(id, result).dump();
+		outBody = DumpJsonSafe(BuildJsonRpcResult(id, result));
 		return true;
 	}
 
@@ -851,7 +861,7 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 		if (outLogContext != nullptr) {
 			outLogContext->responseDisplay = FormatMcpLogJson(result);
 		}
-		outBody = BuildJsonRpcResult(id, result).dump();
+		outBody = DumpJsonSafe(BuildJsonRpcResult(id, result));
 		return true;
 	}
 
@@ -865,13 +875,13 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 					{"message", error}
 				});
 			}
-			outBody = BuildJsonRpcError(id, -32603, error).dump();
+			outBody = DumpJsonSafe(BuildJsonRpcError(id, -32603, error));
 			return true;
 		}
 		if (outLogContext != nullptr) {
 			outLogContext->responseDisplay = FormatMcpLogJson(result);
 		}
-		outBody = BuildJsonRpcResult(id, result).dump();
+		outBody = DumpJsonSafe(BuildJsonRpcResult(id, result));
 		return true;
 	}
 
@@ -885,13 +895,13 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 					{"message", error}
 				});
 			}
-			outBody = BuildJsonRpcError(id, -32602, error).dump();
+			outBody = DumpJsonSafe(BuildJsonRpcError(id, -32602, error));
 			return true;
 		}
 		if (outLogContext != nullptr) {
 			outLogContext->responseDisplay = FormatMcpLogJson(result);
 		}
-		outBody = BuildJsonRpcResult(id, result).dump();
+		outBody = DumpJsonSafe(BuildJsonRpcResult(id, result));
 		return true;
 	}
 
@@ -910,11 +920,11 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 			{"message", "method not found"}
 		});
 	}
-	outBody = BuildJsonRpcError(id, -32601, "method not found").dump();
+	outBody = DumpJsonSafe(BuildJsonRpcError(id, -32601, "method not found"));
 	return true;
 }
 
-void HandleClient(SOCKET clientSock)
+void HandleClientImpl(SOCKET clientSock)
 {
 	DWORD timeoutMs = 5000;
 	setsockopt(clientSock, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
@@ -942,7 +952,7 @@ void HandleClient(SOCKET clientSock)
 			{"port", g_boundPort.load()},
 			{"mcp_endpoint", BuildEndpointForPort(g_boundPort.load())}
 		};
-		SendHttpResponse(clientSock, 200, "OK", "application/json; charset=utf-8", health.dump());
+		SendHttpResponse(clientSock, 200, "OK", "application/json; charset=utf-8", DumpJsonSafe(health));
 		return;
 	}
 
@@ -993,6 +1003,33 @@ void HandleClient(SOCKET clientSock)
 		std::chrono::steady_clock::now() - startTime).count();
 	LogMcpResponse(logContext, elapsedMs);
 	SendHttpResponse(clientSock, statusCode, statusText, "application/json; charset=utf-8", responseBody);
+}
+
+// 防御纵深：单个连接的任何未捕获异常（如非法 UTF-8 经 .dump() 抛 type_error）不得逃出到
+// accept 线程而使整个宿主进程崩溃。此处兜底，返回 500 并保证连接被正常关闭。
+void HandleClient(SOCKET clientSock)
+{
+	try {
+		HandleClientImpl(clientSock);
+	}
+	catch (const std::exception& ex) {
+		LogMcp(std::format("HandleClient exception: {}", ex.what()));
+		try {
+			SendHttpResponse(clientSock, 500, "Internal Server Error",
+				"application/json; charset=utf-8", R"({"ok":false,"error":"internal server error"})");
+		}
+		catch (...) {
+		}
+	}
+	catch (...) {
+		LogMcp("HandleClient unknown exception");
+		try {
+			SendHttpResponse(clientSock, 500, "Internal Server Error",
+				"application/json; charset=utf-8", R"({"ok":false,"error":"internal server error"})");
+		}
+		catch (...) {
+		}
+	}
 }
 
 bool TryCreateListeningSocket(int& outPort)
