@@ -7891,7 +7891,7 @@ bool IsRemovedLegacyToolNameForAI(const std::string& toolName)
 	return kRemovedTools.find(toolName) != kRemovedTools.end();
 }
 
-std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
+std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
 {
 	outOk = false;
 
@@ -9308,6 +9308,36 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 	r["ok"] = false;
 	r["error"] = "unknown tool: " + toolName;
 	return Utf8ToLocalText(r.dump());
+}
+
+// 顶层异常防线：工具调用经 SendMessage 在主线程的 WndProc 中执行
+// （HandleToolExecRequest）。若任何工具内部抛出未捕获异常，异常会逃出窗口
+// 过程、穿过 Win32 消息派发边界，触发 MSVC 运行时 abort（“abnormal program
+// termination”），整个 IDE 进程崩溃。这里统一兜底，把异常转成失败结果返回，
+// 保证无论工具内部发生什么都不会崩进程。
+std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
+{
+	try {
+		return ExecuteToolCallOnMainThreadImpl(toolName, argumentsJson, outOk);
+	}
+	catch (const std::exception& ex) {
+		outOk = false;
+		OutputStringToELog(std::string("[Tool] tool_execution_exception tool=") + toolName + " what=" + ex.what());
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("tool execution failed: ") + ex.what();
+		r["exception"] = true;
+		return Utf8ToLocalText(r.dump());
+	}
+	catch (...) {
+		outOk = false;
+		OutputStringToELog(std::string("[Tool] tool_execution_exception tool=") + toolName + " what=<unknown>");
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "tool execution failed: unknown exception";
+		r["exception"] = true;
+		return Utf8ToLocalText(r.dump());
+	}
 }
 
 #endif

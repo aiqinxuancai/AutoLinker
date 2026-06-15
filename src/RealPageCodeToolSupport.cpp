@@ -15,6 +15,11 @@ constexpr std::string_view kDirectiveLocalVariable = ".局部变量";
 constexpr std::string_view kDirectiveParameter = ".参数";
 constexpr std::string_view kDirectiveAssemblyVariable = ".程序集变量";
 constexpr std::string_view kDirectiveMemberVariable = ".成员变量";
+// 类声明指令（注意必须区别于 .程序集变量：后者是变量声明）。
+constexpr std::string_view kDirectiveAssembly = ".程序集";
+// 易语言默认基类标注。声明 `.程序集 X, <对象>` 与 `.程序集 X` 完全等价：
+// IDE 会把显式的默认基类省略掉再存，读回时即变成无基类形式。比较时需归一化两者。
+constexpr std::string_view kDefaultBaseClassToken = "<对象>";
 
 struct DiffOp {
 	char type = ' ';
@@ -301,6 +306,61 @@ std::string PrepareAssemblyVariablesForRealPageWrite(const std::string& text)
 	return changed ? JoinRealCodeLines(lines) : text;
 }
 
+// 把类声明里等价的默认基类标注归一化掉：".程序集 X, <对象>" → ".程序集 X"。
+// IDE 存盘时会省略显式写出的默认基类 <对象>，读回后两种写法语义完全相同，
+// 因此比较前需消除该差异，避免把成功写入误判为 verify_mismatch 而触发回滚重写。
+// 仅处理 .程序集（类声明）行，不会匹配 .程序集变量（分隔符校验已排除）。
+// 返回是否修改了 line。
+bool TryNormalizeAssemblyClassDefaultBase(std::string& line)
+{
+	size_t directivePos = 0;
+	if (!TryMatchDirectiveAtLineStart(line, kDirectiveAssembly, &directivePos)) {
+		return false;
+	}
+
+	const std::string indent = line.substr(0, directivePos);
+	const std::string rest = line.substr(directivePos + kDirectiveAssembly.size());
+
+	std::vector<std::string> fields;
+	size_t fieldStart = 0;
+	while (true) {
+		const size_t comma = rest.find(',', fieldStart);
+		const std::string field = comma == std::string::npos
+			? rest.substr(fieldStart)
+			: rest.substr(fieldStart, comma - fieldStart);
+		fields.push_back(TrimAsciiCopyLocal(field));
+		if (comma == std::string::npos) {
+			break;
+		}
+		fieldStart = comma + 1;
+	}
+
+	// fields[0]=类名；fields[1]=基类（若存在）。只在基类恰为默认 <对象> 时移除。
+	bool changed = false;
+	if (fields.size() >= 2 && fields[1] == kDefaultBaseClassToken) {
+		fields.erase(fields.begin() + 1);
+		changed = true;
+	}
+	// 移除基类后可能遗留的尾部空字段。
+	while (fields.size() > 1 && fields.back().empty()) {
+		fields.pop_back();
+		changed = true;
+	}
+	if (!changed) {
+		return false;
+	}
+
+	std::string rebuilt = indent + std::string(kDirectiveAssembly);
+	if (!fields.empty()) {
+		rebuilt += " " + fields[0];
+		for (size_t i = 1; i < fields.size(); ++i) {
+			rebuilt += ", " + fields[i];
+		}
+	}
+	line = rebuilt;
+	return true;
+}
+
 std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string& text)
 {
 	std::vector<std::string> lines = SplitRealCodeLines(text);
@@ -316,6 +376,9 @@ std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string
 					kDirectiveLocalVariable.size(),
 					kDirectiveAssemblyVariable.data(),
 					kDirectiveAssemblyVariable.size());
+				changed = true;
+			}
+			else if (TryNormalizeAssemblyClassDefaultBase(line)) {
 				changed = true;
 			}
 		}

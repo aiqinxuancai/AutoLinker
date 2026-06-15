@@ -298,7 +298,10 @@ std::string BuildNumberedView(const std::vector<std::string>& lines, int offset,
 
 std::string ToolResultToLocalJson(const json& result)
 {
-	return Utf8ToLocalText(result.dump());
+	// 页面内容/搜索命中可能含非法 UTF-8 字节（如易语言字节集里的 GBK 字节 0xB5）。
+	// 裸 dump() 遇到会抛 type_error.316，异常一路逃出主线程 WndProc 导致 IDE 崩溃。
+	// 用 error_handler=replace 把非法字节替换为 U+FFFD，保证序列化绝不抛异常。
+	return Utf8ToLocalText(result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 }
 
 std::string BuildError(const std::string& error)
