@@ -2542,14 +2542,20 @@ bool IDEFacade::AppendOutputWindowText(const std::string& text) const
 
 	EnsureOutputEditAppendRoom(outputHwnd, text.size());
 	const int beforeLen = GetWindowTextLengthA(outputHwnd);
-	SendMessageA(outputHwnd, EM_SETSEL, static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
+	SendMessageA(outputHwnd, EM_SETSEL, static_cast<WPARAM>(beforeLen), static_cast<LPARAM>(beforeLen));
 	SendMessageA(outputHwnd, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text.c_str()));
 	SendMessageA(outputHwnd, EM_EMPTYUNDOBUFFER, 0, 0);
 
 	if (text.empty()) {
 		return true;
 	}
-	return GetWindowTextLengthA(outputHwnd) > beforeLen;
+	const int afterLen = GetWindowTextLengthA(outputHwnd);
+	if (afterLen <= beforeLen) {
+		return false;
+	}
+	SendMessageA(outputHwnd, EM_SETSEL, static_cast<WPARAM>(afterLen), static_cast<LPARAM>(afterLen));
+	SendMessageA(outputHwnd, EM_SCROLLCARET, 0, 0);
+	return true;
 }
 
 bool IDEFacade::AppendOutputWindowLine(const std::string& text) const
