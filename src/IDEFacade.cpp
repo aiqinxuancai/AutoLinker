@@ -19,6 +19,11 @@
 namespace {
 using PerfClock = std::chrono::steady_clock;
 
+constexpr int kOutputEditTextLimit = 8 * 1024 * 1024;
+constexpr int kOutputEditTrimThreshold = 6 * 1024 * 1024;
+constexpr int kOutputEditTrimKeepChars = 4 * 1024 * 1024;
+constexpr int kOutputEditAppendReserve = 64 * 1024;
+
 long long ElapsedMs(const PerfClock::time_point& start)
 {
 	return static_cast<long long>(
@@ -958,6 +963,84 @@ BOOL CALLBACK EnumChildProcFindOutputWindow(HWND hwnd, LPARAM lParam)
 		return FALSE;
 	}
 	return TRUE;
+}
+
+int FindOutputEditTrimEnd(HWND hWnd, int preferredEnd, int textLength)
+{
+	if (preferredEnd <= 0) {
+		return 0;
+	}
+	if (preferredEnd >= textLength) {
+		return textLength;
+	}
+
+	const LRESULT line = SendMessageA(hWnd, EM_LINEFROMCHAR, static_cast<WPARAM>(preferredEnd), 0);
+	if (line < 0) {
+		return preferredEnd;
+	}
+	const LRESULT nextLineStart = SendMessageA(hWnd, EM_LINEINDEX, static_cast<WPARAM>(line + 1), 0);
+	if (nextLineStart > 0 && nextLineStart < textLength) {
+		return static_cast<int>(nextLineStart);
+	}
+	return preferredEnd;
+}
+
+void EnsureOutputEditAppendRoom(HWND hWnd, size_t appendChars)
+{
+	if (hWnd == nullptr || !IsWindow(hWnd)) {
+		return;
+	}
+
+	const LRESULT currentLimitResult = SendMessageA(hWnd, EM_GETLIMITTEXT, 0, 0);
+	size_t effectiveLimit = static_cast<size_t>(kOutputEditTextLimit);
+	if (currentLimitResult > 0) {
+		const size_t currentLimit = static_cast<size_t>(currentLimitResult);
+		effectiveLimit = (std::max)(effectiveLimit, currentLimit);
+		if (currentLimit < static_cast<size_t>(kOutputEditTextLimit)) {
+			SendMessageA(hWnd, EM_LIMITTEXT, static_cast<WPARAM>(kOutputEditTextLimit), 0);
+		}
+	}
+	else {
+		SendMessageA(hWnd, EM_LIMITTEXT, static_cast<WPARAM>(kOutputEditTextLimit), 0);
+	}
+
+	const int textLength = GetWindowTextLengthA(hWnd);
+	if (textLength <= 0) {
+		return;
+	}
+
+	const size_t projectedLength = static_cast<size_t>(textLength) + appendChars;
+	if (projectedLength < static_cast<size_t>(kOutputEditTrimThreshold) &&
+		projectedLength + kOutputEditAppendReserve < effectiveLimit) {
+		return;
+	}
+
+	size_t keepChars = static_cast<size_t>(kOutputEditTrimKeepChars);
+	if (appendChars + kOutputEditAppendReserve >= effectiveLimit) {
+		keepChars = 0;
+	}
+	else {
+		keepChars = (std::min)(
+			keepChars,
+			effectiveLimit - appendChars - kOutputEditAppendReserve);
+	}
+	if (static_cast<size_t>(textLength) <= keepChars) {
+		return;
+	}
+
+	const int preferredEnd = static_cast<int>(static_cast<size_t>(textLength) - keepChars);
+	const int trimEnd = FindOutputEditTrimEnd(hWnd, preferredEnd, textLength);
+	if (trimEnd <= 0) {
+		return;
+	}
+
+	const char* trimMarker = "[AutoLinker] 输出窗口内容过多，已清理较早日志...\r\n";
+	SendMessageA(hWnd, WM_SETREDRAW, FALSE, 0);
+	SendMessageA(hWnd, EM_SETSEL, 0, static_cast<LPARAM>(trimEnd));
+	SendMessageA(hWnd, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(trimMarker));
+	SendMessageA(hWnd, EM_EMPTYUNDOBUFFER, 0, 0);
+	SendMessageA(hWnd, WM_SETREDRAW, TRUE, 0);
+	InvalidateRect(hWnd, nullptr, TRUE);
 }
 }
 
@@ -2457,9 +2540,16 @@ bool IDEFacade::AppendOutputWindowText(const std::string& text) const
 		return false;
 	}
 
+	EnsureOutputEditAppendRoom(outputHwnd, text.size());
+	const int beforeLen = GetWindowTextLengthA(outputHwnd);
 	SendMessageA(outputHwnd, EM_SETSEL, static_cast<WPARAM>(-1), static_cast<LPARAM>(-1));
-	SendMessageA(outputHwnd, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>(text.c_str()));
-	return true;
+	SendMessageA(outputHwnd, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text.c_str()));
+	SendMessageA(outputHwnd, EM_EMPTYUNDOBUFFER, 0, 0);
+
+	if (text.empty()) {
+		return true;
+	}
+	return GetWindowTextLengthA(outputHwnd) > beforeLen;
 }
 
 bool IDEFacade::AppendOutputWindowLine(const std::string& text) const

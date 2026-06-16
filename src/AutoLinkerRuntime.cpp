@@ -75,8 +75,11 @@ long long ElapsedMs(const PerfClock::time_point& start)
 void OutputStringToELog(const std::string& szbuf)
 {
 	const std::string line = "[AutoLinker]" + szbuf;
+	const std::string ideLine = line.size() <= 256 * 1024
+		? line
+		: line.substr(0, 256 * 1024) + "\r\n[AutoLinker] 单条输出过长，IDE 窗口已截断，完整内容已写入日志文件。";
 	OutputDebugStringA((line + "\n").c_str());
-	IDEFacade::Instance().AppendOutputWindowLine(line);
+	IDEFacade::Instance().AppendOutputWindowLine(ideLine);
 	Logger::Instance().WriteGbk(line);
 }
 
