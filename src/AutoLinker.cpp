@@ -16,6 +16,7 @@
 #include "AIChatFeature.h"
 #include "AIConfigDialog.h"
 #include "ECOMEx.h"
+#include "EPackagerIntegration.h"
 #include "Global.h"
 #include "HeadlessCompileRunner.h"
 #include "IDEFacade.h"
@@ -130,13 +131,19 @@ void ShowAISettingsAddIn()
 	OutputStringToELog("AI配置已保存");
 }
 
+void UpdateEPackagerComponentAddIn()
+{
+	EPackagerIntegration::RunToolUpdateInBackground();
+}
+
 const auto& GetAddInMenuEntries()
 {
-	static const std::array<AddInMenuEntry, 4> kEntries = { {
+	static const std::array<AddInMenuEntry, 5> kEntries = { {
 		{ "打开项目目录", "这是个用作测试的辅助工具功能。", &OpenProjectDirectoryAddIn },
 		{ "打开AutoLinker配置目录", "这是个用作测试的辅助工具功能。", &OpenAutoLinkerConfigDirectoryAddIn },
 		{ "打开E语言目录", "这是个用作测试的辅助工具功能。", &OpenELanguageDirectoryAddIn },
 		{ "AutoLinker AI接口设置", "编辑AI接口地址、API Key、模型和提示词等配置。", &ShowAISettingsAddIn },
+		{ "更新e-packager组件", "检查并下载最新的 e-packager 组件。", &UpdateEPackagerComponentAddIn },
 	} };
 	return kEntries;
 }

@@ -42,6 +42,7 @@ constexpr const char* kGitHubHeaders =
 constexpr long long kUpdateCheckIntervalSeconds = 7LL * 24LL * 60LL * 60LL;
 
 std::atomic_bool g_unpackTaskRunning = false;
+std::atomic_bool g_toolUpdateTaskRunning = false;
 
 struct ScopedComInit {
 	HRESULT hr = E_FAIL;
@@ -765,11 +766,15 @@ bool DownloadAndInstallTool(const LatestReleaseInfo& info, std::string& outError
 	return true;
 }
 
-bool EnsureToolReadyImpl(std::filesystem::path& outToolPath, std::string& outError)
+bool EnsureToolReadyImpl(
+	std::filesystem::path& outToolPath,
+	std::string& outError,
+	bool forceCheck,
+	bool allowExistingFallback)
 {
 	const std::filesystem::path toolPath = GetEPackagerExePath();
 	const bool toolExists = std::filesystem::exists(toolPath);
-	if (!IsUpdateCheckDue(toolExists)) {
+	if (!forceCheck && !IsUpdateCheckDue(toolExists)) {
 		outToolPath = toolPath;
 		return true;
 	}
@@ -777,7 +782,7 @@ bool EnsureToolReadyImpl(std::filesystem::path& outToolPath, std::string& outErr
 	LatestReleaseInfo latest;
 	std::string fetchError;
 	if (!FetchLatestRelease(latest, fetchError)) {
-		if (toolExists) {
+		if (toolExists && allowExistingFallback) {
 			OutputStringToELog("[e-packager] 检查更新失败，将继续使用现有工具：" + fetchError);
 			outToolPath = toolPath;
 			return true;
@@ -805,7 +810,7 @@ bool EnsureToolReadyImpl(std::filesystem::path& outToolPath, std::string& outErr
 	}
 
 	if (!DownloadAndInstallTool(latest, outError)) {
-		if (toolExists) {
+		if (toolExists && allowExistingFallback) {
 			OutputStringToELog("[e-packager] 更新失败，将继续使用现有工具：" + outError);
 			outError.clear();
 			outToolPath = toolPath;
@@ -816,6 +821,29 @@ bool EnsureToolReadyImpl(std::filesystem::path& outToolPath, std::string& outErr
 
 	outToolPath = toolPath;
 	return true;
+}
+
+void ToolUpdateWorker(void*)
+{
+	try {
+		OutputStringToELog("[e-packager] 开始手动更新组件");
+		std::filesystem::path toolPath;
+		std::string error;
+		if (!EnsureToolReadyImpl(toolPath, error, true, false)) {
+			OutputStringToELog("[e-packager] 手动更新失败：" + error);
+			g_toolUpdateTaskRunning.store(false);
+			return;
+		}
+		OutputStringToELog("[e-packager] 手动更新完成：" + LocalPathString(toolPath));
+	}
+	catch (const std::exception& ex) {
+		OutputStringToELog(std::string("[e-packager] 手动更新异常：") + ex.what());
+	}
+	catch (...) {
+		OutputStringToELog("[e-packager] 手动更新发生未知异常");
+	}
+
+	g_toolUpdateTaskRunning.store(false);
 }
 
 bool IsCurrentSourceEFile()
@@ -946,7 +974,7 @@ void UnpackWorker(void* param)
 
 		std::filesystem::path toolPath;
 		std::string error;
-		if (!EnsureToolReadyImpl(toolPath, error)) {
+		if (!EnsureToolReadyImpl(toolPath, error, false, true)) {
 			OutputStringToELog("[e-packager] " + error);
 			CleanupSnapshotRootImpl(snapshotRoot);
 			g_unpackTaskRunning.store(false);
@@ -1029,7 +1057,21 @@ void CleanupSnapshotRoot(const std::filesystem::path& snapshotRoot)
 
 bool EnsureToolReady(std::filesystem::path& outToolPath, std::string& outError)
 {
-	return EnsureToolReadyImpl(outToolPath, outError);
+	return EnsureToolReadyImpl(outToolPath, outError, false, true);
+}
+
+void RunToolUpdateInBackground()
+{
+	if (g_toolUpdateTaskRunning.exchange(true)) {
+		OutputStringToELog("[e-packager] 已有组件更新任务正在执行，请稍候");
+		return;
+	}
+
+	if (_beginthread(ToolUpdateWorker, 0, nullptr) == static_cast<uintptr_t>(-1)) {
+		g_toolUpdateTaskRunning.store(false);
+		OutputStringToELog("[e-packager] 启动后台更新任务失败");
+		return;
+	}
 }
 
 ProcessRunResult RunProcessAndCapture(
