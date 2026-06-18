@@ -474,10 +474,10 @@ std::string JsonStringLiteral(const std::string& utf8Text)
 
 bool IsWebView2RuntimeAvailableWithTag(const char* logTag)
 {
+	(void)logTag;
 	LPWSTR version = nullptr;
 	const HRESULT hr = GetAvailableCoreWebView2BrowserVersionString(nullptr, &version);
 	const bool available = SUCCEEDED(hr);
-	OutputStringToELog(std::format("[{}][WebView2] runtime available={}", logTag == nullptr ? "AI Config" : logTag, available ? 1 : 0));
 	if (version != nullptr) {
 		CoTaskMemFree(version);
 	}
@@ -1975,7 +1975,6 @@ void ApplyAIConfigWebViewSettings(AIConfigWebViewDialogContext* ctx)
 	std::wstring script = L"window.autolinkerApplySettings(JSON.parse('";
 	script += EscapeJsSingleQuotedWide(settingsJsonWide);
 	script += L"'));window.autolinkerFocusPrimary();";
-	OutputStringToELog(std::format("[AI Config][WebView2] apply settings jsonChars={}", settingsJsonWide.size()));
 	ExecuteAIConfigWebViewScript(ctx, script);
 }
 
@@ -2120,7 +2119,6 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 											if (navCtx->hLoading != nullptr) {
 												ShowWindow(navCtx->hLoading, SW_HIDE);
 											}
-											OutputStringToELog("[AI Config][WebView2] navigation completed successfully");
 											LayoutAIConfigWebViewDialog(hWnd, navCtx);
 											ApplyAIConfigWebViewSettings(navCtx);
 											return S_OK;
@@ -2154,7 +2152,6 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 								DestroyWindow(hWnd);
 								return S_OK;
 							}
-							OutputStringToELog(std::format("[AI Config][WebView2] controller ready=1 shellHtmlChars={}", shellHtml.size()));
 							readyCtx->webView->NavigateToString(shellHtml.c_str());
 							return S_OK;
 						}).Get());

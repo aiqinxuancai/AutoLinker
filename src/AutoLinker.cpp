@@ -125,7 +125,6 @@ void ShowAISettingsAddIn()
 	AISettings settings = {};
 	AIService::LoadSettings(g_aiJsonConfig, &g_configManager, settings);
 	if (!ShowAIConfigDialog(g_hwnd, g_aiJsonConfig, settings)) {
-		OutputStringToELog("AI配置已取消");
 		return;
 	}
 	OutputStringToELog("AI配置已保存");
