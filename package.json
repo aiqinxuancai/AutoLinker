@@ -1,0 +1,10 @@
+﻿{
+  "private": true,
+  "scripts": {
+    "build:ai-config-webview": "node scripts/build_ai_config_webview.mjs"
+  },
+  "devDependencies": {
+    "preline": "^3.2.3",
+    "tailwindcss": "3.4.17"
+  }
+}

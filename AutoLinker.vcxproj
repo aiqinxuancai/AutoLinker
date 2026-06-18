@@ -598,9 +598,16 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="src\AutoLinker.def" />
+    <None Include="package.json" />
+    <None Include="scripts\build_ai_config_webview.mjs" />
+    <None Include="tailwind.config.js" />
     <None Include="src\webview\ai_chat_history.html" />
     <None Include="src\webview\ai_config_dialog.html" />
+    <None Include="src\webview\ai_config_dialog.src.html" />
+    <None Include="src\webview\ai_config_dialog.tailwind.css" />
     <None Include="src\webview\ai_preview_dialog.html" />
+    <None Include="src\webview\linker_config_dialog.html" />
+    <None Include="src\webview\linker_config_dialog.src.html" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

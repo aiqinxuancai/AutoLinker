@@ -3,10 +3,15 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <CommCtrl.h>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <new>
 #include <Shellapi.h>
+#include <set>
+#include <system_error>
 #include <wrl.h>
 
 #include "..\\thirdparty\\json.hpp"
@@ -14,7 +19,9 @@
 
 #include "AIService.h"
 #include "Global.h"
+#include "PathHelper.h"
 #include "ResourceTextLoader.h"
+#include "WinINetUtil.h"
 
 #pragma comment(lib, "comctl32.lib")
 #if defined _M_IX86
@@ -32,9 +39,7 @@ constexpr int IDC_CFG_API_KEY = 1002;
 constexpr int IDC_CFG_MODEL = 1003;
 constexpr int IDC_CFG_EXTRA_PROMPT = 1004;
 constexpr int IDC_CFG_GET_KEY_LINK = 1005;
-constexpr int IDC_CFG_FILL_RIGHT_CODES = 1006; // 保留以备兼容，实际已被 IDC_CFG_PLATFORM_PRESET 取代
 constexpr int IDC_CFG_TAVILY_API_KEY = 1007;
-constexpr int IDC_CFG_PLATFORM_PRESET = 1008;
 constexpr int IDC_CFG_TEST_CONNECTION = 1009;
 constexpr int IDC_CFG_THINKING_LEVEL = 1010;
 constexpr int IDC_CFG_CUSTOM_HEADERS = 1011;
@@ -42,8 +47,10 @@ constexpr int IDC_CFG_PROFILE_COMBO = 1012;
 constexpr int IDC_CFG_PROFILE_ADD = 1013;
 constexpr int IDC_CFG_PROFILE_RENAME = 1014;
 constexpr int IDC_CFG_PROFILE_DELETE = 1015;
+constexpr int IDC_CFG_PROFILE_ADD_PRESET = 1016;
 constexpr int IDC_CFG_SAVE = 1;
 constexpr int IDC_CFG_CANCEL = 2;
+constexpr UINT kAIConfigNativePresetMenuBase = 30000;
 
 constexpr int IDC_PREVIEW_EDIT = 1101;
 constexpr int IDC_PREVIEW_OK = 1;
@@ -56,8 +63,11 @@ constexpr int IDC_INPUT_CANCEL = 2;
 constexpr UINT_PTR kAIConfigWebViewInitTimerId = 0xAC01;
 constexpr UINT kAIConfigWebViewInitTimeoutMs = 12000;
 constexpr UINT WM_AUTOLINKER_AI_CONFIG_TEST_DONE = WM_APP + 301;
+constexpr UINT WM_AUTOLINKER_AI_CONFIG_MODEL_LIST_DONE = WM_APP + 302;
 constexpr UINT_PTR kAIPreviewWebViewInitTimerId = 0xAC02;
 constexpr UINT kAIPreviewWebViewInitTimeoutMs = 12000;
+constexpr UINT_PTR kLinkerConfigWebViewInitTimerId = 0xAC03;
+constexpr UINT kLinkerConfigWebViewInitTimeoutMs = 12000;
 
 HMODULE GetCurrentModuleHandle()
 {
@@ -513,7 +523,6 @@ struct AIConfigDialogContext {
 	HWND hExtraPrompt = nullptr;
 	HWND hCustomHeaders = nullptr;
 	HWND hGetKeyLink = nullptr;
-	HWND hPlatformCombo = nullptr;
 	HWND hTestConnection = nullptr;
 };
 
@@ -542,6 +551,18 @@ struct AIConfigConnectionTestRequest {
 struct AIConfigConnectionTestResult {
 	bool forWebView = false;
 	AIResult result;
+};
+
+struct AIConfigModelListRequest {
+	HWND dialogHwnd = nullptr;
+	AISettings settings;
+};
+
+struct AIConfigModelListResult {
+	bool ok = false;
+	std::vector<std::string> models;
+	std::string error;
+	int httpStatus = 0;
 };
 
 struct AIPreviewWebViewDialogContext {
@@ -864,6 +885,135 @@ void PopulateProfileCombo(HWND hCombo, const std::vector<AIConfigProfileEntry>& 
 	SendMessageA(hCombo, CB_SETCURSEL, selectedIndex, 0);
 }
 
+struct AIConfigPresetSite {
+	const wchar_t* label;
+	const char* baseUrl;
+	const char* const* models;
+	size_t modelCount;
+	AIProtocolType protocol;
+};
+
+constexpr const char* kRightPresetModels[] = { "gpt-5.5", "gpt-5.4", "gpt-5.4-mini" };
+constexpr const char* kDeepseekPresetModels[] = { "deepseek-v4-flash", "deepseek-v4-pro" };
+constexpr const char* kZhipuPresetModels[] = { "glm-5.2", "glm-5-turbo", "glm-4.7", "glm-4.5-air" };
+constexpr const char* kQwenPresetModels[] = { "qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash", "qwen3-coder-next", "qwen3-coder-plus" };
+constexpr const char* kKimiPresetModels[] = { "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5" };
+constexpr const char* kDoubaoPresetModels[] = { "doubao-seed-2.0-pro", "doubao-seed-2.0-code", "doubao-seed-2.0-lite", "doubao-seed-1.8" };
+constexpr const char* kMiniMaxPresetModels[] = { "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5" };
+constexpr const char* kAihubmixPresetModels[] = { "gpt-5.5", "claude-opus-4-8", "claude-sonnet-4-6", "deepseek-v4-pro", "deepseek-v4-flash", "gemini-3.1-pro-preview" };
+constexpr const char* kSiliconFlowPresetModels[] = { "deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro", "Pro/zai-org/GLM-5", "zai-org/GLM-5.1", "Qwen/Qwen3.5-397B-A17B" };
+constexpr const char* kOpenAIPresetModels[] = { "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex" };
+constexpr const char* kClaudePresetModels[] = { "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5" };
+constexpr const char* kGeminiPresetModels[] = { "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-pro" };
+
+#define AI_PRESET_MODELS(name) name, std::size(name)
+
+constexpr AIConfigPresetSite kAIConfigPresetSites[] = {
+	{ L"Right",            "https://right.codes/codex",                         AI_PRESET_MODELS(kRightPresetModels),        AIProtocolType::OpenAI },
+	{ L"Deepseek",         "https://api.deepseek.com",                          AI_PRESET_MODELS(kDeepseekPresetModels),     AIProtocolType::OpenAI },
+	{ L"\u667A\u8C31",     "https://open.bigmodel.cn/api/paas/v4",              AI_PRESET_MODELS(kZhipuPresetModels),        AIProtocolType::OpenAI },
+	{ L"\u5343\u95EE",     "https://dashscope.aliyuncs.com/compatible-mode/v1", AI_PRESET_MODELS(kQwenPresetModels),         AIProtocolType::OpenAI },
+	{ L"Kimi",             "https://api.moonshot.cn/v1",                        AI_PRESET_MODELS(kKimiPresetModels),         AIProtocolType::OpenAI },
+	{ L"\u8C46\u5305",     "https://ark.cn-beijing.volces.com/api/v3",          AI_PRESET_MODELS(kDoubaoPresetModels),       AIProtocolType::OpenAI },
+	{ L"MiniMax",          "https://api.minimax.chat/v1",                       AI_PRESET_MODELS(kMiniMaxPresetModels),      AIProtocolType::OpenAI },
+	{ L"aihubmix",         "https://aihubmix.com/v1",                           AI_PRESET_MODELS(kAihubmixPresetModels),     AIProtocolType::OpenAI },
+	{ L"\u7845\u57FA\u6D41\u52A8", "https://api.siliconflow.cn/v1",             AI_PRESET_MODELS(kSiliconFlowPresetModels),  AIProtocolType::OpenAI },
+	{ L"OpenAI",           "https://api.openai.com/v1",                         AI_PRESET_MODELS(kOpenAIPresetModels),       AIProtocolType::OpenAIResponses },
+	{ L"Claude",           "https://api.anthropic.com",                         AI_PRESET_MODELS(kClaudePresetModels),       AIProtocolType::Claude },
+	{ L"Gemini",           "https://generativelanguage.googleapis.com",         AI_PRESET_MODELS(kGeminiPresetModels),       AIProtocolType::Gemini },
+};
+
+#undef AI_PRESET_MODELS
+
+const char* GetPresetSitePrimaryModel(const AIConfigPresetSite& site)
+{
+	return site.modelCount > 0 && site.models != nullptr ? site.models[0] : "";
+}
+
+std::string BuildPresetProfileNameLocal(const AIConfigPresetSite& site, const char* model)
+{
+	const std::string label = Utf8ToLocalText(WideToUtf8(site.label == nullptr ? L"" : site.label));
+	return label + "(" + (model == nullptr ? "" : model) + ")";
+}
+
+void AddNativePresetProfile(HWND hWnd, AIConfigDialogContext* ctx, const AIConfigPresetSite& site, const char* model)
+{
+	if (ctx == nullptr || ctx->settings == nullptr) {
+		return;
+	}
+	const int oldIndex = FindProfileIndexById(ctx->profiles, ctx->activeProfileId);
+	if (oldIndex >= 0) {
+		ctx->profiles[static_cast<size_t>(oldIndex)].settings = ReadAISettingsFromNativeDialog(ctx);
+	}
+
+	AIConfigProfileEntry entry;
+	entry.id = std::format("profile_{}", GetTickCount64());
+	entry.name = BuildPresetProfileNameLocal(site, model);
+	entry.settings = {};
+	entry.settings.protocolType = site.protocol;
+	entry.settings.thinkingLevel = AIThinkingLevel::Off;
+	entry.settings.baseUrl = site.baseUrl == nullptr ? std::string() : site.baseUrl;
+	entry.settings.model = model == nullptr ? std::string() : model;
+
+	ctx->profiles.push_back(std::move(entry));
+	ctx->activeProfileId = ctx->profiles.back().id;
+	*ctx->settings = ctx->profiles.back().settings;
+	PopulateProfileCombo(ctx->hProfileCombo, ctx->profiles, ctx->activeProfileId);
+	ApplyAISettingsToNativeDialog(ctx, *ctx->settings);
+	SetFocus(ctx->hApiKey);
+}
+
+void ShowNativePresetProfileMenu(HWND hWnd, AIConfigDialogContext* ctx, HWND hButton)
+{
+	if (hWnd == nullptr || ctx == nullptr || hButton == nullptr) {
+		return;
+	}
+	HMENU menu = CreatePopupMenu();
+	if (menu == nullptr) {
+		return;
+	}
+	std::vector<std::pair<size_t, size_t>> menuItems;
+	for (size_t i = 0; i < std::size(kAIConfigPresetSites); ++i) {
+		const AIConfigPresetSite& site = kAIConfigPresetSites[i];
+		for (size_t modelIndex = 0; modelIndex < site.modelCount; ++modelIndex) {
+			const char* model = site.models == nullptr ? nullptr : site.models[modelIndex];
+			if (model == nullptr || model[0] == '\0') {
+				continue;
+			}
+			const UINT commandId = kAIConfigNativePresetMenuBase + static_cast<UINT>(menuItems.size());
+			const std::wstring text = std::wstring(site.label) + L"(" + Utf8ToWide(model) + L")";
+			AppendMenuW(menu, MF_STRING, commandId, text.c_str());
+			menuItems.emplace_back(i, modelIndex);
+		}
+	}
+	if (menuItems.empty()) {
+		DestroyMenu(menu);
+		return;
+	}
+
+	RECT rc = {};
+	GetWindowRect(hButton, &rc);
+	const int command = TrackPopupMenu(
+		menu,
+		TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
+		rc.left,
+		rc.bottom,
+		0,
+		hWnd,
+		nullptr);
+	DestroyMenu(menu);
+
+	if (command >= static_cast<int>(kAIConfigNativePresetMenuBase)) {
+		const size_t index = static_cast<size_t>(command - kAIConfigNativePresetMenuBase);
+		if (index < menuItems.size()) {
+			const auto [siteIndex, modelIndex] = menuItems[index];
+			const AIConfigPresetSite& site = kAIConfigPresetSites[siteIndex];
+			const char* model = site.models == nullptr || modelIndex >= site.modelCount ? GetPresetSitePrimaryModel(site) : site.models[modelIndex];
+			AddNativePresetProfile(hWnd, ctx, site, model);
+		}
+	}
+}
+
 bool ValidateAISettingsForConnection(HWND hWnd, const AISettings& settings)
 {
 	if (AIService::Trim(settings.baseUrl).empty() ||
@@ -975,6 +1125,309 @@ bool StartAIConfigConnectionTest(HWND hWnd, const AISettings& settings, bool for
 	return true;
 }
 
+std::string TrimTrailingSlashesCopy(std::string text)
+{
+	text = AIService::Trim(text);
+	while (!text.empty() && text.back() == '/') {
+		text.pop_back();
+	}
+	return text;
+}
+
+bool EndsWithAsciiInsensitiveLocal(const std::string& text, const std::string& suffix)
+{
+	if (suffix.size() > text.size()) {
+		return false;
+	}
+	return _stricmp(text.c_str() + text.size() - suffix.size(), suffix.c_str()) == 0;
+}
+
+std::string BuildModelListUrl(const AISettings& settings)
+{
+	std::string url = TrimTrailingSlashesCopy(settings.baseUrl);
+	if (url.empty()) {
+		return std::string();
+	}
+	if (settings.protocolType == AIProtocolType::Gemini) {
+		if (EndsWithAsciiInsensitiveLocal(url, "/models")) {
+			return url;
+		}
+		if (EndsWithAsciiInsensitiveLocal(url, "/v1beta") || EndsWithAsciiInsensitiveLocal(url, "/v1")) {
+			return url + "/models";
+		}
+		return url + "/v1beta/models";
+	}
+	if (EndsWithAsciiInsensitiveLocal(url, "/models")) {
+		return url;
+	}
+	if (EndsWithAsciiInsensitiveLocal(url, "/chat/completions")) {
+		url = url.substr(0, url.size() - std::string("/chat/completions").size());
+	}
+	else if (EndsWithAsciiInsensitiveLocal(url, "/responses")) {
+		url = url.substr(0, url.size() - std::string("/responses").size());
+	}
+	else if (EndsWithAsciiInsensitiveLocal(url, "/messages")) {
+		url = url.substr(0, url.size() - std::string("/messages").size());
+	}
+	if (EndsWithAsciiInsensitiveLocal(url, "/v1")) {
+		return url + "/models";
+	}
+	return url + "/v1/models";
+}
+
+struct AIConfigHeaderEntry {
+	std::string name;
+	std::string value;
+};
+
+void UpsertAIConfigHeader(
+	std::vector<AIConfigHeaderEntry>& headers,
+	const std::string& name,
+	const std::string& value)
+{
+	for (auto& header : headers) {
+		if (_stricmp(header.name.c_str(), name.c_str()) == 0) {
+			header.name = name;
+			header.value = value;
+			return;
+		}
+	}
+	headers.push_back({ name, value });
+}
+
+void MergeAIConfigCustomHeaders(
+	std::vector<AIConfigHeaderEntry>& headers,
+	const std::string& customText)
+{
+	size_t lineStart = 0;
+	while (lineStart <= customText.size()) {
+		const size_t lineEnd = customText.find_first_of("\r\n", lineStart);
+		const std::string line = lineEnd == std::string::npos
+			? customText.substr(lineStart)
+			: customText.substr(lineStart, lineEnd - lineStart);
+		if (lineEnd == std::string::npos) {
+			lineStart = customText.size() + 1;
+		}
+		else if (customText[lineEnd] == '\r' && lineEnd + 1 < customText.size() && customText[lineEnd + 1] == '\n') {
+			lineStart = lineEnd + 2;
+		}
+		else {
+			lineStart = lineEnd + 1;
+		}
+
+		const std::string trimmed = AIService::Trim(line);
+		if (trimmed.empty()) {
+			continue;
+		}
+		const size_t colon = trimmed.find(':');
+		if (colon == std::string::npos || colon == 0) {
+			continue;
+		}
+		UpsertAIConfigHeader(
+			headers,
+			AIService::Trim(trimmed.substr(0, colon)),
+			AIService::Trim(trimmed.substr(colon + 1)));
+	}
+}
+
+std::string BuildModelListHeaders(const AISettings& settings)
+{
+	std::vector<AIConfigHeaderEntry> headerEntries;
+	if (settings.protocolType == AIProtocolType::Claude) {
+		headerEntries.push_back({ "x-api-key", settings.apiKey });
+		headerEntries.push_back({ "anthropic-version", "2023-06-01" });
+		headerEntries.push_back({ "Accept", "application/json" });
+	}
+	else if (settings.protocolType == AIProtocolType::Gemini) {
+		headerEntries.push_back({ "x-goog-api-key", settings.apiKey });
+		headerEntries.push_back({ "Accept", "application/json" });
+	}
+	else {
+		headerEntries.push_back({ "Authorization", "Bearer " + settings.apiKey });
+		headerEntries.push_back({ "Accept", "application/json" });
+	}
+
+	MergeAIConfigCustomHeaders(headerEntries, settings.customHeadersText);
+
+	std::string headers;
+	for (const auto& entry : headerEntries) {
+		headers += entry.name;
+		headers += ": ";
+		headers += entry.value;
+		headers += "\r\n";
+	}
+	return headers;
+}
+
+void AddModelNameFromJsonValue(
+	const nlohmann::json& value,
+	std::set<std::string>& outModels,
+	bool stripModelPrefix)
+{
+	if (!value.is_string()) {
+		return;
+	}
+	std::string model = AIService::Trim(value.get<std::string>());
+	if (stripModelPrefix && model.rfind("models/", 0) == 0) {
+		model = model.substr(std::string("models/").size());
+	}
+	if (!model.empty()) {
+		outModels.insert(model);
+	}
+}
+
+bool SupportsGeminiGenerateContent(const nlohmann::json& item)
+{
+	if (!item.is_object() || !item.contains("supportedGenerationMethods") || !item["supportedGenerationMethods"].is_array()) {
+		return true;
+	}
+	for (const auto& method : item["supportedGenerationMethods"]) {
+		if (method.is_string() && method.get<std::string>() == "generateContent") {
+			return true;
+		}
+	}
+	return false;
+}
+
+void CollectModelNamesFromArray(
+	const nlohmann::json& arrayValue,
+	std::set<std::string>& outModels,
+	bool stripModelPrefix,
+	bool requireGeminiGenerateContent)
+{
+	if (!arrayValue.is_array()) {
+		return;
+	}
+	for (const auto& item : arrayValue) {
+		if (item.is_string()) {
+			AddModelNameFromJsonValue(item, outModels, stripModelPrefix);
+			continue;
+		}
+		if (!item.is_object()) {
+			continue;
+		}
+		if (requireGeminiGenerateContent && !SupportsGeminiGenerateContent(item)) {
+			continue;
+		}
+		if (item.contains("id")) {
+			AddModelNameFromJsonValue(item["id"], outModels, stripModelPrefix);
+		}
+		else if (item.contains("name")) {
+			AddModelNameFromJsonValue(item["name"], outModels, stripModelPrefix);
+		}
+	}
+}
+
+bool TryParseModelListResponse(
+	const std::string& responseBody,
+	AIProtocolType protocolType,
+	std::vector<std::string>& outModels,
+	std::string& outError)
+{
+	outModels.clear();
+	outError.clear();
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(responseBody);
+		std::set<std::string> models;
+		const bool gemini = protocolType == AIProtocolType::Gemini;
+		if (parsed.is_array()) {
+			CollectModelNamesFromArray(parsed, models, gemini, gemini);
+		}
+		else if (parsed.is_object()) {
+			if (parsed.contains("data")) {
+				CollectModelNamesFromArray(parsed["data"], models, gemini, gemini);
+			}
+			if (parsed.contains("models")) {
+				CollectModelNamesFromArray(parsed["models"], models, gemini, gemini);
+			}
+		}
+		outModels.assign(models.begin(), models.end());
+		if (outModels.empty()) {
+			outError = "模型列表为空。";
+			return false;
+		}
+		return true;
+	}
+	catch (const std::exception& ex) {
+		outError = std::string("解析模型列表失败：") + ex.what();
+		return false;
+	}
+}
+
+DWORD WINAPI AIConfigModelListWorkerProc(LPVOID param)
+{
+	AIConfigModelListRequest* request = reinterpret_cast<AIConfigModelListRequest*>(param);
+	if (request == nullptr) {
+		return 0;
+	}
+
+	AIConfigModelListResult* result = new (std::nothrow) AIConfigModelListResult();
+	if (result == nullptr) {
+		delete request;
+		return 0;
+	}
+
+	const HWND hWnd = request->dialogHwnd;
+	try {
+		std::string headerError;
+		if (AIService::Trim(request->settings.baseUrl).empty()) {
+			result->error = "请输入 Base URL 后再获取模型列表。";
+		}
+		else if (AIService::Trim(request->settings.apiKey).empty()) {
+			result->error = "请输入 API Key 后再获取模型列表。";
+		}
+		else if (!AIService::ValidateCustomHeadersText(request->settings.customHeadersText, headerError)) {
+			result->error = headerError;
+		}
+		else {
+			const std::string url = BuildModelListUrl(request->settings);
+			const std::string headers = BuildModelListHeaders(request->settings);
+			const int timeout = (std::clamp)(request->settings.timeoutMs <= 0 ? 30000 : request->settings.timeoutMs, 1000, 300000);
+			const auto [body, statusCode] = PerformGetRequest(url, headers, timeout, false, false);
+			result->httpStatus = statusCode;
+			if (statusCode < 200 || statusCode >= 300) {
+				result->error = std::format("HTTP {}: {}", statusCode, body.substr(0, (std::min)(body.size(), size_t(500))));
+			}
+			else {
+				result->ok = TryParseModelListResponse(body, request->settings.protocolType, result->models, result->error);
+			}
+		}
+	}
+	catch (const std::exception& ex) {
+		result->error = std::string("获取模型列表异常：") + ex.what();
+	}
+	catch (...) {
+		result->error = "获取模型列表异常：unknown";
+	}
+
+	delete request;
+	if (hWnd == nullptr || !PostMessageA(hWnd, WM_AUTOLINKER_AI_CONFIG_MODEL_LIST_DONE, 0, reinterpret_cast<LPARAM>(result))) {
+		delete result;
+	}
+	return 0;
+}
+
+bool StartAIConfigModelListFetch(HWND hWnd, const AISettings& settings)
+{
+	AIConfigModelListRequest* request = new (std::nothrow) AIConfigModelListRequest();
+	if (request == nullptr) {
+		MessageBoxA(hWnd, "无法启动模型列表获取线程。", "AI Config", MB_ICONERROR | MB_OK);
+		return false;
+	}
+	request->dialogHwnd = hWnd;
+	request->settings = settings;
+
+	const HANDLE workerHandle = CreateThread(nullptr, 0, AIConfigModelListWorkerProc, request, 0, nullptr);
+	if (workerHandle == nullptr) {
+		delete request;
+		MessageBoxA(hWnd, "无法启动模型列表获取线程。", "AI Config", MB_ICONERROR | MB_OK);
+		return false;
+	}
+
+	CloseHandle(workerHandle);
+	return true;
+}
+
 std::string BuildAIConfigWebViewSettingsJson(const std::vector<AIConfigProfileEntry>& profiles, const std::string& activeProfileId)
 {
 	nlohmann::json initialSettings;
@@ -1057,11 +1510,13 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
 			120, 14, 230, 260, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PROFILE_COMBO), nullptr, nullptr);
 		HWND hAddProfile = CreateWindowW(L"BUTTON", L"\u65B0\u5EFA", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-			360, 14, 80, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PROFILE_ADD), nullptr, nullptr);
+			360, 14, 70, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PROFILE_ADD), nullptr, nullptr);
+		HWND hAddPresetProfile = CreateWindowW(L"BUTTON", L"\u4F7F\u7528\u9884\u8BBE\u7AD9\u70B9\u65B0\u5EFA", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+			438, 14, 150, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PROFILE_ADD_PRESET), nullptr, nullptr);
 		HWND hRenameProfile = CreateWindowW(L"BUTTON", L"\u91CD\u547D\u540D", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-			448, 14, 80, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PROFILE_RENAME), nullptr, nullptr);
+			596, 14, 70, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PROFILE_RENAME), nullptr, nullptr);
 		HWND hDeleteProfile = CreateWindowW(L"BUTTON", L"\u5220\u9664", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-			536, 14, 80, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PROFILE_DELETE), nullptr, nullptr);
+			674, 14, 70, 24, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PROFILE_DELETE), nullptr, nullptr);
 		PopulateProfileCombo(ctx->hProfileCombo, ctx->profiles, ctx->activeProfileId);
 
 		HWND hProtocolLabel = CreateWindowA("STATIC", "Protocol:", WS_CHILD | WS_VISIBLE,
@@ -1116,20 +1571,6 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			hGetKeyLink = ctx->hGetKeyLink;
 		}
 
-		ctx->hPlatformCombo = CreateWindowExW(0, L"COMBOBOX", nullptr,
-			WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
-			430, 212, 190, 280, hWnd, reinterpret_cast<HMENU>(IDC_CFG_PLATFORM_PRESET), nullptr, nullptr);
-		// 填入平台列表
-		static const wchar_t* kPlatformNames[] = {
-			L"（平台预设）", L"Right", L"DeepSeek", L"\u667A\u8C31", L"\u5343\u95EE",
-			L"Kimi", L"\u8C46\u5305", L"MiniMax", L"aihubmix",
-			L"\u7845\u57FA\u6D41\u52A8", L"OpenAI", L"Claude", L"Gemini"
-		};
-		for (const wchar_t* name : kPlatformNames) {
-			SendMessageW(ctx->hPlatformCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
-		}
-		SendMessageW(ctx->hPlatformCombo, CB_SETCURSEL, 0, 0);
-
 		HWND hTavilyApiKeyLabel = CreateWindowA("STATIC", "Tavily API Key:", WS_CHILD | WS_VISIBLE,
 			16, 248, 100, 20, hWnd, nullptr, nullptr, nullptr);
 		ctx->hTavilyApiKey = CreateWindowExA(0, "EDIT", ctx->settings->tavilyApiKey.c_str(),
@@ -1159,6 +1600,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			hProfileLabel,
 			ctx->hProfileCombo,
 			hAddProfile,
+			hAddPresetProfile,
 			hRenameProfile,
 			hDeleteProfile,
 			hProtocolLabel,
@@ -1169,7 +1611,6 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			hThinkingLabel,
 			hTavilyApiKeyLabel,
 			ctx->hGetKeyLink,
-			ctx->hPlatformCombo,
 			hExtraPromptLabel,
 			hCustomHeadersLabel,
 			ctx->hBaseUrl,
@@ -1238,6 +1679,11 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			*ctx->settings = ctx->profiles.back().settings;
 			PopulateProfileCombo(ctx->hProfileCombo, ctx->profiles, ctx->activeProfileId);
 			ApplyAISettingsToNativeDialog(ctx, *ctx->settings);
+			return 0;
+		}
+
+		if (id == IDC_CFG_PROFILE_ADD_PRESET) {
+			ShowNativePresetProfileMenu(hWnd, ctx, reinterpret_cast<HWND>(lParam));
 			return 0;
 		}
 
@@ -1317,36 +1763,6 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			return 0;
 		}
 
-		if (id == IDC_CFG_PLATFORM_PRESET && HIWORD(wParam) == CBN_SELCHANGE) {
-			// 与 WebView2 中 PLATFORMS 数组保持相同顺序（索引 0 = 自定义）
-			struct PlatformPreset {
-				const char* baseUrl;
-				AIProtocolType protocol;
-			};
-			static const PlatformPreset kPresets[] = {
-				{ nullptr, AIProtocolType::OpenAI },                                            // 0: 自定义
-				{ "https://right.codes/codex",                         AIProtocolType::OpenAI },  // Right
-				{ "https://api.deepseek.com",                          AIProtocolType::OpenAI },  // DeepSeek
-				{ "https://open.bigmodel.cn/api/paas/v4",              AIProtocolType::OpenAI },  // 智谱
-				{ "https://dashscope.aliyuncs.com/compatible-mode/v1", AIProtocolType::OpenAI },  // 千问
-				{ "https://api.moonshot.cn/v1",                        AIProtocolType::OpenAI },  // Kimi
-				{ "https://ark.cn-beijing.volces.com/api/v3",          AIProtocolType::OpenAI },  // 豆包
-				{ "https://api.minimax.chat/v1",                       AIProtocolType::OpenAI },  // MiniMax
-				{ "https://aihubmix.com/v1",                           AIProtocolType::OpenAI },  // aihubmix
-				{ "https://api.siliconflow.cn/v1",                     AIProtocolType::OpenAI },  // 硅基流动
-				{ "https://api.openai.com/v1",                         AIProtocolType::OpenAIResponses },  // OpenAI
-				{ "https://api.anthropic.com",                         AIProtocolType::Claude  },  // Claude
-				{ "https://generativelanguage.googleapis.com",         AIProtocolType::Gemini  },  // Gemini
-			};
-			const int sel = static_cast<int>(SendMessageW(ctx->hPlatformCombo, CB_GETCURSEL, 0, 0));
-			if (sel > 0 && sel < static_cast<int>(std::size(kPresets))) {
-				const auto& p = kPresets[sel];
-				PopulateProtocolCombo(ctx->hProtocol, p.protocol);
-				SetWindowTextA(ctx->hBaseUrl, p.baseUrl);
-				SetFocus(ctx->hApiKey);
-			}
-			return 0;
-		}
 		if (id == IDC_CFG_GET_KEY_LINK && HIWORD(wParam) == STN_CLICKED) {
 			ShellExecuteA(hWnd, "open", "https://right.codes/register?aff=3dc87885", nullptr, nullptr, SW_SHOWNORMAL);
 			return 0;
@@ -1390,6 +1806,12 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		SetAIConfigNativeTestBusy(ctx, false);
 		const std::string message = BuildAIConnectionTestMessage(result->result);
 		MessageBoxA(hWnd, message.c_str(), "AI Config", (result->result.ok ? MB_ICONINFORMATION : MB_ICONERROR) | MB_OK);
+		delete result;
+		return 0;
+	}
+
+	case WM_AUTOLINKER_AI_CONFIG_MODEL_LIST_DONE: {
+		AIConfigModelListResult* result = reinterpret_cast<AIConfigModelListResult*>(lParam);
 		delete result;
 		return 0;
 	}
@@ -1506,6 +1928,32 @@ void ShowAIConfigWebViewTestResult(AIConfigWebViewDialogContext* ctx, const AIRe
 	}
 
 	std::wstring script = L"window.autolinkerShowTestResult(JSON.parse('";
+	script += EscapeJsSingleQuotedWide(payloadJsonWide);
+	script += L"'));";
+	ExecuteAIConfigWebViewScript(ctx, script);
+}
+
+void ShowAIConfigWebViewModelListResult(AIConfigWebViewDialogContext* ctx, const AIConfigModelListResult& result)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+
+	nlohmann::json payload;
+	payload["ok"] = result.ok;
+	payload["error"] = LocalToUtf8Text(result.error);
+	payload["httpStatus"] = result.httpStatus;
+	payload["models"] = nlohmann::json::array();
+	for (const std::string& model : result.models) {
+		payload["models"].push_back(LocalToUtf8Text(model));
+	}
+
+	const std::wstring payloadJsonWide = Utf8ToWide(payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+	if (payloadJsonWide.empty()) {
+		return;
+	}
+
+	std::wstring script = L"window.autolinkerShowModelListResult(JSON.parse('";
 	script += EscapeJsSingleQuotedWide(payloadJsonWide);
 	script += L"'));";
 	ExecuteAIConfigWebViewScript(ctx, script);
@@ -1629,6 +2077,14 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 														StartAIConfigConnectionTest(hWnd, next, true)) {
 														SetAIConfigWebViewTestBusy(messageCtx, true);
 													}
+												}
+											}
+											else if (action == "fetch_models" && payload.contains("data") && payload["data"].is_object()) {
+												const AISettings next = ReadAISettingsFromWebProfilePayload(
+													*messageCtx->settings,
+													payload["data"]);
+												if (!StartAIConfigModelListFetch(hWnd, next)) {
+													ExecuteAIConfigWebViewScript(messageCtx, L"window.autolinkerSetModelFetchBusy(false);");
 												}
 											}
 											else if (action == "cancel") {
@@ -1797,6 +2253,18 @@ LRESULT CALLBACK AIConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, 
 
 		SetAIConfigWebViewTestBusy(ctx, false);
 		ShowAIConfigWebViewTestResult(ctx, result->result);
+		delete result;
+		return 0;
+	}
+
+	case WM_AUTOLINKER_AI_CONFIG_MODEL_LIST_DONE: {
+		AIConfigModelListResult* result = reinterpret_cast<AIConfigModelListResult*>(lParam);
+		if (ctx == nullptr || result == nullptr) {
+			delete result;
+			return 0;
+		}
+
+		ShowAIConfigWebViewModelListResult(ctx, *result);
 		delete result;
 		return 0;
 	}
@@ -2375,6 +2843,65 @@ LRESULT CALLBACK AIInputDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM l
 	return DefWindowProcA(hWnd, uMsg, wParam, lParam);
 }
 
+void CenterWindowOnOwnerOrScreen(HWND hDialog, HWND owner)
+{
+	if (hDialog == nullptr || !IsWindow(hDialog)) {
+		return;
+	}
+
+	RECT dlgRc = {};
+	if (!GetWindowRect(hDialog, &dlgRc)) {
+		return;
+	}
+	const int dlgW = dlgRc.right - dlgRc.left;
+	const int dlgH = dlgRc.bottom - dlgRc.top;
+
+	// Reference rect: owner window if available, otherwise the work area of
+	// the monitor nearest the dialog.
+	RECT refRc = {};
+	bool haveRef = false;
+	if (owner != nullptr && IsWindow(owner) && !IsIconic(owner)) {
+		haveRef = GetWindowRect(owner, &refRc) != FALSE;
+	}
+	if (!haveRef) {
+		HMONITOR hMon = MonitorFromWindow(hDialog, MONITOR_DEFAULTTOPRIMARY);
+		MONITORINFO mi = {};
+		mi.cbSize = sizeof(mi);
+		if (GetMonitorInfoA(hMon, &mi)) {
+			refRc = mi.rcWork;
+			haveRef = true;
+		}
+	}
+	if (!haveRef) {
+		return;
+	}
+
+	int x = refRc.left + ((refRc.right - refRc.left) - dlgW) / 2;
+	int y = refRc.top + ((refRc.bottom - refRc.top) - dlgH) / 2;
+
+	// Clamp to the work area of the monitor the centered position lands on.
+	HMONITOR hMon = MonitorFromPoint(POINT{ x + dlgW / 2, y + dlgH / 2 }, MONITOR_DEFAULTTONEAREST);
+	MONITORINFO mi = {};
+	mi.cbSize = sizeof(mi);
+	if (GetMonitorInfoA(hMon, &mi)) {
+		const RECT& work = mi.rcWork;
+		if (x + dlgW > work.right) {
+			x = work.right - dlgW;
+		}
+		if (y + dlgH > work.bottom) {
+			y = work.bottom - dlgH;
+		}
+		if (x < work.left) {
+			x = work.left;
+		}
+		if (y < work.top) {
+			y = work.top;
+		}
+	}
+
+	SetWindowPos(hDialog, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 bool RunModalWindow(HWND owner, HWND hDialog)
 {
 	if (hDialog == nullptr) {
@@ -2385,6 +2912,7 @@ bool RunModalWindow(HWND owner, HWND hDialog)
 		EnableWindow(owner, FALSE);
 	}
 
+	CenterWindowOnOwnerOrScreen(hDialog, owner);
 	ShowWindow(hDialog, SW_SHOW);
 	UpdateWindow(hDialog);
 
@@ -2437,7 +2965,7 @@ bool ShowAIConfigDialogNative(HWND owner, AIJsonConfig& jsonConfig, AISettings& 
 		wc.lpszClassName,
 		"AutoLinker AI Config",
 		WS_CAPTION | WS_SYSMENU | WS_VISIBLE,
-		CW_USEDEFAULT, CW_USEDEFAULT, 650, 560,
+		CW_USEDEFAULT, CW_USEDEFAULT, 780, 560,
 		owner,
 		nullptr,
 		wc.hInstance,
@@ -2489,7 +3017,7 @@ AIConfigDialogRunResult ShowAIConfigDialogWebView(HWND owner, AIJsonConfig& json
 		wc.lpszClassName,
 		"AutoLinker AI Config",
 		WS_CAPTION | WS_SYSMENU | WS_VISIBLE | WS_THICKFRAME,
-		CW_USEDEFAULT, CW_USEDEFAULT, 1060, 860,
+		CW_USEDEFAULT, CW_USEDEFAULT, 700, 860,
 		owner,
 		nullptr,
 		wc.hInstance,
@@ -2706,3 +3234,565 @@ bool ShowAITextInputDialog(HWND owner, const std::string& title, const std::stri
 	}
 	return ctx.accepted;
 }
+
+namespace {
+
+constexpr UINT WM_AUTOLINKER_LINKER_SAVE_DONE = WM_APP + 303;
+
+struct LinkerEntry {
+	std::string name;     // UTF-8 显示名（即 .ini 文件名，不含后缀）
+	std::string content;  // UTF-8 文件内容
+};
+
+struct LinkerConfigWebViewDialogContext {
+	bool webViewReady = false;
+	bool fallbackRequested = false;
+	HWND hHost = nullptr;
+	HWND hLoading = nullptr;
+	std::vector<LinkerEntry> linkers;
+	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
+	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
+	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
+};
+
+// link.ini 为易语言使用的 GBK/ANSI 文本：读取时若非 UTF-8 则按 936 转 UTF-8，
+// 写入时再由 UTF-8 转回 936，避免中文乱码。
+std::string LinkerFileBytesToUtf8(const std::string& bytes)
+{
+	if (bytes.empty()) {
+		return std::string();
+	}
+	if (bytes.size() >= 3 &&
+		static_cast<unsigned char>(bytes[0]) == 0xEF &&
+		static_cast<unsigned char>(bytes[1]) == 0xBB &&
+		static_cast<unsigned char>(bytes[2]) == 0xBF) {
+		return bytes.substr(3);
+	}
+	if (IsValidUtf8Text(bytes)) {
+		return bytes;
+	}
+	return ConvertCodePage(bytes, 936, CP_UTF8, 0);
+}
+
+std::string Utf8ToLinkerFileBytes(const std::string& utf8)
+{
+	if (utf8.empty()) {
+		return std::string();
+	}
+	if (!IsValidUtf8Text(utf8)) {
+		return utf8;
+	}
+	return ConvertCodePage(utf8, CP_UTF8, 936, 0);
+}
+
+std::string NormalizeToCrlf(const std::string& text)
+{
+	std::string out;
+	out.reserve(text.size() + 16);
+	for (size_t i = 0; i < text.size(); ++i) {
+		const char ch = text[i];
+		if (ch == '\r') {
+			if (i + 1 < text.size() && text[i + 1] == '\n') {
+				++i;
+			}
+			out += "\r\n";
+		}
+		else if (ch == '\n') {
+			out += "\r\n";
+		}
+		else {
+			out.push_back(ch);
+		}
+	}
+	return out;
+}
+
+std::filesystem::path GetLinkerConfigDirectoryPath()
+{
+	std::filesystem::path dir = GetAutoLinkerDirectoryPath() / "Config";
+	std::error_code ec;
+	std::filesystem::create_directories(dir, ec);
+	return dir;
+}
+
+std::string SanitizeLinkerName(const std::string& name)
+{
+	std::string out;
+	out.reserve(name.size());
+	for (char ch : name) {
+		switch (ch) {
+		case '\\': case '/': case ':': case '*':
+		case '?': case '"': case '<': case '>': case '|':
+			out.push_back('_');
+			break;
+		default:
+			out.push_back(ch);
+			break;
+		}
+	}
+	// 去除首尾空白与点号（Windows 文件名不允许结尾点/空格）。
+	const auto notTrim = [](char c) { return c != ' ' && c != '.' && c != '\t'; };
+	auto begin = std::find_if(out.begin(), out.end(), notTrim);
+	auto end = std::find_if(out.rbegin(), out.rend(), notTrim).base();
+	if (begin >= end) {
+		return std::string();
+	}
+	return std::string(begin, end);
+}
+
+std::vector<LinkerEntry> LoadLinkerEntriesFromDisk()
+{
+	std::vector<LinkerEntry> entries;
+	const std::filesystem::path dir = GetLinkerConfigDirectoryPath();
+	std::error_code ec;
+	if (!std::filesystem::exists(dir, ec)) {
+		return entries;
+	}
+	for (const auto& item : std::filesystem::directory_iterator(dir, ec)) {
+		if (ec) {
+			break;
+		}
+		if (!item.is_regular_file() || item.path().extension() != ".ini") {
+			continue;
+		}
+		LinkerEntry entry;
+		entry.name = WideToUtf8(item.path().stem().wstring());
+		std::ifstream in(item.path(), std::ios::binary);
+		if (in.is_open()) {
+			std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+			entry.content = LinkerFileBytesToUtf8(bytes);
+		}
+		entries.push_back(std::move(entry));
+	}
+	std::sort(entries.begin(), entries.end(), [](const LinkerEntry& a, const LinkerEntry& b) {
+		return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
+	});
+	return entries;
+}
+
+// 将 webview 提交的链接器列表写回 Config 目录：写入/覆盖所有提交项，
+// 删除目录中未出现的 .ini（涵盖重命名与删除）。返回 false 并填充 errorMessage 表示失败。
+bool SaveLinkerEntriesToDisk(const std::vector<LinkerEntry>& entries, std::string& errorMessage)
+{
+	const std::filesystem::path dir = GetLinkerConfigDirectoryPath();
+	std::set<std::wstring> keepStems;
+
+	for (const auto& entry : entries) {
+		const std::string safeName = SanitizeLinkerName(entry.name);
+		if (safeName.empty()) {
+			errorMessage = "存在名称为空的链接器，已取消保存。";
+			return false;
+		}
+		const std::wstring wideStem = Utf8ToWide(safeName);
+		keepStems.insert(wideStem);
+		std::filesystem::path file = dir / (wideStem + L".ini");
+		std::ofstream out(file, std::ios::binary | std::ios::trunc);
+		if (!out.is_open()) {
+			errorMessage = "无法写入链接器文件：" + safeName + ".ini";
+			return false;
+		}
+		const std::string bytes = Utf8ToLinkerFileBytes(NormalizeToCrlf(entry.content));
+		out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+	}
+
+	std::error_code ec;
+	for (const auto& item : std::filesystem::directory_iterator(dir, ec)) {
+		if (ec) {
+			break;
+		}
+		if (!item.is_regular_file() || item.path().extension() != ".ini") {
+			continue;
+		}
+		if (keepStems.find(item.path().stem().wstring()) == keepStems.end()) {
+			std::error_code removeEc;
+			std::filesystem::remove(item.path(), removeEc);
+		}
+	}
+	return true;
+}
+
+std::string BuildLinkerWebViewPayloadJson(const std::vector<LinkerEntry>& linkers)
+{
+	nlohmann::json payload;
+	payload["linkers"] = nlohmann::json::array();
+	for (const auto& entry : linkers) {
+		nlohmann::json item;
+		item["name"] = entry.name;
+		item["content"] = entry.content;
+		payload["linkers"].push_back(std::move(item));
+	}
+	return payload.dump();
+}
+
+std::string BuildLinkerWebViewShellHtml()
+{
+	std::string html = LoadUtf8HtmlResourceText(IDR_HTML_LINKER_CONFIG_DIALOG);
+	if (!html.empty()) {
+		return html;
+	}
+	return "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>Linker config shell resource missing.</body></html>";
+}
+
+void ExecuteLinkerWebViewScript(LinkerConfigWebViewDialogContext* ctx, const std::wstring& script)
+{
+	if (ctx == nullptr || !ctx->webViewReady || ctx->webView == nullptr || script.empty()) {
+		return;
+	}
+	ctx->webView->ExecuteScript(script.c_str(), nullptr);
+}
+
+void ApplyLinkerWebViewData(LinkerConfigWebViewDialogContext* ctx)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	const std::wstring payloadWide = Utf8ToWide(BuildLinkerWebViewPayloadJson(ctx->linkers));
+	std::wstring script = L"window.autolinkerApplyLinkers(JSON.parse('";
+	script += EscapeJsSingleQuotedWide(payloadWide);
+	script += L"'));";
+	ExecuteLinkerWebViewScript(ctx, script);
+}
+
+void NotifyLinkerSaveResult(LinkerConfigWebViewDialogContext* ctx, bool ok, const std::string& message)
+{
+	nlohmann::json result;
+	result["ok"] = ok;
+	result["message"] = message;
+	std::wstring script = L"window.autolinkerLinkerSaveResult(JSON.parse('";
+	script += EscapeJsSingleQuotedWide(Utf8ToWide(result.dump()));
+	script += L"'));";
+	ExecuteLinkerWebViewScript(ctx, script);
+}
+
+void LayoutLinkerConfigWebViewDialog(HWND hWnd, LinkerConfigWebViewDialogContext* ctx)
+{
+	if (hWnd == nullptr || ctx == nullptr) {
+		return;
+	}
+	RECT rc = {};
+	GetClientRect(hWnd, &rc);
+	const int hostWidth = static_cast<int>((std::max)(0L, rc.right));
+	const int hostHeight = static_cast<int>((std::max)(0L, rc.bottom));
+	if (ctx->hHost != nullptr) {
+		MoveWindow(ctx->hHost, 0, 0, hostWidth, hostHeight, TRUE);
+	}
+	if (ctx->hLoading != nullptr) {
+		MoveWindow(ctx->hLoading, 16, 14, (std::max)(0, hostWidth - 32), 24, TRUE);
+	}
+	if (ctx->webViewController != nullptr) {
+		RECT bounds = { 0, 0, static_cast<LONG>(hostWidth), static_cast<LONG>(hostHeight) };
+		ctx->webViewController->put_Bounds(bounds);
+	}
+}
+
+void HandleLinkerWebViewSave(HWND hWnd, LinkerConfigWebViewDialogContext* ctx, const nlohmann::json& data)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	std::vector<LinkerEntry> next;
+	std::set<std::string> seenLower;
+	if (data.contains("linkers") && data["linkers"].is_array()) {
+		for (const auto& item : data["linkers"]) {
+			if (!item.is_object()) {
+				continue;
+			}
+			LinkerEntry entry;
+			entry.name = SanitizeLinkerName(item.value("name", std::string()));
+			entry.content = item.value("content", std::string());
+			if (entry.name.empty()) {
+				NotifyLinkerSaveResult(ctx, false, "链接器名称不能为空。");
+				return;
+			}
+			std::string lower = entry.name;
+			std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			if (!seenLower.insert(lower).second) {
+				NotifyLinkerSaveResult(ctx, false, "存在重名链接器：" + entry.name);
+				return;
+			}
+			next.push_back(std::move(entry));
+		}
+	}
+
+	std::string errorMessage;
+	if (!SaveLinkerEntriesToDisk(next, errorMessage)) {
+		NotifyLinkerSaveResult(ctx, false, errorMessage.empty() ? "保存失败。" : errorMessage);
+		return;
+	}
+	ctx->linkers = std::move(next);
+	NotifyLinkerSaveResult(ctx, true, std::format("已保存 {} 个链接器配置。", ctx->linkers.size()));
+}
+
+HRESULT OnLinkerConfigControllerCreated(HWND hWnd, HRESULT controllerResult, ICoreWebView2Controller* controller)
+{
+	auto* readyCtx = reinterpret_cast<LinkerConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+	if (readyCtx == nullptr || !IsWindow(hWnd)) {
+		return S_OK;
+	}
+	if (FAILED(controllerResult) || controller == nullptr) {
+		OutputStringToELog(std::format("[Linker Config][WebView2] create controller failed hr=0x{:08X}", static_cast<unsigned int>(controllerResult)));
+		readyCtx->fallbackRequested = true;
+		DestroyWindow(hWnd);
+		return S_OK;
+	}
+
+	readyCtx->webViewController = controller;
+	readyCtx->webViewController->get_CoreWebView2(&readyCtx->webView);
+	if (readyCtx->webView == nullptr) {
+		readyCtx->fallbackRequested = true;
+		DestroyWindow(hWnd);
+		return S_OK;
+	}
+
+	Microsoft::WRL::ComPtr<ICoreWebView2Settings> webSettings;
+	if (SUCCEEDED(readyCtx->webView->get_Settings(&webSettings)) && webSettings != nullptr) {
+		webSettings->put_AreDevToolsEnabled(FALSE);
+		webSettings->put_IsStatusBarEnabled(FALSE);
+		webSettings->put_IsZoomControlEnabled(FALSE);
+	}
+
+	readyCtx->webView->add_WebMessageReceived(
+		Microsoft::WRL::Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+			[hWnd](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+				auto* messageCtx = reinterpret_cast<LinkerConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+				if (messageCtx == nullptr || args == nullptr || !IsWindow(hWnd)) {
+					return S_OK;
+				}
+				LPWSTR rawMessage = nullptr;
+				if (FAILED(args->TryGetWebMessageAsString(&rawMessage)) || rawMessage == nullptr) {
+					return S_OK;
+				}
+				const std::string utf8Message = WideToUtf8(rawMessage);
+				CoTaskMemFree(rawMessage);
+				try {
+					const nlohmann::json payload = nlohmann::json::parse(utf8Message);
+					const std::string action = payload.value("action", "");
+					if (action == "save" && payload.contains("data") && payload["data"].is_object()) {
+						HandleLinkerWebViewSave(hWnd, messageCtx, payload["data"]);
+					}
+					else if (action == "cancel") {
+						DestroyWindow(hWnd);
+					}
+				}
+				catch (...) {
+				}
+				return S_OK;
+			}).Get(),
+		nullptr);
+
+	readyCtx->webView->add_NavigationCompleted(
+		Microsoft::WRL::Callback<ICoreWebView2NavigationCompletedEventHandler>(
+			[hWnd](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+				auto* navCtx = reinterpret_cast<LinkerConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+				if (navCtx == nullptr || args == nullptr || !IsWindow(hWnd)) {
+					return S_OK;
+				}
+				BOOL isSuccess = FALSE;
+				args->get_IsSuccess(&isSuccess);
+				if (isSuccess == TRUE) {
+					navCtx->webViewReady = true;
+					KillTimer(hWnd, kLinkerConfigWebViewInitTimerId);
+					if (navCtx->hLoading != nullptr) {
+						ShowWindow(navCtx->hLoading, SW_HIDE);
+					}
+					LayoutLinkerConfigWebViewDialog(hWnd, navCtx);
+					ApplyLinkerWebViewData(navCtx);
+					return S_OK;
+				}
+				COREWEBVIEW2_WEB_ERROR_STATUS webErrorStatus = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+				args->get_WebErrorStatus(&webErrorStatus);
+				if (webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED ||
+					webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED ||
+					webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET) {
+					return S_OK;
+				}
+				navCtx->fallbackRequested = true;
+				DestroyWindow(hWnd);
+				return S_OK;
+			}).Get(),
+		nullptr);
+
+	LayoutLinkerConfigWebViewDialog(hWnd, readyCtx);
+	const std::wstring shellHtml = Utf8ToWide(BuildLinkerWebViewShellHtml());
+	if (shellHtml.empty()) {
+		readyCtx->fallbackRequested = true;
+		DestroyWindow(hWnd);
+		return S_OK;
+	}
+	readyCtx->webView->NavigateToString(shellHtml.c_str());
+	return S_OK;
+}
+
+void StartLinkerConfigWebView(HWND hWnd, LinkerConfigWebViewDialogContext* ctx)
+{
+	if (hWnd == nullptr || ctx == nullptr || ctx->hHost == nullptr) {
+		return;
+	}
+
+	const std::wstring webViewUserDataFolder = GetWebView2UserDataFolderPath();
+	const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
+		nullptr,
+		webViewUserDataFolder.empty() ? nullptr : webViewUserDataFolder.c_str(),
+		nullptr,
+		Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+			[hWnd](HRESULT envResult, ICoreWebView2Environment* environment) -> HRESULT {
+				auto* innerCtx = reinterpret_cast<LinkerConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+				if (innerCtx == nullptr || !IsWindow(hWnd)) {
+					return S_OK;
+				}
+				if (FAILED(envResult) || environment == nullptr) {
+					OutputStringToELog(std::format("[Linker Config][WebView2] create environment failed hr=0x{:08X}", static_cast<unsigned int>(envResult)));
+					innerCtx->fallbackRequested = true;
+					DestroyWindow(hWnd);
+					return S_OK;
+				}
+				innerCtx->webViewEnvironment = environment;
+				return environment->CreateCoreWebView2Controller(
+					innerCtx->hHost,
+					Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+						[hWnd](HRESULT controllerResult, ICoreWebView2Controller* controller) -> HRESULT {
+							return OnLinkerConfigControllerCreated(hWnd, controllerResult, controller);
+						}).Get());
+			}).Get());
+
+	if (FAILED(hr)) {
+		OutputStringToELog(std::format("[Linker Config][WebView2] bootstrap failed hr=0x{:08X}", static_cast<unsigned int>(hr)));
+		ctx->fallbackRequested = true;
+		DestroyWindow(hWnd);
+	}
+}
+
+LRESULT CALLBACK LinkerConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+	auto* ctx = reinterpret_cast<LinkerConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+	switch (uMsg)
+	{
+	case WM_NCCREATE: {
+		const auto* create = reinterpret_cast<CREATESTRUCTA*>(lParam);
+		SetWindowLongPtrA(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+		return TRUE;
+	}
+
+	case WM_CREATE: {
+		if (ctx == nullptr) {
+			return -1;
+		}
+		ctx->hHost = CreateWindowExA(
+			0, "STATIC", "",
+			WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+			0, 0, 0, 0, hWnd, nullptr, nullptr, nullptr);
+		ctx->hLoading = CreateWindowExW(
+			0, L"STATIC", L"正在初始化 WebView2 链接器设置页...",
+			WS_CHILD | WS_VISIBLE,
+			0, 0, 0, 0, hWnd, nullptr, nullptr, nullptr);
+		SetDefaultFont(ctx->hLoading);
+		LayoutLinkerConfigWebViewDialog(hWnd, ctx);
+		SetTimer(hWnd, kLinkerConfigWebViewInitTimerId, kLinkerConfigWebViewInitTimeoutMs, nullptr);
+		StartLinkerConfigWebView(hWnd, ctx);
+		return 0;
+	}
+
+	case WM_GETMINMAXINFO: {
+		auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+		if (mmi != nullptr) {
+			mmi->ptMinTrackSize.x = (std::max)(mmi->ptMinTrackSize.x, 640L);
+			mmi->ptMinTrackSize.y = (std::max)(mmi->ptMinTrackSize.y, 520L);
+		}
+		return 0;
+	}
+
+	case WM_SIZE:
+		if (ctx != nullptr) {
+			LayoutLinkerConfigWebViewDialog(hWnd, ctx);
+		}
+		return 0;
+
+	case WM_TIMER:
+		if (ctx != nullptr && wParam == kLinkerConfigWebViewInitTimerId) {
+			if (!ctx->webViewReady) {
+				OutputStringToELog("[Linker Config][WebView2] initialization timed out");
+				ctx->fallbackRequested = true;
+				DestroyWindow(hWnd);
+				return 0;
+			}
+			KillTimer(hWnd, kLinkerConfigWebViewInitTimerId);
+			return 0;
+		}
+		break;
+
+	case WM_CLOSE:
+		DestroyWindow(hWnd);
+		return 0;
+
+	case WM_DESTROY:
+		KillTimer(hWnd, kLinkerConfigWebViewInitTimerId);
+		if (ctx != nullptr) {
+			ctx->webView = nullptr;
+			ctx->webViewController = nullptr;
+			ctx->webViewEnvironment = nullptr;
+		}
+		return 0;
+
+	default:
+		break;
+	}
+	return DefWindowProcA(hWnd, uMsg, wParam, lParam);
+}
+
+} // namespace
+
+void ShowLinkerConfigDialog(HWND owner)
+{
+	if (!IsWebView2RuntimeAvailable()) {
+		MessageBoxW(owner,
+			L"未检测到 WebView2 运行时，无法打开链接器设置页。\n请安装 Microsoft Edge WebView2 Runtime 后重试。",
+			L"AutoLinker 链接器设置",
+			MB_OK | MB_ICONWARNING);
+		return;
+	}
+
+	ComCtl6ActivationScope themeScope;
+	INITCOMMONCONTROLSEX icex = {};
+	icex.dwSize = sizeof(icex);
+	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES | ICC_LINK_CLASS;
+	InitCommonControlsEx(&icex);
+
+	WNDCLASSEXA wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.lpfnWndProc = LinkerConfigWebViewDialogProc;
+	wc.hInstance = GetModuleHandleA(nullptr);
+	wc.lpszClassName = "AutoLinkerLinkerConfigWebViewDialogWindow";
+	wc.hIcon = GetAppIconLarge();
+	wc.hIconSm = GetAppIconSmall();
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+	RegisterClassExA(&wc);
+
+	LinkerConfigWebViewDialogContext ctx = {};
+	ctx.linkers = LoadLinkerEntriesFromDisk();
+
+	HWND hDialog = CreateWindowExA(
+		WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+		wc.lpszClassName,
+		"AutoLinker Linker Config",
+		WS_CAPTION | WS_SYSMENU | WS_VISIBLE | WS_THICKFRAME,
+		CW_USEDEFAULT, CW_USEDEFAULT, 760, 720,
+		owner,
+		nullptr,
+		wc.hInstance,
+		&ctx);
+
+	if (hDialog == nullptr) {
+		OutputStringToELog("[Linker Config][WebView2] CreateWindowExA failed");
+		return;
+	}
+
+	ApplyWindowIcon(hDialog);
+	EnsureWindowTitle(hDialog, "AutoLinker 链接器设置");
+	RunModalWindow(owner, hDialog);
+}
+
+
+
+
+

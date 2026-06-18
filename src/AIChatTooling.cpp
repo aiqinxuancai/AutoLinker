@@ -159,6 +159,31 @@ std::string Utf8ToLocalText(const std::string& text)
 	return ConvertCodePage(text, CP_UTF8, CP_ACP, MB_ERR_INVALID_CHARS);
 }
 
+void NormalizeJsonStringsToUtf8(nlohmann::json& value)
+{
+	if (value.is_string()) {
+		value = LocalToUtf8Text(value.get<std::string>());
+		return;
+	}
+	if (value.is_array()) {
+		for (auto& item : value) {
+			NormalizeJsonStringsToUtf8(item);
+		}
+		return;
+	}
+	if (value.is_object()) {
+		for (auto& item : value.items()) {
+			NormalizeJsonStringsToUtf8(item.value());
+		}
+	}
+}
+
+std::string JsonToLocalText(nlohmann::json value)
+{
+	NormalizeJsonStringsToUtf8(value);
+	return Utf8ToLocalText(value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+
 void ReplaceAllInPlace(std::string& text, const std::string& from, const std::string& to)
 {
 	if (from.empty()) {
@@ -326,7 +351,7 @@ std::string FormatToolLogJsonString(const std::string& jsonText)
 		if (value.is_null() || (value.is_object() && value.empty())) {
 			return "null";
 		}
-		return FormatToolLogText(value.dump());
+		return FormatToolLogText(value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 	}
 	catch (...) {
 		return FormatToolLogText(jsonText);
@@ -345,7 +370,7 @@ std::string FormatToolLogJsonStringFull(const std::string& jsonText)
 		if (value.is_null() || (value.is_object() && value.empty())) {
 			return "null";
 		}
-		return SanitizeSingleLineText(value.dump());
+		return SanitizeSingleLineText(value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 	}
 	catch (...) {
 		return SanitizeSingleLineText(jsonText);
@@ -455,7 +480,7 @@ std::string ExecuteToolCallImpl(
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalText(r);
 		}
 
 		if (TrimAsciiCopy(commandUtf8).empty()) {
@@ -486,7 +511,7 @@ std::string ExecuteToolCallImpl(
 				r["ok"] = false;
 				r["cancelled"] = true;
 				r["error"] = "user cancelled powershell execution";
-				return Utf8ToLocalText(r.dump());
+				return JsonToLocalText(r);
 			}
 			if (secondaryAccepted) {
 				g_psAllowAllForProcess.store(true);
@@ -510,7 +535,7 @@ std::string ExecuteToolCallImpl(
 			r["error"] = runResult.error;
 		}
 		outOk = runResult.ok;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalText(r);
 	}
 
 	if (toolName == "search_web_tavily") {
@@ -533,7 +558,7 @@ std::string ExecuteToolCallImpl(
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalText(r);
 		}
 
 		AISettings settings = {};
@@ -550,7 +575,7 @@ std::string ExecuteToolCallImpl(
 			r["ok"] = false;
 			r["http_status"] = searchResult.httpStatus;
 			r["error"] = searchResult.error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalText(r);
 		}
 
 		outOk = true;
@@ -578,7 +603,7 @@ std::string ExecuteToolCallImpl(
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalText(r);
 		}
 
 		const HttpFetchResult fetchResult = WebDocumentClient::FetchTextUrl(urlUtf8, timeoutSeconds, maxBytes);
@@ -595,7 +620,7 @@ std::string ExecuteToolCallImpl(
 			r["error"] = fetchResult.error;
 		}
 		outOk = fetchResult.ok;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalText(r);
 	}
 
 	if (toolName == "extract_web_document") {
@@ -619,7 +644,7 @@ std::string ExecuteToolCallImpl(
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalText(r);
 		}
 
 		const HttpFetchResult fetchResult = WebDocumentClient::FetchTextUrl(urlUtf8, timeoutSeconds, maxBytes);
@@ -646,7 +671,7 @@ std::string ExecuteToolCallImpl(
 			r["error"] = document.error;
 		}
 		outOk = document.ok;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalText(r);
 	}
 
 	if (toolName == "read_file" ||
@@ -670,7 +695,7 @@ std::string ExecuteToolCallImpl(
 	nlohmann::json r;
 	r["ok"] = false;
 	r["error"] = "unknown tool: " + toolName;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalText(r);
 }
 
 } // namespace

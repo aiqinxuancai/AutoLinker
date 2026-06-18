@@ -1,0 +1,871 @@
+﻿<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light only">
+<style>
+/*__AUTOLINKER_AI_CONFIG_CSS__*/
+</style>
+</head>
+<body class="font-sans text-[13px]">
+<div class="flex min-h-full flex-col">
+	<header class="border-b border-slate-200 bg-white px-5 py-3">
+		<div class="flex items-center justify-between gap-3">
+			<h1 class="text-lg font-semibold leading-6 text-slate-950">AutoLinker AI 设置</h1>
+			<div class="hidden items-center gap-2 text-[12px] text-slate-500 sm:flex">
+				<span id="profileCountBadge" class="rounded border border-slate-200 bg-slate-50 px-2 py-1">0 组配置</span>
+			</div>
+		</div>
+	</header>
+
+	<main class="flex flex-1 flex-col bg-white">
+		<section class="min-w-0 p-5">
+			<div class="space-y-4">
+				<div>
+					<label for="profileSelect" class="ui-label">配置组</label>
+					<div class="flex flex-wrap items-center gap-2">
+						<select id="profileSelect" class="ui-select min-w-[200px] flex-1"></select>
+						<button id="addProfileBtn" class="ui-btn" type="button">新建</button>
+						<span id="presetProfileMenuAnchor" class="hs-dropdown relative inline-flex shrink-0 [--auto-close:inside]">
+							<button id="addPresetProfileBtn" class="hs-dropdown-toggle ui-btn" type="button" aria-haspopup="menu" aria-expanded="false">使用预设站点新建</button>
+							<div id="presetProfileMenu" class="hs-dropdown-menu ui-menu left-0 top-[calc(100%+6px)] hidden w-[320px]" role="menu"></div>
+						</span>
+						<button id="renameProfileBtn" class="ui-btn" type="button">重命名</button>
+						<button id="deleteProfileBtn" class="ui-btn" type="button">删除</button>
+					</div>
+				</div>
+
+				<div>
+					<label for="protocol" class="ui-label">Protocol</label>
+					<select id="protocol" class="ui-select">
+						<option value="openai">OpenAI Chat</option>
+						<option value="openai_responses">OpenAI Responses</option>
+						<option value="gemini">Gemini</option>
+						<option value="claude">Claude</option>
+					</select>
+				</div>
+
+				<div>
+					<label for="baseUrl" class="ui-label">Base URL</label>
+					<input id="baseUrl" class="ui-input" placeholder="https://right.codes/codex" autocomplete="off">
+					<p id="endpointPreview" class="mt-1.5 text-[12px] leading-5 text-slate-500">最终请求 URL：<span class="ui-code">-</span></p>
+				</div>
+
+				<div>
+					<label for="apiKey" class="ui-label">API Key</label>
+					<div class="flex gap-2">
+						<input id="apiKey" class="ui-input min-w-0 flex-1" type="password" placeholder="API Key" autocomplete="off">
+						<button id="toggleApiKey" class="ui-btn w-16 px-0" type="button">显示</button>
+					</div>
+				</div>
+
+				<div>
+					<label for="model" class="ui-label">Model</label>
+					<div class="flex gap-2">
+						<div id="modelCmb" class="relative min-w-0 flex-1">
+							<input id="model" class="ui-input pr-9" placeholder="例如 gpt-5.3-codex" autocomplete="off">
+							<button id="modelArrow" class="absolute right-0 top-0 flex h-9 w-9 items-center justify-center text-[11px] text-slate-400 hover:text-slate-600" type="button" tabindex="-1" title="显示模型候选" aria-label="显示模型候选">▼</button>
+							<div id="modelMenu" class="ui-menu left-0 right-0 top-[calc(100%+6px)] hidden" role="menu"></div>
+						</div>
+						<button id="modelFetchBtn" class="ui-btn ui-icon-btn" type="button" title="获取模型列表" aria-label="获取模型列表">↻</button>
+					</div>
+				</div>
+
+				<div>
+					<label for="thinkingLevel" class="ui-label">Thinking Level</label>
+					<select id="thinkingLevel" class="ui-select">
+						<option value="off">关闭</option>
+						<option value="low">低</option>
+						<option value="medium">中</option>
+						<option value="high">高</option>
+					</select>
+				</div>
+
+				<div>
+					<label for="extraPrompt" class="ui-label">System Prompt</label>
+					<textarea id="extraPrompt" class="ui-textarea min-h-[3.5rem]" placeholder="附加系统提示词。"></textarea>
+				</div>
+
+				<div>
+					<label for="customHeaders" class="ui-label">Custom Headers</label>
+					<textarea id="customHeaders" class="ui-textarea min-h-[3.5rem]" placeholder="Authorization: Bearer xxx&#10;X-Provider: custom"></textarea>
+					<p class="mt-1.5 text-[12px] text-slate-500">每行一个 Header: Value，可覆盖内置请求头</p>
+				</div>
+
+				<section class="rounded-lg border border-slate-200 bg-slate-50 p-4">
+					<h2 class="mb-3 text-[12px] font-semibold uppercase tracking-wide text-slate-500">Tavily 联网搜索</h2>
+					<label for="tavilyApiKey" class="ui-label">Tavily API Key</label>
+					<div class="flex gap-2">
+						<input id="tavilyApiKey" class="ui-input min-w-0 flex-1" type="password" placeholder="用于 search_web_tavily" autocomplete="off">
+						<button id="toggleTavilyKey" class="ui-btn w-16 px-0" type="button">显示</button>
+					</div>
+					<p class="mt-3 text-[12px] leading-5 text-slate-500">这个 Key 仅供 <span class="ui-code">search_web_tavily</span> 工具使用，不影响主模型配置。</p>
+				</section>
+			</div>
+		</section>
+	</main>
+
+	<footer class="flex flex-col-reverse gap-2 border-t border-slate-200 bg-white px-5 py-3 sm:flex-row sm:items-center sm:justify-end">
+		<button id="testBtn" class="ui-btn ui-btn-accent" type="button">测试连通性</button>
+		<button id="cancelBtn" class="ui-btn" type="button">取消</button>
+		<button id="saveBtn" class="ui-btn ui-btn-primary" type="button">保存并继续</button>
+	</footer>
+</div>
+<script>
+/*__AUTOLINKER_PRELINE_JS__*/
+</script>
+<script>
+const initialSettings = {
+	activeProfileId: "default",
+	profiles: [{
+		id: "default",
+		name: "\u9ED8\u8BA4",
+		protocolType: "openai",
+		thinkingLevel: "off",
+		baseUrl: "",
+		apiKey: "",
+		model: "",
+		extraPrompt: "",
+		customHeaders: "",
+		tavilyApiKey: ""
+	}]
+};
+
+var _profiles = [];
+var _activeProfileId = "default";
+
+function $(id) {
+	return document.getElementById(id);
+}
+
+function post(payload) {
+	if (window.chrome && window.chrome.webview) {
+		window.chrome.webview.postMessage(JSON.stringify(payload));
+	}
+}
+
+function setField(id, value) {
+	const el = $(id);
+	if (el) {
+		el.value = value || "";
+	}
+}
+
+function trimText(value) {
+	return (value || "").trim();
+}
+
+function endsWithInsensitive(text, suffix) {
+	return text.toLowerCase().slice(-suffix.length) === suffix.toLowerCase();
+}
+
+function replaceSuffixIfPresent(text, suffix, replacement) {
+	if (!suffix) {
+		return text;
+	}
+	if (!endsWithInsensitive(text, suffix)) {
+		return text;
+	}
+	return text.slice(0, text.length - suffix.length) + replacement;
+}
+
+function trimTrailingSlashes(url) {
+	while (url && url.charAt(url.length - 1) === "/") {
+		url = url.slice(0, -1);
+	}
+	return url;
+}
+
+function buildOpenAIChatEndpoint(baseUrl) {
+	var url = trimTrailingSlashes(trimText(baseUrl));
+	url = replaceSuffixIfPresent(url, "/responses", "/chat/completions");
+	if (endsWithInsensitive(url, "/chat/completions")) {
+		return url;
+	}
+	if (endsWithInsensitive(url, "/v1")) {
+		return url + "/chat/completions";
+	}
+	return url + "/v1/chat/completions";
+}
+
+function buildOpenAIResponsesEndpoint(baseUrl) {
+	var url = trimTrailingSlashes(trimText(baseUrl));
+	url = replaceSuffixIfPresent(url, "/chat/completions", "/responses");
+	if (endsWithInsensitive(url, "/responses")) {
+		return url;
+	}
+	if (endsWithInsensitive(url, "/v1")) {
+		return url + "/responses";
+	}
+	return url + "/v1/responses";
+}
+
+function buildClaudeEndpoint(baseUrl) {
+	var url = trimTrailingSlashes(trimText(baseUrl));
+	if (endsWithInsensitive(url, "/v1/messages")) {
+		return url;
+	}
+	if (endsWithInsensitive(url, "/v1")) {
+		return url + "/messages";
+	}
+	return url + "/v1/messages";
+}
+
+function buildGeminiEndpoint(baseUrl, model) {
+	var url = trimTrailingSlashes(trimText(baseUrl));
+	var suffix = ":generateContent";
+	var otherSuffix = ":streamGenerateContent";
+	var modelText = trimText(model) || "{model}";
+	url = replaceSuffixIfPresent(url, otherSuffix, suffix);
+	if (endsWithInsensitive(url, suffix)) {
+		return url + "?key=<api-key>";
+	}
+	if (url.indexOf("/models/") >= 0) {
+		return url + suffix + "?key=<api-key>";
+	}
+	if (endsWithInsensitive(url, "/v1beta") || endsWithInsensitive(url, "/v1")) {
+		return url + "/models/" + encodeURIComponent(modelText) + suffix + "?key=<api-key>";
+	}
+	return url + "/v1beta/models/" + encodeURIComponent(modelText) + suffix + "?key=<api-key>";
+}
+
+function buildRequestTargetUrl(protocolType, baseUrl, model) {
+	var url = trimText(baseUrl);
+	if (!url) {
+		return "-";
+	}
+	switch (protocolType) {
+	case "claude":
+		return buildClaudeEndpoint(url);
+	case "gemini":
+		return buildGeminiEndpoint(url, model);
+	case "openai_responses":
+		return buildOpenAIResponsesEndpoint(url);
+	case "openai":
+	default:
+		return buildOpenAIChatEndpoint(url);
+	}
+}
+
+function updateEndpointPreview() {
+	var preview = $("endpointPreview");
+	if (!preview) {
+		return;
+	}
+	var codeEl = preview.querySelector(".ui-code");
+	if (!codeEl) {
+		return;
+	}
+	codeEl.textContent = buildRequestTargetUrl(
+		$("protocol") ? $("protocol").value : "openai",
+		$("baseUrl") ? $("baseUrl").value : "",
+		$("model") ? $("model").value : "");
+}
+
+function getDefaultProfileBaseUrl(protocolType) {
+	switch (protocolType) {
+	case "claude":
+		return "https://api.anthropic.com";
+	case "gemini":
+		return "https://generativelanguage.googleapis.com";
+	case "openai_responses":
+		return "https://api.openai.com/v1";
+	case "openai":
+	default:
+		return "https://api.openai.com/v1";
+	}
+}
+
+function cloneProfile(profile) {
+	return {
+		id: profile.id,
+		name: profile.name,
+		protocolType: profile.protocolType || "openai",
+		thinkingLevel: profile.thinkingLevel || "off",
+		baseUrl: profile.baseUrl || "",
+		apiKey: profile.apiKey || "",
+		model: profile.model || "",
+		extraPrompt: profile.extraPrompt || "",
+		customHeaders: profile.customHeaders || "",
+		tavilyApiKey: profile.tavilyApiKey || ""
+	};
+}
+
+function findProfile(id) {
+	for (var i = 0; i < _profiles.length; ++i) {
+		if (_profiles[i].id === id) {
+			return _profiles[i];
+		}
+	}
+	return null;
+}
+
+function saveCurrentFormToActiveProfile() {
+	var current = findProfile(_activeProfileId);
+	if (!current) {
+		return;
+	}
+	current.protocolType = $("protocol").value || "openai";
+	current.thinkingLevel = $("thinkingLevel").value || "off";
+	current.baseUrl = $("baseUrl").value || "";
+	current.apiKey = $("apiKey").value || "";
+	current.model = $("model").value || "";
+	current.extraPrompt = $("extraPrompt").value || "";
+	current.customHeaders = $("customHeaders").value || "";
+	current.tavilyApiKey = $("tavilyApiKey").value || "";
+}
+
+function renderProfileSelect() {
+	var select = $("profileSelect");
+	if (!select) {
+		return;
+	}
+	select.innerHTML = "";
+	_profiles.forEach(function(profile) {
+		var opt = document.createElement("option");
+		opt.value = profile.id;
+		opt.textContent = profile.name;
+		select.appendChild(opt);
+	});
+	select.value = _activeProfileId;
+	if (!select.value && _profiles.length) {
+		_activeProfileId = _profiles[0].id;
+		select.value = _activeProfileId;
+	}
+	$("deleteProfileBtn").disabled = _profiles.length <= 1;
+	$("renameProfileBtn").disabled = !_profiles.length;
+	if ($("profileCountBadge")) {
+		$("profileCountBadge").textContent = _profiles.length + " 组配置";
+	}
+}
+
+function applyProfileToForm(profile) {
+	if (!profile) {
+		return;
+	}
+	setField("protocol", profile.protocolType);
+	setField("thinkingLevel", profile.thinkingLevel);
+	setField("baseUrl", profile.baseUrl);
+	setField("apiKey", profile.apiKey);
+	setField("model", profile.model);
+	setField("extraPrompt", profile.extraPrompt);
+	setField("customHeaders", profile.customHeaders);
+	setField("tavilyApiKey", profile.tavilyApiKey);
+	updateModelMenu(getPresetModelsForBaseUrl(profile.baseUrl));
+	updateEndpointPreview();
+}
+
+function buildPayload() {
+	saveCurrentFormToActiveProfile();
+	return {
+		activeProfileId: _activeProfileId,
+		profiles: _profiles.map(function(profile) { return cloneProfile(profile); })
+	};
+}
+
+function toggleSecret(id, btnId) {
+	const input = $(id);
+	const btn = $(btnId);
+	if (!input || !btn) {
+		return;
+	}
+	const next = input.type === "password" ? "text" : "password";
+	input.type = next;
+	btn.textContent = next === "password" ? "\u663E\u793A" : "\u9690\u85CF";
+}
+
+function collect() {
+	return buildPayload();
+}
+
+function validateCustomHeaders(headerText) {
+	var lines = (headerText || "").split(/\r?\n/);
+	for (var i = 0; i < lines.length; ++i) {
+		var line = lines[i].trim();
+		if (!line) {
+			continue;
+		}
+		var colon = line.indexOf(":");
+		if (colon <= 0) {
+			alert("Custom Headers 第 " + (i + 1) + " 行格式无效，需要 Header: Value。");
+			return false;
+		}
+	}
+	return true;
+}
+
+function validate(data) {
+	if (!data || !data.profiles || !data.profiles.length) {
+		alert("\u81F3\u5C11\u9700\u8981\u4E00\u4E2A\u914D\u7F6E\u7EC4\u3002");
+		return false;
+	}
+	var current = null;
+	data.profiles.forEach(function(profile) {
+		if (profile.id === data.activeProfileId) {
+			current = profile;
+		}
+	});
+	if (!current) {
+		alert("\u5F53\u524D\u914D\u7F6E\u7EC4\u65E0\u6548\u3002");
+		return false;
+	}
+	if (!current.baseUrl.trim() || !current.apiKey.trim() || !current.model.trim()) {
+		alert("baseUrl / apiKey / model \u4E0D\u80FD\u4E3A\u7A7A\u3002");
+		return false;
+	}
+	if (!validateCustomHeaders(current.customHeaders || "")) {
+		return false;
+	}
+	return true;
+}
+
+function applyInitial(settings) {
+	const next = settings || initialSettings;
+	_profiles = (next.profiles || initialSettings.profiles).map(cloneProfile);
+	_activeProfileId = next.activeProfileId || (_profiles.length ? _profiles[0].id : "default");
+	if (!_profiles.length) {
+		_profiles = initialSettings.profiles.map(cloneProfile);
+		_activeProfileId = _profiles[0].id;
+	}
+	renderProfileSelect();
+	applyProfileToForm(findProfile(_activeProfileId));
+}
+
+function setTestBusy(isBusy) {
+	var btn = $("testBtn");
+	if (!btn) {
+		return;
+	}
+	btn.disabled = !!isBusy;
+	btn.textContent = isBusy ? "测试中..." : "测试连通性";
+}
+
+window.autolinkerApplySettings = function(settings) {
+	applyInitial(settings);
+};
+
+window.autolinkerSetTestBusy = function(isBusy) {
+	setTestBusy(!!isBusy);
+};
+
+window.autolinkerShowTestResult = function(payload) {
+	if (!payload) {
+		return;
+	}
+	alert(payload.message || (payload.ok ? "连通性测试成功。" : "连通性测试失败。"));
+};
+
+window.autolinkerFocusPrimary = function() {
+	if ($("baseUrl")) {
+		$("baseUrl").focus();
+	}
+};
+
+$("toggleApiKey").addEventListener("click", function() {
+	toggleSecret("apiKey", "toggleApiKey");
+});
+
+$("toggleTavilyKey").addEventListener("click", function() {
+	toggleSecret("tavilyApiKey", "toggleTavilyKey");
+});
+
+$("protocol").addEventListener("change", updateEndpointPreview);
+$("baseUrl").addEventListener("input", updateEndpointPreview);
+$("model").addEventListener("input", updateEndpointPreview);
+
+$("profileSelect").addEventListener("change", function() {
+	saveCurrentFormToActiveProfile();
+	_activeProfileId = $("profileSelect").value || _activeProfileId;
+	applyProfileToForm(findProfile(_activeProfileId));
+});
+
+$("addProfileBtn").addEventListener("click", function() {
+	var name = prompt("\u8BF7\u8F93\u5165\u65B0\u914D\u7F6E\u7EC4\u540D\u79F0", "\u65B0\u914D\u7F6E");
+	if (!name) {
+		return;
+	}
+	saveCurrentFormToActiveProfile();
+	var id = "profile_" + Date.now();
+	_profiles.push({
+		id: id,
+		name: name,
+		protocolType: "openai",
+		thinkingLevel: "off",
+		baseUrl: "",
+		apiKey: "",
+		model: "",
+		extraPrompt: "",
+		customHeaders: "",
+		tavilyApiKey: ""
+	});
+	_activeProfileId = id;
+	renderProfileSelect();
+	applyProfileToForm(findProfile(_activeProfileId));
+});
+
+$("renameProfileBtn").addEventListener("click", function() {
+	var current = findProfile(_activeProfileId);
+	if (!current) {
+		return;
+	}
+	var name = prompt("\u8BF7\u8F93\u5165\u65B0\u7684\u914D\u7F6E\u7EC4\u540D\u79F0", current.name || "");
+	if (!name) {
+		return;
+	}
+	current.name = name;
+	renderProfileSelect();
+});
+
+$("deleteProfileBtn").addEventListener("click", function() {
+	if (_profiles.length <= 1) {
+		alert("\u81F3\u5C11\u4FDD\u7559\u4E00\u4E2A\u914D\u7F6E\u7EC4\u3002");
+		return;
+	}
+	var current = findProfile(_activeProfileId);
+	if (!current) {
+		return;
+	}
+	if (!confirm("\u786E\u5B9A\u5220\u9664\u914D\u7F6E\u7EC4\uFF1A" + current.name + " \u5417\uFF1F")) {
+		return;
+	}
+	_profiles = _profiles.filter(function(profile) { return profile.id !== _activeProfileId; });
+	_activeProfileId = _profiles[0].id;
+	renderProfileSelect();
+	applyProfileToForm(findProfile(_activeProfileId));
+});
+
+var _modelMenuOpen = false;
+var _presetMenuOpen = false;
+var _modelOptions = [];
+var _fetchingModels = false;
+
+var PRESET_SITES = [
+	{ id: "right", label: "Right", protocolType: "openai", baseUrl: "https://right.codes/codex", website: "https://right.codes/register?aff=3dc87885", models: ["gpt-5.3-codex", "gpt-5.2"] },
+	{ id: "deepseek", label: "Deepseek", protocolType: "openai", baseUrl: "https://api.deepseek.com", website: "https://platform.deepseek.com", models: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"] },
+	{ id: "zhipu", label: "\u667A\u8C31", protocolType: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4", website: "https://open.bigmodel.cn", models: ["glm-5.2", "glm-5-turbo", "glm-4.7", "glm-4.5-air"] },
+	{ id: "qwen", label: "\u5343\u95EE", protocolType: "openai", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", website: "https://dashscope.console.aliyun.com", models: ["qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash", "qwen3-coder-next", "qwen3-coder-plus"] },
+	{ id: "kimi", label: "Kimi", protocolType: "openai", baseUrl: "https://api.moonshot.cn/v1", website: "https://platform.moonshot.cn", models: ["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"] },
+	{ id: "doubao", label: "\u8C46\u5305", protocolType: "openai", baseUrl: "https://ark.cn-beijing.volces.com/api/v3", website: "https://console.volcengine.com/ark", models: ["doubao-seed-2.0-pro", "doubao-seed-2.0-code", "doubao-seed-2.0-lite", "doubao-seed-1.8"] },
+	{ id: "minimax", label: "MiniMax", protocolType: "openai", baseUrl: "https://api.minimax.chat/v1", website: "https://platform.minimax.chat", models: ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5"] },
+	{ id: "aihubmix", label: "aihubmix", protocolType: "openai", baseUrl: "https://aihubmix.com/v1", website: "https://aihubmix.com/?aff=eeX5", models: ["gpt-5.5", "claude-opus-4-8", "claude-sonnet-4-6", "deepseek-v4-pro", "deepseek-v4-flash", "gemini-3.1-pro-preview"] },
+	{ id: "siliconflow", label: "\u7845\u57FA\u6D41\u52A8", protocolType: "openai", baseUrl: "https://api.siliconflow.cn/v1", website: "https://cloud.siliconflow.cn/i/Oezhkra7", models: ["deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro", "Pro/zai-org/GLM-5", "zai-org/GLM-5.1", "Qwen/Qwen3.5-397B-A17B"] },
+	{ id: "openai", label: "OpenAI", protocolType: "openai_responses", baseUrl: "https://api.openai.com/v1", website: "https://platform.openai.com", models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"] },
+	{ id: "claude", label: "Claude", protocolType: "claude", baseUrl: "https://api.anthropic.com", website: "https://console.anthropic.com", models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"] },
+	{ id: "gemini", label: "Gemini", protocolType: "gemini", baseUrl: "https://generativelanguage.googleapis.com", website: "https://aistudio.google.com", models: ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-pro"] }
+];
+
+function normalizeBaseUrlForMatch(baseUrl) {
+	return trimTrailingSlashes(trimText(baseUrl)).toLowerCase();
+}
+
+function getPresetSiteForBaseUrl(baseUrl) {
+	var normalized = normalizeBaseUrlForMatch(baseUrl);
+	if (!normalized) {
+		return null;
+	}
+	for (var i = 0; i < PRESET_SITES.length; ++i) {
+		if (normalizeBaseUrlForMatch(PRESET_SITES[i].baseUrl) === normalized) {
+			return PRESET_SITES[i];
+		}
+	}
+	return null;
+}
+
+function getPresetModelsForBaseUrl(baseUrl) {
+	var site = getPresetSiteForBaseUrl(baseUrl);
+	return site ? site.models : [];
+}
+
+function dedupeModels(models) {
+	var result = [];
+	var seen = {};
+	(models || []).forEach(function(name) {
+		var model = trimText(name);
+		if (!model || seen[model]) {
+			return;
+		}
+		seen[model] = true;
+		result.push(model);
+	});
+	return result;
+}
+
+function hideModelMenu() {
+	var m = $("modelMenu");
+	if (m) {
+		m.classList.add("hidden");
+	}
+	_modelMenuOpen = false;
+}
+
+function showModelMenu() {
+	var m = $("modelMenu");
+	if (!m || !m.children.length) {
+		return;
+	}
+	m.classList.remove("hidden");
+	_modelMenuOpen = true;
+}
+
+
+function updateModelMenu(models) {
+	var m = $("modelMenu");
+	if (!m) {
+		return;
+	}
+	_modelOptions = dedupeModels(models);
+	m.innerHTML = "";
+	if (!_modelOptions.length) {
+		hideModelMenu();
+		if ($("modelArrow")) {
+			$("modelArrow").disabled = true;
+		}
+		return;
+	}
+	if ($("modelArrow")) {
+		$("modelArrow").disabled = false;
+	}
+	_modelOptions.forEach(function(name) {
+		var d = document.createElement("div");
+		d.className = "ui-menu-item";
+		d.textContent = name;
+		d.addEventListener("mousedown", function(e) {
+			e.preventDefault();
+			$("model").value = name;
+			hideModelMenu();
+			updateEndpointPreview();
+		});
+		m.appendChild(d);
+	});
+}
+
+function buildPresetModelLabel(siteLabel, model) {
+	return siteLabel + "(" + model + ")";
+}
+
+function setModelFetchBusy(isBusy) {
+	_fetchingModels = !!isBusy;
+	var btn = $("modelFetchBtn");
+	if (!btn) {
+		return;
+	}
+	btn.disabled = _fetchingModels;
+	btn.textContent = _fetchingModels ? "..." : "\u21BB";
+	btn.title = _fetchingModels ? "\u6B63\u5728\u83B7\u53D6\u6A21\u578B\u5217\u8868" : "\u83B7\u53D6\u6A21\u578B\u5217\u8868";
+}
+
+function currentFormProfilePayload() {
+	return {
+		id: _activeProfileId || "preview",
+		name: (findProfile(_activeProfileId) || {}).name || "\u914D\u7F6E",
+		protocolType: $("protocol").value || "openai",
+		thinkingLevel: $("thinkingLevel").value || "off",
+		baseUrl: $("baseUrl").value || "",
+		apiKey: $("apiKey").value || "",
+		model: $("model").value || "",
+		extraPrompt: $("extraPrompt").value || "",
+		customHeaders: $("customHeaders").value || "",
+		tavilyApiKey: $("tavilyApiKey").value || ""
+	};
+}
+
+function requestModelList() {
+	if (_fetchingModels) {
+		return;
+	}
+	var payload = currentFormProfilePayload();
+	if (!trimText(payload.baseUrl)) {
+		alert("\u8BF7\u8F93\u5165 Base URL \u540E\u518D\u83B7\u53D6\u6A21\u578B\u5217\u8868\u3002");
+		return;
+	}
+	if (!trimText(payload.apiKey)) {
+		alert("\u8BF7\u8F93\u5165 API Key \u540E\u518D\u83B7\u53D6\u6A21\u578B\u5217\u8868\u3002");
+		return;
+	}
+	if (!validateCustomHeaders(payload.customHeaders || "")) {
+		return;
+	}
+	setModelFetchBusy(true);
+	post({ action: "fetch_models", data: payload });
+}
+
+window.autolinkerShowModelListResult = function(payload) {
+	setModelFetchBusy(false);
+	if (!payload) {
+		return;
+	}
+	if (!payload.ok) {
+		alert("\u83B7\u53D6\u6A21\u578B\u5217\u8868\u5931\u8D25\uFF1A" + (payload.error || "unknown"));
+		return;
+	}
+	var models = dedupeModels(payload.models || []);
+	if (!models.length) {
+		alert("\u6A21\u578B\u5217\u8868\u4E3A\u7A7A\u3002");
+		return;
+	}
+	updateModelMenu(_modelOptions.concat(models));
+	if (!trimText($("model").value)) {
+		$("model").value = models[0];
+		updateEndpointPreview();
+	}
+	showModelMenu();
+	alert("\u5DF2\u83B7\u53D6 " + models.length + " \u4E2A\u6A21\u578B\u3002");
+};
+
+window.autolinkerSetModelFetchBusy = function(isBusy) {
+	setModelFetchBusy(!!isBusy);
+};
+
+function hidePresetProfileMenu() {
+	var anchor = $("presetProfileMenuAnchor");
+	var m = $("presetProfileMenu");
+	if (window.HSDropdown && anchor) {
+		window.HSDropdown.close(anchor);
+	} else if (m) {
+		m.classList.add("hidden");
+	}
+	if ($("addPresetProfileBtn")) {
+		$("addPresetProfileBtn").setAttribute("aria-expanded", "false");
+	}
+	_presetMenuOpen = false;
+}
+
+function createProfileFromPreset(site, model) {
+	if (!site || !model) {
+		return;
+	}
+	saveCurrentFormToActiveProfile();
+	var id = "profile_" + Date.now() + "_" + Math.floor(Math.random() * 10000);
+	var name = buildPresetModelLabel(site.label, model);
+	var profile = {
+		id: id,
+		name: name,
+		protocolType: site.protocolType || "openai",
+		thinkingLevel: "off",
+		baseUrl: site.baseUrl || getDefaultProfileBaseUrl(site.protocolType || "openai"),
+		apiKey: "",
+		model: model,
+		extraPrompt: "",
+		customHeaders: "",
+		tavilyApiKey: ""
+	};
+	_profiles.push(profile);
+	_activeProfileId = id;
+	renderProfileSelect();
+	applyProfileToForm(profile);
+	updateModelMenu(site.models || [model]);
+	hidePresetProfileMenu();
+	if ($("apiKey")) {
+		$("apiKey").focus();
+	}
+}
+
+function showPresetProfileMenu() {
+	var m = $("presetProfileMenu");
+	if (!m) {
+		return;
+	}
+	m.innerHTML = "";
+	PRESET_SITES.forEach(function(site) {
+		var models = site.models || [];
+		if (!models.length) {
+			return;
+		}
+		models.forEach(function(model) {
+			var d = document.createElement("div");
+			d.className = "ui-menu-item";
+			d.setAttribute("role", "menuitem");
+			d.textContent = buildPresetModelLabel(site.label, model);
+			d.addEventListener("mousedown", function(e) {
+				e.preventDefault();
+				createProfileFromPreset(site, model);
+			});
+			m.appendChild(d);
+		});
+	});
+	if (!m.children.length) {
+		return;
+	}
+	if (window.HSDropdown) {
+		window.HSDropdown.autoInit();
+		window.HSDropdown.open($("presetProfileMenuAnchor"));
+	} else {
+		m.classList.remove("hidden");
+	}
+	if ($("addPresetProfileBtn")) {
+		$("addPresetProfileBtn").setAttribute("aria-expanded", "true");
+	}
+	_presetMenuOpen = true;
+}
+
+$("modelArrow").addEventListener("mousedown", function(e) {
+	e.preventDefault();
+});
+
+$("modelArrow").addEventListener("click", function(e) {
+	e.stopPropagation();
+	if (_modelMenuOpen) {
+		hideModelMenu();
+	} else {
+		showModelMenu();
+	}
+});
+
+$("modelFetchBtn").addEventListener("click", requestModelList);
+
+$("model").addEventListener("focus", function() {
+	showModelMenu();
+});
+
+$("model").addEventListener("blur", function() {
+	setTimeout(hideModelMenu, 150);
+});
+
+document.addEventListener("click", function(e) {
+	var c = $("modelCmb");
+	if (c && !c.contains(e.target)) {
+		hideModelMenu();
+	}
+	var a = $("presetProfileMenuAnchor");
+	if (a && !a.contains(e.target)) {
+		hidePresetProfileMenu();
+	}
+});
+
+$("addPresetProfileBtn").addEventListener("click", function(e) {
+	e.preventDefault();
+	e.stopPropagation();
+	if (e.stopImmediatePropagation) {
+		e.stopImmediatePropagation();
+	}
+	if (_presetMenuOpen) {
+		hidePresetProfileMenu();
+	} else {
+		showPresetProfileMenu();
+	}
+});
+
+$("cancelBtn").addEventListener("click", function() {
+	post({ action: "cancel" });
+});
+
+$("testBtn").addEventListener("click", function() {
+	const data = collect();
+	if (!validate(data)) {
+		return;
+	}
+	post({ action: "test_connection", data: data });
+});
+
+$("saveBtn").addEventListener("click", function() {
+	const data = collect();
+	if (!validate(data)) {
+		return;
+	}
+	post({ action: "save", data: data });
+});
+
+applyInitial(initialSettings);
+</script>
+</body>
+</html>

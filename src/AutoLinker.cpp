@@ -136,13 +136,19 @@ void UpdateEPackagerComponentAddIn()
 	EPackagerIntegration::RunToolUpdateInBackground();
 }
 
+void ShowLinkerSettingsAddIn()
+{
+	ShowLinkerConfigDialog(g_hwnd);
+}
+
 const auto& GetAddInMenuEntries()
 {
-	static const std::array<AddInMenuEntry, 5> kEntries = { {
+	static const std::array<AddInMenuEntry, 6> kEntries = { {
 		{ "打开项目目录", "这是个用作测试的辅助工具功能。", &OpenProjectDirectoryAddIn },
 		{ "打开AutoLinker配置目录", "这是个用作测试的辅助工具功能。", &OpenAutoLinkerConfigDirectoryAddIn },
 		{ "打开E语言目录", "这是个用作测试的辅助工具功能。", &OpenELanguageDirectoryAddIn },
 		{ "AutoLinker AI接口设置", "编辑AI接口地址、API Key、模型和提示词等配置。", &ShowAISettingsAddIn },
+		{ "AutoLinker 链接器设置", "查看并编辑 AutoLinker/Config 下的 link.ini 链接器配置。", &ShowLinkerSettingsAddIn },
 		{ "更新e-packager组件", "检查并下载最新的 e-packager 组件。", &UpdateEPackagerComponentAddIn },
 	} };
 	return kEntries;

@@ -281,6 +281,32 @@ std::string Utf8ToLocalText(const std::string& text)
 	return ConvertCodePage(text, CP_UTF8, CP_ACP, MB_ERR_INVALID_CHARS);
 }
 
+void NormalizeJsonStringsToUtf8ForAI(nlohmann::json& value)
+{
+	if (value.is_string()) {
+		value = LocalToUtf8Text(value.get<std::string>());
+		return;
+	}
+	if (value.is_array()) {
+		for (auto& item : value) {
+			NormalizeJsonStringsToUtf8ForAI(item);
+		}
+		return;
+	}
+	if (value.is_object()) {
+		for (auto& item : value.items()) {
+			NormalizeJsonStringsToUtf8ForAI(item.value());
+		}
+	}
+}
+
+std::string JsonToLocalTextForAI(nlohmann::json value)
+{
+	// 工具结果可能混入 IDE/MFC 返回的本地编码字符串，统一转 UTF-8 后再序列化。
+	NormalizeJsonStringsToUtf8ForAI(value);
+	return Utf8ToLocalText(value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+
 std::string GetCurrentProcessPathForAI()
 {
 	char buffer[MAX_PATH] = {};
@@ -2283,7 +2309,7 @@ bool TryWriteJsonCacheFileForAI(const std::filesystem::path& path, const nlohman
 		if (!out.is_open()) {
 			return false;
 		}
-		const std::string text = jsonValue.dump();
+		const std::string text = jsonValue.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 		out.write(text.data(), static_cast<std::streamsize>(text.size()));
 		return out.good();
 	}
@@ -4545,7 +4571,7 @@ std::string BuildListImportedModulesJsonOnMainThread(bool& outOk)
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error.empty() ? "list imported modules failed" : error;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	nlohmann::json modules = nlohmann::json::array();
@@ -4568,7 +4594,7 @@ std::string BuildListImportedModulesJsonOnMainThread(bool& outOk)
 	r["warning"] = LocalToUtf8Text("这里列出的是项目当前导入的易模块路径；模块公开信息优先来自 IDE 模块公开信息窗口的隐藏抓取，必要时才退回 .ec 离线解析，且仅可作为公开接口/伪代码参考。");
 	r["modules"] = std::move(modules);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildSearchAvailableModulePublicCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -4581,7 +4607,7 @@ std::string BuildSearchAvailableModulePublicCodeJsonOnMainThread(const std::stri
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	PublicCodeSearchSpecForAI spec;
@@ -4590,7 +4616,7 @@ std::string BuildSearchAvailableModulePublicCodeJsonOnMainThread(const std::stri
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = specError;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const std::string moduleName = args.contains("module_name") && args["module_name"].is_string()
@@ -4632,7 +4658,7 @@ std::string BuildSearchAvailableModulePublicCodeJsonOnMainThread(const std::stri
 				}
 				r["candidates"] = std::move(rows);
 			}
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 		modulePaths.push_back(resolvedPath);
 	}
@@ -4643,7 +4669,7 @@ std::string BuildSearchAvailableModulePublicCodeJsonOnMainThread(const std::stri
 		if (!searchRoot.empty()) {
 			r["search_root"] = LocalToUtf8Text(searchRoot);
 		}
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const std::string loweredNameContains = ToLowerAsciiCopyLocal(TrimAsciiCopy(nameContains));
@@ -4759,7 +4785,7 @@ std::string BuildSearchAvailableModulePublicCodeJsonOnMainThread(const std::stri
 	r["warning"] = LocalToUtf8Text("这里搜索的是易语言 ecom 目录下可用 .ec 模块的公开声明文本。默认只走本地 .ec 解析与缓存，不会自动导入模块。找到目标模块后，可继续调用 add_module_to_project 将其加入当前工程；若结果里带有 md5，也可继续用 read_module_public_code 读取命中附近行。");
 	r["matches"] = std::move(matches);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -4772,7 +4798,7 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const std::string moduleName = args.contains("module_name") && args["module_name"].is_string()
@@ -4806,7 +4832,7 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 			}
 			r["candidates"] = std::move(rows);
 		}
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	IDEFacade& ide = IDEFacade::Instance();
@@ -4822,7 +4848,7 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 		r["module_index"] = existingIndex;
 		r["warning"] = LocalToUtf8Text("目标模块已在当前工程中，无需重复加入。");
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const bool addedByNewMethod = ide.AddECOM2(resolvedPath);
@@ -4834,7 +4860,7 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 		r["module_path"] = LocalToUtf8Text(resolvedPath);
 		r["module_name"] = LocalToUtf8Text(GetFileStemForAI(resolvedPath));
 		r["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(resolvedPath));
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const int moduleIndex = ide.FindECOMIndex(resolvedPath);
@@ -4846,7 +4872,7 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 		r["module_name"] = LocalToUtf8Text(GetFileStemForAI(resolvedPath));
 		r["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(resolvedPath));
 		r["add_method"] = addedByNewMethod ? "AddECOM2" : "AddECOM";
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	nlohmann::json r;
@@ -4860,7 +4886,7 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 	r["add_method"] = addedByNewMethod ? "AddECOM2" : "AddECOM";
 	r["warning"] = LocalToUtf8Text("模块已加入当前工程。后续可用 list_imported_modules、get_module_public_info、search_module_public_code 等工具继续读取其公开信息。");
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildListSupportLibrariesJsonOnMainThread(bool& outOk)
@@ -4871,7 +4897,7 @@ std::string BuildListSupportLibrariesJsonOnMainThread(bool& outOk)
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error.empty() ? "list support libraries failed" : error;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	nlohmann::json rows = nlohmann::json::array();
@@ -4894,7 +4920,7 @@ std::string BuildListSupportLibrariesJsonOnMainThread(bool& outOk)
 	r["warning"] = LocalToUtf8Text("这里列出的是 IDE 当前已选支持库。若能解析到支持库文件路径，则可进一步通过 GetNewInf/lib2.h 读取其命令、常量、数据类型等公开定义。");
 	r["libraries"] = std::move(rows);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildGetSupportLibraryInfoJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -4907,7 +4933,7 @@ std::string BuildGetSupportLibraryInfoJsonOnMainThread(const std::string& argume
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	SupportLibraryInfoHeaderForAI header;
@@ -4916,7 +4942,7 @@ std::string BuildGetSupportLibraryInfoJsonOnMainThread(const std::string& argume
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = resolveError;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	nlohmann::json r;
@@ -4932,7 +4958,7 @@ std::string BuildGetSupportLibraryInfoJsonOnMainThread(const std::string& argume
 			r["source_kind"] = "getnewinf";
 			r["warning"] = LocalToUtf8Text("支持库公开信息来自支持库文件 GetNewInf/lib2.h 结构解析，可作为公开接口参考。");
 			outOk = true;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 	}
 
@@ -4948,7 +4974,7 @@ std::string BuildGetSupportLibraryInfoJsonOnMainThread(const std::string& argume
 	r["source_kind"] = "ide_text";
 	r["warning"] = LocalToUtf8Text("当前未解析到支持库文件路径或 GetNewInf 失败，以下内容来自 IDE 返回的支持库信息文本。");
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildSearchSupportLibraryInfoJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -4961,7 +4987,7 @@ std::string BuildSearchSupportLibraryInfoJsonOnMainThread(const std::string& arg
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const std::string keyword = args.contains("keyword") && args["keyword"].is_string()
@@ -4984,7 +5010,7 @@ std::string BuildSearchSupportLibraryInfoJsonOnMainThread(const std::string& arg
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 		libs.push_back(std::move(header));
 	}
@@ -4992,7 +5018,7 @@ std::string BuildSearchSupportLibraryInfoJsonOnMainThread(const std::string& arg
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error.empty() ? "list support libraries failed" : error;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const auto matchesKeyword = [&](const std::string& text) {
@@ -5153,7 +5179,7 @@ std::string BuildSearchSupportLibraryInfoJsonOnMainThread(const std::string& arg
 	r["warning"] = LocalToUtf8Text("支持库检索优先来自支持库文件 GetNewInf/lib2.h 结构解析；无法解析文件时退回 IDE 返回的支持库信息文本。结果属于公开接口参考，不是项目源码页。");
 	r["matches"] = std::move(matches);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 bool TryResolveSupportLibraryEntryForReadForAI(
@@ -5222,7 +5248,7 @@ std::string BuildSearchSupportLibraryPublicCodeJsonOnMainThread(const std::strin
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	PublicCodeSearchSpecForAI spec;
@@ -5231,7 +5257,7 @@ std::string BuildSearchSupportLibraryPublicCodeJsonOnMainThread(const std::strin
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = specError;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const int limit = args.contains("limit") && args["limit"].is_number_integer()
@@ -5246,7 +5272,7 @@ std::string BuildSearchSupportLibraryPublicCodeJsonOnMainThread(const std::strin
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 		libs.push_back(std::move(header));
 	}
@@ -5254,7 +5280,7 @@ std::string BuildSearchSupportLibraryPublicCodeJsonOnMainThread(const std::strin
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error.empty() ? "list support libraries failed" : error;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	nlohmann::json matches = nlohmann::json::array();
@@ -5342,7 +5368,7 @@ std::string BuildSearchSupportLibraryPublicCodeJsonOnMainThread(const std::strin
 	r["warning"] = LocalToUtf8Text("这里搜索的是支持库公开信息的按行文本。优先来自支持库文件 GetNewInf/lib2.h 结构解析；无法定位文件时退回 IDE 支持库信息文本。结果属于公开接口参考，不是项目源码页。现在同样支持单关键字、多关键字与正则按行匹配。");
 	r["matches"] = std::move(matches);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildReadSupportLibraryPublicCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -5355,7 +5381,7 @@ std::string BuildReadSupportLibraryPublicCodeJsonOnMainThread(const std::string&
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const int startLine = args.contains("start_line") && args["start_line"].is_number_integer()
@@ -5375,7 +5401,7 @@ std::string BuildReadSupportLibraryPublicCodeJsonOnMainThread(const std::string&
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = loadError.empty() ? "load support library public code failed" : loadError;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const int totalLines = static_cast<int>(entry.lines.size());
@@ -5388,7 +5414,7 @@ std::string BuildReadSupportLibraryPublicCodeJsonOnMainThread(const std::string&
 		r["file_path"] = LocalToUtf8Text(
 			GetJsonStringFieldLocalForAI(entry.dumpJson, "file_path"));
 		r["md5"] = entry.md5;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 	if (startLine > totalLines) {
 		nlohmann::json r;
@@ -5400,7 +5426,7 @@ std::string BuildReadSupportLibraryPublicCodeJsonOnMainThread(const std::string&
 			GetJsonStringFieldLocalForAI(entry.dumpJson, "file_path"));
 		r["md5"] = entry.md5;
 		r["total_lines"] = totalLines;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const int clampedEndLine = (std::min)(endLine, totalLines);
@@ -5440,7 +5466,7 @@ std::string BuildReadSupportLibraryPublicCodeJsonOnMainThread(const std::string&
 	r["text"] = LocalToUtf8Text(text);
 	r["lines"] = std::move(lines);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildGetModulePublicInfoJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -5453,7 +5479,7 @@ std::string BuildGetModulePublicInfoJsonOnMainThread(const std::string& argument
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const std::string moduleName = args.contains("module_name") && args["module_name"].is_string()
@@ -5475,7 +5501,7 @@ std::string BuildGetModulePublicInfoJsonOnMainThread(const std::string& argument
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = resolveError;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	e571::ModulePublicInfoDump dump;
@@ -5491,7 +5517,7 @@ std::string BuildGetModulePublicInfoJsonOnMainThread(const std::string& argument
 		r["module_path"] = LocalToUtf8Text(resolvedPath);
 		r["trace"] = dump.trace;
 		r["loader_error"] = LocalToUtf8Text(dump.loaderError);
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	nlohmann::json records = nlohmann::json::array();
@@ -5532,7 +5558,7 @@ std::string BuildGetModulePublicInfoJsonOnMainThread(const std::string& argument
 	r["warning"] = LocalToUtf8Text("模块公开信息优先来自 IDE 模块公开信息窗口的隐藏抓取；必要时会退回 .ec 离线解析。它仍不是 IDE 正常编辑页，也不是模块完整源码，只能作为公开接口/伪代码参考。");
 	r["records"] = std::move(records);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildSearchModulePublicInfoJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -5545,7 +5571,7 @@ std::string BuildSearchModulePublicInfoJsonOnMainThread(const std::string& argum
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const std::string keyword = args.contains("keyword") && args["keyword"].is_string()
@@ -5574,7 +5600,7 @@ std::string BuildSearchModulePublicInfoJsonOnMainThread(const std::string& argum
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = resolveError;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 		paths.push_back(resolvedPath);
 	}
@@ -5582,7 +5608,7 @@ std::string BuildSearchModulePublicInfoJsonOnMainThread(const std::string& argum
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = resolveError.empty() ? "list imported modules failed" : resolveError;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	nlohmann::json matches = nlohmann::json::array();
@@ -5664,7 +5690,7 @@ std::string BuildSearchModulePublicInfoJsonOnMainThread(const std::string& argum
 	r["warning"] = LocalToUtf8Text("这里搜索的是模块公开信息窗口抓取到的公开接口文本；必要时会退回 .ec 离线解析。它不是模块完整源码，只能作为公开接口/伪代码参考。");
 	r["matches"] = std::move(matches);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 bool TryResolveModulePublicInfoEntryForReadForAI(
@@ -5707,7 +5733,7 @@ std::string BuildSearchModulePublicCodeJsonOnMainThread(const std::string& argum
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	PublicCodeSearchSpecForAI spec;
@@ -5716,7 +5742,7 @@ std::string BuildSearchModulePublicCodeJsonOnMainThread(const std::string& argum
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = specError;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const std::string moduleName = args.contains("module_name") && args["module_name"].is_string()
@@ -5737,7 +5763,7 @@ std::string BuildSearchModulePublicCodeJsonOnMainThread(const std::string& argum
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = resolveError;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 		paths.push_back(resolvedPath);
 	}
@@ -5745,7 +5771,7 @@ std::string BuildSearchModulePublicCodeJsonOnMainThread(const std::string& argum
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = resolveError.empty() ? "list imported modules failed" : resolveError;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	nlohmann::json matches = nlohmann::json::array();
@@ -5817,7 +5843,7 @@ std::string BuildSearchModulePublicCodeJsonOnMainThread(const std::string& argum
 	r["warning"] = LocalToUtf8Text("这里搜索的是模块公开声明文本的按行结果。它来自模块公开信息窗口抓取或 .ec 离线解析，只能作为公开接口/伪代码参考，不是模块完整源码。现在同样支持单关键字、多关键字与正则按行匹配。");
 	r["matches"] = std::move(matches);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildReadModulePublicCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -5830,7 +5856,7 @@ std::string BuildReadModulePublicCodeJsonOnMainThread(const std::string& argumen
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const int startLine = args.contains("start_line") && args["start_line"].is_number_integer()
@@ -5849,7 +5875,7 @@ std::string BuildReadModulePublicCodeJsonOnMainThread(const std::string& argumen
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = loadError.empty() ? "load module public code failed" : loadError;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const int totalLines = static_cast<int>(entry.lines.size());
@@ -5859,7 +5885,7 @@ std::string BuildReadModulePublicCodeJsonOnMainThread(const std::string& argumen
 		r["error"] = "module public code text is empty";
 		r["module_path"] = LocalToUtf8Text(entry.dump.modulePath);
 		r["md5"] = entry.md5;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 	if (startLine > totalLines) {
 		nlohmann::json r;
@@ -5868,7 +5894,7 @@ std::string BuildReadModulePublicCodeJsonOnMainThread(const std::string& argumen
 		r["module_path"] = LocalToUtf8Text(entry.dump.modulePath);
 		r["md5"] = entry.md5;
 		r["total_lines"] = totalLines;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const int clampedEndLine = (std::min)(endLine, totalLines);
@@ -5905,7 +5931,7 @@ std::string BuildReadModulePublicCodeJsonOnMainThread(const std::string& argumen
 	r["text"] = LocalToUtf8Text(text);
 	r["lines"] = std::move(lines);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildRefreshProjectSourceCacheJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -5926,7 +5952,7 @@ std::string BuildRefreshProjectSourceCacheJsonOnMainThread(const std::string& ar
 		r["ok"] = false;
 		r["error"] = error.empty() ? "refresh project source cache failed" : error;
 		r["trace"] = LocalToUtf8Text(trace);
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	nlohmann::json pages = nlohmann::json::array();
@@ -5958,7 +5984,7 @@ std::string BuildRefreshProjectSourceCacheJsonOnMainThread(const std::string& ar
 	r["pages_preview"] = std::move(pages);
 	r["warning"] = LocalToUtf8Text("该工具仅使用内存直序列化：会把当前工程从 IDE 内存直接序列化为二进制字节，并直接交给 e2txt 重新解析刷新内存缓存。若当前会话尚未捕获可用的序列化上下文，它会直接报错，不会再走保存重定向或磁盘兜底。");
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildSearchProjectSourceCacheJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -5971,7 +5997,7 @@ std::string BuildSearchProjectSourceCacheJsonOnMainThread(const std::string& arg
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	PublicCodeSearchSpecForAI spec;
@@ -5980,7 +6006,7 @@ std::string BuildSearchProjectSourceCacheJsonOnMainThread(const std::string& arg
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = specError;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const int limit = args.contains("limit") && args["limit"].is_number_integer()
@@ -6001,7 +6027,7 @@ std::string BuildSearchProjectSourceCacheJsonOnMainThread(const std::string& arg
 		r["ok"] = false;
 		r["error"] = error.empty() ? "refresh project source cache failed" : error;
 		r["trace"] = LocalToUtf8Text(trace);
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const auto hits = CollectProjectCacheSearchHitsForAI(snapshot, [&](const std::string& line, std::vector<std::string>& matchedKeywords) {
@@ -6074,7 +6100,7 @@ std::string BuildSearchProjectSourceCacheJsonOnMainThread(const std::string& arg
 	r["warning"] = LocalToUtf8Text("这里搜索的是当前工程源码缓存：仅依赖内存直序列化，把当前工程从 IDE 内存导出到临时快照并重新解析，再在解析后的页代码里逐行搜索。若当前会话尚未捕获可用的序列化上下文，它会直接报错，不会再走保存重定向或磁盘兜底。若主要查当前工程源码，优先用这个工具而不是 IDE 隐藏搜索。");
 	r["results"] = std::move(results);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildReadProjectSourceCacheCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -6087,7 +6113,7 @@ std::string BuildReadProjectSourceCacheCodeJsonOnMainThread(const std::string& a
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const std::string jumpToken = (args.contains("jump_token") && args["jump_token"].is_string())
@@ -6111,7 +6137,7 @@ std::string BuildReadProjectSourceCacheCodeJsonOnMainThread(const std::string& a
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = projectTokenError.empty() ? "invalid project cache jump_token" : projectTokenError;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	project_source_cache::Snapshot snapshot;
@@ -6130,7 +6156,7 @@ std::string BuildReadProjectSourceCacheCodeJsonOnMainThread(const std::string& a
 		r["error"] = resolveError.empty() ? "resolve project cache snapshot failed" : resolveError;
 		r["trace"] = LocalToUtf8Text(resolveTrace);
 		r["jump_token"] = jumpToken;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const auto* page = FindProjectCachePageForAI(snapshot, projectToken);
@@ -6141,7 +6167,7 @@ std::string BuildReadProjectSourceCacheCodeJsonOnMainThread(const std::string& a
 		r["trace"] = LocalToUtf8Text(resolveTrace);
 		r["jump_token"] = jumpToken;
 		r["cache_revision"] = snapshot.revision;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const auto& pageLines = page->lines;
@@ -6154,7 +6180,7 @@ std::string BuildReadProjectSourceCacheCodeJsonOnMainThread(const std::string& a
 		r["page_name"] = LocalToUtf8Text(page->name);
 		r["type_key"] = page->typeKey;
 		r["type_name"] = LocalToUtf8Text(page->typeName);
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const int hintLineNumber = projectToken.lineNumber;
@@ -6190,7 +6216,7 @@ std::string BuildReadProjectSourceCacheCodeJsonOnMainThread(const std::string& a
 			r["resolve_method"] = resolvedBy;
 			r["search_text"] = LocalToUtf8Text(searchText);
 			r["cache_revision"] = snapshot.revision;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 	}
 	else {
@@ -6247,7 +6273,7 @@ std::string BuildReadProjectSourceCacheCodeJsonOnMainThread(const std::string& a
 	r["text"] = LocalToUtf8Text(text);
 	r["lines"] = std::move(lines);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -6260,7 +6286,7 @@ std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJs
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	PublicCodeSearchSpecForAI spec;
@@ -6269,7 +6295,7 @@ std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJs
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = specError;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const int limit = args.contains("limit") && args["limit"].is_number_integer()
@@ -6419,7 +6445,7 @@ std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJs
 				nlohmann::json r;
 				r["ok"] = false;
 				r["error"] = resolveError;
-				return Utf8ToLocalText(r.dump());
+				return JsonToLocalTextForAI(r);
 			}
 			modulePaths.push_back(resolvedPath);
 		}
@@ -6427,7 +6453,7 @@ std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJs
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = resolveError.empty() ? "list imported modules failed" : resolveError;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		for (const auto& path : modulePaths) {
@@ -6504,7 +6530,7 @@ std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJs
 				nlohmann::json r;
 				r["ok"] = false;
 				r["error"] = error;
-				return Utf8ToLocalText(r.dump());
+				return JsonToLocalTextForAI(r);
 			}
 			libs.push_back(std::move(header));
 		}
@@ -6512,7 +6538,7 @@ std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJs
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "list support libraries failed" : error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		for (const auto& lib : libs) {
@@ -6617,7 +6643,7 @@ std::string BuildSearchPublicCodeJsonOnMainThread(const std::string& argumentsJs
 	r["warning"] = LocalToUtf8Text(warning);
 	r["matches"] = std::move(matches);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 void WarmupImportedModulePublicInfoCacheOnMainThread()
@@ -6683,7 +6709,7 @@ std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argument
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	std::string keyword;
@@ -6705,7 +6731,7 @@ std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argument
 		r["ok"] = false;
 		r["error"] = "current IDE does not support direct global search";
 		r["trace"] = directSearchTrace;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 	const auto hits = e571::DebugSearchDirectGlobalKeyword(
 		keyword.c_str(),
@@ -6748,7 +6774,7 @@ std::string BuildProgramSearchResultJsonOnMainThread(const std::string& argument
 		r["page_type_lookup_error"] = listError;
 	}
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string BuildReadProjectSearchResultCodeJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -6761,7 +6787,7 @@ std::string BuildReadProjectSearchResultCodeJsonOnMainThread(const std::string& 
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const std::string jumpToken = GetJsonStringArgumentLocal(args, "jump_token");
@@ -6788,7 +6814,7 @@ std::string BuildReadProjectSearchResultCodeJsonOnMainThread(const std::string& 
 		r["ok"] = false;
 		r["error"] = "jump to search result failed";
 		r["trace"] = jumpTrace;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	std::string currentPageName;
@@ -6801,7 +6827,7 @@ std::string BuildReadProjectSearchResultCodeJsonOnMainThread(const std::string& 
 		r["error"] = "get current page after jump failed";
 		r["trace"] = jumpTrace;
 		r["current_page_trace"] = currentPageTrace;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	ProgramTreeItemInfo item;
@@ -6813,7 +6839,7 @@ std::string BuildReadProjectSearchResultCodeJsonOnMainThread(const std::string& 
 		r["trace"] = jumpTrace;
 		r["current_page_name"] = LocalToUtf8Text(currentPageName);
 		r["current_page_type"] = LocalToUtf8Text(currentPageType);
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	std::string code;
@@ -6827,7 +6853,7 @@ std::string BuildReadProjectSearchResultCodeJsonOnMainThread(const std::string& 
 		r["trace"] = LocalToUtf8Text(jumpTrace + "|" + codeTrace);
 		r["current_page_name"] = LocalToUtf8Text(item.name);
 		r["current_page_type"] = LocalToUtf8Text(item.typeName);
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const auto pageLines = SplitLinesCopyForAI(NormalizeLineBreaksForAI(code));
@@ -6857,7 +6883,7 @@ std::string BuildReadProjectSearchResultCodeJsonOnMainThread(const std::string& 
 		r["search_line_hint"] = hintLineNumber;
 		r["resolve_method"] = resolvedBy;
 		r["search_text"] = LocalToUtf8Text(searchText);
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const int totalLines = static_cast<int>(pageLines.size());
@@ -6904,7 +6930,7 @@ std::string BuildReadProjectSearchResultCodeJsonOnMainThread(const std::string& 
 	r["text"] = LocalToUtf8Text(text);
 	r["lines"] = std::move(lines);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 bool TryReadMappedRealPageCodeForAI(
@@ -6960,7 +6986,7 @@ std::string ExecuteMappedEditFileToolForAI(
 			r["code"] = LocalToUtf8Text(currentCode);
 			r["code_hash"] = BuildStableTextHashForRealCode(currentCode);
 		}
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 	LogToolStageForAI(
 		"edit_file",
@@ -6985,7 +7011,7 @@ std::string ExecuteMappedEditFileToolForAI(
 		r["trace"] = LocalToUtf8Text(trace);
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (BuildStableTextHashForRealCode(replacedCode) == BuildStableTextHashForRealCode(baseCode)) {
@@ -7002,7 +7028,7 @@ std::string ExecuteMappedEditFileToolForAI(
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	PageCodeSnapshotEntry snapshot;
@@ -7039,7 +7065,7 @@ std::string ExecuteMappedEditFileToolForAI(
 		r["trace"] = LocalToUtf8Text(trace);
 		r["rollback_attempted"] = rollbackAttempted;
 		r["rollback_succeeded"] = rollbackSucceeded;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 	LogToolStageForAI(
 		"edit_file",
@@ -7066,7 +7092,7 @@ std::string ExecuteMappedEditFileToolForAI(
 	r["code_kind"] = "real_source";
 	r["code"] = LocalToUtf8Text(finalCode);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string ExecuteMappedMultiEditFileToolForAI(
@@ -7085,7 +7111,7 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 	if (edits.empty()) {
 		return R"({"ok":false,"error":"edits is required"})";
@@ -7109,7 +7135,7 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 			r["code"] = LocalToUtf8Text(currentCode);
 			r["code_hash"] = BuildStableTextHashForRealCode(currentCode);
 		}
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	std::string candidateCode;
@@ -7139,7 +7165,7 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 		r["trace"] = LocalToUtf8Text(trace);
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (appliedCount == 0) {
@@ -7152,7 +7178,7 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 		r["trace"] = LocalToUtf8Text(trace);
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (BuildStableTextHashForRealCode(candidateCode) == BuildStableTextHashForRealCode(baseCode)) {
@@ -7167,7 +7193,7 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	PageCodeSnapshotEntry snapshot;
@@ -7193,7 +7219,7 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 		r["trace"] = LocalToUtf8Text(trace);
 		r["rollback_attempted"] = rollbackAttempted;
 		r["rollback_succeeded"] = rollbackSucceeded;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const auto hunks = BuildRealPageStructuredPatch(baseCode, finalCode);
@@ -7216,7 +7242,7 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 	r["code_kind"] = "real_source";
 	r["code"] = LocalToUtf8Text(finalCode);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string ExecuteMappedWriteFileToolForAI(
@@ -7251,7 +7277,7 @@ std::string ExecuteMappedWriteFileToolForAI(
 			r["code"] = LocalToUtf8Text(currentCode);
 			r["code_hash"] = BuildStableTextHashForRealCode(currentCode);
 		}
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	std::string preparedFullCode = fullCode;
@@ -7270,7 +7296,7 @@ std::string ExecuteMappedWriteFileToolForAI(
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	PageCodeSnapshotEntry snapshot;
@@ -7295,7 +7321,7 @@ std::string ExecuteMappedWriteFileToolForAI(
 		r["trace"] = LocalToUtf8Text(trace);
 		r["rollback_attempted"] = rollbackAttempted;
 		r["rollback_succeeded"] = rollbackSucceeded;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const auto hunks = BuildRealPageStructuredPatch(baseCode, finalCode);
@@ -7316,7 +7342,7 @@ std::string ExecuteMappedWriteFileToolForAI(
 	r["code_kind"] = "real_source";
 	r["code"] = LocalToUtf8Text(finalCode);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string ExecuteMappedDiffFileToolForAI(
@@ -7351,7 +7377,7 @@ std::string ExecuteMappedDiffFileToolForAI(
 			r["code"] = LocalToUtf8Text(currentCode);
 			r["code_hash"] = BuildStableTextHashForRealCode(currentCode);
 		}
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	std::string candidateCode;
@@ -7375,7 +7401,7 @@ std::string ExecuteMappedDiffFileToolForAI(
 				editResults.push_back(BuildRealPageTextEditResultJsonForAI(result));
 			}
 			r["results"] = std::move(editResults);
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 		for (const auto& result : applyResults) {
 			editResults.push_back(BuildRealPageTextEditResultJsonForAI(result));
@@ -7387,7 +7413,7 @@ std::string ExecuteMappedDiffFileToolForAI(
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 		std::vector<RealPageTextEditApplyResult> applyResults;
 		if (!ApplyRealPageTextEdits(baseCode, edits, failOnUnmatched, candidateCode, applyResults, error)) {
@@ -7398,7 +7424,7 @@ std::string ExecuteMappedDiffFileToolForAI(
 				editResults.push_back(BuildRealPageTextEditResultJsonForAI(result));
 			}
 			r["results"] = std::move(editResults);
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 		for (const auto& result : applyResults) {
 			editResults.push_back(BuildRealPageTextEditResultJsonForAI(result));
@@ -7432,7 +7458,7 @@ std::string ExecuteMappedDiffFileToolForAI(
 	}
 	r["proposed_code"] = LocalToUtf8Text(candidateCode);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string ExecuteMappedRestoreFileSnapshotToolForAI(
@@ -7473,7 +7499,7 @@ std::string ExecuteMappedRestoreFileSnapshotToolForAI(
 			r["code"] = LocalToUtf8Text(currentCode);
 			r["code_hash"] = BuildStableTextHashForRealCode(currentCode);
 		}
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (BuildStableTextHashForRealCode(snapshot.code) == BuildStableTextHashForRealCode(baseCode)) {
@@ -7485,7 +7511,7 @@ std::string ExecuteMappedRestoreFileSnapshotToolForAI(
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	PageCodeSnapshotEntry createdSnapshot;
@@ -7510,7 +7536,7 @@ std::string ExecuteMappedRestoreFileSnapshotToolForAI(
 		r["trace"] = LocalToUtf8Text(trace);
 		r["rollback_attempted"] = rollbackAttempted;
 		r["rollback_succeeded"] = rollbackSucceeded;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	const auto hunks = BuildRealPageStructuredPatch(baseCode, finalCode);
@@ -7533,7 +7559,7 @@ std::string ExecuteMappedRestoreFileSnapshotToolForAI(
 	r["code_kind"] = "real_source";
 	r["code"] = LocalToUtf8Text(finalCode);
 	outOk = true;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 std::string ExecuteFileMappedRealPageToolForAI(
@@ -7562,7 +7588,7 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (!args.contains("file_path") || !args["file_path"].is_string()) {
@@ -7593,7 +7619,7 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		r["ok"] = false;
 		r["error"] = error.empty() ? "resolve file_path failed" : error;
 		r["file_path"] = filePathUtf8;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 	LogToolStageForAI(
 		"file_mapped_tool",
@@ -7624,7 +7650,7 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		r["file_path"] = filePathUtf8;
 		r["mapped_page_name"] = LocalToUtf8Text(item.pageNameLocal);
 		r["mapped_kind"] = item.kind;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 	LogToolStageForAI(
 		"file_mapped_tool",
@@ -7662,7 +7688,7 @@ std::string ExecuteFileMappedRealPageToolForAI(
 			"file_mapped_tool",
 			"unknown_tool|tool=" + publicToolName,
 			totalStart);
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 	LogToolStageForAI(
 		"file_mapped_tool",
@@ -7722,7 +7748,7 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		}
 	}
 
-	return Utf8ToLocalText(result.dump());
+	return JsonToLocalTextForAI(result);
 }
 
 bool TryExecuteFixedTableReadFileToolForAI(
@@ -7741,7 +7767,7 @@ bool TryExecuteFixedTableReadFileToolForAI(
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		outResultLocal = Utf8ToLocalText(r.dump());
+		outResultLocal = JsonToLocalTextForAI(r);
 		return true;
 	}
 
@@ -7764,7 +7790,7 @@ bool TryExecuteFixedTableReadFileToolForAI(
 		r["file_path"] = filePathUtf8;
 		r["mapped_page_name"] = LocalToUtf8Text(item.pageNameLocal);
 		r["mapped_kind"] = item.kind;
-		outResultLocal = Utf8ToLocalText(r.dump());
+		outResultLocal = JsonToLocalTextForAI(r);
 		return true;
 	}
 
@@ -7778,7 +7804,7 @@ bool TryExecuteFixedTableReadFileToolForAI(
 		r["mapped_page_name"] = LocalToUtf8Text(item.pageNameLocal);
 		r["mapped_kind"] = item.kind;
 		r["trace"] = LocalToUtf8Text(trace);
-		outResultLocal = Utf8ToLocalText(r.dump());
+		outResultLocal = JsonToLocalTextForAI(r);
 		return true;
 	}
 
@@ -7811,7 +7837,7 @@ bool TryExecuteFixedTableReadFileToolForAI(
 	r["truncated"] = offset + returnedLines < totalLines;
 	r["content"] = LocalToUtf8Text(view);
 	outOk = true;
-	outResultLocal = Utf8ToLocalText(r.dump());
+	outResultLocal = JsonToLocalTextForAI(r);
 	return true;
 }
 
@@ -7927,7 +7953,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = "unknown tool: " + toolName;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "get_current_page_code") {
@@ -7983,7 +8009,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 				if (!codeTrace.empty()) {
 					r["trace"] = LocalToUtf8Text(codeTrace);
 				}
-				return Utf8ToLocalText(r.dump());
+				return JsonToLocalTextForAI(r);
 			}
 			codeKind = "editor_clipboard";
 			if (codeTrace.empty()) {
@@ -8005,7 +8031,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		}
 		LocalMcpServer::UpdateInstanceHints(sourceFilePath, pageName, pageType);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "get_current_page_info") {
@@ -8018,7 +8044,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["ok"] = false;
 			r["error"] = "GetCurrentPageName failed";
 			r["page_name_trace"] = pageNameTrace;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		nlohmann::json r;
@@ -8029,7 +8055,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["page_name_trace"] = pageNameTrace;
 		LocalMcpServer::UpdateInstanceHints(sourceFilePath, pageName, pageType);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "get_current_eide_info") {
@@ -8107,7 +8133,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["mcp_port"] = LocalMcpServer::GetBoundPort();
 		r["mcp_endpoint"] = LocalMcpServer::GetEndpoint();
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "get_program_item_project_cache_code") {
@@ -8119,7 +8145,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const std::string pageName = GetJsonStringArgumentLocal(args, "page_name");
@@ -8135,7 +8161,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "program item lookup failed" : error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::string code;
@@ -8160,7 +8186,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["type_key"] = item.typeKey;
 			r["type_name"] = LocalToUtf8Text(item.typeName);
 			r["refresh_cache"] = refreshCache;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		nlohmann::json r;
@@ -8183,7 +8209,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["code"] = LocalToUtf8Text(code);
 		r["warning"] = LocalToUtf8Text("该结果来自当前工程源码缓存：先把当前工程从 IDE 内存直序列化为 .e 二进制，再由 e2txt 解析得到对应页面代码。它不会切换 IDE 页面，但与编辑器当前页的真实复制结果可能存在格式差异。");
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "get_program_item_real_code") {
@@ -8195,7 +8221,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const std::string pageName = GetJsonStringArgumentLocal(args, "page_name");
@@ -8210,7 +8236,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "program item lookup failed" : error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::string code;
@@ -8221,7 +8247,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["error"] = error.empty() ? "get real page code failed" : error;
 			r["trace"] = LocalToUtf8Text(accessResult.trace);
 			r["item_data"] = item.itemData;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		PageCodeCacheEntry cacheEntry;
@@ -8239,7 +8265,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["code_hash"] = cacheEntry.codeHash;
 		r["code"] = LocalToUtf8Text(code);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "read_program_item_real_code") {
@@ -8251,7 +8277,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const std::string pageName = GetJsonStringArgumentLocal(args, "page_name");
@@ -8270,7 +8296,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "program item lookup failed" : error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::string code;
@@ -8284,7 +8310,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["trace"] = LocalToUtf8Text(trace);
 			r["page_name"] = LocalToUtf8Text(item.name);
 			r["type_key"] = item.typeKey;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		int totalLines = 0;
@@ -8316,7 +8342,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["with_line_numbers"] = withLineNumbers;
 		r["code"] = LocalToUtf8Text(view);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "search_program_item_real_code") {
@@ -8328,7 +8354,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const std::string pageName = GetJsonStringArgumentLocal(args, "page_name");
@@ -8349,7 +8375,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "program item lookup failed" : error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::string code;
@@ -8361,7 +8387,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["ok"] = false;
 			r["error"] = error.empty() ? "read real page code failed" : error;
 			r["trace"] = LocalToUtf8Text(trace);
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::vector<RealPageSearchMatch> matches = SearchRealPageCode(code, keyword, caseSensitive, useRegex, contextLines, limit, &error);
@@ -8369,7 +8395,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		nlohmann::json rows = nlohmann::json::array();
@@ -8389,7 +8415,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["match_count"] = matches.size();
 		r["matches"] = std::move(rows);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "list_program_item_symbols") {
@@ -8401,7 +8427,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const std::string pageName = GetJsonStringArgumentLocal(args, "page_name");
@@ -8417,7 +8443,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "program item lookup failed" : error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::string code;
@@ -8429,7 +8455,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["ok"] = false;
 			r["error"] = error.empty() ? "read real page code failed" : error;
 			r["trace"] = LocalToUtf8Text(trace);
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const auto symbols = ParseRealPageSymbols(code);
@@ -8450,7 +8476,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["symbol_count"] = symbols.size();
 		r["symbols"] = std::move(rows);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "get_symbol_real_code") {
@@ -8462,7 +8488,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const std::string pageName = GetJsonStringArgumentLocal(args, "page_name");
@@ -8482,7 +8508,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "program item lookup failed" : error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::string code;
@@ -8494,7 +8520,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["ok"] = false;
 			r["error"] = error.empty() ? "read real page code failed" : error;
 			r["trace"] = LocalToUtf8Text(trace);
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const auto symbols = ParseRealPageSymbols(code);
@@ -8503,7 +8529,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		nlohmann::json r;
@@ -8518,7 +8544,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["symbol"] = BuildRealPageSymbolJsonForAI(symbol);
 		r["code"] = LocalToUtf8Text(symbol.code);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "edit_symbol_real_code") {
@@ -8530,7 +8556,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const std::string pageName = GetJsonStringArgumentLocal(args, "page_name");
@@ -8553,7 +8579,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "program item lookup failed" : error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::string baseCode;
@@ -8571,7 +8597,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 				r["code"] = LocalToUtf8Text(currentCode);
 				r["code_hash"] = BuildStableTextHashForRealCode(currentCode);
 			}
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const auto symbols = ParseRealPageSymbols(baseCode);
@@ -8580,7 +8606,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::string candidateCode;
@@ -8588,7 +8614,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		if (BuildStableTextHashForRealCode(candidateCode) == BuildStableTextHashForRealCode(baseCode)) {
@@ -8599,7 +8625,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 			r["code"] = LocalToUtf8Text(baseCode);
 			outOk = true;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		PageCodeSnapshotEntry snapshot;
@@ -8623,7 +8649,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["trace"] = LocalToUtf8Text(trace);
 			r["rollback_attempted"] = rollbackAttempted;
 			r["rollback_succeeded"] = rollbackSucceeded;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const auto hunks = BuildRealPageStructuredPatch(baseCode, finalCode);
@@ -8645,7 +8671,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["code_kind"] = "real_source";
 		r["code"] = LocalToUtf8Text(finalCode);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "insert_program_item_code_block") {
@@ -8657,7 +8683,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const std::string pageName = GetJsonStringArgumentLocal(args, "page_name");
@@ -8676,7 +8702,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "program item lookup failed" : error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::string baseCode;
@@ -8694,7 +8720,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 				r["code"] = LocalToUtf8Text(currentCode);
 				r["code_hash"] = BuildStableTextHashForRealCode(currentCode);
 			}
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const auto symbols = ParseRealPageSymbols(baseCode);
@@ -8711,7 +8737,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		if (BuildStableTextHashForRealCode(candidateCode) == BuildStableTextHashForRealCode(baseCode)) {
@@ -8721,7 +8747,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 			r["code"] = LocalToUtf8Text(baseCode);
 			outOk = true;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		PageCodeSnapshotEntry snapshot;
@@ -8745,7 +8771,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["trace"] = LocalToUtf8Text(trace);
 			r["rollback_attempted"] = rollbackAttempted;
 			r["rollback_succeeded"] = rollbackSucceeded;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const auto hunks = BuildRealPageStructuredPatch(baseCode, finalCode);
@@ -8766,7 +8792,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["code_kind"] = "real_source";
 		r["code"] = LocalToUtf8Text(finalCode);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "list_imported_modules") {
@@ -8822,7 +8848,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const std::string kind = args.contains("kind") && args["kind"].is_string()
@@ -8847,7 +8873,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "list program items failed" : error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		nlohmann::json rows = nlohmann::json::array();
@@ -8902,7 +8928,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["warning"] = LocalToUtf8Text("程序树按名称抓取到的代码与IDE正常编辑页结构可能不同，仅可作为伪代码参考。");
 		r["items"] = std::move(rows);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "switch_to_program_item_page") {
@@ -8914,7 +8940,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const std::string name = args.contains("name") && args["name"].is_string()
@@ -8933,7 +8959,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "list program items failed" : error;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::vector<ProgramTreeItemInfo> matched;
@@ -8946,13 +8972,13 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = "program item not found";
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 		if (matched.size() > 1) {
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = "program item name is ambiguous";
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::string switchTrace;
@@ -8963,7 +8989,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["ok"] = false;
 			r["error"] = "open program item page failed";
 			r["trace"] = LocalToUtf8Text(switchTrace);
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		nlohmann::json r;
@@ -8974,7 +9000,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["item_data"] = matched.front().itemData;
 		r["trace"] = LocalToUtf8Text(switchTrace);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "search_project_keyword") {
@@ -9006,7 +9032,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const std::string jumpToken = args.contains("jump_token") && args["jump_token"].is_string()
@@ -9037,7 +9063,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 				r["ok"] = false;
 				r["error"] = resolveError.empty() ? "resolve project cache snapshot failed" : resolveError;
 				r["trace"] = LocalToUtf8Text(resolveTrace);
-				return Utf8ToLocalText(r.dump());
+				return JsonToLocalTextForAI(r);
 			}
 
 			const auto* page = FindProjectCachePageForAI(snapshot, projectToken);
@@ -9046,7 +9072,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 				r["ok"] = false;
 				r["error"] = "page not found in project cache snapshot";
 				r["trace"] = LocalToUtf8Text(resolveTrace);
-				return Utf8ToLocalText(r.dump());
+				return JsonToLocalTextForAI(r);
 			}
 
 			ProgramTreeItemInfo item;
@@ -9060,7 +9086,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 				r["page_name"] = LocalToUtf8Text(page->name);
 				r["type_key"] = page->typeKey;
 				r["type_name"] = LocalToUtf8Text(page->typeName);
-				return Utf8ToLocalText(r.dump());
+				return JsonToLocalTextForAI(r);
 			}
 
 			std::string openTrace;
@@ -9069,7 +9095,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 				r["ok"] = false;
 				r["error"] = "open program item page failed";
 				r["trace"] = LocalToUtf8Text(resolveTrace + "|" + openTrace);
-				return Utf8ToLocalText(r.dump());
+				return JsonToLocalTextForAI(r);
 			}
 
 			std::string currentPageName;
@@ -9091,7 +9117,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["current_page_trace"] = currentPageTrace;
 			r["warning"] = LocalToUtf8Text("当前命中来自 e2txt 解析缓存，jump_to_search_result 这里只负责尽量打开对应页面，不再尝试把 IDE 光标精确移动到解析行号。若需要精确行内容，请继续调用 read_project_source_cache_code。");
 			outOk = true;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		e571::DirectGlobalSearchDebugHit hit{};
@@ -9105,7 +9131,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["ok"] = false;
 			r["error"] = "jump to search result failed";
 			r["trace"] = jumpTrace;
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		std::string currentPageName;
@@ -9124,7 +9150,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["current_page_type"] = LocalToUtf8Text(currentPageType);
 		r["current_page_trace"] = currentPageTrace;
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	if (toolName == "compile_with_output_path") {
@@ -9136,7 +9162,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		const std::string target = args.contains("target") && args["target"].is_string()
@@ -9173,7 +9199,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = "unsupported target";
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		// 编译前：快照输出窗口文本，记录开始时间戳（用于判断产物是否刷新）。
@@ -9213,7 +9239,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["caret_line_text"] = LocalToUtf8Text(caretLineText);
 			r["caret_page_name"] = LocalToUtf8Text(caretPageName);
 			r["caret_page_type"] = LocalToUtf8Text(caretPageType);
-			return Utf8ToLocalText(r.dump());
+			return JsonToLocalTextForAI(r);
 		}
 
 		if (diagnostics == "compile_invoked_dialog_pending" ||
@@ -9301,13 +9327,13 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["caret_page_name"] = LocalToUtf8Text(caretPageName);
 		r["caret_page_type"] = LocalToUtf8Text(caretPageType);
 		outOk = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 
 	nlohmann::json r;
 	r["ok"] = false;
 	r["error"] = "unknown tool: " + toolName;
-	return Utf8ToLocalText(r.dump());
+	return JsonToLocalTextForAI(r);
 }
 
 // 顶层异常防线：工具调用经 SendMessage 在主线程的 WndProc 中执行
@@ -9327,7 +9353,7 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		r["ok"] = false;
 		r["error"] = std::string("tool execution failed: ") + ex.what();
 		r["exception"] = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 	catch (...) {
 		outOk = false;
@@ -9336,7 +9362,7 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 		r["ok"] = false;
 		r["error"] = "tool execution failed: unknown exception";
 		r["exception"] = true;
-		return Utf8ToLocalText(r.dump());
+		return JsonToLocalTextForAI(r);
 	}
 }
 

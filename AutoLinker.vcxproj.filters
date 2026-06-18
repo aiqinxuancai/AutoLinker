@@ -343,13 +343,34 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="src\AutoLinker.def" />
+    <None Include="package.json">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="scripts\build_ai_config_webview.mjs">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="tailwind.config.js">
+      <Filter>AI</Filter>
+    </None>
     <None Include="src\webview\ai_chat_history.html">
       <Filter>AI</Filter>
     </None>
     <None Include="src\webview\ai_config_dialog.html">
       <Filter>AI</Filter>
     </None>
+    <None Include="src\webview\ai_config_dialog.src.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\ai_config_dialog.tailwind.css">
+      <Filter>AI</Filter>
+    </None>
     <None Include="src\webview\ai_preview_dialog.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\linker_config_dialog.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\linker_config_dialog.src.html">
       <Filter>AI</Filter>
     </None>
   </ItemGroup>

@@ -667,7 +667,8 @@ std::string ProjectSourceCacheManager::BuildHitToken(const HitToken& token) cons
 	root["page_name"] = LocalToUtf8TextForProjectCache(token.pageName);
 	root["page_type_key"] = token.pageTypeKey;
 	root["page_type_name"] = LocalToUtf8TextForProjectCache(token.pageTypeName);
-	return std::string(kProjectHitTokenPrefix) + root.dump();
+	return std::string(kProjectHitTokenPrefix) +
+		root.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
 bool ProjectSourceCacheManager::ParseHitToken(const std::string& text, HitToken& outToken, std::string* outError) const

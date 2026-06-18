@@ -1,0 +1,64 @@
+﻿@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+	html,
+	body {
+		@apply h-full bg-slate-100 text-slate-900 antialiased;
+	}
+
+	* {
+		box-sizing: border-box;
+	}
+}
+
+@layer components {
+	.ui-label {
+		@apply mb-1 block text-[11px] font-semibold uppercase tracking-wide text-slate-500;
+	}
+
+	.ui-input {
+		@apply h-9 w-full rounded-md border border-slate-300 bg-white px-3 text-[13px] leading-5 text-slate-950 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500;
+	}
+
+	.ui-select {
+		@apply h-9 w-full cursor-pointer appearance-none rounded-md border border-slate-300 bg-white px-3 pr-8 text-[13px] leading-5 text-slate-950 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500;
+		background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2364758b' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C%2Fsvg%3E");
+		background-position: right .7rem center;
+		background-repeat: no-repeat;
+		background-size: 10px 6px;
+	}
+
+	.ui-textarea {
+		@apply min-h-28 w-full resize-y rounded-md border border-slate-300 bg-white px-3 py-2 text-[13px] leading-5 text-slate-950 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10;
+	}
+
+	.ui-btn {
+		@apply inline-flex h-9 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-md border border-slate-300 bg-white px-3 text-[13px] font-semibold leading-none text-slate-700 transition hover:border-slate-400 hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-45;
+	}
+
+	.ui-btn-primary {
+		@apply border-blue-700 bg-blue-700 text-white hover:border-blue-800 hover:bg-blue-800;
+	}
+
+	.ui-btn-accent {
+		@apply border-orange-600 bg-orange-600 text-white hover:border-orange-700 hover:bg-orange-700;
+	}
+
+	.ui-icon-btn {
+		@apply h-9 w-9 px-0 text-[15px];
+	}
+
+	.ui-menu {
+		@apply absolute z-30 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl shadow-slate-900/10;
+	}
+
+	.ui-menu-item {
+		@apply flex cursor-pointer items-center px-3 py-2 text-[13px] leading-5 text-slate-700 hover:bg-blue-50 hover:text-blue-700;
+	}
+
+	.ui-code {
+		@apply inline break-all rounded bg-slate-100 px-1.5 py-0.5 font-mono text-[12px] text-slate-700;
+	}
+}
