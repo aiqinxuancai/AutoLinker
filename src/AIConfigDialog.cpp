@@ -675,6 +675,9 @@ void ApplyProfileValuesToSettings(const std::map<std::string, std::string>& valu
 	if (const auto it = values.find("temperature"); it != values.end()) {
 		try { settings.temperature = std::stod(it->second); } catch (...) {}
 	}
+	if (const auto it = values.find("context_window"); it != values.end()) {
+		try { settings.contextWindowTokens = (std::max)(0, std::stoi(it->second)); } catch (...) {}
+	}
 }
 
 std::map<std::string, std::string> BuildProfileValuesFromSettings(const AISettings& settings)
@@ -689,7 +692,8 @@ std::map<std::string, std::string> BuildProfileValuesFromSettings(const AISettin
 		{ "custom_headers", settings.customHeadersText },
 		{ "tavily_api_key", settings.tavilyApiKey },
 		{ "timeout_ms", std::to_string(settings.timeoutMs) },
-		{ "temperature", std::format("{:.2f}", settings.temperature) }
+		{ "temperature", std::format("{:.2f}", settings.temperature) },
+		{ "context_window", std::to_string(settings.contextWindowTokens) }
 	};
 }
 
@@ -1445,6 +1449,7 @@ std::string BuildAIConfigWebViewSettingsJson(const std::vector<AIConfigProfileEn
 		item["extraPrompt"] = LocalToUtf8Text(profile.settings.extraSystemPrompt);
 		item["customHeaders"] = LocalToUtf8Text(profile.settings.customHeadersText);
 		item["tavilyApiKey"] = LocalToUtf8Text(profile.settings.tavilyApiKey);
+		item["contextWindow"] = profile.settings.contextWindowTokens;
 		initialSettings["profiles"].push_back(std::move(item));
 	}
 	return initialSettings.dump();
@@ -1837,6 +1842,7 @@ AISettings ReadAISettingsFromWebProfilePayload(const AISettings& current, const 
 	next.extraSystemPrompt = Utf8ToLocalText(data.value("extraPrompt", ""));
 	next.customHeadersText = Utf8ToLocalText(data.value("customHeaders", ""));
 	next.tavilyApiKey = Utf8ToLocalText(data.value("tavilyApiKey", ""));
+	next.contextWindowTokens = (std::max)(0, data.value("contextWindow", 0));
 	return next;
 }
 

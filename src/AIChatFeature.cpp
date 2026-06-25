@@ -152,6 +152,9 @@ struct AIChatSessionState {
 	unsigned long long activeRequestId = 0;
 	unsigned long long nextRequestId = 1;
 	std::shared_ptr<AIChatRequestCancellation> cancellation;
+	int lastInputTokens = 0;          // 上一轮响应的真实输入 token（无则 0）
+	bool hasLastUsage = false;        // 是否已有真实 usage
+	int effectiveContextWindow = 0;   // 请求开始时按当前 settings 解析的上下文窗口
 };
 
 struct ChatDialogContext {
@@ -2335,7 +2338,17 @@ void CompactHistoryLocked(AIChatSessionState& state)
 		}
 	}
 
-	if (contextCount <= 40 && contextChars <= 24000) {
+	// 触发判定（移植自 openai/codex）：以「模型上下文窗口 × 95%」为可用上限，
+	// 优先用上一轮的真实输入 token，无则按 字符数/4 估算；另保留宽松的字符数二级兜底。
+	const int window = state.effectiveContextWindow > 0 ? state.effectiveContextWindow : 200000;
+	const long long limit = static_cast<long long>(window) * 95 / 100;
+	const long long currentTokens = state.hasLastUsage
+		? static_cast<long long>(state.lastInputTokens)
+		: static_cast<long long>(contextChars / 4);
+	const bool overTokenLimit = currentTokens >= limit;
+	const bool overCharSafetyNet = contextChars > 200000;
+
+	if (!overTokenLimit && !overCharSafetyNet) {
 		cleanupInvisibleContextMessages();
 		return;
 	}
@@ -2872,6 +2885,7 @@ bool StartChatRequest(const std::string& userInput)
 		g_session.sourceFileNameLocal = GetCurrentChatSourceFileNameLocal();
 		EnsureChatSessionBindingLocked(g_session);
 		g_session.messages.push_back(SessionMessage{ SessionRole::User, trimmed, true, true, "", "" });
+		g_session.effectiveContextWindow = AIService::ResolveContextWindowTokens(settings);
 		CompactHistoryLocked(g_session);
 
 		request->requestId = g_session.nextRequestId++;
@@ -3364,6 +3378,11 @@ void HandleChatTaskDone(LPARAM lParam)
 		g_session.activeRequestId = 0;
 		g_session.cancellation.reset();
 		g_session.streamingAssistantPreview.clear();
+
+		if (result->chatResult.hasUsage && result->chatResult.promptTokens > 0) {
+			g_session.lastInputTokens = result->chatResult.promptTokens;
+			g_session.hasLastUsage = true;
+		}
 
 		AppendToolEventHistoryMessagesLocked(g_session, result->chatResult);
 

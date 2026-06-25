@@ -45,6 +45,7 @@ struct AISettings {
 	std::string tavilyApiKey;
 	int timeoutMs = 120000;
 	double temperature = 0.2;
+	int contextWindowTokens = 0; // 0 = 未设置，回落到模型表/默认
 };
 
 // AI 单次任务结果。
@@ -83,6 +84,10 @@ struct AIChatResult {
 	int httpStatus = 0;
 	std::vector<AIChatToolEvent> toolEvents;
 	std::vector<std::string> contextPrefixRawMessagesUtf8;
+	// 本轮真实 token 用量（用于上下文压缩触发判定）。
+	bool hasUsage = false;
+	int promptTokens = 0; // 输入 token —— 衡量「上下文有多满」的关键数
+	int totalTokens = 0;  // prompt+completion，仅日志诊断用
 };
 
 class AIService {
@@ -92,6 +97,8 @@ public:
 	// 将 AI 设置保存到 JSON 配置。
 	static void SaveSettings(AIJsonConfig& jsonConfig, const AISettings& settings);
 	static bool HasRequiredSettings(const AISettings& settings, std::string& outMissingField);
+	// 解析当前模型的有效上下文窗口（token）。优先级：用户配置 > 内置模型表 > 默认 200000。
+	static int ResolveContextWindowTokens(const AISettings& settings);
 	static AIProtocolType ParseProtocolType(const std::string& text);
 	static std::string ProtocolTypeToString(AIProtocolType protocolType);
 	static std::string ProtocolTypeDisplayName(AIProtocolType protocolType);

@@ -72,6 +72,12 @@
 				</div>
 
 				<div>
+					<label for="contextWindow" class="ui-label">上下文长度</label>
+					<input id="contextWindow" class="ui-input" type="number" min="0" step="1024" placeholder="留空则自动判断" autocomplete="off">
+					<p id="contextWindowHint" class="mt-1.5 text-[12px] text-slate-500">达到上下文长度的 95% 时自动压缩历史。留空时按模型名自动判断。</p>
+				</div>
+
+				<div>
 					<label for="thinkingLevel" class="ui-label">Thinking Level</label>
 					<select id="thinkingLevel" class="ui-select">
 						<option value="off">关闭</option>
@@ -142,7 +148,8 @@ const initialSettings = {
 		model: "",
 		extraPrompt: "",
 		customHeaders: "",
-		tavilyApiKey: ""
+		tavilyApiKey: "",
+		contextWindow: 0
 	}]
 };
 
@@ -277,6 +284,95 @@ function updateEndpointPreview() {
 		$("model") ? $("model").value : "");
 }
 
+// 与 C++ 的 AIService::ResolveContextWindowTokens 保持一致：
+// 先按「版本递增族」carry-forward（未登记的更高小版本继承上一代），再按子串表，最后回落 200000。
+// 仅用于在「上下文长度」留空时给出占位提示，真正生效的判定仍以 C++ 为准。
+// 版本族：prefix 含主版本号，versions 按 minor 升序。
+var CONTEXT_WINDOW_FAMILIES = [
+	["gpt-5",    [[0, 400000], [5, 1050000]]],
+	["opus-4",   [[0, 200000], [1, 200000], [6, 1000000], [7, 1000000], [8, 1000000]]],
+	["sonnet-4", [[5, 200000], [6, 1000000]]],
+	["haiku-4",  [[5, 200000]]]
+];
+
+// 不规则命名或非递增族的子串表。更具体的在前。
+var CONTEXT_WINDOW_TABLE = [
+	["gpt-4.1", 1047576],
+	["gpt-4o", 128000],
+	["gpt-4-turbo", 128000],
+	["o4", 200000],
+	["o3", 200000],
+	["o1", 200000],
+	["gpt-4", 8192],
+	["gpt-3.5", 16385],
+	["fable-5", 1000000],
+	["mythos-5", 1000000],
+	["claude", 200000],
+	["gemini-1.5-pro", 2097152],
+	["gemini-1.5", 1048576],
+	["gemini-2.5", 1048576],
+	["gemini-2.0", 1048576],
+	["gemini-3", 1048576],
+	["gemini", 1048576],
+	["deepseek", 128000]
+];
+
+function parseFamilyMinorVersion(model, prefix) {
+	var pos = model.indexOf(prefix);
+	if (pos === -1) {
+		return null;
+	}
+	var i = pos + prefix.length;
+	if (i < model.length && (model[i] === "." || model[i] === "-")) {
+		i++;
+	}
+	var minor = 0;
+	var hasDigit = false;
+	while (i < model.length && model[i] >= "0" && model[i] <= "9") {
+		minor = minor * 10 + (model.charCodeAt(i) - 48);
+		hasDigit = true;
+		i++;
+	}
+	return hasDigit ? minor : 0;
+}
+
+function resolveContextWindowForModel(model) {
+	var m = (model || "").toLowerCase();
+	for (var f = 0; f < CONTEXT_WINDOW_FAMILIES.length; f++) {
+		var prefix = CONTEXT_WINDOW_FAMILIES[f][0];
+		var versions = CONTEXT_WINDOW_FAMILIES[f][1];
+		var minor = parseFamilyMinorVersion(m, prefix);
+		if (minor === null) {
+			continue;
+		}
+		var best = -1;
+		for (var k = 0; k < versions.length; k++) {
+			if (versions[k][0] <= minor) {
+				best = versions[k][1];
+			}
+		}
+		if (best >= 0) {
+			return best;
+		}
+	}
+	for (var i = 0; i < CONTEXT_WINDOW_TABLE.length; i++) {
+		if (m.indexOf(CONTEXT_WINDOW_TABLE[i][0]) !== -1) {
+			return CONTEXT_WINDOW_TABLE[i][1];
+		}
+	}
+	return 200000;
+}
+
+function updateContextWindowPlaceholder() {
+	var input = $("contextWindow");
+	if (!input) {
+		return;
+	}
+	var model = $("model") ? $("model").value : "";
+	var resolved = resolveContextWindowForModel(model);
+	input.placeholder = "留空则自动判断（当前模型约 " + resolved.toLocaleString("en-US") + "）";
+}
+
 function getDefaultProfileBaseUrl(protocolType) {
 	switch (protocolType) {
 	case "claude":
@@ -302,7 +398,8 @@ function cloneProfile(profile) {
 		model: profile.model || "",
 		extraPrompt: profile.extraPrompt || "",
 		customHeaders: profile.customHeaders || "",
-		tavilyApiKey: profile.tavilyApiKey || ""
+		tavilyApiKey: profile.tavilyApiKey || "",
+		contextWindow: profile.contextWindow || 0
 	};
 }
 
@@ -328,6 +425,7 @@ function saveCurrentFormToActiveProfile() {
 	current.extraPrompt = $("extraPrompt").value || "";
 	current.customHeaders = $("customHeaders").value || "";
 	current.tavilyApiKey = $("tavilyApiKey").value || "";
+	current.contextWindow = parseInt($("contextWindow").value, 10) || 0;
 }
 
 function renderProfileSelect() {
@@ -366,8 +464,12 @@ function applyProfileToForm(profile) {
 	setField("extraPrompt", profile.extraPrompt);
 	setField("customHeaders", profile.customHeaders);
 	setField("tavilyApiKey", profile.tavilyApiKey);
+	if ($("contextWindow")) {
+		$("contextWindow").value = profile.contextWindow ? String(profile.contextWindow) : "";
+	}
 	updateModelMenu(getPresetModelsForBaseUrl(profile.baseUrl));
 	updateEndpointPreview();
+	updateContextWindowPlaceholder();
 }
 
 function buildPayload() {
@@ -486,7 +588,10 @@ $("toggleTavilyKey").addEventListener("click", function() {
 
 $("protocol").addEventListener("change", updateEndpointPreview);
 $("baseUrl").addEventListener("input", updateEndpointPreview);
-$("model").addEventListener("input", updateEndpointPreview);
+$("model").addEventListener("input", function() {
+	updateEndpointPreview();
+	updateContextWindowPlaceholder();
+});
 
 $("profileSelect").addEventListener("change", function() {
 	saveCurrentFormToActiveProfile();
@@ -649,6 +754,7 @@ function updateModelMenu(models) {
 			$("model").value = name;
 			hideModelMenu();
 			updateEndpointPreview();
+			updateContextWindowPlaceholder();
 		});
 		m.appendChild(d);
 	});
@@ -680,7 +786,8 @@ function currentFormProfilePayload() {
 		model: $("model").value || "",
 		extraPrompt: $("extraPrompt").value || "",
 		customHeaders: $("customHeaders").value || "",
-		tavilyApiKey: $("tavilyApiKey").value || ""
+		tavilyApiKey: $("tavilyApiKey").value || "",
+		contextWindow: parseInt($("contextWindow").value, 10) || 0
 	};
 }
 
@@ -722,6 +829,7 @@ window.autolinkerShowModelListResult = function(payload) {
 	if (!trimText($("model").value)) {
 		$("model").value = models[0];
 		updateEndpointPreview();
+		updateContextWindowPlaceholder();
 	}
 	showModelMenu();
 	alert("\u5DF2\u83B7\u53D6 " + models.length + " \u4E2A\u6A21\u578B\u3002");

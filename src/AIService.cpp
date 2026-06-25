@@ -1083,6 +1083,9 @@ struct ChatStreamParseState {
 	std::string reasoningContentUtf8;
 	std::vector<StreamToolCallState> toolCalls;
 	std::string parseError;
+	bool hasUsage = false;
+	int promptTokens = 0;
+	int totalTokens = 0;
 };
 
 StreamToolCallState& EnsureToolCallSlot(std::vector<StreamToolCallState>& toolCalls, size_t index)
@@ -1125,6 +1128,19 @@ bool ProcessStreamDataPayload(
 			state.parseError = "AI streaming response contains error";
 		}
 		return false;
+	}
+
+	// usage 通常随最后一个 chunk 下发（需 stream_options.include_usage），其 choices 为空数组，
+	// 故须在下面的 choices 早退之前捕获。
+	if (packet.contains("usage") && packet["usage"].is_object()) {
+		const auto& u = packet["usage"];
+		if (u.contains("prompt_tokens") && u["prompt_tokens"].is_number_integer()) {
+			state.promptTokens = u["prompt_tokens"].get<int>();
+		}
+		if (u.contains("total_tokens") && u["total_tokens"].is_number_integer()) {
+			state.totalTokens = u["total_tokens"].get<int>();
+		}
+		state.hasUsage = true;
 	}
 
 	if (!packet.contains("choices") || !packet["choices"].is_array() || packet["choices"].empty()) {
@@ -2640,6 +2656,16 @@ AIChatResult ExecuteChatWithToolsClaude(
 			}
 			result.ok = true;
 			result.content = Utf8ToLocal(textUtf8);
+			if (parsed.contains("usage") && parsed["usage"].is_object()) {
+				const auto& u = parsed["usage"];
+				if (u.contains("input_tokens") && u["input_tokens"].is_number_integer()) {
+					result.promptTokens = u["input_tokens"].get<int>();
+				}
+				const int out = (u.contains("output_tokens") && u["output_tokens"].is_number_integer())
+					? u["output_tokens"].get<int>() : 0;
+				result.totalTokens = result.promptTokens + out;
+				result.hasUsage = true;
+			}
 			if (streamCallback) {
 				streamCallback(result.content);
 			}
@@ -2832,6 +2858,16 @@ AIChatResult ExecuteChatWithToolsGemini(
 			}
 			result.ok = true;
 			result.content = Utf8ToLocal(textUtf8);
+			if (parsed.contains("usageMetadata") && parsed["usageMetadata"].is_object()) {
+				const auto& u = parsed["usageMetadata"];
+				if (u.contains("promptTokenCount") && u["promptTokenCount"].is_number_integer()) {
+					result.promptTokens = u["promptTokenCount"].get<int>();
+				}
+				if (u.contains("totalTokenCount") && u["totalTokenCount"].is_number_integer()) {
+					result.totalTokens = u["totalTokenCount"].get<int>();
+				}
+				result.hasUsage = true;
+			}
 			if (streamCallback) {
 				streamCallback(result.content);
 			}
@@ -2980,6 +3016,26 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			}
 			result.ok = true;
 			result.content = Utf8ToLocal(textUtf8);
+			{
+				const nlohmann::json* up = nullptr;
+				if (parsed.contains("response") && parsed["response"].is_object() &&
+					parsed["response"].contains("usage") && parsed["response"]["usage"].is_object()) {
+					up = &parsed["response"]["usage"];
+				}
+				else if (parsed.contains("usage") && parsed["usage"].is_object()) {
+					up = &parsed["usage"];
+				}
+				if (up != nullptr) {
+					const auto& u = *up;
+					if (u.contains("input_tokens") && u["input_tokens"].is_number_integer()) {
+						result.promptTokens = u["input_tokens"].get<int>();
+					}
+					if (u.contains("total_tokens") && u["total_tokens"].is_number_integer()) {
+						result.totalTokens = u["total_tokens"].get<int>();
+					}
+					result.hasUsage = true;
+				}
+			}
 			if (streamCallback) {
 				streamCallback(result.content);
 			}
@@ -3068,6 +3124,7 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 				{ "tavily_api_key",     "ai.tavily_api_key"       },
 				{ "timeout_ms",         "ai.timeout_ms"           },
 				{ "temperature",        "ai.temperature"          },
+				{ "context_window",     "ai.context_window"       },
 			};
 			std::map<std::string, std::string> toMigrate;
 			for (const auto& [jsonKey, iniKey] : mapping) {
@@ -3112,6 +3169,16 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 		}
 	}
 
+	const std::string ctxWindowValue = jsonConfig.getValue("context_window");
+	if (!ctxWindowValue.empty()) {
+		try {
+			outSettings.contextWindowTokens = (std::max)(0, std::stoi(ctxWindowValue));
+		}
+		catch (...) {
+			outSettings.contextWindowTokens = 0;
+		}
+	}
+
 	return true;
 }
 
@@ -3128,6 +3195,7 @@ void AIService::SaveSettings(AIJsonConfig& jsonConfig, const AISettings& setting
 		{ "tavily_api_key",      settings.tavilyApiKey                       },
 		{ "timeout_ms",          std::to_string(settings.timeoutMs)          },
 		{ "temperature",         std::format("{:.2f}", settings.temperature) },
+		{ "context_window",      std::to_string(settings.contextWindowTokens) },
 	});
 }
 
@@ -3147,6 +3215,123 @@ bool AIService::HasRequiredSettings(const AISettings& settings, std::string& out
 	}
 	outMissingField.clear();
 	return true;
+}
+
+namespace {
+
+// 在 model 中定位 family 前缀，并解析其后紧邻的小版本号。
+// 例：prefix="gpt-5" 对 "gpt-5.6-codex" → outMinor=6；对 "gpt-5"/"gpt-5-codex" → outMinor=0。
+// 主版本号已包含在 prefix 内（如 "opus-4"），这里只取其后的小版本。
+bool ParseFamilyMinorVersion(const std::string& model, const char* prefix, int& outMinor)
+{
+	const std::string prefixStr(prefix);
+	const size_t pos = model.find(prefixStr);
+	if (pos == std::string::npos) {
+		return false;
+	}
+	size_t i = pos + prefixStr.size();
+	if (i < model.size() && (model[i] == '.' || model[i] == '-')) {
+		++i; // 跳过 major 与 minor 间的一个分隔符（OpenAI 用 '.'，Claude 用 '-'）
+	}
+	int minor = 0;
+	bool hasDigit = false;
+	while (i < model.size() && model[i] >= '0' && model[i] <= '9') {
+		minor = minor * 10 + (model[i] - '0');
+		hasDigit = true;
+		++i;
+	}
+	outMinor = hasDigit ? minor : 0;
+	return true;
+}
+
+// 递增族：在已知小版本里取 version<=modelMinor 的最近条目窗口（carry-forward），
+// 使未登记的更高小版本默认继承上一代（如 gpt-5.6 继承 gpt-5.5 的 1M，而非回落）。
+struct FamilyMinorWindow { int minor; int window; };
+
+// versions 须按 minor 升序。modelMinor 比所有已知都小则返回 false（交回子串表/默认）。
+bool ResolveVersionedFamilyWindow(
+	const std::string& model, const char* prefix,
+	const FamilyMinorWindow* versions, size_t count, int& outWindow)
+{
+	int minor = 0;
+	if (!ParseFamilyMinorVersion(model, prefix, minor)) {
+		return false;
+	}
+	int best = -1;
+	for (size_t k = 0; k < count; ++k) {
+		if (versions[k].minor <= minor) {
+			best = versions[k].window; // 升序遍历，最后一个满足 <= 的即最近版本
+		}
+	}
+	if (best < 0) {
+		return false;
+	}
+	outWindow = best;
+	return true;
+}
+
+} // namespace
+
+int AIService::ResolveContextWindowTokens(const AISettings& settings)
+{
+	if (settings.contextWindowTokens > 0) {
+		return settings.contextWindowTokens; // P1: 用户配置
+	}
+
+	const std::string m = ToLowerAsciiCopy(settings.model);
+
+	// P2a: 版本递增族 —— 未登记的更高小版本继承上一代窗口（窗口值核实于 2026-06）。
+	// versions 按 minor 升序，主版本号写在前缀里。
+	struct VersionedFamily { const char* prefix; const FamilyMinorWindow* versions; size_t count; };
+	static const FamilyMinorWindow kGpt5[]    = { { 0, 400000 }, { 5, 1050000 } };       // 5→400k, 5.5→1.05M
+	static const FamilyMinorWindow kOpus4[]   = { { 0, 200000 }, { 1, 200000 }, { 6, 1000000 }, { 7, 1000000 }, { 8, 1000000 } };
+	static const FamilyMinorWindow kSonnet4[] = { { 5, 200000 }, { 6, 1000000 } };
+	static const FamilyMinorWindow kHaiku4[]  = { { 5, 200000 } };
+	static const VersionedFamily kFamilies[] = {
+		{ "gpt-5",    kGpt5,    sizeof(kGpt5) / sizeof(kGpt5[0]) },
+		{ "opus-4",   kOpus4,   sizeof(kOpus4) / sizeof(kOpus4[0]) },
+		{ "sonnet-4", kSonnet4, sizeof(kSonnet4) / sizeof(kSonnet4[0]) },
+		{ "haiku-4",  kHaiku4,  sizeof(kHaiku4) / sizeof(kHaiku4[0]) },
+	};
+	for (const auto& fam : kFamilies) {
+		int window = 0;
+		if (ResolveVersionedFamilyWindow(m, fam.prefix, fam.versions, fam.count, window)) {
+			return window;
+		}
+	}
+
+	// P2b: 子串表 —— 不规则命名或非递增族。更具体的在前。
+	struct Entry { const char* key; int window; };
+	static const Entry kTable[] = {
+		// OpenAI（gpt-5 系由上面的版本族处理）
+		{ "gpt-4.1",        1047576 },
+		{ "gpt-4o",          128000 },
+		{ "gpt-4-turbo",     128000 },
+		{ "o4",              200000 },
+		{ "o3",              200000 },
+		{ "o1",              200000 },
+		{ "gpt-4",             8192 },
+		{ "gpt-3.5",          16385 },
+		// Anthropic Claude（opus/sonnet/haiku-4 系由版本族处理）
+		{ "fable-5",        1000000 },
+		{ "mythos-5",       1000000 },
+		{ "claude",          200000 }, // 兜底：未识别的 Claude 一律按 200K
+		// Google Gemini —— 1.5/2.x/3 普遍 1M+
+		{ "gemini-1.5-pro", 2097152 },
+		{ "gemini-1.5",     1048576 },
+		{ "gemini-2.5",     1048576 },
+		{ "gemini-2.0",     1048576 },
+		{ "gemini-3",       1048576 },
+		{ "gemini",         1048576 },
+		// DeepSeek
+		{ "deepseek",        128000 },
+	};
+	for (const auto& e : kTable) {
+		if (m.find(e.key) != std::string::npos) {
+			return e.window; // P2b: 子串表
+		}
+	}
+	return 200000; // P3: 默认（保守）
 }
 
 AIThinkingLevel AIService::ParseThinkingLevel(const std::string& text)
@@ -3559,6 +3744,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 		requestBody["model"] = LocalToUtf8(settings.model);
 		ApplyOpenAITemperatureIfSupported(requestBody, settings);
 		requestBody["stream"] = true;
+		requestBody["stream_options"] = { {"include_usage", true} };
 		requestBody["messages"] = requestMessages;
 		requestBody["tools"] = tools;
 		if (!IsDeepSeekCompatibleSettings(settings)) {
@@ -3733,6 +3919,11 @@ AIChatResult AIService::ExecuteChatWithTools(
 		result.content = Utf8ToLocal(mergedUtf8);
 		if (message.contains("reasoning_content") && message["reasoning_content"].is_string()) {
 			result.reasoningContent = message["reasoning_content"].get<std::string>();
+		}
+		if (streamState.hasUsage) {
+			result.hasUsage = true;
+			result.promptTokens = streamState.promptTokens;
+			result.totalTokens = streamState.totalTokens;
 		}
 		return result;
 	}
