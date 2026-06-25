@@ -800,6 +800,7 @@ void ApplyThinkingConfigToOpenAIResponsesRequest(nlohmann::json& requestBody, co
 	requestBody["reasoning"] = {
 		{"effort", GetOpenAIReasoningEffort(settings.thinkingLevel)}
 	};
+	requestBody["include"] = nlohmann::json::array({ "reasoning.encrypted_content" });
 }
 
 void ApplyThinkingConfigToClaudeRequest(nlohmann::json& requestBody, const AISettings& settings)
@@ -2217,7 +2218,63 @@ bool IsResponsesInputItem(const nlohmann::json& item)
 		return false;
 	}
 	const std::string type = item.value("type", std::string());
-	return type == "message" || type == "reasoning" || type == "function_call" || type == "function_call_output";
+	if (type == "message" || type == "reasoning" || type == "function_call" || type == "function_call_output") {
+		return true;
+	}
+	const std::string role = item.value("role", std::string());
+	return type.empty() &&
+		(role == "user" || role == "assistant" || role == "developer" || role == "system") &&
+		item.contains("content");
+}
+
+bool HasNonEmptyJsonString(const nlohmann::json& item, const char* key)
+{
+	return item.contains(key) && item[key].is_string() && !item[key].get<std::string>().empty();
+}
+
+bool IsResponsesReasoningItemReusableStateless(const nlohmann::json& item)
+{
+	return item.is_object() &&
+		item.value("type", std::string()) == "reasoning" &&
+		HasNonEmptyJsonString(item, "encrypted_content");
+}
+
+void ClearResponsesItemIdForStatelessRequest(nlohmann::json& item)
+{
+	if (!item.is_object()) {
+		return;
+	}
+	item.erase("id");
+}
+
+bool PrepareResponsesInputItemForStatelessRequest(nlohmann::json& item)
+{
+	if (!IsResponsesInputItem(item)) {
+		return false;
+	}
+
+	const std::string type = item.value("type", std::string());
+	if (type == "reasoning" && !IsResponsesReasoningItemReusableStateless(item)) {
+		return false;
+	}
+
+	ClearResponsesItemIdForStatelessRequest(item);
+	return true;
+}
+
+void PrepareResponsesInputItemsForStatelessRequest(nlohmann::json& input)
+{
+	if (!input.is_array()) {
+		return;
+	}
+
+	nlohmann::json prepared = nlohmann::json::array();
+	for (auto item : input) {
+		if (PrepareResponsesInputItemForStatelessRequest(item)) {
+			prepared.push_back(std::move(item));
+		}
+	}
+	input = std::move(prepared);
 }
 
 bool TryGetResponsesPreviousResponseId(const nlohmann::json& item, std::string& outResponseId)
@@ -2278,7 +2335,10 @@ void AppendResponsesOutputItemsToInput(const nlohmann::json& parsed, nlohmann::j
 		return;
 	}
 	for (const auto& item : parsed["output"]) {
-		input.push_back(item);
+		nlohmann::json inputItem = item;
+		if (PrepareResponsesInputItemForStatelessRequest(inputItem)) {
+			input.push_back(std::move(inputItem));
+		}
 	}
 }
 
@@ -2421,6 +2481,7 @@ AIResult ExecuteTaskOpenAIResponses(const std::string& systemPrompt, const std::
 		BuildResponsesTextMessage("user", LocalToUtf8(inputText))
 	});
 	requestBody["stream"] = false;
+	requestBody["store"] = false;
 	ApplyThinkingConfigToOpenAIResponsesRequest(requestBody, settings);
 	NormalizeJsonStringsToUtf8InPlace(requestBody);
 
@@ -2867,9 +2928,12 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		requestBody["model"] = LocalToUtf8(settings.model);
 		ApplyOpenAITemperatureIfSupported(requestBody, settings);
 		requestBody["instructions"] = instructionsUtf8;
-		requestBody["input"] = input;
+		nlohmann::json requestInput = input;
+		PrepareResponsesInputItemsForStatelessRequest(requestInput);
+		requestBody["input"] = std::move(requestInput);
 		requestBody["tools"] = tools;
 		requestBody["stream"] = false;
+		requestBody["store"] = false;
 		ApplyThinkingConfigToOpenAIResponsesRequest(requestBody, settings);
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
@@ -2925,11 +2989,12 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		AppendResponsesOutputItemsToInput(parsed, input);
 		if (parsed.contains("output") && parsed["output"].is_array()) {
 			for (const auto& item : parsed["output"]) {
-				if (!IsResponsesInputItem(item)) {
+				nlohmann::json contextItem = item;
+				if (!PrepareResponsesInputItemForStatelessRequest(contextItem)) {
 					continue;
 				}
 				try {
-					result.contextPrefixRawMessagesUtf8.push_back(item.dump());
+					result.contextPrefixRawMessagesUtf8.push_back(contextItem.dump());
 				}
 				catch (...) {
 				}
