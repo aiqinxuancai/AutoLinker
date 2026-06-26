@@ -75,76 +75,126 @@ function Resolve-ChatCompletionsEndpoint([string]$BaseUrl) {
 	return "$url/v1/chat/completions"
 }
 
-function New-FallbackNotes(
-	[string]$ReleaseName,
-	[string]$CurrentTag,
-	[string]$PreviousTag,
-	[string]$CommitSubjects,
-	[string]$DiffStat
-) {
-	$rangeText = if ([string]::IsNullOrWhiteSpace($PreviousTag)) {
-		"未找到上一个 tag；为避免误导，未生成 AI 摘要。"
+function Get-CommitSubjectLines([string]$CommitSubjectsText) {
+	if ([string]::IsNullOrWhiteSpace($CommitSubjectsText)) {
+		return @()
 	}
-	else {
-		"$PreviousTag ... $CurrentTag"
+
+	$subjects = @()
+	foreach ($line in ($CommitSubjectsText -split "`r?`n")) {
+		if (-not [string]::IsNullOrWhiteSpace($line)) {
+			$subjects += $line.Trim()
+		}
+	}
+	return $subjects
+}
+
+function New-ReleaseNotesFromCategories(
+	[string]$ReleaseName,
+	[string[]]$CommitSubjects,
+	[hashtable]$CategoriesById
+) {
+	$allowedCategories = @("新功能", "改进", "修正")
+	$grouped = @{
+		"新功能" = New-Object System.Collections.Generic.List[string]
+		"改进" = New-Object System.Collections.Generic.List[string]
+		"修正" = New-Object System.Collections.Generic.List[string]
+	}
+
+	for ($index = 0; $index -lt $CommitSubjects.Count; $index++) {
+		$id = $index + 1
+		$category = "改进"
+		if ($CategoriesById.ContainsKey($id) -and ($allowedCategories -contains $CategoriesById[$id])) {
+			$category = $CategoriesById[$id]
+		}
+		$grouped[$category].Add($CommitSubjects[$index]) | Out-Null
 	}
 
 	$notes = @()
 	$notes += "# $ReleaseName"
 	$notes += ""
-	$notes += "## 改进"
-	$notes += ""
-	if ([string]::IsNullOrWhiteSpace($CommitSubjects)) {
+
+	if ($CommitSubjects.Count -eq 0) {
+		$notes += "## 改进"
+		$notes += ""
 		$notes += "- 未找到可整理的变更。"
+		return ($notes -join "`r`n") + "`r`n"
 	}
-	else {
-		$notes += $CommitSubjects
+
+	foreach ($category in $allowedCategories) {
+		if ($grouped[$category].Count -eq 0) {
+			continue
+		}
+		$notes += "## $category"
+		$notes += ""
+		foreach ($subject in $grouped[$category]) {
+			$notes += "- $subject"
+		}
+		$notes += ""
 	}
-	return ($notes -join "`r`n") + "`r`n"
+
+	return ($notes -join "`r`n").TrimEnd() + "`r`n"
 }
 
-function Invoke-AiReleaseNotes(
+function New-FallbackNotes(
+	[string]$ReleaseName,
+	[string]$CurrentTag,
+	[string]$PreviousTag,
+	[string[]]$CommitSubjects
+) {
+	return New-ReleaseNotesFromCategories `
+		-ReleaseName $ReleaseName `
+		-CommitSubjects $CommitSubjects `
+		-CategoriesById @{}
+}
+
+function ConvertFrom-AiJsonContent([string]$Content) {
+	$text = $Content.Trim()
+	$text = $text -replace "^\s*```(?:json)?\s*", ""
+	$text = $text -replace "\s*```\s*$", ""
+
+	$start = $text.IndexOf("{")
+	$end = $text.LastIndexOf("}")
+	if ($start -ge 0 -and $end -gt $start) {
+		$text = $text.Substring($start, $end - $start + 1)
+	}
+
+	return $text | ConvertFrom-Json
+}
+
+function Invoke-AiCommitClassification(
 	[string]$ApiKey,
 	[string]$BaseUrl,
 	[string]$Model,
 	[string]$ReleaseName,
 	[string]$CurrentTag,
 	[string]$PreviousTag,
-	[string]$CommitDetails,
-	[string]$CommitSubjects,
-	[string]$DiffStat,
-	[string]$ChangedFiles
+	[string[]]$CommitSubjects
 ) {
 	$endpoint = Resolve-ChatCompletionsEndpoint $BaseUrl
 	$rangeText = "$PreviousTag ... $CurrentTag"
+	$indexedSubjects = New-Object System.Collections.Generic.List[string]
+	for ($index = 0; $index -lt $CommitSubjects.Count; $index++) {
+		$indexedSubjects.Add("$($index + 1). $($CommitSubjects[$index])") | Out-Null
+	}
+	$indexedSubjectText = $indexedSubjects -join "`n"
 
 	$prompt = @"
-你是 AutoLinker 项目的发布说明撰写助手。请根据提交记录、文件变更统计和文件列表，生成中文 GitHub Release Notes。
+你是 AutoLinker 项目的发布说明分类助手。请只判断每条 commit 标题属于哪个分类。
 
 要求：
-1. 不要编造提交记录中没有体现的功能。
-2. 面向用户描述，不要写成开发流水账。
-3. 只允许使用这三个二级标题：新功能、改进、修正。
-4. 没有内容的分类直接省略，不要写“无”。
-5. 不要输出“更新摘要”“完整变更”“构建与发布”“内部调整”等其他标题。
-6. 不要解释生成过程，不要写变更范围，不要写文件统计。
-7. 输出 Markdown，不要包裹代码块。
+1. 只能返回 JSON，不要返回 Markdown，不要解释。
+2. category 只能是：新功能、改进、修正。
+3. 必须按 id 分类；不要改写、扩写、翻译、合并或拆分标题。
+4. 无法明确判断时归类为“改进”。
+5. 返回格式必须是：{"items":[{"id":1,"category":"改进"}]}。
 
 Release: $ReleaseName
 Tag: $CurrentTag
 Range: $rangeText
 
-提交详情：
-$CommitDetails
-
-文件变更统计：
-$DiffStat
-
-变更文件：
-$ChangedFiles
-
-原始 commit 标题：
-$CommitSubjects
+原始 commit 标题列表：
+$indexedSubjectText
 "@
 
 	$body = @{
@@ -153,7 +203,7 @@ $CommitSubjects
 		messages = @(
 			@{
 				role = "system"
-				content = "你负责把 GitHub 提交记录整理成准确、克制、面向用户的中文发布说明。"
+				content = "你只负责把 GitHub commit 标题 id 分类为新功能、改进或修正，并且只返回 JSON。"
 			},
 			@{
 				role = "user"
@@ -176,7 +226,30 @@ $CommitSubjects
 	if ([string]::IsNullOrWhiteSpace($content)) {
 		throw "AI response content is empty."
 	}
-	return $content.Trim() + "`r`n"
+
+	$result = ConvertFrom-AiJsonContent $content
+	$categoriesById = @{}
+	foreach ($item in @($result.items)) {
+		try {
+			$id = [int]$item.id
+		}
+		catch {
+			continue
+		}
+
+		$category = [string]$item.category
+		if ($id -lt 1 -or $id -gt $CommitSubjects.Count) {
+			continue
+		}
+		if (@("新功能", "改进", "修正") -notcontains $category) {
+			continue
+		}
+		if (-not $categoriesById.ContainsKey($id)) {
+			$categoriesById[$id] = $category
+		}
+	}
+
+	return $categoriesById
 }
 
 $currentTag = Get-EnvValue "RELEASE_TAG" (Get-EnvValue "GITHUB_REF_NAME")
@@ -199,25 +272,8 @@ $previousTag = Resolve-PreviousTag $currentTag $currentCommit
 $range = if ([string]::IsNullOrWhiteSpace($previousTag)) { "$currentCommit^..$currentCommit" } else { "$previousTag..$currentCommit" }
 Write-Output "Release notes current_tag=$currentTag current_commit=$currentCommit previous_tag=$previousTag range=$range"
 
-$commitSubjects = Invoke-GitText @("log", $range, "--pretty=format:- %s")
-$commitDetails = Invoke-GitText @("log", $range, "--pretty=format:commit %h%nsubject: %s%nauthor: %an%nbody:%n%b%n---")
-$diffStat = if ([string]::IsNullOrWhiteSpace($previousTag)) {
-	Invoke-GitText @("show", "--stat", "--oneline", "--no-renames", $currentTag)
-}
-else {
-	Invoke-GitText @("diff", "--stat", "--no-renames", $previousTag, $currentTag)
-}
-$changedFiles = if ([string]::IsNullOrWhiteSpace($previousTag)) {
-	Invoke-GitText @("show", "--name-only", "--pretty=format:", $currentTag)
-}
-else {
-	Invoke-GitText @("diff", "--name-only", $previousTag, $currentTag)
-}
-
-$commitDetails = Limit-Text $commitDetails 24000
-$commitSubjects = Limit-Text $commitSubjects 8000
-$diffStat = Limit-Text $diffStat 12000
-$changedFiles = Limit-Text $changedFiles 12000
+$commitSubjectsText = Invoke-GitText @("log", $range, "--pretty=format:%s")
+$commitSubjects = Get-CommitSubjectLines $commitSubjectsText
 
 $apiKey = Get-EnvValue "AI_NOTES_API_KEY"
 $baseUrl = Get-EnvValue "AI_NOTES_BASE_URL" "https://api.openai.com/v1"
@@ -226,29 +282,42 @@ $model = Get-EnvValue "AI_NOTES_MODEL"
 $notes = ""
 if ([string]::IsNullOrWhiteSpace($previousTag)) {
 	Write-Warning "Previous tag was not found. Falling back to non-AI release notes to avoid summarizing the whole repository."
-	$notes = New-FallbackNotes $releaseName $currentTag $previousTag $commitSubjects $diffStat
+	$notes = New-FallbackNotes `
+		-ReleaseName $releaseName `
+		-CurrentTag $currentTag `
+		-PreviousTag $previousTag `
+		-CommitSubjects $commitSubjects
 }
 elseif ([string]::IsNullOrWhiteSpace($apiKey) -or [string]::IsNullOrWhiteSpace($model)) {
 	Write-Warning "AI_NOTES_API_KEY or AI_NOTES_MODEL is empty. Falling back to non-AI release notes."
-	$notes = New-FallbackNotes $releaseName $currentTag $previousTag $commitSubjects $diffStat
+	$notes = New-FallbackNotes `
+		-ReleaseName $releaseName `
+		-CurrentTag $currentTag `
+		-PreviousTag $previousTag `
+		-CommitSubjects $commitSubjects
 }
 else {
 	try {
-		$notes = Invoke-AiReleaseNotes `
+		$categoriesById = Invoke-AiCommitClassification `
 			-ApiKey $apiKey `
 			-BaseUrl $baseUrl `
 			-Model $model `
 			-ReleaseName $releaseName `
 			-CurrentTag $currentTag `
 			-PreviousTag $previousTag `
-			-CommitDetails $commitDetails `
+			-CommitSubjects $commitSubjects
+		$notes = New-ReleaseNotesFromCategories `
+			-ReleaseName $releaseName `
 			-CommitSubjects $commitSubjects `
-			-DiffStat $diffStat `
-			-ChangedFiles $changedFiles
+			-CategoriesById $categoriesById
 	}
 	catch {
 		Write-Warning "AI release notes generation failed: $($_.Exception.Message)"
-		$notes = New-FallbackNotes $releaseName $currentTag $previousTag $commitSubjects $diffStat
+		$notes = New-FallbackNotes `
+			-ReleaseName $releaseName `
+			-CurrentTag $currentTag `
+			-PreviousTag $previousTag `
+			-CommitSubjects $commitSubjects
 	}
 }
 
