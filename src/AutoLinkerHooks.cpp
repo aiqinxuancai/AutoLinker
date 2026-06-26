@@ -16,6 +16,7 @@
 
 #include "ECOMEx.h"
 #include "EideProjectBinarySerializer.h"
+#include "ForceLinkLibManager.h"
 #include "Global.h"
 #include "HeadlessCompileRunner.h"
 #include "IDEFacade.h"
@@ -472,22 +473,20 @@ BOOL WINAPI MyCreateProcessA(
 	OutputStringToELog(krnlnPath);
 
 	if (!krnlnPath.empty()) {
-		const std::string libFilePath = std::format("{}\\AutoLinker\\ForceLinkLib.txt", GetBasePath());
-		const auto libList = ReadFileAndSplitLines(libFilePath);
+		const ForceLinkLibManager forceLinkLibManager;
+		const auto forceLinkRules = forceLinkLibManager.getRules();
 
-		if (!libList.empty()) {
+		if (!forceLinkRules.empty()) {
 			const std::string currentLinkerName = g_configManager.getValue(g_nowOpenSourceFilePath);
 			OutputStringToELog(std::format("current linker: {}", currentLinkerName));
 
 			std::string libCmd;
-			for (const auto& line : libList) {
-				const auto parts = SplitStringTwo(line, '=');
-				std::string libPath = line;
-				std::string linkerName;
-				if (parts.size() == 2) {
-					linkerName = parts[0];
-					libPath = parts[1];
+			for (const auto& rule : forceLinkRules) {
+				if (!rule.enabled) {
+					continue;
 				}
+				const std::string& linkerName = rule.linkerName;
+				const std::string& libPath = rule.libPath;
 
 				if (!linkerName.empty()) {
 					if (currentLinkerName.find(linkerName) != std::string::npos) {

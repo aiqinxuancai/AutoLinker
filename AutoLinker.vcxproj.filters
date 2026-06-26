@@ -65,6 +65,15 @@
     <ClCompile Include="src\EideInternalTextBridge.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\EcSwitchConfigDialog.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ForceLinkLibConfigDialog.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ForceLinkLibManager.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\ECOMEx.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -238,6 +247,15 @@
     <ClInclude Include="src\EcModulePublicInfoReader.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="src\EcSwitchConfigDialog.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ForceLinkLibConfigDialog.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ForceLinkLibManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
     <ClInclude Include="src\EideInternalTextBridge.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -371,6 +389,18 @@
       <Filter>AI</Filter>
     </None>
     <None Include="src\webview\linker_config_dialog.src.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\ec_switch_config_dialog.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\ec_switch_config_dialog.src.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\force_link_lib_config_dialog.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\force_link_lib_config_dialog.src.html">
       <Filter>AI</Filter>
     </None>
   </ItemGroup>

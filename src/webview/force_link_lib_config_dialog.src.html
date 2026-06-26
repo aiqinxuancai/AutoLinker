@@ -1,0 +1,296 @@
+﻿<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light only">
+<style>
+/*__AUTOLINKER_AI_CONFIG_CSS__*/
+</style>
+</head>
+<body class="font-sans text-[13px]">
+<div class="flex min-h-full flex-col bg-white">
+	<header class="border-b border-slate-200 bg-white px-5 py-3">
+		<div class="flex items-center justify-between gap-3">
+			<div>
+				<h1 class="text-lg font-semibold leading-6 text-slate-950">AutoLinker 核心库函数重写设置</h1>
+				<p id="configPathText" class="mt-0.5 max-w-[760px] truncate text-[12px] text-slate-500"></p>
+			</div>
+			<span id="ruleCountBadge" class="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[12px] text-slate-500">0 条规则</span>
+		</div>
+	</header>
+
+	<main class="flex min-h-0 flex-1 flex-col gap-4 bg-white p-5">
+		<section class="border border-slate-200 bg-slate-50 px-4 py-3">
+			<div class="grid gap-3 md:grid-cols-[1fr_1fr]">
+				<div>
+					<h2 class="text-[13px] font-semibold text-slate-900">功能说明</h2>
+					<p class="mt-1 leading-5 text-slate-600">静态编译时，AutoLinker 会在链接命令中把规则里的 .lib 放到 <span class="ui-code">krnln_static.lib</span> 前面，并追加 <span class="ui-code">/FORCE</span>，用于覆盖核心库或第三方库中的同名符号。</p>
+				</div>
+				<div>
+					<h2 class="text-[13px] font-semibold text-slate-900">配置例子</h2>
+					<p class="mt-1 leading-5 text-slate-600"><span class="ui-code">vc2022</span> + <span class="ui-code">D:\Libs\CoreOverride.lib</span> 只在当前源码选择的链接器名称包含 vc2022 时生效。</p>
+					<p class="mt-1 text-[12px] leading-5 text-slate-500">链接器匹配留空表示所有链接器生效；保存为 ForceLinkLib.ini，UTF-8 BOM 与 CRLF。</p>
+				</div>
+			</div>
+		</section>
+
+		<section class="flex min-h-0 flex-1 flex-col">
+			<div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+				<div>
+					<h2 class="text-[13px] font-semibold text-slate-900">强制链接规则</h2>
+					<p class="mt-0.5 text-[12px] text-slate-500">路径请填写 32 位 Release .lib 文件；不存在的路径会在编译时被跳过。</p>
+				</div>
+				<div class="flex gap-2">
+					<button id="sampleBtn" class="ui-btn" type="button">填入示例</button>
+					<button id="addBtn" class="ui-btn ui-btn-primary" type="button">添加规则</button>
+				</div>
+			</div>
+
+			<div class="min-h-0 flex-1 overflow-auto border border-slate-200">
+				<table class="min-w-full border-collapse">
+					<thead class="sticky top-0 bg-slate-50 text-left text-[11px] font-semibold uppercase text-slate-500">
+						<tr>
+							<th class="w-16 border-b border-slate-200 px-3 py-2">启用</th>
+							<th class="w-[22%] border-b border-slate-200 px-3 py-2">链接器匹配</th>
+							<th class="border-b border-slate-200 px-3 py-2">Lib 路径</th>
+							<th class="w-24 border-b border-slate-200 px-3 py-2 text-right">操作</th>
+						</tr>
+					</thead>
+					<tbody id="rulesBody"></tbody>
+				</table>
+				<div id="emptyState" class="hidden px-4 py-8 text-center text-[13px] text-slate-500">尚未配置核心库函数重写规则。</div>
+			</div>
+		</section>
+	</main>
+
+	<footer class="flex items-center justify-between gap-2 border-t border-slate-200 bg-white px-5 py-3">
+		<span id="statusText" class="text-[12px] text-slate-500"></span>
+		<div class="flex gap-2">
+			<button id="cancelBtn" class="ui-btn" type="button">取消</button>
+			<button id="saveBtn" class="ui-btn ui-btn-primary" type="button" disabled>保存</button>
+		</div>
+	</footer>
+</div>
+<script>
+/*__AUTOLINKER_PRELINE_JS__*/
+</script>
+<script>
+var _rules = [];
+var _initialSnapshot = "";
+var _dirty = false;
+var _configPath = "";
+
+function $(id) { return document.getElementById(id); }
+
+function post(payload) {
+	if (window.chrome && window.chrome.webview) {
+		window.chrome.webview.postMessage(JSON.stringify(payload));
+	}
+}
+
+function cleanText(value) {
+	return (value || "").trim();
+}
+
+function snapshot() {
+	return JSON.stringify(_rules.map(function (rule) {
+		return {
+			enabled: rule.enabled !== false,
+			linkerName: cleanText(rule.linkerName),
+			libPath: cleanText(rule.libPath)
+		};
+	}));
+}
+
+function setStatus(text) {
+	$("statusText").textContent = text || "";
+}
+
+function recomputeDirty() {
+	_dirty = snapshot() !== _initialSnapshot;
+	$("saveBtn").disabled = !_dirty;
+}
+</script>
+<script>
+function buildRuleRow(rule, index) {
+	var tr = document.createElement("tr");
+	tr.className = "border-b border-slate-100 last:border-b-0";
+
+	var enabledCell = document.createElement("td");
+	enabledCell.className = "px-3 py-2 align-middle";
+	var enabledInput = document.createElement("input");
+	enabledInput.type = "checkbox";
+	enabledInput.className = "h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-500";
+	enabledInput.checked = rule.enabled !== false;
+	enabledInput.addEventListener("change", function () {
+		_rules[index].enabled = enabledInput.checked;
+		recomputeDirty();
+	});
+	enabledCell.appendChild(enabledInput);
+
+	var linkerCell = document.createElement("td");
+	linkerCell.className = "px-3 py-2 align-top";
+	var linkerInput = document.createElement("input");
+	linkerInput.className = "ui-input";
+	linkerInput.placeholder = "留空为全部";
+	linkerInput.value = rule.linkerName || "";
+	linkerInput.addEventListener("input", function () {
+		_rules[index].linkerName = linkerInput.value;
+		recomputeDirty();
+	});
+	linkerInput.addEventListener("blur", function () {
+		linkerInput.value = cleanText(linkerInput.value);
+		_rules[index].linkerName = linkerInput.value;
+		recomputeDirty();
+	});
+	linkerCell.appendChild(linkerInput);
+
+	var pathCell = document.createElement("td");
+	pathCell.className = "px-3 py-2 align-top";
+	var pathInput = document.createElement("input");
+	pathInput.className = "ui-input font-mono";
+	pathInput.placeholder = "D:\\Libs\\CoreOverride.lib";
+	pathInput.value = rule.libPath || "";
+	pathInput.addEventListener("input", function () {
+		_rules[index].libPath = pathInput.value;
+		recomputeDirty();
+	});
+	pathInput.addEventListener("blur", function () {
+		pathInput.value = cleanText(pathInput.value);
+		_rules[index].libPath = pathInput.value;
+		recomputeDirty();
+	});
+	pathCell.appendChild(pathInput);
+
+	var actionCell = document.createElement("td");
+	actionCell.className = "px-3 py-2 text-right align-top";
+	var deleteBtn = document.createElement("button");
+	deleteBtn.type = "button";
+	deleteBtn.className = "ui-btn";
+	deleteBtn.textContent = "删除";
+	deleteBtn.addEventListener("click", function () {
+		_rules.splice(index, 1);
+		renderRules();
+		recomputeDirty();
+	});
+	actionCell.appendChild(deleteBtn);
+
+	tr.appendChild(enabledCell);
+	tr.appendChild(linkerCell);
+	tr.appendChild(pathCell);
+	tr.appendChild(actionCell);
+	return tr;
+}
+
+function renderRules() {
+	var body = $("rulesBody");
+	body.innerHTML = "";
+	_rules.forEach(function (rule, index) {
+		body.appendChild(buildRuleRow(rule, index));
+	});
+	$("emptyState").classList.toggle("hidden", _rules.length !== 0);
+	$("ruleCountBadge").textContent = _rules.length + " 条规则";
+}
+
+function addRule(linkerName, libPath) {
+	_rules.push({
+		enabled: true,
+		linkerName: linkerName || "",
+		libPath: libPath || ""
+	});
+	renderRules();
+	recomputeDirty();
+	var inputs = $("rulesBody").querySelectorAll("input[type='text'], input:not([type])");
+	if (inputs.length >= 2) {
+		inputs[inputs.length - 1].focus();
+	}
+}
+</script>
+<script>
+function validateRules() {
+	for (var i = 0; i < _rules.length; i++) {
+		var linkerName = cleanText(_rules[i].linkerName);
+		var libPath = cleanText(_rules[i].libPath);
+		if (!linkerName && !libPath) {
+			continue;
+		}
+		if (/[\r\n=]/.test(linkerName)) {
+			return "第 " + (i + 1) + " 行的链接器匹配不能包含等号或换行。";
+		}
+		if (!libPath) {
+			return "第 " + (i + 1) + " 行需要填写 Lib 路径。";
+		}
+		if (/[\r\n]/.test(libPath)) {
+			return "第 " + (i + 1) + " 行的 Lib 路径不能包含换行。";
+		}
+		_rules[i].linkerName = linkerName;
+		_rules[i].libPath = libPath;
+	}
+	return "";
+}
+
+function onSave() {
+	var error = validateRules();
+	if (error) {
+		window.alert(error);
+		setStatus(error);
+		renderRules();
+		return;
+	}
+
+	$("saveBtn").disabled = true;
+	setStatus("正在保存...");
+	post({
+		action: "save",
+		data: {
+			rules: _rules.map(function (rule) {
+				return {
+					enabled: rule.enabled !== false,
+					linkerName: cleanText(rule.linkerName),
+					libPath: cleanText(rule.libPath)
+				};
+			})
+		}
+	});
+}
+
+window.autolinkerApplyForceLinkLibConfig = function (payload) {
+	_configPath = (payload && payload.configPath) ? payload.configPath : "";
+	$("configPathText").textContent = _configPath ? ("配置文件：" + _configPath) : "配置文件：AutoLinker\\ForceLinkLib.ini";
+	_rules = (payload && payload.rules ? payload.rules : []).map(function (rule) {
+		return {
+			enabled: rule.enabled !== false,
+			linkerName: rule.linkerName || "",
+			libPath: rule.libPath || ""
+		};
+	});
+	_initialSnapshot = snapshot();
+	renderRules();
+	recomputeDirty();
+	setStatus("");
+};
+
+window.autolinkerForceLinkLibSaveResult = function (result) {
+	if (result && result.ok) {
+		_initialSnapshot = snapshot();
+		recomputeDirty();
+		setStatus(result.message || "已保存");
+	} else {
+		$("saveBtn").disabled = false;
+		setStatus((result && result.message) ? result.message : "保存失败");
+		if (result && result.message) { window.alert(result.message); }
+	}
+};
+
+document.addEventListener("DOMContentLoaded", function () {
+	$("addBtn").addEventListener("click", function () { addRule("", ""); });
+	$("sampleBtn").addEventListener("click", function () {
+		addRule("vc2022", "D:\\Libs\\CoreOverride.lib");
+	});
+	$("saveBtn").addEventListener("click", onSave);
+	$("cancelBtn").addEventListener("click", function () { post({ action: "cancel" }); });
+	renderRules();
+});
+</script>
+</body>
+</html>

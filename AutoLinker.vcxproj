@@ -480,6 +480,9 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='static_lib_release|x64'">true</ExcludedFromBuild>
     </ClCompile>
     <ClCompile Include="src\EideInternalTextBridge.cpp" />
+    <ClCompile Include="src\EcSwitchConfigDialog.cpp" />
+    <ClCompile Include="src\ForceLinkLibConfigDialog.cpp" />
+    <ClCompile Include="src\ForceLinkLibManager.cpp" />
     <ClCompile Include="src\direct_global_search.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
@@ -563,9 +566,12 @@
     <ClInclude Include="src\EPackagerIntegration.h" />
     <ClInclude Include="src\EFolderCodec.h" />
     <ClInclude Include="src\EcModulePublicInfoReader.h" />
+    <ClInclude Include="src\EcSwitchConfigDialog.h" />
     <ClInclude Include="src\EideInternalTextBridge.h" />
     <ClInclude Include="src\e2txt.h" />
     <ClInclude Include="src\EideProjectBinarySerializer.h" />
+    <ClInclude Include="src\ForceLinkLibConfigDialog.h" />
+    <ClInclude Include="src\ForceLinkLibManager.h" />
     <ClInclude Include="src\direct_global_search.hpp" />
     <ClInclude Include="src\ECOMEx.h" />
     <ClInclude Include="src\Global.h" />
@@ -608,6 +614,10 @@
     <None Include="src\webview\ai_preview_dialog.html" />
     <None Include="src\webview\linker_config_dialog.html" />
     <None Include="src\webview\linker_config_dialog.src.html" />
+    <None Include="src\webview\ec_switch_config_dialog.html" />
+    <None Include="src\webview\ec_switch_config_dialog.src.html" />
+    <None Include="src\webview\force_link_lib_config_dialog.html" />
+    <None Include="src\webview\force_link_lib_config_dialog.src.html" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

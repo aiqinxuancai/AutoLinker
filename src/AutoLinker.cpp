@@ -15,8 +15,10 @@
 #include "AIChatTooling.h"
 #include "AIChatFeature.h"
 #include "AIConfigDialog.h"
+#include "EcSwitchConfigDialog.h"
 #include "ECOMEx.h"
 #include "EPackagerIntegration.h"
+#include "ForceLinkLibConfigDialog.h"
 #include "Global.h"
 #include "HeadlessCompileRunner.h"
 #include "IDEFacade.h"
@@ -140,14 +142,26 @@ void ShowLinkerSettingsAddIn()
 	ShowLinkerConfigDialog(g_hwnd);
 }
 
+void ShowEcSwitchSettingsAddIn()
+{
+	ShowEcSwitchConfigDialog(g_hwnd);
+}
+
+void ShowForceLinkLibSettingsAddIn()
+{
+	ShowForceLinkLibConfigDialog(g_hwnd);
+}
+
 const auto& GetAddInMenuEntries()
 {
-	static const std::array<AddInMenuEntry, 6> kEntries = { {
+	static const std::array<AddInMenuEntry, 8> kEntries = { {
 		{ "打开项目目录", "这是个用作测试的辅助工具功能。", &OpenProjectDirectoryAddIn },
 		{ "打开AutoLinker配置目录", "这是个用作测试的辅助工具功能。", &OpenAutoLinkerConfigDirectoryAddIn },
 		{ "打开E语言目录", "这是个用作测试的辅助工具功能。", &OpenELanguageDirectoryAddIn },
 		{ "AutoLinker AI接口设置", "编辑AI接口地址、API Key、模型和提示词等配置。", &ShowAISettingsAddIn },
 		{ "AutoLinker 链接器设置", "查看并编辑 AutoLinker/Config 下的 link.ini 链接器配置。", &ShowLinkerSettingsAddIn },
+		{ "AutoLinker EC模块自动切换设置", "配置调试用动态 ec 与编译用静态 ec 的成对自动切换规则。", &ShowEcSwitchSettingsAddIn },
+		{ "AutoLinker 核心库函数重写设置", "配置静态编译时额外强制链接的 .lib，用于覆盖核心库或第三方库同名符号。", &ShowForceLinkLibSettingsAddIn },
 		{ "更新e-packager组件", "检查并下载最新的 e-packager 组件。", &UpdateEPackagerComponentAddIn },
 	} };
 	return kEntries;

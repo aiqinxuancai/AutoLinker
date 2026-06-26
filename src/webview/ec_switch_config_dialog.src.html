@@ -1,0 +1,292 @@
+﻿<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light only">
+<style>
+/*__AUTOLINKER_AI_CONFIG_CSS__*/
+</style>
+</head>
+<body class="font-sans text-[13px]">
+<div class="flex min-h-full flex-col bg-white">
+	<header class="border-b border-slate-200 bg-white px-5 py-3">
+		<div class="flex items-center justify-between gap-3">
+			<div>
+				<h1 class="text-lg font-semibold leading-6 text-slate-950">AutoLinker EC 模块自动切换设置</h1>
+				<p id="configPathText" class="mt-0.5 max-w-[720px] truncate text-[12px] text-slate-500"></p>
+			</div>
+			<span id="ruleCountBadge" class="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[12px] text-slate-500">0 条规则</span>
+		</div>
+	</header>
+
+	<main class="flex min-h-0 flex-1 flex-col gap-4 bg-white p-5">
+		<section class="border border-slate-200 bg-slate-50 px-4 py-3">
+			<div class="grid gap-3 md:grid-cols-[1fr_1fr]">
+				<div>
+					<h2 class="text-[13px] font-semibold text-slate-900">功能说明</h2>
+					<p class="mt-1 leading-5 text-slate-600">为同一个易模块配置一对 ec 文件。开始调试时切换到动态版，开始编译时切换到静态版，两个文件必须放在同一个目录中。</p>
+				</div>
+				<div>
+					<h2 class="text-[13px] font-semibold text-slate-900">配置例子</h2>
+					<p class="mt-1 leading-5 text-slate-600"><span class="ui-code">VMPSDK.ec</span> 作为动态调试版，<span class="ui-code">VMPSDK_LIB.ec</span> 作为静态编译版。</p>
+					<p class="mt-1 text-[12px] leading-5 text-slate-500">保存到 ModelManager.ini 时使用 UTF-8 BOM 与 CRLF。</p>
+				</div>
+			</div>
+		</section>
+
+		<section class="flex min-h-0 flex-1 flex-col">
+			<div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+				<div>
+					<h2 class="text-[13px] font-semibold text-slate-900">切换规则</h2>
+					<p class="mt-0.5 text-[12px] text-slate-500">左侧为调试用动态版，右侧为编译用静态版，只填写文件名。</p>
+				</div>
+				<div class="flex gap-2">
+					<button id="sampleBtn" class="ui-btn" type="button">填入示例</button>
+					<button id="addBtn" class="ui-btn ui-btn-primary" type="button">添加规则</button>
+				</div>
+			</div>
+
+			<div class="min-h-0 flex-1 overflow-auto border border-slate-200">
+				<table class="min-w-full border-collapse">
+					<thead class="sticky top-0 bg-slate-50 text-left text-[11px] font-semibold uppercase text-slate-500">
+						<tr>
+							<th class="w-[44%] border-b border-slate-200 px-3 py-2">动态调试版 ec</th>
+							<th class="w-[44%] border-b border-slate-200 px-3 py-2">静态编译版 ec</th>
+							<th class="w-24 border-b border-slate-200 px-3 py-2 text-right">操作</th>
+						</tr>
+					</thead>
+					<tbody id="rulesBody"></tbody>
+				</table>
+				<div id="emptyState" class="hidden px-4 py-8 text-center text-[13px] text-slate-500">尚未配置 EC 模块自动切换规则。</div>
+			</div>
+		</section>
+	</main>
+
+	<footer class="flex items-center justify-between gap-2 border-t border-slate-200 bg-white px-5 py-3">
+		<span id="statusText" class="text-[12px] text-slate-500"></span>
+		<div class="flex gap-2">
+			<button id="cancelBtn" class="ui-btn" type="button">取消</button>
+			<button id="saveBtn" class="ui-btn ui-btn-primary" type="button" disabled>保存</button>
+		</div>
+	</footer>
+</div>
+<script>
+/*__AUTOLINKER_PRELINE_JS__*/
+</script>
+<script>
+var _rules = [];
+var _initialSnapshot = "";
+var _dirty = false;
+var _configPath = "";
+
+function $(id) { return document.getElementById(id); }
+
+function post(payload) {
+	if (window.chrome && window.chrome.webview) {
+		window.chrome.webview.postMessage(JSON.stringify(payload));
+	}
+}
+
+function normalizeEcName(value) {
+	var text = (value || "").trim();
+	if (text && !/\.ec$/i.test(text)) {
+		text += ".ec";
+	}
+	return text;
+}
+
+function snapshot() {
+	return JSON.stringify(_rules.map(function (rule) {
+		return {
+			dynamicName: normalizeEcName(rule.dynamicName),
+			staticName: normalizeEcName(rule.staticName)
+		};
+	}));
+}
+
+function setStatus(text) {
+	$("statusText").textContent = text || "";
+}
+
+function recomputeDirty() {
+	_dirty = snapshot() !== _initialSnapshot;
+	$("saveBtn").disabled = !_dirty;
+}
+</script>
+<script>
+function buildRuleRow(rule, index) {
+	var tr = document.createElement("tr");
+	tr.className = "border-b border-slate-100 last:border-b-0";
+
+	var dynamicCell = document.createElement("td");
+	dynamicCell.className = "px-3 py-2 align-top";
+	var dynamicInput = document.createElement("input");
+	dynamicInput.className = "ui-input font-mono";
+	dynamicInput.placeholder = "VMPSDK.ec";
+	dynamicInput.value = rule.dynamicName || "";
+	dynamicInput.addEventListener("input", function () {
+		_rules[index].dynamicName = dynamicInput.value;
+		recomputeDirty();
+	});
+	dynamicInput.addEventListener("blur", function () {
+		dynamicInput.value = normalizeEcName(dynamicInput.value);
+		_rules[index].dynamicName = dynamicInput.value;
+		recomputeDirty();
+	});
+	dynamicCell.appendChild(dynamicInput);
+
+	var staticCell = document.createElement("td");
+	staticCell.className = "px-3 py-2 align-top";
+	var staticInput = document.createElement("input");
+	staticInput.className = "ui-input font-mono";
+	staticInput.placeholder = "VMPSDK_LIB.ec";
+	staticInput.value = rule.staticName || "";
+	staticInput.addEventListener("input", function () {
+		_rules[index].staticName = staticInput.value;
+		recomputeDirty();
+	});
+	staticInput.addEventListener("blur", function () {
+		staticInput.value = normalizeEcName(staticInput.value);
+		_rules[index].staticName = staticInput.value;
+		recomputeDirty();
+	});
+	staticCell.appendChild(staticInput);
+
+	var actionCell = document.createElement("td");
+	actionCell.className = "px-3 py-2 text-right align-top";
+	var deleteBtn = document.createElement("button");
+	deleteBtn.type = "button";
+	deleteBtn.className = "ui-btn";
+	deleteBtn.textContent = "删除";
+	deleteBtn.addEventListener("click", function () {
+		_rules.splice(index, 1);
+		renderRules();
+		recomputeDirty();
+	});
+	actionCell.appendChild(deleteBtn);
+
+	tr.appendChild(dynamicCell);
+	tr.appendChild(staticCell);
+	tr.appendChild(actionCell);
+	return tr;
+}
+
+function renderRules() {
+	var body = $("rulesBody");
+	body.innerHTML = "";
+	_rules.forEach(function (rule, index) {
+		body.appendChild(buildRuleRow(rule, index));
+	});
+	$("emptyState").classList.toggle("hidden", _rules.length !== 0);
+	$("ruleCountBadge").textContent = _rules.length + " 条规则";
+}
+
+function addRule(dynamicName, staticName) {
+	_rules.push({
+		dynamicName: dynamicName || "",
+		staticName: staticName || ""
+	});
+	renderRules();
+	recomputeDirty();
+	var inputs = $("rulesBody").querySelectorAll("input");
+	if (inputs.length >= 2) {
+		inputs[inputs.length - 2].focus();
+	}
+}
+</script>
+<script>
+function validateRules() {
+	var seenDynamic = {};
+	var seenStatic = {};
+	for (var i = 0; i < _rules.length; i++) {
+		var dynamicName = normalizeEcName(_rules[i].dynamicName);
+		var staticName = normalizeEcName(_rules[i].staticName);
+		if (!dynamicName && !staticName) {
+			continue;
+		}
+		if (!dynamicName || !staticName) {
+			return "第 " + (i + 1) + " 行需要同时填写动态版和静态版。";
+		}
+		if (/[\\/:*?"<>|=\r\n]/.test(dynamicName) || /[\\/:*?"<>|=\r\n]/.test(staticName)) {
+			return "第 " + (i + 1) + " 行只能填写 ec 文件名，不能包含路径或非法字符。";
+		}
+		if (dynamicName.toLowerCase() === staticName.toLowerCase()) {
+			return "第 " + (i + 1) + " 行的动态版和静态版不能相同。";
+		}
+		if (seenDynamic[dynamicName.toLowerCase()]) {
+			return "动态调试版重复：" + dynamicName;
+		}
+		if (seenStatic[staticName.toLowerCase()]) {
+			return "静态编译版重复：" + staticName;
+		}
+		seenDynamic[dynamicName.toLowerCase()] = true;
+		seenStatic[staticName.toLowerCase()] = true;
+		_rules[i].dynamicName = dynamicName;
+		_rules[i].staticName = staticName;
+	}
+	return "";
+}
+
+function onSave() {
+	var error = validateRules();
+	if (error) {
+		window.alert(error);
+		setStatus(error);
+		renderRules();
+		return;
+	}
+
+	$("saveBtn").disabled = true;
+	setStatus("正在保存...");
+	post({
+		action: "save",
+		data: {
+			rules: _rules.map(function (rule) {
+				return {
+					dynamicName: normalizeEcName(rule.dynamicName),
+					staticName: normalizeEcName(rule.staticName)
+				};
+			})
+		}
+	});
+}
+
+window.autolinkerApplyEcSwitchConfig = function (payload) {
+	_configPath = (payload && payload.configPath) ? payload.configPath : "";
+	$("configPathText").textContent = _configPath ? ("配置文件：" + _configPath) : "配置文件：AutoLinker\\ModelManager.ini";
+	_rules = (payload && payload.rules ? payload.rules : []).map(function (rule) {
+		return {
+			dynamicName: rule.dynamicName || "",
+			staticName: rule.staticName || ""
+		};
+	});
+	_initialSnapshot = snapshot();
+	renderRules();
+	recomputeDirty();
+	setStatus("");
+};
+
+window.autolinkerEcSwitchSaveResult = function (result) {
+	if (result && result.ok) {
+		_initialSnapshot = snapshot();
+		recomputeDirty();
+		setStatus(result.message || "已保存");
+	} else {
+		$("saveBtn").disabled = false;
+		setStatus((result && result.message) ? result.message : "保存失败");
+		if (result && result.message) { window.alert(result.message); }
+	}
+};
+
+document.addEventListener("DOMContentLoaded", function () {
+	$("addBtn").addEventListener("click", function () { addRule("", ""); });
+	$("sampleBtn").addEventListener("click", function () {
+		addRule("VMPSDK.ec", "VMPSDK_LIB.ec");
+	});
+	$("saveBtn").addEventListener("click", onSave);
+	$("cancelBtn").addEventListener("click", function () { post({ action: "cancel" }); });
+	renderRules();
+});
+</script>
+</body>
+</html>
