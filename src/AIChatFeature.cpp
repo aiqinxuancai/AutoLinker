@@ -2696,7 +2696,14 @@ std::string BuildHistoryHtmlLocked(
 	}
 
 	if (TrimAsciiCopy(body).empty()) {
-		appendMessageCard(body, SessionRole::System, LocalFromWide(L"系统"), LocalFromWide(L"等待开始对话..."), false);
+		body += "<div class=\"empty-state\"><div class=\"empty-state-title\">";
+		body += EscapeHtml(LocalFromWide(L"需要做点什么？"));
+		body += "</div><div class=\"empty-state-links\">";
+		body += "<a class=\"mcp-guide-link\" href=\"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE\">";
+		body += EscapeHtml(LocalFromWide(L"推荐用Codex连接MCP"));
+		body += "</a><a class=\"mcp-guide-link\" href=\"https://github.com/aiqinxuancai/Awesome-E-Agent\">";
+		body += EscapeHtml(LocalFromWide(L"必读：易语言 × AI Agent 实践白皮书"));
+		body += "</a></div></div>";
 	}
 
 	std::string html;
