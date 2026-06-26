@@ -1293,13 +1293,14 @@ LRESULT CALLBACK EditControlSubclassProc(
 	{
 	case WM_KEYDOWN: {
 		const bool ctrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+		const bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 		if (ctrlDown && (wParam == 'A' || wParam == 'a')) {
 			SendMessageA(hWnd, EM_SETSEL, 0, -1);
 			return 0;
 		}
 
 		if ((dwRefData & kEditFlagSubmitOnEnter) != 0 && wParam == VK_RETURN) {
-			if (ctrlDown) {
+			if (ctrlDown || shiftDown) {
 				SendMessageA(hWnd, EM_REPLACESEL, TRUE, reinterpret_cast<LPARAM>("\r\n"));
 				HWND hParent = GetParent(hWnd);
 				if (hParent != nullptr) {
