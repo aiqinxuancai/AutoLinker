@@ -175,6 +175,48 @@ body {
 	margin-left: auto;
 }
 
+.session-elapsed {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	height: 20px;
+	color: #4c4f69;
+	font: 11px/1 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	white-space: nowrap;
+}
+
+.session-elapsed[hidden],
+.session-status[hidden] {
+	display: none;
+}
+
+.session-status {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	height: 18px;
+	padding: 0 7px;
+	border: 1px solid #ccd3dd;
+	border-radius: 5px;
+	background: #fff;
+	color: #4c4f69;
+	font: 700 10px/1 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	white-space: nowrap;
+	box-sizing: border-box;
+}
+
+.session-status.working {
+	border-color: rgba(30, 102, 245, .32);
+	background: rgba(30, 102, 245, .08);
+	color: #1e66f5;
+}
+
+.session-status.done {
+	border-color: rgba(46, 125, 50, .28);
+	background: rgba(46, 125, 50, .08);
+	color: #2e7d32;
+}
+
 .context-usage {
 	display: inline-flex;
 	align-items: center;
@@ -372,6 +414,69 @@ body {
 	stroke-width: 1.6;
 	stroke-linecap: round;
 	stroke-linejoin: round;
+	pointer-events: none;
+}
+
+.stop-icon-btn {
+	position: absolute;
+	right: 8px;
+	bottom: 8px;
+	width: 28px;
+	height: 28px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: #1e66f5;
+	padding: 0;
+	cursor: pointer;
+	transition: color .15s ease, transform .1s ease;
+}
+
+.stop-icon-btn:hover {
+	color: #1554d1;
+}
+
+.stop-icon-btn:active {
+	transform: scale(.92);
+}
+
+.stop-icon-btn:focus-visible {
+	outline: 2px solid rgba(30, 102, 245, .4);
+	outline-offset: 2px;
+}
+
+.stop-icon-btn:disabled {
+	color: #9aa0ac;
+	cursor: default;
+}
+
+.stop-icon-btn::before {
+	content: "";
+	position: absolute;
+	inset: 3px;
+	border-radius: 50%;
+	border: 1px solid rgba(30, 102, 245, .18);
+	border-top-color: currentColor;
+	animation: stop-spin .8s linear infinite;
+	pointer-events: none;
+}
+
+.stop-icon-btn:disabled::before {
+	border-color: rgba(150, 156, 168, .22);
+	border-top-color: currentColor;
+}
+
+@keyframes stop-spin {
+	to { transform: rotate(360deg); }
+}
+
+.stop-icon-btn svg {
+	width: 12px;
+	height: 12px;
+	fill: currentColor;
 	pointer-events: none;
 }
 
@@ -730,6 +835,11 @@ body {
 						<path d="m22 2-7 20-4-9-9-4Z"></path>
 					</svg>
 				</button>
+				<button id="stop-btn" class="stop-icon-btn" type="button" title="&#x505C;&#x6B62;" aria-label="&#x505C;&#x6B62;" style="display:none;">
+					<svg viewBox="0 0 24 24" aria-hidden="true">
+						<rect x="4" y="4" width="16" height="16" rx="3"></rect>
+					</svg>
+				</button>
 			</div>
 			<div id="clear-confirm" class="clear-confirm" hidden>
 				<div class="clear-confirm-text">&#x5F53;&#x524D; AI &#x5BF9;&#x8BDD;&#x5C06;&#x4FDD;&#x5B58;&#x5230;&#x5386;&#x53F2;&#xFF0C;&#x5E76;&#x5F00;&#x542F;&#x65B0;&#x4F1A;&#x8BDD;&#x3002;</div>
@@ -740,8 +850,9 @@ body {
 			</div>
 			<div class="actions">
 				<div class="right-actions">
+					<span id="session-elapsed" class="session-elapsed" title="&#x4F1A;&#x8BDD;&#x5B9E;&#x9645;&#x7528;&#x65F6;" hidden>0m 0s</span>
+					<span id="session-status" class="session-status done" title="&#x4F1A;&#x8BDD;&#x72B6;&#x6001;" hidden>&#x5DF2;&#x5B8C;&#x6210;</span>
 					<span id="context-usage" class="context-usage" title="&#x5F53;&#x524D;&#x4E0A;&#x4E0B;&#x6587;&#x4F7F;&#x7528;&#x7387;">&#x4E0A;&#x4E0B;&#x6587; --</span>
-					<button id="stop-btn" class="btn" type="button" style="display:none;">&#x505C;&#x6B62;</button>
 				</div>
 			</div>
 			<div id="restore-confirm" class="page-msgbox" role="alertdialog" aria-labelledby="restore-confirm-title" aria-describedby="restore-confirm-text" hidden>
@@ -791,7 +902,7 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	}
 	if (stop) {
 		stop.disabled = !isBusy || isStopping;
-		stop.textContent = isStopping ? "\u505C\u6B62\u4E2D..." : "\u505C\u6B62";
+		stop.title = isStopping ? "\u505C\u6B62\u4E2D..." : "\u505C\u6B62";
 		stop.style.display = isBusy ? "" : "none";
 	}
 	if (newSession) {
@@ -817,6 +928,25 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 		if (restoreConfirm) {
 			restoreConfirm.hidden = true;
 		}
+	}
+};
+
+window.autolinkerSetSessionTiming = function(elapsedLabel, statusLabel, title, working, visible) {
+	var elapsed = document.getElementById("session-elapsed");
+	var status = document.getElementById("session-status");
+	var isWorking = !!working;
+	var shouldShow = !!visible;
+	if (elapsed) {
+		elapsed.hidden = !shouldShow;
+		elapsed.textContent = elapsedLabel || "0m 0s";
+		elapsed.title = title || "\u4F1A\u8BDD\u5B9E\u9645\u7528\u65F6";
+	}
+	if (status) {
+		status.hidden = !shouldShow;
+		status.textContent = statusLabel || (isWorking ? "\u5DE5\u4F5C\u4E2D" : "\u5DF2\u5B8C\u6210");
+		status.title = title || "\u4F1A\u8BDD\u72B6\u6001";
+		status.classList.toggle("working", isWorking);
+		status.classList.toggle("done", !isWorking);
 	}
 };
 

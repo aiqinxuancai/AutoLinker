@@ -22,6 +22,7 @@ struct AIChatStoredSession {
 	std::string sourceFilePathHintLocal;
 	long long createdAtUnixMs = 0;
 	long long updatedAtUnixMs = 0;
+	long long elapsedMs = 0;  // 会话累计实际用时（毫秒）。
 	std::string createdAtDisplayLocal;
 	std::string updatedAtDisplayLocal;
 	std::string rollingSummaryLocal;

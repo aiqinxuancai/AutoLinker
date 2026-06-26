@@ -230,6 +230,7 @@ bool SerializeSession(const AIChatStoredSession& session, nlohmann::json& outJso
 		outJson["source_file_path_hint"] = LocalToUtf8TextForSessionStore(session.sourceFilePathHintLocal);
 		outJson["created_at_unix_ms"] = session.createdAtUnixMs;
 		outJson["updated_at_unix_ms"] = session.updatedAtUnixMs;
+		outJson["elapsed_ms"] = session.elapsedMs;
 		outJson["created_at_display"] = LocalToUtf8TextForSessionStore(session.createdAtDisplayLocal);
 		outJson["updated_at_display"] = LocalToUtf8TextForSessionStore(session.updatedAtDisplayLocal);
 		outJson["rolling_summary"] = LocalToUtf8TextForSessionStore(session.rollingSummaryLocal);
@@ -267,6 +268,10 @@ bool DeserializeSession(const nlohmann::json& jsonValue, AIChatStoredSession& ou
 	outSession.sourceFilePathHintLocal = GetJsonStringAsLocalText(jsonValue, "source_file_path_hint");
 	outSession.createdAtUnixMs = GetJsonInt64(jsonValue, "created_at_unix_ms", 0);
 	outSession.updatedAtUnixMs = GetJsonInt64(jsonValue, "updated_at_unix_ms", 0);
+	outSession.elapsedMs = GetJsonInt64(jsonValue, "elapsed_ms", 0);
+	if (outSession.elapsedMs < 0) {
+		outSession.elapsedMs = 0;
+	}
 	outSession.createdAtDisplayLocal = GetJsonStringAsLocalText(jsonValue, "created_at_display");
 	outSession.updatedAtDisplayLocal = GetJsonStringAsLocalText(jsonValue, "updated_at_display");
 	outSession.rollingSummaryLocal = GetJsonStringAsLocalText(jsonValue, "rolling_summary");
