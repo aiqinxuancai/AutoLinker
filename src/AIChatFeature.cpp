@@ -327,6 +327,7 @@ bool IsStopRequestedLocked(const AIChatSessionState& state);
 std::string DescribeMissingChatSettingField(const std::string& missingField);
 bool QueryChatSettingsState(AISettings& outSettings, std::string* outMissingField = nullptr);
 void PostRefreshDialog();
+void AppendAgentActivity(unsigned long long requestId, const std::string& line);
 std::wstring WideFromUtf8Text(const std::string& text);
 
 std::string GetWindowTextCopyLocalA(HWND hWnd)
@@ -1350,15 +1351,24 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 	PostRefreshDialog();
 }
 
-void PrepareWorkspaceMirrorForChat()
+void PrepareWorkspaceMirrorForChat(unsigned long long requestId)
 {
 	std::string error;
 	if (WorkspaceMirror::EnsureMirrorFresh(error)) {
 		OutputStringToELog("[WorkspaceMirror] chat workspace mirror prepared");
+		AppendAgentActivity(requestId, LocalFromWide(L"\u5de5\u7a0b\u955c\u50cf\u51c6\u5907\u5b8c\u6210"));
 		return;
 	}
 	if (!TrimAsciiCopy(error).empty()) {
 		OutputStringToELog("[WorkspaceMirror] prepare chat workspace mirror failed: " + error);
+		std::string displayError = TrimAsciiCopy(error);
+		if (displayError.size() > 300) {
+			displayError.resize(300);
+			displayError += "...";
+		}
+		AppendAgentActivity(
+			requestId,
+			LocalFromWide(L"\u5de5\u7a0b\u955c\u50cf\u51c6\u5907\u5931\u8d25\uff0c\u540e\u7eed\u5de5\u5177\u4f1a\u6309\u9700\u91cd\u8bd5\uff1a") + displayError);
 	}
 }
 
@@ -3214,32 +3224,48 @@ void RunAIChatWorker(void* pParams)
 	}
 	result->requestId = request->requestId;
 	try {
-		result->chatResult = AIService::ExecuteChatWithTools(
-			request->contextMessages,
-			request->settings,
-			[
-				cancellation = request->cancellation,
-				requestId = request->requestId
-			](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
-				AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, false, false));
-				std::string toolResult = ExecuteToolCall(
-					toolName,
-					argumentsJson,
-					outOk,
-					true,
-					[cancellation]() {
+		const auto isCancelled = [&request]() {
+			return request->cancellation != nullptr && request->cancellation->IsCancelled();
+		};
+		if (isCancelled()) {
+			result->chatResult.ok = false;
+			result->chatResult.error = LocalFromWide(L"\u5df2\u53d6\u6d88\uff0c\u672a\u53d1\u9001 AI \u8bf7\u6c42\u3002");
+		}
+		else {
+			PrepareWorkspaceMirrorForChat(request->requestId);
+			if (isCancelled()) {
+				result->chatResult.ok = false;
+				result->chatResult.error = LocalFromWide(L"\u5df2\u53d6\u6d88\uff0c\u672a\u53d1\u9001 AI \u8bf7\u6c42\u3002");
+			}
+			else {
+				result->chatResult = AIService::ExecuteChatWithTools(
+					request->contextMessages,
+					request->settings,
+					[
+						cancellation = request->cancellation,
+						requestId = request->requestId
+					](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
+						AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, false, false));
+						std::string toolResult = ExecuteToolCall(
+							toolName,
+							argumentsJson,
+							outOk,
+							true,
+							[cancellation]() {
+								return cancellation != nullptr && cancellation->IsCancelled();
+							});
+						AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, true, outOk));
+						return toolResult;
+					},
+					[requestId = request->requestId](const std::string& deltaText) {
+						AppendStreamingAssistantDelta(requestId, deltaText);
+					},
+					[cancellation = request->cancellation]() {
 						return cancellation != nullptr && cancellation->IsCancelled();
-					});
-				AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, true, outOk));
-				return toolResult;
-			},
-			[requestId = request->requestId](const std::string& deltaText) {
-				AppendStreamingAssistantDelta(requestId, deltaText);
-			},
-			[cancellation = request->cancellation]() {
-				return cancellation != nullptr && cancellation->IsCancelled();
-			},
-			request->cancellation != nullptr ? &request->cancellation->httpRequest : nullptr);
+					},
+					request->cancellation != nullptr ? &request->cancellation->httpRequest : nullptr);
+			}
+		}
 	}
 	catch (const std::exception& ex) {
 		result->chatResult.ok = false;
@@ -3260,7 +3286,6 @@ bool StartChatRequest(const std::string& userInput)
 		return false;
 	}
 	RebindChatSessionToCurrentSourceIfNeeded();
-	PrepareWorkspaceMirrorForChat();
 
 	AISettings settings = {};
 	if (!EnsureChatSettingsReady(settings)) {
@@ -3293,6 +3318,7 @@ bool StartChatRequest(const std::string& userInput)
 		request->cancellation = std::make_shared<AIChatRequestCancellation>();
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
+		g_session.agentActivityLines.push_back(LocalFromWide(L"\u6b63\u5728\u51c6\u5907\u5de5\u7a0b\u955c\u50cf..."));
 		g_session.requestInFlight = true;
 		g_session.activeRequestId = request->requestId;
 		g_session.activeRequestStartedAtUnixMs = requestStartedAtMs;
