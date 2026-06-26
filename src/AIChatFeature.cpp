@@ -85,6 +85,7 @@ constexpr int IDC_AI_CHAT_CLEAR_CONFIRM_TEXT = 32558;
 constexpr int IDC_AI_CHAT_CLEAR_CONFIRM_APPLY = 32559;
 constexpr int IDC_AI_CHAT_CLEAR_CONFIRM_CANCEL = 32560;
 constexpr int IDC_AI_CHAT_MCP_GUIDE_LINK = 32561;
+constexpr int IDC_AI_CHAT_CONTEXT_USAGE = 32562;
 
 constexpr UINT_PTR kEditSubclassId = 1;
 constexpr UINT_PTR kActionControlSubclassId = 2;
@@ -143,6 +144,7 @@ struct AIChatSessionState {
 	std::vector<SessionMessage> messages;
 	std::string rollingSummary;
 	std::string streamingAssistantPreview;
+	std::vector<std::string> agentActivityLines;
 	std::string activeSessionId;
 	std::filesystem::path activeSessionFilePath;
 	std::string sourceFilePathLocal;
@@ -170,6 +172,7 @@ struct ChatDialogContext {
 	HWND hClearConfirmApply = nullptr;
 	HWND hClearConfirmCancel = nullptr;
 	HWND hMcpGuideLink = nullptr;
+	HWND hContextUsage = nullptr;
 	int inputRowsVisible = 1;
 	bool clearConfirmVisible = false;
 	bool restoreConfirmVisible = false;
@@ -196,6 +199,16 @@ struct AIChatAsyncRequest {
 struct AIChatAsyncResult {
 	unsigned long long requestId = 0;
 	AIChatResult chatResult = {};
+};
+
+struct ContextUsageSnapshot {
+	bool available = false;
+	bool estimated = true;
+	int percent = 0;
+	long long usedTokens = 0;
+	int contextWindow = 0;
+	std::string labelLocal;
+	std::string titleLocal;
 };
 
 struct ChatHistoryGarbage {
@@ -724,6 +737,25 @@ std::wstring EscapeJsSingleQuotedWide(const std::wstring& text)
 	return out;
 }
 
+std::wstring EscapeJsDoubleQuotedWide(const std::wstring& text)
+{
+	std::wstring out;
+	out.reserve(text.size() + 32);
+	for (wchar_t ch : text) {
+		switch (ch)
+		{
+		case L'\\': out += L"\\\\"; break;
+		case L'"': out += L"\\\""; break;
+		case L'\r': out += L"\\r"; break;
+		case L'\n': out += L"\\n"; break;
+		case 0x2028: out += L"\\u2028"; break;
+		case 0x2029: out += L"\\u2029"; break;
+		default: out.push_back(ch); break;
+		}
+	}
+	return out;
+}
+
 std::string NormalizeNewlinesLf(const std::string& text)
 {
 	std::string normalized;
@@ -909,6 +941,47 @@ std::string FormatUnixTimeLocalForChat(long long unixMs)
 		return std::string();
 	}
 	return buffer;
+}
+
+ContextUsageSnapshot BuildContextUsageSnapshotLocked(const AIChatSessionState& state, int fallbackContextWindow)
+{
+	ContextUsageSnapshot snapshot = {};
+	snapshot.contextWindow = state.effectiveContextWindow > 0 ? state.effectiveContextWindow : fallbackContextWindow;
+	if (snapshot.contextWindow <= 0) {
+		snapshot.labelLocal = LocalFromWide(L"\u4e0a\u4e0b\u6587 --");
+		snapshot.titleLocal = LocalFromWide(L"\u6682\u65e0\u53ef\u7528\u7684\u4e0a\u4e0b\u6587\u7a97\u53e3\u914d\u7f6e");
+		return snapshot;
+	}
+
+	size_t contextChars = state.rollingSummary.size();
+	for (const auto& message : state.messages) {
+		if (message.includeInContext) {
+			contextChars += message.content.size();
+		}
+	}
+
+	snapshot.available = true;
+	snapshot.estimated = !state.hasLastUsage || state.lastInputTokens <= 0;
+	snapshot.usedTokens = snapshot.estimated
+		? static_cast<long long>(contextChars / 4)
+		: static_cast<long long>(state.lastInputTokens);
+	if (snapshot.usedTokens < 0) {
+		snapshot.usedTokens = 0;
+	}
+
+	const long long rawPercent =
+		(snapshot.usedTokens * 100 + snapshot.contextWindow / 2) / snapshot.contextWindow;
+	snapshot.percent = static_cast<int>((std::min<long long>)(999, (std::max<long long>)(0, rawPercent)));
+	snapshot.labelLocal = std::format(
+		"{} {}%",
+		LocalFromWide(L"\u4e0a\u4e0b\u6587"),
+		snapshot.percent);
+	snapshot.titleLocal = std::format(
+		"{}{} / {} tokens",
+		snapshot.estimated ? LocalFromWide(L"\u4f30\u7b97\uff1a") : std::string(),
+		snapshot.usedTokens,
+		snapshot.contextWindow);
+	return snapshot;
 }
 
 std::string GetCurrentChatSourceFilePathLocal()
@@ -1107,6 +1180,7 @@ bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
 	g_session.messages.clear();
 	g_session.rollingSummary = stored.rollingSummaryLocal;
 	g_session.streamingAssistantPreview.clear();
+	g_session.agentActivityLines.clear();
 	g_session.activeSessionId = stored.sessionId;
 	g_session.activeSessionFilePath = stored.sessionFilePath;
 	g_session.sourceFilePathLocal = stored.sourceFilePathHintLocal.empty()
@@ -1120,6 +1194,9 @@ bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
 	g_session.activeRequestId = 0;
 	g_session.cancellation.reset();
 	g_session.nextRequestId = 1;
+	g_session.lastInputTokens = 0;
+	g_session.hasLastUsage = false;
+	g_session.effectiveContextWindow = 0;
 
 	for (const auto& row : stored.messages) {
 		g_session.messages.push_back(SessionMessage{
@@ -1167,6 +1244,7 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 		g_session.messages.clear();
 		g_session.rollingSummary.clear();
 		g_session.streamingAssistantPreview.clear();
+		g_session.agentActivityLines.clear();
 		ResetChatSessionBindingLocked(g_session);
 	}
 	WorkspaceMirror::ResetAndCleanup();
@@ -1444,6 +1522,9 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		if (ctx->hMcpGuideLink != nullptr) {
 			ShowWindow(ctx->hMcpGuideLink, SW_HIDE);
 		}
+		if (ctx->hContextUsage != nullptr) {
+			ShowWindow(ctx->hContextUsage, SW_HIDE);
+		}
 		if (ctx->hClearConfirmText != nullptr) {
 			ShowWindow(ctx->hClearConfirmText, SW_HIDE);
 		}
@@ -1474,6 +1555,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int inputHeightSingle = 30;
 	const int inputHeightDouble = 54;
 	const int sendWidth = 92;
+	const int contextUsageWidth = 82;
 	const int clearHistoryWidth = 26;
 	const int restoreHistoryWidth = 26;
 	const int openSettingsWidth = 26;
@@ -1484,8 +1566,9 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const bool showInlineConfirm = HasVisibleInlineConfirm(ctx);
 
 	const int contentWidth = (std::max)(120, clientWidth - margin * 2);
-	const int inputWidth = (std::max)(80, contentWidth - sendWidth - gap);
-	const int sendX = margin + inputWidth + gap;
+	const int inputWidth = (std::max)(80, contentWidth - contextUsageWidth - sendWidth - gap * 2);
+	const int contextUsageX = margin + inputWidth + gap;
+	const int sendX = contextUsageX + contextUsageWidth + gap;
 	const int inputY = clientHeight - bottomMargin - inputHeight;
 	const int mcpGuideY = inputY - mcpGuideGap - mcpGuideHeight;
 	const int actionRowY = mcpGuideY - gap - actionRowHeight;
@@ -1550,6 +1633,10 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		ShowWindow(ctx->hInput, SW_SHOW);
 		MoveWindow(ctx->hInput, margin, inputY, inputWidth, inputHeight, TRUE);
 	}
+	if (ctx->hContextUsage != nullptr) {
+		ShowWindow(ctx->hContextUsage, SW_SHOW);
+		MoveWindow(ctx->hContextUsage, contextUsageX, inputY, contextUsageWidth, inputHeight, TRUE);
+	}
 	if (ctx->hSend != nullptr) {
 		ShowWindow(ctx->hSend, SW_SHOW);
 		MoveWindow(ctx->hSend, sendX, inputY, sendWidth, inputHeight, TRUE);
@@ -1598,6 +1685,36 @@ void UpdateWebViewComposerState(ChatDialogContext* ctx, bool busy, bool stopRequ
 	script += stopRequested ? L"true" : L"false";
 	script += L");";
 	ExecuteWebViewScript(ctx, script);
+}
+
+void UpdateWebViewContextUsage(ChatDialogContext* ctx, const ContextUsageSnapshot& snapshot)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	std::wstring script = L"window.autolinkerSetContextUsage(";
+	script += snapshot.available ? L"true" : L"false";
+	script += L",";
+	script += std::to_wstring(snapshot.percent);
+	script += L",\"";
+	script += EscapeJsDoubleQuotedWide(WideFromLocal(snapshot.labelLocal));
+	script += L"\",\"";
+	script += EscapeJsDoubleQuotedWide(WideFromLocal(snapshot.titleLocal));
+	script += L"\",";
+	script += snapshot.estimated ? L"true" : L"false";
+	script += L");";
+	ExecuteWebViewScript(ctx, script);
+}
+
+void UpdateNativeContextUsage(ChatDialogContext* ctx, const ContextUsageSnapshot& snapshot)
+{
+	if (ctx == nullptr || ctx->hContextUsage == nullptr) {
+		return;
+	}
+	const std::wstring label = WideFromLocal(snapshot.labelLocal.empty()
+		? LocalFromWide(L"\u4e0a\u4e0b\u6587 --")
+		: snapshot.labelLocal);
+	SetWindowTextW(ctx->hContextUsage, label.c_str());
 }
 
 void ClearWebViewInput(ChatDialogContext* ctx)
@@ -1876,17 +1993,7 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												const std::string action = payload.contains("action") && payload["action"].is_string()
 													? payload["action"].get<std::string>()
 													: std::string();
-												if (action == "copy_code") {
-													const std::string text = payload.contains("text") && payload["text"].is_string()
-														? Utf8ToLocalText(payload["text"].get<std::string>())
-														: std::string();
-													const bool ok = !text.empty() && IDEFacade::Instance().SetClipboardText(text);
-													OutputStringToELog(std::format(
-														"[AI Chat][WebView2] copy code block ok={} bytes={}",
-														ok ? 1 : 0,
-														text.size()));
-												}
-												else if (action == "submit") {
+												if (action == "submit") {
 													const std::string text = payload.contains("text") && payload["text"].is_string()
 														? Utf8ToLocalText(payload["text"].get<std::string>())
 														: std::string();
@@ -1957,12 +2064,20 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												}
 												bool inFlight = false;
 												bool stopRequested = false;
+												ContextUsageSnapshot usageSnapshot;
 												{
+													AISettings settings = {};
+													const int fallbackContextWindow =
+														QueryChatSettingsState(settings, nullptr)
+															? AIService::ResolveContextWindowTokens(settings)
+															: 200000;
 													std::lock_guard<std::mutex> guard(g_session.mutex);
 													inFlight = g_session.requestInFlight;
 													stopRequested = IsStopRequestedLocked(g_session);
+													usageSnapshot = BuildContextUsageSnapshotLocked(g_session, fallbackContextWindow);
 												}
 												UpdateWebViewComposerState(navCtx, inFlight, stopRequested);
+												UpdateWebViewContextUsage(navCtx, usageSnapshot);
 												FocusWebViewInput(navCtx);
 												return S_OK;
 											}
@@ -2218,7 +2333,7 @@ std::string RenderMarkdownToHtml(const std::string& markdown)
 		}
 	};
 	auto openCodeBlock = [&]() {
-		html += "<div class=\"code-block\"><button class=\"code-copy-btn\" type=\"button\" title=\"复制代码\" aria-label=\"复制代码\"><svg viewBox='0 0 16 16' aria-hidden='true'><path d='M5.5 1.75A1.75 1.75 0 0 1 7.25 0h5A1.75 1.75 0 0 1 14 1.75v7.5A1.75 1.75 0 0 1 12.25 11h-5A1.75 1.75 0 0 1 5.5 9.25z'></path><path d='M2.75 4A1.75 1.75 0 0 0 1 5.75v7.5C1 14.216 1.784 15 2.75 15h5A1.75 1.75 0 0 0 9.5 13.25V13h-1v.25a.75.75 0 0 1-.75.75h-5a.75.75 0 0 1-.75-.75v-7.5A.75.75 0 0 1 2.75 5H3V4z'></path></svg></button><pre><code>";
+		html += "<div class=\"code-block\"><pre><code>";
 		inCodeBlock = true;
 	};
 	auto closeCodeBlock = [&]() {
@@ -2542,6 +2657,13 @@ std::string BuildHistoryHtmlLocked(
 	if (state.requestInFlight) {
 		const bool stopRequested = IsStopRequestedLocked(state);
 		const std::string preview = TrimAsciiCopy(state.streamingAssistantPreview);
+		std::string activityText;
+		for (const std::string& line : state.agentActivityLines) {
+			if (!activityText.empty()) {
+				activityText += "\r\n";
+			}
+			activityText += line;
+		}
 		if (!preview.empty()) {
 			appendMessageCard(body, SessionRole::Assistant, "AI", state.streamingAssistantPreview, true);
 			appendMessageCard(
@@ -2550,7 +2672,9 @@ std::string BuildHistoryHtmlLocked(
 				LocalFromWide(L"系统"),
 				stopRequested
 					? LocalFromWide(L"已发出停止请求，等待当前步骤结束...")
-					: LocalFromWide(L"AI 正在生成（流式）..."),
+					: (activityText.empty()
+						? LocalFromWide(L"AI 正在生成（流式）...")
+						: activityText),
 				false);
 		}
 		else {
@@ -2560,7 +2684,9 @@ std::string BuildHistoryHtmlLocked(
 				LocalFromWide(L"系统"),
 				stopRequested
 					? LocalFromWide(L"正在中断 AI 请求...")
-					: LocalFromWide(L"等待 AI 返回..."),
+					: (activityText.empty()
+						? LocalFromWide(L"等待 AI 返回...")
+						: activityText),
 				false);
 		}
 	}
@@ -2607,6 +2733,13 @@ std::string BuildHistoryTextLocked(
 	if (state.requestInFlight) {
 		const bool stopRequested = IsStopRequestedLocked(state);
 		const std::string preview = TrimAsciiCopy(state.streamingAssistantPreview);
+		std::string activityText;
+		for (const std::string& line : state.agentActivityLines) {
+			if (!activityText.empty()) {
+				activityText += "\r\n";
+			}
+			activityText += line;
+		}
 		if (!preview.empty()) {
 			text += "[AI]\r\n";
 			text += state.streamingAssistantPreview;
@@ -2614,13 +2747,17 @@ std::string BuildHistoryTextLocked(
 			text += "[" + LocalFromWide(L"\u7cfb\u7edf") + "]\r\n"
 				+ (stopRequested
 					? LocalFromWide(L"\u5df2\u53d1\u51fa\u505c\u6b62\u8bf7\u6c42\uff0c\u7b49\u5f85\u5f53\u524d\u6b65\u9aa4\u7ed3\u675f...")
-					: LocalFromWide(L"AI \u6b63\u5728\u751f\u6210\uff08\u6d41\u5f0f\uff09...")) + "\r\n";
+					: (activityText.empty()
+						? LocalFromWide(L"AI \u6b63\u5728\u751f\u6210\uff08\u6d41\u5f0f\uff09...")
+						: activityText)) + "\r\n";
 		}
 		else {
 			text += "[" + LocalFromWide(L"\u7cfb\u7edf") + "]\r\n"
 				+ (stopRequested
 					? LocalFromWide(L"\u6b63\u5728\u4e2d\u65ad AI \u8bf7\u6c42...")
-					: LocalFromWide(L"\u7b49\u5f85 AI \u8fd4\u56de...")) + "\r\n";
+					: (activityText.empty()
+						? LocalFromWide(L"\u7b49\u5f85 AI \u8fd4\u56de...")
+						: activityText)) + "\r\n";
 		}
 	}
 	return text;
@@ -2697,6 +2834,7 @@ void RecoverInFlightIfNeeded(const std::string& reason)
 		g_session.activeRequestId = 0;
 		g_session.cancellation.reset();
 		g_session.streamingAssistantPreview.clear();
+		g_session.agentActivityLines.clear();
 		g_session.messages.push_back(SessionMessage{
 			SessionRole::System,
 			"Chat request auto-recovered: " + reason,
@@ -2710,6 +2848,39 @@ void RecoverInFlightIfNeeded(const std::string& reason)
 	if (recovered) {
 		SaveChatSessionSnapshotNow();
 	}
+}
+
+std::string BuildAgentActivityLine(const std::string& toolName, bool done, bool ok)
+{
+	std::string displayName = TrimAsciiCopy(toolName);
+	if (displayName.empty()) {
+		displayName = "<unknown>";
+	}
+	if (!done) {
+		return LocalFromWide(L"\u6b63\u5728\u8c03\u7528\u5de5\u5177\uff1a") + displayName;
+	}
+	return LocalFromWide(L"\u5de5\u5177\u5b8c\u6210\uff1a") + displayName + (ok ? " (ok)" : " (failed)");
+}
+
+void AppendAgentActivity(unsigned long long requestId, const std::string& line)
+{
+	const std::string trimmed = TrimAsciiCopy(line);
+	if (trimmed.empty()) {
+		return;
+	}
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight || g_session.activeRequestId != requestId) {
+			return;
+		}
+		g_session.agentActivityLines.push_back(trimmed);
+		if (g_session.agentActivityLines.size() > 12) {
+			g_session.agentActivityLines.erase(
+				g_session.agentActivityLines.begin(),
+				g_session.agentActivityLines.begin() + (g_session.agentActivityLines.size() - 12));
+		}
+	}
+	PostRefreshDialog();
 }
 
 void AppendStreamingAssistantDelta(unsigned long long requestId, const std::string& deltaLocalText)
@@ -2825,8 +2996,12 @@ void RunAIChatWorker(void* pParams)
 		result->chatResult = AIService::ExecuteChatWithTools(
 			request->contextMessages,
 			request->settings,
-			[cancellation = request->cancellation](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
-				return ExecuteToolCall(
+			[
+				cancellation = request->cancellation,
+				requestId = request->requestId
+			](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
+				AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, false, false));
+				std::string toolResult = ExecuteToolCall(
 					toolName,
 					argumentsJson,
 					outOk,
@@ -2834,6 +3009,8 @@ void RunAIChatWorker(void* pParams)
 					[cancellation]() {
 						return cancellation != nullptr && cancellation->IsCancelled();
 					});
+				AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, true, outOk));
+				return toolResult;
 			},
 			[requestId = request->requestId](const std::string& deltaText) {
 				AppendStreamingAssistantDelta(requestId, deltaText);
@@ -2893,6 +3070,7 @@ bool StartChatRequest(const std::string& userInput)
 		request->contextMessages = BuildContextMessagesLocked(g_session);
 		request->cancellation = std::make_shared<AIChatRequestCancellation>();
 		g_session.streamingAssistantPreview.clear();
+		g_session.agentActivityLines.clear();
 		g_session.requestInFlight = true;
 		g_session.activeRequestId = request->requestId;
 		g_session.cancellation = request->cancellation;
@@ -2906,6 +3084,7 @@ bool StartChatRequest(const std::string& userInput)
 		g_session.activeRequestId = 0;
 		g_session.cancellation.reset();
 		g_session.streamingAssistantPreview.clear();
+		g_session.agentActivityLines.clear();
         g_session.messages.push_back(SessionMessage{ SessionRole::System, "Failed to start background chat task.", false, true, "", "" });
 		PostRefreshDialog();
 		SaveChatSessionSnapshotNow();
@@ -3244,9 +3423,13 @@ void ClearChatHistory()
 		oldMessages.swap(g_session.messages);
 		oldSummary.swap(g_session.rollingSummary);
 		g_session.streamingAssistantPreview.clear();
+		g_session.agentActivityLines.clear();
 		g_session.requestInFlight = false;
 		g_session.activeRequestId = 0;
 		g_session.cancellation.reset();
+		g_session.lastInputTokens = 0;
+		g_session.hasLastUsage = false;
+		g_session.effectiveContextWindow = 0;
 		ResetChatSessionBindingLocked(g_session);
 	}
 	WorkspaceMirror::ResetAndCleanup();
@@ -3378,6 +3561,7 @@ void HandleChatTaskDone(LPARAM lParam)
 		g_session.activeRequestId = 0;
 		g_session.cancellation.reset();
 		g_session.streamingAssistantPreview.clear();
+		g_session.agentActivityLines.clear();
 
 		if (result->chatResult.hasUsage && result->chatResult.promptTokens > 0) {
 			g_session.lastInputTokens = result->chatResult.promptTokens;
@@ -3515,6 +3699,10 @@ void RefreshChatDialog(HWND hWnd)
 	std::string historyHtml;
 	bool inFlight = false;
 	bool stopRequested = false;
+	ContextUsageSnapshot usageSnapshot;
+	const int fallbackContextWindow = settingsReady
+		? AIService::ResolveContextWindowTokens(currentSettings)
+		: 200000;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		if (g_session.requestInFlight && g_session.activeRequestId == 0) {
@@ -3528,6 +3716,7 @@ void RefreshChatDialog(HWND hWnd)
 		}
 		inFlight = g_session.requestInFlight;
 		stopRequested = IsStopRequestedLocked(g_session);
+		usageSnapshot = BuildContextUsageSnapshotLocked(g_session, fallbackContextWindow);
 	}
 
 	const bool hideInlineConfirmForBusy = inFlight && HasVisibleInlineConfirm(ctx);
@@ -3565,7 +3754,12 @@ void RefreshChatDialog(HWND hWnd)
 		SetWindowTextW(ctx->hStop, stopRequested ? L"\u505c\u6b62\u4e2d..." : L"\u505c\u6b62");
 		ShowWindow(ctx->hStop, (nativeComposerVisible && inFlight) ? SW_SHOW : SW_HIDE);
 	}
+	if (ctx->hContextUsage != nullptr) {
+		ShowWindow(ctx->hContextUsage, nativeComposerVisible ? SW_SHOW : SW_HIDE);
+		UpdateNativeContextUsage(ctx, usageSnapshot);
+	}
 	UpdateWebViewComposerState(ctx, inFlight, stopRequested);
+	UpdateWebViewContextUsage(ctx, usageSnapshot);
 	if (hideInlineConfirmForBusy) {
 		LayoutAIChatDialog(hWnd, ctx);
 	}
@@ -3615,6 +3809,9 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hOpenSettings = CreateWindowW(L"STATIC", L"\u2699",
 			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			76, 442, 26, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_OPEN_SETTINGS), nullptr, nullptr);
+		ctx->hContextUsage = CreateWindowW(L"STATIC", L"\u4e0a\u4e0b\u6587 --",
+			WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE,
+			586, 476, 82, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CONTEXT_USAGE), nullptr, nullptr);
 		ctx->hClearConfirmText = CreateWindowW(L"STATIC", L"\u786e\u8ba4\u6e05\u7a7a\u5f53\u524d AI \u5bf9\u8bdd\uff1f\u6e05\u7a7a\u540e\u5c06\u5f00\u542f\u65b0\u4f1a\u8bdd\u3002",
 			WS_CHILD | SS_LEFT | SS_CENTERIMAGE,
 			14, 442, 540, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_CONFIRM_TEXT), nullptr, nullptr);
@@ -3649,6 +3846,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		SetDefaultFont(ctx->hClearHistory);
 		SetDefaultFont(ctx->hRestoreSession);
 		SetDefaultFont(ctx->hOpenSettings);
+		SetDefaultFont(ctx->hContextUsage);
 		SetDefaultFont(ctx->hClearConfirmText);
 		SetDefaultFont(ctx->hClearConfirmApply);
 		SetDefaultFont(ctx->hClearConfirmCancel);

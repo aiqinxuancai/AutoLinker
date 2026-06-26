@@ -27,6 +27,7 @@ body {
 	overflow: auto;
 	padding: 10px 10px 8px 10px;
 	box-sizing: border-box;
+	font-size: 12px;
 }
 
 #chat-root {
@@ -58,6 +59,34 @@ body {
 
 .right-actions {
 	margin-left: auto;
+}
+
+.context-usage {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 76px;
+	height: 30px;
+	border: 1px solid #d2d7de;
+	border-radius: 6px;
+	background: #fff;
+	color: #4b5563;
+	font: 12px/1 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	white-space: nowrap;
+	padding: 0 8px;
+	box-sizing: border-box;
+}
+
+.context-usage.warn {
+	border-color: #e0a83a;
+	color: #8a5a00;
+	background: #fff8e6;
+}
+
+.context-usage.danger {
+	border-color: #d96c61;
+	color: #9f1f17;
+	background: #fff1f0;
 }
 
 .input-wrap {
@@ -208,58 +237,11 @@ body {
 	margin: 0 0 8px 0;
 }
 
-.body .code-copy-btn {
-	position: absolute;
-	top: 8px;
-	right: 8px;
-	z-index: 1;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	width: 28px;
-	height: 28px;
-	border: 1px solid #d0d7de;
-	background: #ffffff;
-	color: #57606a;
-	border-radius: 6px;
-	padding: 0;
-	cursor: pointer;
-	box-shadow: 0 1px 2px rgba(31, 35, 40, .06);
-}
-
-.body .code-copy-btn:hover {
-	background: #f3f4f6;
-	color: #24292f;
-}
-
-.body .code-copy-btn:active {
-	background: #e9ebef;
-}
-
-.body .code-copy-btn svg {
-	width: 15px;
-	height: 15px;
-	fill: currentColor;
-	pointer-events: none;
-}
-
-.body .code-copy-btn.copied {
-	background: #e7f6ec;
-	border-color: #9dd3ae;
-	color: #146c2e;
-}
-
-.body .code-copy-btn.failed {
-	background: #fff1f0;
-	border-color: #ffb3ad;
-	color: #c62828;
-}
-
 .body pre {
 	overflow: auto;
 	background: #f6f8fa;
 	border-radius: 6px;
-	padding: 42px 10px 10px 10px;
+	padding: 10px;
 	white-space: pre-wrap;
 	word-break: break-word;
 	overflow-wrap: anywhere;
@@ -475,6 +457,7 @@ body {
 					</button>
 				</div>
 				<div class="right-actions">
+					<span id="context-usage" class="context-usage" title="&#x5F53;&#x524D;&#x4E0A;&#x4E0B;&#x6587;&#x4F7F;&#x7528;&#x7387;">&#x4E0A;&#x4E0B;&#x6587; --</span>
 					<button id="send-btn" class="btn primary" type="button">&#x53D1;&#x9001;</button>
 					<button id="stop-btn" class="btn" type="button" style="display:none;">&#x505C;&#x6B62;</button>
 				</div>
@@ -549,6 +532,23 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	}
 };
 
+window.autolinkerSetContextUsage = function(available, percent, label, title, estimated) {
+	var el = document.getElementById("context-usage");
+	if (!el) {
+		return;
+	}
+	var value = Number(percent) || 0;
+	el.textContent = label || "\u4E0A\u4E0B\u6587 --";
+	el.title = title || "\u5F53\u524D\u4E0A\u4E0B\u6587\u4F7F\u7528\u7387";
+	el.classList.toggle("warn", !!available && value >= 70 && value < 90);
+	el.classList.toggle("danger", !!available && value >= 90);
+	if (estimated) {
+		el.setAttribute("data-estimated", "1");
+	} else {
+		el.removeAttribute("data-estimated");
+	}
+};
+
 window.autolinkerClearInput = function() {
 	var input = document.getElementById("chat-input");
 	if (input) {
@@ -583,38 +583,6 @@ window.autolinkerFocusInput = function() {
 	function post(obj) {
 		if (window.chrome && window.chrome.webview) {
 			window.chrome.webview.postMessage(JSON.stringify(obj));
-		}
-	}
-
-	function setCopyState(btn, state) {
-		if (!btn) {
-			return;
-		}
-		var copied = state === "copied";
-		var failed = state === "failed";
-		btn.classList.toggle("copied", copied);
-		btn.classList.toggle("failed", failed);
-
-		var title = "\u590D\u5236\u4EE3\u7801";
-		if (copied) {
-			title = "\u5DF2\u590D\u5236";
-		} else if (failed) {
-			title = "\u590D\u5236\u5931\u8D25";
-		}
-
-		btn.setAttribute("title", title);
-		btn.setAttribute("aria-label", title);
-		if (btn._copyTimer) {
-			clearTimeout(btn._copyTimer);
-		}
-		if (state !== "idle") {
-			btn._copyTimer = setTimeout(function() {
-				btn.classList.remove("copied");
-				btn.classList.remove("failed");
-				btn.setAttribute("title", "\u590D\u5236\u4EE3\u7801");
-				btn.setAttribute("aria-label", "\u590D\u5236\u4EE3\u7801");
-				btn._copyTimer = 0;
-			}, 1600);
 		}
 	}
 
@@ -703,33 +671,6 @@ window.autolinkerFocusInput = function() {
 			sessionMenu.hidden = false;
 		}
 	};
-
-	function copyCode(btn) {
-		if (!btn) {
-			return;
-		}
-		var block = btn.closest(".code-block");
-		var code = block ? block.querySelector("code") : null;
-		var text = code ? (code.textContent || "") : "";
-		if (!text) {
-			setCopyState(btn, "failed");
-			return;
-		}
-		if (window.chrome && window.chrome.webview) {
-			post({ action: "copy_code", text: text });
-			setCopyState(btn, "copied");
-			return;
-		}
-		if (navigator.clipboard && navigator.clipboard.writeText) {
-			navigator.clipboard.writeText(text).then(function() {
-				setCopyState(btn, "copied");
-			}, function() {
-				setCopyState(btn, "failed");
-			});
-			return;
-		}
-		setCopyState(btn, "failed");
-	}
 
 	function doSend() {
 		if (!input || input.disabled) {
@@ -831,12 +772,6 @@ window.autolinkerFocusInput = function() {
 			post({ action: "open_settings" });
 			return;
 		}
-		var btn = e.target && e.target.closest ? e.target.closest(".code-copy-btn") : null;
-		if (!btn) {
-			return;
-		}
-		e.preventDefault();
-		copyCode(btn);
 	});
 
 	document.addEventListener("mousedown", function(e) {

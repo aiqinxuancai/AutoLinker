@@ -171,13 +171,20 @@ DWORD ComputeAiRetryDelayMs(int retryIndex)
 
 void LogAiRetryAttempt(const std::string& tag, int nextAttemptIndex, int statusCode, const std::string& responseBody)
 {
+	// reason 来自接口/网关返回的响应体；去掉首尾空白（尤其尾部 \r\n，否则 IDE 输出窗口会多空一行）。
+	std::string reason = AIService::Trim(responseBody);
+	if (reason.empty()) {
+		reason = statusCode == 0
+			? "<no response: network/transport failure>"
+			: "<empty response body>";
+	}
 	OutputStringToELog(std::format(
 		"[AI Chat][Retry] {} attempt {}/{} http={} reason={}",
 		tag,
 		nextAttemptIndex,
 		kAiRequestRetryCount + 1,
 		statusCode,
-		TruncateForLog(responseBody, 120)));
+		TruncateForLog(reason, 120)));
 }
 
 AIChatResult BuildCancelledChatResult(const std::string& partialContentLocal = std::string())
