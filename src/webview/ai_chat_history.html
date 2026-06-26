@@ -43,6 +43,46 @@ body {
 	letter-spacing: 0;
 	text-transform: uppercase;
 	white-space: nowrap;
+	cursor: pointer;
+}
+
+.topbar-left {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.update-tag {
+	display: inline-flex;
+	align-items: center;
+	height: 16px;
+	padding: 0 7px;
+	border-radius: 5px;
+	background: linear-gradient(110deg, #8839ef, #1e66f5);
+	color: #fff;
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: .6px;
+	line-height: 1;
+	text-decoration: none;
+	white-space: nowrap;
+	cursor: pointer;
+	box-shadow: 0 1px 4px rgba(136, 57, 239, .35);
+	animation: update-tag-pulse 1.9s ease-in-out infinite;
+}
+
+.update-tag[hidden] {
+	display: none;
+}
+
+.update-tag:hover {
+	filter: brightness(1.08);
+}
+
+@keyframes update-tag-pulse {
+	0%, 100% { box-shadow: 0 1px 4px rgba(136, 57, 239, .35); }
+	50% { box-shadow: 0 1px 9px rgba(30, 102, 245, .58); }
 }
 
 .topbar-actions {
@@ -650,7 +690,10 @@ body {
 <body>
 <div class="layout">
 	<div class="topbar">
-		<div class="topbar-brand">AUTOLINKER</div>
+		<div class="topbar-left">
+			<div class="topbar-brand mcp-guide-link" href="https://github.com/aiqinxuancai/AutoLinker">AUTOLINKER</div>
+			<a id="update-tag" class="update-tag mcp-guide-link" href="https://github.com/aiqinxuancai/AutoLinker/releases" title="&#x6709;&#x65B0;&#x7248;&#x672C;&#xFF0C;&#x70B9;&#x51FB;&#x67E5;&#x770B;" hidden>NEW</a>
+		</div>
 		<div class="topbar-actions">
 			<button id="new-session-btn" class="top-action" type="button" title="&#x65B0;&#x5EFA;&#x4F1A;&#x8BDD;" aria-label="&#x65B0;&#x5EFA;&#x4F1A;&#x8BDD;">
 				<svg viewBox="0 0 24 24" aria-hidden="true">
@@ -721,6 +764,13 @@ window.autolinkerSetChatHtml = function(html) {
 		if (scroll) {
 			scroll.scrollTop = scroll.scrollHeight;
 		}
+	}
+};
+
+window.autolinkerSetUpdateTag = function(show) {
+	var tag = document.getElementById("update-tag");
+	if (tag) {
+		tag.hidden = !show;
 	}
 };
 

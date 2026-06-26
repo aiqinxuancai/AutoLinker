@@ -72,6 +72,7 @@ constexpr UINT WM_AUTOLINKER_AI_CHAT_CLEAR_CONFIRMED = WM_APP + 210;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_CLEAR_CANCEL = WM_APP + 211;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_RESTORE_CONFIRMED = WM_APP + 212;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_RESTORE_CANCEL = WM_APP + 213;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_UPDATE_TAG = WM_APP + 214;
 constexpr UINT_PTR kHistoryWebViewFlushTimerId = 0xA17;
 
 constexpr int IDC_AI_CHAT_HISTORY = 2101;
@@ -105,6 +106,10 @@ constexpr const char* kChatMcpGuideUrl =
 	"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE";
 constexpr const char* kChatAgentWhitepaperUrl =
 	"https://github.com/aiqinxuancai/Awesome-E-Agent";
+constexpr const char* kChatHomeUrl =
+	"https://github.com/aiqinxuancai/AutoLinker";
+constexpr const char* kChatReleasesUrl =
+	"https://github.com/aiqinxuancai/AutoLinker/releases";
 
 enum class SessionRole {
 	System,
@@ -221,6 +226,7 @@ ConfigManager* g_configManager = nullptr;
 AIJsonConfig* g_aiJsonConfig = nullptr;
 HWND g_chatDialog = nullptr;
 bool g_chatTabAdded = false;
+std::atomic_bool g_updateAvailable = false;
 enum class ChatHostMode {
 	None,
 	LeftWorkArea,
@@ -1707,6 +1713,17 @@ void UpdateWebViewContextUsage(ChatDialogContext* ctx, const ContextUsageSnapsho
 	ExecuteWebViewScript(ctx, script);
 }
 
+void UpdateWebViewUpdateTag(ChatDialogContext* ctx)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	std::wstring script = L"window.autolinkerSetUpdateTag(";
+	script += g_updateAvailable.load() ? L"true" : L"false";
+	script += L");";
+	ExecuteWebViewScript(ctx, script);
+}
+
 void UpdateNativeContextUsage(ChatDialogContext* ctx, const ContextUsageSnapshot& snapshot)
 {
 	if (ctx == nullptr || ctx->hContextUsage == nullptr) {
@@ -1731,7 +1748,9 @@ void FocusWebViewInput(ChatDialogContext* ctx)
 bool IsAllowedChatExternalUrl(const std::string& url)
 {
 	return _stricmp(url.c_str(), kChatMcpGuideUrl) == 0 ||
-		_stricmp(url.c_str(), kChatAgentWhitepaperUrl) == 0;
+		_stricmp(url.c_str(), kChatAgentWhitepaperUrl) == 0 ||
+		_stricmp(url.c_str(), kChatHomeUrl) == 0 ||
+		_stricmp(url.c_str(), kChatReleasesUrl) == 0;
 }
 
 void OpenChatExternalUrl(HWND owner, const std::string& url)
@@ -2082,6 +2101,7 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												}
 												UpdateWebViewComposerState(navCtx, inFlight, stopRequested);
 												UpdateWebViewContextUsage(navCtx, usageSnapshot);
+												UpdateWebViewUpdateTag(navCtx);
 												FocusWebViewInput(navCtx);
 												return S_OK;
 											}
@@ -2700,9 +2720,11 @@ std::string BuildHistoryHtmlLocked(
 		body += EscapeHtml(LocalFromWide(L"需要做点什么？"));
 		body += "</div><div class=\"empty-state-links\">";
 		body += "<a class=\"mcp-guide-link\" href=\"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE\">";
-		body += EscapeHtml(LocalFromWide(L"推荐用Codex连接MCP"));
+		body += EscapeHtml(LocalFromWide(L"Codex连接AutoLinker MCP"));
 		body += "</a><a class=\"mcp-guide-link\" href=\"https://github.com/aiqinxuancai/Awesome-E-Agent\">";
-		body += EscapeHtml(LocalFromWide(L"必读：易语言 × AI Agent 实践白皮书"));
+		body += EscapeHtml(LocalFromWide(L"易语言 × AI Agent 实践白皮书"));
+		body += "</a><a class=\"mcp-guide-link\" href=\"https://github.com/aiqinxuancai/AutoLinker\">";
+		body += EscapeHtml(LocalFromWide(L"前往AutoLinker项目Github"));
 		body += "</a></div></div>";
 	}
 
@@ -4021,6 +4043,12 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		RefreshChatDialog(hWnd);
 		return 0;
 
+	case WM_AUTOLINKER_AI_CHAT_UPDATE_TAG:
+		if (ctx != nullptr) {
+			UpdateWebViewUpdateTag(ctx);
+		}
+		return 0;
+
 	case WM_CLOSE:
 		DestroyWindow(hWnd);
 		return 0;
@@ -4628,6 +4656,15 @@ bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 		return HandleToolExecRequest(lParam);
 	}
 	return false;
+}
+
+void SetUpdateAvailable(const std::string& latestVersion)
+{
+	(void)latestVersion;
+	g_updateAvailable.store(true);
+	if (g_chatDialog != nullptr && IsWindow(g_chatDialog)) {
+		PostMessageA(g_chatDialog, WM_AUTOLINKER_AI_CHAT_UPDATE_TAG, 0, 0);
+	}
 }
 
 bool ExecutePublicTool(const std::string& toolName, const std::string& argumentsJson, std::string& outResultJsonUtf8, bool& outOk)

@@ -320,6 +320,7 @@ void FneCheckNewVersion(void* pParams)
 				Version currentVersionObj(AUTOLINKER_VERSION);
 				if (nowGithubVersionObj > currentVersionObj) {
 					OutputStringToELog(std::format("有新版本：{}", nowGithubVersion));
+					AIChatFeature::SetUpdateAvailable(nowGithubVersion);
 				}
 			}
 			catch (const std::exception& e) {
