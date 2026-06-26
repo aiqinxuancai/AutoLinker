@@ -110,9 +110,9 @@ body {
 
 .composer {
 	flex: 0 0 auto;
-	border-top: 1px solid #d9d9d9;
-	background: #fbfbfb;
-	padding: 8px 10px 10px 10px;
+	border-top: 1px solid #d7dbe3;
+	background: #e6e9ef;
+	padding: 12px 12px 14px 12px;
 	box-sizing: border-box;
 	position: relative;
 }
@@ -174,7 +174,6 @@ body {
 	align-items: center;
 	justify-content: center;
 	gap: 24px;
-	min-height: 72vh;
 	padding: 28px 20px;
 	box-sizing: border-box;
 	text-align: center;
@@ -217,7 +216,7 @@ body {
 	text-decoration: none;
 	padding: 8px 18px;
 	border: 1px solid rgba(30, 102, 245, .26);
-	border-radius: 999px;
+	border-radius: 6px;
 	background: rgba(30, 102, 245, .06);
 	transition: color .15s ease, background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
 	cursor: pointer;
@@ -241,72 +240,96 @@ body {
 	max-height: 220px;
 	resize: none;
 	box-sizing: border-box;
-	border: 1px solid #cfcfcf;
-	border-radius: 3px;
-	padding: 8px 42px 30px 10px;
+	border: 1px solid #d4d9e3;
+	border-radius: 6px;
+	padding: 11px 44px 32px 12px;
 	font: 13px/1.5 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	color: #4c4f69;
 	outline: none;
 	background: #fff;
 	overflow: hidden;
+	box-shadow: 0 1px 2px rgba(76, 79, 105, .05);
+	transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+#chat-input::placeholder {
+	color: #9ca3b4;
 }
 
 #chat-input:focus {
-	border-color: #7aa7e0;
-	box-shadow: 0 0 0 2px rgba(64, 127, 214, .12);
+	border-color: #1e66f5;
+	box-shadow: 0 0 0 3px rgba(30, 102, 245, .12), 0 1px 3px rgba(30, 102, 245, .08);
 }
 
 .btn {
-	border: 1px solid #c8c8c8;
+	border: 1px solid #d2d7e0;
 	background: #fff;
 	border-radius: 6px;
-	padding: 6px 12px;
+	padding: 6px 14px;
 	font: 12px "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	color: #4c4f69;
 	cursor: pointer;
+	transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+
+.btn:hover {
+	background: #eef1f6;
+	border-color: #c2c8d4;
 }
 
 .btn.primary {
-	background: #0b63c9;
-	border-color: #0b63c9;
+	background: #1e66f5;
+	border-color: #1e66f5;
 	color: #fff;
+}
+
+.btn.primary:hover {
+	background: #1554d1;
+	border-color: #1554d1;
 }
 
 .send-icon-btn {
 	position: absolute;
 	right: 8px;
 	bottom: 8px;
-	width: 24px;
-	height: 24px;
+	width: 28px;
+	height: 28px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	border: 0;
-	border-radius: 0;
+	border-radius: 6px;
 	background: transparent;
-	color: #4c4f69;
+	color: #1e66f5;
 	padding: 0;
 	cursor: pointer;
+	transition: color .15s ease, transform .1s ease;
 }
 
 .send-icon-btn:hover {
-	color: #0b63c9;
+	color: #1554d1;
+}
+
+.send-icon-btn:active {
+	transform: scale(.9);
 }
 
 .send-icon-btn:focus-visible {
-	outline: 1px solid #4c4f69;
+	outline: 2px solid rgba(30, 102, 245, .4);
 	outline-offset: 2px;
 }
 
 .send-icon-btn:disabled {
-	opacity: .45;
+	color: #b9bfca;
 	cursor: default;
 }
 
 .send-icon-btn svg {
-	width: 16px;
-	height: 16px;
+	width: 17px;
+	height: 17px;
 	fill: none;
 	stroke: currentColor;
-	stroke-width: 1.5;
+	stroke-width: 1.6;
 	stroke-linecap: round;
 	stroke-linejoin: round;
 	pointer-events: none;
@@ -510,6 +533,11 @@ body {
 	background: #b42318;
 	border-color: #b42318;
 	color: #fff;
+}
+
+.btn.danger:hover {
+	background: #9a1d14;
+	border-color: #9a1d14;
 }
 
 .muted {
