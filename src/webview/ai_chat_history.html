@@ -6,8 +6,8 @@
 html, body {
 	margin: 0;
 	padding: 0;
-	background: #ffffff;
-	color: #222;
+	background: #e6e9ef;
+	color: #4c4f69;
 	font: 13px/1.6 "Microsoft YaHei UI", "Segoe UI", sans-serif;
 }
 
@@ -20,18 +20,90 @@ body {
 	flex-direction: column;
 	height: 100vh;
 	box-sizing: border-box;
+	position: relative;
+}
+
+.topbar {
+	flex: 0 0 36px;
+	height: 36px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	background: #e6e9ef;
+	padding: 0 10px 0 12px;
+	box-sizing: border-box;
+	position: relative;
+}
+
+.topbar-brand {
+	color: #8839ef;
+	font-size: 13px;
+	font-weight: 300;
+	line-height: 1;
+	letter-spacing: 0;
+	text-transform: uppercase;
+	white-space: nowrap;
+}
+
+.topbar-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.top-action {
+	width: 24px;
+	height: 24px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+	color: #4c4f69;
+	padding: 0;
+	cursor: pointer;
+}
+
+.top-action:hover {
+	color: #0b63c9;
+}
+
+.top-action:focus-visible {
+	outline: 1px solid #4c4f69;
+	outline-offset: 2px;
+}
+
+.top-action:disabled {
+	opacity: .45;
+	cursor: default;
+}
+
+.top-action svg {
+	width: 14px;
+	height: 14px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.25;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	pointer-events: none;
 }
 
 .history {
 	flex: 1 1 auto;
+	min-height: 0;
 	overflow: auto;
-	padding: 10px 10px 8px 10px;
+	padding: 0;
 	box-sizing: border-box;
+	background: #e6e9ef;
 	font-size: 12px;
+	color: #4c4f69;
 }
 
 #chat-root {
 	min-height: 100%;
+	background: #e6e9ef;
 }
 
 .composer {
@@ -167,44 +239,43 @@ body {
 }
 
 .msg {
-	border: 1px solid #d8d8d8;
-	border-radius: 6px;
-	padding: 8px 10px;
-	margin: 0 0 10px 0;
+	border: 0;
+	border-bottom: 1pt solid #e6e9ef;
+	border-radius: 0;
+	padding: 10px 12px;
+	margin: 0;
 	box-sizing: border-box;
 	overflow: hidden;
+	color: #4c4f69;
 }
 
 .msg.user {
-	background: #f7fbff;
-	border-color: #c8ddf5;
+	background: #eff1f5;
 }
 
 .msg.assistant {
-	background: #ffffff;
-	border-color: #d8d8d8;
+	background: #e6e9ef;
 }
 
 .msg.tool {
-	background: #fbfbfb;
-	border-color: #dddddd;
+	background: #e6e9ef;
 }
 
 .msg.system {
-	background: #fff9e8;
-	border-color: #ecd9a1;
+	background: #e6e9ef;
 }
 
 .role {
 	font-size: 12px;
 	font-weight: 700;
-	color: #5a5a5a;
+	color: #4c4f69;
 	margin-bottom: 6px;
 }
 
 .body {
 	overflow-wrap: anywhere;
 	word-break: break-word;
+	color: #4c4f69;
 }
 
 .body p,
@@ -217,6 +288,10 @@ body {
 .body h5,
 .body h6 {
 	margin: 0 0 8px 0;
+}
+
+.body > :last-child {
+	margin-bottom: 0;
 }
 
 .body h1,
@@ -255,7 +330,7 @@ body {
 
 .body code {
 	font-family: Consolas, "Courier New", monospace;
-	background: #f2f2f2;
+	background: #cfd1d7;
 	border-radius: 4px;
 	padding: 1px 4px;
 	overflow-wrap: anywhere;
@@ -269,7 +344,7 @@ body {
 
 .body pre {
 	overflow: auto;
-	background: #f6f8fa;
+	background: #ccd0da;
 	border-radius: 6px;
 	padding: 10px;
 	white-space: pre-wrap;
@@ -348,8 +423,8 @@ body {
 
 .session-menu {
 	position: absolute;
-	left: 10px;
-	bottom: 58px;
+	top: 34px;
+	right: 8px;
 	width: 320px;
 	max-height: 280px;
 	overflow: auto;
@@ -451,6 +526,31 @@ body {
 </head>
 <body>
 <div class="layout">
+	<div class="topbar">
+		<div class="topbar-brand">AUTOLINKER</div>
+		<div class="topbar-actions">
+			<button id="new-session-btn" class="top-action" type="button" title="&#x65B0;&#x5EFA;&#x4F1A;&#x8BDD;" aria-label="&#x65B0;&#x5EFA;&#x4F1A;&#x8BDD;">
+				<svg viewBox="0 0 24 24" aria-hidden="true">
+					<line x1="12" y1="5" x2="12" y2="19"></line>
+					<line x1="5" y1="12" x2="19" y2="12"></line>
+				</svg>
+			</button>
+			<button id="restore-btn" class="top-action" type="button" title="&#x5386;&#x53F2;&#x4F1A;&#x8BDD;" aria-label="&#x5386;&#x53F2;&#x4F1A;&#x8BDD;">
+				<svg viewBox="0 0 24 24" aria-hidden="true">
+					<path d="M3 12a9 9 0 1 0 3-6.7"></path>
+					<path d="M3 5v5h5"></path>
+					<path d="M12 7v5l3 2"></path>
+				</svg>
+			</button>
+			<button id="settings-btn" class="top-action" type="button" title="AI Key &#x8BBE;&#x7F6E;" aria-label="AI Key &#x8BBE;&#x7F6E;">
+				<svg viewBox="0 0 24 24" aria-hidden="true">
+					<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.08a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.08a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.08a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
+					<circle cx="12" cy="12" r="3"></circle>
+				</svg>
+			</button>
+		</div>
+		<div id="session-menu" class="session-menu" hidden></div>
+	</div>
 	<div id="history-scroll" class="history">
 		<div id="chat-root"></div>
 	</div>
@@ -460,39 +560,21 @@ body {
 				<a class="mcp-guide-link" href="https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE">&#x63A8;&#x8350;&#x7528;Codex&#x8FDE;&#x63A5;MCP</a>
 				<a class="mcp-guide-link" href="https://github.com/aiqinxuancai/Awesome-E-Agent">&#x5FC5;&#x8BFB;&#xFF1A;&#x6613;&#x8BED;&#x8A00; &#xD7; AI Agent &#x5B9E;&#x8DF5;&#x767D;&#x76AE;&#x4E66;</a>
 			</div>
-			<textarea id="chat-input" placeholder="&#x8F93;&#x5165;&#x6D88;&#x606F;&#xFF0C;Enter &#x53D1;&#x9001;&#xFF0C;Ctrl+Enter &#x6362;&#x884C;"></textarea>
+			<textarea id="chat-input" placeholder="&#x8F93;&#x5165;&#x6D88;&#x606F;&#xFF0C;Enter &#x53D1;&#x9001;&#xFF0C;Shift/Ctrl+Enter &#x6362;&#x884C;"></textarea>
 			<div id="clear-confirm" class="clear-confirm" hidden>
-				<div class="clear-confirm-text">&#x786E;&#x8BA4;&#x6E05;&#x7A7A;&#x5F53;&#x524D; AI &#x5BF9;&#x8BDD;&#xFF1F;&#x6E05;&#x7A7A;&#x540E;&#x5C06;&#x5F00;&#x542F;&#x65B0;&#x4F1A;&#x8BDD;&#x3002;</div>
+				<div class="clear-confirm-text">&#x5F53;&#x524D; AI &#x5BF9;&#x8BDD;&#x5C06;&#x4FDD;&#x5B58;&#x5230;&#x5386;&#x53F2;&#xFF0C;&#x5E76;&#x5F00;&#x542F;&#x65B0;&#x4F1A;&#x8BDD;&#x3002;</div>
 				<div class="clear-confirm-actions">
-					<button id="clear-confirm-btn" class="btn danger" type="button">&#x6E05;&#x7A7A;</button>
+					<button id="clear-confirm-btn" class="btn danger" type="button">&#x65B0;&#x5EFA;</button>
 					<button id="clear-cancel-btn" class="btn" type="button">&#x53D6;&#x6D88;</button>
 				</div>
 			</div>
 			<div class="actions">
-				<div class="left-actions">
-					<button id="clear-btn" class="btn icon-btn" type="button" title="&#x6E05;&#x7A7A;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;" aria-label="&#x6E05;&#x7A7A;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;">
-						<svg viewBox="0 0 24 24" aria-hidden="true">
-							<path d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v8h-2V9zm4 0h2v8h-2V9zM7 9h2v8H7V9zm1 11h8c1.1 0 2-.9 2-2V8H6v10c0 1.1.9 2 2 2z"></path>
-						</svg>
-					</button>
-					<button id="restore-btn" class="btn icon-btn" type="button" title="&#x6062;&#x590D;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;" aria-label="&#x6062;&#x590D;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;">
-						<svg viewBox="0 0 24 24" aria-hidden="true">
-							<path d="M12 5a7 7 0 1 1-6.57 9.42h2.13A5 5 0 1 0 7 12H3l3.2-3.2L9 11H7a5 5 0 1 0 5-5z"></path>
-						</svg>
-					</button>
-					<button id="settings-btn" class="btn icon-btn" type="button" title="AI Key &#x8BBE;&#x7F6E;" aria-label="AI Key &#x8BBE;&#x7F6E;">
-						<svg viewBox="0 0 24 24" aria-hidden="true">
-							<path d="M19.43 12.98c.04-.32.07-.65.07-.98s-.02-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.37-.31-.6-.22l-2.49 1a7.28 7.28 0 0 0-1.69-.98L14.5 2.42A.49.49 0 0 0 14.01 2h-4c-.25 0-.46.18-.5.42L9.13 5.07c-.61.23-1.18.56-1.69.98l-2.49-1a.49.49 0 0 0-.6.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.08.65-.08.98s.03.66.08.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.12.22.37.31.6.22l2.49-1c.51.4 1.08.73 1.69.98l.38 2.65c.04.24.25.42.5.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.18-.58 1.69-.98l2.49 1c.23.08.48 0 .6-.22l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65zM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5z"></path>
-						</svg>
-					</button>
-				</div>
 				<div class="right-actions">
 					<span id="context-usage" class="context-usage" title="&#x5F53;&#x524D;&#x4E0A;&#x4E0B;&#x6587;&#x4F7F;&#x7528;&#x7387;">&#x4E0A;&#x4E0B;&#x6587; --</span>
 					<button id="send-btn" class="btn primary" type="button">&#x53D1;&#x9001;</button>
 					<button id="stop-btn" class="btn" type="button" style="display:none;">&#x505C;&#x6B62;</button>
 				</div>
 			</div>
-			<div id="session-menu" class="session-menu" hidden></div>
 			<div id="restore-confirm" class="page-msgbox" role="alertdialog" aria-labelledby="restore-confirm-title" aria-describedby="restore-confirm-text" hidden>
 				<div id="restore-confirm-title" class="page-msgbox-title">&#x6062;&#x590D;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;</div>
 				<div id="restore-confirm-text" class="page-msgbox-text">&#x5F53;&#x524D;&#x5DF2;&#x6709;&#x5BF9;&#x8BDD;&#xFF0C;&#x6062;&#x590D;&#x5386;&#x53F2;&#x4F1A;&#x8BDD;&#x5C06;&#x8986;&#x76D6;&#x5F53;&#x524D;&#x5185;&#x5BB9;&#xFF0C;&#x662F;&#x5426;&#x7EE7;&#x7EED;&#xFF1F;</div>
@@ -519,7 +601,7 @@ window.autolinkerSetChatHtml = function(html) {
 window.autolinkerSetBusy = function(busy, stopRequested) {
 	var send = document.getElementById("send-btn");
 	var stop = document.getElementById("stop-btn");
-	var clear = document.getElementById("clear-btn");
+	var newSession = document.getElementById("new-session-btn");
 	var restore = document.getElementById("restore-btn");
 	var settings = document.getElementById("settings-btn");
 	var clearConfirm = document.getElementById("clear-confirm");
@@ -536,8 +618,8 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 		stop.textContent = isStopping ? "\u505C\u6B62\u4E2D..." : "\u505C\u6B62";
 		stop.style.display = isBusy ? "" : "none";
 	}
-	if (clear) {
-		clear.disabled = isBusy;
+	if (newSession) {
+		newSession.disabled = isBusy;
 	}
 	if (restore) {
 		restore.disabled = isBusy;
@@ -598,7 +680,7 @@ window.autolinkerFocusInput = function() {
 	var input = document.getElementById("chat-input");
 	var send = document.getElementById("send-btn");
 	var stop = document.getElementById("stop-btn");
-	var clear = document.getElementById("clear-btn");
+	var newSession = document.getElementById("new-session-btn");
 	var restore = document.getElementById("restore-btn");
 	var settings = document.getElementById("settings-btn");
 	var clearConfirm = document.getElementById("clear-confirm");
@@ -721,11 +803,12 @@ window.autolinkerFocusInput = function() {
 	if (stop) {
 		stop.addEventListener("click", doStop);
 	}
-	if (clear) {
-		clear.addEventListener("click", function() {
+	if (newSession) {
+		newSession.addEventListener("click", function() {
 			hideSessionMenu();
 			hideRestoreConfirm();
-			post({ action: "clear" });
+			hideClearConfirm();
+			post({ action: "new_session" });
 		});
 	}
 	if (clearConfirmBtn) {
@@ -828,7 +911,7 @@ window.autolinkerFocusInput = function() {
 
 	if (input) {
 		input.addEventListener("keydown", function(e) {
-			if (e.key === "Enter" && !e.ctrlKey) {
+			if (e.key === "Enter" && !e.ctrlKey && !e.shiftKey) {
 				e.preventDefault();
 				doSend();
 			}

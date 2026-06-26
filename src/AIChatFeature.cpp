@@ -1343,8 +1343,8 @@ void PostChatAction(HWND hWnd, UINT_PTR action)
 		return;
 	}
 	if (action == kActionClear) {
-		OutputStringToELog("[AI Chat][UI] click action: clear");
-		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_CLEAR, 0, 0);
+		OutputStringToELog("[AI Chat][UI] click action: new_session");
+		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_CLEAR_CONFIRMED, 0, 0);
 	}
 	else if (action == kActionClearConfirm) {
 		auto* ctx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(hParent, GWLP_USERDATA));
@@ -1466,12 +1466,12 @@ void UpdateNativeInlineConfirmText(ChatDialogContext* ctx)
 			ctx->hClearConfirmText,
 			ctx->restoreConfirmVisible
 				? L"\u5f53\u524d\u5df2\u6709\u5bf9\u8bdd\uff0c\u6062\u590d\u5386\u53f2\u4f1a\u8bdd\u5c06\u8986\u76d6\u5f53\u524d\u5185\u5bb9\uff0c\u662f\u5426\u7ee7\u7eed\uff1f"
-				: L"\u786e\u8ba4\u6e05\u7a7a\u5f53\u524d AI \u5bf9\u8bdd\uff1f\u6e05\u7a7a\u540e\u5c06\u5f00\u542f\u65b0\u4f1a\u8bdd\u3002");
+				: L"\u5f53\u524d AI \u5bf9\u8bdd\u5c06\u4fdd\u5b58\u5230\u5386\u53f2\uff0c\u5e76\u5f00\u542f\u65b0\u4f1a\u8bdd\u3002");
 	}
 	if (ctx->hClearConfirmApply != nullptr) {
 		SetWindowTextW(
 			ctx->hClearConfirmApply,
-			ctx->restoreConfirmVisible ? L"\u8986\u76d6\u6062\u590d" : L"\u6e05\u7a7a");
+			ctx->restoreConfirmVisible ? L"\u8986\u76d6\u6062\u590d" : L"\u65b0\u5efa");
 	}
 }
 
@@ -1999,6 +1999,9 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 														? Utf8ToLocalText(payload["text"].get<std::string>())
 														: std::string();
 													HandleChatSubmitUi(hWnd, msgCtx, text);
+												}
+												else if (action == "new_session") {
+													HandleChatClearConfirmedUi(hWnd, msgCtx);
 												}
 												else if (action == "clear") {
 													HandleChatClearUi(hWnd, msgCtx);
@@ -3135,18 +3138,6 @@ void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx)
 		return;
 	}
 	HideWebViewSessionMenu(ctx);
-	bool needConfirm = false;
-	if (!QueryClearChatHistoryAvailability(needConfirm)) {
-		HideChatConfirmInPage(ctx);
-		LayoutAIChatDialog(hWnd, ctx);
-		FocusChatComposerInput(ctx);
-		return;
-	}
-	if (needConfirm) {
-		ShowClearChatConfirmInPage(hWnd, ctx);
-		return;
-	}
-
 	HandleChatClearConfirmedUi(hWnd, ctx);
 }
 
@@ -3801,7 +3792,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 				nullptr,
 				nullptr);
 		}
-		ctx->hClearHistory = CreateWindowW(L"STATIC", L"\u2715",
+		ctx->hClearHistory = CreateWindowW(L"STATIC", L"+",
 			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			14, 442, 26, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_HISTORY), nullptr, nullptr);
 		ctx->hRestoreSession = CreateWindowW(L"STATIC", L"\u21BB",
@@ -3813,10 +3804,10 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hContextUsage = CreateWindowW(L"STATIC", L"\u4e0a\u4e0b\u6587 --",
 			WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE,
 			586, 476, 82, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CONTEXT_USAGE), nullptr, nullptr);
-		ctx->hClearConfirmText = CreateWindowW(L"STATIC", L"\u786e\u8ba4\u6e05\u7a7a\u5f53\u524d AI \u5bf9\u8bdd\uff1f\u6e05\u7a7a\u540e\u5c06\u5f00\u542f\u65b0\u4f1a\u8bdd\u3002",
+		ctx->hClearConfirmText = CreateWindowW(L"STATIC", L"\u5f53\u524d AI \u5bf9\u8bdd\u5c06\u4fdd\u5b58\u5230\u5386\u53f2\uff0c\u5e76\u5f00\u542f\u65b0\u4f1a\u8bdd\u3002",
 			WS_CHILD | SS_LEFT | SS_CENTERIMAGE,
 			14, 442, 540, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_CONFIRM_TEXT), nullptr, nullptr);
-		ctx->hClearConfirmApply = CreateWindowW(L"STATIC", L"\u6e05\u7a7a",
+		ctx->hClearConfirmApply = CreateWindowW(L"STATIC", L"\u65b0\u5efa",
 			WS_CHILD | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			560, 442, 52, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_CONFIRM_APPLY), nullptr, nullptr);
 		ctx->hClearConfirmCancel = CreateWindowW(L"STATIC", L"\u53d6\u6d88",
