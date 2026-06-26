@@ -89,13 +89,25 @@ jobs:
       run: |
         powershell Compress-Archive -Path "bin/${{env.BUILD_CONFIGURATION}}/AutoLinker.fne" -DestinationPath "AutoLinker-${{steps.release_meta.outputs.version_label}}.zip"
 
+    - name: Generate AI Release Notes
+      shell: pwsh
+      env:
+        RELEASE_TAG: ${{ steps.release_meta.outputs.raw_tag }}
+        RELEASE_NAME: AutoLinker ${{ steps.release_meta.outputs.version_label }}
+        AI_NOTES_API_KEY: ${{ secrets.AI_NOTES_API_KEY }}
+        AI_NOTES_BASE_URL: ${{ vars.AI_NOTES_BASE_URL }}
+        AI_NOTES_MODEL: ${{ vars.AI_NOTES_MODEL }}
+      run: |
+        ./scripts/generate_ai_release_notes.ps1 -OutputPath release_notes.md
+        Get-Content release_notes.md -Encoding utf8BOM | Out-String | Write-Output
+
     - name: Create a Release
       uses: ncipollo/release-action@v1
       with:
         tag: ${{ steps.release_meta.outputs.raw_tag }}
         name: AutoLinker ${{ steps.release_meta.outputs.version_label }}
         artifacts: "AutoLinker-${{steps.release_meta.outputs.version_label}}.zip"
+        bodyFile: release_notes.md
         prerelease: ${{ steps.release_meta.outputs.prerelease }}
         makeLatest: ${{ steps.release_meta.outputs.make_latest }}
         token: ${{ secrets.GITHUB_TOKEN }}
-        generateReleaseNotes: true
