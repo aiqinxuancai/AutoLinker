@@ -302,19 +302,13 @@ url = "http://127.0.0.1:19207/mcp"
       pRetData->m_int = (searchResult != inputString.end()) ? std::distance(inputString.begin(), searchResult) + 1 : -1;
   }
   ```
-  * 使用Release编译为32位lib，将lib的路径添加到`e\AutoLinker\ForceLinkLib.ini`中，或通过“AutoLinker 核心库函数重写设置”页面配置。`linker`留空表示所有链接器均使用此Lib，填写链接器名称则仅在当前源码选择的链接器名称包含该文本时使用：
-    ```ini
-    [rule.1]
-    enabled=1
-    linker=vc2022+pf
-    path=D:\git\X\Release\TestCore.lib
+  * 使用Release编译为32位lib，然后在易语言 IDE 的「工具」菜单中打开 **AutoLinker 核心库函数重写设置**，在设置页中维护要强制链接的 .lib 列表：
+    * **Lib 路径**：要追加链接的 `.lib` 文件路径（会被排在 `krnln_static.lib` 之前以覆盖同名符号）。
+    * **链接器匹配**：留空表示对所有链接器生效；填写文本则仅当当前源码所选链接器名称**包含**该文本时才使用此 Lib（例如填 `vc2022+pf` 表示仅 VC2022 链接器生效）。
+    * **启用开关**：可临时停用某条规则而不必删除。
+    * 点击保存即生效，下次静态编译时自动按规则追加链接。
 
-    [rule.2]
-    enabled=1
-    linker=
-    path=D:\git\X\Release\CommonOverride.lib
-    ```
-    **注意**：例子TestCore使用C++20，必须使用VC2022链接器才可链接
+    **注意**：例子TestCore使用C++20，必须使用VC2022链接器才可链接；该设置页基于 WebView2，请确保系统已安装 WebView2 运行时。
     
   * 进行静态编译既可，会提示如下内容，不会影响代码运行
     ```
