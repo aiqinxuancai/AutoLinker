@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -53,6 +53,7 @@ var _linkers = [];        // [{name, content}]
 var _initialSnapshot = "";
 var _selectedIndex = -1;
 var _dirty = false;
+var _defaultContent = "";
 
 function $(id) { return document.getElementById(id); }
 
@@ -64,7 +65,7 @@ function post(payload) {
 
 function snapshot() {
 	return JSON.stringify(_linkers.map(function (l) {
-		return { name: l.name, content: l.content };
+		return { name: l.name, content: l.content, isDefault: !!l.isDefault };
 	}));
 }
 
@@ -84,7 +85,7 @@ function renderSelect() {
 	_linkers.forEach(function (l, i) {
 		var opt = document.createElement("option");
 		opt.value = String(i);
-		opt.textContent = l.name;
+		opt.textContent = l.isDefault ? (l.name + "（默认）") : l.name;
 		sel.appendChild(opt);
 	});
 	if (_selectedIndex >= 0 && _selectedIndex < _linkers.length) {
@@ -92,9 +93,12 @@ function renderSelect() {
 	}
 	$("linkerCountBadge").textContent = _linkers.length + " 个链接器";
 	var empty = _linkers.length === 0;
-	$("renameBtn").disabled = empty;
-	$("deleteBtn").disabled = empty;
+	var current = (_selectedIndex >= 0 && _selectedIndex < _linkers.length) ? _linkers[_selectedIndex] : null;
+	var readonly = !current || !!current.isDefault;
+	$("renameBtn").disabled = empty || readonly;
+	$("deleteBtn").disabled = empty || readonly;
 	$("linkerContent").disabled = empty;
+	$("linkerContent").readOnly = !!readonly;
 }
 
 function showSelected() {
@@ -144,7 +148,7 @@ function onAdd() {
 		window.alert("已存在同名链接器：" + name);
 		return;
 	}
-	_linkers.push({ name: name, content: "" });
+	_linkers.push({ name: name, content: _defaultContent || "" });
 	selectIndex(_linkers.length - 1);
 	recomputeDirty();
 	$("linkerContent").focus();
@@ -152,6 +156,7 @@ function onAdd() {
 
 function onRename() {
 	if (_selectedIndex < 0) { return; }
+	if (_linkers[_selectedIndex].isDefault) { return; }
 	var cur = _linkers[_selectedIndex].name;
 	var name = promptName("重命名链接器：", cur);
 	if (name === null || name === cur) { return; }
@@ -166,6 +171,7 @@ function onRename() {
 
 function onDelete() {
 	if (_selectedIndex < 0) { return; }
+	if (_linkers[_selectedIndex].isDefault) { return; }
 	var cur = _linkers[_selectedIndex].name;
 	if (!window.confirm("确定删除链接器 \"" + cur + "\" 吗？保存后对应的 .ini 文件将被删除。")) {
 		return;
@@ -179,6 +185,7 @@ function onDelete() {
 <script>
 function onContentInput() {
 	if (_selectedIndex >= 0 && _selectedIndex < _linkers.length) {
+		if (_linkers[_selectedIndex].isDefault) { return; }
 		_linkers[_selectedIndex].content = $("linkerContent").value;
 		recomputeDirty();
 	}
@@ -191,8 +198,10 @@ function onSave() {
 	post({
 		action: "save",
 		data: {
-			linkers: _linkers.map(function (l) {
-				return { name: l.name, content: l.content };
+			linkers: _linkers.filter(function (l) {
+				return !l.isDefault;
+			}).map(function (l) {
+				return { name: l.name, content: l.content, isDefault: false };
 			})
 		}
 	});
@@ -200,8 +209,9 @@ function onSave() {
 
 // C++ -> JS: inject linker list
 window.autolinkerApplyLinkers = function (payload) {
+	_defaultContent = (payload && payload.defaultContent) ? payload.defaultContent : "";
 	_linkers = (payload && payload.linkers ? payload.linkers : []).map(function (l) {
-		return { name: l.name || "", content: l.content || "" };
+		return { name: l.name || "", content: l.content || "", isDefault: !!l.isDefault };
 	});
 	_initialSnapshot = snapshot();
 	_selectedIndex = _linkers.length > 0 ? 0 : -1;

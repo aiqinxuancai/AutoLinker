@@ -19,6 +19,7 @@
 
 #include "AIService.h"
 #include "Global.h"
+#include "LinkerManager.h"
 #include "PathHelper.h"
 #include "ResourceTextLoader.h"
 #include "WinINetUtil.h"
@@ -31,6 +32,8 @@
 #else
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #endif
+
+extern LinkerManager g_linkerManager;
 
 namespace {
 constexpr int IDC_CFG_PROTOCOL = 1000;
@@ -3245,6 +3248,7 @@ constexpr UINT WM_AUTOLINKER_LINKER_SAVE_DONE = WM_APP + 303;
 struct LinkerEntry {
 	std::string name;     // UTF-8 显示名（即 .ini 文件名，不含后缀）
 	std::string content;  // UTF-8 文件内容
+	bool isDefault = false; // 是否为 IDE tools/link.ini 内置默认项
 };
 
 struct LinkerConfigWebViewDialogContext {
@@ -3286,6 +3290,30 @@ std::string Utf8ToLinkerFileBytes(const std::string& utf8)
 		return utf8;
 	}
 	return ConvertCodePage(utf8, CP_UTF8, 936, 0);
+}
+
+std::string GetDefaultLinkerNameUtf8()
+{
+	return LocalToUtf8Text(LinkerManager::getDefaultConfigName());
+}
+
+std::string ReadDefaultLinkerContentUtf8()
+{
+	std::ifstream in(LinkerManager::getDefaultConfigPath(), std::ios::binary);
+	if (!in.is_open()) {
+		return std::string();
+	}
+	std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	return LinkerFileBytesToUtf8(bytes);
+}
+
+LinkerEntry BuildDefaultLinkerEntry()
+{
+	LinkerEntry entry;
+	entry.name = GetDefaultLinkerNameUtf8();
+	entry.content = ReadDefaultLinkerContentUtf8();
+	entry.isDefault = true;
+	return entry;
 }
 
 std::string NormalizeToCrlf(const std::string& text)
@@ -3346,6 +3374,8 @@ std::string SanitizeLinkerName(const std::string& name)
 std::vector<LinkerEntry> LoadLinkerEntriesFromDisk()
 {
 	std::vector<LinkerEntry> entries;
+	entries.push_back(BuildDefaultLinkerEntry());
+
 	const std::filesystem::path dir = GetLinkerConfigDirectoryPath();
 	std::error_code ec;
 	if (!std::filesystem::exists(dir, ec)) {
@@ -3360,6 +3390,9 @@ std::vector<LinkerEntry> LoadLinkerEntriesFromDisk()
 		}
 		LinkerEntry entry;
 		entry.name = WideToUtf8(item.path().stem().wstring());
+		if (entry.name == GetDefaultLinkerNameUtf8()) {
+			continue;
+		}
 		std::ifstream in(item.path(), std::ios::binary);
 		if (in.is_open()) {
 			std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -3367,7 +3400,7 @@ std::vector<LinkerEntry> LoadLinkerEntriesFromDisk()
 		}
 		entries.push_back(std::move(entry));
 	}
-	std::sort(entries.begin(), entries.end(), [](const LinkerEntry& a, const LinkerEntry& b) {
+	std::sort(entries.begin() + 1, entries.end(), [](const LinkerEntry& a, const LinkerEntry& b) {
 		return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
 	});
 	return entries;
@@ -3379,11 +3412,19 @@ bool SaveLinkerEntriesToDisk(const std::vector<LinkerEntry>& entries, std::strin
 {
 	const std::filesystem::path dir = GetLinkerConfigDirectoryPath();
 	std::set<std::wstring> keepStems;
+	const std::string reservedDefaultName = GetDefaultLinkerNameUtf8();
 
 	for (const auto& entry : entries) {
+		if (entry.isDefault) {
+			continue;
+		}
 		const std::string safeName = SanitizeLinkerName(entry.name);
 		if (safeName.empty()) {
 			errorMessage = "存在名称为空的链接器，已取消保存。";
+			return false;
+		}
+		if (safeName == reservedDefaultName) {
+			errorMessage = "默认链接器使用 IDE 目录下的 tools/link.ini，不能保存为自定义配置。";
 			return false;
 		}
 		const std::wstring wideStem = Utf8ToWide(safeName);
@@ -3417,11 +3458,13 @@ bool SaveLinkerEntriesToDisk(const std::vector<LinkerEntry>& entries, std::strin
 std::string BuildLinkerWebViewPayloadJson(const std::vector<LinkerEntry>& linkers)
 {
 	nlohmann::json payload;
+	payload["defaultContent"] = ReadDefaultLinkerContentUtf8();
 	payload["linkers"] = nlohmann::json::array();
 	for (const auto& entry : linkers) {
 		nlohmann::json item;
 		item["name"] = entry.name;
 		item["content"] = entry.content;
+		item["isDefault"] = entry.isDefault;
 		payload["linkers"].push_back(std::move(item));
 	}
 	return payload.dump();
@@ -3503,6 +3546,10 @@ void HandleLinkerWebViewSave(HWND hWnd, LinkerConfigWebViewDialogContext* ctx, c
 			LinkerEntry entry;
 			entry.name = SanitizeLinkerName(item.value("name", std::string()));
 			entry.content = item.value("content", std::string());
+			entry.isDefault = item.value("isDefault", false);
+			if (entry.isDefault) {
+				continue;
+			}
 			if (entry.name.empty()) {
 				NotifyLinkerSaveResult(ctx, false, "链接器名称不能为空。");
 				return;
@@ -3523,6 +3570,7 @@ void HandleLinkerWebViewSave(HWND hWnd, LinkerConfigWebViewDialogContext* ctx, c
 		return;
 	}
 	ctx->linkers = std::move(next);
+	g_linkerManager.reload();
 	NotifyLinkerSaveResult(ctx, true, std::format("已保存 {} 个链接器配置。", ctx->linkers.size()));
 }
 

@@ -19,9 +19,11 @@ public:
 
     std::string name; //文件名（显示名称，不包含后缀）
 
-    int id; //自定义的ID，从10000累加
+    int id = 0; //自定义的ID，从10000累加
 
     std::string path; //文件路径
+
+    bool isDefault = false; // 是否为易语言 IDE 自带 tools/link.ini。
 
 };
 
@@ -32,8 +34,22 @@ class LinkerManager {
 public:
 
     LinkerManager() {
+        reload();
+    }
+
+    void reload() {
 
         int idCounter = 17750;
+
+        configs_.clear();
+        e = {};
+
+        LinkConfig defaultConfig;
+        defaultConfig.name = getDefaultConfigName();
+        defaultConfig.id = idCounter++;
+        defaultConfig.path = getDefaultConfigPath().string();
+        defaultConfig.isDefault = true;
+        configs_[defaultConfig.name] = defaultConfig;
 
 
 
@@ -47,7 +63,7 @@ public:
 
         if (!std::filesystem::exists(autoLinkerPath)) {
 
-            std::filesystem::create_directory(autoLinkerPath);
+            std::filesystem::create_directories(autoLinkerPath);
 
         }
 
@@ -60,10 +76,14 @@ public:
                 LinkConfig config;
 
                 config.name = entry.path().stem().string();
+                if (config.name == getDefaultConfigName()) {
+                    continue;
+                }
 
                 config.id = idCounter++;
 
                 config.path = entry.path().string();
+                config.isDefault = false;
 
 
 
@@ -73,6 +93,14 @@ public:
 
         }
 
+    }
+
+    static std::string getDefaultConfigName() {
+        return "默认";
+    }
+
+    static std::filesystem::path getDefaultConfigPath() {
+        return std::filesystem::path(GetBasePath()) / "tools" / "link.ini";
     }
 
 

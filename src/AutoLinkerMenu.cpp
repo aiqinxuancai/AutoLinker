@@ -52,8 +52,9 @@ void UpdateLinkerSubMenuParentItem(HMENU hTargetMenu)
 			std::wstring title = GetLinkerMenuTitle();
 			MENUITEMINFOW miiUpdate = {};
 			miiUpdate.cbSize = sizeof(miiUpdate);
-			miiUpdate.fMask = MIIM_STRING | MIIM_STATE;
+			miiUpdate.fMask = MIIM_STRING | MIIM_STATE | MIIM_SUBMENU;
 			miiUpdate.fState = g_nowOpenSourceFilePath.empty() ? MFS_GRAYED : MFS_ENABLED;
+			miiUpdate.hSubMenu = g_topLinkerSubMenu;
 			miiUpdate.dwTypeData = title.data();
 			miiUpdate.cch = static_cast<UINT>(title.size());
 			SetMenuItemInfoW(hTargetMenu, static_cast<UINT>(i), TRUE, &miiUpdate);
@@ -163,7 +164,7 @@ bool IsCompileOrToolsTopPopup(HMENU hPopupMenu)
 	}
 
 	if (popupIndex < 0) {
-		return false;
+		return popupKeywordMatch();
 	}
 
 	int targetIndex = compileIndex >= 0 ? compileIndex : toolsIndex;
@@ -234,9 +235,11 @@ void RemoveExistingTopMenuExtensions(HMENU hTargetMenu)
 		mii.fMask = MIIM_SUBMENU | MIIM_ID;
 
 		bool removeThis = false;
+		bool preserveSubMenu = false;
 		if (GetMenuItemInfoW(hTargetMenu, static_cast<UINT>(i), TRUE, &mii)) {
 			if (mii.hSubMenu == g_topLinkerSubMenu || mii.wID == IDM_AUTOLINKER_UNPACK_SOURCE) {
 				removeThis = true;
+				preserveSubMenu = mii.hSubMenu == g_topLinkerSubMenu;
 			}
 		}
 		if (!removeThis) {
@@ -245,10 +248,16 @@ void RemoveExistingTopMenuExtensions(HMENU hTargetMenu)
 				title.find(L"使用的链接器") != std::wstring::npos ||
 				title.find(L"反编译到目录") != std::wstring::npos) {
 				removeThis = true;
+				preserveSubMenu = mii.hSubMenu == g_topLinkerSubMenu;
 			}
 		}
 		if (removeThis) {
-			DeleteMenu(hTargetMenu, static_cast<UINT>(i), MF_BYPOSITION);
+			if (preserveSubMenu) {
+				RemoveMenu(hTargetMenu, static_cast<UINT>(i), MF_BYPOSITION);
+			}
+			else {
+				DeleteMenu(hTargetMenu, static_cast<UINT>(i), MF_BYPOSITION);
+			}
 		}
 	}
 
@@ -265,6 +274,9 @@ void EnsureTopLinkerSubMenuAttached(HMENU hTargetMenu)
 	}
 
 	RemoveExistingTopMenuExtensions(hTargetMenu);
+	if (!EnsureTopLinkerSubMenu()) {
+		return;
+	}
 
 	int count = GetMenuItemCount(hTargetMenu);
 	if (count > 0) {
@@ -296,19 +308,41 @@ void RebuildTopLinkerSubMenu()
 	std::string nowLinkConfigName = g_configManager.getValue(g_nowOpenSourceFilePath);
 
 	UINT cmd = IDM_AUTOLINKER_LINKER_BASE;
-	for (const auto& [key, value] : g_linkerManager.getMap()) {
+	const auto configs = g_linkerManager.getMap();
+	auto appendLinkerConfig = [&](const std::string& key, const LinkConfig& value) {
 		if (cmd > IDM_AUTOLINKER_LINKER_MAX) {
-			break;
+			return false;
 		}
 
 		UINT flags = MF_STRING | MF_ENABLED;
-		if (!nowLinkConfigName.empty() && nowLinkConfigName == key) {
+		if ((value.isDefault && (nowLinkConfigName.empty() || nowLinkConfigName == key)) ||
+			(!value.isDefault && nowLinkConfigName == key)) {
 			flags |= MF_CHECKED;
 		}
 
 		AppendMenuA(g_topLinkerSubMenu, flags, cmd, key.c_str());
 		g_topLinkerCommandMap[cmd] = key;
 		++cmd;
+		return true;
+	};
+
+	bool appendedDefault = false;
+	for (const auto& [key, value] : configs) {
+		if (value.isDefault) {
+			appendedDefault = appendLinkerConfig(key, value);
+			break;
+		}
+	}
+	if (appendedDefault && configs.size() > 1 && cmd <= IDM_AUTOLINKER_LINKER_MAX) {
+		AppendMenuA(g_topLinkerSubMenu, MF_SEPARATOR, 0, nullptr);
+	}
+	for (const auto& [key, value] : configs) {
+		if (value.isDefault) {
+			continue;
+		}
+		if (!appendLinkerConfig(key, value)) {
+			break;
+		}
 	}
 }
 
@@ -330,7 +364,13 @@ bool HandleTopLinkerMenuCommand(UINT cmd)
 		return true;
 	}
 
-	g_configManager.setValue(g_nowOpenSourceFilePath, it->second);
+	const LinkConfig& selectedConfig = g_linkerManager.getConfig(it->second);
+	if (selectedConfig.isDefault) {
+		g_configManager.setValue(g_nowOpenSourceFilePath, "");
+	}
+	else {
+		g_configManager.setValue(g_nowOpenSourceFilePath, it->second);
+	}
 	OutputCurrentSourceLinker();
 	RebuildTopLinkerSubMenu();
 	return true;
