@@ -475,7 +475,9 @@ bool ApplyRealPageTextEdits(
 
 	for (const auto& edit : edits) {
 		RealPageTextEditApplyResult result;
-		if (edit.oldText.empty()) {
+		const std::string normalizedOldText = NormalizeRealCodeLineBreaksToCrLf(edit.oldText);
+		const std::string normalizedNewText = NormalizeRealCodeLineBreaksToCrLf(edit.newText);
+		if (normalizedOldText.empty()) {
 			result.error = "old_text is required";
 			outResults.push_back(result);
 			if (failOnUnmatched) {
@@ -485,7 +487,7 @@ bool ApplyRealPageTextEdits(
 			continue;
 		}
 
-		result.matchCount = CountOccurrencesLocal(outCode, edit.oldText);
+		result.matchCount = CountOccurrencesLocal(outCode, normalizedOldText);
 		if (result.matchCount == 0) {
 			result.error = "old_text not found";
 			outResults.push_back(result);
@@ -507,11 +509,11 @@ bool ApplyRealPageTextEdits(
 		}
 
 		if (edit.replaceAll) {
-			outCode = ReplaceAllLocal(outCode, edit.oldText, edit.newText);
+			outCode = ReplaceAllLocal(outCode, normalizedOldText, normalizedNewText);
 		}
 		else {
-			const size_t pos = outCode.find(edit.oldText);
-			outCode.replace(pos, edit.oldText.size(), edit.newText);
+			const size_t pos = outCode.find(normalizedOldText);
+			outCode.replace(pos, normalizedOldText.size(), normalizedNewText);
 		}
 		result.applied = true;
 		outResults.push_back(result);

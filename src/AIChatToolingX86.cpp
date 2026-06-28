@@ -780,16 +780,18 @@ bool ReplaceExactlyOnceForAI(
 	size_t& outMatchCount)
 {
 	outResult.clear();
-	outMatchCount = CountExactOccurrencesForAI(source, oldText);
+	const std::string normalizedOldText = NormalizeRealCodeLineBreaksToCrLf(oldText);
+	const std::string normalizedNewText = NormalizeRealCodeLineBreaksToCrLf(newText);
+	outMatchCount = CountExactOccurrencesForAI(source, normalizedOldText);
 	if (outMatchCount != 1) {
 		return false;
 	}
 
-	const size_t pos = source.find(oldText);
-	outResult.reserve(source.size() - oldText.size() + newText.size());
+	const size_t pos = source.find(normalizedOldText);
+	outResult.reserve(source.size() - normalizedOldText.size() + normalizedNewText.size());
 	outResult.append(source.substr(0, pos));
-	outResult.append(newText);
-	outResult.append(source.substr(pos + oldText.size()));
+	outResult.append(normalizedNewText);
+	outResult.append(source.substr(pos + normalizedOldText.size()));
 	return true;
 }
 
@@ -7005,6 +7007,7 @@ std::string ExecuteMappedEditFileToolForAI(
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = matchCount == 0 ? "old_text not found in real IDE page" : "old_text matched multiple times in real IDE page";
+		r["hint"] = "old_text must be copied exactly from the returned real IDE page code; preserve line breaks, indentation and full-width punctuation. Use write_file when replacing a large block.";
 		r["match_count"] = matchCount;
 		r["page_name"] = LocalToUtf8Text(item.name);
 		r["type_key"] = item.typeKey;

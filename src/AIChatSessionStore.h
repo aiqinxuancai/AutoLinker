@@ -26,6 +26,9 @@ struct AIChatStoredSession {
 	std::string createdAtDisplayLocal;
 	std::string updatedAtDisplayLocal;
 	std::string rollingSummaryLocal;
+	std::string planModeState;      // 计划模式状态：normal / planning / awaiting_approval / approved。
+	std::string pendingPlanLocal;   // 待批准的计划正文。
+	bool autoAllowWrites = false;   // 自动允许写入模式。
 	std::vector<AIChatStoredMessage> messages;
 	std::filesystem::path sessionFilePath;
 };

@@ -6,6 +6,7 @@
 #include <format>
 #include <fstream>
 #include <string_view>
+#include <unordered_set>
 #include <Windows.h>
 
 #include "..\\thirdparty\\json.hpp"
@@ -1808,6 +1809,10 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"- 需要确认当前页名/页类型时用 get_current_page_info，不要臆测当前页。\n"
 			"- 涉及联网、查文档、搜最新资料时用 search_web_tavily 搜索、extract_web_document 取正文、fetch_url 取原始响应。\n"
 			"- 需要本地命令时用 run_powershell_command（会经用户确认后执行）。\n\n"
+			"计划模式：\n"
+			"- 如果上下文系统消息说明当前处于计划模式，只能探索、阅读、搜索和制定方案，不要写入文件、回滚、编译或执行 PowerShell。\n"
+			"- 计划准备好时，必须用单独的 <proposed_plan>...</proposed_plan> 块提交方案，等待用户批准后再实施。\n"
+			"- 用户批准计划后再按批准方案执行；若用户要求修改计划，先重新提交新的 <proposed_plan>。\n\n"
 			"易语言基础约定：\n"
 			"- 以 # 开头的标识通常表示常量；图片/音频等二进制资源也按常量资源引用，例如 #启动画面。\n"
 			"- 以 & 开头通常表示对子程序取址，用于回调或传递函数地址，例如 到整数 (&枚举窗口过程)。\n"
@@ -2285,6 +2290,63 @@ bool PrepareResponsesInputItemForStatelessRequest(nlohmann::json& item)
 	return true;
 }
 
+std::string GetResponsesCallId(const nlohmann::json& item)
+{
+	if (!item.is_object() || !item.contains("call_id") || !item["call_id"].is_string()) {
+		return std::string();
+	}
+	return item["call_id"].get<std::string>();
+}
+
+void RemoveOrphanResponsesFunctionCallItems(nlohmann::json& input)
+{
+	if (!input.is_array()) {
+		return;
+	}
+
+	std::unordered_set<std::string> functionCallIds;
+	std::unordered_set<std::string> outputCallIds;
+	for (const auto& item : input) {
+		if (!item.is_object()) {
+			continue;
+		}
+		const std::string type = item.value("type", std::string());
+		const std::string callId = GetResponsesCallId(item);
+		if (callId.empty()) {
+			continue;
+		}
+		if (type == "function_call") {
+			functionCallIds.insert(callId);
+		}
+		else if (type == "function_call_output") {
+			outputCallIds.insert(callId);
+		}
+	}
+
+	nlohmann::json filtered = nlohmann::json::array();
+	for (auto& item : input) {
+		if (!item.is_object()) {
+			filtered.push_back(std::move(item));
+			continue;
+		}
+		const std::string type = item.value("type", std::string());
+		if (type != "function_call" && type != "function_call_output") {
+			filtered.push_back(std::move(item));
+			continue;
+		}
+
+		const std::string callId = GetResponsesCallId(item);
+		const bool paired =
+			!callId.empty() &&
+			functionCallIds.find(callId) != functionCallIds.end() &&
+			outputCallIds.find(callId) != outputCallIds.end();
+		if (paired) {
+			filtered.push_back(std::move(item));
+		}
+	}
+	input = std::move(filtered);
+}
+
 void PrepareResponsesInputItemsForStatelessRequest(nlohmann::json& input)
 {
 	if (!input.is_array()) {
@@ -2297,6 +2359,7 @@ void PrepareResponsesInputItemsForStatelessRequest(nlohmann::json& input)
 			prepared.push_back(std::move(item));
 		}
 	}
+	RemoveOrphanResponsesFunctionCallItems(prepared);
 	input = std::move(prepared);
 }
 

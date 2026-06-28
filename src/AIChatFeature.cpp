@@ -73,6 +73,14 @@ constexpr UINT WM_AUTOLINKER_AI_CHAT_CLEAR_CANCEL = WM_APP + 211;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_RESTORE_CONFIRMED = WM_APP + 212;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_RESTORE_CANCEL = WM_APP + 213;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_UPDATE_TAG = WM_APP + 214;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_ENTER_PLAN_MODE = WM_APP + 215;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_EXIT_PLAN_MODE = WM_APP + 216;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_APPROVE_PLAN = WM_APP + 217;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_REVISE_PLAN = WM_APP + 218;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_TOGGLE_AUTO_ALLOW = WM_APP + 219;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_APPROVE_TOOL = WM_APP + 220;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_DENY_TOOL = WM_APP + 221;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_AUTO_ALLOW_TOOL = WM_APP + 222;
 constexpr UINT_PTR kHistoryWebViewFlushTimerId = 0xA17;
 constexpr UINT_PTR kSessionTimingTimerId = 0xA18;
 
@@ -90,6 +98,8 @@ constexpr int IDC_AI_CHAT_MCP_GUIDE_LINK = 32561;
 constexpr int IDC_AI_CHAT_CONTEXT_USAGE = 32562;
 constexpr int IDC_AI_CHAT_SESSION_ELAPSED = 32563;
 constexpr int IDC_AI_CHAT_SESSION_STATUS = 32564;
+constexpr int IDC_AI_CHAT_PLAN_MODE = 32565;
+constexpr int IDC_AI_CHAT_AUTO_ALLOW_MODE = 32566;
 
 constexpr UINT_PTR kEditSubclassId = 1;
 constexpr UINT_PTR kActionControlSubclassId = 2;
@@ -104,6 +114,8 @@ constexpr UINT_PTR kActionOpenSettings = 4;
 constexpr UINT_PTR kActionRestoreSession = 5;
 constexpr UINT_PTR kActionClearConfirm = 6;
 constexpr UINT_PTR kActionClearCancel = 7;
+constexpr UINT_PTR kActionPlanMode = 8;
+constexpr UINT_PTR kActionAutoAllowMode = 9;
 
 constexpr const char* kChatMcpGuideUrl =
 	"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE";
@@ -119,6 +131,13 @@ enum class SessionRole {
 	User,
 	Assistant,
 	Tool
+};
+
+enum class PlanModeState {
+	Normal,
+	Planning,
+	AwaitingApproval,
+	Approved
 };
 
 struct SessionMessage {
@@ -153,6 +172,9 @@ struct AIChatSessionState {
 	std::string rollingSummary;
 	std::string streamingAssistantPreview;
 	std::vector<std::string> agentActivityLines;
+	PlanModeState planModeState = PlanModeState::Normal;
+	std::string pendingPlan;
+	bool autoAllowWrites = false;
 	std::string activeSessionId;
 	std::filesystem::path activeSessionFilePath;
 	std::string sourceFilePathLocal;
@@ -185,6 +207,8 @@ struct ChatDialogContext {
 	HWND hSessionElapsed = nullptr;
 	HWND hSessionStatus = nullptr;
 	HWND hContextUsage = nullptr;
+	HWND hPlanMode = nullptr;
+	HWND hAutoAllowMode = nullptr;
 	int inputRowsVisible = 1;
 	bool sessionTimingInProgress = false;
 	bool sessionTimingVisible = false;
@@ -239,6 +263,14 @@ struct ChatHistoryGarbage {
 	std::string rollingSummary;
 };
 
+struct ToolApprovalRequestState {
+	unsigned long long id = 0;
+	ToolExecutionRequest* request = nullptr;
+	std::string toolName;
+	std::string argumentsJson;
+	nlohmann::json payloadUtf8;
+};
+
 HWND g_mainWindow = nullptr;
 ConfigManager* g_configManager = nullptr;
 AIJsonConfig* g_aiJsonConfig = nullptr;
@@ -262,6 +294,9 @@ struct LeftWorkAreaHostState {
 ChatHostMode g_chatHostMode = ChatHostMode::None;
 LeftWorkAreaHostState g_leftWorkAreaHost;
 AIChatSessionState g_session;
+std::mutex g_toolApprovalMutex;
+ToolApprovalRequestState g_pendingToolApproval;
+unsigned long long g_nextToolApprovalId = 1;
 UINT g_msgAIChatDone = 0;
 UINT g_msgAIChatToolDialog = 0;
 UINT g_msgAIChatToolExec = 0;
@@ -319,6 +354,13 @@ void HandleChatShowRecentSessionsUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatRestoreSessionByIdUi(HWND hWnd, ChatDialogContext* ctx, const std::string& sessionId);
 void HandleChatRestoreSessionConfirmedUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatRestoreSessionCancelUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatEnterPlanModeUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatExitPlanModeUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatApprovePlanUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatRevisePlanUi(HWND hWnd, ChatDialogContext* ctx, const std::string& feedback);
+void HandleChatToggleAutoAllowUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatApproveToolUi(HWND hWnd, ChatDialogContext* ctx, unsigned long long approvalId, bool enableAutoAllow);
+void HandleChatDenyToolUi(HWND hWnd, ChatDialogContext* ctx, unsigned long long approvalId);
 std::vector<AIChatStoredSessionListEntry> LoadRecentChatSessionsForCurrentSource();
 bool BeginRestoreStoredChatSessionUi(HWND hWnd, ChatDialogContext* ctx, const AIChatStoredSessionListEntry& selected);
 bool RestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry& selected);
@@ -329,6 +371,15 @@ bool QueryChatSettingsState(AISettings& outSettings, std::string* outMissingFiel
 void PostRefreshDialog();
 void AppendAgentActivity(unsigned long long requestId, const std::string& line);
 std::wstring WideFromUtf8Text(const std::string& text);
+bool StartChatRequest(const std::string& userInput);
+void HideWebViewToolApproval(ChatDialogContext* ctx);
+unsigned long long GetPendingToolApprovalId();
+void CompletePendingToolApproval(
+	HWND hWnd,
+	ChatDialogContext* ctx,
+	unsigned long long approvalId,
+	bool approved,
+	bool enableAutoAllow);
 
 std::string GetWindowTextCopyLocalA(HWND hWnd)
 {
@@ -1128,11 +1179,324 @@ void SetDefaultFont(HWND hWnd)
 	}
 }
 
+const char* PlanModeStateToString(PlanModeState state)
+{
+	switch (state)
+	{
+	case PlanModeState::Planning:
+		return "planning";
+	case PlanModeState::AwaitingApproval:
+		return "awaiting_approval";
+	case PlanModeState::Approved:
+		return "approved";
+	case PlanModeState::Normal:
+	default:
+		return "normal";
+	}
+}
+
+PlanModeState ParsePlanModeState(const std::string& text)
+{
+	if (_stricmp(text.c_str(), "planning") == 0) {
+		return PlanModeState::Planning;
+	}
+	if (_stricmp(text.c_str(), "awaiting_approval") == 0) {
+		return PlanModeState::AwaitingApproval;
+	}
+	if (_stricmp(text.c_str(), "approved") == 0) {
+		return PlanModeState::Approved;
+	}
+	return PlanModeState::Normal;
+}
+
+std::string PlanModeLabelLocal(PlanModeState state)
+{
+	switch (state)
+	{
+	case PlanModeState::Planning:
+		return LocalFromWide(L"\u8ba1\u5212\u4e2d");
+	case PlanModeState::AwaitingApproval:
+		return LocalFromWide(L"\u5f85\u6279\u51c6");
+	case PlanModeState::Approved:
+		return LocalFromWide(L"\u5df2\u6279\u51c6");
+	case PlanModeState::Normal:
+	default:
+		return LocalFromWide(L"\u8ba1\u5212");
+	}
+}
+
+bool IsPlanModeActive(PlanModeState state)
+{
+	return state == PlanModeState::Planning ||
+		state == PlanModeState::AwaitingApproval;
+}
+
+std::string AutoAllowModeLabelLocal(bool enabled)
+{
+	return enabled
+		? LocalFromWide(L"\u81ea\u52a8\u5141\u8bb8")
+		: LocalFromWide(L"\u8be2\u95ee");
+}
+
+std::string AutoAllowModeTitleLocal(bool enabled)
+{
+	return enabled
+		? LocalFromWide(L"\u81ea\u52a8\u5141\u8bb8\u5199\u5165\u64cd\u4f5c\uff0c\u70b9\u51fb\u5207\u56de\u9ed8\u8ba4\u8be2\u95ee")
+		: LocalFromWide(L"\u9ed8\u8ba4\u8be2\u95ee\u5199\u5165\u64cd\u4f5c\uff0c\u70b9\u51fb\u5f00\u542f\u81ea\u52a8\u5141\u8bb8");
+}
+
+bool IsPlanModeWriteBlockedTool(const std::string& toolName)
+{
+	return _stricmp(toolName.c_str(), "edit_file") == 0 ||
+		_stricmp(toolName.c_str(), "multi_edit_file") == 0 ||
+		_stricmp(toolName.c_str(), "write_file") == 0 ||
+		_stricmp(toolName.c_str(), "restore_file_snapshot") == 0 ||
+		_stricmp(toolName.c_str(), "compile_with_output_path") == 0 ||
+		_stricmp(toolName.c_str(), "run_powershell_command") == 0;
+}
+
+bool IsToolRequiringWriteApproval(const std::string& toolName)
+{
+	return _stricmp(toolName.c_str(), "edit_file") == 0 ||
+		_stricmp(toolName.c_str(), "multi_edit_file") == 0 ||
+		_stricmp(toolName.c_str(), "write_file") == 0 ||
+		_stricmp(toolName.c_str(), "restore_file_snapshot") == 0;
+}
+
+std::string BuildPlanModeToolBlockedResult(const std::string& toolName)
+{
+	nlohmann::json r;
+	r["ok"] = false;
+	r["error"] =
+		"tool blocked by plan mode before plan approval: " +
+		(toolName.empty() ? std::string("unknown_tool") : toolName);
+	r["plan_mode"] = true;
+	r["requires_plan_approval"] = true;
+	return Utf8ToLocalText(r.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+
+bool ShouldBlockToolForCurrentPlanMode(const std::string& toolName)
+{
+	if (!IsPlanModeWriteBlockedTool(toolName)) {
+		return false;
+	}
+
+	std::lock_guard<std::mutex> guard(g_session.mutex);
+	return IsPlanModeActive(g_session.planModeState);
+}
+
+bool IsAutoAllowWritesEnabled()
+{
+	std::lock_guard<std::mutex> guard(g_session.mutex);
+	return g_session.autoAllowWrites;
+}
+
+std::string BuildToolApprovalDeniedResult(const std::string& toolName)
+{
+	nlohmann::json r;
+	r["ok"] = false;
+	r["error"] = "tool execution denied by user: " +
+		(toolName.empty() ? std::string("unknown_tool") : toolName);
+	r["denied"] = true;
+	r["requires_tool_approval"] = true;
+	return Utf8ToLocalText(r.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+
+std::string GetJsonStringArgumentUtf8(const nlohmann::json& args, const char* key)
+{
+	if (!args.is_object() || key == nullptr || !args.contains(key) || !args[key].is_string()) {
+		return std::string();
+	}
+	return args[key].get<std::string>();
+}
+
+std::string TruncateUtf8ForToolApproval(std::string text, size_t maxBytes)
+{
+	if (text.size() <= maxBytes) {
+		return text;
+	}
+	text.resize(maxBytes);
+	text += "\n... truncated ...";
+	return text;
+}
+
+std::string ToolApprovalTitleLocal(const std::string& toolName)
+{
+	if (_stricmp(toolName.c_str(), "edit_file") == 0) {
+		return LocalFromWide(L"\u6279\u51c6\u5355\u5904\u4ee3\u7801\u4fee\u6539");
+	}
+	if (_stricmp(toolName.c_str(), "multi_edit_file") == 0) {
+		return LocalFromWide(L"\u6279\u51c6\u6279\u91cf\u4ee3\u7801\u4fee\u6539");
+	}
+	if (_stricmp(toolName.c_str(), "write_file") == 0) {
+		return LocalFromWide(L"\u6279\u51c6\u6574\u9875\u4ee3\u7801\u5199\u5165");
+	}
+	if (_stricmp(toolName.c_str(), "restore_file_snapshot") == 0) {
+		return LocalFromWide(L"\u6279\u51c6\u6062\u590d\u4ee3\u7801\u5feb\u7167");
+	}
+	return LocalFromWide(L"\u6279\u51c6\u5199\u5165\u64cd\u4f5c");
+}
+
+std::string BuildDiffPreviewTextUtf8(const nlohmann::json& diff)
+{
+	std::string preview;
+	if (!diff.is_object() || !diff.contains("hunks") || !diff["hunks"].is_array()) {
+		return preview;
+	}
+	for (const auto& hunk : diff["hunks"]) {
+		if (!hunk.is_object()) {
+			continue;
+		}
+		const int oldStart = hunk.value("old_start", 0);
+		const int oldLines = hunk.value("old_lines", 0);
+		const int newStart = hunk.value("new_start", 0);
+		const int newLines = hunk.value("new_lines", 0);
+		preview += std::format("@@ -{},{} +{},{} @@\n", oldStart, oldLines, newStart, newLines);
+		if (hunk.contains("lines") && hunk["lines"].is_array()) {
+			for (const auto& line : hunk["lines"]) {
+				if (line.is_string()) {
+					preview += line.get<std::string>();
+					preview += "\n";
+				}
+			}
+		}
+	}
+	return TruncateUtf8ForToolApproval(preview, 32000);
+}
+
+nlohmann::json BuildToolApprovalPayloadUtf8(
+	unsigned long long approvalId,
+	const std::string& toolName,
+	const std::string& argumentsJson)
+{
+	nlohmann::json payload = nlohmann::json::object();
+	payload["id"] = approvalId;
+	payload["tool"] = toolName;
+	payload["title"] = LocalToUtf8Text(ToolApprovalTitleLocal(toolName));
+	payload["summary"] = LocalToUtf8Text(LocalFromWide(L"\u9ed8\u8ba4\u8be2\u95ee\u6a21\u5f0f\u9700\u8981\u4f60\u6279\u51c6\u6b64\u6b21\u5199\u5165\u3002"));
+	payload["preview_kind"] = "arguments";
+	payload["preview_ok"] = false;
+
+	nlohmann::json args = nlohmann::json::object();
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		payload["summary"] = std::string("Invalid arguments JSON: ") + ex.what();
+		payload["preview_text"] = argumentsJson;
+		return payload;
+	}
+
+	const std::string filePathUtf8 = GetJsonStringArgumentUtf8(args, "file_path");
+	if (!filePathUtf8.empty()) {
+		payload["file_path"] = filePathUtf8;
+	}
+
+	if (_stricmp(toolName.c_str(), "edit_file") == 0 ||
+		_stricmp(toolName.c_str(), "multi_edit_file") == 0 ||
+		_stricmp(toolName.c_str(), "write_file") == 0) {
+		bool diffOk = false;
+		const std::string diffLocal = ExecuteToolCallOnMainThread("diff_file", args.dump(), diffOk);
+		nlohmann::json diffJson;
+		try {
+			diffJson = nlohmann::json::parse(LocalToUtf8Text(diffLocal));
+		}
+		catch (...) {
+			diffJson = nlohmann::json::object();
+		}
+
+		payload["preview_kind"] = "diff";
+		payload["preview_ok"] = diffOk;
+		if (diffJson.is_object()) {
+			if (diffJson.contains("page_name")) {
+				payload["page_name"] = diffJson["page_name"];
+			}
+			if (diffJson.contains("mapped_page_name")) {
+				payload["mapped_page_name"] = diffJson["mapped_page_name"];
+			}
+			if (diffJson.contains("changed_lines")) {
+				payload["changed_lines"] = diffJson["changed_lines"];
+			}
+			if (diffJson.contains("hunk_count")) {
+				payload["hunk_count"] = diffJson["hunk_count"];
+			}
+			if (diffJson.contains("hunks")) {
+				payload["hunks"] = diffJson["hunks"];
+			}
+			if (diffOk) {
+				const int changedLines = diffJson.value("changed_lines", 0);
+				const int hunkCount = diffJson.value("hunk_count", 0);
+				payload["summary"] = LocalToUtf8Text(
+					LocalFromWide(L"\u9884\u8ba1\u4fee\u6539 ") +
+					std::to_string(changedLines) +
+					LocalFromWide(L" \u884c\uff0c") +
+					std::to_string(hunkCount) +
+					LocalFromWide(L" \u4e2a\u5dee\u5f02\u5757\u3002"));
+				std::string preview = BuildDiffPreviewTextUtf8(diffJson);
+				if (preview.empty()) {
+					preview = LocalToUtf8Text(LocalFromWide(L"\u672a\u68c0\u6d4b\u5230\u4ee3\u7801\u5dee\u5f02\u3002"));
+				}
+				payload["preview_text"] = preview;
+			}
+			else {
+				payload["summary"] = diffJson.value("error", std::string("diff_file failed"));
+				payload["preview_text"] = TruncateUtf8ForToolApproval(diffJson.dump(2, ' ', false, nlohmann::json::error_handler_t::replace), 16000);
+			}
+		}
+		return payload;
+	}
+
+	payload["summary"] = LocalToUtf8Text(LocalFromWide(L"\u6b64\u5de5\u5177\u4f1a\u6062\u590d\u5feb\u7167\u5e76\u6539\u5199\u5bf9\u5e94\u9875\u4ee3\u7801\u3002"));
+	payload["preview_text"] = TruncateUtf8ForToolApproval(args.dump(2, ' ', false, nlohmann::json::error_handler_t::replace), 16000);
+	return payload;
+}
+
+void FinishToolExecutionRequest(ToolExecutionRequest* request, bool ok, const std::string& resultJson)
+{
+	if (request == nullptr) {
+		return;
+	}
+	{
+		std::lock_guard<std::mutex> guard(request->mutex);
+		request->ok = ok;
+		request->resultJson = resultJson;
+		request->done = true;
+	}
+	request->cv.notify_one();
+}
+
+std::string LowerAsciiCopy(std::string text)
+{
+	for (char& ch : text) {
+		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+	}
+	return text;
+}
+
+bool ExtractProposedPlanContent(const std::string& text, std::string& outPlan)
+{
+	outPlan.clear();
+	const std::string lower = LowerAsciiCopy(text);
+	const std::string beginTag = "<proposed_plan>";
+	const std::string endTag = "</proposed_plan>";
+	const size_t begin = lower.find(beginTag);
+	if (begin == std::string::npos) {
+		return false;
+	}
+	const size_t contentBegin = begin + beginTag.size();
+	const size_t end = lower.find(endTag, contentBegin);
+	if (end == std::string::npos || end <= contentBegin) {
+		return false;
+	}
+	outPlan = TrimAsciiCopy(text.substr(contentBegin, end - contentBegin));
+	return !outPlan.empty();
+}
+
 AIChatStoredSession BuildStoredSessionFromLockedState(const AIChatSessionState& state)
 {
 	AIChatStoredSession stored = {};
 	const long long nowMs = GetCurrentUnixTimeMsForChat();
-	stored.schemaVersion = 1;
+	stored.schemaVersion = 3;
 	stored.sessionId = state.activeSessionId;
 	stored.sourceFileNameLocal = state.sourceFileNameLocal;
 	stored.sourceFilePathHintLocal = state.sourceFilePathLocal;
@@ -1142,6 +1506,9 @@ AIChatStoredSession BuildStoredSessionFromLockedState(const AIChatSessionState& 
 	stored.createdAtDisplayLocal = FormatUnixTimeLocalForChat(stored.createdAtUnixMs);
 	stored.updatedAtDisplayLocal = FormatUnixTimeLocalForChat(stored.updatedAtUnixMs);
 	stored.rollingSummaryLocal = state.rollingSummary;
+	stored.planModeState = PlanModeStateToString(state.planModeState);
+	stored.pendingPlanLocal = state.pendingPlan;
+	stored.autoAllowWrites = state.autoAllowWrites;
 	stored.sessionFilePath = state.activeSessionFilePath;
 	for (const auto& message : state.messages) {
 		AIChatStoredMessage row = {};
@@ -1216,7 +1583,10 @@ bool HasAnyChatHistoryLocked(const AIChatSessionState& state)
 {
 	return !state.messages.empty() ||
 		!TrimAsciiCopy(state.rollingSummary).empty() ||
-		!TrimAsciiCopy(state.streamingAssistantPreview).empty();
+		!TrimAsciiCopy(state.streamingAssistantPreview).empty() ||
+		state.autoAllowWrites ||
+		state.planModeState != PlanModeState::Normal ||
+		!TrimAsciiCopy(state.pendingPlan).empty();
 }
 
 bool PersistChatSessionSnapshotLocked(AIChatSessionState& state)
@@ -1270,6 +1640,9 @@ bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
 	g_session.rollingSummary = stored.rollingSummaryLocal;
 	g_session.streamingAssistantPreview.clear();
 	g_session.agentActivityLines.clear();
+	g_session.planModeState = ParsePlanModeState(stored.planModeState);
+	g_session.pendingPlan = stored.pendingPlanLocal;
+	g_session.autoAllowWrites = stored.autoAllowWrites;
 	g_session.activeSessionId = stored.sessionId;
 	g_session.activeSessionFilePath = stored.sessionFilePath;
 	g_session.sourceFilePathLocal = stored.sourceFilePathHintLocal.empty()
@@ -1311,6 +1684,9 @@ void ResetChatSessionBindingLocked(AIChatSessionState& state)
 	state.createdAtUnixMs = 0;
 	state.accumulatedElapsedMs = 0;
 	state.activeRequestStartedAtUnixMs = 0;
+	state.planModeState = PlanModeState::Normal;
+	state.pendingPlan.clear();
+	state.autoAllowWrites = false;
 }
 
 void RebindChatSessionToCurrentSourceIfNeeded()
@@ -1338,6 +1714,9 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 		g_session.rollingSummary.clear();
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
+		g_session.planModeState = PlanModeState::Normal;
+		g_session.pendingPlan.clear();
+		g_session.autoAllowWrites = false;
 		ResetChatSessionBindingLocked(g_session);
 	}
 	WorkspaceMirror::ResetAndCleanup();
@@ -1482,6 +1861,27 @@ void PostChatAction(HWND hWnd, UINT_PTR action)
 		OutputStringToELog("[AI Chat][UI] click action: restore_session");
 		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_RESTORE_LAST, 0, 0);
 	}
+	else if (action == kActionPlanMode) {
+		bool exitPlan = false;
+		auto* ctx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(hParent, GWLP_USERDATA));
+		(void)ctx;
+		{
+			std::lock_guard<std::mutex> guard(g_session.mutex);
+			exitPlan = IsPlanModeActive(g_session.planModeState);
+		}
+		OutputStringToELog(exitPlan
+			? "[AI Chat][UI] click action: exit_plan_mode"
+			: "[AI Chat][UI] click action: enter_plan_mode");
+		PostMessageA(
+			hParent,
+			exitPlan ? WM_AUTOLINKER_AI_CHAT_EXIT_PLAN_MODE : WM_AUTOLINKER_AI_CHAT_ENTER_PLAN_MODE,
+			0,
+			0);
+	}
+	else if (action == kActionAutoAllowMode) {
+		OutputStringToELog("[AI Chat][UI] click action: toggle_auto_allow");
+		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_TOGGLE_AUTO_ALLOW, 0, 0);
+	}
 	else {
 		OutputStringToELog("[AI Chat][UI] click action: submit");
 		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_SUBMIT, 0, 0);
@@ -1622,6 +2022,12 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		if (ctx->hOpenSettings != nullptr) {
 			ShowWindow(ctx->hOpenSettings, SW_HIDE);
 		}
+		if (ctx->hPlanMode != nullptr) {
+			ShowWindow(ctx->hPlanMode, SW_HIDE);
+		}
+		if (ctx->hAutoAllowMode != nullptr) {
+			ShowWindow(ctx->hAutoAllowMode, SW_HIDE);
+		}
 		if (ctx->hMcpGuideLink != nullptr) {
 			ShowWindow(ctx->hMcpGuideLink, SW_HIDE);
 		}
@@ -1670,6 +2076,8 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int clearHistoryWidth = 26;
 	const int restoreHistoryWidth = 26;
 	const int openSettingsWidth = 26;
+	const int planModeWidth = 68;
+	const int autoAllowModeWidth = 78;
 	const int clearConfirmApplyWidth = ctx->restoreConfirmVisible ? 72 : 52;
 	const int clearConfirmCancelWidth = 52;
 	const int inputRowsVisible = ctx->inputRowsVisible >= 2 ? 2 : 1;
@@ -1722,6 +2130,26 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	if (ctx->hOpenSettings != nullptr) {
 		ShowWindow(ctx->hOpenSettings, showInlineConfirm ? SW_HIDE : SW_SHOW);
 		MoveWindow(ctx->hOpenSettings, margin + clearHistoryWidth + gap + restoreHistoryWidth + gap, actionRowY, openSettingsWidth, actionRowHeight, TRUE);
+	}
+	if (ctx->hPlanMode != nullptr) {
+		ShowWindow(ctx->hPlanMode, showInlineConfirm ? SW_HIDE : SW_SHOW);
+		MoveWindow(
+			ctx->hPlanMode,
+			margin + clearHistoryWidth + gap + restoreHistoryWidth + gap + openSettingsWidth + gap,
+			actionRowY,
+			planModeWidth,
+			actionRowHeight,
+			TRUE);
+	}
+	if (ctx->hAutoAllowMode != nullptr) {
+		ShowWindow(ctx->hAutoAllowMode, showInlineConfirm ? SW_HIDE : SW_SHOW);
+		MoveWindow(
+			ctx->hAutoAllowMode,
+			margin + clearHistoryWidth + gap + restoreHistoryWidth + gap + openSettingsWidth + gap + planModeWidth + gap,
+			actionRowY,
+			autoAllowModeWidth,
+			actionRowHeight,
+			TRUE);
 	}
 	UpdateNativeInlineConfirmText(ctx);
 	if (ctx->hClearConfirmText != nullptr) {
@@ -1868,6 +2296,87 @@ void UpdateWebViewUpdateTag(ChatDialogContext* ctx)
 	script += g_updateAvailable.load() ? L"true" : L"false";
 	script += L");";
 	ExecuteWebViewScript(ctx, script);
+}
+
+void UpdateWebViewPlanModeState(ChatDialogContext* ctx, PlanModeState state)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	const std::string label = PlanModeLabelLocal(state);
+	std::string title = LocalFromWide(L"\u8fdb\u5165\u8ba1\u5212\u6a21\u5f0f");
+	if (state == PlanModeState::Planning || state == PlanModeState::AwaitingApproval) {
+		title = LocalFromWide(L"\u9000\u51fa\u8ba1\u5212\u6a21\u5f0f");
+	}
+	else if (state == PlanModeState::Approved) {
+		title = LocalFromWide(L"\u8ba1\u5212\u5df2\u6279\u51c6");
+	}
+
+	std::wstring script = L"window.autolinkerSetPlanMode(\"";
+	script += EscapeJsDoubleQuotedWide(WideFromLocal(PlanModeStateToString(state)));
+	script += L"\",\"";
+	script += EscapeJsDoubleQuotedWide(WideFromLocal(label));
+	script += L"\",\"";
+	script += EscapeJsDoubleQuotedWide(WideFromLocal(title));
+	script += L"\");";
+	ExecuteWebViewScript(ctx, script);
+}
+
+void UpdateWebViewAutoAllowModeState(ChatDialogContext* ctx, bool enabled)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	std::wstring script = L"window.autolinkerSetAutoAllowMode(";
+	script += enabled ? L"true" : L"false";
+	script += L",\"";
+	script += EscapeJsDoubleQuotedWide(WideFromLocal(AutoAllowModeLabelLocal(enabled)));
+	script += L"\",\"";
+	script += EscapeJsDoubleQuotedWide(WideFromLocal(AutoAllowModeTitleLocal(enabled)));
+	script += L"\");";
+	ExecuteWebViewScript(ctx, script);
+}
+
+void ShowWebViewToolApproval(ChatDialogContext* ctx, const nlohmann::json& payloadUtf8)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	std::string payloadText;
+	try {
+		payloadText = payloadUtf8.dump(-1, ' ', true, nlohmann::json::error_handler_t::replace);
+	}
+	catch (...) {
+		payloadText = R"({"id":0,"tool":"unknown","title":"Tool approval","summary":"failed to serialize approval payload"})";
+	}
+	std::wstring script = L"window.autolinkerShowToolApproval(";
+	script += WideFromLocal(Utf8ToLocalText(payloadText));
+	script += L");";
+	ExecuteWebViewScript(ctx, script);
+}
+
+void HideWebViewToolApproval(ChatDialogContext* ctx)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	ExecuteWebViewScript(ctx, L"window.autolinkerHideToolApproval();");
+}
+
+void UpdateNativePlanModeState(ChatDialogContext* ctx, PlanModeState state)
+{
+	if (ctx == nullptr || ctx->hPlanMode == nullptr) {
+		return;
+	}
+	SetWindowTextW(ctx->hPlanMode, WideFromLocal(PlanModeLabelLocal(state)).c_str());
+}
+
+void UpdateNativeAutoAllowModeState(ChatDialogContext* ctx, bool enabled)
+{
+	if (ctx == nullptr || ctx->hAutoAllowMode == nullptr) {
+		return;
+	}
+	SetWindowTextW(ctx->hAutoAllowMode, WideFromLocal(AutoAllowModeLabelLocal(enabled)).c_str());
 }
 
 void UpdateNativeContextUsage(ChatDialogContext* ctx, const ContextUsageSnapshot& snapshot)
@@ -2246,6 +2755,52 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												else if (action == "open_settings") {
 													PostMessageA(hWnd, WM_AUTOLINKER_AI_CHAT_OPEN_SETTINGS, 0, 0);
 												}
+												else if (action == "enter_plan_mode") {
+													HandleChatEnterPlanModeUi(hWnd, msgCtx);
+												}
+												else if (action == "exit_plan_mode") {
+													HandleChatExitPlanModeUi(hWnd, msgCtx);
+												}
+												else if (action == "approve_plan") {
+													HandleChatApprovePlanUi(hWnd, msgCtx);
+												}
+												else if (action == "revise_plan") {
+													const std::string feedback = payload.contains("text") && payload["text"].is_string()
+														? Utf8ToLocalText(payload["text"].get<std::string>())
+														: std::string();
+													HandleChatRevisePlanUi(hWnd, msgCtx, feedback);
+												}
+												else if (action == "toggle_auto_allow") {
+													HandleChatToggleAutoAllowUi(hWnd, msgCtx);
+												}
+												else if (action == "approve_tool" || action == "deny_tool" || action == "auto_allow_tool") {
+													unsigned long long approvalId = 0;
+													if (payload.contains("id")) {
+														if (payload["id"].is_number_unsigned()) {
+															approvalId = payload["id"].get<unsigned long long>();
+														}
+														else if (payload["id"].is_number_integer()) {
+															const long long signedId = payload["id"].get<long long>();
+															if (signedId > 0) {
+																approvalId = static_cast<unsigned long long>(signedId);
+															}
+														}
+														else if (payload["id"].is_string()) {
+															try {
+																approvalId = std::stoull(payload["id"].get<std::string>());
+															}
+															catch (...) {
+																approvalId = 0;
+															}
+														}
+													}
+													if (action == "deny_tool") {
+														HandleChatDenyToolUi(hWnd, msgCtx, approvalId);
+													}
+													else {
+														HandleChatApproveToolUi(hWnd, msgCtx, approvalId, action == "auto_allow_tool");
+													}
+												}
 												else if (action == "open_url") {
 													const std::string url = payload.contains("url") && payload["url"].is_string()
 														? payload["url"].get<std::string>()
@@ -2281,6 +2836,8 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												}
 												bool inFlight = false;
 												bool stopRequested = false;
+												PlanModeState planModeState = PlanModeState::Normal;
+												bool autoAllowWrites = false;
 												ContextUsageSnapshot usageSnapshot;
 												SessionTimingSnapshot timingSnapshot;
 												{
@@ -2292,6 +2849,8 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 													std::lock_guard<std::mutex> guard(g_session.mutex);
 													inFlight = g_session.requestInFlight;
 													stopRequested = IsStopRequestedLocked(g_session);
+													planModeState = g_session.planModeState;
+													autoAllowWrites = g_session.autoAllowWrites;
 													usageSnapshot = BuildContextUsageSnapshotLocked(g_session, fallbackContextWindow);
 													timingSnapshot = BuildSessionTimingSnapshotLocked(g_session, GetCurrentUnixTimeMsForChat());
 												}
@@ -2299,6 +2858,8 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												UpdateWebViewContextUsage(navCtx, usageSnapshot);
 												UpdateWebViewSessionTiming(navCtx, timingSnapshot);
 												UpdateWebViewUpdateTag(navCtx);
+												UpdateWebViewPlanModeState(navCtx, planModeState);
+												UpdateWebViewAutoAllowModeState(navCtx, autoAllowWrites);
 												FocusWebViewInput(navCtx);
 												return S_OK;
 											}
@@ -2756,6 +3317,34 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 		});
 	}
 
+	if (state.planModeState == PlanModeState::Planning) {
+		out.push_back(AIChatMessage{
+			"system",
+			LocalFromWide(
+				L"\u5f53\u524d\u5904\u4e8e\u8ba1\u5212\u6a21\u5f0f\u3002\u4f60\u53ea\u80fd\u63a2\u7d22\u3001\u9605\u8bfb\u3001\u641c\u7d22\u548c\u8bbe\u8ba1\u5b9e\u73b0\u65b9\u6848\uff1b"
+				L"\u4e0d\u5f97\u8c03\u7528\u5199\u5165\u3001\u56de\u6eda\u3001\u7f16\u8bd1\u6216 PowerShell \u5de5\u5177\u3002"
+				L"\u65b9\u6848\u51c6\u5907\u597d\u65f6\uff0c\u53ea\u8f93\u51fa\u4e00\u4e2a <proposed_plan>...</proposed_plan> \u5757\uff0c\u7b49\u5f85\u7528\u6237\u6279\u51c6\u540e\u518d\u5b9e\u65bd\u3002"),
+			"",
+			""
+		});
+	}
+	else if (state.planModeState == PlanModeState::AwaitingApproval) {
+		out.push_back(AIChatMessage{
+			"system",
+			LocalFromWide(L"\u5f53\u524d\u8ba1\u5212\u5df2\u63d0\u4ea4\u5e76\u6b63\u7b49\u5f85\u7528\u6237\u6279\u51c6\u3002\u5728\u7528\u6237\u6279\u51c6\u524d\u4e0d\u8981\u5b9e\u65bd\u4efb\u4f55\u4fee\u6539\u3002"),
+			"",
+			""
+		});
+	}
+	else if (state.planModeState == PlanModeState::Approved) {
+		std::string approvedPrompt = LocalFromWide(L"\u7528\u6237\u5df2\u6279\u51c6\u8ba1\u5212\uff0c\u53ef\u4ee5\u6309\u8ba1\u5212\u5b9e\u65bd\u3002");
+		if (!TrimAsciiCopy(state.pendingPlan).empty()) {
+			approvedPrompt += LocalFromWide(L"\u5df2\u6279\u51c6\u8ba1\u5212\uff1a\n");
+			approvedPrompt += state.pendingPlan;
+		}
+		out.push_back(AIChatMessage{ "system", approvedPrompt, "", "" });
+	}
+
 	std::vector<SessionMessage> contextMsgs;
 	contextMsgs.reserve(state.messages.size());
 	for (const auto& msg : state.messages) {
@@ -2806,12 +3395,174 @@ bool IsStopRequestedLocked(const AIChatSessionState& state)
 		state.cancellation->IsCancelled();
 }
 
+std::string RenderAutoWriteDiffLinesHtml(const std::string& diff)
+{
+	const std::string normalized = NormalizeNewlinesLf(diff);
+	std::string out;
+	size_t begin = 0;
+	while (begin <= normalized.size()) {
+		const size_t end = normalized.find('\n', begin);
+		const std::string line = (end == std::string::npos)
+			? normalized.substr(begin)
+			: normalized.substr(begin, end - begin);
+		const char* cls = "";
+		if (line.rfind("@@", 0) == 0) {
+			cls = "diff-hunk";
+		}
+		else if (!line.empty() && line[0] == '+') {
+			cls = "diff-add";
+		}
+		else if (!line.empty() && line[0] == '-') {
+			cls = "diff-del";
+		}
+		out += "<div";
+		if (cls[0] != '\0') {
+			out += " class=\"";
+			out += cls;
+			out += "\"";
+		}
+		out += ">";
+		out += EscapeHtml(line.empty() ? std::string(" ") : line);
+		out += "</div>";
+		if (end == std::string::npos) {
+			break;
+		}
+		begin = end + 1;
+	}
+	return out;
+}
+
+bool ExtractAutoWriteDiffMessage(
+	const std::string& content,
+	std::string& fileOut,
+	std::string& summaryOut,
+	std::string& diffOut)
+{
+	static const std::string kMarker = "@@AUTOLINKER_WRITE_DIFF@@\n";
+	static const std::string kSep = "\n@@DIFF@@\n";
+	if (content.rfind(kMarker, 0) != 0) {
+		return false;
+	}
+	const size_t sepPos = content.find(kSep, kMarker.size());
+	const std::string header = (sepPos == std::string::npos)
+		? content.substr(kMarker.size())
+		: content.substr(kMarker.size(), sepPos - kMarker.size());
+	diffOut = (sepPos == std::string::npos)
+		? std::string()
+		: content.substr(sepPos + kSep.size());
+	fileOut.clear();
+	summaryOut.clear();
+	size_t begin = 0;
+	while (begin <= header.size()) {
+		const size_t end = header.find('\n', begin);
+		const std::string ln = (end == std::string::npos)
+			? header.substr(begin)
+			: header.substr(begin, end - begin);
+		if (ln.rfind("file:", 0) == 0) {
+			fileOut = ln.substr(5);
+		}
+		else if (ln.rfind("summary:", 0) == 0) {
+			summaryOut = ln.substr(8);
+		}
+		if (end == std::string::npos) {
+			break;
+		}
+		begin = end + 1;
+	}
+	return true;
+}
+
+std::string RenderAutoWriteCardHtml(
+	const std::string& file,
+	const std::string& summary,
+	const std::string& diff)
+{
+	std::string html;
+	html += "<div class=\"plan-card\"><div class=\"plan-card-head\"><span>";
+	std::string title = LocalFromWide(L"\u5df2\u81ea\u52a8\u5199\u5165");
+	if (!file.empty()) {
+		title += LocalFromWide(L"\uff1a");
+		title += file;
+	}
+	html += EscapeHtml(title);
+	html += "</span><span class=\"plan-status\">";
+	html += EscapeHtml(LocalFromWide(L"\u81ea\u52a8"));
+	html += "</span></div>";
+	if (!TrimAsciiCopy(summary).empty()) {
+		html += "<p class=\"plan-content\">";
+		html += EscapeHtml(summary);
+		html += "</p>";
+	}
+	html += "<pre class=\"tool-approval-preview\">";
+	html += RenderAutoWriteDiffLinesHtml(diff);
+	html += "</pre></div>";
+	return html;
+}
+
 std::string BuildHistoryHtmlLocked(
 	const AIChatSessionState& state,
 	bool settingsReady,
 	const std::string& missingField)
 {
-	auto appendMessageCard = [](std::string& html, SessionRole role, const std::string& roleText, const std::string& content, bool renderMarkdown) {
+	auto appendPlanCard = [&state](std::string& html, const std::string& planText) {
+		const bool samePendingPlan =
+			TrimAsciiCopy(planText) == TrimAsciiCopy(state.pendingPlan);
+		const bool canApprove =
+			state.planModeState == PlanModeState::AwaitingApproval &&
+			samePendingPlan;
+		const bool approved =
+			state.planModeState == PlanModeState::Approved &&
+			samePendingPlan;
+		std::string statusText = LocalFromWide(L"\u8ba1\u5212");
+		if (canApprove) {
+			statusText = LocalFromWide(L"\u5f85\u6279\u51c6");
+		}
+		else if (approved) {
+			statusText = LocalFromWide(L"\u5df2\u6279\u51c6");
+		}
+
+		html += "<section class=\"msg assistant plan-message\"><div class=\"role\">AI</div><div class=\"body\">";
+		html += "<div class=\"plan-card\"><div class=\"plan-card-head\"><span>";
+		html += EscapeHtml(LocalFromWide(L"\u5b9e\u65bd\u8ba1\u5212"));
+		html += "</span><span class=\"plan-status\">";
+		html += EscapeHtml(statusText);
+		html += "</span></div><div class=\"plan-content\">";
+		html += RenderMarkdownToHtml(planText);
+		html += "</div>";
+		if (canApprove) {
+			html += "<div class=\"plan-card-actions\">";
+			html += "<button class=\"btn primary plan-action\" type=\"button\" data-plan-action=\"approve\">";
+			html += EscapeHtml(LocalFromWide(L"\u6279\u51c6\u5e76\u6267\u884c"));
+			html += "</button>";
+			html += "<button class=\"btn plan-action\" type=\"button\" data-plan-action=\"revise\">";
+			html += EscapeHtml(LocalFromWide(L"\u8981\u6c42\u4fee\u6539"));
+			html += "</button>";
+			html += "<button class=\"btn plan-action\" type=\"button\" data-plan-action=\"exit\">";
+			html += EscapeHtml(LocalFromWide(L"\u9000\u51fa\u8ba1\u5212\u6a21\u5f0f"));
+			html += "</button>";
+			html += "</div>";
+		}
+		html += "</div></div></section>";
+	};
+	auto appendMessageCard = [&appendPlanCard](std::string& html, SessionRole role, const std::string& roleText, const std::string& content, bool renderMarkdown) {
+		std::string awFile;
+		std::string awSummary;
+		std::string awDiff;
+		if (ExtractAutoWriteDiffMessage(content, awFile, awSummary, awDiff)) {
+			html += "<section class=\"msg tool\"><div class=\"role\">";
+			html += EscapeHtml(RoleLabel(SessionRole::Tool));
+			html += "</div><div class=\"body\">";
+			html += RenderAutoWriteCardHtml(awFile, awSummary, awDiff);
+			html += "</div></section>";
+			return;
+		}
+		std::string proposedPlan;
+		if (role == SessionRole::Assistant &&
+			ExtractProposedPlanContent(content, proposedPlan)) {
+			appendPlanCard(html, proposedPlan);
+			return;
+		}
+
 		std::string roleClass = "system";
 		switch (role)
 		{
@@ -2957,7 +3708,31 @@ std::string BuildHistoryTextLocked(
 		text += "[";
 		text += RoleLabel(msg.role);
 		text += "]\r\n";
-		text += msg.content;
+		std::string awFile;
+		std::string awSummary;
+		std::string awDiff;
+		std::string proposedPlan;
+		if (ExtractAutoWriteDiffMessage(msg.content, awFile, awSummary, awDiff)) {
+			text += LocalFromWide(L"\u5df2\u81ea\u52a8\u5199\u5165");
+			if (!awFile.empty()) {
+				text += LocalFromWide(L"\uff1a");
+				text += awFile;
+			}
+			text += "\r\n";
+			if (!TrimAsciiCopy(awSummary).empty()) {
+				text += awSummary;
+				text += "\r\n";
+			}
+			text += awDiff;
+		}
+		else if (msg.role == SessionRole::Assistant &&
+			ExtractProposedPlanContent(msg.content, proposedPlan)) {
+			text += LocalFromWide(L"\u5b9e\u65bd\u8ba1\u5212\uff1a\r\n");
+			text += proposedPlan;
+		}
+		else {
+			text += msg.content;
+		}
 		text += "\r\n\r\n";
 	}
 	if (state.requestInFlight) {
@@ -3245,6 +4020,14 @@ void RunAIChatWorker(void* pParams)
 						cancellation = request->cancellation,
 						requestId = request->requestId
 					](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
+						if (ShouldBlockToolForCurrentPlanMode(toolName)) {
+							outOk = false;
+							AppendAgentActivity(
+								requestId,
+								LocalFromWide(L"\u8ba1\u5212\u672a\u6279\u51c6\uff0c\u5df2\u62e6\u622a\u5de5\u5177\uff1a") +
+								(toolName.empty() ? std::string("<unknown>") : toolName));
+							return BuildPlanModeToolBlockedResult(toolName);
+						}
 						AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, false, false));
 						std::string toolResult = ExecuteToolCall(
 							toolName,
@@ -3478,6 +4261,7 @@ void HandleChatStopUi(HWND hWnd, ChatDialogContext* ctx)
 	}
 	HideChatConfirmInPage(ctx);
 	LayoutAIChatDialog(hWnd, ctx);
+	CompletePendingToolApproval(hWnd, ctx, 0, false, false);
 	RequestStopCurrentChat();
 	RefreshChatDialog(hWnd);
 }
@@ -3514,6 +4298,207 @@ void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx)
 			SetFocus(ctx->hInput);
 		}
 	}
+}
+
+void HandleChatEnterPlanModeUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx != nullptr) {
+		HideChatConfirmInPage(ctx);
+		LayoutAIChatDialog(hWnd, ctx);
+	}
+
+	bool changed = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (g_session.requestInFlight) {
+			return;
+		}
+		if (g_session.planModeState == PlanModeState::Planning ||
+			g_session.planModeState == PlanModeState::AwaitingApproval) {
+			return;
+		}
+		g_session.planModeState = PlanModeState::Planning;
+		g_session.pendingPlan.clear();
+		g_session.messages.push_back(SessionMessage{
+			SessionRole::System,
+			LocalFromWide(L"\u5df2\u8fdb\u5165\u8ba1\u5212\u6a21\u5f0f\u3002AI \u5c06\u5148\u63a2\u7d22\u5e76\u63d0\u4ea4\u65b9\u6848\uff0c\u6279\u51c6\u540e\u518d\u6267\u884c\u5199\u5165\u64cd\u4f5c\u3002"),
+			false,
+			true,
+			"",
+			""
+		});
+		changed = true;
+	}
+	if (changed) {
+		SaveChatSessionSnapshotNow();
+		RefreshChatDialog(hWnd);
+	}
+	FocusChatComposerInput(ctx);
+}
+
+void HandleChatExitPlanModeUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx != nullptr) {
+		HideChatConfirmInPage(ctx);
+		LayoutAIChatDialog(hWnd, ctx);
+	}
+
+	bool changed = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (g_session.requestInFlight) {
+			return;
+		}
+		if (g_session.planModeState == PlanModeState::Normal && g_session.pendingPlan.empty()) {
+			return;
+		}
+		g_session.planModeState = PlanModeState::Normal;
+		g_session.pendingPlan.clear();
+		g_session.messages.push_back(SessionMessage{
+			SessionRole::System,
+			LocalFromWide(L"\u5df2\u9000\u51fa\u8ba1\u5212\u6a21\u5f0f\u3002"),
+			false,
+			true,
+			"",
+			""
+		});
+		changed = true;
+	}
+	if (changed) {
+		SaveChatSessionSnapshotNow();
+		RefreshChatDialog(hWnd);
+	}
+	FocusChatComposerInput(ctx);
+}
+
+void HandleChatApprovePlanUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx != nullptr) {
+		HideChatConfirmInPage(ctx);
+		LayoutAIChatDialog(hWnd, ctx);
+	}
+
+	bool canApprove = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight &&
+			g_session.planModeState == PlanModeState::AwaitingApproval &&
+			!TrimAsciiCopy(g_session.pendingPlan).empty()) {
+			g_session.planModeState = PlanModeState::Approved;
+			canApprove = true;
+		}
+	}
+	if (!canApprove) {
+		RefreshChatDialog(hWnd);
+		FocusChatComposerInput(ctx);
+		return;
+	}
+
+	if (ctx != nullptr && ctx->webViewDesired) {
+		ClearWebViewInput(ctx);
+	}
+	SaveChatSessionSnapshotNow();
+	StartChatRequest(LocalFromWide(L"\u6211\u6279\u51c6\u6b64\u8ba1\u5212\uff0c\u8bf7\u6309\u8ba1\u5212\u5f00\u59cb\u6267\u884c\u3002"));
+	RefreshChatDialog(hWnd);
+}
+
+void HandleChatRevisePlanUi(HWND hWnd, ChatDialogContext* ctx, const std::string& feedback)
+{
+	if (ctx != nullptr) {
+		HideChatConfirmInPage(ctx);
+		LayoutAIChatDialog(hWnd, ctx);
+	}
+
+	bool canRevise = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight &&
+			(g_session.planModeState == PlanModeState::AwaitingApproval ||
+				g_session.planModeState == PlanModeState::Planning)) {
+			g_session.planModeState = PlanModeState::Planning;
+			g_session.pendingPlan.clear();
+			canRevise = true;
+		}
+	}
+	if (!canRevise) {
+		RefreshChatDialog(hWnd);
+		FocusChatComposerInput(ctx);
+		return;
+	}
+
+	std::string prompt = LocalFromWide(L"\u8bf7\u6839\u636e\u6211\u7684\u53cd\u9988\u4fee\u6539\u8ba1\u5212\uff0c\u4fee\u6539\u5b8c\u540e\u91cd\u65b0\u7528 <proposed_plan> \u63d0\u4ea4\u5f85\u6279\u51c6\u8ba1\u5212\u3002");
+	const std::string trimmedFeedback = TrimAsciiCopy(feedback);
+	if (!trimmedFeedback.empty()) {
+		prompt += LocalFromWide(L"\n\n\u53cd\u9988\uff1a\n");
+		prompt += trimmedFeedback;
+	}
+
+	if (ctx != nullptr && ctx->webViewDesired) {
+		ClearWebViewInput(ctx);
+	}
+	SaveChatSessionSnapshotNow();
+	StartChatRequest(prompt);
+	RefreshChatDialog(hWnd);
+}
+
+void HandleChatToggleAutoAllowUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx != nullptr) {
+		HideChatConfirmInPage(ctx);
+		LayoutAIChatDialog(hWnd, ctx);
+	}
+
+	bool currentlyEnabled = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		currentlyEnabled = g_session.autoAllowWrites;
+	}
+
+	if (!currentlyEnabled) {
+		const unsigned long long pendingApprovalId = GetPendingToolApprovalId();
+		if (pendingApprovalId != 0) {
+			CompletePendingToolApproval(hWnd, ctx, pendingApprovalId, true, true);
+			return;
+		}
+	}
+
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		g_session.autoAllowWrites = !currentlyEnabled;
+		if (g_session.autoAllowWrites) {
+			g_session.messages.push_back(SessionMessage{
+				SessionRole::System,
+				LocalFromWide(L"\u5df2\u5f00\u542f\u81ea\u52a8\u5141\u8bb8\u6a21\u5f0f\uff0c\u4ee3\u7801\u5199\u5165\u5c06\u76f4\u63a5\u6267\u884c\u3002"),
+				false,
+				true,
+				"",
+				""
+			});
+		}
+		else {
+			g_session.messages.push_back(SessionMessage{
+				SessionRole::System,
+				LocalFromWide(L"\u5df2\u5207\u56de\u9ed8\u8ba4\u8be2\u95ee\u6a21\u5f0f\uff0c\u4ee3\u7801\u5199\u5165\u524d\u9700\u8981\u6279\u51c6\u3002"),
+				false,
+				true,
+				"",
+				""
+			});
+		}
+	}
+	SaveChatSessionSnapshotNow();
+	RefreshChatDialog(hWnd);
+	FocusChatComposerInput(ctx);
+}
+
+void HandleChatApproveToolUi(HWND hWnd, ChatDialogContext* ctx, unsigned long long approvalId, bool enableAutoAllow)
+{
+	CompletePendingToolApproval(hWnd, ctx, approvalId, true, enableAutoAllow);
+}
+
+void HandleChatDenyToolUi(HWND hWnd, ChatDialogContext* ctx, unsigned long long approvalId)
+{
+	CompletePendingToolApproval(hWnd, ctx, approvalId, false, false);
 }
 
 std::vector<AIChatStoredSessionListEntry> LoadRecentChatSessionsForCurrentSource()
@@ -3892,9 +4877,20 @@ void HandleChatTaskDone(LPARAM lParam)
 			});
 		}
 		else if (result->chatResult.ok) {
+			const std::string assistantContent = NormalizeCodeForEIDE(result->chatResult.content);
+			std::string proposedPlan;
+			if (g_session.planModeState == PlanModeState::Planning &&
+				ExtractProposedPlanContent(assistantContent, proposedPlan)) {
+				g_session.planModeState = PlanModeState::AwaitingApproval;
+				g_session.pendingPlan = proposedPlan;
+			}
+			else if (g_session.planModeState == PlanModeState::Approved) {
+				g_session.planModeState = PlanModeState::Normal;
+				g_session.pendingPlan.clear();
+			}
 			g_session.messages.push_back(SessionMessage{
 				SessionRole::Assistant,
-				NormalizeCodeForEIDE(result->chatResult.content),
+				assistantContent,
 				true,
 				true,
 				result->chatResult.reasoningContent,
@@ -3902,6 +4898,10 @@ void HandleChatTaskDone(LPARAM lParam)
 			});
 		}
 		else {
+			if (g_session.planModeState == PlanModeState::Approved) {
+				g_session.planModeState = PlanModeState::Normal;
+				g_session.pendingPlan.clear();
+			}
 			std::string err;
 			if (result->chatResult.toolRoundsExceeded) {
 				err = LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25: ") + result->chatResult.error +
@@ -3940,6 +4940,8 @@ void RefreshChatDialog(HWND hWnd)
 	std::string historyHtml;
 	bool inFlight = false;
 	bool stopRequested = false;
+	PlanModeState planModeState = PlanModeState::Normal;
+	bool autoAllowWrites = false;
 	ContextUsageSnapshot usageSnapshot;
 	SessionTimingSnapshot timingSnapshot;
 	const int fallbackContextWindow = settingsReady
@@ -3959,6 +4961,8 @@ void RefreshChatDialog(HWND hWnd)
 		}
 		inFlight = g_session.requestInFlight;
 		stopRequested = IsStopRequestedLocked(g_session);
+		planModeState = g_session.planModeState;
+		autoAllowWrites = g_session.autoAllowWrites;
 		usageSnapshot = BuildContextUsageSnapshotLocked(g_session, fallbackContextWindow);
 		timingSnapshot = BuildSessionTimingSnapshotLocked(g_session, GetCurrentUnixTimeMsForChat());
 	}
@@ -3983,6 +4987,12 @@ void RefreshChatDialog(HWND hWnd)
 	}
 	if (ctx->hOpenSettings != nullptr) {
 		EnableWindow(ctx->hOpenSettings, inFlight ? FALSE : TRUE);
+	}
+	if (ctx->hPlanMode != nullptr) {
+		EnableWindow(ctx->hPlanMode, inFlight ? FALSE : TRUE);
+	}
+	if (ctx->hAutoAllowMode != nullptr) {
+		EnableWindow(ctx->hAutoAllowMode, TRUE);
 	}
 	if (ctx->hClearConfirmApply != nullptr) {
 		EnableWindow(ctx->hClearConfirmApply, inFlight ? FALSE : TRUE);
@@ -4010,9 +5020,13 @@ void RefreshChatDialog(HWND hWnd)
 		ShowWindow(ctx->hSessionStatus, (nativeComposerVisible && timingSnapshot.visible) ? SW_SHOW : SW_HIDE);
 	}
 	UpdateNativeSessionTiming(ctx, timingSnapshot);
+	UpdateNativePlanModeState(ctx, planModeState);
+	UpdateNativeAutoAllowModeState(ctx, autoAllowWrites);
 	UpdateWebViewComposerState(ctx, inFlight, stopRequested);
 	UpdateWebViewContextUsage(ctx, usageSnapshot);
 	UpdateWebViewSessionTiming(ctx, timingSnapshot);
+	UpdateWebViewPlanModeState(ctx, planModeState);
+	UpdateWebViewAutoAllowModeState(ctx, autoAllowWrites);
 	SyncSessionTimingTimer(hWnd, timingSnapshot.inProgress);
 	if (hideInlineConfirmForBusy || timingVisibilityChanged) {
 		LayoutAIChatDialog(hWnd, ctx);
@@ -4063,6 +5077,12 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hOpenSettings = CreateWindowW(L"STATIC", L"\u2699",
 			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			76, 442, 26, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_OPEN_SETTINGS), nullptr, nullptr);
+		ctx->hPlanMode = CreateWindowW(L"STATIC", L"\u8ba1\u5212",
+			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
+			108, 442, 68, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_PLAN_MODE), nullptr, nullptr);
+		ctx->hAutoAllowMode = CreateWindowW(L"STATIC", L"\u8be2\u95ee",
+			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
+			182, 442, 78, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_AUTO_ALLOW_MODE), nullptr, nullptr);
 		ctx->hSessionElapsed = CreateWindowW(L"STATIC", L"0m 0s",
 			WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE,
 			424, 476, 86, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_SESSION_ELAPSED), nullptr, nullptr);
@@ -4106,6 +5126,8 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		SetDefaultFont(ctx->hClearHistory);
 		SetDefaultFont(ctx->hRestoreSession);
 		SetDefaultFont(ctx->hOpenSettings);
+		SetDefaultFont(ctx->hPlanMode);
+		SetDefaultFont(ctx->hAutoAllowMode);
 		SetDefaultFont(ctx->hSessionElapsed);
 		SetDefaultFont(ctx->hSessionStatus);
 		SetDefaultFont(ctx->hContextUsage);
@@ -4123,6 +5145,8 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		InstallChatActionControl(ctx->hClearHistory, kActionClear);
 		InstallChatActionControl(ctx->hRestoreSession, kActionRestoreSession);
 		InstallChatActionControl(ctx->hOpenSettings, kActionOpenSettings);
+		InstallChatActionControl(ctx->hPlanMode, kActionPlanMode);
+		InstallChatActionControl(ctx->hAutoAllowMode, kActionAutoAllowMode);
 		InstallChatActionControl(ctx->hClearConfirmApply, kActionClearConfirm);
 		InstallChatActionControl(ctx->hClearConfirmCancel, kActionClearCancel);
 		ctx->inputRowsVisible = 1;
@@ -4194,6 +5218,8 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 			if (hStatic != ctx->hClearHistory &&
 				hStatic != ctx->hRestoreSession &&
 				hStatic != ctx->hOpenSettings &&
+				hStatic != ctx->hPlanMode &&
+				hStatic != ctx->hAutoAllowMode &&
 				hStatic != ctx->hClearConfirmApply &&
 				hStatic != ctx->hClearConfirmCancel &&
 				hStatic != ctx->hSend &&
@@ -4304,11 +5330,65 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		}
 		return 0;
 
+	case WM_AUTOLINKER_AI_CHAT_ENTER_PLAN_MODE:
+		if (ctx != nullptr) {
+			HandleChatEnterPlanModeUi(hWnd, ctx);
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_EXIT_PLAN_MODE:
+		if (ctx != nullptr) {
+			HandleChatExitPlanModeUi(hWnd, ctx);
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_APPROVE_PLAN:
+		if (ctx != nullptr) {
+			HandleChatApprovePlanUi(hWnd, ctx);
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_REVISE_PLAN:
+		if (ctx != nullptr) {
+			HandleChatRevisePlanUi(hWnd, ctx, GetEditTextA(ctx->hInput));
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_TOGGLE_AUTO_ALLOW:
+		if (ctx != nullptr) {
+			HandleChatToggleAutoAllowUi(hWnd, ctx);
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_APPROVE_TOOL:
+		if (ctx != nullptr) {
+			HandleChatApproveToolUi(hWnd, ctx, static_cast<unsigned long long>(wParam), false);
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_DENY_TOOL:
+		if (ctx != nullptr) {
+			HandleChatDenyToolUi(hWnd, ctx, static_cast<unsigned long long>(wParam));
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_AUTO_ALLOW_TOOL:
+		if (ctx != nullptr) {
+			HandleChatApproveToolUi(hWnd, ctx, static_cast<unsigned long long>(wParam), true);
+		}
+		return 0;
+
 	case WM_CLOSE:
 		DestroyWindow(hWnd);
 		return 0;
 
 	case WM_DESTROY:
+		CompletePendingToolApproval(
+			hWnd,
+			ctx,
+			0,
+			false,
+			false);
 		if (g_chatDialog == hWnd) {
 			g_chatDialog = nullptr;
 			g_chatTabAdded = false;
@@ -4358,6 +5438,212 @@ bool HandleToolDialogRequest(LPARAM lParam)
 	return true;
 }
 
+ToolApprovalRequestState TakePendingToolApproval(unsigned long long approvalId)
+{
+	ToolApprovalRequestState pending;
+	std::lock_guard<std::mutex> guard(g_toolApprovalMutex);
+	if (g_pendingToolApproval.id == 0 ||
+		(approvalId != 0 && g_pendingToolApproval.id != approvalId)) {
+		return pending;
+	}
+	pending = std::move(g_pendingToolApproval);
+	g_pendingToolApproval = {};
+	return pending;
+}
+
+unsigned long long GetPendingToolApprovalId()
+{
+	std::lock_guard<std::mutex> guard(g_toolApprovalMutex);
+	return g_pendingToolApproval.id;
+}
+
+void CompletePendingToolApproval(
+	HWND hWnd,
+	ChatDialogContext* ctx,
+	unsigned long long approvalId,
+	bool approved,
+	bool enableAutoAllow)
+{
+	ToolApprovalRequestState pending = TakePendingToolApproval(approvalId);
+	if (pending.request == nullptr) {
+		return;
+	}
+
+	if (enableAutoAllow) {
+		{
+			std::lock_guard<std::mutex> guard(g_session.mutex);
+			g_session.autoAllowWrites = true;
+			g_session.messages.push_back(SessionMessage{
+				SessionRole::System,
+				LocalFromWide(L"\u5df2\u5f00\u542f\u81ea\u52a8\u5141\u8bb8\u6a21\u5f0f\uff0c\u540e\u7eed\u4ee3\u7801\u5199\u5165\u5c06\u76f4\u63a5\u6267\u884c\u3002"),
+				false,
+				true,
+				"",
+				""
+			});
+		}
+		SaveChatSessionSnapshotNow();
+	}
+
+	if (ctx != nullptr) {
+		HideWebViewToolApproval(ctx);
+	}
+
+	if (!approved) {
+		FinishToolExecutionRequest(
+			pending.request,
+			false,
+			BuildToolApprovalDeniedResult(pending.toolName));
+		PostRefreshDialog();
+		return;
+	}
+
+	bool ok = false;
+	const std::string resultJson = ExecuteToolCallOnMainThread(pending.toolName, pending.argumentsJson, ok);
+	FinishToolExecutionRequest(pending.request, ok, resultJson);
+	PostRefreshDialog();
+	if (hWnd != nullptr && IsWindow(hWnd)) {
+		RefreshChatDialog(hWnd);
+	}
+}
+
+bool BeginToolApprovalRequest(ToolExecutionRequest* request)
+{
+	if (request == nullptr) {
+		return false;
+	}
+
+	nlohmann::json payload = BuildToolApprovalPayloadUtf8(0, request->toolName, request->argumentsJson);
+	auto* ctx = (g_chatDialog != nullptr && IsWindow(g_chatDialog))
+		? reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(g_chatDialog, GWLP_USERDATA))
+		: nullptr;
+	const bool canUseWebViewApproval =
+		ctx != nullptr &&
+		ctx->webViewDesired &&
+		ctx->webViewContentReady &&
+		ctx->webView != nullptr;
+
+	if (!canUseWebViewApproval) {
+		const std::string title = Utf8ToLocalText(payload.value("title", std::string("AI Tool Approval")));
+		std::string content = Utf8ToLocalText(payload.value("summary", std::string()));
+		const std::string filePath = Utf8ToLocalText(payload.value("file_path", std::string()));
+		if (!filePath.empty()) {
+			content += "\r\n\r\n";
+			content += LocalFromWide(L"\u76ee\u6807\uff1a");
+			content += filePath;
+		}
+		const std::string preview = Utf8ToLocalText(payload.value("preview_text", std::string()));
+		if (!preview.empty()) {
+			content += "\r\n\r\n";
+			content += preview;
+		}
+		const AIPreviewAction action = ShowAIPreviewDialogEx(
+			g_mainWindow,
+			title,
+			content,
+			LocalFromWide(L"\u5141\u8bb8\u672c\u6b21"),
+			LocalFromWide(L"\u62d2\u7edd"));
+		if (action == AIPreviewAction::PrimaryConfirm) {
+			bool ok = false;
+			const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, request->argumentsJson, ok);
+			FinishToolExecutionRequest(request, ok, resultJson);
+		}
+		else {
+			FinishToolExecutionRequest(request, false, BuildToolApprovalDeniedResult(request->toolName));
+		}
+		return true;
+	}
+
+	unsigned long long approvalId = 0;
+	{
+		std::lock_guard<std::mutex> guard(g_toolApprovalMutex);
+		if (g_pendingToolApproval.id != 0) {
+			FinishToolExecutionRequest(
+				request,
+				false,
+				BuildToolApprovalDeniedResult(request->toolName));
+			return true;
+		}
+		approvalId = g_nextToolApprovalId++;
+		payload["id"] = approvalId;
+		g_pendingToolApproval.id = approvalId;
+		g_pendingToolApproval.request = request;
+		g_pendingToolApproval.toolName = request->toolName;
+		g_pendingToolApproval.argumentsJson = request->argumentsJson;
+		g_pendingToolApproval.payloadUtf8 = payload;
+	}
+
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (g_session.requestInFlight && g_session.activeRequestId != 0) {
+			g_session.agentActivityLines.push_back(
+				LocalFromWide(L"\u7b49\u5f85\u6279\u51c6\u5199\u5165\u64cd\u4f5c\uff1a") +
+				(request->toolName.empty() ? std::string("<unknown>") : request->toolName));
+		}
+	}
+	ShowWebViewToolApproval(ctx, payload);
+	PostRefreshDialog();
+	return true;
+}
+
+bool IsAutoWriteDiffTool(const std::string& toolName)
+{
+	return _stricmp(toolName.c_str(), "edit_file") == 0 ||
+		_stricmp(toolName.c_str(), "multi_edit_file") == 0 ||
+		_stricmp(toolName.c_str(), "write_file") == 0;
+}
+
+void AppendAutoWriteDiffMessageForTool(const std::string& toolName, const std::string& argumentsJsonUtf8)
+{
+	if (!IsAutoWriteDiffTool(toolName)) {
+		return;
+	}
+	nlohmann::json payload;
+	try {
+		payload = BuildToolApprovalPayloadUtf8(0, toolName, argumentsJsonUtf8);
+	}
+	catch (...) {
+		return;
+	}
+	auto readStr = [&payload](const char* key) -> std::string {
+		auto it = payload.find(key);
+		if (it != payload.end() && it->is_string()) {
+			return it->get<std::string>();
+		}
+		return std::string();
+	};
+	const std::string previewLocal = Utf8ToLocalText(readStr("preview_text"));
+	if (TrimAsciiCopy(previewLocal).empty()) {
+		return;
+	}
+	const std::string summaryLocal = Utf8ToLocalText(readStr("summary"));
+	std::string fileLocal = Utf8ToLocalText(readStr("file_path"));
+	if (fileLocal.empty()) {
+		fileLocal = Utf8ToLocalText(readStr("mapped_page_name"));
+	}
+	if (fileLocal.empty()) {
+		fileLocal = Utf8ToLocalText(readStr("page_name"));
+	}
+	std::string content = "@@AUTOLINKER_WRITE_DIFF@@\n";
+	content += "file:";
+	content += fileLocal;
+	content += "\nsummary:";
+	content += summaryLocal;
+	content += "\n@@DIFF@@\n";
+	content += previewLocal;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		g_session.messages.push_back(SessionMessage{
+			SessionRole::Tool,
+			content,
+			false,
+			true,
+			std::string(),
+			std::string()
+		});
+	}
+}
+
 bool HandleToolExecRequest(LPARAM lParam)
 {
 	auto* request = reinterpret_cast<ToolExecutionRequest*>(lParam);
@@ -4365,15 +5651,16 @@ bool HandleToolExecRequest(LPARAM lParam)
 		return true;
 	}
 
+	if (IsToolRequiringWriteApproval(request->toolName) && !IsAutoAllowWritesEnabled()) {
+		return BeginToolApprovalRequest(request);
+	}
+
+	AppendAutoWriteDiffMessageForTool(request->toolName, request->argumentsJson);
+	PostRefreshDialog();
+
 	bool ok = false;
 	const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, request->argumentsJson, ok);
-	{
-		std::lock_guard<std::mutex> guard(request->mutex);
-		request->ok = ok;
-		request->resultJson = resultJson;
-		request->done = true;
-	}
-	request->cv.notify_one();
+	FinishToolExecutionRequest(request, ok, resultJson);
 	return true;
 }
 } // namespace

@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstdint>
 #include <format>
+#include <initializer_list>
 #include <mbstring.h>
 
 #include <cstring>
@@ -105,6 +106,18 @@ struct NativeSearchAddresses {
     std::uintptr_t selectSearchResultTab = 0;
     std::uintptr_t setMainEditorActiveEditorObject = 0;
     ptrdiff_t mainEditorHostActiveEditorObjectOffset = 0;
+};
+
+struct OpenCodeTargetAddresses {
+    bool initialized = false;
+    bool ok = false;
+    std::uintptr_t moduleBase = 0;
+
+    std::uintptr_t containerGetAt = 0;
+    std::uintptr_t openCodeTarget = 0;
+    std::uintptr_t type1Container = 0;
+    std::uintptr_t mainEditorHost = 0;
+    std::string trace;
 };
 
 constexpr int kSearchTypes[] = {1, 2, 3, 4, 6, 7, 8};
@@ -212,6 +225,8 @@ private:
 
 std::mutex g_nativeSearchAddressMutex;
 NativeSearchAddresses g_nativeSearchAddresses;
+std::mutex g_openCodeTargetAddressMutex;
+OpenCodeTargetAddresses g_openCodeTargetAddresses;
 
 std::uintptr_t NormalizeRuntimeAddress(std::uintptr_t runtimeAddress, std::uintptr_t moduleBase) {
     if (runtimeAddress == 0 || moduleBase == 0 || runtimeAddress < moduleBase) {
@@ -265,6 +280,26 @@ std::uintptr_t ResolveUniqueCodeAddress(
         return 0;
     }
     return NormalizeRuntimeAddress(static_cast<std::uintptr_t>(matches.front()), moduleBase);
+}
+
+std::uintptr_t ResolveUniqueCodeAddressFromPatterns(
+    const char* label,
+    std::initializer_list<const char*> patterns,
+    std::uintptr_t moduleBase) {
+    size_t patternIndex = 0;
+    for (const char* pattern : patterns) {
+        const auto matches = FindSelfModelMemoryAll(pattern);
+        if (matches.size() == 1) {
+            return NormalizeRuntimeAddress(static_cast<std::uintptr_t>(matches.front()), moduleBase);
+        }
+        OutputStringToELog(std::format(
+            "[DirectGlobalSearch] resolve {} pattern#{} failed, matchCount={}",
+            label,
+            patternIndex,
+            matches.size()));
+        ++patternIndex;
+    }
+    return 0;
 }
 
 std::uintptr_t ResolveUniqueImmAddress(
@@ -354,6 +389,108 @@ std::uintptr_t ResolveSetMainEditorActiveEditorObjectAddress(
     return functionRva;
 }
 
+bool TryPopulateKnownOpenCodeTargetMainHost(OpenCodeTargetAddresses& addrs, std::uintptr_t moduleBase) {
+    struct KnownProfile {
+        const char* name = nullptr;
+        std::uintptr_t mainEditorHostRva = 0;
+        std::uintptr_t setActiveEditorObjectRva = 0;
+        ptrdiff_t activeEditorObjectOffset = 0;
+    };
+
+    static constexpr KnownProfile kProfiles[] = {
+        { "e5.95", 0x6756E0, 0x47ADF0, 0x464 },
+        { "e571", 0x5CAE70, 0x471B30, 0x438 },
+    };
+
+    for (const auto& profile : kProfiles) {
+        ptrdiff_t activeOffset = 0;
+        if (!TryExtractActiveEditorOffsetFromSetActiveEditorObject(
+                moduleBase,
+                profile.setActiveEditorObjectRva,
+                &activeOffset)) {
+            addrs.trace +=
+                std::string("|known_profile_try=") +
+                profile.name +
+                "|set_active_signature_mismatch";
+            continue;
+        }
+        if (activeOffset != profile.activeEditorObjectOffset) {
+            addrs.trace +=
+                std::string("|known_profile_try=") +
+                profile.name +
+                "|active_offset_mismatch=" +
+                std::to_string(activeOffset);
+            continue;
+        }
+
+        addrs.mainEditorHost = profile.mainEditorHostRva;
+        addrs.trace +=
+            std::string("|known_profile=") +
+            profile.name +
+            "|main_editor_host=" +
+            std::to_string(addrs.mainEditorHost);
+        return true;
+    }
+
+    return false;
+}
+
+bool PopulateOpenCodeTargetAddresses(OpenCodeTargetAddresses& addrs, std::uintptr_t moduleBase) {
+    addrs = {};
+    addrs.initialized = true;
+    addrs.moduleBase = moduleBase;
+    addrs.trace = "open_code_target_probe";
+    if (moduleBase == 0) {
+        addrs.trace += "|module_base_invalid";
+        return false;
+    }
+
+    addrs.openCodeTarget = ResolveUniqueCodeAddressFromPatterns(
+        "open_code_target",
+        {
+            "83 EC 08 53 56 57 8B F9 8B 87 ?? ?? ?? ?? F7 D0 83 E0 01 3C 01 0F 84 C0 02 00 00 8B 5C 24 18 33 F6 83 FB 01 74 39",
+            "83 EC 08 53 56 57 8B F9 8B 87 ?? ?? ?? ?? F7 D0 83 E0 01 3C 01",
+        },
+        moduleBase);
+    addrs.containerGetAt = ResolveUniqueCodeAddress(
+        "container_get_at",
+        "8B 41 18 8B 54 24 04 C1 E8 03 3B D0 7D 23 56 8B 71 18 85 F6 5E 75 04 33 C9 EB 03 8B 49 10 03 C2",
+        moduleBase);
+    addrs.type1Container = ResolveUniqueImmAddress(
+        "type1_container",
+        "8B C1 41 89 4C 24 48 52 50 B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? 85 C0 0F 84 1B 04 00 00 8B 44 24",
+        10,
+        moduleBase);
+
+    if (!TryPopulateKnownOpenCodeTargetMainHost(addrs, moduleBase)) {
+        addrs.trace += "|known_profile=no_match|fallback=pattern_scan";
+        addrs.mainEditorHost = ResolveUniqueImmAddress(
+            "main_editor_host",
+            "A1 ?? ?? ?? ?? 3B C7 74 0A B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? 8D 44 24 14 55 50 B9 ?? ?? ?? ?? E8",
+            10,
+            moduleBase);
+    }
+
+    addrs.ok =
+        addrs.openCodeTarget != 0 &&
+        addrs.mainEditorHost != 0;
+    addrs.trace +=
+        std::string("|ok=") + (addrs.ok ? "1" : "0") +
+        "|open_code_target=" + std::to_string(addrs.openCodeTarget) +
+        "|main_editor_host=" + std::to_string(addrs.mainEditorHost) +
+        "|container_get_at=" + std::to_string(addrs.containerGetAt) +
+        "|type1_container=" + std::to_string(addrs.type1Container);
+    return addrs.ok;
+}
+
+const OpenCodeTargetAddresses& GetOpenCodeTargetAddresses(std::uintptr_t moduleBase) {
+    std::lock_guard<std::mutex> lock(g_openCodeTargetAddressMutex);
+    if (!g_openCodeTargetAddresses.initialized || g_openCodeTargetAddresses.moduleBase != moduleBase) {
+        PopulateOpenCodeTargetAddresses(g_openCodeTargetAddresses, moduleBase);
+    }
+    return g_openCodeTargetAddresses;
+}
+
 bool PopulateNativeSearchAddresses(NativeSearchAddresses& addrs, std::uintptr_t moduleBase) {
     addrs = {};
     addrs.moduleBase = moduleBase;
@@ -386,9 +523,12 @@ bool PopulateNativeSearchAddresses(NativeSearchAddresses& addrs, std::uintptr_t 
         "resolve_bucket_index",
         "53 8B 5C 24 08 56 57 8B F1 53 E8 ?? ?? ?? ?? 83 C4 04 85 C0 75 06 5F 5E 5B C2 0C 00 8B 46 18 85 C0 75 04 33 FF EB 03 8B 7E 10",
         moduleBase);
-    addrs.openCodeTarget = ResolveUniqueCodeAddress(
+    addrs.openCodeTarget = ResolveUniqueCodeAddressFromPatterns(
         "open_code_target",
-        "83 EC 08 53 56 57 8B F9 8B 87 CC 03 00 00 F7 D0 83 E0 01 3C 01 0F 84 C0 02 00 00 8B 5C 24 18 33 F6 83 FB 01 74 39",
+        {
+            "83 EC 08 53 56 57 8B F9 8B 87 ?? ?? ?? ?? F7 D0 83 E0 01 3C 01 0F 84 C0 02 00 00 8B 5C 24 18 33 F6 83 FB 01 74 39",
+            "83 EC 08 53 56 57 8B F9 8B 87 ?? ?? ?? ?? F7 D0 83 E0 01 3C 01",
+        },
         moduleBase);
     addrs.createCodePage = ResolveUniqueCodeAddress(
         "create_code_page",
@@ -695,6 +835,13 @@ bool SafeContainerGetAt(
     int index,
     int* outPtr,
     int* outOk);
+bool SafeCallOpenCodeTarget(
+    FnOpenCodeTarget fn,
+    void* mainEditorHost,
+    int openType,
+    int arg2,
+    int arg3,
+    void** outEditorObject);
 int ResolveTypeDataRaw(int type, std::uintptr_t moduleBase);
 
 class ScopedHiddenBuiltinSearchApiHooks {
@@ -1461,10 +1608,10 @@ bool TryResolveEditorObjectForProgramTreeItemData(
         return false;
     }
 
-    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    const auto& addrs = GetOpenCodeTargetAddresses(moduleBase);
     if (!addrs.ok) {
         if (outTrace != nullptr) {
-            *outTrace = "resolve_native_addresses_failed";
+            *outTrace = "resolve_open_code_target_addresses_failed|" + addrs.trace;
         }
         return false;
     }
@@ -1486,20 +1633,18 @@ bool TryResolveEditorObjectForProgramTreeItemData(
             return false;
         }
 
-        const auto containerGetAt = BindAbsolute<FnContainerGetAt>(moduleBase, addrs.containerGetAt);
-        int bucketOk = 0;
-        if (!SafeContainerGetAt(
-                containerGetAt,
-                PtrAbsolute<void>(moduleBase, addrs.type1Container),
-                resolvedIndex,
-                &bucketData,
-                &bucketOk) ||
-            bucketOk == 0 ||
-            bucketData == 0) {
-            if (outTrace != nullptr) {
-                *outTrace = "type1_bucket_lookup_failed";
+        if (addrs.containerGetAt != 0 && addrs.type1Container != 0) {
+            const auto containerGetAt = BindAbsolute<FnContainerGetAt>(moduleBase, addrs.containerGetAt);
+            int bucketOk = 0;
+            if (!SafeContainerGetAt(
+                    containerGetAt,
+                    PtrAbsolute<void>(moduleBase, addrs.type1Container),
+                    resolvedIndex,
+                    &bucketData,
+                    &bucketOk) ||
+                bucketOk == 0) {
+                bucketData = 0;
             }
-            return false;
         }
 
         openType = 1;
@@ -1536,18 +1681,41 @@ bool TryResolveEditorObjectForProgramTreeItemData(
         return false;
     }
 
-    void* editorObject = reinterpret_cast<void*>(openCodeTarget(
-        PtrAbsolute<void>(moduleBase, addrs.mainEditorHost),
-        openType,
-        arg2,
-        arg3,
-        0,
-        0,
-        1,
-        -1));
+    void* editorObject = nullptr;
+    const DWORD openStartTick = ::GetTickCount();
+    if (!SafeCallOpenCodeTarget(
+            openCodeTarget,
+            PtrAbsolute<void>(moduleBase, addrs.mainEditorHost),
+            openType,
+            arg2,
+            arg3,
+            &editorObject)) {
+        if (outTrace != nullptr) {
+            *outTrace =
+                "open_code_target_exception"
+                "|open_type=" + std::to_string(openType) +
+                "|arg2=" + std::to_string(arg2) +
+                "|arg3=" + std::to_string(arg3) +
+                "|resolved_index=" + std::to_string(resolvedIndex) +
+                "|bucket_data=" + std::to_string(bucketData) +
+                "|" +
+                addrs.trace;
+        }
+        return false;
+    }
+    const DWORD openElapsed = ::GetTickCount() - openStartTick;
     if (editorObject == nullptr) {
         if (outTrace != nullptr) {
-            *outTrace = "open_code_target_null";
+            *outTrace =
+                "open_code_target_null"
+                "|open_ms=" + std::to_string(openElapsed) +
+                "|open_type=" + std::to_string(openType) +
+                "|arg2=" + std::to_string(arg2) +
+                "|arg3=" + std::to_string(arg3) +
+                "|resolved_index=" + std::to_string(resolvedIndex) +
+                "|bucket_data=" + std::to_string(bucketData) +
+                "|" +
+                addrs.trace;
         }
         return false;
     }
@@ -1565,7 +1733,16 @@ bool TryResolveEditorObjectForProgramTreeItemData(
         *outBucketData = bucketData;
     }
     if (outTrace != nullptr) {
-        *outTrace = "open_editor_ok";
+        *outTrace =
+            "open_editor_ok"
+            "|open_ms=" + std::to_string(openElapsed) +
+            "|open_type=" + std::to_string(openType) +
+            "|arg2=" + std::to_string(arg2) +
+            "|arg3=" + std::to_string(arg3) +
+            "|resolved_index=" + std::to_string(resolvedIndex) +
+            "|bucket_data=" + std::to_string(bucketData) +
+            "|" +
+            addrs.trace;
     }
     return true;
 }

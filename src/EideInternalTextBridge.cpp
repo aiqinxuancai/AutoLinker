@@ -3242,6 +3242,26 @@ bool IsProjectCacheVerificationPreferredProgramTreeItem(unsigned int itemData)
 	return (itemData >> 28) == 6;
 }
 
+bool IsEditorPageTypeCompatibleWithProgramTreeItem(unsigned int itemData, unsigned int pageType)
+{
+	switch (itemData >> 28) {
+	case 1:
+		return pageType == 1;
+	case 2:
+		return pageType == 3;
+	case 3:
+		return pageType == 2;
+	case 4:
+		return pageType == 4;
+	case 6:
+		return pageType == 6;
+	case 7:
+		return ((itemData & 0x0FFFFFFFu) == 1u) ? pageType == 7 : pageType == 8;
+	default:
+		return false;
+	}
+}
+
 bool IsActiveEditorShortcutPreferredProgramTreeItem(unsigned int itemData)
 {
 	return (itemData >> 28) == 6;
@@ -4206,7 +4226,51 @@ bool TryGetProgramTreeItemClickPoint(HWND treeHwnd, HTREEITEM item, POINT* outPo
 	return true;
 }
 
-void DispatchProgramTreeItemDoubleClick(HWND treeHwnd, HTREEITEM item, std::string* outTrace)
+bool SendProgramTreeMessageWithTimeout(
+	HWND hwnd,
+	UINT message,
+	WPARAM wParam,
+	LPARAM lParam,
+	DWORD timeoutMs,
+	LRESULT* outResult,
+	DWORD* outElapsed,
+	DWORD* outError)
+{
+	if (outResult != nullptr) {
+		*outResult = 0;
+	}
+	if (outElapsed != nullptr) {
+		*outElapsed = 0;
+	}
+	if (outError != nullptr) {
+		*outError = ERROR_SUCCESS;
+	}
+
+	const DWORD startTick = GetTickCount();
+	DWORD_PTR rawResult = 0;
+	SetLastError(ERROR_SUCCESS);
+	const BOOL ok = SendMessageTimeoutA(
+		hwnd,
+		message,
+		wParam,
+		lParam,
+		SMTO_BLOCK | SMTO_ABORTIFHUNG,
+		timeoutMs,
+		&rawResult);
+	const DWORD elapsed = GetTickCount() - startTick;
+	if (outElapsed != nullptr) {
+		*outElapsed = elapsed;
+	}
+	if (outResult != nullptr) {
+		*outResult = static_cast<LRESULT>(rawResult);
+	}
+	if (outError != nullptr) {
+		*outError = ok ? ERROR_SUCCESS : GetLastError();
+	}
+	return ok != FALSE;
+}
+
+bool DispatchProgramTreeItemDoubleClick(HWND treeHwnd, HTREEITEM item, std::string* outTrace)
 {
 	if (outTrace != nullptr) {
 		outTrace->clear();
@@ -4215,34 +4279,101 @@ void DispatchProgramTreeItemDoubleClick(HWND treeHwnd, HTREEITEM item, std::stri
 		if (outTrace != nullptr) {
 			*outTrace = "tree_double_click_invalid_argument";
 		}
-		return;
+		return false;
 	}
 
 	POINT clickPoint = {};
+	const DWORD rectStartTick = GetTickCount();
 	if (!TryGetProgramTreeItemClickPoint(treeHwnd, item, &clickPoint)) {
 		if (outTrace != nullptr) {
 			*outTrace = "tree_double_click_item_rect_failed";
 		}
-		return;
+		return false;
 	}
+	const DWORD rectElapsed = GetTickCount() - rectStartTick;
 
 	const LPARAM clickPos = MAKELPARAM(clickPoint.x, clickPoint.y);
-	SendMessageA(treeHwnd, WM_MOUSEMOVE, 0, clickPos);
-	SendMessageA(treeHwnd, WM_LBUTTONDOWN, MK_LBUTTON, clickPos);
-	SendMessageA(treeHwnd, WM_LBUTTONUP, 0, clickPos);
+	std::string timingTrace =
+		"|rect_ms=" + std::to_string(rectElapsed);
+	const auto sendTimed = [&](UINT message, WPARAM wParam, LPARAM lParam, const char* label) {
+		DWORD elapsed = 0;
+		DWORD error = ERROR_SUCCESS;
+		LRESULT result = 0;
+		const bool ok = SendProgramTreeMessageWithTimeout(
+			treeHwnd,
+			message,
+			wParam,
+			lParam,
+			1500,
+			&result,
+			&elapsed,
+			&error);
+		timingTrace +=
+			"|" +
+			std::string(label) +
+			"_ok=" +
+			std::to_string(ok ? 1 : 0) +
+			"|" +
+			std::string(label) +
+			"_ms=" +
+			std::to_string(elapsed);
+		if (!ok) {
+			timingTrace +=
+				"|" +
+				std::string(label) +
+				"_error=" +
+				std::to_string(error);
+		}
+		return ok;
+	};
+
+	const DWORD totalStartTick = GetTickCount();
+	if (!sendTimed(WM_MOUSEMOVE, 0, clickPos, "mousemove") ||
+		!sendTimed(WM_LBUTTONDOWN, MK_LBUTTON, clickPos, "down1") ||
+		!sendTimed(WM_LBUTTONUP, 0, clickPos, "up1")) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				"tree_double_click_timeout"
+				"|x=" + std::to_string(clickPoint.x) +
+				"|y=" + std::to_string(clickPoint.y) +
+				timingTrace +
+				"|total_ms=" + std::to_string(GetTickCount() - totalStartTick);
+		}
+		return false;
+	}
+	const DWORD pump1StartTick = GetTickCount();
 	PumpPendingMessages();
+	timingTrace += "|pump1_ms=" + std::to_string(GetTickCount() - pump1StartTick);
 	Sleep(30);
-	SendMessageA(treeHwnd, WM_LBUTTONDBLCLK, MK_LBUTTON, clickPos);
-	SendMessageA(treeHwnd, WM_LBUTTONUP, 0, clickPos);
+	timingTrace += "|sleep1_ms=30";
+	if (!sendTimed(WM_LBUTTONDBLCLK, MK_LBUTTON, clickPos, "dblclk") ||
+		!sendTimed(WM_LBUTTONUP, 0, clickPos, "up2")) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				"tree_double_click_timeout"
+				"|x=" + std::to_string(clickPoint.x) +
+				"|y=" + std::to_string(clickPoint.y) +
+				timingTrace +
+				"|total_ms=" + std::to_string(GetTickCount() - totalStartTick);
+		}
+		return false;
+	}
+	const DWORD pump2StartTick = GetTickCount();
 	PumpPendingMessages();
+	timingTrace += "|pump2_ms=" + std::to_string(GetTickCount() - pump2StartTick);
 	Sleep(80);
+	timingTrace +=
+		"|sleep2_ms=80"
+		"|total_ms=" + std::to_string(GetTickCount() - totalStartTick);
 
 	if (outTrace != nullptr) {
 		*outTrace =
 			"tree_double_click_ok"
 			"|x=" + std::to_string(clickPoint.x) +
-			"|y=" + std::to_string(clickPoint.y);
+			"|y=" + std::to_string(clickPoint.y) +
+			timingTrace;
 	}
+	return true;
 }
 
 bool TriggerProgramTreeItemOpenByUi(
@@ -4260,22 +4391,64 @@ bool TriggerProgramTreeItemOpenByUi(
 		return false;
 	}
 
-	SendMessageA(treeHwnd, TVM_ENSUREVISIBLE, 0, reinterpret_cast<LPARAM>(item));
-	SendMessageA(treeHwnd, TVM_SELECTITEM, TVGN_CARET, reinterpret_cast<LPARAM>(item));
+	const DWORD totalStartTick = GetTickCount();
+	DWORD ensureElapsed = 0;
+	DWORD ensureError = ERROR_SUCCESS;
+	LRESULT ensureResult = 0;
+	const bool ensureOk = SendProgramTreeMessageWithTimeout(
+		treeHwnd,
+		TVM_ENSUREVISIBLE,
+		0,
+		reinterpret_cast<LPARAM>(item),
+		1500,
+		&ensureResult,
+		&ensureElapsed,
+		&ensureError);
+	DWORD selectElapsed = 0;
+	DWORD selectError = ERROR_SUCCESS;
+	LRESULT selectResult = 0;
+	const bool selectOk = SendProgramTreeMessageWithTimeout(
+		treeHwnd,
+		TVM_SELECTITEM,
+		TVGN_CARET,
+		reinterpret_cast<LPARAM>(item),
+		1500,
+		&selectResult,
+		&selectElapsed,
+		&selectError);
+	const DWORD focusStartTick = GetTickCount();
 	SetFocus(treeHwnd);
+	const DWORD focusElapsed = GetTickCount() - focusStartTick;
+	const DWORD pump1StartTick = GetTickCount();
 	PumpPendingMessages();
+	const DWORD pump1Elapsed = GetTickCount() - pump1StartTick;
 	std::string doubleClickTrace;
-	DispatchProgramTreeItemDoubleClick(treeHwnd, item, &doubleClickTrace);
+	const DWORD doubleClickStartTick = GetTickCount();
+	const bool doubleClickOk = DispatchProgramTreeItemDoubleClick(treeHwnd, item, &doubleClickTrace);
+	const DWORD doubleClickElapsed = GetTickCount() - doubleClickStartTick;
+	const DWORD pump2StartTick = GetTickCount();
 	PumpPendingMessages();
+	const DWORD pump2Elapsed = GetTickCount() - pump2StartTick;
 
 	if (outTrace != nullptr) {
 		*outTrace =
 			"tree_open_triggered"
 			"|method=double_click"
+			"|ensure_ok=" + std::to_string(ensureOk ? 1 : 0) +
+			"|ensure_ms=" + std::to_string(ensureElapsed) +
+			(ensureOk ? std::string() : ("|ensure_error=" + std::to_string(ensureError))) +
+			"|select_ok=" + std::to_string(selectOk ? 1 : 0) +
+			"|select_ms=" + std::to_string(selectElapsed) +
+			(selectOk ? std::string() : ("|select_error=" + std::to_string(selectError))) +
+			"|focus_ms=" + std::to_string(focusElapsed) +
+			"|pump_before_ms=" + std::to_string(pump1Elapsed) +
+			"|double_click_call_ms=" + std::to_string(doubleClickElapsed) +
+			"|pump_after_ms=" + std::to_string(pump2Elapsed) +
+			"|total_ms=" + std::to_string(GetTickCount() - totalStartTick) +
 			"|" +
 			doubleClickTrace;
 	}
-	return true;
+	return ensureOk && selectOk && doubleClickOk;
 }
 
 bool TryResolveProgramTreeItemEditorWindowByUi(
@@ -4300,6 +4473,7 @@ bool TryResolveProgramTreeItemEditorWindowByUi(
 		return false;
 	}
 
+	const DWORD findStartTick = GetTickCount();
 	const HTREEITEM rootItem = GetTreeNextItemInternal(treeHwnd, nullptr, TVGN_ROOT);
 	const HTREEITEM firstChild = GetTreeNextItemInternal(treeHwnd, rootItem, TVGN_CHILD);
 	std::string itemText;
@@ -4310,11 +4484,14 @@ bool TryResolveProgramTreeItemEditorWindowByUi(
 		0,
 		8,
 		&itemText);
+	const DWORD findElapsed = GetTickCount() - findStartTick;
 	if (item == nullptr) {
 		if (outTrace != nullptr) {
 			*outTrace =
 				treeTrace +
-				"|tree_item_not_found|item_data=" + std::to_string(itemData);
+				"|tree_item_not_found"
+				"|find_ms=" + std::to_string(findElapsed) +
+				"|item_data=" + std::to_string(itemData);
 		}
 		return false;
 	}
@@ -4328,6 +4505,7 @@ bool TryResolveProgramTreeItemEditorWindowByUi(
 		return false;
 	}
 
+	const DWORD waitStartTick = GetTickCount();
 	for (int attempt = 0; attempt < 60; ++attempt) {
 		PumpPendingMessages();
 		const HWND activeChild = GetActiveMdiChildWindow(mainHwnd);
@@ -4354,6 +4532,9 @@ bool TryResolveProgramTreeItemEditorWindowByUi(
 						"|" +
 						openTrace +
 						"|resolve_editor_hwnd_ui_ok" +
+						"|find_ms=" + std::to_string(findElapsed) +
+						"|wait_ms=" + std::to_string(GetTickCount() - waitStartTick) +
+						"|attempt=" + std::to_string(attempt) +
 						"|item=" + itemText +
 						"|active_changed=" + std::to_string(activeChild != activeBefore ? 1 : 0) +
 						"|active_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(activeChild)) +
@@ -4373,7 +4554,10 @@ bool TryResolveProgramTreeItemEditorWindowByUi(
 			treeTrace +
 			"|" +
 			openTrace +
-			"|resolve_editor_hwnd_ui_failed|item=" + itemText;
+			"|resolve_editor_hwnd_ui_failed"
+			"|find_ms=" + std::to_string(findElapsed) +
+			"|wait_ms=" + std::to_string(GetTickCount() - waitStartTick) +
+			"|item=" + itemText;
 	}
 	return false;
 }
@@ -4401,6 +4585,7 @@ bool TryResolveProgramTreeItemEditorObjectByUi(
 		return false;
 	}
 
+	const DWORD findStartTick = GetTickCount();
 	const HTREEITEM rootItem = GetTreeNextItemInternal(treeHwnd, nullptr, TVGN_ROOT);
 	const HTREEITEM firstChild = GetTreeNextItemInternal(treeHwnd, rootItem, TVGN_CHILD);
 	std::string itemText;
@@ -4411,16 +4596,72 @@ bool TryResolveProgramTreeItemEditorObjectByUi(
 		0,
 		8,
 		&itemText);
+	const DWORD findElapsed = GetTickCount() - findStartTick;
 	if (item == nullptr) {
 		if (outTrace != nullptr) {
 			*outTrace =
 				treeTrace +
-				"|tree_item_not_found|item_data=" + std::to_string(itemData);
+				"|tree_item_not_found"
+				"|find_ms=" + std::to_string(findElapsed) +
+				"|item_data=" + std::to_string(itemData);
 		}
 		return false;
 	}
 
 	const HWND activeBefore = GetActiveMdiChildWindow(mainHwnd);
+	if (activeBefore != nullptr && IsWindow(activeBefore)) {
+		const std::string activeTitle = WindowTextToString(activeBefore);
+		if (DoesProgramItemTitleMatchWindowTitle(itemText, activeTitle)) {
+			std::uintptr_t activeEditorObject = 0;
+			HWND activeMatchedEditorHwnd = nullptr;
+			std::string activeResolveTrace;
+			if (TryResolveEditorObjectFromMdiChildHeuristic(
+					activeBefore,
+					moduleBase,
+					&activeEditorObject,
+					&activeMatchedEditorHwnd,
+					&activeResolveTrace) &&
+				activeEditorObject != 0) {
+				EditorDispatchTargetInfo activeTargetInfo{};
+				if (!TryResolveInnerEditorObject(activeEditorObject, &activeTargetInfo) ||
+					!IsEditorPageTypeCompatibleWithProgramTreeItem(itemData, activeTargetInfo.pageType)) {
+					if (outTrace != nullptr) {
+						*outTrace =
+							treeTrace +
+							"|active_page_shortcut_type_mismatch"
+							"|find_ms=" + std::to_string(findElapsed) +
+							"|item=" + itemText +
+							"|item_data=" + std::to_string(itemData) +
+							"|active_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(activeBefore)) +
+							"|active_text=" + activeTitle +
+							"|page_type=" + std::to_string(activeTargetInfo.pageType) +
+							"|" +
+							activeResolveTrace;
+					}
+				}
+				else {
+					if (outEditorObject != nullptr) {
+						*outEditorObject = activeEditorObject;
+					}
+					if (outTrace != nullptr) {
+						*outTrace =
+							treeTrace +
+							"|active_page_shortcut_ok"
+							"|find_ms=" + std::to_string(findElapsed) +
+							"|item=" + itemText +
+							"|active_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(activeBefore)) +
+							"|active_class=" + WindowClassToString(activeBefore) +
+							"|active_text=" + activeTitle +
+							"|matched_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(activeMatchedEditorHwnd)) +
+							"|page_type=" + std::to_string(activeTargetInfo.pageType) +
+							"|" +
+							activeResolveTrace;
+					}
+					return true;
+				}
+			}
+		}
+	}
 	std::string openTrace;
 	if (!TriggerProgramTreeItemOpenByUi(treeHwnd, item, &openTrace)) {
 		if (outTrace != nullptr) {
@@ -4429,6 +4670,7 @@ bool TryResolveProgramTreeItemEditorObjectByUi(
 		return false;
 	}
 
+	const DWORD waitStartTick = GetTickCount();
 	for (int attempt = 0; attempt < 60; ++attempt) {
 		PumpPendingMessages();
 		const HWND activeChild = GetActiveMdiChildWindow(mainHwnd);
@@ -4460,6 +4702,9 @@ bool TryResolveProgramTreeItemEditorObjectByUi(
 						"|" +
 						openTrace +
 						"|resolve_editor_ui_ok" +
+						"|find_ms=" + std::to_string(findElapsed) +
+						"|wait_ms=" + std::to_string(GetTickCount() - waitStartTick) +
+						"|attempt=" + std::to_string(attempt) +
 						"|item=" + itemText +
 						"|active_changed=" + std::to_string(activeChild != activeBefore ? 1 : 0) +
 						"|active_hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(activeChild)) +
@@ -4480,7 +4725,10 @@ bool TryResolveProgramTreeItemEditorObjectByUi(
 			treeTrace +
 			"|" +
 			openTrace +
-			"|resolve_editor_ui_failed|item=" + itemText;
+			"|resolve_editor_ui_failed"
+			"|find_ms=" + std::to_string(findElapsed) +
+			"|wait_ms=" + std::to_string(GetTickCount() - waitStartTick) +
+			"|item=" + itemText;
 	}
 	return false;
 }
@@ -7391,6 +7639,60 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 	}
 
 	std::uintptr_t editorObject = 0;
+	std::string debugTrace;
+	std::string debugAttemptTrace;
+	int debugResolvedType = 0;
+	int debugResolvedIndex = -1;
+	int debugBucketData = 0;
+	const DWORD debugStartTick = GetTickCount();
+	const bool debugResolved = DebugResolveEditorObjectByProgramTreeItemData(
+			itemData,
+			moduleBase,
+			&editorObject,
+			&debugResolvedType,
+			&debugResolvedIndex,
+			&debugBucketData,
+			&debugTrace);
+	const DWORD debugElapsed = GetTickCount() - debugStartTick;
+	if (debugResolved && editorObject != 0) {
+		EditorDispatchTargetInfo targetInfo{};
+		if (TryResolveInnerEditorObject(editorObject, &targetInfo) &&
+			IsEditorPageTypeCompatibleWithProgramTreeItem(itemData, targetInfo.pageType)) {
+			if (outEditorObject != nullptr) {
+				*outEditorObject = editorObject;
+			}
+			if (outTrace != nullptr) {
+				*outTrace =
+					"internal_open_shortcut_ok"
+					"|resolve_ms=" + std::to_string(debugElapsed) +
+					"|page_type=" + std::to_string(targetInfo.pageType) +
+					"|resolved_type=" + std::to_string(debugResolvedType) +
+					"|resolved_index=" + std::to_string(debugResolvedIndex) +
+					"|bucket_data=" + std::to_string(debugBucketData) +
+					"|" +
+					debugTrace;
+			}
+			return true;
+		}
+		debugAttemptTrace =
+			"internal_open_shortcut_type_mismatch"
+			"|resolve_ms=" + std::to_string(debugElapsed) +
+			"|item_data=" + std::to_string(itemData) +
+			"|page_type=" + std::to_string(targetInfo.pageType) +
+			"|resolved_type=" + std::to_string(debugResolvedType) +
+			"|resolved_index=" + std::to_string(debugResolvedIndex) +
+			"|bucket_data=" + std::to_string(debugBucketData) +
+			"|" +
+			debugTrace;
+	}
+	else {
+		debugAttemptTrace =
+			"internal_open_shortcut_failed"
+			"|resolve_ms=" + std::to_string(debugElapsed) +
+			"|" +
+			(debugTrace.empty() ? std::string("resolve_editor_failed") : debugTrace);
+	}
+
 	std::string uiTrace;
 	if (TryResolveProgramTreeItemEditorObjectByUi(itemData, moduleBase, &editorObject, &uiTrace) &&
 		editorObject != 0) {
@@ -7398,41 +7700,22 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 			*outEditorObject = editorObject;
 		}
 		if (outTrace != nullptr) {
-			*outTrace = uiTrace;
+			*outTrace =
+				(!debugAttemptTrace.empty() ? (debugAttemptTrace + "|fallback_ui|") : std::string()) +
+				uiTrace;
 		}
 		return true;
 	}
 
-	std::string debugTrace;
-	if (!DebugResolveEditorObjectByProgramTreeItemData(
-			itemData,
-			moduleBase,
-			&editorObject,
-			nullptr,
-			nullptr,
-			nullptr,
-			&debugTrace) ||
-		editorObject == 0) {
-		if (outTrace != nullptr) {
-			if (!uiTrace.empty() && !debugTrace.empty()) {
-				*outTrace = uiTrace + "|fallback_debug_failed|" + debugTrace;
-			}
-			else {
-				*outTrace = !uiTrace.empty() ? uiTrace : debugTrace;
-			}
-		}
-		return false;
-	}
-
-	if (outEditorObject != nullptr) {
-		*outEditorObject = editorObject;
-	}
 	if (outTrace != nullptr) {
-		*outTrace =
-			(!uiTrace.empty() ? (uiTrace + "|fallback_debug_ok|") : "fallback_debug_ok|") +
-			debugTrace;
+		if (!debugAttemptTrace.empty() && !uiTrace.empty()) {
+			*outTrace = debugAttemptTrace + "|fallback_ui_failed|" + uiTrace;
+		}
+		else {
+			*outTrace = !uiTrace.empty() ? uiTrace : debugAttemptTrace;
+		}
 	}
-	return true;
+	return false;
 }
 
 bool TryActivateProgramTreeItemPageByEditorObjectFallback(

@@ -234,6 +234,9 @@ bool SerializeSession(const AIChatStoredSession& session, nlohmann::json& outJso
 		outJson["created_at_display"] = LocalToUtf8TextForSessionStore(session.createdAtDisplayLocal);
 		outJson["updated_at_display"] = LocalToUtf8TextForSessionStore(session.updatedAtDisplayLocal);
 		outJson["rolling_summary"] = LocalToUtf8TextForSessionStore(session.rollingSummaryLocal);
+		outJson["plan_mode_state"] = session.planModeState;
+		outJson["pending_plan"] = LocalToUtf8TextForSessionStore(session.pendingPlanLocal);
+		outJson["auto_allow_writes"] = session.autoAllowWrites;
 		outJson["messages"] = nlohmann::json::array();
 
 		for (const auto& message : session.messages) {
@@ -275,6 +278,9 @@ bool DeserializeSession(const nlohmann::json& jsonValue, AIChatStoredSession& ou
 	outSession.createdAtDisplayLocal = GetJsonStringAsLocalText(jsonValue, "created_at_display");
 	outSession.updatedAtDisplayLocal = GetJsonStringAsLocalText(jsonValue, "updated_at_display");
 	outSession.rollingSummaryLocal = GetJsonStringAsLocalText(jsonValue, "rolling_summary");
+	outSession.planModeState = GetJsonStringUtf8(jsonValue, "plan_mode_state");
+	outSession.pendingPlanLocal = GetJsonStringAsLocalText(jsonValue, "pending_plan");
+	outSession.autoAllowWrites = GetJsonBool(jsonValue, "auto_allow_writes", false);
 
 	if (outSession.createdAtDisplayLocal.empty()) {
 		outSession.createdAtDisplayLocal = BuildTimestampDisplayLocal(outSession.createdAtUnixMs);
