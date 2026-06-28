@@ -44,6 +44,9 @@ void CleanupSnapshotRoot(const std::filesystem::path& snapshotRoot);
 // 确认 e-packager.exe 可用，必要时下载/更新。
 bool EnsureToolReady(std::filesystem::path& outToolPath, std::string& outError);
 
+// 强制检查最新版 e-packager.exe，失败时不静默回退到旧版本。
+bool EnsureLatestToolReady(std::filesystem::path& outToolPath, std::string& outError);
+
 // 后台检查并更新 e-packager.exe，忽略自动检查间隔。
 void RunToolUpdateInBackground();
 

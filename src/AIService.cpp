@@ -1319,8 +1319,17 @@ nlohmann::json BuildPublicToolCatalog()
 {
 	nlohmann::json tools = nlohmann::json::array();
 	tools.push_back({
+		{"name", "refresh_workspace_mirror"},
+		{"description", "Refresh the current e-packager workspace mirror from the live IDE project memory before reading source. Call this once before the first list_files/search_code/read_file in each conversation round, especially after the user may have edited code manually in the IDE. Existing mirrors use e-packager unpack --main-only to refresh only the main .e/.ec project and avoid re-exporting dependency modules/support libraries."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", nlohmann::json::object()},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "list_files"},
-		{"description", "List files in the current e-packager workspace mirror. Paths are relative to the mirror root. By default focuses on src, ecom, elib and header text areas."},
+		{"description", "List files in the current e-packager workspace mirror. Paths are relative to the mirror root. Call refresh_workspace_mirror once before this in each conversation round when fresh IDE edits may exist. By default focuses on src, ecom, elib and header text areas."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1333,7 +1342,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "search_code"},
-		{"description", "Search text inside the current e-packager workspace mirror. Searches current project source plus unpacked dependencies/resources exposed as text; use glob to narrow scope."},
+		{"description", "Search text inside the current e-packager workspace mirror. Call refresh_workspace_mirror once before this in each conversation round when fresh IDE edits may exist. Searches current project source plus unpacked dependencies/resources exposed as text; use glob to narrow scope."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1351,7 +1360,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "read_file"},
-		{"description", "Read one text file from the current e-packager workspace mirror. Returns cat -n style numbered text. Paths are mirror-relative."},
+		{"description", "Read one text file from the current e-packager workspace mirror. Call refresh_workspace_mirror once before this in each conversation round when fresh IDE edits may exist. Returns cat -n style numbered text. Paths are mirror-relative."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1672,11 +1681,13 @@ std::vector<std::string> SelectGeminiToolNames(const std::vector<AIChatMessage>&
 		AddUniqueToolName(names, "get_current_page_info");
 	};
 	const auto addFileReadTools = [&names]() {
+		AddUniqueToolName(names, "refresh_workspace_mirror");
 		AddUniqueToolName(names, "list_files");
 		AddUniqueToolName(names, "search_code");
 		AddUniqueToolName(names, "read_file");
 	};
 	const auto addSearchTools = [&names]() {
+		AddUniqueToolName(names, "refresh_workspace_mirror");
 		AddUniqueToolName(names, "search_code");
 		AddUniqueToolName(names, "read_file");
 	};
@@ -1796,15 +1807,17 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"当前项目类型：" + projectType + "\n\n"
 			"统一源码工具规则：\n"
 			"1) 所有源码读取、搜索和列出都基于 e-packager 解包出的当前工程镜像。路径一律是镜像内相对路径。\n"
-			"2) 用 list_files 定位文件，用 search_code 搜索内容，用 read_file 读取具体文件。\n"
-			"3) 修改当前工程源码时只能用 edit_file / multi_edit_file / write_file / diff_file / restore_file_snapshot，并以 file_path 作为目标。\n"
-			"4) edit_file 和 write_file 内部会把 file_path 映射到 IDE 真实程序项，通过整页复制读取真实页作为基准，再通过整页粘贴写回；不要假设解包镜像本身会被直接写入。\n"
-			"5) 写入成功后镜像会过期，下次 read_file / search_code / list_files 会重新解包以反映最新 IDE 内存状态。\n"
-			"6) src/*.xml 是窗口界面 XML，只读；窗口程序集代码应编辑对应 src/*.txt。\n"
-			"7) ecom/、elib/、header/ 是依赖/公开信息参考，可读可搜但不可写。\n"
-			"8) 固定表文件 src/.数据类型.txt、src/.DLL声明.txt、src/.常量.txt、src/.全局变量.txt 可作为对应真实表页的编辑目标。\n"
-			"9) 需要预览改动用 diff_file；需要回滚最近写入用 restore_file_snapshot。\n"
-			"10) 修改后需要验证时调用 compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type 和可用编译模式。\n\n"
+			"2) 每轮对话第一次 list_files / search_code / read_file 前，先调用一次 refresh_workspace_mirror，以读取用户可能在 IDE 中手工修改后的最新内存源码。\n"
+			"3) refresh_workspace_mirror 会优先用 e-packager unpack --main-only 只刷新当前 .e/.ec 主工程代码，避免重复导出模块和支持库。\n"
+			"4) 用 list_files 定位文件，用 search_code 搜索内容，用 read_file 读取具体文件。\n"
+			"5) 修改当前工程源码时只能用 edit_file / multi_edit_file / write_file / diff_file / restore_file_snapshot，并以 file_path 作为目标。\n"
+			"6) edit_file 和 write_file 内部会把 file_path 映射到 IDE 真实程序项，通过整页复制读取真实页作为基准，再通过整页粘贴写回；不要假设解包镜像本身会被直接写入。\n"
+			"7) 写入成功后镜像会过期，下次 read_file / search_code / list_files 会重新解包以反映最新 IDE 内存状态。\n"
+			"8) src/*.xml 是窗口界面 XML，只读；窗口程序集代码应编辑对应 src/*.txt。\n"
+			"9) ecom/、elib/、header/ 是依赖/公开信息参考，可读可搜但不可写。\n"
+			"10) 固定表文件 src/.数据类型.txt、src/.DLL声明.txt、src/.常量.txt、src/.全局变量.txt 可作为对应真实表页的编辑目标。\n"
+			"11) 需要预览改动用 diff_file；需要回滚最近写入用 restore_file_snapshot。\n"
+			"12) 修改后需要验证时调用 compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type 和可用编译模式。\n\n"
 			"其他工具：\n"
 			"- 需要确认当前页名/页类型时用 get_current_page_info，不要臆测当前页。\n"
 			"- 涉及联网、查文档、搜最新资料时用 search_web_tavily 搜索、extract_web_document 取正文、fetch_url 取原始响应。\n"

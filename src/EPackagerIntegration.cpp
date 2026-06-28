@@ -1060,6 +1060,11 @@ bool EnsureToolReady(std::filesystem::path& outToolPath, std::string& outError)
 	return EnsureToolReadyImpl(outToolPath, outError, false, true);
 }
 
+bool EnsureLatestToolReady(std::filesystem::path& outToolPath, std::string& outError)
+{
+	return EnsureToolReadyImpl(outToolPath, outError, true, false);
+}
+
 void RunToolUpdateInBackground()
 {
 	if (g_toolUpdateTaskRunning.exchange(true)) {

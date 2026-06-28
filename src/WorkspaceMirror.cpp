@@ -232,6 +232,32 @@ void RemoveMirrorRootIfSafe(const std::filesystem::path& mirrorRoot)
 	std::filesystem::remove_all(mirrorRoot, ec);
 }
 
+bool RemoveMainProjectArtifacts(const std::filesystem::path& mirrorRoot, std::string& outError)
+{
+	outError.clear();
+	if (!ShouldRemoveMirrorRoot(mirrorRoot)) {
+		outError = "拒绝清理非 AutoLinker 工程镜像目录：" + LocalFromPath(mirrorRoot);
+		return false;
+	}
+
+	for (const auto& child : {
+			L"src",
+			L"project",
+			L"image",
+			L"audio",
+			L"header",
+			L"info.json",
+			L"AGENTS.md" }) {
+		std::error_code ec;
+		std::filesystem::remove_all(mirrorRoot / child, ec);
+		if (ec) {
+			outError = "清理工程镜像主工程文件失败：" + ec.message();
+			return false;
+		}
+	}
+	return true;
+}
+
 void CleanupSiblingMirrors(const std::filesystem::path& baseDir)
 {
 	std::error_code ec;
@@ -526,6 +552,84 @@ bool RebuildMirrorLocked(const std::filesystem::path& sourcePath, std::string& o
 	return true;
 }
 
+bool RefreshMirrorMainOnlyLocked(const std::filesystem::path& sourcePath, std::string& outError)
+{
+	if (g_state.mirrorRoot.empty() || !IsSamePath(g_state.sourcePath, sourcePath)) {
+		return false;
+	}
+
+	std::error_code ec;
+	if (!std::filesystem::exists(g_state.mirrorRoot, ec) ||
+		!std::filesystem::is_directory(g_state.mirrorRoot, ec)) {
+		return false;
+	}
+
+	std::filesystem::path snapshotPath;
+	std::string snapshotTrace;
+	if (!BuildSnapshot(sourcePath, snapshotPath, snapshotTrace, outError)) {
+		return false;
+	}
+	const bool snapshotIsTemporary = !IsSamePath(snapshotPath, sourcePath);
+
+	std::filesystem::path toolPath;
+	if (!EPackagerIntegration::EnsureToolReady(toolPath, outError)) {
+		if (snapshotIsTemporary) {
+			EPackagerIntegration::CleanupSnapshotRoot(snapshotPath.parent_path());
+		}
+		return false;
+	}
+
+	if (!RemoveMainProjectArtifacts(g_state.mirrorRoot, outError)) {
+		if (snapshotIsTemporary) {
+			EPackagerIntegration::CleanupSnapshotRoot(snapshotPath.parent_path());
+		}
+		return false;
+	}
+
+	auto runMainOnlyUnpack = [&]() {
+		return EPackagerIntegration::RunProcessAndCapture(
+			toolPath,
+			{ L"unpack", snapshotPath.wstring(), g_state.mirrorRoot.wstring(), L"--main-only" },
+			toolPath.parent_path());
+	};
+
+	OutputStringToELog("[WorkspaceMirror] refreshing main workspace mirror: " + LocalFromPath(g_state.mirrorRoot));
+	EPackagerIntegration::ProcessRunResult result = runMainOnlyUnpack();
+	if (!result.ok) {
+		OutputStringToELog("[WorkspaceMirror] main-only refresh failed, checking latest e-packager");
+		std::string updateError;
+		if (EPackagerIntegration::EnsureLatestToolReady(toolPath, updateError)) {
+			result = runMainOnlyUnpack();
+		}
+		else {
+			OutputStringToELog("[WorkspaceMirror] latest e-packager check failed: " + updateError);
+		}
+	}
+	if (snapshotIsTemporary) {
+		EPackagerIntegration::CleanupSnapshotRoot(snapshotPath.parent_path());
+	}
+
+	if (!result.ok) {
+		outError = std::format(
+			"e-packager main-only unpack failed, exitCode={} {}",
+			result.exitCode,
+			result.error);
+		if (!result.stdErrBytes.empty()) {
+			outError += " stderr=" + result.stdErrBytes;
+		}
+		return false;
+	}
+
+	if (!ParseMetadata(g_state, outError)) {
+		g_state.valid = false;
+		return false;
+	}
+
+	g_state.valid = true;
+	OutputStringToELog("[WorkspaceMirror] main workspace mirror refreshed: " + LocalFromPath(g_state.mirrorRoot));
+	return true;
+}
+
 bool EnsureMirrorFreshLocked(std::string& outError)
 {
 	outError.clear();
@@ -584,6 +688,39 @@ bool EnsureMirrorFresh(std::string& outError)
 {
 	std::lock_guard<std::mutex> guard(g_mutex);
 	return EnsureMirrorFreshLocked(outError);
+}
+
+bool RefreshMirror(std::string& outError, std::string* outMode)
+{
+	std::lock_guard<std::mutex> guard(g_mutex);
+	outError.clear();
+	if (outMode != nullptr) {
+		outMode->clear();
+	}
+
+	std::filesystem::path sourcePath;
+	if (!EPackagerIntegration::GetCurrentSourcePath(sourcePath, outError)) {
+		return false;
+	}
+
+	if (RefreshMirrorMainOnlyLocked(sourcePath, outError)) {
+		if (outMode != nullptr) {
+			*outMode = "main_only";
+		}
+		return true;
+	}
+
+	if (!outError.empty()) {
+		OutputStringToELog("[WorkspaceMirror] main-only refresh failed, rebuilding mirror: " + outError);
+		outError.clear();
+	}
+	if (!RebuildMirrorLocked(sourcePath, outError)) {
+		return false;
+	}
+	if (outMode != nullptr) {
+		*outMode = "full";
+	}
+	return true;
 }
 
 void InvalidateMirror()

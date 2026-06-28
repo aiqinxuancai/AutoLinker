@@ -1733,8 +1733,9 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 void PrepareWorkspaceMirrorForChat(unsigned long long requestId)
 {
 	std::string error;
-	if (WorkspaceMirror::EnsureMirrorFresh(error)) {
-		OutputStringToELog("[WorkspaceMirror] chat workspace mirror prepared");
+	std::string mode;
+	if (WorkspaceMirror::RefreshMirror(error, &mode)) {
+		OutputStringToELog("[WorkspaceMirror] chat workspace mirror refreshed: " + mode);
 		AppendAgentActivity(requestId, LocalFromWide(L"\u5de5\u7a0b\u955c\u50cf\u51c6\u5907\u5b8c\u6210"));
 		return;
 	}

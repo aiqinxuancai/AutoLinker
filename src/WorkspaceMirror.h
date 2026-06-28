@@ -20,6 +20,9 @@ struct ProgramItemRef {
 // 确保当前源码的解包镜像可用；必要时导出内存快照并重新解包。
 bool EnsureMirrorFresh(std::string& outError);
 
+// 强制刷新当前源码镜像。已有镜像时优先只刷新主工程源码，不重新导出模块/支持库。
+bool RefreshMirror(std::string& outError, std::string* outMode = nullptr);
+
 // 标记镜像已过期，下一次读取/搜索/列出时惰性重建。
 void InvalidateMirror();
 

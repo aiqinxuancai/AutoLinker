@@ -7924,6 +7924,45 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 {
 	outOk = false;
 
+	if (toolName == "refresh_workspace_mirror") {
+		std::string error;
+		std::string mode;
+		if (!WorkspaceMirror::RefreshMirror(error, &mode)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "refresh workspace mirror failed" : error;
+			return JsonToLocalTextForAI(r);
+		}
+
+		std::filesystem::path mirrorRoot;
+		if (!WorkspaceMirror::GetMirrorRoot(mirrorRoot, error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "query refreshed workspace mirror failed" : error;
+			r["refresh_mode"] = mode;
+			return JsonToLocalTextForAI(r);
+		}
+
+		std::vector<std::string> files;
+		if (!WorkspaceMirror::ListMirrorFiles(files, error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "list refreshed workspace mirror failed" : error;
+			r["refresh_mode"] = mode;
+			r["mirror_root"] = LocalToUtf8Text(mirrorRoot.string());
+			return JsonToLocalTextForAI(r);
+		}
+
+		nlohmann::json r;
+		r["ok"] = true;
+		r["refresh_mode"] = mode;
+		r["mirror_root"] = LocalToUtf8Text(mirrorRoot.string());
+		r["file_count"] = files.size();
+		r["note"] = "workspace mirror refreshed from current IDE memory; call read_file, search_code, or list_files after this";
+		outOk = true;
+		return JsonToLocalTextForAI(r);
+	}
+
 	if (WorkspaceFileTools::CanHandleTool(toolName)) {
 		if (toolName == "read_file") {
 			std::string fixedTableResult;
