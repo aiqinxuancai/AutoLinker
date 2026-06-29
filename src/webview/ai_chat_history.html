@@ -826,16 +826,22 @@ body {
 }
 
 .tool-approval-preview {
-	max-height: 260px;
+	max-height: 280px;
 	overflow: auto;
 	border: 1px solid #d7dce6;
 	border-radius: 6px;
 	background: #f7f9fc;
 	margin: 0;
-	padding: 8px;
-	font: 11px/1.45 Consolas, "Courier New", monospace;
+	padding: 10px 12px;
+	font-family: "Cascadia Mono", "Cascadia Code", Consolas, "JetBrains Mono", "SF Mono", "Courier New", monospace;
+	font-size: 12px;
+	line-height: 1.6;
 	white-space: pre;
 	color: #374151;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	text-rendering: optimizeLegibility;
+	font-variant-ligatures: none;
 }
 
 .tool-approval-preview .diff-add {
