@@ -1972,6 +1972,24 @@ std::string ReplaceSuffixIfPresent(const std::string& text, const std::string& o
 	return text.substr(0, text.size() - oldSuffix.size()) + newSuffix;
 }
 
+bool EndsWithOpenAIVersionSegment(const std::string& text)
+{
+	const size_t slash = text.find_last_of('/');
+	if (slash == std::string::npos || slash + 2 >= text.size()) {
+		return false;
+	}
+	if (text[slash + 1] != 'v' && text[slash + 1] != 'V') {
+		return false;
+	}
+	for (size_t i = slash + 2; i < text.size(); ++i) {
+		const unsigned char ch = static_cast<unsigned char>(text[i]);
+		if (std::isdigit(ch) == 0 && ch != '.') {
+			return false;
+		}
+	}
+	return true;
+}
+
 std::string BuildClaudeEndpoint(const std::string& baseUrl)
 {
 	std::string url = AIService::Trim(baseUrl);
@@ -1998,7 +2016,7 @@ std::string BuildOpenAIResponsesEndpoint(const std::string& baseUrl)
 	if (EndsWithInsensitive(url, "/responses")) {
 		return url;
 	}
-	if (EndsWithInsensitive(url, "/v1")) {
+	if (EndsWithOpenAIVersionSegment(url)) {
 		return url + "/responses";
 	}
 	return url + "/v1/responses";
@@ -4104,7 +4122,7 @@ std::string AIService::BuildEndpoint(const std::string& baseUrl)
 	if (EndsWithInsensitive(url, "/chat/completions")) {
 		return url;
 	}
-	if (EndsWithInsensitive(url, "/v1")) {
+	if (EndsWithOpenAIVersionSegment(url)) {
 		return url + "/chat/completions";
 	}
 	return url + "/v1/chat/completions";
