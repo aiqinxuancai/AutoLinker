@@ -125,6 +125,7 @@ constexpr const char* kChatHomeUrl =
 	"https://github.com/aiqinxuancai/AutoLinker";
 constexpr const char* kChatReleasesUrl =
 	"https://github.com/aiqinxuancai/AutoLinker/releases";
+constexpr const char* kAutoAllowWritesConfigKey = "ai.chat.auto_allow_writes";
 
 enum class SessionRole {
 	System,
@@ -716,6 +717,37 @@ std::string TrimAsciiCopy(const std::string& text)
 		--end;
 	}
 	return text.substr(begin, end - begin);
+}
+
+bool ParsePersistedBoolValue(const std::string& raw, bool defaultValue)
+{
+	const std::string value = ToLowerAsciiCopySimple(TrimAsciiCopy(raw));
+	if (value.empty()) {
+		return defaultValue;
+	}
+	if (value == "1" || value == "true" || value == "yes" || value == "on") {
+		return true;
+	}
+	if (value == "0" || value == "false" || value == "no" || value == "off") {
+		return false;
+	}
+	return defaultValue;
+}
+
+bool LoadPersistedAutoAllowWrites()
+{
+	if (g_configManager == nullptr) {
+		return false;
+	}
+	return ParsePersistedBoolValue(g_configManager->getValue(kAutoAllowWritesConfigKey), false);
+}
+
+void SavePersistedAutoAllowWrites(bool enabled)
+{
+	if (g_configManager == nullptr) {
+		return;
+	}
+	g_configManager->setValue(kAutoAllowWritesConfigKey, enabled ? "true" : "false");
 }
 
 std::string NormalizeCodeForEIDE(const std::string& text)
@@ -1584,7 +1616,6 @@ bool HasAnyChatHistoryLocked(const AIChatSessionState& state)
 	return !state.messages.empty() ||
 		!TrimAsciiCopy(state.rollingSummary).empty() ||
 		!TrimAsciiCopy(state.streamingAssistantPreview).empty() ||
-		state.autoAllowWrites ||
 		state.planModeState != PlanModeState::Normal ||
 		!TrimAsciiCopy(state.pendingPlan).empty();
 }
@@ -1672,6 +1703,7 @@ bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
 			row.rawMessageJsonUtf8
 		});
 	}
+	SavePersistedAutoAllowWrites(g_session.autoAllowWrites);
 	return true;
 }
 
@@ -1686,7 +1718,7 @@ void ResetChatSessionBindingLocked(AIChatSessionState& state)
 	state.activeRequestStartedAtUnixMs = 0;
 	state.planModeState = PlanModeState::Normal;
 	state.pendingPlan.clear();
-	state.autoAllowWrites = false;
+	state.autoAllowWrites = LoadPersistedAutoAllowWrites();
 }
 
 void RebindChatSessionToCurrentSourceIfNeeded()
@@ -1716,7 +1748,6 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 		g_session.agentActivityLines.clear();
 		g_session.planModeState = PlanModeState::Normal;
 		g_session.pendingPlan.clear();
-		g_session.autoAllowWrites = false;
 		ResetChatSessionBindingLocked(g_session);
 	}
 	WorkspaceMirror::ResetAndCleanup();
@@ -4466,6 +4497,7 @@ void HandleChatToggleAutoAllowUi(HWND hWnd, ChatDialogContext* ctx)
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		g_session.autoAllowWrites = !currentlyEnabled;
+		SavePersistedAutoAllowWrites(g_session.autoAllowWrites);
 		if (g_session.autoAllowWrites) {
 			g_session.messages.push_back(SessionMessage{
 				SessionRole::System,
@@ -5474,6 +5506,7 @@ void CompletePendingToolApproval(
 		{
 			std::lock_guard<std::mutex> guard(g_session.mutex);
 			g_session.autoAllowWrites = true;
+			SavePersistedAutoAllowWrites(g_session.autoAllowWrites);
 			g_session.messages.push_back(SessionMessage{
 				SessionRole::System,
 				LocalFromWide(L"\u5df2\u5f00\u542f\u81ea\u52a8\u5141\u8bb8\u6a21\u5f0f\uff0c\u540e\u7eed\u4ee3\u7801\u5199\u5165\u5c06\u76f4\u63a5\u6267\u884c\u3002"),
@@ -6113,6 +6146,12 @@ void Initialize(HWND mainWindow, ConfigManager* configManager, AIJsonConfig* aiJ
 	g_mainWindow = mainWindow;
 	g_configManager = configManager;
 	g_aiJsonConfig = aiJsonConfig;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight) {
+			g_session.autoAllowWrites = LoadPersistedAutoAllowWrites();
+		}
+	}
 	g_msgAIChatDone = RegisterWindowMessageA("AutoLinker.AIChat.Done");
 	g_msgAIChatToolDialog = RegisterWindowMessageA("AutoLinker.AIChat.ToolDialog");
 	g_msgAIChatToolExec = RegisterWindowMessageA("AutoLinker.AIChat.ToolExec");
