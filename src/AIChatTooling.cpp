@@ -358,7 +358,7 @@ std::string FormatToolLogJsonString(const std::string& jsonText)
 	}
 }
 
-// 构建用于文件日志的完整工具 JSON 字符串（单行，不截断）
+// 构建用于文件日志的完整工具 JSON 字符串，不移除换行，便于排查工具原始输入/输出。
 std::string FormatToolLogJsonStringFull(const std::string& jsonText)
 {
 	const std::string trimmed = TrimAsciiCopy(jsonText);
@@ -370,10 +370,10 @@ std::string FormatToolLogJsonStringFull(const std::string& jsonText)
 		if (value.is_null() || (value.is_object() && value.empty())) {
 			return "null";
 		}
-		return SanitizeSingleLineText(value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+		return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 	catch (...) {
-		return SanitizeSingleLineText(jsonText);
+		return jsonText;
 	}
 }
 

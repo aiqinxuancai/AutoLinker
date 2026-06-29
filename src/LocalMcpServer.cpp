@@ -258,6 +258,11 @@ void LogMcpCallLine(const std::string& message)
 	Logger::Instance().WriteAndIde("MCP", message);
 }
 
+void LogMcpCallSplit(const std::string& fileMessage, const std::string& ideMessage)
+{
+	Logger::Instance().WriteSplit("MCP", fileMessage, ideMessage);
+}
+
 std::string TrimAsciiSingleLine(const std::string& text)
 {
 	return TrimAsciiCopy(text);
@@ -336,9 +341,20 @@ std::string FormatMcpLogJson(const nlohmann::json& value)
 		180);
 }
 
+std::string FormatMcpFileLogJson(const nlohmann::json& value)
+{
+	// 文件日志保留 JSON 字符串中的转义换行，避免排查时丢失原始内容。
+	return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
 std::string FormatMcpLogText(const std::string& value)
 {
 	return TruncateMcpLogText(SanitizeSingleLineText(value), 180);
+}
+
+std::string FormatMcpFileLogText(const std::string& value)
+{
+	return value;
 }
 
 std::string BuildJsonValueCallSuffix(const nlohmann::json& value)
@@ -352,12 +368,43 @@ std::string BuildJsonValueCallSuffix(const nlohmann::json& value)
 	return FormatMcpLogJson(value);
 }
 
+std::string BuildJsonValueFileCallSuffix(const nlohmann::json& value)
+{
+	if (value.is_null()) {
+		return "null";
+	}
+	if (value.is_object() && value.empty()) {
+		return "null";
+	}
+	return FormatMcpFileLogJson(value);
+}
+
 struct McpLogContext {
 	bool enabled = false;
 	std::string responseName;
-	std::string requestDisplay;
-	std::string responseDisplay;
+	std::string requestDisplayForIde;
+	std::string requestDisplayForFile;
+	std::string responseDisplayForIde;
+	std::string responseDisplayForFile;
 };
+
+void SetMcpLogResponse(McpLogContext* ctx, const std::string& value)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	ctx->responseDisplayForIde = value;
+	ctx->responseDisplayForFile = value;
+}
+
+void SetMcpLogResponseJson(McpLogContext* ctx, const nlohmann::json& value)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	ctx->responseDisplayForIde = FormatMcpLogJson(value);
+	ctx->responseDisplayForFile = FormatMcpFileLogJson(value);
+}
 
 McpLogContext BuildMcpLogContextForPayload(const nlohmann::json& payload)
 {
@@ -366,7 +413,8 @@ McpLogContext BuildMcpLogContextForPayload(const nlohmann::json& payload)
 
 	if (!payload.is_object()) {
 		ctx.responseName = "invalid_request";
-		ctx.requestDisplay = "invalid_request(" + FormatMcpLogJson(payload) + ")";
+		ctx.requestDisplayForIde = "invalid_request(" + FormatMcpLogJson(payload) + ")";
+		ctx.requestDisplayForFile = "invalid_request(" + FormatMcpFileLogJson(payload) + ")";
 		return ctx;
 	}
 
@@ -384,12 +432,14 @@ McpLogContext BuildMcpLogContextForPayload(const nlohmann::json& payload)
 			? params["arguments"]
 			: nlohmann::json(nullptr);
 		ctx.responseName = toolName;
-		ctx.requestDisplay = toolName + "(" + BuildJsonValueCallSuffix(arguments) + ")";
+		ctx.requestDisplayForIde = toolName + "(" + BuildJsonValueCallSuffix(arguments) + ")";
+		ctx.requestDisplayForFile = toolName + "(" + BuildJsonValueFileCallSuffix(arguments) + ")";
 		return ctx;
 	}
 
 	ctx.responseName = method;
-	ctx.requestDisplay = method + "(" + BuildJsonValueCallSuffix(params) + ")";
+	ctx.requestDisplayForIde = method + "(" + BuildJsonValueCallSuffix(params) + ")";
+	ctx.requestDisplayForFile = method + "(" + BuildJsonValueFileCallSuffix(params) + ")";
 	return ctx;
 }
 
@@ -405,7 +455,8 @@ McpLogContext BuildMcpLogContextForRequestBody(const std::string& body)
 		McpLogContext ctx{};
 		ctx.enabled = true;
 		ctx.responseName = "invalid_json";
-		ctx.requestDisplay = "invalid_json(" + FormatMcpLogText(body) + ")";
+		ctx.requestDisplayForIde = "invalid_json(" + FormatMcpLogText(body) + ")";
+		ctx.requestDisplayForFile = "invalid_json(" + FormatMcpFileLogText(body) + ")";
 		return ctx;
 	}
 }
@@ -415,7 +466,9 @@ void LogMcpRequest(const McpLogContext& ctx)
 	if (!ctx.enabled) {
 		return;
 	}
-	LogMcpCallLine(">> " + ctx.requestDisplay);
+	const std::string ideText = ctx.requestDisplayForIde.empty() ? "null" : ctx.requestDisplayForIde;
+	const std::string fileText = ctx.requestDisplayForFile.empty() ? ideText : ctx.requestDisplayForFile;
+	LogMcpCallSplit(">> " + fileText, ">> " + ideText);
 }
 
 void LogMcpResponse(const McpLogContext& ctx, double elapsedMs)
@@ -424,12 +477,18 @@ void LogMcpResponse(const McpLogContext& ctx, double elapsedMs)
 		return;
 	}
 
-	const std::string responseText = ctx.responseDisplay.empty() ? "null" : ctx.responseDisplay;
-	LogMcpCallLine(std::format(
+	const std::string responseTextForIde = ctx.responseDisplayForIde.empty() ? "null" : ctx.responseDisplayForIde;
+	const std::string responseTextForFile = ctx.responseDisplayForFile.empty() ? responseTextForIde : ctx.responseDisplayForFile;
+	LogMcpCallSplit(std::format(
 		"<< {} ({:.1f}ms) {}",
 		ctx.responseName.empty() ? "unknown" : ctx.responseName,
 		elapsedMs,
-		responseText));
+		responseTextForFile),
+		std::format(
+		"<< {} ({:.1f}ms) {}",
+		ctx.responseName.empty() ? "unknown" : ctx.responseName,
+		elapsedMs,
+		responseTextForIde));
 }
 
 void CloseSocketSafe(SOCKET& sock)
@@ -797,8 +856,9 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 		if (outLogContext != nullptr) {
 			outLogContext->enabled = true;
 			outLogContext->responseName = "invalid_json";
-			outLogContext->requestDisplay = "invalid_json(" + FormatMcpLogText(request.body) + ")";
-			outLogContext->responseDisplay = FormatMcpLogJson({
+			outLogContext->requestDisplayForIde = "invalid_json(" + FormatMcpLogText(request.body) + ")";
+			outLogContext->requestDisplayForFile = "invalid_json(" + FormatMcpFileLogText(request.body) + ")";
+			SetMcpLogResponseJson(outLogContext, {
 				{"code", -32700},
 				{"message", std::string("parse error: ") + ex.what()}
 			});
@@ -812,24 +872,20 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 	}
 
 	if (!payload.is_object()) {
-		if (outLogContext != nullptr) {
-			outLogContext->responseDisplay = FormatMcpLogJson({
-				{"code", -32600},
-				{"message", "request must be a JSON object"}
-			});
-		}
+		SetMcpLogResponseJson(outLogContext, {
+			{"code", -32600},
+			{"message", "request must be a JSON object"}
+		});
 		outBody = DumpJsonSafe(BuildJsonRpcError(nullptr, -32600, "request must be a JSON object"));
 		return true;
 	}
 
 	const nlohmann::json id = payload.contains("id") ? payload["id"] : nlohmann::json(nullptr);
 	if (!payload.contains("method") || !payload["method"].is_string()) {
-		if (outLogContext != nullptr) {
-			outLogContext->responseDisplay = FormatMcpLogJson({
-				{"code", -32600},
-				{"message", "method is required"}
-			});
-		}
+		SetMcpLogResponseJson(outLogContext, {
+			{"code", -32600},
+			{"message", "method is required"}
+		});
 		outBody = DumpJsonSafe(BuildJsonRpcError(id, -32600, "method is required"));
 		return true;
 	}
@@ -841,26 +897,20 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 	if (method == "notifications/initialized") {
 		outStatusCode = 202;
 		outBody.clear();
-		if (outLogContext != nullptr) {
-			outLogContext->responseDisplay = "null";
-		}
+		SetMcpLogResponse(outLogContext, "null");
 		return true;
 	}
 
 	if (method == "ping") {
 		const nlohmann::json result = nlohmann::json::object();
-		if (outLogContext != nullptr) {
-			outLogContext->responseDisplay = FormatMcpLogJson(result);
-		}
+		SetMcpLogResponseJson(outLogContext, result);
 		outBody = DumpJsonSafe(BuildJsonRpcResult(id, result));
 		return true;
 	}
 
 	if (method == "initialize") {
 		const nlohmann::json result = BuildInitializeResult();
-		if (outLogContext != nullptr) {
-			outLogContext->responseDisplay = FormatMcpLogJson(result);
-		}
+		SetMcpLogResponseJson(outLogContext, result);
 		outBody = DumpJsonSafe(BuildJsonRpcResult(id, result));
 		return true;
 	}
@@ -869,18 +919,14 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 		nlohmann::json result;
 		std::string error;
 		if (!TryBuildToolListResult(result, error)) {
-			if (outLogContext != nullptr) {
-				outLogContext->responseDisplay = FormatMcpLogJson({
-					{"code", -32603},
-					{"message", error}
-				});
-			}
+			SetMcpLogResponseJson(outLogContext, {
+				{"code", -32603},
+				{"message", error}
+			});
 			outBody = DumpJsonSafe(BuildJsonRpcError(id, -32603, error));
 			return true;
 		}
-		if (outLogContext != nullptr) {
-			outLogContext->responseDisplay = FormatMcpLogJson(result);
-		}
+		SetMcpLogResponseJson(outLogContext, result);
 		outBody = DumpJsonSafe(BuildJsonRpcResult(id, result));
 		return true;
 	}
@@ -889,18 +935,14 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 		nlohmann::json result;
 		std::string error;
 		if (!TryBuildToolCallResult(params, result, error)) {
-			if (outLogContext != nullptr) {
-				outLogContext->responseDisplay = FormatMcpLogJson({
-					{"code", -32602},
-					{"message", error}
-				});
-			}
+			SetMcpLogResponseJson(outLogContext, {
+				{"code", -32602},
+				{"message", error}
+			});
 			outBody = DumpJsonSafe(BuildJsonRpcError(id, -32602, error));
 			return true;
 		}
-		if (outLogContext != nullptr) {
-			outLogContext->responseDisplay = FormatMcpLogJson(result);
-		}
+		SetMcpLogResponseJson(outLogContext, result);
 		outBody = DumpJsonSafe(BuildJsonRpcResult(id, result));
 		return true;
 	}
@@ -908,18 +950,14 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 	if (!hasId) {
 		outStatusCode = 202;
 		outBody.clear();
-		if (outLogContext != nullptr) {
-			outLogContext->responseDisplay = "null";
-		}
+		SetMcpLogResponse(outLogContext, "null");
 		return true;
 	}
 
-	if (outLogContext != nullptr) {
-		outLogContext->responseDisplay = FormatMcpLogJson({
-			{"code", -32601},
-			{"message", "method not found"}
-		});
-	}
+	SetMcpLogResponseJson(outLogContext, {
+		{"code", -32601},
+		{"message", "method not found"}
+	});
 	outBody = DumpJsonSafe(BuildJsonRpcError(id, -32601, "method not found"));
 	return true;
 }
@@ -977,7 +1015,8 @@ void HandleClientImpl(SOCKET clientSock)
 		const double elapsedMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - startTime).count();
 		logContext.responseName = handledLogContext.responseName.empty() ? logContext.responseName : handledLogContext.responseName;
-		logContext.responseDisplay = R"({"ok":false,"error":"internal server error"})";
+		logContext.responseDisplayForIde = R"({"ok":false,"error":"internal server error"})";
+		logContext.responseDisplayForFile = R"({"ok":false,"error":"internal server error"})";
 		LogMcpResponse(logContext, elapsedMs);
 		SendHttpResponse(clientSock, 500, "Internal Server Error", "application/json; charset=utf-8", R"({"ok":false,"error":"internal server error"})");
 		return;
@@ -986,10 +1025,14 @@ void HandleClientImpl(SOCKET clientSock)
 		if (!handledLogContext.responseName.empty()) {
 			logContext.responseName = handledLogContext.responseName;
 		}
-		if (!handledLogContext.requestDisplay.empty()) {
-			logContext.requestDisplay = handledLogContext.requestDisplay;
+		if (!handledLogContext.requestDisplayForIde.empty()) {
+			logContext.requestDisplayForIde = handledLogContext.requestDisplayForIde;
 		}
-		logContext.responseDisplay = handledLogContext.responseDisplay;
+		if (!handledLogContext.requestDisplayForFile.empty()) {
+			logContext.requestDisplayForFile = handledLogContext.requestDisplayForFile;
+		}
+		logContext.responseDisplayForIde = handledLogContext.responseDisplayForIde;
+		logContext.responseDisplayForFile = handledLogContext.responseDisplayForFile;
 	}
 
 	const char* statusText = "OK";
