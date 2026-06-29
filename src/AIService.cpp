@@ -15,6 +15,7 @@
 #include "ConfigManager.h"
 #include "Global.h"
 #include "IDEFacade.h"
+#include "Logger.h"
 #include "WinINetUtil.h"
 #include <chrono>
 
@@ -172,20 +173,65 @@ DWORD ComputeAiRetryDelayMs(int retryIndex)
 
 void LogAiRetryAttempt(const std::string& tag, int nextAttemptIndex, int statusCode, const std::string& responseBody)
 {
-	// reason 来自接口/网关返回的响应体；去掉首尾空白（尤其尾部 \r\n，否则 IDE 输出窗口会多空一行）。
-	std::string reason = AIService::Trim(responseBody);
-	if (reason.empty()) {
-		reason = statusCode == 0
+	// reason 来自接口/网关返回的响应体；文件日志保留完整内容，IDE 仅显示摘要。
+	std::string fileReason = responseBody;
+	if (fileReason.empty()) {
+		fileReason = statusCode == 0
 			? "<no response: network/transport failure>"
 			: "<empty response body>";
 	}
-	OutputStringToELog(std::format(
+	std::string ideReason = AIService::Trim(responseBody);
+	if (ideReason.empty()) {
+		ideReason = fileReason;
+	}
+	const std::string prefix = std::format(
+		"[AI Chat][Retry] {} attempt {}/{} http={} reason=",
+		tag,
+		nextAttemptIndex,
+		kAiRequestRetryCount + 1,
+		statusCode);
+	Logger::Instance().WriteSplit(
+		"AI",
+		prefix + fileReason,
+		std::format(
 		"[AI Chat][Retry] {} attempt {}/{} http={} reason={}",
 		tag,
 		nextAttemptIndex,
 		kAiRequestRetryCount + 1,
 		statusCode,
-		TruncateForLog(reason, 120)));
+		TruncateForLog(ideReason, 120)));
+}
+
+void LogAiHttpFailure(const std::string& tag, int statusCode, const std::string& responseBody)
+{
+	// HTTP 响应体可能包含换行和完整错误 JSON；文件日志保留原文，IDE 仅显示摘要。
+	std::string fileResponse = responseBody;
+	if (fileResponse.empty()) {
+		fileResponse = statusCode == 0
+			? "<no response: network/transport failure>"
+			: "<empty response body>";
+	}
+	std::string ideResponse = AIService::Trim(responseBody);
+	if (ideResponse.empty()) {
+		ideResponse = fileResponse;
+	}
+	const std::string prefix = std::format(
+		"[AI Chat][HTTP Failure] {} http={} response=",
+		tag,
+		statusCode);
+	Logger::Instance().WriteSplit(
+		"AI",
+		prefix + fileResponse,
+		std::format(
+		"[AI Chat][HTTP Failure] {} http={} response={}",
+		tag,
+		statusCode,
+		TruncateForLog(ideResponse, 120)));
+}
+
+std::string BuildHttpStatusErrorForUi(int statusCode, const std::string& responseBody)
+{
+	return std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
 }
 
 AIChatResult BuildCancelledChatResult(const std::string& partialContentLocal = std::string())
@@ -2475,7 +2521,8 @@ AIResult ExecuteTaskClaude(const std::string& systemPrompt, const std::string& i
 		"claude-task");
 	result.httpStatus = statusCode;
 	if (statusCode < 200 || statusCode >= 300) {
-		result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+		LogAiHttpFailure("claude-task", statusCode, responseBody);
+		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
 		return result;
 	}
 
@@ -2536,7 +2583,8 @@ AIResult ExecuteTaskGemini(const std::string& systemPrompt, const std::string& i
 		"gemini-task");
 	result.httpStatus = statusCode;
 	if (statusCode < 200 || statusCode >= 300) {
-		result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+		LogAiHttpFailure("gemini-task", statusCode, responseBody);
+		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
 		return result;
 	}
 
@@ -2594,7 +2642,8 @@ AIResult ExecuteTaskOpenAIResponses(const std::string& systemPrompt, const std::
 		"openai-responses-task");
 	result.httpStatus = statusCode;
 	if (statusCode < 200 || statusCode >= 300) {
-		result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+		LogAiHttpFailure("openai-responses-task", statusCode, responseBody);
+		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
 		return result;
 	}
 
@@ -2711,7 +2760,8 @@ AIChatResult ExecuteChatWithToolsClaude(
 			return MarkChatResultCancelled(std::move(result));
 		}
 		if (statusCode < 200 || statusCode >= 300) {
-			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+			LogAiHttpFailure("claude-chat", statusCode, responseBody);
+			result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
 			return result;
 		}
 
@@ -2901,7 +2951,8 @@ AIChatResult ExecuteChatWithToolsGemini(
 				--round;
 				continue;
 			}
-			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+			LogAiHttpFailure("gemini-chat", statusCode, responseBody);
+			result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
 			return result;
 		}
 
@@ -3071,7 +3122,8 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			return MarkChatResultCancelled(std::move(result));
 		}
 		if (statusCode < 200 || statusCode >= 300) {
-			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+			LogAiHttpFailure("openai-responses-chat", statusCode, responseBody);
+			result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
 			return result;
 		}
 
@@ -3593,7 +3645,8 @@ AIResult AIService::TestConnection(const AISettings& settings)
 	result.httpStatus = statusCode;
 
 	if (statusCode < 200 || statusCode >= 300) {
-		result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+		LogAiHttpFailure("openai-test", statusCode, responseBody);
+		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
 		return result;
 	}
 
@@ -3699,7 +3752,8 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 	result.httpStatus = statusCode;
 
 	if (statusCode < 200 || statusCode >= 300) {
-		result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+		LogAiHttpFailure("openai-task", statusCode, responseBody);
+		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
 		return result;
 	}
 
@@ -3873,7 +3927,8 @@ AIChatResult AIService::ExecuteChatWithTools(
 			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(streamState.mergedUtf8));
 		}
 		if (statusCode < 200 || statusCode >= 300) {
-			result.error = std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+			LogAiHttpFailure("openai-chat", statusCode, responseBody);
+			result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
 			return result;
 		}
 
