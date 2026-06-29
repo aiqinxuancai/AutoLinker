@@ -166,6 +166,24 @@ function endsWithInsensitive(text, suffix) {
 	return text.toLowerCase().slice(-suffix.length) === suffix.toLowerCase();
 }
 
+function endsWithOpenAIVersionSegment(text) {
+	var slash = text.lastIndexOf("/");
+	if (slash < 0 || slash + 2 >= text.length) {
+		return false;
+	}
+	var marker = text.charAt(slash + 1);
+	if (marker !== "v" && marker !== "V") {
+		return false;
+	}
+	for (var i = slash + 2; i < text.length; i++) {
+		var ch = text.charAt(i);
+		if (!((ch >= "0" && ch <= "9") || ch === ".")) {
+			return false;
+		}
+	}
+	return true;
+}
+
 function replaceSuffixIfPresent(text, suffix, replacement) {
 	if (!suffix) {
 		return text;
@@ -189,7 +207,7 @@ function buildOpenAIChatEndpoint(baseUrl) {
 	if (endsWithInsensitive(url, "/chat/completions")) {
 		return url;
 	}
-	if (endsWithInsensitive(url, "/v1")) {
+	if (endsWithOpenAIVersionSegment(url)) {
 		return url + "/chat/completions";
 	}
 	return url + "/v1/chat/completions";
@@ -201,7 +219,7 @@ function buildOpenAIResponsesEndpoint(baseUrl) {
 	if (endsWithInsensitive(url, "/responses")) {
 		return url;
 	}
-	if (endsWithInsensitive(url, "/v1")) {
+	if (endsWithOpenAIVersionSegment(url)) {
 		return url + "/responses";
 	}
 	return url + "/v1/responses";

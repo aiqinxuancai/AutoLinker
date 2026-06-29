@@ -1149,6 +1149,24 @@ bool EndsWithAsciiInsensitiveLocal(const std::string& text, const std::string& s
 	return _stricmp(text.c_str() + text.size() - suffix.size(), suffix.c_str()) == 0;
 }
 
+bool EndsWithOpenAIVersionSegmentLocal(const std::string& text)
+{
+	const size_t slash = text.find_last_of('/');
+	if (slash == std::string::npos || slash + 2 >= text.size()) {
+		return false;
+	}
+	if (text[slash + 1] != 'v' && text[slash + 1] != 'V') {
+		return false;
+	}
+	for (size_t i = slash + 2; i < text.size(); ++i) {
+		const unsigned char ch = static_cast<unsigned char>(text[i]);
+		if (std::isdigit(ch) == 0 && ch != '.') {
+			return false;
+		}
+	}
+	return true;
+}
+
 std::string BuildModelListUrl(const AISettings& settings)
 {
 	std::string url = TrimTrailingSlashesCopy(settings.baseUrl);
@@ -1176,7 +1194,7 @@ std::string BuildModelListUrl(const AISettings& settings)
 	else if (EndsWithAsciiInsensitiveLocal(url, "/messages")) {
 		url = url.substr(0, url.size() - std::string("/messages").size());
 	}
-	if (EndsWithAsciiInsensitiveLocal(url, "/v1")) {
+	if (EndsWithOpenAIVersionSegmentLocal(url)) {
 		return url + "/models";
 	}
 	return url + "/v1/models";
