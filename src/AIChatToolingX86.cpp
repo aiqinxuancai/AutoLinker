@@ -7754,96 +7754,6 @@ std::string ExecuteFileMappedRealPageToolForAI(
 	return JsonToLocalTextForAI(result);
 }
 
-bool TryExecuteFixedTableReadFileToolForAI(
-	const std::string& argumentsJson,
-	std::string& outResultLocal,
-	bool& outOk)
-{
-	outResultLocal.clear();
-	outOk = false;
-
-	nlohmann::json args;
-	try {
-		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
-	}
-	catch (const std::exception& ex) {
-		nlohmann::json r;
-		r["ok"] = false;
-		r["error"] = std::string("invalid arguments json: ") + ex.what();
-		outResultLocal = JsonToLocalTextForAI(r);
-		return true;
-	}
-
-	if (!args.contains("file_path") || !args["file_path"].is_string()) {
-		return false;
-	}
-
-	const std::string filePathUtf8 = args["file_path"].get<std::string>();
-	WorkspaceMirror::ProgramItemRef item;
-	std::string error;
-	if (!WorkspaceMirror::ResolveFileToProgramItem(filePathUtf8, item, error) || !item.fixedTable) {
-		return false;
-	}
-
-	ProgramTreeItemInfo programItem;
-	if (!TryGetProgramItemByNameForAI(item.pageNameLocal, item.kind, programItem, error)) {
-		nlohmann::json r;
-		r["ok"] = false;
-		r["error"] = error.empty() ? "program item lookup failed" : error;
-		r["file_path"] = filePathUtf8;
-		r["mapped_page_name"] = LocalToUtf8Text(item.pageNameLocal);
-		r["mapped_kind"] = item.kind;
-		outResultLocal = JsonToLocalTextForAI(r);
-		return true;
-	}
-
-	std::string code;
-	std::string trace;
-	if (!TryReadFixedTableRealPageCodeForAI(programItem, code, trace, error)) {
-		nlohmann::json r;
-		r["ok"] = false;
-		r["error"] = error.empty() ? "read fixed table real page failed" : error;
-		r["file_path"] = filePathUtf8;
-		r["mapped_page_name"] = LocalToUtf8Text(item.pageNameLocal);
-		r["mapped_kind"] = item.kind;
-		r["trace"] = LocalToUtf8Text(trace);
-		outResultLocal = JsonToLocalTextForAI(r);
-		return true;
-	}
-
-	const int offset = (std::max)(0, GetJsonIntArgument(args, "offset", 0));
-	const int requestedLimit = GetJsonIntArgument(args, "limit", 0);
-	const int limit = requestedLimit <= 0 ? 2000 : (std::clamp)(requestedLimit, 1, 20000);
-	int totalLines = 0;
-	int returnedLines = 0;
-	int startLine = 1;
-	const std::string view = BuildRealCodeView(
-		code,
-		offset,
-		limit,
-		true,
-		&totalLines,
-		&returnedLines,
-		&startLine);
-
-	nlohmann::json r;
-	r["ok"] = true;
-	r["file_path"] = filePathUtf8;
-	r["mapped_page_name"] = LocalToUtf8Text(item.pageNameLocal);
-	r["mapped_kind"] = item.kind;
-	r["code_kind"] = "fixed_table_real_page";
-	r["trace"] = LocalToUtf8Text(trace);
-	r["code_hash"] = BuildStableTextHashForRealCode(code);
-	r["total_lines"] = totalLines;
-	r["offset"] = offset;
-	r["returned_lines"] = returnedLines;
-	r["truncated"] = offset + returnedLines < totalLines;
-	r["content"] = LocalToUtf8Text(view);
-	outOk = true;
-	outResultLocal = JsonToLocalTextForAI(r);
-	return true;
-}
-
 bool TryReadMappedRealPageCodeForAI(
 	const WorkspaceMirror::ProgramItemRef& item,
 	std::string& outCode,
@@ -7964,14 +7874,6 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 	}
 
 	if (WorkspaceFileTools::CanHandleTool(toolName)) {
-		if (toolName == "read_file") {
-			std::string fixedTableResult;
-			bool fixedTableOk = false;
-			if (TryExecuteFixedTableReadFileToolForAI(argumentsJson, fixedTableResult, fixedTableOk)) {
-				outOk = fixedTableOk;
-				return fixedTableResult;
-			}
-		}
 		return WorkspaceFileTools::ExecuteTool(toolName, argumentsJson, outOk);
 	}
 
