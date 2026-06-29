@@ -837,11 +837,19 @@ body {
 	font-size: 12px;
 	line-height: 1.6;
 	white-space: pre;
+	overflow-wrap: normal;
+	word-break: normal;
 	color: #374151;
 	-webkit-font-smoothing: antialiased;
 	-moz-osx-font-smoothing: grayscale;
 	text-rendering: optimizeLegibility;
 	font-variant-ligatures: none;
+}
+
+.tool-approval-preview > div {
+	width: max-content;
+	min-width: 100%;
+	box-sizing: border-box;
 }
 
 .tool-approval-preview .diff-add {
