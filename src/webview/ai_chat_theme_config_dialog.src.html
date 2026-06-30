@@ -1,0 +1,389 @@
+﻿<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light only">
+<style>
+/*__AUTOLINKER_AI_CONFIG_CSS__*/
+</style>
+</head>
+<body class="font-sans text-[13px]">
+<div class="flex min-h-full flex-col bg-white">
+	<header class="border-b border-slate-200 bg-white px-5 py-3">
+		<div class="flex items-center justify-between gap-3">
+			<div>
+				<h1 class="text-lg font-semibold leading-6 text-slate-950">AutoLinker AI 对话配色设置</h1>
+				<p class="mt-0.5 text-[12px] text-slate-500">保存后立即应用到已打开的 AI 对话界面。</p>
+			</div>
+			<span id="themeCountBadge" class="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[12px] text-slate-500">0 套配色</span>
+		</div>
+	</header>
+
+	<main class="grid min-h-0 flex-1 grid-cols-[220px_minmax(320px,1fr)_320px] gap-4 bg-white p-5">
+		<section class="flex min-h-0 flex-col border border-slate-200">
+			<div class="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-3 py-2">
+				<h2 class="text-[13px] font-semibold text-slate-900">配色文件</h2>
+				<button id="addBtn" class="ui-btn ui-btn-primary px-2 py-1 text-[12px]" type="button">新建</button>
+			</div>
+			<div id="themeList" class="min-h-0 flex-1 overflow-auto p-2"></div>
+			<div class="grid grid-cols-2 gap-2 border-t border-slate-200 p-2">
+				<button id="copyBtn" class="ui-btn" type="button">复制</button>
+				<button id="renameBtn" class="ui-btn" type="button">重命名</button>
+				<button id="deleteBtn" class="ui-btn col-span-2" type="button">删除</button>
+			</div>
+		</section>
+
+		<section class="flex min-h-0 flex-col">
+			<div class="mb-2 flex items-center justify-between">
+				<div>
+					<h2 id="editorTitle" class="text-[13px] font-semibold text-slate-900">颜色</h2>
+					<p id="editorHint" class="mt-0.5 text-[12px] text-slate-500"></p>
+				</div>
+				<button id="resetBtn" class="ui-btn" type="button">恢复默认颜色</button>
+			</div>
+			<div id="colorEditor" class="min-h-0 flex-1 overflow-auto border border-slate-200"></div>
+		</section>
+
+		<section class="flex min-h-0 flex-col">
+			<div class="mb-2">
+				<h2 class="text-[13px] font-semibold text-slate-900">实时预览</h2>
+				<p class="mt-0.5 text-[12px] text-slate-500">预览只反映当前页面编辑内容。</p>
+			</div>
+			<div id="previewRoot" class="min-h-0 flex-1 overflow-hidden border border-slate-200"></div>
+		</section>
+	</main>
+
+	<footer class="flex items-center justify-between gap-2 border-t border-slate-200 bg-white px-5 py-3">
+		<span id="statusText" class="text-[12px] text-slate-500"></span>
+		<div class="flex gap-2">
+			<button id="cancelBtn" class="ui-btn" type="button">取消</button>
+			<button id="saveBtn" class="ui-btn ui-btn-primary" type="button" disabled>保存</button>
+		</div>
+	</footer>
+</div>
+<script>
+/*__AUTOLINKER_PRELINE_JS__*/
+</script>
+<script>
+var COLOR_LABELS = {
+	pageBg: "页面背景",
+	text: "基础文字",
+	mutedText: "次级文字",
+	subtleText: "弱提示文字",
+	brand: "品牌文字",
+	primary: "主色",
+	primaryHover: "主色悬停",
+	accent: "强调色",
+	success: "成功色",
+	warning: "警告色",
+	danger: "危险色",
+	border: "主边框",
+	softBorder: "弱边框",
+	panelBg: "面板背景",
+	toolbarBg: "顶部栏背景",
+	composerBg: "输入区背景",
+	inputBg: "输入框背景",
+	inputBorder: "输入框边框",
+	buttonBg: "按钮背景",
+	buttonHoverBg: "按钮悬停",
+	userMsgBg: "用户发言块",
+	assistantMsgBg: "系统回复块",
+	systemMsgBg: "系统消息块",
+	toolMsgBg: "工具消息块",
+	planMsgBg: "计划消息块",
+	roleText: "角色标题文字",
+	bodyText: "消息正文文字",
+	linkText: "链接文字",
+	inlineCodeBg: "行内代码背景",
+	codeBlockBg: "代码块背景",
+	codeText: "代码文字",
+	planBg: "计划卡片背景",
+	planBorder: "计划卡片边框",
+	planText: "计划卡片文字",
+	chipBg: "标签背景",
+	approvalBg: "审批卡片背景",
+	diffBg: "差异预览背景",
+	diffAdd: "差异新增",
+	diffDel: "差异删除",
+	placeholder: "占位文字"
+};
+var _themes = [];
+var _colorKeys = [];
+var _selectedId = "default";
+var _initialSnapshot = "";
+var _dirty = false;
+
+function $(id) { return document.getElementById(id); }
+function post(payload) {
+	if (window.chrome && window.chrome.webview) {
+		window.chrome.webview.postMessage(JSON.stringify(payload));
+	}
+}
+function clone(obj) { return JSON.parse(JSON.stringify(obj || {})); }
+function currentTheme() {
+	for (var i = 0; i < _themes.length; i++) {
+		if (_themes[i].id === _selectedId) {
+			return _themes[i];
+		}
+	}
+	return _themes[0] || null;
+}
+function defaultTheme() {
+	for (var i = 0; i < _themes.length; i++) {
+		if (_themes[i].isDefault) {
+			return _themes[i];
+		}
+	}
+	return _themes[0] || { colors: {} };
+}
+function snapshot() {
+	return JSON.stringify({
+		currentThemeId: _selectedId,
+		themes: _themes.map(function (t) {
+			return { id: t.id, name: t.name, isDefault: !!t.isDefault, colors: t.colors || {} };
+		})
+	});
+}
+function setStatus(text) {
+	$("statusText").textContent = text || "";
+}
+function recomputeDirty() {
+	_dirty = snapshot() !== _initialSnapshot;
+	$("saveBtn").disabled = !_dirty;
+}
+function sanitizeId(name) {
+	var text = String(name || "theme").replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
+	return text || ("theme_" + Date.now());
+}
+function uniqueId(base) {
+	var seed = sanitizeId(base);
+	var id = seed;
+	var index = 2;
+	while (_themes.some(function (t) { return t.id.toLowerCase() === id.toLowerCase(); })) {
+		id = seed + "_" + index++;
+	}
+	return id;
+}
+function isHexColor(value) {
+	return /^#[0-9a-fA-F]{6}$/.test(String(value || ""));
+}
+</script>
+<script>
+function renderThemeList() {
+	var list = $("themeList");
+	list.innerHTML = "";
+	for (var i = 0; i < _themes.length; i++) {
+		var theme = _themes[i];
+		var btn = document.createElement("button");
+		btn.type = "button";
+		btn.className = "mb-1 flex w-full items-center justify-between gap-2 border px-2 py-2 text-left text-[13px] " +
+			(theme.id === _selectedId ? "border-blue-500 bg-blue-50 text-blue-800" : "border-transparent bg-white text-slate-700 hover:bg-slate-50");
+		btn.setAttribute("data-theme-id", theme.id);
+		var name = document.createElement("span");
+		name.className = "min-w-0 truncate";
+		name.textContent = theme.name + (theme.isDefault ? "（默认）" : "");
+		var swatch = document.createElement("span");
+		swatch.className = "h-4 w-4 shrink-0 border border-slate-300";
+		swatch.style.background = (theme.colors && theme.colors.primary) || "#1e66f5";
+		btn.appendChild(name);
+		btn.appendChild(swatch);
+		list.appendChild(btn);
+	}
+	$("themeCountBadge").textContent = _themes.length + " 套配色";
+	var current = currentTheme();
+	var readonly = !current || !!current.isDefault;
+	$("renameBtn").disabled = readonly;
+	$("deleteBtn").disabled = readonly;
+	$("resetBtn").disabled = !current;
+}
+
+function renderEditor() {
+	var current = currentTheme();
+	var root = $("colorEditor");
+	root.innerHTML = "";
+	if (!current) {
+		return;
+	}
+	$("editorTitle").textContent = current.name;
+	$("editorHint").textContent = current.isDefault ? "默认配色不可直接修改，可复制后再编辑。" : "可编辑颜色值，支持 #RRGGBB。";
+	for (var i = 0; i < _colorKeys.length; i++) {
+		var key = _colorKeys[i];
+		var row = document.createElement("div");
+		row.className = "grid grid-cols-[150px_44px_1fr] items-center gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0";
+		var label = document.createElement("label");
+		label.className = "text-[12px] font-medium text-slate-700";
+		label.textContent = COLOR_LABELS[key] || key;
+		var color = document.createElement("input");
+		color.type = "color";
+		color.value = current.colors[key] || "#000000";
+		color.disabled = !!current.isDefault;
+		color.setAttribute("data-color-key", key);
+		color.className = "h-8 w-10 border border-slate-200 bg-white p-0";
+		var text = document.createElement("input");
+		text.value = current.colors[key] || "";
+		text.readOnly = !!current.isDefault;
+		text.setAttribute("data-color-key", key);
+		text.className = "ui-input font-mono";
+		row.appendChild(label);
+		row.appendChild(color);
+		row.appendChild(text);
+		root.appendChild(row);
+	}
+}
+
+function renderPreview() {
+	var theme = currentTheme() || defaultTheme();
+	var c = clone((theme && theme.colors) || {});
+	var root = $("previewRoot");
+	root.innerHTML = "";
+	var frame = document.createElement("div");
+	frame.className = "flex h-full flex-col";
+	frame.style.background = c.pageBg;
+	frame.style.color = c.text;
+	var top = document.createElement("div");
+	top.className = "flex h-9 items-center justify-between px-3";
+	top.style.background = c.toolbarBg;
+	top.innerHTML = '<strong style="color:' + c.brand + '">AUTOLINKER</strong><span style="color:' + c.subtleText + '">上下文 18%</span>';
+	var history = document.createElement("div");
+	history.className = "min-h-0 flex-1 overflow-auto";
+	history.innerHTML =
+		'<section style="background:' + c.userMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
+		'<div style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">用户</div>' +
+		'<div style="color:' + c.bodyText + '">请生成一个带日志输出的初始化函数。</div></section>' +
+		'<section style="background:' + c.assistantMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
+		'<div style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">AI</div>' +
+		'<div style="color:' + c.bodyText + '">可以这样组织：<code style="background:' + c.inlineCodeBg + ';padding:1px 4px;border-radius:4px">Init()</code>' +
+		'<pre style="margin-top:8px;background:' + c.codeBlockBg + ';color:' + c.codeText + ';border-radius:6px;padding:10px;white-space:pre-wrap">bool Init() {\\n    return true;\\n}</pre></div></section>' +
+		'<section style="background:' + c.planMsgBg + ';padding:10px 12px"><div style="border:1px solid ' + c.planBorder + ';background:' + c.planBg + ';color:' + c.planText + ';padding:10px;border-radius:8px">实施计划 <span style="background:' + c.chipBg + ';color:' + c.primary + ';padding:2px 6px;border-radius:5px">预览</span></div></section>';
+	var composer = document.createElement("div");
+	composer.className = "border-t p-3";
+	composer.style.borderColor = c.border;
+	composer.style.background = c.composerBg;
+	composer.innerHTML = '<textarea readonly style="width:100%;height:64px;border:1px solid ' + c.inputBorder + ';background:' + c.inputBg + ';color:' + c.text + ';border-radius:6px;padding:8px;resize:none">输入消息...</textarea>' +
+		'<div style="margin-top:8px;text-align:right"><button style="border:1px solid ' + c.primary + ';background:' + c.primary + ';color:#fff;border-radius:6px;padding:6px 14px">发送</button></div>';
+	frame.appendChild(top);
+	frame.appendChild(history);
+	frame.appendChild(composer);
+	root.appendChild(frame);
+}
+
+function renderAll() {
+	renderThemeList();
+	renderEditor();
+	renderPreview();
+	recomputeDirty();
+}
+</script>
+<script>
+function addThemeFrom(base, nameSuffix) {
+	var source = base || defaultTheme();
+	var name = window.prompt("输入配色名称：", (source && source.name ? source.name : "新配色") + (nameSuffix || ""));
+	if (name === null) { return; }
+	name = name.trim();
+	if (!name) {
+		window.alert("配色名称不能为空。");
+		return;
+	}
+	var id = uniqueId(name);
+	_themes.push({ id: id, name: name, isDefault: false, colors: clone(source.colors || {}) });
+	_selectedId = id;
+	renderAll();
+	setStatus("已创建配色，保存后写入文件。");
+}
+
+function renameTheme() {
+	var theme = currentTheme();
+	if (!theme || theme.isDefault) { return; }
+	var name = window.prompt("重命名配色：", theme.name || "");
+	if (name === null) { return; }
+	name = name.trim();
+	if (!name) {
+		window.alert("配色名称不能为空。");
+		return;
+	}
+	theme.name = name;
+	renderAll();
+}
+
+function deleteTheme() {
+	var theme = currentTheme();
+	if (!theme || theme.isDefault) { return; }
+	if (!window.confirm("确定删除配色 \"" + theme.name + "\" 吗？保存后对应文件将被删除。")) {
+		return;
+	}
+	_themes = _themes.filter(function (t) { return t.id !== theme.id; });
+	_selectedId = "default";
+	renderAll();
+}
+
+function resetColors() {
+	var theme = currentTheme();
+	if (!theme) { return; }
+	theme.colors = clone(defaultTheme().colors || {});
+	renderAll();
+}
+
+window.autolinkerApplyThemeConfig = function(payload) {
+	var data = payload || {};
+	_themes = Array.isArray(data.themes) ? data.themes : [];
+	_colorKeys = Array.isArray(data.colorKeys) ? data.colorKeys : Object.keys((defaultTheme() || {}).colors || {});
+	_selectedId = data.currentThemeId || "default";
+	_initialSnapshot = snapshot();
+	renderAll();
+	$("saveBtn").disabled = true;
+	setStatus("");
+};
+
+window.autolinkerThemeSaveResult = function(result) {
+	var data = result || {};
+	setStatus(data.message || (data.ok ? "已保存" : "保存失败"));
+	if (data.ok) {
+		_initialSnapshot = snapshot();
+		recomputeDirty();
+	} else if (data.message) {
+		window.alert(data.message);
+	}
+};
+</script>
+<script>
+$("themeList").addEventListener("click", function (e) {
+	var btn = e.target && e.target.closest ? e.target.closest("[data-theme-id]") : null;
+	if (!btn) { return; }
+	_selectedId = btn.getAttribute("data-theme-id") || "default";
+	renderAll();
+});
+$("colorEditor").addEventListener("input", function (e) {
+	var input = e.target;
+	var key = input && input.getAttribute ? input.getAttribute("data-color-key") : "";
+	var theme = currentTheme();
+	if (!key || !theme || theme.isDefault) { return; }
+	var value = input.value || "";
+	if (!isHexColor(value)) { return; }
+	theme.colors[key] = value.toLowerCase();
+	var siblings = $("colorEditor").querySelectorAll('[data-color-key="' + key + '"]');
+	for (var i = 0; i < siblings.length; i++) {
+		if (siblings[i] !== input) {
+			siblings[i].value = theme.colors[key];
+		}
+	}
+	renderPreview();
+	recomputeDirty();
+});
+$("addBtn").addEventListener("click", function () { addThemeFrom(defaultTheme(), " 副本"); });
+$("copyBtn").addEventListener("click", function () { addThemeFrom(currentTheme(), " 副本"); });
+$("renameBtn").addEventListener("click", renameTheme);
+$("deleteBtn").addEventListener("click", deleteTheme);
+$("resetBtn").addEventListener("click", resetColors);
+$("cancelBtn").addEventListener("click", function () { post({ action: "cancel" }); });
+$("saveBtn").addEventListener("click", function () {
+	post({
+		action: "save",
+		data: {
+			currentThemeId: _selectedId,
+			themes: _themes
+		}
+	});
+});
+</script>
+</body>
+</html>

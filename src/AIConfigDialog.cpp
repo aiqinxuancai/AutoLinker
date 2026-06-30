@@ -18,6 +18,8 @@
 #include "..\\thirdparty\\WebView2.h"
 
 #include "AIService.h"
+#include "AIChatFeature.h"
+#include "AIChatThemeManager.h"
 #include "Global.h"
 #include "LinkerManager.h"
 #include "PathHelper.h"
@@ -3858,6 +3860,348 @@ void ShowLinkerConfigDialog(HWND owner)
 
 	ApplyWindowIcon(hDialog);
 	EnsureWindowTitle(hDialog, "AutoLinker 链接器设置");
+	RunModalWindow(owner, hDialog);
+}
+
+namespace {
+constexpr UINT_PTR kAIChatThemeConfigWebViewInitTimerId = 0xAC04;
+constexpr UINT kAIChatThemeConfigWebViewInitTimeoutMs = 12000;
+
+struct AIChatThemeConfigWebViewDialogContext {
+	HWND hHost = nullptr;
+	HWND hLoading = nullptr;
+	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
+	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
+	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
+	bool webViewReady = false;
+};
+
+std::string BuildAIChatThemeConfigWebViewShellHtml()
+{
+	std::string html = LoadUtf8HtmlResourceText(IDR_HTML_AI_CHAT_THEME_CONFIG_DIALOG);
+	if (!html.empty()) {
+		return html;
+	}
+	return "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>AI chat theme config shell resource missing.</body></html>";
+}
+
+void ExecuteAIChatThemeConfigWebViewScript(AIChatThemeConfigWebViewDialogContext* ctx, const std::wstring& script)
+{
+	if (ctx == nullptr || !ctx->webViewReady || ctx->webView == nullptr || script.empty()) {
+		return;
+	}
+	ctx->webView->ExecuteScript(script.c_str(), nullptr);
+}
+
+void ApplyAIChatThemeConfigWebViewData(AIChatThemeConfigWebViewDialogContext* ctx)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	const std::wstring payloadWide = Utf8ToWide(AIChatThemeManager::BuildConfigPayloadJson());
+	std::wstring script = L"window.autolinkerApplyThemeConfig(JSON.parse('";
+	script += EscapeJsSingleQuotedWide(payloadWide);
+	script += L"'));";
+	ExecuteAIChatThemeConfigWebViewScript(ctx, script);
+}
+
+void NotifyAIChatThemeConfigSaveResult(AIChatThemeConfigWebViewDialogContext* ctx, bool ok, const std::string& message)
+{
+	nlohmann::json result;
+	result["ok"] = ok;
+	result["message"] = message;
+	std::wstring script = L"window.autolinkerThemeSaveResult(JSON.parse('";
+	script += EscapeJsSingleQuotedWide(Utf8ToWide(result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)));
+	script += L"'));";
+	ExecuteAIChatThemeConfigWebViewScript(ctx, script);
+}
+
+void LayoutAIChatThemeConfigWebViewDialog(HWND hWnd, AIChatThemeConfigWebViewDialogContext* ctx)
+{
+	if (hWnd == nullptr || ctx == nullptr) {
+		return;
+	}
+	RECT rc = {};
+	GetClientRect(hWnd, &rc);
+	const int hostWidth = static_cast<int>((std::max)(0L, rc.right));
+	const int hostHeight = static_cast<int>((std::max)(0L, rc.bottom));
+	if (ctx->hHost != nullptr) {
+		MoveWindow(ctx->hHost, 0, 0, hostWidth, hostHeight, TRUE);
+	}
+	if (ctx->hLoading != nullptr) {
+		MoveWindow(ctx->hLoading, 16, 14, (std::max)(0, hostWidth - 32), 24, TRUE);
+	}
+	if (ctx->webViewController != nullptr) {
+		RECT bounds = { 0, 0, static_cast<LONG>(hostWidth), static_cast<LONG>(hostHeight) };
+		ctx->webViewController->put_Bounds(bounds);
+	}
+}
+
+void HandleAIChatThemeConfigWebViewSave(HWND hWnd, AIChatThemeConfigWebViewDialogContext* ctx, const nlohmann::json& data)
+{
+	(void)hWnd;
+	if (ctx == nullptr) {
+		return;
+	}
+	std::string message;
+	if (!AIChatThemeManager::SaveConfigPayload(data, message)) {
+		NotifyAIChatThemeConfigSaveResult(ctx, false, message.empty() ? "保存失败。" : message);
+		return;
+	}
+	AIChatFeature::ReloadTheme();
+	NotifyAIChatThemeConfigSaveResult(ctx, true, message.empty() ? "已保存。" : message);
+	ApplyAIChatThemeConfigWebViewData(ctx);
+}
+
+HRESULT OnAIChatThemeConfigControllerCreated(HWND hWnd, HRESULT controllerResult, ICoreWebView2Controller* controller)
+{
+	auto* readyCtx = reinterpret_cast<AIChatThemeConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+	if (readyCtx == nullptr || !IsWindow(hWnd)) {
+		return S_OK;
+	}
+	if (FAILED(controllerResult) || controller == nullptr) {
+		OutputStringToELog(std::format("[AI Chat Theme][WebView2] create controller failed hr=0x{:08X}", static_cast<unsigned int>(controllerResult)));
+		DestroyWindow(hWnd);
+		return S_OK;
+	}
+
+	readyCtx->webViewController = controller;
+	readyCtx->webViewController->get_CoreWebView2(&readyCtx->webView);
+	if (readyCtx->webView == nullptr) {
+		DestroyWindow(hWnd);
+		return S_OK;
+	}
+
+	Microsoft::WRL::ComPtr<ICoreWebView2Settings> webSettings;
+	if (SUCCEEDED(readyCtx->webView->get_Settings(&webSettings)) && webSettings != nullptr) {
+		webSettings->put_AreDevToolsEnabled(FALSE);
+		webSettings->put_IsStatusBarEnabled(FALSE);
+		webSettings->put_IsZoomControlEnabled(FALSE);
+	}
+
+	readyCtx->webView->add_WebMessageReceived(
+		Microsoft::WRL::Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+			[hWnd](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+				auto* messageCtx = reinterpret_cast<AIChatThemeConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+				if (messageCtx == nullptr || args == nullptr || !IsWindow(hWnd)) {
+					return S_OK;
+				}
+				LPWSTR rawMessage = nullptr;
+				if (FAILED(args->TryGetWebMessageAsString(&rawMessage)) || rawMessage == nullptr) {
+					return S_OK;
+				}
+				const std::string utf8Message = WideToUtf8(rawMessage);
+				CoTaskMemFree(rawMessage);
+				try {
+					const nlohmann::json payload = nlohmann::json::parse(utf8Message);
+					const std::string action = payload.value("action", "");
+					if (action == "save" && payload.contains("data") && payload["data"].is_object()) {
+						HandleAIChatThemeConfigWebViewSave(hWnd, messageCtx, payload["data"]);
+					}
+					else if (action == "cancel") {
+						DestroyWindow(hWnd);
+					}
+				}
+				catch (...) {
+				}
+				return S_OK;
+			}).Get(),
+		nullptr);
+
+	readyCtx->webView->add_NavigationCompleted(
+		Microsoft::WRL::Callback<ICoreWebView2NavigationCompletedEventHandler>(
+			[hWnd](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+				auto* navCtx = reinterpret_cast<AIChatThemeConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+				if (navCtx == nullptr || args == nullptr || !IsWindow(hWnd)) {
+					return S_OK;
+				}
+				BOOL isSuccess = FALSE;
+				args->get_IsSuccess(&isSuccess);
+				if (isSuccess == TRUE) {
+					navCtx->webViewReady = true;
+					KillTimer(hWnd, kAIChatThemeConfigWebViewInitTimerId);
+					if (navCtx->hLoading != nullptr) {
+						ShowWindow(navCtx->hLoading, SW_HIDE);
+					}
+					LayoutAIChatThemeConfigWebViewDialog(hWnd, navCtx);
+					ApplyAIChatThemeConfigWebViewData(navCtx);
+					return S_OK;
+				}
+				COREWEBVIEW2_WEB_ERROR_STATUS webErrorStatus = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+				args->get_WebErrorStatus(&webErrorStatus);
+				if (webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED ||
+					webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED ||
+					webErrorStatus == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET) {
+					return S_OK;
+				}
+				DestroyWindow(hWnd);
+				return S_OK;
+			}).Get(),
+		nullptr);
+
+	LayoutAIChatThemeConfigWebViewDialog(hWnd, readyCtx);
+	const std::wstring shellHtml = Utf8ToWide(BuildAIChatThemeConfigWebViewShellHtml());
+	if (shellHtml.empty()) {
+		DestroyWindow(hWnd);
+		return S_OK;
+	}
+	readyCtx->webView->NavigateToString(shellHtml.c_str());
+	return S_OK;
+}
+
+void StartAIChatThemeConfigWebView(HWND hWnd, AIChatThemeConfigWebViewDialogContext* ctx)
+{
+	if (hWnd == nullptr || ctx == nullptr || ctx->hHost == nullptr) {
+		return;
+	}
+
+	const std::wstring webViewUserDataFolder = GetWebView2UserDataFolderPath();
+	const HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
+		nullptr,
+		webViewUserDataFolder.empty() ? nullptr : webViewUserDataFolder.c_str(),
+		nullptr,
+		Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+			[hWnd](HRESULT envResult, ICoreWebView2Environment* environment) -> HRESULT {
+				auto* innerCtx = reinterpret_cast<AIChatThemeConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+				if (innerCtx == nullptr || !IsWindow(hWnd)) {
+					return S_OK;
+				}
+				if (FAILED(envResult) || environment == nullptr) {
+					OutputStringToELog(std::format("[AI Chat Theme][WebView2] create environment failed hr=0x{:08X}", static_cast<unsigned int>(envResult)));
+					DestroyWindow(hWnd);
+					return S_OK;
+				}
+				innerCtx->webViewEnvironment = environment;
+				return environment->CreateCoreWebView2Controller(
+					innerCtx->hHost,
+					Microsoft::WRL::Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+						[hWnd](HRESULT controllerResult, ICoreWebView2Controller* controller) -> HRESULT {
+							return OnAIChatThemeConfigControllerCreated(hWnd, controllerResult, controller);
+						}).Get());
+			}).Get());
+
+	if (FAILED(hr)) {
+		OutputStringToELog(std::format("[AI Chat Theme][WebView2] bootstrap failed hr=0x{:08X}", static_cast<unsigned int>(hr)));
+		DestroyWindow(hWnd);
+	}
+}
+
+LRESULT CALLBACK AIChatThemeConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+	auto* ctx = reinterpret_cast<AIChatThemeConfigWebViewDialogContext*>(GetWindowLongPtrA(hWnd, GWLP_USERDATA));
+	switch (uMsg)
+	{
+	case WM_NCCREATE: {
+		const auto* create = reinterpret_cast<CREATESTRUCTA*>(lParam);
+		SetWindowLongPtrA(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+		return TRUE;
+	}
+	case WM_CREATE:
+		if (ctx == nullptr) {
+			return -1;
+		}
+		ctx->hHost = CreateWindowExA(
+			0, "STATIC", "",
+			WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+			0, 0, 0, 0, hWnd, nullptr, nullptr, nullptr);
+		ctx->hLoading = CreateWindowExW(
+			0, L"STATIC", L"正在初始化 WebView2 AI 对话配色设置页...",
+			WS_CHILD | WS_VISIBLE,
+			0, 0, 0, 0, hWnd, nullptr, nullptr, nullptr);
+		SetDefaultFont(ctx->hLoading);
+		LayoutAIChatThemeConfigWebViewDialog(hWnd, ctx);
+		SetTimer(hWnd, kAIChatThemeConfigWebViewInitTimerId, kAIChatThemeConfigWebViewInitTimeoutMs, nullptr);
+		StartAIChatThemeConfigWebView(hWnd, ctx);
+		return 0;
+	case WM_GETMINMAXINFO: {
+		auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+		if (mmi != nullptr) {
+			mmi->ptMinTrackSize.x = (std::max)(mmi->ptMinTrackSize.x, 760L);
+			mmi->ptMinTrackSize.y = (std::max)(mmi->ptMinTrackSize.y, 560L);
+		}
+		return 0;
+	}
+	case WM_SIZE:
+		if (ctx != nullptr) {
+			LayoutAIChatThemeConfigWebViewDialog(hWnd, ctx);
+		}
+		return 0;
+	case WM_TIMER:
+		if (ctx != nullptr && wParam == kAIChatThemeConfigWebViewInitTimerId) {
+			if (!ctx->webViewReady) {
+				OutputStringToELog("[AI Chat Theme][WebView2] initialization timed out");
+				DestroyWindow(hWnd);
+				return 0;
+			}
+			KillTimer(hWnd, kAIChatThemeConfigWebViewInitTimerId);
+			return 0;
+		}
+		break;
+	case WM_CLOSE:
+		DestroyWindow(hWnd);
+		return 0;
+	case WM_DESTROY:
+		KillTimer(hWnd, kAIChatThemeConfigWebViewInitTimerId);
+		if (ctx != nullptr) {
+			ctx->webView = nullptr;
+			ctx->webViewController = nullptr;
+			ctx->webViewEnvironment = nullptr;
+		}
+		return 0;
+	default:
+		break;
+	}
+	return DefWindowProcA(hWnd, uMsg, wParam, lParam);
+}
+
+} // namespace
+
+void ShowAIChatThemeConfigDialog(HWND owner)
+{
+	if (!IsWebView2RuntimeAvailable()) {
+		MessageBoxW(owner,
+			L"未检测到 WebView2 运行时，无法打开 AI 对话配色设置页。\n请安装 Microsoft Edge WebView2 Runtime 后重试。",
+			L"AutoLinker AI 对话配色设置",
+			MB_OK | MB_ICONWARNING);
+		return;
+	}
+
+	ComCtl6ActivationScope themeScope;
+	INITCOMMONCONTROLSEX icex = {};
+	icex.dwSize = sizeof(icex);
+	icex.dwICC = ICC_STANDARD_CLASSES | ICC_WIN95_CLASSES | ICC_LINK_CLASS;
+	InitCommonControlsEx(&icex);
+
+	WNDCLASSEXA wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.lpfnWndProc = AIChatThemeConfigWebViewDialogProc;
+	wc.hInstance = GetModuleHandleA(nullptr);
+	wc.lpszClassName = "AutoLinkerAIChatThemeConfigWebViewDialogWindow";
+	wc.hIcon = GetAppIconLarge();
+	wc.hIconSm = GetAppIconSmall();
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
+	RegisterClassExA(&wc);
+
+	AIChatThemeConfigWebViewDialogContext ctx = {};
+	HWND hDialog = CreateWindowExA(
+		WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+		wc.lpszClassName,
+		"AutoLinker AI Chat Theme Config",
+		WS_CAPTION | WS_SYSMENU | WS_VISIBLE | WS_THICKFRAME,
+		CW_USEDEFAULT, CW_USEDEFAULT, 900, 680,
+		owner,
+		nullptr,
+		wc.hInstance,
+		&ctx);
+
+	if (hDialog == nullptr) {
+		OutputStringToELog("[AI Chat Theme][WebView2] CreateWindowExA failed");
+		return;
+	}
+
+	ApplyWindowIcon(hDialog);
+	EnsureWindowTitle(hDialog, "AutoLinker AI 对话配色设置");
 	RunModalWindow(owner, hDialog);
 }
 

@@ -17,5 +17,7 @@ void SetUpdateAvailable(const std::string& latestVersion);
 void OnCurrentSourceFilePathChanged(const std::string& previousPath, const std::string& currentPath);
 bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam);
 bool ExecutePublicTool(const std::string& toolName, const std::string& argumentsJson, std::string& outResultJsonUtf8, bool& outOk);
+// 重新读取并应用当前 AI 对话配色。
+void ReloadTheme();
 
 } // namespace AIChatFeature

@@ -140,7 +140,8 @@ url = "http://127.0.0.1:19207/mcp"
 ### ⭐工程源码读写模型
 
 - 会话开始或首次源码工具调用时，AutoLinker 会用 e-packager 将当前 IDE 工程（包含未保存改动）解包到源文件目录下的 `.temp/al_*` 临时镜像目录；源码目录不可写时会回退到系统临时目录。
-- 如果用户可能在 IDE 中手工修改过代码，外部 Agent 建议在每轮对话第一次 `list_files`、`search_code`、`read_file` 前先调用一次 `refresh_workspace_mirror`；已有镜像会优先用 e-packager `unpack --main-only` 只刷新当前主工程代码，避免重新导出模块和支持库。
+- 如果用户可能在 IDE 中手工修改过代码，外部 Agent 建议在每轮对话第一次 `list_files`、`search_code`、`read_file` 前先调用一次 `refresh_workspace_mirror`；`mode` 支持 `auto`（默认，已有镜像优先只刷新主工程代码）、`main_only` / `source_only`（仅源文件）和 `full`（完整全量刷新，重新导出模块和支持库）。
+- 调用 `add_module_to_project` 或 `remove_module_from_project` 成功导入 / 删除易模块后，AutoLinker 会自动执行一次 `refresh_workspace_mirror` 的 `full` 全量刷新，确保后续读取工具看到最新模块状态。
 - AI 侧不再区分“真实源码 / 工程缓存 / IDE 搜索结果 / 模块公开代码 / 支持库公开代码”。定位源码统一使用 `list_files`、`search_code`、`read_file`，路径均为解包镜像内的相对路径。
 - `edit_file`、`multi_edit_file`、`write_file`、`diff_file`、`restore_file_snapshot` 以 `file_path` 为目标。内部会把文件路径映射回易语言程序项，再读取 IDE 真实整页源码，修改后写回 IDE；不会使用 e-packager 回包编译。
 - 写回成功后，当前解包镜像会被标记为过期；下一次 `list_files`、`search_code`、`read_file` 会重新解包，确保读到最新源码。
@@ -151,10 +152,14 @@ url = "http://127.0.0.1:19207/mcp"
 
 | 类别 | 方法 | 说明 |
 | --- | --- | --- |
-| 文件读取 | `refresh_workspace_mirror` | 从 IDE 当前内存工程刷新解包镜像；每轮读取前建议调用一次，已有镜像优先只刷新主工程代码 |
+| 文件读取 | `refresh_workspace_mirror` | 从 IDE 当前内存工程刷新解包镜像；`mode` 支持 `auto`、`main_only` / `source_only`、`full` |
 | 文件读取 | `list_files` | 按 glob 模式列出当前工程解包镜像内的文件 |
 | 文件读取 | `search_code` | 在解包镜像内做内容搜索，支持文件过滤、上下文、大小写、数量限制等参数 |
 | 文件读取 | `read_file` | 读取解包镜像内指定文件，按带行号的 `cat -n` 风格返回，可指定 offset/limit |
+| 模块 | `list_imported_modules` | 列出当前工程已导入的 `.ec` 易模块 |
+| 模块 | `search_available_module_public_code` | 搜索本机可用 `.ec` 易模块公开声明，不自动导入 |
+| 模块 | `add_module_to_project` | 按 `module_path` 或 `module_name` 导入易模块；成功后自动执行 `full` 全量刷新 |
+| 模块 | `remove_module_from_project` | 按 `module_index`、`module_path` 或 `module_name` 删除已导入易模块；成功后自动执行 `full` 全量刷新 |
 | 文件编辑 | `edit_file` | 对指定 `file_path` 做精确文本替换；写回前读取 IDE 真实整页源码 |
 | 文件编辑 | `multi_edit_file` | 对指定 `file_path` 批量执行多个精确文本替换 |
 | 文件编辑 | `write_file` | 用完整源码覆盖指定 `file_path` 对应的真实 IDE 页面，可带 `expected_base_hash` |

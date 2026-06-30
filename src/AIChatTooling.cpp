@@ -694,6 +694,10 @@ std::string ExecuteToolCallImpl(
 		toolName == "write_file" ||
 		toolName == "diff_file" ||
 		toolName == "restore_file_snapshot" ||
+		toolName == "list_imported_modules" ||
+		toolName == "search_available_module_public_code" ||
+		toolName == "add_module_to_project" ||
+		toolName == "remove_module_from_project" ||
 		toolName == "compile_with_output_path") {
 		std::string resultJson;
 		if (!RequestToolExecutionFromMainThread(toolName, argumentsJson, resultJson, outOk)) {

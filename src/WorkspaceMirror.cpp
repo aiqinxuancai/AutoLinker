@@ -690,7 +690,7 @@ bool EnsureMirrorFresh(std::string& outError)
 	return EnsureMirrorFreshLocked(outError);
 }
 
-bool RefreshMirror(std::string& outError, std::string* outMode)
+bool RefreshMirror(std::string& outError, std::string* outMode, RefreshMode mode)
 {
 	std::lock_guard<std::mutex> guard(g_mutex);
 	outError.clear();
@@ -703,11 +703,25 @@ bool RefreshMirror(std::string& outError, std::string* outMode)
 		return false;
 	}
 
+	if (mode == RefreshMode::Full) {
+		if (!RebuildMirrorLocked(sourcePath, outError)) {
+			return false;
+		}
+		if (outMode != nullptr) {
+			*outMode = "full";
+		}
+		return true;
+	}
+
 	if (RefreshMirrorMainOnlyLocked(sourcePath, outError)) {
 		if (outMode != nullptr) {
 			*outMode = "main_only";
 		}
 		return true;
+	}
+
+	if (mode == RefreshMode::MainOnly) {
+		return false;
 	}
 
 	if (!outError.empty()) {

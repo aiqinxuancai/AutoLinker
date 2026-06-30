@@ -4790,6 +4790,8 @@ std::string BuildSearchAvailableModulePublicCodeJsonOnMainThread(const std::stri
 	return JsonToLocalTextForAI(r);
 }
 
+void AppendFullMirrorRefreshResult(nlohmann::json& r);
+
 std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
 {
 	nlohmann::json args;
@@ -4874,6 +4876,7 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 		r["module_name"] = LocalToUtf8Text(GetFileStemForAI(resolvedPath));
 		r["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(resolvedPath));
 		r["add_method"] = addedByNewMethod ? "AddECOM2" : "AddECOM";
+		AppendFullMirrorRefreshResult(r);
 		return JsonToLocalTextForAI(r);
 	}
 
@@ -4887,6 +4890,137 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 	r["module_index"] = moduleIndex;
 	r["add_method"] = addedByNewMethod ? "AddECOM2" : "AddECOM";
 	r["warning"] = LocalToUtf8Text("模块已加入当前工程。后续可用 list_imported_modules、get_module_public_info、search_module_public_code 等工具继续读取其公开信息。");
+	AppendFullMirrorRefreshResult(r);
+	outOk = true;
+	return JsonToLocalTextForAI(r);
+}
+
+void AppendFullMirrorRefreshResult(nlohmann::json& r)
+{
+	std::string refreshError;
+	std::string refreshMode;
+	if (WorkspaceMirror::RefreshMirror(refreshError, &refreshMode, WorkspaceMirror::RefreshMode::Full)) {
+		r["workspace_mirror_refreshed"] = true;
+		r["refresh_mode"] = refreshMode;
+		return;
+	}
+	r["workspace_mirror_refreshed"] = false;
+	r["refresh_error"] = refreshError.empty() ? "refresh workspace mirror failed" : refreshError;
+}
+
+std::string BuildRemoveModuleFromProjectJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return JsonToLocalTextForAI(r);
+	}
+
+	IDEFacade& ide = IDEFacade::Instance();
+	int moduleIndex = -1;
+	std::string modulePath;
+	std::string moduleName;
+
+	if (args.contains("module_index") && args["module_index"].is_number_integer()) {
+		moduleIndex = args["module_index"].get<int>();
+		int count = 0;
+		if (!ide.GetImportedECOMCount(count)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "GetImportedECOMCount failed";
+			return JsonToLocalTextForAI(r);
+		}
+		if (moduleIndex < 0 || moduleIndex >= count) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "module_index out of range";
+			r["module_count"] = count;
+			return JsonToLocalTextForAI(r);
+		}
+		ide.GetImportedECOMPath(moduleIndex, modulePath);
+		moduleName = GetFileStemForAI(modulePath);
+	}
+	else {
+		modulePath = args.contains("module_path") && args["module_path"].is_string()
+			? Utf8ToLocalText(args["module_path"].get<std::string>())
+			: std::string();
+		moduleName = args.contains("module_name") && args["module_name"].is_string()
+			? Utf8ToLocalText(args["module_name"].get<std::string>())
+			: std::string();
+		if (!TrimAsciiCopy(modulePath).empty()) {
+			moduleIndex = ide.FindECOMIndex(TrimAsciiCopy(modulePath));
+			if (moduleIndex >= 0) {
+				ide.GetImportedECOMPath(moduleIndex, modulePath);
+				moduleName = GetFileStemForAI(modulePath);
+			}
+		}
+		else if (!TrimAsciiCopy(moduleName).empty()) {
+			moduleIndex = ide.FindECOMNameIndex(TrimAsciiCopy(moduleName));
+			if (moduleIndex >= 0) {
+				ide.GetImportedECOMPath(moduleIndex, modulePath);
+				moduleName = GetFileStemForAI(modulePath);
+			}
+		}
+	}
+
+	if (moduleIndex < 0) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "module not found";
+		if (!TrimAsciiCopy(modulePath).empty()) {
+			r["module_path"] = LocalToUtf8Text(modulePath);
+		}
+		if (!TrimAsciiCopy(moduleName).empty()) {
+			r["module_name"] = LocalToUtf8Text(moduleName);
+		}
+		std::vector<std::string> paths;
+		std::string listError;
+		if (TryListImportedModulePathsForAI(paths, &listError)) {
+			nlohmann::json rows = nlohmann::json::array();
+			for (size_t i = 0; i < paths.size(); ++i) {
+				nlohmann::json row;
+				row["module_index"] = i;
+				row["module_path"] = LocalToUtf8Text(paths[i]);
+				row["module_name"] = LocalToUtf8Text(GetFileStemForAI(paths[i]));
+				row["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(paths[i]));
+				rows.push_back(std::move(row));
+			}
+			r["imported_modules"] = std::move(rows);
+		}
+		return JsonToLocalTextForAI(r);
+	}
+
+	if (TrimAsciiCopy(modulePath).empty()) {
+		ide.GetImportedECOMPath(moduleIndex, modulePath);
+	}
+	if (TrimAsciiCopy(moduleName).empty()) {
+		moduleName = GetFileStemForAI(modulePath);
+	}
+
+	if (!ide.RemoveECOM(moduleIndex)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "remove_ecom_failed";
+		r["module_index"] = moduleIndex;
+		r["module_path"] = LocalToUtf8Text(modulePath);
+		r["module_name"] = LocalToUtf8Text(moduleName);
+		r["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(modulePath));
+		return JsonToLocalTextForAI(r);
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["removed"] = true;
+	r["module_index"] = moduleIndex;
+	r["module_path"] = LocalToUtf8Text(modulePath);
+	r["module_name"] = LocalToUtf8Text(moduleName);
+	r["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(modulePath));
+	AppendFullMirrorRefreshResult(r);
 	outOk = true;
 	return JsonToLocalTextForAI(r);
 }
@@ -7807,9 +7941,6 @@ bool IsRemovedLegacyToolNameForAI(const std::string& toolName)
 		"write_program_item_real_code",
 		"diff_program_item_code",
 		"restore_program_item_code_snapshot",
-		"list_imported_modules",
-		"search_available_module_public_code",
-		"add_module_to_project",
 		"list_support_libraries",
 		"get_support_library_info",
 		"search_public_code",
@@ -7835,12 +7966,44 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 	outOk = false;
 
 	if (toolName == "refresh_workspace_mirror") {
+		nlohmann::json args = nlohmann::json::object();
+		try {
+			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("invalid arguments json: ") + ex.what();
+			return JsonToLocalTextForAI(r);
+		}
+		std::string requestedMode = "auto";
+		WorkspaceMirror::RefreshMode refreshMode = WorkspaceMirror::RefreshMode::Auto;
+		if (args.contains("mode") && args["mode"].is_string()) {
+			requestedMode = ToLowerAsciiCopyLocal(TrimAsciiCopy(args["mode"].get<std::string>()));
+			if (requestedMode == "full") {
+				refreshMode = WorkspaceMirror::RefreshMode::Full;
+			}
+			else if (requestedMode == "main_only" || requestedMode == "source_only") {
+				requestedMode = "main_only";
+				refreshMode = WorkspaceMirror::RefreshMode::MainOnly;
+			}
+			else if (requestedMode.empty() || requestedMode == "auto") {
+				requestedMode = "auto";
+			}
+			else {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["error"] = "mode must be auto, main_only, or full";
+				return JsonToLocalTextForAI(r);
+			}
+		}
 		std::string error;
 		std::string mode;
-		if (!WorkspaceMirror::RefreshMirror(error, &mode)) {
+		if (!WorkspaceMirror::RefreshMirror(error, &mode, refreshMode)) {
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "refresh workspace mirror failed" : error;
+			r["requested_mode"] = requestedMode;
 			return JsonToLocalTextForAI(r);
 		}
 
@@ -7849,6 +8012,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "query refreshed workspace mirror failed" : error;
+			r["requested_mode"] = requestedMode;
 			r["refresh_mode"] = mode;
 			return JsonToLocalTextForAI(r);
 		}
@@ -7858,6 +8022,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "list refreshed workspace mirror failed" : error;
+			r["requested_mode"] = requestedMode;
 			r["refresh_mode"] = mode;
 			r["mirror_root"] = LocalToUtf8Text(mirrorRoot.string());
 			return JsonToLocalTextForAI(r);
@@ -7865,6 +8030,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 
 		nlohmann::json r;
 		r["ok"] = true;
+		r["requested_mode"] = requestedMode;
 		r["refresh_mode"] = mode;
 		r["mirror_root"] = LocalToUtf8Text(mirrorRoot.string());
 		r["file_count"] = files.size();
@@ -8749,6 +8915,10 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 
 	if (toolName == "add_module_to_project") {
 		return BuildAddModuleToProjectJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "remove_module_from_project") {
+		return BuildRemoveModuleFromProjectJsonOnMainThread(argumentsJson, outOk);
 	}
 
 	if (toolName == "list_support_libraries") {

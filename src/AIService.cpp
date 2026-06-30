@@ -1366,10 +1366,12 @@ nlohmann::json BuildPublicToolCatalog()
 	nlohmann::json tools = nlohmann::json::array();
 	tools.push_back({
 		{"name", "refresh_workspace_mirror"},
-		{"description", "Refresh the current e-packager workspace mirror from the live IDE project memory before reading source. Call this once before the first list_files/search_code/read_file in each conversation round, especially after the user may have edited code manually in the IDE. Existing mirrors use e-packager unpack --main-only to refresh only the main .e/.ec project and avoid re-exporting dependency modules/support libraries."},
+		{"description", "Refresh the current e-packager workspace mirror from the live IDE project memory before reading source. Call this once before the first list_files/search_code/read_file in each conversation round, especially after the user may have edited code manually in the IDE. mode=auto keeps the default strategy, main_only refreshes only the main source files, and full rebuilds the complete mirror including dependency modules/support libraries."},
 		{"inputSchema", {
 			{"type", "object"},
-			{"properties", nlohmann::json::object()},
+			{"properties", {
+				{"mode", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "main_only", "full"})}, {"description", "Defaults to auto."}}}
+			}},
 			{"additionalProperties", false}
 		}}
 	});
@@ -1527,6 +1529,54 @@ nlohmann::json BuildPublicToolCatalog()
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", nlohmann::json::object()},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "list_imported_modules"},
+		{"description", "List .ec modules currently imported by the active E-language project."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", nlohmann::json::object()},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "search_available_module_public_code"},
+		{"description", "Search public declarations in available local .ec modules without importing them. Use add_module_to_project after selecting a module."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"keyword", {{"type", "string"}, {"description", "Keyword to search in module public code."}}},
+				{"module_name", {{"type", "string"}, {"description", "Optional module name filter."}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}
+			}},
+			{"required", nlohmann::json::array({"keyword"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "add_module_to_project"},
+		{"description", "Import one .ec module into the current project by module_path or module_name. After a successful add, AutoLinker performs a full refresh_workspace_mirror."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"module_path", {{"type", "string"}, {"description", "Absolute .ec file path."}}},
+				{"module_name", {{"type", "string"}, {"description", "Module name or file name to resolve from the E-language module directory."}}}
+			}},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "remove_module_from_project"},
+		{"description", "Remove one imported .ec module from the current project by module_index, module_path, or module_name. After a successful removal, AutoLinker performs a full refresh_workspace_mirror."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"module_index", {{"type", "integer"}, {"minimum", 0}}},
+				{"module_path", {{"type", "string"}}},
+				{"module_name", {{"type", "string"}}}
+			}},
 			{"additionalProperties", false}
 		}}
 	});
@@ -1770,6 +1820,10 @@ std::vector<std::string> SelectGeminiToolNames(const std::vector<AIChatMessage>&
 	}
 	if (ContainsAnyText(text, { "模块", "ECOM", ".ec", "module", "支持库", "support library", ".fne", ".fnr" })) {
 		addFileReadTools();
+		AddUniqueToolName(names, "list_imported_modules");
+		AddUniqueToolName(names, "search_available_module_public_code");
+		AddUniqueToolName(names, "add_module_to_project");
+		AddUniqueToolName(names, "remove_module_from_project");
 	}
 	if (ContainsAnyText(text, { "PowerShell", "powershell", "命令行", "执行命令" })) {
 		AddUniqueToolName(names, "run_powershell_command");

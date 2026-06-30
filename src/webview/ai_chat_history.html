@@ -989,6 +989,176 @@ body {
 	gap: 8px;
 	margin-top: 10px;
 }
+
+:root {
+	--al-page-bg: #e6e9ef;
+	--al-text: #4c4f69;
+	--al-muted-text: #5d6475;
+	--al-subtle-text: #9aa0b0;
+	--al-brand: #8839ef;
+	--al-primary: #1e66f5;
+	--al-primary-hover: #1554d1;
+	--al-accent: #04a5e5;
+	--al-success: #2e7d32;
+	--al-warning: #8a5a00;
+	--al-danger: #b42318;
+	--al-border: #d7dbe3;
+	--al-soft-border: #ccd3dd;
+	--al-panel-bg: #ffffff;
+	--al-toolbar-bg: #e6e9ef;
+	--al-composer-bg: #e6e9ef;
+	--al-input-bg: #ffffff;
+	--al-input-border: #d4d9e3;
+	--al-button-bg: #ffffff;
+	--al-button-hover-bg: #eef1f6;
+	--al-user-msg-bg: #eff1f5;
+	--al-assistant-msg-bg: #e6e9ef;
+	--al-system-msg-bg: #e6e9ef;
+	--al-tool-msg-bg: #e6e9ef;
+	--al-plan-msg-bg: #eef3ff;
+	--al-role-text: #4c4f69;
+	--al-body-text: #4c4f69;
+	--al-link-text: #0b63c9;
+	--al-inline-code-bg: #cfd1d7;
+	--al-code-block-bg: #ccd0da;
+	--al-code-text: #1f2937;
+	--al-plan-bg: #f7faff;
+	--al-plan-border: #b9cffb;
+	--al-plan-text: #374151;
+	--al-chip-bg: #dce9ff;
+	--al-approval-bg: #ffffff;
+	--al-diff-bg: #f7f9fc;
+	--al-diff-add: #1b7f37;
+	--al-diff-del: #b42318;
+	--al-placeholder: #9ca3b4;
+}
+
+html,
+body,
+.history,
+#chat-root {
+	background: var(--al-page-bg);
+	color: var(--al-text);
+}
+
+.topbar { background: var(--al-toolbar-bg); }
+.topbar-brand { color: var(--al-brand); }
+.update-tag {
+	background: linear-gradient(110deg, var(--al-brand), var(--al-primary));
+}
+.empty-state-title {
+	background: linear-gradient(110deg, var(--al-brand) 0%, var(--al-primary) 42%, var(--al-accent) 78%, var(--al-brand) 100%);
+	background-size: 220% auto;
+	-webkit-background-clip: text;
+	background-clip: text;
+}
+.top-action,
+.session-elapsed,
+.context-usage,
+.btn,
+.msg,
+.role,
+.body { color: var(--al-text); }
+.top-action:hover,
+.send-icon-btn,
+.stop-icon-btn,
+.body a { color: var(--al-link-text); }
+.top-action.active,
+.mode-chip.active,
+.session-status.working,
+.plan-status {
+	background: var(--al-chip-bg);
+	color: var(--al-primary);
+}
+.composer {
+	background: var(--al-composer-bg);
+	border-top-color: var(--al-border);
+}
+#chat-input {
+	background: var(--al-input-bg);
+	border-color: var(--al-input-border);
+	color: var(--al-text);
+}
+#chat-input::placeholder { color: var(--al-placeholder); }
+#chat-input:focus { border-color: var(--al-primary); }
+.btn {
+	background: var(--al-button-bg);
+	border-color: var(--al-soft-border);
+}
+.btn:hover { background: var(--al-button-hover-bg); }
+.btn.primary {
+	background: var(--al-primary);
+	border-color: var(--al-primary);
+	color: #fff;
+}
+.btn.primary:hover {
+	background: var(--al-primary-hover);
+	border-color: var(--al-primary-hover);
+}
+.msg { border-bottom-color: var(--al-border); }
+.msg.user { background: var(--al-user-msg-bg); }
+.msg.assistant { background: var(--al-assistant-msg-bg); }
+.msg.tool { background: var(--al-tool-msg-bg); }
+.msg.system { background: var(--al-system-msg-bg); }
+.plan-message { background: var(--al-plan-msg-bg); }
+.role { color: var(--al-role-text); }
+.body { color: var(--al-body-text); }
+.body code { background: var(--al-inline-code-bg); }
+.body pre {
+	background: var(--al-code-block-bg);
+	color: var(--al-code-text);
+}
+.body .code-block pre { padding-right: 58px; }
+.body pre code { color: var(--al-code-text); }
+.copy-code-btn {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	min-width: 38px;
+	height: 22px;
+	border: 1px solid var(--al-soft-border);
+	border-radius: 5px;
+	background: var(--al-button-bg);
+	color: var(--al-muted-text);
+	font: 11px/1 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	padding: 0 7px;
+	cursor: pointer;
+	opacity: .9;
+}
+.copy-code-btn:hover {
+	background: var(--al-button-hover-bg);
+	color: var(--al-primary);
+}
+.copy-code-btn.copied {
+	background: var(--al-primary);
+	border-color: var(--al-primary);
+	color: #fff;
+}
+.plan-card {
+	background: var(--al-plan-bg);
+	border-color: var(--al-plan-border);
+}
+.plan-card-head,
+.plan-content { color: var(--al-plan-text); }
+.tool-approval,
+.session-status,
+.session-menu,
+.session-item {
+	background: var(--al-approval-bg);
+	color: var(--al-text);
+	border-color: var(--al-soft-border);
+}
+.tool-approval-preview {
+	background: var(--al-diff-bg);
+	color: var(--al-plan-text);
+}
+.tool-approval-preview .diff-add { color: var(--al-diff-add); }
+.tool-approval-preview .diff-del { color: var(--al-diff-del); }
+.tool-approval-preview .diff-hunk { color: var(--al-primary); }
+.context-usage.warn { color: var(--al-warning); }
+.context-usage.danger { color: var(--al-danger); }
+.session-status.done,
+.mode-chip.auto.active { color: var(--al-success); }
 </style>
 </head>
 <body>
@@ -1086,6 +1256,58 @@ window.autolinkerEscapeHtml = function(text) {
 		.replace(/>/g, "&gt;")
 		.replace(/\"/g, "&quot;")
 		.replace(/'/g, "&#39;");
+};
+
+window.autolinkerApplyTheme = function(theme) {
+	var colors = theme && theme.colors ? theme.colors : {};
+	var map = {
+		pageBg: "--al-page-bg",
+		text: "--al-text",
+		mutedText: "--al-muted-text",
+		subtleText: "--al-subtle-text",
+		brand: "--al-brand",
+		primary: "--al-primary",
+		primaryHover: "--al-primary-hover",
+		accent: "--al-accent",
+		success: "--al-success",
+		warning: "--al-warning",
+		danger: "--al-danger",
+		border: "--al-border",
+		softBorder: "--al-soft-border",
+		panelBg: "--al-panel-bg",
+		toolbarBg: "--al-toolbar-bg",
+		composerBg: "--al-composer-bg",
+		inputBg: "--al-input-bg",
+		inputBorder: "--al-input-border",
+		buttonBg: "--al-button-bg",
+		buttonHoverBg: "--al-button-hover-bg",
+		userMsgBg: "--al-user-msg-bg",
+		assistantMsgBg: "--al-assistant-msg-bg",
+		systemMsgBg: "--al-system-msg-bg",
+		toolMsgBg: "--al-tool-msg-bg",
+		planMsgBg: "--al-plan-msg-bg",
+		roleText: "--al-role-text",
+		bodyText: "--al-body-text",
+		linkText: "--al-link-text",
+		inlineCodeBg: "--al-inline-code-bg",
+		codeBlockBg: "--al-code-block-bg",
+		codeText: "--al-code-text",
+		planBg: "--al-plan-bg",
+		planBorder: "--al-plan-border",
+		planText: "--al-plan-text",
+		chipBg: "--al-chip-bg",
+		approvalBg: "--al-approval-bg",
+		diffBg: "--al-diff-bg",
+		diffAdd: "--al-diff-add",
+		diffDel: "--al-diff-del",
+		placeholder: "--al-placeholder"
+	};
+	var root = document.documentElement;
+	for (var key in map) {
+		if (Object.prototype.hasOwnProperty.call(map, key) && colors[key]) {
+			root.style.setProperty(map[key], colors[key]);
+		}
+	}
 };
 
 window.autolinkerSetChatHtml = function(html) {
@@ -1365,6 +1587,32 @@ window.autolinkerHideToolApproval = function() {
 		return window.autolinkerEscapeHtml(text);
 	}
 
+	function copyText(text) {
+		if (navigator.clipboard && navigator.clipboard.writeText) {
+			return navigator.clipboard.writeText(text);
+		}
+		return new Promise(function(resolve, reject) {
+			var area = document.createElement("textarea");
+			area.value = text || "";
+			area.setAttribute("readonly", "readonly");
+			area.style.position = "fixed";
+			area.style.left = "-9999px";
+			document.body.appendChild(area);
+			area.select();
+			try {
+				if (document.execCommand("copy")) {
+					resolve();
+				} else {
+					reject(new Error("copy failed"));
+				}
+			} catch (err) {
+				reject(err);
+			} finally {
+				document.body.removeChild(area);
+			}
+		});
+	}
+
 	function hideSessionMenu() {
 		if (sessionMenu) {
 			sessionMenu.hidden = true;
@@ -1590,6 +1838,27 @@ window.autolinkerHideToolApproval = function() {
 			} else if (planAction === "exit") {
 				post({ action: "exit_plan_mode" });
 			}
+			return;
+		}
+		var copyBtn = e.target && e.target.closest ? e.target.closest(".copy-code-btn") : null;
+		if (copyBtn) {
+			e.preventDefault();
+			var block = copyBtn.closest ? copyBtn.closest(".code-block") : null;
+			var code = block && block.querySelector ? block.querySelector("pre code") : null;
+			var original = copyBtn.textContent || "\u590D\u5236";
+			copyText(code ? (code.textContent || "") : "").then(function() {
+				copyBtn.textContent = "\u5DF2\u590D\u5236";
+				copyBtn.classList.add("copied");
+				setTimeout(function() {
+					copyBtn.textContent = original;
+					copyBtn.classList.remove("copied");
+				}, 1200);
+			}, function() {
+				copyBtn.textContent = "\u5931\u8D25";
+				setTimeout(function() {
+					copyBtn.textContent = original;
+				}, 1200);
+			});
 			return;
 		}
 		var actionBtn = e.target && e.target.closest ? e.target.closest("[data-chat-action='open_settings']") : null;

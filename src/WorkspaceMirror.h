@@ -7,6 +7,12 @@
 // 会话级工程镜像：把当前 IDE 内存源码用 e-packager 解包到临时目录，并提供文件到真实程序项的映射。
 namespace WorkspaceMirror {
 
+enum class RefreshMode {
+	Auto,
+	MainOnly,
+	Full
+};
+
 // 解包文件对应的真实程序项。
 struct ProgramItemRef {
 	std::string relativePathUtf8;
@@ -20,8 +26,8 @@ struct ProgramItemRef {
 // 确保当前源码的解包镜像可用；必要时导出内存快照并重新解包。
 bool EnsureMirrorFresh(std::string& outError);
 
-// 强制刷新当前源码镜像。已有镜像时优先只刷新主工程源码，不重新导出模块/支持库。
-bool RefreshMirror(std::string& outError, std::string* outMode = nullptr);
+// 强制刷新当前源码镜像。Auto 保持原策略；MainOnly 只刷新源文件；Full 重建完整镜像。
+bool RefreshMirror(std::string& outError, std::string* outMode = nullptr, RefreshMode mode = RefreshMode::Auto);
 
 // 标记镜像已过期，下一次读取/搜索/列出时惰性重建。
 void InvalidateMirror();

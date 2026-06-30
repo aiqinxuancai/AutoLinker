@@ -3,7 +3,8 @@
     "./src/webview/ai_config_dialog.src.html",
     "./src/webview/linker_config_dialog.src.html",
     "./src/webview/ec_switch_config_dialog.src.html",
-    "./src/webview/force_link_lib_config_dialog.src.html"
+    "./src/webview/force_link_lib_config_dialog.src.html",
+    "./src/webview/ai_chat_theme_config_dialog.src.html"
   ],
   safelist: ["block"],
   theme: {

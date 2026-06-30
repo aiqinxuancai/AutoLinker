@@ -31,6 +31,7 @@
 #include "AIConfigDialog.h"
 #include "AIJsonConfig.h"
 #include "AIChatSessionStore.h"
+#include "AIChatThemeManager.h"
 #include "AIService.h"
 #include "ConfigManager.h"
 #include "AIChatTooling.h"
@@ -2268,6 +2269,11 @@ void ExecuteWebViewScript(ChatDialogContext* ctx, const std::wstring& script)
 	ctx->webView->ExecuteScript(script.c_str(), nullptr);
 }
 
+void ApplyCurrentThemeToWebView(ChatDialogContext* ctx)
+{
+	ExecuteWebViewScript(ctx, AIChatThemeManager::BuildApplyCurrentThemeScript());
+}
+
 void UpdateWebViewComposerState(ChatDialogContext* ctx, bool busy, bool stopRequested = false)
 {
 	if (ctx == nullptr) {
@@ -2862,6 +2868,7 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												navCtx->webViewContentReady = true;
 												SyncHistoryPresentation(navCtx);
 												LayoutAIChatDialog(hWnd, navCtx);
+												ApplyCurrentThemeToWebView(navCtx);
 												if (!navCtx->pendingHistoryHtml.empty()) {
 													UpdateHistoryWebViewHtml(navCtx, navCtx->pendingHistoryHtml);
 													FlushHistoryWebViewHtml(navCtx);
@@ -3147,7 +3154,7 @@ std::string RenderMarkdownToHtml(const std::string& markdown)
 		}
 	};
 	auto openCodeBlock = [&]() {
-		html += "<div class=\"code-block\"><pre><code>";
+		html += "<div class=\"code-block\"><button class=\"copy-code-btn\" type=\"button\" title=\"复制代码\">复制</button><pre><code>";
 		inCodeBlock = true;
 	};
 	auto closeCodeBlock = [&]() {
@@ -6263,5 +6270,17 @@ bool ExecutePublicTool(const std::string& toolName, const std::string& arguments
 	outResultJsonUtf8 = LocalToUtf8Text(resultJsonLocal);
 	outOk = toolOk;
 	return true;
+}
+
+void ReloadTheme()
+{
+	if (g_chatDialog == nullptr || !IsWindow(g_chatDialog)) {
+		return;
+	}
+	auto* ctx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(g_chatDialog, GWLP_USERDATA));
+	if (ctx == nullptr) {
+		return;
+	}
+	ApplyCurrentThemeToWebView(ctx);
 }
 } // namespace AIChatFeature

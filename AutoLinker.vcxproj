@@ -513,6 +513,9 @@
     <ClCompile Include="src\AIConfigDialog.cpp" />
     <ClCompile Include="src\AIChatFeature.cpp" />
     <ClCompile Include="src\AIChatSessionStore.cpp" />
+    <ClCompile Include="src\AIChatThemeManager.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="src\AIChatTooling.cpp" />
     <ClCompile Include="src\AIChatToolingX86.cpp" />
     <ClCompile Include="src\AIService.cpp" />
@@ -556,6 +559,7 @@
     <ClInclude Include="src\AIConfigDialog.h" />
     <ClInclude Include="src\AIChatFeature.h" />
     <ClInclude Include="src\AIChatSessionStore.h" />
+    <ClInclude Include="src\AIChatThemeManager.h" />
     <ClInclude Include="src\AIChatTooling.h" />
     <ClInclude Include="src\AIChatToolingInternal.h" />
     <ClInclude Include="src\AIService.h" />
@@ -608,6 +612,8 @@
     <None Include="scripts\build_ai_config_webview.mjs" />
     <None Include="tailwind.config.js" />
     <None Include="src\webview\ai_chat_history.html" />
+    <None Include="src\webview\ai_chat_theme_config_dialog.html" />
+    <None Include="src\webview\ai_chat_theme_config_dialog.src.html" />
     <None Include="src\webview\ai_config_dialog.html" />
     <None Include="src\webview\ai_config_dialog.src.html" />
     <None Include="src\webview\ai_config_dialog.tailwind.css" />

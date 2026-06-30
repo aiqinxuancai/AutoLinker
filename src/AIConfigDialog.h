@@ -17,6 +17,8 @@ bool ShowAIConfigDialog(HWND owner, AIJsonConfig& jsonConfig, AISettings& ioSett
 
 // 打开“AutoLinker 链接器设置”对话框（WebView2），用于查看/编辑 AutoLinker/Config 下的 link.ini 配置。
 void ShowLinkerConfigDialog(HWND owner);
+// 打开“AutoLinker AI 对话配色设置”对话框（WebView2）。
+void ShowAIChatThemeConfigDialog(HWND owner);
 AIPreviewAction ShowAIPreviewDialogEx(
 	HWND owner,
 	const std::string& title,
