@@ -4189,7 +4189,7 @@ void ShowAIChatThemeConfigDialog(HWND owner)
 		wc.lpszClassName,
 		"AutoLinker AI Chat Theme Config",
 		WS_CAPTION | WS_SYSMENU | WS_VISIBLE | WS_THICKFRAME,
-		CW_USEDEFAULT, CW_USEDEFAULT, 900, 680,
+		CW_USEDEFAULT, CW_USEDEFAULT, 1000, 680,
 		owner,
 		nullptr,
 		wc.hInstance,
