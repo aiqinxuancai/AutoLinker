@@ -1062,17 +1062,43 @@ bool TryReadFixedTableRealPageCodeForAI(
 	return false;
 }
 
+bool CommitCurrentFixedTablePageForAI(const std::string& pageCode, std::string& outTrace)
+{
+	outTrace.clear();
+
+	const bool forceOk = IDEFacade::Instance().RunForceProcess();
+	const bool setOk = IDEFacade::Instance().RunSetAndCompilePrgItemText(pageCode, false);
+	outTrace =
+		std::string("force_process=") + (forceOk ? "1" : "0") +
+		"|set_and_compile_text=" + (setOk ? "1" : "0");
+	Sleep(50);
+	return forceOk || setOk;
+}
+
 bool TryWriteFixedTableRealPageCodeByPasteForAI(
 	const ProgramTreeItemInfo& item,
 	const std::string& baseCode,
 	const std::string& newCode,
 	std::string& outFinalCode,
 	std::string& outTrace,
-	std::string& outError)
+	std::string& outError,
+	bool* outRollbackAttempted = nullptr,
+	bool* outRollbackSucceeded = nullptr)
 {
 	outFinalCode.clear();
 	outTrace.clear();
 	outError.clear();
+	if (outRollbackAttempted != nullptr) {
+		*outRollbackAttempted = false;
+	}
+	if (outRollbackSucceeded != nullptr) {
+		*outRollbackSucceeded = false;
+	}
+
+	const std::string normalizedBaseCode = NormalizeRealCodeLineBreaksToCrLf(baseCode);
+	const std::string normalizedNewCode = NormalizeRealCodeLineBreaksToCrLf(newCode);
+	const std::string preparedExpectedCode = NormalizeRealCodeLineBreaksToCrLf(
+		PrepareAssemblyVariablesForRealPageWrite(normalizedNewCode));
 
 	std::string openTrace;
 	if (!OpenFixedTablePageForAI(item, openTrace)) {
@@ -1081,10 +1107,6 @@ bool TryWriteFixedTableRealPageCodeByPasteForAI(
 		return false;
 	}
 
-	const std::string normalizedBaseCode = NormalizeRealCodeLineBreaksToCrLf(baseCode);
-	const std::string normalizedNewCode = NormalizeRealCodeLineBreaksToCrLf(newCode);
-	const std::string preparedExpectedCode = NormalizeRealCodeLineBreaksToCrLf(
-		PrepareAssemblyVariablesForRealPageWrite(normalizedNewCode));
 	auto pasteCurrentPage = [&](const std::string& currentOpenTrace) -> bool {
 		const bool pasteReportedOk = IDEFacade::Instance().ReplaceCurrentPageCode(normalizedNewCode, false);
 
@@ -1098,9 +1120,12 @@ bool TryWriteFixedTableRealPageCodeByPasteForAI(
 					BuildStableTextHashForRealCode(normalizedBaseCode);
 				if (pageChanged) {
 					outFinalCode = verifyCode;
+					std::string commitTrace;
+					CommitCurrentFixedTablePageForAI(normalizedNewCode, commitTrace);
 					outTrace = currentOpenTrace +
 						(pasteReportedOk ? "|paste_current_fixed_table_page_ok" : "|paste_current_fixed_table_page_reported_failed") +
-						"|verify_mismatch_but_page_changed";
+						"|verify_mismatch_but_page_changed" +
+						"|commit_current_fixed_table|" + commitTrace;
 					outError.clear();
 					return true;
 				}
@@ -1114,18 +1139,24 @@ bool TryWriteFixedTableRealPageCodeByPasteForAI(
 				return false;
 			}
 			outFinalCode = verifyCode;
+			std::string commitTrace;
+			CommitCurrentFixedTablePageForAI(normalizedNewCode, commitTrace);
 			outTrace = currentOpenTrace +
 				(pasteReportedOk ? "|paste_current_fixed_table_page_ok" : "|paste_current_fixed_table_page_reported_failed") +
 				"|verify_ok_" + verifyMode +
 				"|" +
-				verifyCopyTrace;
+				verifyCopyTrace +
+				"|commit_current_fixed_table|" + commitTrace;
 			outError.clear();
 			return true;
 		}
 
 		if (pasteReportedOk) {
 			outFinalCode = normalizedNewCode;
-			outTrace = currentOpenTrace + "|paste_current_fixed_table_page_ok|verify_copy_failed_final_code=write_target|" + verifyCopyTrace;
+			std::string commitTrace;
+			CommitCurrentFixedTablePageForAI(normalizedNewCode, commitTrace);
+			outTrace = currentOpenTrace + "|paste_current_fixed_table_page_ok|verify_copy_failed_final_code=write_target|" + verifyCopyTrace +
+				"|commit_current_fixed_table|" + commitTrace;
 			outError.clear();
 			return true;
 		}
@@ -1486,30 +1517,6 @@ bool TryWriteRealPageCodeForAI(
 	const std::string preparedExpectedCode = NormalizeRealCodeLineBreaksToCrLf(
 		PrepareAssemblyVariablesForRealPageWrite(normalizedNewCode));
 
-	if (IsFixedTableProgramItemForAI(item)) {
-		std::string fixedTableFinalCode;
-		if (!TryWriteFixedTableRealPageCodeByPasteForAI(
-				item,
-				normalizedBaseCode,
-				normalizedNewCode,
-				fixedTableFinalCode,
-				outTrace,
-				outError)) {
-			if (outError.empty()) {
-				outError = "paste fixed table page code failed";
-			}
-			return false;
-		}
-
-		PageCodeCacheEntry postSnapshotEntry;
-		const bool hasPostSnapshotEntry = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, postSnapshotEntry);
-		PutPageCodeCacheEntryForAI(item, fixedTableFinalCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
-
-		outFinalCode = fixedTableFinalCode;
-		outTrace += "|write_by_fixed_table_page_paste|final_code=real_copy";
-		return true;
-	}
-
 	std::string openTrace;
 	std::string openError;
 	const std::uintptr_t moduleBase = reinterpret_cast<std::uintptr_t>(::GetModuleHandleW(nullptr));
@@ -1517,6 +1524,70 @@ bool TryWriteRealPageCodeForAI(
 		outTrace = "internal_real_page_write_failed|module_base_invalid";
 		outError = "module base invalid";
 		return false;
+	}
+
+	if (IsFixedTableProgramItemForAI(item)) {
+		e571::NativeRealPageAccessResult fixedTableWriteResult{};
+		const auto fixedTableWriteStart = ToolPerfClock::now();
+		const bool fixedTableWriteOk = e571::ReplaceRealPageCodeByProgramTreeItemData(
+			item.itemData,
+			moduleBase,
+			normalizedNewCode,
+			&normalizedBaseCode,
+			&fixedTableWriteResult);
+		const auto fixedTableWriteMs = ElapsedToolMs(fixedTableWriteStart);
+		outRollbackAttempted = fixedTableWriteResult.rollbackAttempted;
+		outRollbackSucceeded = fixedTableWriteResult.rollbackSucceeded;
+
+		const std::string fixedTableDirectTrace =
+			std::string("write_by_fixed_table_internal_editor_object") +
+			"|editor_object=" + std::to_string(fixedTableWriteResult.editorObject) +
+			"|write_ok=" + std::to_string(fixedTableWriteOk ? 1 : 0) +
+			"|write_ms=" + std::to_string(fixedTableWriteMs) +
+			(fixedTableWriteResult.trace.empty() ? std::string() : ("|" + fixedTableWriteResult.trace));
+		if (fixedTableWriteOk) {
+			outFinalCode = fixedTableWriteResult.pageCode.empty()
+				? preparedExpectedCode
+				: NormalizeRealCodeLineBreaksToCrLf(fixedTableWriteResult.pageCode);
+
+			PageCodeCacheEntry postSnapshotEntry;
+			const bool hasPostSnapshotEntry = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, postSnapshotEntry);
+			PutPageCodeCacheEntryForAI(item, outFinalCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
+
+			outTrace = fixedTableDirectTrace + "|final_code=real_copy";
+			return true;
+		}
+
+		std::string fallbackFinalCode;
+		std::string fallbackTrace;
+		std::string fallbackError;
+		bool fallbackRollbackAttempted = false;
+		bool fallbackRollbackSucceeded = false;
+		if (!TryWriteFixedTableRealPageCodeByPasteForAI(
+				item,
+				normalizedBaseCode,
+				normalizedNewCode,
+				fallbackFinalCode,
+				fallbackTrace,
+				fallbackError,
+				&fallbackRollbackAttempted,
+				&fallbackRollbackSucceeded)) {
+			outRollbackAttempted = outRollbackAttempted || fallbackRollbackAttempted;
+			outRollbackSucceeded = outRollbackSucceeded || fallbackRollbackSucceeded;
+			outTrace = fixedTableDirectTrace + "|fallback_page_paste_failed|" + fallbackTrace;
+			outError = fallbackError.empty() ? "paste fixed table page code failed" : fallbackError;
+			return false;
+		}
+
+		outRollbackAttempted = outRollbackAttempted || fallbackRollbackAttempted;
+		outRollbackSucceeded = outRollbackSucceeded || fallbackRollbackSucceeded;
+		PageCodeCacheEntry postSnapshotEntry;
+		const bool hasPostSnapshotEntry = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, postSnapshotEntry);
+		PutPageCodeCacheEntryForAI(item, fallbackFinalCode, hasPostSnapshotEntry ? &postSnapshotEntry : nullptr, nullptr);
+
+		outFinalCode = fallbackFinalCode;
+		outTrace = fixedTableDirectTrace + "|fallback_page_paste_ok|" + fallbackTrace + "|final_code=real_copy";
+		return true;
 	}
 
 	e571::NativeRealPageAccessResult writeResult{};
@@ -7857,14 +7928,14 @@ std::string ExecuteFileMappedRealPageToolForAI(
 	const bool ok = result.value("ok", false);
 	const bool noChanges = result.value("no_changes", false);
 	if (item.fixedTable && ok && result.contains("code_kind")) {
-		result["code_kind"] = "fixed_table_real_page_paste";
+		result["code_kind"] = "fixed_table_real_page";
 	}
 	if (ok && invalidateOnWrite && !noChanges) {
 		WorkspaceMirror::InvalidateMirror();
 		result["workspace_mirror_invalidated"] = true;
 
 		if (item.fixedTable) {
-			result["code_kind"] = "fixed_table_real_page_paste";
+			result["code_kind"] = "fixed_table_real_page";
 			result["post_write_real_page_refreshed"] = true;
 		}
 	}
