@@ -27,7 +27,6 @@
 #include "MemFind.h"
 #include "MouseBack.h"
 #include "PathHelper.h"
-#include "ProjectSourceCacheManager.h"
 #include "Version.h"
 #include "WorkspaceMirror.h"
 #include "WinINetUtil.h"
@@ -426,24 +425,6 @@ bool FneInit()
 	HeadlessCompileRunner::NotifyIdeRuntimeReady();
 	TraceInitStep("检查无头编译请求");
 	HeadlessCompileRunner::StartIfRequested();
-	if (!headlessCompileMode) {
-		TraceInitStep("开始预热当前工程源码解析缓存");
-		std::string warmupError;
-		std::string warmupTrace;
-		if (!project_source_cache::ProjectSourceCacheManager::Instance().WarmupCurrentSource(
-				&warmupError,
-				&warmupTrace)) {
-			OutputStringToELog(std::format(
-				"[ProjectSourceCacheWarmup] 跳过或失败 error={} trace={}",
-				warmupError.empty() ? "warmup_failed" : warmupError,
-				warmupTrace));
-		}
-		TraceInitStep("当前工程源码解析缓存预热结束");
-	}
-	else {
-		TraceInitStep("无头编译模式：跳过工程源码解析缓存预热");
-	}
-
 	if (!headlessCompileMode) {
 		TraceInitStep("开始启动版本检查线程");
 		_beginthread(FneCheckNewVersion, 0, NULL);

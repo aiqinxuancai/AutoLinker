@@ -7445,7 +7445,7 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	}
 
 	if (skipVerifyRead) {
-		AppendPageEditTraceLine("ReplaceRealPageCode.verify_skipped|reason=project_cache_backed");
+		AppendPageEditTraceLine("ReplaceRealPageCode.verify_skipped|reason=requested");
 		AppendPageEditTraceLine("ReplaceRealPageCode.success");
 		if (outResult != nullptr) {
 			outResult->ok = true;
@@ -7457,7 +7457,7 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 				writeStrategyTrace +
 				"|" +
 				replaceTrace +
-				"|verify_skipped_project_cache";
+				"|verify_skipped_requested";
 		}
 		return true;
 	}

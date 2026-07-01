@@ -39,7 +39,6 @@
 #include "Global.h"
 #include "IDEFacade.h"
 #include "PathHelper.h"
-#include "ProjectSourceCacheManager.h"
 #include "ResourceTextLoader.h"
 #include "WorkspaceMirror.h"
 #include "WinINetUtil.h"
@@ -4710,36 +4709,6 @@ void RequestClearChatHistoryAsync()
 	PostRefreshDialog();
 }
 
-void RefreshProjectSourceCacheAfterChatTurn()
-{
-#if defined(_M_IX86)
-	project_source_cache::Snapshot snapshot;
-	bool refreshed = false;
-	std::string error;
-	std::string trace;
-	if (project_source_cache::ProjectSourceCacheManager::Instance().EnsureCurrentSourceLatest(
-			snapshot,
-			true,
-			&refreshed,
-			&error,
-			&trace)) {
-		OutputStringToELog(std::format(
-			"[ProjectSourceCache] chat_turn_refresh_ok source={} revision={} pages={} refreshed={} trace={}",
-			snapshot.sourcePath,
-			snapshot.revision,
-			snapshot.pages.size(),
-			refreshed ? 1 : 0,
-			trace));
-	}
-	else if (!error.empty()) {
-		OutputStringToELog(std::format(
-			"[ProjectSourceCache] chat_turn_refresh_skip error={} trace={}",
-			error,
-			trace));
-	}
-#endif
-}
-
 std::string BuildToolEventHistoryLine(const AIChatToolEvent& evt)
 {
 	std::string line =
@@ -4961,7 +4930,6 @@ void HandleChatTaskDone(LPARAM lParam)
 
 	PostRefreshDialog();
 	SaveChatSessionSnapshotNow();
-	RefreshProjectSourceCacheAfterChatTurn();
 }
 
 void RefreshChatDialog(HWND hWnd)

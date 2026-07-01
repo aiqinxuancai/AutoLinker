@@ -32,21 +32,6 @@ AUTOLINKER_TEST_API int AutoLinkerTest_GetVersionText(char* buffer, int bufferSi
 // 执行本地 EC 公开信息解析，并输出调试文本。
 AUTOLINKER_TEST_API int AutoLinkerTest_DumpLocalModulePublicInfo(const char* modulePath, char* buffer, int bufferSize);
 
-// 执行原生 e2txt 导出，并输出结果摘要。
-AUTOLINKER_TEST_API int AutoLinkerTest_GenerateE2Txt(const char* inputPath, const char* outputPath, char* buffer, int bufferSize);
-
-// 执行原生 txt2e 恢复，并输出结果摘要。
-AUTOLINKER_TEST_API int AutoLinkerTest_RestoreE2Txt(const char* inputPath, const char* outputPath, char* buffer, int bufferSize);
-
-// 将 .e 文件完整解包到目录工程。
-AUTOLINKER_TEST_API int AutoLinkerTest_UnpackEProject(const char* inputPath, const char* outputDir, char* buffer, int bufferSize);
-
-// 将目录工程完整封装为 .e 文件。
-AUTOLINKER_TEST_API int AutoLinkerTest_PackEProject(const char* inputDir, const char* outputPath, char* buffer, int bufferSize);
-
-// 对比原始 .e 与目录工程读回后的 BundleDigest，并输出首个失配点。
-AUTOLINKER_TEST_API int AutoLinkerTest_CompareBundleDigest(const char* inputPath, const char* inputDir, char* buffer, int bufferSize);
-
 // 对指定 DeepSeek 模型执行连通性、普通对话、thinking、多轮工具调用集成测试，并输出 JSON 结果。
 AUTOLINKER_TEST_API int AutoLinkerTest_RunDeepSeekModelIntegrationTest(
 	const char* apiKey,

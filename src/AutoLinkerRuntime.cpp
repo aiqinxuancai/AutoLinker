@@ -16,7 +16,6 @@
 #include "IDEFacade.h"
 #include "Logger.h"
 #include "PageCodeCacheManager.h"
-#include "ProjectSourceCacheManager.h"
 #include "WindowHelper.h"
 #include "EideProjectBinarySerializer.h"
 
@@ -139,11 +138,10 @@ std::string DescribeSourcePathForRuntimeLog(const std::string& sourcePath)
 void HandleCurrentSourceFilePathChanged(const std::string& previousPath, const std::string& currentPath)
 {
 	e571::ProjectBinarySerializer::Instance().ClearVerifiedSerializerContext();
-	project_source_cache::ProjectSourceCacheManager::Instance().Clear();
 	PageCodeCacheManager::Instance().Clear();
 
 	OutputStringToELog(std::format(
-		"[SourceContext] source_changed old={} new={} serializer_context=cleared project_cache=cleared page_code_cache=cleared",
+		"[SourceContext] source_changed old={} new={} serializer_context=cleared page_code_cache=cleared",
 		DescribeSourcePathForRuntimeLog(previousPath),
 		DescribeSourcePathForRuntimeLog(currentPath)));
 
@@ -166,16 +164,6 @@ void HandleCurrentSourceFilePathChanged(const std::string& previousPath, const s
 	}
 	catch (...) {}
 
-	std::string warmupError;
-	std::string warmupTrace;
-	if (!project_source_cache::ProjectSourceCacheManager::Instance().WarmupCurrentSource(
-			&warmupError,
-			&warmupTrace)) {
-		OutputStringToELog(std::format(
-			"[SourceContext] warmup_failed error={} trace={}",
-			warmupError.empty() ? "warmup_failed" : warmupError,
-			warmupTrace));
-	}
 	AIChatFeature::OnCurrentSourceFilePathChanged(previousPath, currentPath);
 }
 
