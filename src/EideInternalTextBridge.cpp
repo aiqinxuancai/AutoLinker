@@ -31,7 +31,6 @@ constexpr int kEditorCmdSelectAll = 0x01010023;
 constexpr int kEditorCmdDeleteSelection = 0x02020003;
 constexpr int kEditorCmdPaste = 0x02020005;
 constexpr int kEditorCmdCopy = 0x02030001;
-constexpr int kEditorCmdInsertRawText = 0x0202006D;
 constexpr unsigned int kEditorUiCmdSelectAll = 0x2041;
 constexpr unsigned int kEditorUiCmdCopy = 0x2043;
 constexpr unsigned int kEditorUiCmdPaste = 0x2056;
@@ -59,8 +58,25 @@ constexpr std::uintptr_t kKnownGenericArrayDestroyRva = 0x486260;
 constexpr std::uintptr_t kKnownClipboardObjectCtorRva = 0x40E400;
 constexpr std::uintptr_t kKnownGenericArrayVtableRva = 0x574900;
 constexpr std::uintptr_t kKnownCollectionGetValueByIndexRva = 0x4E7EA0;
+constexpr std::uintptr_t kE595TextBufferInitRva = 0x4918B0;
+constexpr std::uintptr_t kE595TextBufferAssignRva = 0x492170;
+constexpr std::uintptr_t kE595TextBufferAppendCharRva = 0x491BB0;
+constexpr std::uintptr_t kE595TextBufferDestroyRva = 0x491AB0;
+constexpr std::uintptr_t kE595TextPackageCtorRva = 0x40E5E0;
+constexpr std::uintptr_t kE595TextPackageDestroyRva = 0x401F70;
+constexpr std::uintptr_t kE595TextPackageParseTextRva = 0x4D59B0;
+constexpr std::uintptr_t kE595TextPackageInsertIntoEditorRva = 0x496E40;
+constexpr std::uintptr_t kE595TextPackageItemRangeMergeRva = 0x4E7380;
+constexpr std::uintptr_t kE595TextPackageParsedItemDestroyRva = 0x40F4E0;
+constexpr std::uintptr_t kE595TextPackageParsedItemRemoveAtRva = 0x5BB445;
+constexpr std::uintptr_t kE595GlobalSupportLibraryArrayRva = 0x675898;
+constexpr std::uintptr_t kE595SupportLibraryArrayAddUniqueRva = 0x501270;
 constexpr size_t kInternalClipboardObjectSize = 0x340;
 constexpr size_t kInternalGenericArraySize = 0x14;
+constexpr size_t kE595InternalTextPackageSize = 0x400;
+constexpr size_t kE595InternalTextPackageSupportLibrariesOffset = 0xF8;
+constexpr size_t kE595InternalTextPackageParsedItemArrayOffset = 0x1F4;
+constexpr size_t kE595InternalTextPackageMergedRangeArrayOffset = 0x244;
 constexpr size_t kClipboardObjectSupportLibrariesOffset = 0x94;
 constexpr size_t kClipboardObjectGuidFlagOffset = 0x10C;
 constexpr size_t kClipboardObjectGuidOffset = 0x110;
@@ -72,6 +88,7 @@ using FnEditorPasteHandler = void(__thiscall*)(void*, int);
 using FnClipboardTextToObjectWrapper = int(__thiscall*)(void*, void*);
 using FnClipboardTextToObjectDirect = int(__thiscall*)(void*, void*);
 using FnEditorInsertClipboardObject = int(__thiscall*)(void*, void*, int, int, int);
+using FnSetMainEditorActiveEditorObject = int(__thiscall*)(void*, void*, int);
 using FnThiscallVoid = void(__thiscall*)(void*);
 using FnThiscallVoidInt = void(__thiscall*)(void*, int);
 using FnThiscallVoidIntInt = void(__thiscall*)(void*, int, int);
@@ -85,6 +102,9 @@ using FnCdeclCStringArrayAddUnique = int(__cdecl*)(CStringArray*, unsigned char*
 using FnThiscallMergeParsedRange = void(__thiscall*)(void*, void*, int, int);
 using FnThiscallPtrArrayRemoveAt = void*(__thiscall*)(void*, int, int);
 using FnCdeclFillMemory = void(__cdecl*)(void*, int);
+using FnE595TextBufferAssign = int(__thiscall*)(void*, const void*, int);
+using FnE595TextBufferAppendChar = int(__thiscall*)(void*, char);
+using FnE595TextPackageParseText = int(__thiscall*)(void*, void*);
 
 struct NativeEditorCommandAddresses {
 	bool initialized = false;
@@ -94,6 +114,35 @@ struct NativeEditorCommandAddresses {
 	std::uintptr_t editorPasteHandler = 0;
 	std::uintptr_t editorGetRangeCount = 0;
 	std::uintptr_t editorFormatRangeText = 0;
+};
+
+struct InternalInteropAddresses {
+	bool initialized = false;
+	bool ok = false;
+	std::uintptr_t moduleBase = 0;
+	std::uintptr_t clipboardTextToObjectWrapper = 0;
+	std::uintptr_t clipboardTextToObjectDirect = 0;
+	std::uintptr_t clipboardInsertObject = 0;
+	std::uintptr_t clipboardDeserialize = 0;
+	std::uintptr_t clipboardSerialize = 0;
+	std::uintptr_t clipboardValidateA00 = 0;
+	std::uintptr_t clipboardValidate560 = 0;
+	std::uintptr_t clipboardValidate230 = 0;
+	std::uintptr_t clipboardCollectionFirstInvalid = 0;
+	std::uintptr_t globalSupportLibraryArray = 0;
+	std::uintptr_t supportLibraryArrayAddUnique = 0;
+	std::uintptr_t clipboardMergeParsedRange = 0;
+	std::uintptr_t parsedItemDestroy = 0;
+	std::uintptr_t ptrArrayRemoveAt = 0;
+	std::uintptr_t clipboardObjectDestroy = 0;
+	std::uintptr_t genericArrayInit = 0;
+	std::uintptr_t genericArrayAssign = 0;
+	std::uintptr_t genericArrayFinalize = 0;
+	std::uintptr_t genericArrayDestroy = 0;
+	std::uintptr_t clipboardObjectCtor = 0;
+	std::uintptr_t genericArrayVtable = 0;
+	std::uintptr_t collectionGetValueByIndex = 0;
+	std::string trace;
 };
 
 struct ActiveEditorHostAddresses {
@@ -119,6 +168,10 @@ enum class KnownActiveEditorCallerProbeResult {
 	InvalidArgument,
 	Exception,
 };
+
+std::uintptr_t ResolveUniqueCodeAddress(const char* pattern, std::uintptr_t moduleBase);
+std::mutex g_internalInteropAddressMutex;
+InternalInteropAddresses g_internalInteropAddresses;
 
 template <size_t N>
 bool MatchRvaSignature(
@@ -266,7 +319,255 @@ bool MatchKnownActiveEditorCaller(
 	return true;
 }
 
+bool ReadRvaUInt32NoThrow(
+	std::uintptr_t moduleBase,
+	std::uintptr_t rva,
+	size_t offset,
+	std::uint32_t* outValue)
+{
+	if (outValue != nullptr) {
+		*outValue = 0;
+	}
+	if (moduleBase == 0 || rva < kImageBase || outValue == nullptr) {
+		return false;
+	}
+
+	const auto* const code = reinterpret_cast<const std::uint8_t*>(moduleBase + (rva - kImageBase));
+	__try {
+		*outValue = *reinterpret_cast<const std::uint32_t*>(code + offset);
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+void AppendAddressTrace(
+	std::string& trace,
+	const char* label,
+	std::uintptr_t address,
+	const char* source)
+{
+	trace += "|";
+	trace += label == nullptr ? "unknown" : label;
+	trace += "=";
+	trace += std::to_string(address);
+	if (source != nullptr && *source != '\0') {
+		trace += "(";
+		trace += source;
+		trace += ")";
+	}
+}
+
+bool MatchKnownFunctionStart(
+	std::uintptr_t moduleBase,
+	std::uintptr_t rva,
+	const char* pattern)
+{
+	if (moduleBase == 0 || rva < kImageBase || pattern == nullptr || *pattern == '\0') {
+		return false;
+	}
+
+	const auto* const code = reinterpret_cast<const std::uint8_t*>(moduleBase + (rva - kImageBase));
+	__try {
+		size_t index = 0;
+		const char* cursor = pattern;
+		while (*cursor != '\0') {
+			while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') {
+				++cursor;
+			}
+			if (*cursor == '\0') {
+				break;
+			}
+			if (cursor[0] == '?' && cursor[1] == '?') {
+				cursor += 2;
+				++index;
+				continue;
+			}
+			if (!std::isxdigit(static_cast<unsigned char>(cursor[0])) ||
+				!std::isxdigit(static_cast<unsigned char>(cursor[1]))) {
+				return false;
+			}
+			char byteText[3] = { cursor[0], cursor[1], '\0' };
+			const auto expected = static_cast<std::uint8_t>(std::strtoul(byteText, nullptr, 16));
+			if (code[index] != expected) {
+				return false;
+			}
+			cursor += 2;
+			++index;
+		}
+		return index > 0;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+std::uintptr_t ResolveUniqueCodeAddressWithKnownFallback(
+	std::uintptr_t moduleBase,
+	const char* label,
+	const char* pattern,
+	std::uintptr_t knownRva,
+	bool allowKnownFallback,
+	std::string& trace)
+{
+	const std::uintptr_t resolved = ResolveUniqueCodeAddress(pattern, moduleBase);
+	if (resolved != 0) {
+		AppendAddressTrace(trace, label, resolved, "pattern");
+		return resolved;
+	}
+
+	if (allowKnownFallback && MatchKnownFunctionStart(moduleBase, knownRva, pattern)) {
+		AppendAddressTrace(trace, label, knownRva, "known");
+		return knownRva;
+	}
+
+	AppendAddressTrace(trace, label, 0, "unresolved");
+	return 0;
+}
+
+bool PopulateInternalInteropAddresses(InternalInteropAddresses& addrs, std::uintptr_t moduleBase)
+{
+	addrs = {};
+	addrs.initialized = true;
+	addrs.moduleBase = moduleBase;
+	addrs.trace = "internal_interop_address_probe";
+	if (moduleBase == 0) {
+		addrs.trace += "|module_base_invalid";
+		return false;
+	}
+
+	static constexpr char kGenericArrayInitPattern[] =
+		"8B C1 33 C9 C7 00 ?? ?? ?? ?? C7 40 04 ?? ?? ?? ?? 89 48 08 89 48 10 89 48 0C C3";
+	static constexpr char kGenericArrayDestroyPattern[] =
+		"56 8B F1 8B 46 08 50 E8 14 00 00 00 33 C0 89 46 08 89 46 10 89 46 0C 5E C3";
+	static constexpr char kGenericArrayAssignPattern[] =
+		"56 57 8B 7C 24 10 85 FF 7E 3D 8B 71 10 8D 04 3E";
+	static constexpr char kGenericArrayFinalizePattern[] =
+		"8B 41 10 8B 51 0C 3B D0 7E 16 8B 51 08 53 8A 5C";
+	static constexpr char kClipboardObjectCtorPattern[] =
+		"55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 51 89 4D F0 8B 4D F0 E8 ?? ?? ?? ?? 8B 4D F0 83 C1 3C E8 ?? ?? ?? ?? C7 45 FC 00 00 00 00 8B 4D F0 81 C1 94 00 00 00 E8";
+	static constexpr char kClipboardObjectDestroyPattern[] =
+		"6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 83 EC 08 53 56 8B F1 57 89 74 24 0C C7 44 24 1C 1F 00 00 00 E8";
+	static constexpr char kClipboardDeserializePattern[] =
+		"64 A1 00 00 00 00 6A FF 68 ?? ?? ?? ?? 50 64 89 25 00 00 00 00 83 EC 78 56 57 8B F9 6A 00 FF 15";
+	static constexpr char kClipboardSerializePattern[] =
+		"6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 83 EC 78 56 8B F1 68 00 10 00 00";
+	static constexpr char kClipboardInsertPattern[] =
+		"8B 44 24 10 8B 54 24 0C 50 8B 44 24 0C 52 8B 54 24 0C 50 52 E8 17 00 00 00 6A 00 B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? C2 10 00";
+	static constexpr char kParseWrapperPattern[] =
+		"8B 44 24 04 C7 05 ?? ?? ?? ?? 01 00 00 00 50 E8 ?? ?? ?? ?? C7 05 ?? ?? ?? ?? 00 00 00 00 C2 04 00";
+	static constexpr char kParseDirectPattern[] =
+		"6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 83 EC 58 A1 ?? ?? ?? ?? 53 55 56 85 C0 57 89 4C 24 18 0F 85";
+	static constexpr char kMergeParsedRangePattern[] =
+		"83 EC 08 53 55 8B 6C 24 1C 56 85 ED 8B D9 0F 84";
+	static constexpr char kParsedItemDestroyPattern[] =
+		"55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 51 89 4D F0 C7 45 FC 09 00 00 00 8B 4D F0 81 C1 BC 00 00 00 E8";
+	static constexpr char kPtrArrayRemoveAtPattern[] =
+		"8B 54 24 04 56 8B F1 57 8B 7C 24 10 8B 46 08 2B";
+	static constexpr char kSupportLibraryAddUniquePattern[] =
+		"53 8B 5C 24 08 55 8B 6C 24 10 56 8B 74 24 18 57 8B 7B 08 4F 3B F7";
+	static constexpr char kCollectionGetValueByIndexPattern[] =
+		"8B 41 18 8B 54 24 04 C1 E8 03 3B D0 7D 23 56 8B 71 18 85 F6 5E 75 04 33 C9 EB 03 8B 49 10 03 C2";
+	static constexpr char kValidateA00Pattern[] =
+		"6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 83 EC 60 53 55 56 57 8B F1 6A 01";
+	static constexpr char kValidate560Pattern[] =
+		"6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 83 EC 34 53 55 8B E9 56 57";
+	static constexpr char kValidate230Pattern[] =
+		"6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 83 EC 40 53 55 89 4C 24 20";
+	static constexpr char kFirstInvalidPattern[] =
+		"53 55 56 57 8B 7C 24 14 8B E9 33 DB 6A 00 53 8B CF E8 ?? ?? ?? ?? 8B F0 85 F6";
+
+	const bool knownE571Profile =
+		MatchKnownFunctionStart(moduleBase, kKnownClipboardObjectCtorRva, kClipboardObjectCtorPattern) &&
+		MatchKnownFunctionStart(moduleBase, kKnownClipboardInsertObjectRva, kClipboardInsertPattern) &&
+		MatchKnownFunctionStart(moduleBase, kKnownSupportLibraryArrayAddUniqueRva, kSupportLibraryAddUniquePattern);
+	addrs.trace += std::string("|known_profile=") + (knownE571Profile ? "e571" : "no_match");
+
+	constexpr bool allowKnownFallback = true;
+	addrs.genericArrayInit = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "generic_array_init", kGenericArrayInitPattern, kKnownGenericArrayInitRva, allowKnownFallback, addrs.trace);
+	addrs.genericArrayDestroy = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "generic_array_destroy", kGenericArrayDestroyPattern, kKnownGenericArrayDestroyRva, allowKnownFallback, addrs.trace);
+	addrs.genericArrayAssign = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "generic_array_assign", kGenericArrayAssignPattern, kKnownGenericArrayAssignRva, allowKnownFallback, addrs.trace);
+	addrs.genericArrayFinalize = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "generic_array_finalize", kGenericArrayFinalizePattern, kKnownGenericArrayFinalizeRva, allowKnownFallback, addrs.trace);
+	addrs.clipboardObjectCtor = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "clipboard_object_ctor", kClipboardObjectCtorPattern, kKnownClipboardObjectCtorRva, allowKnownFallback, addrs.trace);
+	addrs.clipboardObjectDestroy = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "clipboard_object_destroy", kClipboardObjectDestroyPattern, kKnownClipboardObjectDestroyRva, allowKnownFallback, addrs.trace);
+	addrs.clipboardDeserialize = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "clipboard_deserialize", kClipboardDeserializePattern, kKnownClipboardDeserializeRva, allowKnownFallback, addrs.trace);
+	addrs.clipboardSerialize = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "clipboard_serialize", kClipboardSerializePattern, kKnownClipboardSerializeRva, allowKnownFallback, addrs.trace);
+	addrs.clipboardInsertObject = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "clipboard_insert", kClipboardInsertPattern, kKnownClipboardInsertObjectRva, allowKnownFallback, addrs.trace);
+	addrs.clipboardTextToObjectWrapper = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "clipboard_parse_wrapper", kParseWrapperPattern, kKnownClipboardTextToObjectWrapperRva, allowKnownFallback, addrs.trace);
+	addrs.clipboardTextToObjectDirect = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "clipboard_parse_direct", kParseDirectPattern, kKnownClipboardTextToObjectDirectRva, allowKnownFallback, addrs.trace);
+	addrs.clipboardMergeParsedRange = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "clipboard_merge_range", kMergeParsedRangePattern, kKnownClipboardMergeParsedRangeRva, allowKnownFallback, addrs.trace);
+	addrs.parsedItemDestroy = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "parsed_item_destroy", kParsedItemDestroyPattern, kKnownParsedItemDestroyRva, allowKnownFallback, addrs.trace);
+	addrs.ptrArrayRemoveAt = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "ptr_array_remove_at", kPtrArrayRemoveAtPattern, kKnownPtrArrayRemoveAtRva, allowKnownFallback, addrs.trace);
+	addrs.supportLibraryArrayAddUnique = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "support_library_add_unique", kSupportLibraryAddUniquePattern, kKnownSupportLibraryArrayAddUniqueRva, allowKnownFallback, addrs.trace);
+	addrs.collectionGetValueByIndex = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "collection_get_value_by_index", kCollectionGetValueByIndexPattern, kKnownCollectionGetValueByIndexRva, allowKnownFallback, addrs.trace);
+	addrs.clipboardValidateA00 = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "clipboard_validate_a00", kValidateA00Pattern, kKnownClipboardValidateA00Rva, allowKnownFallback, addrs.trace);
+	addrs.clipboardValidate560 = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "clipboard_validate_560", kValidate560Pattern, kKnownClipboardValidate560Rva, allowKnownFallback, addrs.trace);
+	addrs.clipboardValidate230 = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "clipboard_validate_230", kValidate230Pattern, kKnownClipboardValidate230Rva, allowKnownFallback, addrs.trace);
+	addrs.clipboardCollectionFirstInvalid = ResolveUniqueCodeAddressWithKnownFallback(moduleBase, "clipboard_collection_first_invalid", kFirstInvalidPattern, kKnownClipboardCollectionFirstInvalidRva, allowKnownFallback, addrs.trace);
+
+	std::uint32_t genericArrayVtable = 0;
+	if (ReadRvaUInt32NoThrow(moduleBase, addrs.genericArrayInit, 6, &genericArrayVtable)) {
+		addrs.genericArrayVtable = static_cast<std::uintptr_t>(genericArrayVtable);
+		AppendAddressTrace(addrs.trace, "generic_array_vtable", addrs.genericArrayVtable, "from_init");
+	}
+	else if (MatchRvaSignature(moduleBase, kKnownGenericArrayVtableRva, std::array<std::uint8_t, 0>{})) {
+		addrs.genericArrayVtable = kKnownGenericArrayVtableRva;
+		AppendAddressTrace(addrs.trace, "generic_array_vtable", addrs.genericArrayVtable, "known");
+	}
+
+	if (knownE571Profile) {
+		addrs.globalSupportLibraryArray = kKnownGlobalSupportLibraryArrayRva;
+		AppendAddressTrace(addrs.trace, "global_support_library_array", addrs.globalSupportLibraryArray, "known_profile");
+	}
+	else {
+		AppendAddressTrace(addrs.trace, "global_support_library_array", 0, "profile_guard");
+	}
+
+	addrs.ok =
+		knownE571Profile &&
+		addrs.genericArrayInit != 0 &&
+		addrs.genericArrayDestroy != 0 &&
+		addrs.genericArrayAssign != 0 &&
+		addrs.genericArrayFinalize != 0 &&
+		addrs.genericArrayVtable != 0 &&
+		addrs.clipboardObjectCtor != 0 &&
+		addrs.clipboardObjectDestroy != 0 &&
+		addrs.clipboardTextToObjectDirect != 0 &&
+		addrs.clipboardInsertObject != 0 &&
+		addrs.globalSupportLibraryArray != 0 &&
+		addrs.supportLibraryArrayAddUnique != 0 &&
+		addrs.clipboardMergeParsedRange != 0 &&
+		addrs.parsedItemDestroy != 0 &&
+		addrs.ptrArrayRemoveAt != 0 &&
+		addrs.collectionGetValueByIndex != 0;
+	addrs.trace += std::string("|ok=") + (addrs.ok ? "1" : "0");
+	return addrs.ok;
+}
+
+const InternalInteropAddresses& GetInternalInteropAddresses(std::uintptr_t moduleBase)
+{
+	std::lock_guard<std::mutex> lock(g_internalInteropAddressMutex);
+	if (!g_internalInteropAddresses.initialized || g_internalInteropAddresses.moduleBase != moduleBase) {
+		PopulateInternalInteropAddresses(g_internalInteropAddresses, moduleBase);
+	}
+	return g_internalInteropAddresses;
+}
+
 bool IsVersionLockedInternalInteropSupported(std::string* outTrace = nullptr)
+{
+	const std::uintptr_t moduleBase = reinterpret_cast<std::uintptr_t>(::GetModuleHandleA(nullptr));
+	const auto& addrs = GetInternalInteropAddresses(moduleBase);
+	if (outTrace != nullptr) {
+		*outTrace =
+			std::string(addrs.ok ? "internal_interop_supported" : "internal_interop_unsupported") +
+			"|" +
+			addrs.trace;
+	}
+	return addrs.ok;
+}
+
+bool IsE595DirectTextPackageWriteSupported(std::string* outTrace = nullptr)
 {
 	if (outTrace != nullptr) {
 		outTrace->clear();
@@ -275,46 +576,58 @@ bool IsVersionLockedInternalInteropSupported(std::string* outTrace = nullptr)
 	const std::uintptr_t moduleBase = reinterpret_cast<std::uintptr_t>(::GetModuleHandleA(nullptr));
 	if (moduleBase == 0) {
 		if (outTrace != nullptr) {
-			*outTrace = "internal_interop_signature_probe_no_module_base";
+			*outTrace = "e595_text_package_probe_no_module_base";
 		}
 		return false;
 	}
 
-	static constexpr std::array<std::uint8_t, 16> kSigGenericArrayInit = {
-		0x8B, 0xC1, 0x33, 0xC9, 0xC7, 0x00, 0x00, 0x49,
-		0x57, 0x00, 0xC7, 0x40, 0x04, 0x90, 0xBC, 0x5C,
+	static constexpr std::array<std::uint8_t, 16> kSigTextBufferInit = {
+		0x8B, 0xC1, 0x33, 0xC9, 0xC7, 0x00, 0x40, 0x79,
+		0x5F, 0x00, 0xC7, 0x40, 0x04, 0x50, 0x65, 0x67,
 	};
-	static constexpr std::array<std::uint8_t, 16> kSigGenericArrayDestroy = {
-		0x56, 0x8B, 0xF1, 0x8B, 0x46, 0x08, 0x50, 0xE8,
-		0x14, 0x00, 0x00, 0x00, 0x33, 0xC0, 0x89, 0x46,
-	};
-	static constexpr std::array<std::uint8_t, 16> kSigGenericArrayAssign = {
+	static constexpr std::array<std::uint8_t, 16> kSigTextBufferAssign = {
 		0x56, 0x57, 0x8B, 0x7C, 0x24, 0x10, 0x85, 0xFF,
 		0x7E, 0x3D, 0x8B, 0x71, 0x10, 0x8D, 0x04, 0x3E,
 	};
-	static constexpr std::array<std::uint8_t, 16> kSigGenericArrayFinalize = {
+	static constexpr std::array<std::uint8_t, 16> kSigTextBufferAppendChar = {
 		0x8B, 0x41, 0x10, 0x8B, 0x51, 0x0C, 0x3B, 0xD0,
 		0x7E, 0x16, 0x8B, 0x51, 0x08, 0x53, 0x8A, 0x5C,
 	};
-	static constexpr std::array<std::uint8_t, 16> kSigClipboardObjectCtor = {
-		0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68, 0xDD, 0xE7,
-		0x55, 0x00, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00,
+	static constexpr std::array<std::uint8_t, 16> kSigTextBufferDestroy = {
+		0x56, 0x8B, 0xF1, 0x8B, 0x46, 0x08, 0x50, 0xE8,
+		0x14, 0x00, 0x00, 0x00, 0x33, 0xC0, 0x89, 0x46,
 	};
-	static constexpr std::array<std::uint8_t, 16> kSigClipboardObjectDestroy = {
-		0x6A, 0xFF, 0x68, 0x38, 0xD6, 0x55, 0x00, 0x64,
+	static constexpr std::array<std::uint8_t, 16> kSigTextPackageCtor = {
+		0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68, 0x5B, 0xF1,
+		0x5D, 0x00, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigTextPackageDestroy = {
+		0x6A, 0xFF, 0x68, 0x84, 0xDF, 0x5D, 0x00, 0x64,
 		0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89,
 	};
-	static constexpr std::array<std::uint8_t, 16> kSigClipboardDeserialize = {
-		0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x6A, 0xFF,
-		0x68, 0x53, 0x3F, 0x56, 0x00, 0x50, 0x64, 0x89,
+	static constexpr std::array<std::uint8_t, 16> kSigTextPackageParse = {
+		0x8B, 0x44, 0x24, 0x04, 0xC7, 0x05, 0x60, 0x26,
+		0x68, 0x00, 0x01, 0x00, 0x00, 0x00, 0x50, 0xE8,
 	};
-	static constexpr std::array<std::uint8_t, 16> kSigClipboardSerialize = {
-		0x6A, 0xFF, 0x68, 0xE3, 0x47, 0x56, 0x00, 0x64,
-		0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89,
-	};
-	static constexpr std::array<std::uint8_t, 16> kSigClipboardInsert = {
+	static constexpr std::array<std::uint8_t, 16> kSigTextPackageInsert = {
 		0x8B, 0x44, 0x24, 0x10, 0x8B, 0x54, 0x24, 0x0C,
 		0x50, 0x8B, 0x44, 0x24, 0x0C, 0x52, 0x8B, 0x54,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigItemRangeMerge = {
+		0x83, 0xEC, 0x08, 0x53, 0x55, 0x8B, 0x6C, 0x24,
+		0x1C, 0x56, 0x85, 0xED, 0x8B, 0xD9, 0x0F, 0x84,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigParsedItemDestroy = {
+		0x55, 0x8B, 0xEC, 0x6A, 0xFF, 0x68, 0x7E, 0xF3,
+		0x5D, 0x00, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigParsedItemRemoveAt = {
+		0x8B, 0x54, 0x24, 0x04, 0x56, 0x8B, 0xF1, 0x57,
+		0x8B, 0x7C, 0x24, 0x10, 0x8B, 0x46, 0x08, 0x2B,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigSupportLibraryAddUnique = {
+		0x53, 0x8B, 0x5C, 0x24, 0x08, 0x55, 0x8B, 0x6C,
+		0x24, 0x10, 0x56, 0x8B, 0x74, 0x24, 0x18, 0x57,
 	};
 
 	struct ProbeItem {
@@ -324,19 +637,22 @@ bool IsVersionLockedInternalInteropSupported(std::string* outTrace = nullptr)
 	};
 
 	std::vector<ProbeItem> items = {
-		{ "generic_array_init", kKnownGenericArrayInitRva, MatchRvaSignature(moduleBase, kKnownGenericArrayInitRva, kSigGenericArrayInit) },
-		{ "generic_array_destroy", kKnownGenericArrayDestroyRva, MatchRvaSignature(moduleBase, kKnownGenericArrayDestroyRva, kSigGenericArrayDestroy) },
-		{ "generic_array_assign", kKnownGenericArrayAssignRva, MatchRvaSignature(moduleBase, kKnownGenericArrayAssignRva, kSigGenericArrayAssign) },
-		{ "generic_array_finalize", kKnownGenericArrayFinalizeRva, MatchRvaSignature(moduleBase, kKnownGenericArrayFinalizeRva, kSigGenericArrayFinalize) },
-		{ "clipboard_object_ctor", kKnownClipboardObjectCtorRva, MatchRvaSignature(moduleBase, kKnownClipboardObjectCtorRva, kSigClipboardObjectCtor) },
-		{ "clipboard_object_destroy", kKnownClipboardObjectDestroyRva, MatchRvaSignature(moduleBase, kKnownClipboardObjectDestroyRva, kSigClipboardObjectDestroy) },
-		{ "clipboard_deserialize", kKnownClipboardDeserializeRva, MatchRvaSignature(moduleBase, kKnownClipboardDeserializeRva, kSigClipboardDeserialize) },
-		{ "clipboard_serialize", kKnownClipboardSerializeRva, MatchRvaSignature(moduleBase, kKnownClipboardSerializeRva, kSigClipboardSerialize) },
-		{ "clipboard_insert", kKnownClipboardInsertObjectRva, MatchRvaSignature(moduleBase, kKnownClipboardInsertObjectRva, kSigClipboardInsert) },
+		{ "text_buffer_init", kE595TextBufferInitRva, MatchRvaSignature(moduleBase, kE595TextBufferInitRva, kSigTextBufferInit) },
+		{ "text_buffer_assign", kE595TextBufferAssignRva, MatchRvaSignature(moduleBase, kE595TextBufferAssignRva, kSigTextBufferAssign) },
+		{ "text_buffer_append_char", kE595TextBufferAppendCharRva, MatchRvaSignature(moduleBase, kE595TextBufferAppendCharRva, kSigTextBufferAppendChar) },
+		{ "text_buffer_destroy", kE595TextBufferDestroyRva, MatchRvaSignature(moduleBase, kE595TextBufferDestroyRva, kSigTextBufferDestroy) },
+		{ "text_package_ctor", kE595TextPackageCtorRva, MatchRvaSignature(moduleBase, kE595TextPackageCtorRva, kSigTextPackageCtor) },
+		{ "text_package_destroy", kE595TextPackageDestroyRva, MatchRvaSignature(moduleBase, kE595TextPackageDestroyRva, kSigTextPackageDestroy) },
+		{ "text_package_parse", kE595TextPackageParseTextRva, MatchRvaSignature(moduleBase, kE595TextPackageParseTextRva, kSigTextPackageParse) },
+		{ "text_package_insert", kE595TextPackageInsertIntoEditorRva, MatchRvaSignature(moduleBase, kE595TextPackageInsertIntoEditorRva, kSigTextPackageInsert) },
+		{ "item_range_merge", kE595TextPackageItemRangeMergeRva, MatchRvaSignature(moduleBase, kE595TextPackageItemRangeMergeRva, kSigItemRangeMerge) },
+		{ "parsed_item_destroy", kE595TextPackageParsedItemDestroyRva, MatchRvaSignature(moduleBase, kE595TextPackageParsedItemDestroyRva, kSigParsedItemDestroy) },
+		{ "parsed_item_remove_at", kE595TextPackageParsedItemRemoveAtRva, MatchRvaSignature(moduleBase, kE595TextPackageParsedItemRemoveAtRva, kSigParsedItemRemoveAt) },
+		{ "support_library_add_unique", kE595SupportLibraryArrayAddUniqueRva, MatchRvaSignature(moduleBase, kE595SupportLibraryArrayAddUniqueRva, kSigSupportLibraryAddUnique) },
 	};
 
 	bool supported = true;
-	std::string trace = "internal_interop_signature_probe";
+	std::string trace = "e595_text_package_probe";
 	for (const auto& item : items) {
 		trace += "|" + std::string(item.label) + "=" + (item.matched ? "1" : "0");
 		supported = supported && item.matched;
@@ -344,7 +660,7 @@ bool IsVersionLockedInternalInteropSupported(std::string* outTrace = nullptr)
 
 	if (outTrace != nullptr) {
 		*outTrace =
-			std::string(supported ? "version_locked_internal_interop_supported" : "version_locked_internal_interop_unsupported") +
+			std::string(supported ? "e595_text_package_supported" : "e595_text_package_unsupported") +
 			"|" +
 			trace;
 	}
@@ -357,12 +673,24 @@ bool IsDirectGlobalSearchEditorResolveSupported(std::string* outTrace = nullptr)
 		outTrace->clear();
 	}
 
+	const std::uintptr_t moduleBase = reinterpret_cast<std::uintptr_t>(::GetModuleHandleA(nullptr));
+	if (moduleBase == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = "direct_global_search_editor_resolve_unsupported|module_base_invalid";
+		}
+		return false;
+	}
+
+	std::string supportTrace;
+	const bool supported = DebugIsDirectGlobalSearchSupported(moduleBase, &supportTrace);
 	if (outTrace != nullptr) {
 		*outTrace =
-			std::string("direct_global_search_editor_resolve_unsupported") +
-			"|direct_global_search_fixed_layout_unsupported_without_probe";
+			std::string(supported
+				? "direct_global_search_editor_resolve_supported"
+				: "direct_global_search_editor_resolve_unsupported") +
+			(supportTrace.empty() ? std::string() : ("|" + supportTrace));
 	}
-	return false;
+	return supported;
 }
 
 struct EditorDispatchTargetInfo {
@@ -789,6 +1117,127 @@ bool TryReadMainEditorActiveEditorObjectFast(
 			addrs.trace;
 	}
 	return editorObject != 0;
+}
+
+bool SafeSetMainEditorActiveEditorObjectFastRaw(
+	FnSetMainEditorActiveEditorObject setActiveEditorObject,
+	std::uintptr_t mainEditorHost,
+	ptrdiff_t activeEditorObjectOffset,
+	std::uintptr_t editorObject,
+	int notifyMode,
+	std::uintptr_t* outPreviousEditorObject,
+	std::uintptr_t* outCurrentEditorObject)
+{
+	if (outPreviousEditorObject != nullptr) {
+		*outPreviousEditorObject = 0;
+	}
+	if (outCurrentEditorObject != nullptr) {
+		*outCurrentEditorObject = 0;
+	}
+	if (setActiveEditorObject == nullptr ||
+		mainEditorHost == 0 ||
+		activeEditorObjectOffset <= 0 ||
+		editorObject == 0) {
+		return false;
+	}
+
+	__try {
+		auto* const hostBytes = reinterpret_cast<std::uint8_t*>(mainEditorHost);
+		const std::uintptr_t previousEditorObject =
+			*reinterpret_cast<const std::uintptr_t*>(hostBytes + activeEditorObjectOffset);
+		setActiveEditorObject(
+			reinterpret_cast<void*>(mainEditorHost),
+			reinterpret_cast<void*>(editorObject),
+			notifyMode);
+		const std::uintptr_t currentEditorObject =
+			*reinterpret_cast<const std::uintptr_t*>(hostBytes + activeEditorObjectOffset);
+		if (outPreviousEditorObject != nullptr) {
+			*outPreviousEditorObject = previousEditorObject;
+		}
+		if (outCurrentEditorObject != nullptr) {
+			*outCurrentEditorObject = currentEditorObject;
+		}
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+bool TrySetMainEditorActiveEditorObjectFast(
+	std::uintptr_t moduleBase,
+	std::uintptr_t editorObject,
+	int notifyMode,
+	std::uintptr_t* outPreviousEditorObject,
+	std::string* outTrace)
+{
+	if (outPreviousEditorObject != nullptr) {
+		*outPreviousEditorObject = 0;
+	}
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (moduleBase == 0 || editorObject == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = "active_editor_set_fast_invalid_argument";
+		}
+		return false;
+	}
+
+	const auto& addrs = GetActiveEditorHostAddresses(moduleBase);
+	if (!addrs.ok) {
+		if (outTrace != nullptr) {
+			*outTrace = addrs.trace.empty() ? "active_editor_host_unavailable" : addrs.trace;
+		}
+		return false;
+	}
+
+	const std::uintptr_t mainEditorHost = ResolveInternalPointer(moduleBase, addrs.mainEditorHost);
+	const std::uintptr_t setActiveAddress = ResolveInternalPointer(moduleBase, addrs.setActiveEditorObject);
+	if (mainEditorHost == 0 || setActiveAddress == 0 ||
+		!IsReadableAddressRange(mainEditorHost + static_cast<std::uintptr_t>(addrs.activeEditorObjectOffset), sizeof(std::uintptr_t))) {
+		if (outTrace != nullptr) {
+			*outTrace =
+				addrs.trace +
+				"|active_editor_set_fast_runtime_unavailable"
+				"|main_editor_host=" + std::to_string(mainEditorHost) +
+				"|set_active=" + std::to_string(setActiveAddress);
+		}
+		return false;
+	}
+
+	const auto setActiveEditorObject =
+		reinterpret_cast<FnSetMainEditorActiveEditorObject>(setActiveAddress);
+	std::uintptr_t previousEditorObject = 0;
+	std::uintptr_t currentEditorObject = 0;
+	if (!SafeSetMainEditorActiveEditorObjectFastRaw(
+			setActiveEditorObject,
+			mainEditorHost,
+			addrs.activeEditorObjectOffset,
+			editorObject,
+			notifyMode,
+			&previousEditorObject,
+			&currentEditorObject)) {
+		if (outTrace != nullptr) {
+			*outTrace = addrs.trace + "|active_editor_set_fast_exception";
+		}
+		return false;
+	}
+
+	if (outPreviousEditorObject != nullptr) {
+		*outPreviousEditorObject = previousEditorObject;
+	}
+	if (outTrace != nullptr) {
+		*outTrace =
+			"active_editor_set_fast_ok"
+			"|notify=" + std::to_string(notifyMode) +
+			"|previous=" + std::to_string(previousEditorObject) +
+			"|current=" + std::to_string(currentEditorObject) +
+			"|requested=" + std::to_string(editorObject) +
+			"|" +
+			addrs.trace;
+	}
+	return currentEditorObject == editorObject;
 }
 
 bool PopulateNativeEditorCommandAddresses(NativeEditorCommandAddresses& addrs, std::uintptr_t moduleBase)
@@ -1616,15 +2065,16 @@ bool CopyInternalGenericArrayField(
 		return false;
 	}
 
+	const auto& addrs = GetInternalInteropAddresses(moduleBase);
 	const auto destroyFn = ResolveInternalAddress<FnThiscallVoid>(
 		moduleBase,
-		kKnownGenericArrayDestroyRva);
+		addrs.genericArrayDestroy);
 	const auto assignFn = ResolveInternalAddress<FnThiscallGenericArrayAssign>(
 		moduleBase,
-		kKnownGenericArrayAssignRva);
+		addrs.genericArrayAssign);
 	const auto finalizeFn = ResolveInternalAddress<FnThiscallVoidInt>(
 		moduleBase,
-		kKnownGenericArrayFinalizeRva);
+		addrs.genericArrayFinalize);
 	if (destroyFn == nullptr || assignFn == nullptr || finalizeFn == nullptr) {
 		return false;
 	}
@@ -1798,6 +2248,157 @@ bool CallEditorInsertClipboardObjectSafe(
 	}
 }
 
+bool CallE595TextBufferAssignTextSafe(
+	FnE595TextBufferAssign assignFn,
+	FnE595TextBufferAppendChar appendCharFn,
+	void* textBuffer,
+	const char* text,
+	int bytes)
+{
+	if (assignFn == nullptr || appendCharFn == nullptr || textBuffer == nullptr || text == nullptr || bytes <= 0) {
+		return false;
+	}
+	__try {
+		if (assignFn(textBuffer, text, bytes) == 0) {
+			return false;
+		}
+		return appendCharFn(textBuffer, '\0') != 0;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+bool CallE595TextPackageParseTextSafe(
+	FnE595TextPackageParseText parseFn,
+	void* textPackage,
+	void* textBuffer)
+{
+	if (parseFn == nullptr || textPackage == nullptr || textBuffer == nullptr) {
+		return false;
+	}
+	__try {
+		return parseFn(textPackage, textBuffer) != 0;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+bool CallCStringArrayAddUniqueSafe(
+	FnCdeclCStringArrayAddUnique addFn,
+	CStringArray* array,
+	const char* name)
+{
+	if (addFn == nullptr || array == nullptr || name == nullptr || *name == '\0') {
+		return false;
+	}
+	__try {
+		addFn(
+			array,
+			reinterpret_cast<unsigned char*>(const_cast<char*>(name)),
+			0);
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+bool CallE595TextPackageInsertSafe(
+	FnEditorInsertClipboardObject insertFn,
+	void* editorObject,
+	void* textPackage,
+	int pasteMode,
+	int insertFlags,
+	int parsedTextMode)
+{
+	if (insertFn == nullptr || editorObject == nullptr || textPackage == nullptr) {
+		return false;
+	}
+	__try {
+		insertFn(editorObject, textPackage, pasteMode, insertFlags, parsedTextMode);
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+bool FinalizeE595ParsedTextPackageRaw(
+	void* rawObject,
+	FnThiscallMergeParsedRange mergeRangeFn,
+	FnThiscallVoid destroyParsedItemFn,
+	FnThiscallPtrArrayRemoveAt removePtrAtFn,
+	size_t* outMergedItems,
+	size_t* outRemovedItems)
+{
+	if (outMergedItems != nullptr) {
+		*outMergedItems = 0;
+	}
+	if (outRemovedItems != nullptr) {
+		*outRemovedItems = 0;
+	}
+	if (rawObject == nullptr ||
+		mergeRangeFn == nullptr ||
+		destroyParsedItemFn == nullptr ||
+		removePtrAtFn == nullptr) {
+		return false;
+	}
+
+	__try {
+		auto* base = reinterpret_cast<std::byte*>(rawObject);
+		auto* parsedItemArray = base + kE595InternalTextPackageParsedItemArrayOffset;
+		auto* mergedRangeArray = base + kE595InternalTextPackageMergedRangeArrayOffset;
+		auto** items = *reinterpret_cast<void***>(parsedItemArray + 4);
+		int count = *reinterpret_cast<int*>(parsedItemArray + 8);
+		for (int index = count - 1; index >= 0; --index) {
+			if (items == nullptr) {
+				break;
+			}
+
+			void* item = items[index];
+			if (item == nullptr) {
+				continue;
+			}
+
+			auto* itemBytes = reinterpret_cast<std::byte*>(item);
+			mergeRangeFn(
+				mergedRangeArray,
+				itemBytes + 0x38,
+				0,
+				*reinterpret_cast<int*>(itemBytes + 0x3C));
+			mergeRangeFn(
+				mergedRangeArray,
+				itemBytes + 0x18,
+				0,
+				*reinterpret_cast<int*>(itemBytes + 0x1C));
+			if (outMergedItems != nullptr) {
+				++(*outMergedItems);
+			}
+
+			if (*reinterpret_cast<int*>(itemBytes + 0xCC) != 0) {
+				(void)CallVirtualVoidAtOffsetSafe(item, 0x38);
+				(void)CallVirtualVoidAtOffsetSafe(item, 0x18);
+				continue;
+			}
+
+			destroyParsedItemFn(item);
+			operator delete(item);
+			removePtrAtFn(parsedItemArray, index, 1);
+			if (outRemovedItems != nullptr) {
+				++(*outRemovedItems);
+			}
+			items = *reinterpret_cast<void***>(parsedItemArray + 4);
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+
+	return true;
+}
+
 bool CallEditorPasteHandlerSafe(FnEditorPasteHandler fn, void* editorObject, int pasteMode)
 {
 	if (fn == nullptr || editorObject == nullptr) {
@@ -1817,6 +2418,14 @@ class InternalClipboardObject;
 bool FinalizeParsedClipboardObject(
 	std::uintptr_t moduleBase,
 	InternalClipboardObject* object,
+	const std::vector<std::string>& supportLibraries,
+	std::string* outTrace);
+
+class E595InternalTextPackage;
+
+bool FinalizeE595ParsedTextPackage(
+	std::uintptr_t moduleBase,
+	E595InternalTextPackage* object,
 	const std::vector<std::string>& supportLibraries,
 	std::string* outTrace);
 
@@ -1844,12 +2453,13 @@ public:
 			return false;
 		}
 
+		const auto& addrs = GetInternalInteropAddresses(m_moduleBase);
 		const auto assignFn = ResolveInternalAddress<FnThiscallGenericArrayAssign>(
 			m_moduleBase,
-			kKnownGenericArrayAssignRva);
+			addrs.genericArrayAssign);
 		const auto finalizeFn = ResolveInternalAddress<FnThiscallVoidInt>(
 			m_moduleBase,
-			kKnownGenericArrayFinalizeRva);
+			addrs.genericArrayFinalize);
 		if (assignFn == nullptr || finalizeFn == nullptr) {
 			return false;
 		}
@@ -1923,14 +2533,15 @@ public:
 private:
 	void Initialize()
 	{
-		if (!IsVersionLockedInternalInteropSupported()) {
+		const auto& addrs = GetInternalInteropAddresses(m_moduleBase);
+		if (!addrs.ok) {
 			return;
 		}
 
 		std::memset(m_storage.data(), 0, m_storage.size());
 		const auto initFn = ResolveInternalAddress<FnThiscallVoid>(
 			m_moduleBase,
-			kKnownGenericArrayInitRva);
+			addrs.genericArrayInit);
 		if (initFn != nullptr) {
 			__try {
 				initFn(m_storage.data());
@@ -1947,18 +2558,19 @@ private:
 		if (!m_initialized) {
 			return;
 		}
-		if (!IsVersionLockedInternalInteropSupported()) {
+		const auto& addrs = GetInternalInteropAddresses(m_moduleBase);
+		if (!addrs.ok) {
 			m_initialized = false;
 			return;
 		}
 
 		const auto destroyFn = ResolveInternalAddress<FnThiscallVoid>(
 			m_moduleBase,
-			kKnownGenericArrayDestroyRva);
+			addrs.genericArrayDestroy);
 		if (destroyFn != nullptr) {
 			__try {
 				*reinterpret_cast<std::uintptr_t*>(m_storage.data()) =
-					ResolveInternalPointer(m_moduleBase, kKnownGenericArrayVtableRva);
+					ResolveInternalPointer(m_moduleBase, addrs.genericArrayVtable);
 				destroyFn(m_storage.data());
 			}
 			__except (EXCEPTION_EXECUTE_HANDLER) {
@@ -1970,6 +2582,233 @@ private:
 	std::uintptr_t m_moduleBase = 0;
 	bool m_initialized = false;
 	std::array<std::byte, kInternalGenericArraySize> m_storage{};
+};
+
+class E595InternalTextBuffer {
+public:
+	explicit E595InternalTextBuffer(std::uintptr_t moduleBase)
+		: m_moduleBase(moduleBase)
+	{
+		Initialize();
+	}
+
+	~E595InternalTextBuffer()
+	{
+		Destroy();
+	}
+
+	E595InternalTextBuffer(const E595InternalTextBuffer&) = delete;
+	E595InternalTextBuffer& operator=(const E595InternalTextBuffer&) = delete;
+
+	bool AssignText(const std::string& text)
+	{
+		if (!m_initialized) {
+			return false;
+		}
+
+		const auto assignFn = ResolveInternalAddress<FnE595TextBufferAssign>(
+			m_moduleBase,
+			kE595TextBufferAssignRva);
+		const auto appendCharFn = ResolveInternalAddress<FnE595TextBufferAppendChar>(
+			m_moduleBase,
+			kE595TextBufferAppendCharRva);
+		if (assignFn == nullptr || appendCharFn == nullptr) {
+			return false;
+		}
+
+		const std::string preparedText = EnsureTextUsesGbkCodePage(NormalizeLineBreakToCrLf(text));
+		if (preparedText.empty()) {
+			return false;
+		}
+
+		return CallE595TextBufferAssignTextSafe(
+			assignFn,
+			appendCharFn,
+			m_storage.data(),
+			preparedText.c_str(),
+			static_cast<int>(preparedText.size()));
+	}
+
+	void* Data()
+	{
+		return m_initialized ? m_storage.data() : nullptr;
+	}
+
+private:
+	void Initialize()
+	{
+		if (!IsE595DirectTextPackageWriteSupported()) {
+			return;
+		}
+
+		std::memset(m_storage.data(), 0, m_storage.size());
+		const auto initFn = ResolveInternalAddress<FnThiscallVoid>(
+			m_moduleBase,
+			kE595TextBufferInitRva);
+		if (initFn == nullptr) {
+			return;
+		}
+
+		__try {
+			initFn(m_storage.data());
+			m_initialized = true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) {
+			m_initialized = false;
+		}
+	}
+
+	void Destroy()
+	{
+		if (!m_initialized) {
+			return;
+		}
+
+		const auto destroyFn = ResolveInternalAddress<FnThiscallVoid>(
+			m_moduleBase,
+			kE595TextBufferDestroyRva);
+		if (destroyFn != nullptr) {
+			__try {
+				destroyFn(m_storage.data());
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER) {
+			}
+		}
+		m_initialized = false;
+	}
+
+	std::uintptr_t m_moduleBase = 0;
+	bool m_initialized = false;
+	std::array<std::byte, kInternalGenericArraySize> m_storage{};
+};
+
+class E595InternalTextPackage {
+public:
+	explicit E595InternalTextPackage(std::uintptr_t moduleBase)
+		: m_moduleBase(moduleBase)
+	{
+		Initialize();
+	}
+
+	~E595InternalTextPackage()
+	{
+		Destroy();
+	}
+
+	E595InternalTextPackage(const E595InternalTextPackage&) = delete;
+	E595InternalTextPackage& operator=(const E595InternalTextPackage&) = delete;
+
+	bool ParseText(E595InternalTextBuffer& buffer) const
+	{
+		if (!m_initialized || buffer.Data() == nullptr) {
+			return false;
+		}
+
+		const auto parseFn = ResolveInternalAddress<FnE595TextPackageParseText>(
+			m_moduleBase,
+			kE595TextPackageParseTextRva);
+		if (parseFn == nullptr) {
+			return false;
+		}
+
+		return CallE595TextPackageParseTextSafe(parseFn, RawObject(), buffer.Data());
+	}
+
+	bool InsertIntoEditor(std::uintptr_t editorObject, int pasteMode, int insertFlags, int parsedTextMode) const
+	{
+		if (!m_initialized || editorObject == 0) {
+			return false;
+		}
+
+		const auto insertFn = ResolveInternalAddress<FnEditorInsertClipboardObject>(
+			m_moduleBase,
+			kE595TextPackageInsertIntoEditorRva);
+		return CallE595TextPackageInsertSafe(
+			insertFn,
+			reinterpret_cast<void*>(editorObject),
+			RawObject(),
+			pasteMode,
+			insertFlags,
+			parsedTextMode);
+	}
+
+	void SetSupportLibraries(const std::vector<std::string>& names) const
+	{
+		if (!m_initialized) {
+			return;
+		}
+
+		__try {
+			SupportLibraries()->RemoveAll();
+			for (const std::string& name : names) {
+				SupportLibraries()->Add(name.c_str());
+			}
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) {
+		}
+	}
+
+	void* RawObject() const
+	{
+		return const_cast<std::byte*>(m_storage.data());
+	}
+
+private:
+	void Initialize()
+	{
+		if (!IsE595DirectTextPackageWriteSupported()) {
+			return;
+		}
+
+		std::memset(m_storage.data(), 0, m_storage.size());
+		const auto ctorFn = ResolveInternalAddress<int(__thiscall*)(void*)>(
+			m_moduleBase,
+			kE595TextPackageCtorRva);
+		if (ctorFn == nullptr) {
+			return;
+		}
+
+		__try {
+			(void)ctorFn(RawObject());
+			m_initialized = true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) {
+			m_initialized = false;
+		}
+	}
+
+	void Destroy()
+	{
+		if (!m_initialized) {
+			return;
+		}
+
+		const auto destroyFn = ResolveInternalAddress<FnThiscallVoid>(
+			m_moduleBase,
+			kE595TextPackageDestroyRva);
+		if (destroyFn != nullptr) {
+			__try {
+				destroyFn(RawObject());
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER) {
+			}
+		}
+		m_initialized = false;
+	}
+
+	void* MutableBytes(size_t offset) const
+	{
+		return const_cast<std::byte*>(m_storage.data() + offset);
+	}
+
+	CStringArray* SupportLibraries() const
+	{
+		return reinterpret_cast<CStringArray*>(MutableBytes(kE595InternalTextPackageSupportLibrariesOffset));
+	}
+
+	std::uintptr_t m_moduleBase = 0;
+	bool m_initialized = false;
+	mutable std::array<std::byte, kE595InternalTextPackageSize> m_storage{};
 };
 
 class InternalClipboardObject {
@@ -1993,9 +2832,10 @@ public:
 		if (!m_initialized) {
 			return false;
 		}
+		const auto& addrs = GetInternalInteropAddresses(m_moduleBase);
 		const auto deserializeFn = ResolveInternalAddress<FnThiscallBool>(
 			m_moduleBase,
-			kKnownClipboardDeserializeRva);
+			addrs.clipboardDeserialize);
 		if (deserializeFn == nullptr) {
 			return false;
 		}
@@ -2007,12 +2847,13 @@ public:
 		if (!m_initialized) {
 			return false;
 		}
+		const auto& addrs = GetInternalInteropAddresses(m_moduleBase);
 		const auto parseWrapperFn = ResolveInternalAddress<FnClipboardTextToObjectWrapper>(
 			m_moduleBase,
-			kKnownClipboardTextToObjectWrapperRva);
+			addrs.clipboardTextToObjectWrapper);
 		const auto parseFn = ResolveInternalAddress<FnClipboardTextToObjectDirect>(
 			m_moduleBase,
-			kKnownClipboardTextToObjectDirectRva);
+			addrs.clipboardTextToObjectDirect);
 		if (parseWrapperFn == nullptr && parseFn == nullptr) {
 			return false;
 		}
@@ -2034,9 +2875,10 @@ public:
 		if (!m_initialized) {
 			return nullptr;
 		}
+		const auto& addrs = GetInternalInteropAddresses(m_moduleBase);
 		const auto serializeFn = ResolveInternalAddress<FnThiscallHandle>(
 			m_moduleBase,
-			kKnownClipboardSerializeRva);
+			addrs.clipboardSerialize);
 		if (serializeFn == nullptr) {
 			return nullptr;
 		}
@@ -2103,14 +2945,15 @@ public:
 private:
 	void Initialize()
 	{
-		if (!IsVersionLockedInternalInteropSupported()) {
+		const auto& addrs = GetInternalInteropAddresses(m_moduleBase);
+		if (!addrs.ok) {
 			return;
 		}
 
 		std::memset(m_storage.data(), 0, m_storage.size());
 		const auto ctorFn = ResolveInternalAddress<int(__thiscall*)(void*)>(
 			m_moduleBase,
-			kKnownClipboardObjectCtorRva);
+			addrs.clipboardObjectCtor);
 		if (ctorFn == nullptr) {
 			return;
 		}
@@ -2129,14 +2972,15 @@ private:
 		if (!m_initialized) {
 			return;
 		}
-		if (!IsVersionLockedInternalInteropSupported()) {
+		const auto& addrs = GetInternalInteropAddresses(m_moduleBase);
+		if (!addrs.ok) {
 			m_initialized = false;
 			return;
 		}
 
 		const auto destroyFn = ResolveInternalAddress<FnThiscallVoid>(
 			m_moduleBase,
-			kKnownClipboardObjectDestroyRva);
+			addrs.clipboardObjectDestroy);
 		if (destroyFn != nullptr) {
 			__try {
 				destroyFn(Base());
@@ -2197,18 +3041,19 @@ ClipboardObjectValidationStats GatherClipboardObjectValidationStats(
 		return stats;
 	}
 
+	const auto& addrs = GetInternalInteropAddresses(moduleBase);
 	const auto validateA00Fn = ResolveInternalAddress<FnThiscallInt>(
 		moduleBase,
-		kKnownClipboardValidateA00Rva);
+		addrs.clipboardValidateA00);
 	const auto validate560Fn = ResolveInternalAddress<FnThiscallInt>(
 		moduleBase,
-		kKnownClipboardValidate560Rva);
+		addrs.clipboardValidate560);
 	const auto validate230Fn = ResolveInternalAddress<FnThiscallInt>(
 		moduleBase,
-		kKnownClipboardValidate230Rva);
+		addrs.clipboardValidate230);
 	const auto firstInvalidFn = ResolveInternalAddress<FnStdcallIntPtr>(
 		moduleBase,
-		kKnownClipboardCollectionFirstInvalidRva);
+		addrs.clipboardCollectionFirstInvalid);
 	auto* rawObjectBytes = reinterpret_cast<std::byte*>(rawObject);
 
 	stats.count1FC = GetStructuredCollectionCount(rawObjectBytes + 0x1FC);
@@ -2262,9 +3107,10 @@ bool TransplantParsedTextOntoTemplateObject(
 		return false;
 	}
 
+	const auto& addrs = GetInternalInteropAddresses(moduleBase);
 	const auto getValueByIndexFn = ResolveInternalAddress<FnThiscallCollectionGetValueByIndex>(
 		moduleBase,
-		kKnownCollectionGetValueByIndexRva);
+		addrs.collectionGetValueByIndex);
 	if (getValueByIndexFn == nullptr) {
 		if (outTrace != nullptr) {
 			*outTrace = "transplant_resolve_failed";
@@ -2374,11 +3220,12 @@ bool EnsureGlobalSupportLibraries(
 		return false;
 	}
 
+	const auto& addrs = GetInternalInteropAddresses(moduleBase);
 	const auto addSupportLibraryFn = ResolveInternalAddress<FnCdeclCStringArrayAddUnique>(
 		moduleBase,
-		kKnownSupportLibraryArrayAddUniqueRva);
+		addrs.supportLibraryArrayAddUnique);
 	auto* globalSupportLibraryArray = reinterpret_cast<CStringArray*>(
-		ResolveInternalPointer(moduleBase, kKnownGlobalSupportLibraryArrayRva));
+		ResolveInternalPointer(moduleBase, addrs.globalSupportLibraryArray));
 	if (addSupportLibraryFn == nullptr || globalSupportLibraryArray == nullptr) {
 		if (outTrace != nullptr) {
 			*outTrace = "support_library_resolve_failed";
@@ -2408,6 +3255,57 @@ bool EnsureGlobalSupportLibraries(
 	return true;
 }
 
+bool EnsureE595GlobalSupportLibraries(
+	std::uintptr_t moduleBase,
+	const std::vector<std::string>& supportLibraries,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (moduleBase == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_support_library_invalid_module";
+		}
+		return false;
+	}
+
+	const auto addSupportLibraryFn = ResolveInternalAddress<FnCdeclCStringArrayAddUnique>(
+		moduleBase,
+		kE595SupportLibraryArrayAddUniqueRva);
+	auto* globalSupportLibraryArray = reinterpret_cast<CStringArray*>(
+		ResolveInternalPointer(moduleBase, kE595GlobalSupportLibraryArrayRva));
+	if (addSupportLibraryFn == nullptr || globalSupportLibraryArray == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_support_library_resolve_failed";
+		}
+		return false;
+	}
+
+	size_t addedCount = 0;
+	for (const std::string& name : supportLibraries) {
+		if (name.empty()) {
+			continue;
+		}
+		if (!CallCStringArrayAddUniqueSafe(addSupportLibraryFn, globalSupportLibraryArray, name.c_str())) {
+			if (outTrace != nullptr) {
+				*outTrace = "e595_support_library_exception|added=" + std::to_string(addedCount);
+			}
+			return false;
+		}
+		++addedCount;
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			"e595_support_library_global_ok|requested=" +
+			std::to_string(supportLibraries.size()) +
+			"|added=" +
+			std::to_string(addedCount);
+	}
+	return true;
+}
+
 bool FinalizeParsedClipboardObject(
 	std::uintptr_t moduleBase,
 	InternalClipboardObject* object,
@@ -2424,15 +3322,16 @@ bool FinalizeParsedClipboardObject(
 		return false;
 	}
 
+	const auto& addrs = GetInternalInteropAddresses(moduleBase);
 	const auto mergeRangeFn = ResolveInternalAddress<FnThiscallMergeParsedRange>(
 		moduleBase,
-		kKnownClipboardMergeParsedRangeRva);
+		addrs.clipboardMergeParsedRange);
 	const auto destroyParsedItemFn = ResolveInternalAddress<FnThiscallVoid>(
 		moduleBase,
-		kKnownParsedItemDestroyRva);
+		addrs.parsedItemDestroy);
 	const auto removePtrAtFn = ResolveInternalAddress<FnThiscallPtrArrayRemoveAt>(
 		moduleBase,
-		kKnownPtrArrayRemoveAtRva);
+		addrs.ptrArrayRemoveAt);
 	if (mergeRangeFn == nullptr ||
 		destroyParsedItemFn == nullptr ||
 		removePtrAtFn == nullptr) {
@@ -2468,6 +3367,74 @@ bool FinalizeParsedClipboardObject(
 	if (outTrace != nullptr) {
 		*outTrace =
 			"finalize_ok|support_libs=" + std::to_string(supportLibraries.size()) +
+			"|merged_items=" + std::to_string(mergedItems) +
+			"|removed_items=" + std::to_string(removedItems) +
+			"|" +
+			supportLibraryTrace;
+	}
+	return true;
+}
+
+bool FinalizeE595ParsedTextPackage(
+	std::uintptr_t moduleBase,
+	E595InternalTextPackage* object,
+	const std::vector<std::string>& supportLibraries,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (moduleBase == 0 || object == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_finalize_invalid_argument";
+		}
+		return false;
+	}
+
+	const auto mergeRangeFn = ResolveInternalAddress<FnThiscallMergeParsedRange>(
+		moduleBase,
+		kE595TextPackageItemRangeMergeRva);
+	const auto destroyParsedItemFn = ResolveInternalAddress<FnThiscallVoid>(
+		moduleBase,
+		kE595TextPackageParsedItemDestroyRva);
+	const auto removePtrAtFn = ResolveInternalAddress<FnThiscallPtrArrayRemoveAt>(
+		moduleBase,
+		kE595TextPackageParsedItemRemoveAtRva);
+	if (mergeRangeFn == nullptr ||
+		destroyParsedItemFn == nullptr ||
+		removePtrAtFn == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_finalize_resolve_failed";
+		}
+		return false;
+	}
+
+	std::string supportLibraryTrace;
+	if (!EnsureE595GlobalSupportLibraries(moduleBase, supportLibraries, &supportLibraryTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_finalize_support_libraries_failed|" + supportLibraryTrace;
+		}
+		return false;
+	}
+
+	size_t mergedItems = 0;
+	size_t removedItems = 0;
+	if (!FinalizeE595ParsedTextPackageRaw(
+			object->RawObject(),
+			mergeRangeFn,
+			destroyParsedItemFn,
+			removePtrAtFn,
+			&mergedItems,
+			&removedItems)) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_finalize_exception";
+		}
+		return false;
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			"e595_finalize_ok|support_libs=" + std::to_string(supportLibraries.size()) +
 			"|merged_items=" + std::to_string(mergedItems) +
 			"|removed_items=" + std::to_string(removedItems) +
 			"|" +
@@ -5986,8 +6953,6 @@ const char* DescribeEditorCommand(int command)
 		return "paste";
 	case kEditorCmdCopy:
 		return "copy";
-	case kEditorCmdInsertRawText:
-		return "insert_raw_text";
 	default:
 		return "unknown";
 	}
@@ -6559,9 +7524,10 @@ bool PasteParsedTextObjectByEditor(
 		return false;
 	}
 
+	const auto& addrs = GetInternalInteropAddresses(moduleBase);
 	const auto insertFn = ResolveInternalAddress<FnEditorInsertClipboardObject>(
 		moduleBase,
-		kKnownClipboardInsertObjectRva);
+		addrs.clipboardInsertObject);
 	if (insertFn == nullptr) {
 		if (outTrace != nullptr) {
 			*outTrace = "insert_object_resolve_failed";
@@ -6587,6 +7553,92 @@ bool PasteParsedTextObjectByEditor(
 			"paste_parsed_ok|support_libs=" + std::to_string(supportLibraries.size()) +
 			"|" +
 			finalizeTrace;
+	}
+	return true;
+}
+
+bool PasteE595DirectTextPackageByEditor(
+	std::uintptr_t editorObject,
+	std::uintptr_t moduleBase,
+	const std::string& pageCode,
+	std::string* outTrace)
+{
+	AppendPageEditTraceLine(
+		"PasteE595DirectTextPackageByEditor.begin|editor=" +
+		std::to_string(editorObject) +
+		"|bytes=" +
+		std::to_string(pageCode.size()));
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (editorObject == 0 || moduleBase == 0 || pageCode.empty()) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_direct_package_invalid_argument";
+		}
+		return false;
+	}
+
+	std::string interopTrace;
+	if (!IsE595DirectTextPackageWriteSupported(&interopTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_direct_package_unsupported|" + interopTrace;
+		}
+		return false;
+	}
+
+	const std::string preparedPageCode =
+		PrepareAssemblyVariablesForRealPageWrite(NormalizeLineBreakToCrLf(pageCode));
+	E595InternalTextBuffer textBuffer(moduleBase);
+	if (!textBuffer.AssignText(preparedPageCode)) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_text_buffer_assign_failed|" + interopTrace;
+		}
+		return false;
+	}
+
+	E595InternalTextPackage parsedPackage(moduleBase);
+	if (!parsedPackage.ParseText(textBuffer)) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_parse_text_failed|" + interopTrace;
+		}
+		return false;
+	}
+
+	const std::vector<std::string> supportLibraries = ParseSupportLibraryNamesFromPageCode(preparedPageCode);
+	parsedPackage.SetSupportLibraries(supportLibraries);
+
+	std::string finalizeTrace;
+	if (!FinalizeE595ParsedTextPackage(
+			moduleBase,
+			&parsedPackage,
+			supportLibraries,
+			&finalizeTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_finalize_failed|" + finalizeTrace + "|" + interopTrace;
+		}
+		return false;
+	}
+
+	if (!parsedPackage.InsertIntoEditor(editorObject, 0, 0, 1)) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_insert_failed|" + finalizeTrace + "|" + interopTrace;
+		}
+		return false;
+	}
+
+	SettleEditorAfterCommand();
+	AppendPageEditTraceLine(
+		"PasteE595DirectTextPackageByEditor.ok|support_libs=" +
+		std::to_string(supportLibraries.size()) +
+		"|" +
+		finalizeTrace);
+	if (outTrace != nullptr) {
+		*outTrace =
+			"e595_direct_package_ok|support_libs=" + std::to_string(supportLibraries.size()) +
+			"|" +
+			finalizeTrace +
+			"|" +
+			interopTrace;
 	}
 	return true;
 }
@@ -7121,6 +8173,166 @@ bool ReplaceWholePageByParsedTextObject(
 	return true;
 }
 
+bool ReplaceWholePageByInternalClipboardObject(
+	std::uintptr_t editorObject,
+	std::uintptr_t moduleBase,
+	const std::string& pageCode,
+	bool deleteSelectionFirst,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (editorObject == 0 || moduleBase == 0 || pageCode.empty()) {
+		if (outTrace != nullptr) {
+			*outTrace = "internal_clipboard_replace_invalid_argument";
+		}
+		return false;
+	}
+
+	std::string interopTrace;
+	if (!IsVersionLockedInternalInteropSupported(&interopTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "internal_clipboard_replace_unsupported|" + interopTrace;
+		}
+		return false;
+	}
+
+	std::string selectTrace;
+	if (!InvokeEditorCommand(
+			editorObject,
+			moduleBase,
+			kEditorCmdSelectAll,
+			kEditorDispatchDefaultFlags,
+			nullptr,
+			nullptr,
+			&selectTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "internal_clipboard_select_all_failed|" + selectTrace;
+		}
+		return false;
+	}
+	SettleEditorAfterCommand();
+
+	std::string deleteTrace;
+	if (deleteSelectionFirst) {
+		if (!InvokeEditorCommand(
+				editorObject,
+				moduleBase,
+				kEditorCmdDeleteSelection,
+				kEditorDispatchDefaultFlags,
+				nullptr,
+				nullptr,
+				&deleteTrace)) {
+			if (outTrace != nullptr) {
+				*outTrace = "select_all|" + selectTrace + "|internal_clipboard_delete_failed|" + deleteTrace;
+			}
+			return false;
+		}
+		SettleEditorAfterCommand();
+	}
+	else {
+		deleteTrace = "delete_skipped|selection_replace";
+	}
+
+	const std::string preparedPageCode =
+		PrepareAssemblyVariablesForRealPageWrite(NormalizeLineBreakToCrLf(pageCode));
+	std::string pasteTrace;
+	if (!PasteParsedTextObjectByEditor(editorObject, moduleBase, preparedPageCode, nullptr, &pasteTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "select_all|" + selectTrace + "|" + deleteTrace + "|" + pasteTrace;
+		}
+		return false;
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			"select_all|" +
+			selectTrace +
+			"|" +
+			deleteTrace +
+			"|" +
+			pasteTrace +
+			"|" +
+			interopTrace;
+	}
+	return true;
+}
+
+bool ReplaceWholePageByE595DirectTextPackage(
+	std::uintptr_t editorObject,
+	std::uintptr_t moduleBase,
+	const std::string& pageCode,
+	bool deleteSelectionFirst,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (editorObject == 0 || moduleBase == 0 || pageCode.empty()) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_direct_replace_invalid_argument";
+		}
+		return false;
+	}
+
+	std::string selectTrace;
+	if (!InvokeEditorCommand(
+			editorObject,
+			moduleBase,
+			kEditorCmdSelectAll,
+			kEditorDispatchDefaultFlags,
+			nullptr,
+			nullptr,
+			&selectTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_direct_select_all_failed|" + selectTrace;
+		}
+		return false;
+	}
+	SettleEditorAfterCommand();
+
+	std::string deleteTrace;
+	if (deleteSelectionFirst) {
+		if (!InvokeEditorCommand(
+				editorObject,
+				moduleBase,
+				kEditorCmdDeleteSelection,
+				kEditorDispatchDefaultFlags,
+				nullptr,
+				nullptr,
+				&deleteTrace)) {
+			if (outTrace != nullptr) {
+				*outTrace = "select_all|" + selectTrace + "|e595_direct_delete_failed|" + deleteTrace;
+			}
+			return false;
+		}
+		SettleEditorAfterCommand();
+	}
+	else {
+		deleteTrace = "delete_skipped|selection_replace";
+	}
+
+	std::string pasteTrace;
+	if (!PasteE595DirectTextPackageByEditor(editorObject, moduleBase, pageCode, &pasteTrace)) {
+		if (outTrace != nullptr) {
+			*outTrace = "select_all|" + selectTrace + "|" + deleteTrace + "|" + pasteTrace;
+		}
+		return false;
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			"select_all|" +
+			selectTrace +
+			"|" +
+			deleteTrace +
+			"|" +
+			pasteTrace;
+	}
+	return true;
+}
+
 bool ReplaceWholePageByTextPaste(
 	std::uintptr_t editorObject,
 	std::uintptr_t moduleBase,
@@ -7183,70 +8395,6 @@ bool ReplaceWholePageByTextPaste(
 	return true;
 }
 
-bool ReplaceWholePageByRawInsertCommand(
-	std::uintptr_t editorObject,
-	std::uintptr_t moduleBase,
-	const std::string& pageCode,
-	std::string* outTrace)
-{
-	if (outTrace != nullptr) {
-		outTrace->clear();
-	}
-	if (editorObject == 0 || pageCode.empty()) {
-		if (outTrace != nullptr) {
-			*outTrace = "invalid_argument";
-		}
-		return false;
-	}
-
-	const std::string preparedPageCode = PrepareAssemblyVariablesForRealPageWrite(pageCode);
-
-	std::string selectTrace;
-	if (!InvokeEditorCommandWithFallback(
-			editorObject,
-			moduleBase,
-			kEditorCmdSelectAll,
-			&selectTrace)) {
-		if (outTrace != nullptr) {
-			*outTrace = "select_all_failed|" + selectTrace;
-		}
-		return false;
-	}
-
-	std::string deleteTrace;
-	if (!InvokeEditorCommandWithFallback(
-			editorObject,
-			moduleBase,
-			kEditorCmdDeleteSelection,
-			&deleteTrace)) {
-		if (outTrace != nullptr) {
-			*outTrace = selectTrace + "|delete_failed|" + deleteTrace;
-		}
-		return false;
-	}
-
-	std::string insertTrace;
-	if (!InvokeEditorCommand(
-			editorObject,
-			moduleBase,
-			kEditorCmdInsertRawText,
-			1,
-			const_cast<char*>(preparedPageCode.c_str()),
-			reinterpret_cast<char*>(1),
-			&insertTrace)) {
-		if (outTrace != nullptr) {
-			*outTrace = selectTrace + "|" + deleteTrace + "|insert_failed|" + insertTrace;
-		}
-		return false;
-	}
-	SettleEditorAfterCommand();
-
-	if (outTrace != nullptr) {
-		*outTrace = selectTrace + "|" + deleteTrace + "|" + insertTrace;
-	}
-	return true;
-}
-
 bool TryRollbackRealPageCode(
 	std::uintptr_t editorObject,
 	std::uintptr_t moduleBase,
@@ -7278,7 +8426,7 @@ bool TryRollbackRealPageCode(
 				deleteSelectionFirst,
 				&rollbackWriteTrace)) {
 			if (outTrace != nullptr) {
-				*outTrace = "rollback_text_paste_failed|" + rollbackWriteTrace;
+				*outTrace = "rollback_text_failed|" + rollbackWriteTrace;
 			}
 			return false;
 		}
@@ -7417,17 +8565,61 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	AppendPageEditTraceLine("ReplaceRealPageCode.after_select_all|" + selectTrace);
 
 	std::string replaceTrace;
-	const std::string writeStrategyTrace =
+	std::string writeStrategyTrace =
 		deleteSelectionFirst
-			? "write_by_real_paste_handler_text|replace_mode=delete_then_paste"
-			: "write_by_real_paste_handler_text|replace_mode=selection_paste";
+			? "write_by_e595_direct_text_package|replace_mode=delete_then_insert"
+			: "write_by_e595_direct_text_package|replace_mode=selection_insert";
 	AppendPageEditTraceLine("ReplaceRealPageCode.before_replace|" + writeStrategyTrace);
-	const bool replaceOk = ReplaceWholePageByTextPaste(
+	bool usedClipboardEmulationForWrite = false;
+	bool replaceOk = ReplaceWholePageByE595DirectTextPackage(
 		editorObject,
 		moduleBase,
 		normalizedNewPageCode,
 		deleteSelectionFirst,
 		&replaceTrace);
+	if (!replaceOk) {
+		const std::string directPackageTrace = replaceTrace;
+		writeStrategyTrace =
+			deleteSelectionFirst
+				? "write_by_internal_clipboard_object|replace_mode=delete_then_insert|direct_package_failed"
+				: "write_by_internal_clipboard_object|replace_mode=selection_insert|direct_package_failed";
+		AppendPageEditTraceLine(
+			"ReplaceRealPageCode.direct_package_failed|fallback=internal_clipboard_object|" +
+			directPackageTrace);
+		replaceOk = ReplaceWholePageByInternalClipboardObject(
+			editorObject,
+			moduleBase,
+			normalizedNewPageCode,
+			deleteSelectionFirst,
+			&replaceTrace);
+		replaceTrace =
+			"direct_package_failed|" +
+			directPackageTrace +
+			"|fallback_internal_clipboard_object|" +
+			replaceTrace;
+	}
+	if (!replaceOk) {
+		const std::string directObjectTrace = replaceTrace;
+		writeStrategyTrace =
+			deleteSelectionFirst
+				? "write_by_real_paste_handler_text|replace_mode=delete_then_paste|direct_object_failed"
+				: "write_by_real_paste_handler_text|replace_mode=selection_paste|direct_object_failed";
+		AppendPageEditTraceLine(
+			"ReplaceRealPageCode.internal_clipboard_object_failed|fallback=text_paste|" +
+			directObjectTrace);
+		usedClipboardEmulationForWrite = true;
+		replaceOk = ReplaceWholePageByTextPaste(
+			editorObject,
+			moduleBase,
+			normalizedNewPageCode,
+			deleteSelectionFirst,
+			&replaceTrace);
+		replaceTrace =
+			"direct_object_failed|" +
+			directObjectTrace +
+			"|fallback_text_paste|" +
+			replaceTrace;
+	}
 	AppendPageEditTraceLine(
 		std::string("ReplaceRealPageCode.after_replace|ok=") +
 		(replaceOk ? "1" : "0") +
@@ -7449,7 +8641,7 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 		AppendPageEditTraceLine("ReplaceRealPageCode.success");
 		if (outResult != nullptr) {
 			outResult->ok = true;
-			outResult->usedClipboardEmulation = true;
+			outResult->usedClipboardEmulation = usedClipboardEmulationForWrite;
 			outResult->textBytes = normalizedNewPageCode.size();
 			outResult->trace =
 				selectTrace +
@@ -7512,7 +8704,7 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 
 	if (outResult != nullptr) {
 		outResult->ok = true;
-		outResult->usedClipboardEmulation = true;
+		outResult->usedClipboardEmulation = usedClipboardEmulationForWrite;
 		outResult->textBytes = verifyCode.size();
 		outResult->pageCode = verifyCode;
 		outResult->trace =
@@ -7622,6 +8814,97 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 		outTrace->clear();
 	}
 
+	const HWND originalMainHwnd = ResolveMainIdeWindow();
+	const HWND originalMdiChildHwnd = GetActiveMdiChildWindow(originalMainHwnd);
+	const std::string originalMdiTitle = WindowTextToString(originalMdiChildHwnd);
+	std::uintptr_t originalActiveEditorObject = 0;
+	std::string originalActiveEditorTrace;
+	const bool originalActiveEditorCaptured =
+		TryReadMainEditorActiveEditorObjectFast(
+			moduleBase,
+			&originalActiveEditorObject,
+			&originalActiveEditorTrace) &&
+		originalActiveEditorObject != 0;
+	std::string restoreTrace;
+	const auto appendRestoreSegment = [&](const std::string& segment) {
+		if (segment.empty()) {
+			return;
+		}
+		restoreTrace += (restoreTrace.empty() ? std::string() : std::string("|")) + segment;
+	};
+	appendRestoreSegment(
+		std::string("active_before|") +
+		(originalActiveEditorCaptured ? "captured=1" : "captured=0") +
+		(originalActiveEditorTrace.empty() ? std::string() : ("|" + originalActiveEditorTrace)));
+	const auto restoreOriginalState = [&]() {
+		if (originalActiveEditorCaptured && originalActiveEditorObject != 0) {
+			std::uintptr_t currentActiveEditorObject = 0;
+			std::string currentActiveEditorTrace;
+			if (TryReadMainEditorActiveEditorObjectFast(
+					moduleBase,
+					&currentActiveEditorObject,
+					&currentActiveEditorTrace) &&
+				currentActiveEditorObject == originalActiveEditorObject) {
+				appendRestoreSegment("active_editor_restore_skipped|already_original|" + currentActiveEditorTrace);
+			}
+			else {
+				std::string setTrace;
+				if (TrySetMainEditorActiveEditorObjectFast(
+						moduleBase,
+						originalActiveEditorObject,
+						1,
+						nullptr,
+						&setTrace)) {
+					appendRestoreSegment("active_editor_restore_ok|" + setTrace);
+				}
+				else {
+					appendRestoreSegment(
+						"active_editor_restore_failed|" +
+						(setTrace.empty() ? std::string("set_active_editor_fast_failed") : setTrace));
+				}
+			}
+		}
+		else {
+			appendRestoreSegment("active_editor_restore_skipped|original_not_captured");
+		}
+
+		if (originalMainHwnd != nullptr && IsWindow(originalMainHwnd) &&
+			originalMdiChildHwnd != nullptr && IsWindow(originalMdiChildHwnd)) {
+			const HWND activeBeforeRestore = GetActiveMdiChildWindow(originalMainHwnd);
+			const std::string activeBeforeTitle = WindowTextToString(activeBeforeRestore);
+			if (activeBeforeRestore != originalMdiChildHwnd) {
+				const HWND mdiClientHwnd = GetParent(originalMdiChildHwnd);
+				if (mdiClientHwnd != nullptr && IsWindow(mdiClientHwnd)) {
+					SendMessageA(
+						mdiClientHwnd,
+						WM_MDIACTIVATE,
+						reinterpret_cast<WPARAM>(originalMdiChildHwnd),
+						0);
+					PumpPendingMessages();
+				}
+			}
+
+			for (int attempt = 0; attempt < 20; ++attempt) {
+				const HWND activeChild = GetActiveMdiChildWindow(originalMainHwnd);
+				const std::string activeTitle = WindowTextToString(activeChild);
+				if (activeChild == originalMdiChildHwnd ||
+					(!originalMdiTitle.empty() &&
+					 !activeTitle.empty() &&
+					 activeTitle.find(originalMdiTitle) != std::string::npos)) {
+					appendRestoreSegment("mdi_restore_ok|active_text=" + activeTitle);
+					return;
+				}
+				Sleep(10);
+				PumpPendingMessages();
+			}
+
+			appendRestoreSegment("mdi_restore_timeout|requested_text=" + originalMdiTitle);
+		}
+		else {
+			appendRestoreSegment("mdi_restore_skipped|original_mdi_missing");
+		}
+	};
+
 	if (IsActiveEditorShortcutPreferredProgramTreeItem(itemData)) {
 		ActiveEditorObjectInfo activeInfo{};
 		if (ResolveCurrentActiveEditorObject(moduleBase, &activeInfo) &&
@@ -7634,6 +8917,10 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 			if (outTrace != nullptr) {
 				*outTrace = "active_editor_shortcut|" + activeInfo.trace;
 			}
+			restoreOriginalState();
+			if (outTrace != nullptr && !restoreTrace.empty()) {
+				*outTrace += "|post_read_restore|" + restoreTrace;
+			}
 			return true;
 		}
 	}
@@ -7645,7 +8932,7 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 	int debugResolvedIndex = -1;
 	int debugBucketData = 0;
 	const DWORD debugStartTick = GetTickCount();
-	const bool debugResolved = DebugResolveEditorObjectByProgramTreeItemData(
+	const bool noActivateResolved = DebugResolveEditorObjectByProgramTreeItemDataNoActivate(
 			itemData,
 			moduleBase,
 			&editorObject,
@@ -7654,7 +8941,7 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 			&debugBucketData,
 			&debugTrace);
 	const DWORD debugElapsed = GetTickCount() - debugStartTick;
-	if (debugResolved && editorObject != 0) {
+	if (noActivateResolved && editorObject != 0) {
 		EditorDispatchTargetInfo targetInfo{};
 		if (TryResolveInnerEditorObject(editorObject, &targetInfo) &&
 			IsEditorPageTypeCompatibleWithProgramTreeItem(itemData, targetInfo.pageType)) {
@@ -7663,7 +8950,7 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 			}
 			if (outTrace != nullptr) {
 				*outTrace =
-					"internal_open_shortcut_ok"
+					"internal_no_activate_ok"
 					"|resolve_ms=" + std::to_string(debugElapsed) +
 					"|page_type=" + std::to_string(targetInfo.pageType) +
 					"|resolved_type=" + std::to_string(debugResolvedType) +
@@ -7672,10 +8959,14 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 					"|" +
 					debugTrace;
 			}
+			restoreOriginalState();
+			if (outTrace != nullptr && !restoreTrace.empty()) {
+				*outTrace += "|post_read_restore|" + restoreTrace;
+			}
 			return true;
 		}
 		debugAttemptTrace =
-			"internal_open_shortcut_type_mismatch"
+			"internal_no_activate_type_mismatch"
 			"|resolve_ms=" + std::to_string(debugElapsed) +
 			"|item_data=" + std::to_string(itemData) +
 			"|page_type=" + std::to_string(targetInfo.pageType) +
@@ -7687,8 +8978,68 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 	}
 	else {
 		debugAttemptTrace =
-			"internal_open_shortcut_failed"
+			"internal_no_activate_failed"
 			"|resolve_ms=" + std::to_string(debugElapsed) +
+			"|" +
+			(debugTrace.empty() ? std::string("resolve_editor_failed") : debugTrace);
+	}
+
+	editorObject = 0;
+	debugTrace.clear();
+	debugResolvedType = 0;
+	debugResolvedIndex = -1;
+	debugBucketData = 0;
+	const DWORD openDebugStartTick = GetTickCount();
+	const bool debugResolved = DebugResolveEditorObjectByProgramTreeItemData(
+			itemData,
+			moduleBase,
+			&editorObject,
+			&debugResolvedType,
+			&debugResolvedIndex,
+			&debugBucketData,
+			&debugTrace);
+	const DWORD openDebugElapsed = GetTickCount() - openDebugStartTick;
+	if (debugResolved && editorObject != 0) {
+		EditorDispatchTargetInfo targetInfo{};
+		if (TryResolveInnerEditorObject(editorObject, &targetInfo) &&
+			IsEditorPageTypeCompatibleWithProgramTreeItem(itemData, targetInfo.pageType)) {
+			if (outEditorObject != nullptr) {
+				*outEditorObject = editorObject;
+			}
+			if (outTrace != nullptr) {
+				*outTrace =
+					debugAttemptTrace +
+					"|fallback_internal_open|"
+					"internal_open_shortcut_ok"
+					"|resolve_ms=" + std::to_string(openDebugElapsed) +
+					"|page_type=" + std::to_string(targetInfo.pageType) +
+					"|resolved_type=" + std::to_string(debugResolvedType) +
+					"|resolved_index=" + std::to_string(debugResolvedIndex) +
+					"|bucket_data=" + std::to_string(debugBucketData) +
+					"|" +
+					debugTrace;
+			}
+			return true;
+		}
+		debugAttemptTrace =
+			debugAttemptTrace +
+			"|fallback_internal_open|"
+			"internal_open_shortcut_type_mismatch"
+			"|resolve_ms=" + std::to_string(openDebugElapsed) +
+			"|item_data=" + std::to_string(itemData) +
+			"|page_type=" + std::to_string(targetInfo.pageType) +
+			"|resolved_type=" + std::to_string(debugResolvedType) +
+			"|resolved_index=" + std::to_string(debugResolvedIndex) +
+			"|bucket_data=" + std::to_string(debugBucketData) +
+			"|" +
+			debugTrace;
+	}
+	else {
+		debugAttemptTrace =
+			debugAttemptTrace +
+			"|fallback_internal_open|"
+			"internal_open_shortcut_failed"
+			"|resolve_ms=" + std::to_string(openDebugElapsed) +
 			"|" +
 			(debugTrace.empty() ? std::string("resolve_editor_failed") : debugTrace);
 	}
@@ -8083,7 +9434,12 @@ bool GetRealPageCodeByProgramTreeItemData(
 	std::string hiddenSwitchTrace;
 	std::string hiddenRestoreTrace;
 	bool hiddenNeedRestore = false;
-	bool hiddenOriginalCaptured = false;
+	bool hiddenOriginalCaptured =
+		TryReadMainEditorActiveEditorObjectFast(
+			moduleBase,
+			&hiddenOriginalEditorObject,
+			&hiddenOriginalTrace) &&
+		hiddenOriginalEditorObject != 0;
 	const auto restoreHiddenMdiChild = [&]() {
 		if (hiddenMainHwnd == nullptr || !IsWindow(hiddenMainHwnd) ||
 			hiddenOriginalMdiChildHwnd == nullptr || !IsWindow(hiddenOriginalMdiChildHwnd)) {
@@ -8139,7 +9495,7 @@ bool GetRealPageCodeByProgramTreeItemData(
 			return;
 		}
 		std::string restoreTrace;
-		if (DebugSetMainEditorActiveEditorObject(
+		if (TrySetMainEditorActiveEditorObjectFast(
 				moduleBase,
 				hiddenOriginalEditorObject,
 				1,
@@ -8157,9 +9513,11 @@ bool GetRealPageCodeByProgramTreeItemData(
 	std::string hiddenSupportTrace;
 	if (IsDirectGlobalSearchEditorResolveSupported(&hiddenSupportTrace)) {
 		hiddenAttemptState = "attempt";
-		hiddenOriginalCaptured =
-			DebugGetMainEditorActiveEditorObject(moduleBase, &hiddenOriginalEditorObject, &hiddenOriginalTrace) &&
-			hiddenOriginalEditorObject != 0;
+		if (!hiddenOriginalCaptured) {
+			hiddenOriginalCaptured =
+				DebugGetMainEditorActiveEditorObject(moduleBase, &hiddenOriginalEditorObject, &hiddenOriginalTrace) &&
+				hiddenOriginalEditorObject != 0;
+		}
 		if (DebugResolveEditorObjectByProgramTreeItemDataNoActivate(
 				itemData,
 				moduleBase,
@@ -8337,6 +9695,14 @@ bool GetRealPageCodeByProgramTreeItemData(
 	else {
 		localResult.trace = resolveTrace.empty() ? localResult.trace : (resolveTrace + "|" + localResult.trace);
 	}
+	hiddenNeedRestore =
+		hiddenOriginalCaptured &&
+		hiddenOriginalEditorObject != 0 &&
+		hiddenOriginalEditorObject != editorObject;
+	restoreHiddenActiveEditor();
+	if (!hiddenRestoreTrace.empty()) {
+		localResult.trace += "|post_read_restore|" + hiddenRestoreTrace;
+	}
 	if (outResult != nullptr) {
 		*outResult = std::move(localResult);
 	}
@@ -8350,19 +9716,147 @@ bool ReplaceRealPageCodeByEditorObject(
 	const std::string* rollbackPageCode,
 	NativeRealPageAccessResult* outResult)
 {
+	if (outResult != nullptr) {
+		*outResult = {};
+	}
+
+	const HWND originalMainHwnd = ResolveMainIdeWindow();
+	const HWND originalMdiChildHwnd = GetActiveMdiChildWindow(originalMainHwnd);
+	const std::string originalMdiTitle = WindowTextToString(originalMdiChildHwnd);
+	std::uintptr_t originalActiveEditorObject = 0;
+	std::string originalActiveEditorTrace;
+	const bool originalActiveEditorCaptured =
+		TryReadMainEditorActiveEditorObjectFast(
+			moduleBase,
+			&originalActiveEditorObject,
+			&originalActiveEditorTrace) &&
+		originalActiveEditorObject != 0;
+	std::string postWriteRestoreTrace;
+	const auto appendPostWriteRestoreSegment = [&](const std::string& segment) {
+		if (segment.empty()) {
+			return;
+		}
+		postWriteRestoreTrace +=
+			(postWriteRestoreTrace.empty() ? std::string() : std::string("|")) +
+			segment;
+	};
+	appendPostWriteRestoreSegment(
+		std::string("active_before|") +
+		(originalActiveEditorCaptured ? "captured=1" : "captured=0") +
+		(originalActiveEditorTrace.empty() ? std::string() : ("|" + originalActiveEditorTrace)));
+	const auto restoreOriginalActiveEditor = [&]() {
+		if (!originalActiveEditorCaptured || originalActiveEditorObject == 0) {
+			appendPostWriteRestoreSegment("active_editor_restore_skipped|original_not_captured");
+			return;
+		}
+
+		std::uintptr_t currentActiveEditorObject = 0;
+		std::string currentActiveEditorTrace;
+		if (TryReadMainEditorActiveEditorObjectFast(
+				moduleBase,
+				&currentActiveEditorObject,
+				&currentActiveEditorTrace) &&
+			currentActiveEditorObject == originalActiveEditorObject) {
+			appendPostWriteRestoreSegment(
+				"active_editor_restore_skipped|already_original|" +
+				currentActiveEditorTrace);
+			return;
+		}
+
+		std::string restoreTrace;
+		if (TrySetMainEditorActiveEditorObjectFast(
+				moduleBase,
+				originalActiveEditorObject,
+				1,
+				nullptr,
+				&restoreTrace)) {
+			appendPostWriteRestoreSegment("active_editor_restore_ok|" + restoreTrace);
+		}
+		else {
+			appendPostWriteRestoreSegment(
+				"active_editor_restore_failed|" +
+				(restoreTrace.empty() ? std::string("set_active_editor_fast_failed") : restoreTrace));
+		}
+	};
+	const auto restoreOriginalMdiChild = [&]() {
+		if (originalMainHwnd == nullptr || !IsWindow(originalMainHwnd) ||
+			originalMdiChildHwnd == nullptr || !IsWindow(originalMdiChildHwnd)) {
+			appendPostWriteRestoreSegment("post_write_mdi_restore_skipped|original_mdi_missing");
+			return;
+		}
+
+		const HWND activeBeforeRestore = GetActiveMdiChildWindow(originalMainHwnd);
+		const std::string activeBeforeTitle = WindowTextToString(activeBeforeRestore);
+		if (activeBeforeRestore == originalMdiChildHwnd ||
+			(!originalMdiTitle.empty() &&
+			 !activeBeforeTitle.empty() &&
+			 activeBeforeTitle.find(originalMdiTitle) != std::string::npos)) {
+			appendPostWriteRestoreSegment(
+				"post_write_mdi_restore_skipped"
+				"|active_text=" + activeBeforeTitle);
+			return;
+		}
+
+		const HWND mdiClientHwnd = GetParent(originalMdiChildHwnd);
+		if (mdiClientHwnd == nullptr || !IsWindow(mdiClientHwnd)) {
+			appendPostWriteRestoreSegment("post_write_mdi_restore_client_missing");
+			return;
+		}
+
+		SendMessageA(
+			mdiClientHwnd,
+			WM_MDIACTIVATE,
+			reinterpret_cast<WPARAM>(originalMdiChildHwnd),
+			0);
+		PumpPendingMessages();
+
+		for (int attempt = 0; attempt < 20; ++attempt) {
+			const HWND activeChild = GetActiveMdiChildWindow(originalMainHwnd);
+			const std::string activeTitle = WindowTextToString(activeChild);
+			if (activeChild == originalMdiChildHwnd ||
+				(!originalMdiTitle.empty() &&
+				 !activeTitle.empty() &&
+				 activeTitle.find(originalMdiTitle) != std::string::npos)) {
+				appendPostWriteRestoreSegment(
+					"post_write_mdi_restore_ok"
+					"|active_text=" + activeTitle);
+				return;
+			}
+			Sleep(10);
+			PumpPendingMessages();
+		}
+
+		appendPostWriteRestoreSegment(
+			"post_write_mdi_restore_timeout"
+			"|requested_text=" + originalMdiTitle);
+	};
+	const auto appendPostWriteRestoreTrace = [&](NativeRealPageAccessResult& result) {
+		restoreOriginalActiveEditor();
+		restoreOriginalMdiChild();
+		if (!postWriteRestoreTrace.empty()) {
+			result.trace += "|post_write_restore|" + postWriteRestoreTrace;
+		}
+	};
+
 	bool deleteSelectionFirst = true;
 	EditorDispatchTargetInfo targetInfo{};
 	if (TryResolveInnerEditorObject(editorObject, &targetInfo)) {
 		deleteSelectionFirst = !IsSelectionReplacePreferredEditorPageType(targetInfo.pageType);
 	}
-	return ReplaceRealPageCodeByEditorObjectInternal(
+	NativeRealPageAccessResult localResult{};
+	const bool ok = ReplaceRealPageCodeByEditorObjectInternal(
 		editorObject,
 		moduleBase,
 		newPageCode,
 		rollbackPageCode,
 		deleteSelectionFirst,
 		false,
-		outResult);
+		&localResult);
+	appendPostWriteRestoreTrace(localResult);
+	if (outResult != nullptr) {
+		*outResult = std::move(localResult);
+	}
+	return ok;
 }
 
 bool ReplaceRealPageCodeByProgramTreeItemData(
@@ -8375,6 +9869,124 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 	if (outResult != nullptr) {
 		*outResult = {};
 	}
+
+	const HWND originalMainHwnd = ResolveMainIdeWindow();
+	const HWND originalMdiChildHwnd = GetActiveMdiChildWindow(originalMainHwnd);
+	const std::string originalMdiTitle = WindowTextToString(originalMdiChildHwnd);
+	std::uintptr_t originalActiveEditorObject = 0;
+	std::string originalActiveEditorTrace;
+	const bool originalActiveEditorCaptured =
+		TryReadMainEditorActiveEditorObjectFast(
+			moduleBase,
+			&originalActiveEditorObject,
+			&originalActiveEditorTrace) &&
+		originalActiveEditorObject != 0;
+	std::string postWriteRestoreTrace;
+	const auto appendPostWriteRestoreSegment = [&](const std::string& segment) {
+		if (segment.empty()) {
+			return;
+		}
+		postWriteRestoreTrace +=
+			(postWriteRestoreTrace.empty() ? std::string() : std::string("|")) +
+			segment;
+	};
+	appendPostWriteRestoreSegment(
+		std::string("active_before|") +
+		(originalActiveEditorCaptured ? "captured=1" : "captured=0") +
+		(originalActiveEditorTrace.empty() ? std::string() : ("|" + originalActiveEditorTrace)));
+	const auto restoreOriginalMdiChild = [&]() {
+		if (originalMainHwnd == nullptr || !IsWindow(originalMainHwnd) ||
+			originalMdiChildHwnd == nullptr || !IsWindow(originalMdiChildHwnd)) {
+			appendPostWriteRestoreSegment("post_write_mdi_restore_skipped|original_mdi_missing");
+			return;
+		}
+
+		const HWND activeBeforeRestore = GetActiveMdiChildWindow(originalMainHwnd);
+		const std::string activeBeforeTitle = WindowTextToString(activeBeforeRestore);
+		if (activeBeforeRestore == originalMdiChildHwnd ||
+			(!originalMdiTitle.empty() &&
+			 !activeBeforeTitle.empty() &&
+			 activeBeforeTitle.find(originalMdiTitle) != std::string::npos)) {
+			appendPostWriteRestoreSegment(
+				"post_write_mdi_restore_skipped"
+				"|active_text=" + activeBeforeTitle);
+			return;
+		}
+
+		const HWND mdiClientHwnd = GetParent(originalMdiChildHwnd);
+		if (mdiClientHwnd == nullptr || !IsWindow(mdiClientHwnd)) {
+			appendPostWriteRestoreSegment("post_write_mdi_restore_client_missing");
+			return;
+		}
+
+		SendMessageA(
+			mdiClientHwnd,
+			WM_MDIACTIVATE,
+			reinterpret_cast<WPARAM>(originalMdiChildHwnd),
+			0);
+		PumpPendingMessages();
+
+		for (int attempt = 0; attempt < 20; ++attempt) {
+			const HWND activeChild = GetActiveMdiChildWindow(originalMainHwnd);
+			const std::string activeTitle = WindowTextToString(activeChild);
+			if (activeChild == originalMdiChildHwnd ||
+				(!originalMdiTitle.empty() &&
+				 !activeTitle.empty() &&
+				 activeTitle.find(originalMdiTitle) != std::string::npos)) {
+				appendPostWriteRestoreSegment(
+					"post_write_mdi_restore_ok"
+					"|active_text=" + activeTitle);
+				return;
+			}
+			Sleep(10);
+			PumpPendingMessages();
+		}
+
+		appendPostWriteRestoreSegment(
+			"post_write_mdi_restore_timeout"
+			"|requested_text=" + originalMdiTitle);
+	};
+	const auto restoreOriginalActiveEditor = [&]() {
+		if (!originalActiveEditorCaptured || originalActiveEditorObject == 0) {
+			appendPostWriteRestoreSegment("active_editor_restore_skipped|original_not_captured");
+			return;
+		}
+
+		std::uintptr_t currentActiveEditorObject = 0;
+		std::string currentActiveEditorTrace;
+		if (TryReadMainEditorActiveEditorObjectFast(
+				moduleBase,
+				&currentActiveEditorObject,
+				&currentActiveEditorTrace) &&
+			currentActiveEditorObject == originalActiveEditorObject) {
+			appendPostWriteRestoreSegment(
+				"active_editor_restore_skipped|already_original|" +
+				currentActiveEditorTrace);
+			return;
+		}
+
+		std::string restoreTrace;
+		if (TrySetMainEditorActiveEditorObjectFast(
+				moduleBase,
+				originalActiveEditorObject,
+				1,
+				nullptr,
+				&restoreTrace)) {
+			appendPostWriteRestoreSegment("active_editor_restore_ok|" + restoreTrace);
+		}
+		else {
+			appendPostWriteRestoreSegment(
+				"active_editor_restore_failed|" +
+				(restoreTrace.empty() ? std::string("set_active_editor_fast_failed") : restoreTrace));
+		}
+	};
+	const auto appendPostWriteRestoreTrace = [&](NativeRealPageAccessResult& result) {
+		restoreOriginalActiveEditor();
+		restoreOriginalMdiChild();
+		if (!postWriteRestoreTrace.empty()) {
+			result.trace += "|post_write_restore|" + postWriteRestoreTrace;
+		}
+	};
 
 	std::uintptr_t editorObject = 0;
 	std::string resolveTrace;
@@ -8442,6 +10054,7 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 						(verifySummary.empty() ? std::string() : ("|" + verifySummary)) +
 						"|" +
 						refreshedReadResult.trace;
+					appendPostWriteRestoreTrace(localResult);
 					if (outResult != nullptr) {
 						*outResult = std::move(localResult);
 					}
@@ -8499,6 +10112,7 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 
 	localResult.editorObject = editorObject;
 	localResult.trace = resolveTrace.empty() ? localResult.trace : (resolveTrace + "|" + localResult.trace);
+	appendPostWriteRestoreTrace(localResult);
 	if (outResult != nullptr) {
 		*outResult = std::move(localResult);
 	}

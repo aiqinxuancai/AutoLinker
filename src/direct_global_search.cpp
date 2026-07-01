@@ -256,13 +256,107 @@ std::uintptr_t ReadNormalizedAbs32(std::uintptr_t absoluteAddress, std::uintptr_
 bool HasUnsafeDirectGlobalSearchLayoutSupport(
     std::uintptr_t moduleBase,
     std::string* outTrace = nullptr) {
-    (void)moduleBase;
     if (outTrace != nullptr) {
         outTrace->clear();
     }
 
+    if (moduleBase == 0) {
+        if (outTrace != nullptr) {
+            *outTrace = "direct_global_search_fixed_layout_unsupported|module_base_invalid";
+        }
+        return false;
+    }
+
+    struct KnownLayoutProfile {
+        const char* name;
+        std::uintptr_t setActiveEditorObjectRva;
+        ptrdiff_t activeEditorObjectOffset;
+    };
+
+    static constexpr KnownLayoutProfile kProfiles[] = {
+        { "e5.95", 0x47ADF0, 0x464 },
+        { "e571", 0x471B30, 0x438 },
+    };
+
+    auto tryExtractActiveEditorOffset = [moduleBase](std::uintptr_t functionRva, ptrdiff_t* outOffset) -> bool {
+        if (outOffset != nullptr) {
+            *outOffset = 0;
+        }
+        if (functionRva < kImageBase) {
+            return false;
+        }
+
+        const auto* const code = reinterpret_cast<const std::uint8_t*>(moduleBase + (functionRva - kImageBase));
+        __try {
+            if (code == nullptr ||
+                code[0] != 0x53 ||
+                code[1] != 0x8B ||
+                code[2] != 0xD9 ||
+                code[3] != 0x56 ||
+                code[4] != 0x57 ||
+                code[5] != 0x8B ||
+                code[6] != 0xB3 ||
+                code[21] != 0xC7 ||
+                code[22] != 0x83 ||
+                code[44] != 0x8B ||
+                code[45] != 0x83 ||
+                code[56] != 0x89 ||
+                code[57] != 0xBB) {
+                return false;
+            }
+
+            const std::uint32_t disp1 = *reinterpret_cast<const std::uint32_t*>(code + 7);
+            const std::uint32_t disp2 = *reinterpret_cast<const std::uint32_t*>(code + 23);
+            const std::uint32_t disp3 = *reinterpret_cast<const std::uint32_t*>(code + 46);
+            const std::uint32_t disp4 = *reinterpret_cast<const std::uint32_t*>(code + 58);
+            if (disp1 == 0 || disp1 != disp2 || disp1 != disp3 || disp1 != disp4) {
+                return false;
+            }
+
+            if (outOffset != nullptr) {
+                *outOffset = static_cast<ptrdiff_t>(disp1);
+            }
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    };
+
+    std::string mismatchTrace;
+    for (const auto& profile : kProfiles) {
+        ptrdiff_t activeOffset = 0;
+        if (!tryExtractActiveEditorOffset(profile.setActiveEditorObjectRva, &activeOffset)) {
+            mismatchTrace +=
+                std::string("|known_profile_try=") +
+                profile.name +
+                "|set_active_signature_mismatch";
+            continue;
+        }
+        if (activeOffset != profile.activeEditorObjectOffset) {
+            mismatchTrace +=
+                std::string("|known_profile_try=") +
+                profile.name +
+                "|active_offset_mismatch=" +
+                std::to_string(activeOffset);
+            continue;
+        }
+
+        if (outTrace != nullptr) {
+            *outTrace =
+                std::string("direct_global_search_fixed_layout_supported") +
+                "|known_profile=" +
+                profile.name +
+                "|active_offset=" +
+                std::to_string(activeOffset);
+        }
+        return true;
+    }
+
     if (outTrace != nullptr) {
-        *outTrace = "direct_global_search_fixed_layout_unsupported_without_probe";
+        *outTrace =
+            std::string("direct_global_search_fixed_layout_unsupported") +
+            "|known_profile=no_match" +
+            mismatchTrace;
     }
     return false;
 }
@@ -2571,17 +2665,132 @@ bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
     }
 
     const auto& addrs = GetNativeSearchAddresses(moduleBase);
-    if (!addrs.ok) {
-        if (outTrace != nullptr) {
-            *outTrace = "resolve_native_addresses_failed";
+    const auto resolveLightweightByHiddenOpen = [&](const char* reason) -> bool {
+        const auto& openAddrs = GetOpenCodeTargetAddresses(moduleBase);
+        if (!openAddrs.ok) {
+            if (outTrace != nullptr) {
+                *outTrace =
+                    std::string(reason == nullptr ? "native_addresses_unavailable" : reason) +
+                    "|lightweight_open_code_target_unavailable|" +
+                    openAddrs.trace;
+            }
+            return false;
         }
-        return false;
+
+        int openType = 0;
+        int openArg2 = -1;
+        int openArg3 = -1;
+        int resolvedIndex = -1;
+        switch (itemTypeNibble) {
+        case 1:
+            resolvedIndex = static_cast<int>(((itemData >> 16) & 0x0FFFu)) - 1;
+            if (resolvedIndex < 0) {
+                if (outTrace != nullptr) {
+                    *outTrace = "type1_resolved_index_invalid";
+                }
+                return false;
+            }
+            openType = 1;
+            openArg2 = resolvedIndex;
+            openArg3 = 0;
+            break;
+        case 2:
+            openType = 3;
+            break;
+        case 3:
+            openType = 2;
+            break;
+        case 4:
+            openType = 4;
+            break;
+        case 5:
+            resolvedIndex = static_cast<int>(itemData & 0x0FFFFFFFu);
+            openType = 5;
+            openArg2 = resolvedIndex;
+            break;
+        case 6:
+            openType = 6;
+            break;
+        case 7: {
+            const unsigned int subType = itemData & 0x0FFFFFFFu;
+            openType = (subType == 1u) ? 7 : 8;
+            break;
+        }
+        default:
+            if (outTrace != nullptr) {
+                *outTrace = "unsupported_tree_item_type";
+            }
+            return false;
+        }
+
+        void* const mainEditorHost = PtrAbsolute<void>(moduleBase, openAddrs.mainEditorHost);
+        if (mainEditorHost == nullptr) {
+            if (outTrace != nullptr) {
+                *outTrace =
+                    std::string(reason == nullptr ? "native_addresses_unavailable" : reason) +
+                    "|lightweight_main_editor_host_null|" +
+                    openAddrs.trace;
+            }
+            return false;
+        }
+
+        const auto openCodeTarget = BindAbsolute<FnOpenCodeTarget>(moduleBase, openAddrs.openCodeTarget);
+        void* editorObject = nullptr;
+        std::string hiddenOpenTrace;
+        if (!TryOpenCodeTargetNoActivate(
+                openCodeTarget,
+                mainEditorHost,
+                openType,
+                openArg2,
+                openArg3,
+                &editorObject,
+                &hiddenOpenTrace) ||
+            editorObject == nullptr) {
+            if (outTrace != nullptr) {
+                *outTrace =
+                    std::string(reason == nullptr ? "native_addresses_unavailable" : reason) +
+                    "|lightweight_hidden_open_failed|" +
+                    (hiddenOpenTrace.empty() ? std::string("hidden_open_failed") : hiddenOpenTrace) +
+                    "|" +
+                    openAddrs.trace;
+            }
+            return false;
+        }
+
+        if (outEditorObject != nullptr) {
+            *outEditorObject = editorObject;
+        }
+        if (outResolvedType != nullptr) {
+            *outResolvedType = openType;
+        }
+        if (outResolvedIndex != nullptr) {
+            *outResolvedIndex = resolvedIndex;
+        }
+        if (outBucketData != nullptr) {
+            *outBucketData = 0;
+        }
+        if (outTrace != nullptr) {
+            *outTrace =
+                std::string("open_editor_no_activate_lightweight_hidden_open") +
+                "|" +
+                (reason == nullptr ? "native_addresses_unavailable" : reason) +
+                "|open_type=" + std::to_string(openType) +
+                "|arg2=" + std::to_string(openArg2) +
+                "|arg3=" + std::to_string(openArg3) +
+                "|resolved_index=" + std::to_string(resolvedIndex) +
+                "|bucket_data=0|" +
+                hiddenOpenTrace +
+                "|" +
+                openAddrs.trace;
+        }
+        return true;
+    };
+
+    if (!addrs.ok) {
+        return resolveLightweightByHiddenOpen("resolve_native_addresses_failed");
     }
     if (addrs.createCodePage == 0) {
-        if (outTrace != nullptr) {
-            *outTrace = "create_code_page_resolve_failed";
-        }
-        return false;
+        return resolveLightweightByHiddenOpen("create_code_page_resolve_failed");
     }
 
     void* const mainEditorHost = PtrAbsolute<void>(moduleBase, addrs.mainEditorHost);
