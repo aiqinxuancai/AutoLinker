@@ -1541,9 +1541,6 @@ int RunStringCommand(const std::string& commandName, const std::string& input)
 	else if (commandName == "version-text") {
 		result = AutoLinkerTest_GetVersionText(buffer, static_cast<int>(sizeof(buffer)));
 	}
-	else if (commandName == "module-local-dump") {
-		result = AutoLinkerTest_DumpLocalModulePublicInfo(input.c_str(), buffer, static_cast<int>(sizeof(buffer)));
-	}
 
 	if (result < 0) {
 		return PrintStringResult(commandName.c_str(), result, buffer);
@@ -1562,7 +1559,6 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest linker-krnln <link-command>" << std::endl;
 	std::cout << "  AutoLinkerTest between-dashes <text>" << std::endl;
 	std::cout << "  AutoLinkerTest version-text" << std::endl;
-	std::cout << "  AutoLinkerTest module-local-dump <module-path>" << std::endl;
 	std::cout << "  AutoLinkerTest deepseek-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest openai-chat-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest openai-responses-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
@@ -1607,7 +1603,7 @@ int main(int argc, char* argv[])
 		return RunVersionCompare(argv[2], argv[3]);
 	}
 
-	if (commandName == "linker-out" || commandName == "linker-krnln" || commandName == "between-dashes" || commandName == "module-local-dump") {
+	if (commandName == "linker-out" || commandName == "linker-krnln" || commandName == "between-dashes") {
 		if (argc < 3) {
 			PrintUsage();
 			return EXIT_FAILURE;

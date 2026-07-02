@@ -1542,20 +1542,6 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
-		{"name", "search_available_module_public_code"},
-		{"description", "Search public declarations in available local .ec modules without importing them. Use add_module_to_project after selecting a module."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"keyword", {{"type", "string"}, {"description", "Keyword to search in module public code."}}},
-				{"module_name", {{"type", "string"}, {"description", "Optional module name filter."}}},
-				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}}
-			}},
-			{"required", nlohmann::json::array({"keyword"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
 		{"name", "add_module_to_project"},
 		{"description", "Import one .ec module into the current project by module_path or module_name. After a successful add, AutoLinker performs a full refresh_workspace_mirror."},
 		{"inputSchema", {
@@ -1821,7 +1807,6 @@ std::vector<std::string> SelectGeminiToolNames(const std::vector<AIChatMessage>&
 	if (ContainsAnyText(text, { "模块", "ECOM", ".ec", "module", "支持库", "support library", ".fne", ".fnr" })) {
 		addFileReadTools();
 		AddUniqueToolName(names, "list_imported_modules");
-		AddUniqueToolName(names, "search_available_module_public_code");
 		AddUniqueToolName(names, "add_module_to_project");
 		AddUniqueToolName(names, "remove_module_from_project");
 	}

@@ -29,9 +29,6 @@ AUTOLINKER_TEST_API int AutoLinkerTest_ExtractBetweenDashes(const char* text, ch
 // 返回当前 AutoLinker 版本文本，成功时返回写入长度，不含结尾空字符。
 AUTOLINKER_TEST_API int AutoLinkerTest_GetVersionText(char* buffer, int bufferSize);
 
-// 执行本地 EC 公开信息解析，并输出调试文本。
-AUTOLINKER_TEST_API int AutoLinkerTest_DumpLocalModulePublicInfo(const char* modulePath, char* buffer, int bufferSize);
-
 // 对指定 DeepSeek 模型执行连通性、普通对话、thinking、多轮工具调用集成测试，并输出 JSON 结果。
 AUTOLINKER_TEST_API int AutoLinkerTest_RunDeepSeekModelIntegrationTest(
 	const char* apiKey,

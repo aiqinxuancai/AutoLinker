@@ -59,9 +59,6 @@
     <ClCompile Include="src\AIJsonConfig.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
-    <ClCompile Include="src\EcModulePublicInfoReader.cpp">
-      <Filter>Utils</Filter>
-    </ClCompile>
     <ClCompile Include="src\EideInternalTextBridge.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -153,7 +150,6 @@
     <ClCompile Include="src\direct_global_search.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
-    <ClCompile Include="src\native_module_public_info.cpp" />
     <ClCompile Include="src\LocalMcpServer.cpp" />
     <ClCompile Include="src\RealPageCodeToolSupport.cpp" />
     <ClCompile Include="src\PowerShellToolRunner.cpp" />
@@ -241,9 +237,6 @@
     <ClInclude Include="src\EPackagerIntegration.h">
       <Filter>Utils</Filter>
     </ClInclude>
-    <ClInclude Include="src\EcModulePublicInfoReader.h">
-      <Filter>Utils</Filter>
-    </ClInclude>
     <ClInclude Include="src\EcSwitchConfigDialog.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -320,7 +313,6 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\LocalMcpServer.h" />
-    <ClInclude Include="src\native_module_public_info.hpp" />
     <ClInclude Include="src\PowerShellToolRunner.h" />
     <ClInclude Include="src\RealPageCodeToolSupport.h" />
     <ClInclude Include="src\ResourceTextLoader.h">
