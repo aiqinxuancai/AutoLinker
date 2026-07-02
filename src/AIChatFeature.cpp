@@ -18,11 +18,8 @@
 #include <process.h>
 #include <Shellapi.h>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 #include <tlhelp32.h>
-#include <wincrypt.h>
 #include <wrl.h>
 
 #include "..\\thirdparty\\json.hpp"
@@ -43,11 +40,6 @@
 #include "WorkspaceMirror.h"
 #include "WinINetUtil.h"
 #include "resource.h"
-#include "..\\elib\\lib2.h"
-#if defined(_M_IX86)
-#include "direct_global_search_debug.hpp"
-#include "native_module_public_info.hpp"
-#endif
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "advapi32.lib")
@@ -304,43 +296,6 @@ UINT g_msgAIChatToolExec = 0;
 std::atomic_bool g_clearHistoryInProgress = false;
 bool g_webView2RuntimeChecked = false;
 bool g_webView2RuntimeAvailable = false;
-
-struct ModulePublicInfoCacheEntry {
-	std::string md5;
-	e571::ModulePublicInfoDump dump;
-	std::string error;
-	bool ok = false;
-};
-
-struct SupportLibraryDumpCacheEntry {
-	std::string md5;
-	nlohmann::json dumpJson = nlohmann::json::object();
-	std::string error;
-	bool ok = false;
-};
-
-std::mutex g_modulePublicInfoCacheMutex;
-std::unordered_map<std::string, ModulePublicInfoCacheEntry> g_modulePublicInfoCache;
-std::mutex g_supportLibraryDumpCacheMutex;
-std::unordered_map<std::string, SupportLibraryDumpCacheEntry> g_supportLibraryDumpCache;
-
-struct ProgramTreeItemInfo {
-	int depth = 0;
-	std::string name;
-	unsigned int itemData = 0;
-	int image = -1;
-	int selectedImage = -1;
-	std::string typeKey;
-	std::string typeName;
-};
-
-struct KeywordSearchResultInfo {
-	std::string pageName;
-	std::string pageTypeKey;
-	std::string pageTypeName;
-	int lineNumber = -1;
-	std::string text;
-};
 
 void RefreshChatDialog(HWND hWnd);
 void RequestClearChatHistoryAsync();
