@@ -1,4 +1,5 @@
 ﻿#include "IDEFacade.h"
+#include "ECOMEx.h"
 #include "Global.h"
 #include "PathHelper.h"
 #include "RealPageCodeToolSupport.h"
@@ -2454,6 +2455,9 @@ bool IDEFacade::CompileWithOutputPath(
 	if (outNormalizedPath != nullptr) {
 		*outNormalizedPath = normalizedPath;
 	}
+
+	// 工具编译不会经过地址 Hook，这里显式执行一次编译前 EC 模块切换。
+	RunChangeECOM(true);
 
 	std::string requestDiagnostics;
 	if (!BeginSilentCompileOutputPathRequest(normalizedPath, GetCurrentThreadId(), &requestDiagnostics)) {

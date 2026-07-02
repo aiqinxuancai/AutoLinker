@@ -1092,16 +1092,6 @@ bool WriteTextFileUtf8(const std::filesystem::path& path, const std::string& tex
 	}
 }
 
-std::string GetFileNameLowerUtf8(const std::wstring& path)
-{
-	const std::filesystem::path fsPath(path);
-	std::wstring name = fsPath.filename().wstring();
-	for (wchar_t& ch : name) {
-		ch = static_cast<wchar_t>(std::towlower(ch));
-	}
-	return WideToUtf8(name);
-}
-
 bool IsHeadlessLauncherAlive(const nlohmann::json& json)
 {
 	if (!json.contains("launcher_pid") || !json["launcher_pid"].is_number_integer()) {
@@ -1120,19 +1110,9 @@ bool IsHeadlessLauncherAlive(const nlohmann::json& json)
 
 	DWORD exitCode = 0;
 	const bool stillActive = GetExitCodeProcess(processHandle, &exitCode) != FALSE && exitCode == STILL_ACTIVE;
-	bool nameMatches = true;
-	if (stillActive && json.contains("launcher_name") && json["launcher_name"].is_string()) {
-		wchar_t processPath[MAX_PATH] = {};
-		DWORD processPathLen = static_cast<DWORD>(std::size(processPath));
-		if (QueryFullProcessImageNameW(processHandle, 0, processPath, &processPathLen) != FALSE) {
-			std::string expectedName = ToLowerAsciiCopyLocal(json["launcher_name"].get<std::string>());
-			std::string actualName = GetFileNameLowerUtf8(std::wstring(processPath, processPathLen));
-			nameMatches = expectedName.empty() || actualName == expectedName;
-		}
-	}
 
 	CloseHandle(processHandle);
-	return stillActive && nameMatches;
+	return stillActive;
 }
 
 void ApplyRequestFile(HeadlessCompileRequest& request)
