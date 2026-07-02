@@ -1882,6 +1882,8 @@ bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* c
 	const std::string activeProfileId = Utf8ToLocalText(data.value("activeProfileId", ""));
 	std::vector<AIConfigProfileEntry> nextProfiles;
 	nextProfiles.reserve(data["profiles"].size());
+	bool activeProfileFound = false;
+	AISettings activeSettings = {};
 	for (const auto& item : data["profiles"]) {
 		if (!item.is_object()) {
 			return false;
@@ -1893,13 +1895,21 @@ bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* c
 		if (entry.id.empty() || entry.name.empty()) {
 			return false;
 		}
-		if (!ValidateAISettingsForConnection(hWnd, entry.settings)) {
-			return false;
+		if (entry.id == activeProfileId) {
+			activeProfileFound = true;
+			activeSettings = entry.settings;
 		}
 		nextProfiles.push_back(std::move(entry));
 	}
 
 	if (nextProfiles.empty()) {
+		return false;
+	}
+	if (activeProfileId.empty() || !activeProfileFound) {
+		MessageBoxA(hWnd, "当前配置组无效。", "AI Config", MB_ICONWARNING | MB_OK);
+		return false;
+	}
+	if (!ValidateAISettingsForConnection(hWnd, activeSettings)) {
 		return false;
 	}
 
@@ -1911,12 +1921,7 @@ bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* c
 
 	ctx->profiles = nextProfiles;
 	ctx->activeProfileId = activeProfileId;
-	for (const auto& entry : ctx->profiles) {
-		if (entry.id == ctx->activeProfileId) {
-			*ctx->settings = entry.settings;
-			break;
-		}
-	}
+	*ctx->settings = activeSettings;
 	ctx->accepted = true;
 	DestroyWindow(hWnd);
 	return true;
