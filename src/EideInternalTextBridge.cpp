@@ -567,6 +567,24 @@ bool IsVersionLockedInternalInteropSupported(std::string* outTrace = nullptr)
 	return addrs.ok;
 }
 
+bool IsGenericArrayInteropSupported(std::uintptr_t moduleBase, std::string* outTrace = nullptr)
+{
+	const auto& addrs = GetInternalInteropAddresses(moduleBase);
+	const bool supported =
+		addrs.genericArrayInit != 0 &&
+		addrs.genericArrayDestroy != 0 &&
+		addrs.genericArrayAssign != 0 &&
+		addrs.genericArrayFinalize != 0 &&
+		addrs.genericArrayVtable != 0;
+	if (outTrace != nullptr) {
+		*outTrace =
+			std::string(supported ? "generic_array_interop_supported" : "generic_array_interop_unsupported") +
+			"|" +
+			addrs.trace;
+	}
+	return supported;
+}
+
 bool IsE595DirectTextPackageWriteSupported(std::string* outTrace = nullptr)
 {
 	if (outTrace != nullptr) {
@@ -2533,11 +2551,11 @@ public:
 private:
 	void Initialize()
 	{
-		const auto& addrs = GetInternalInteropAddresses(m_moduleBase);
-		if (!addrs.ok) {
+		if (!IsGenericArrayInteropSupported(m_moduleBase)) {
 			return;
 		}
 
+		const auto& addrs = GetInternalInteropAddresses(m_moduleBase);
 		std::memset(m_storage.data(), 0, m_storage.size());
 		const auto initFn = ResolveInternalAddress<FnThiscallVoid>(
 			m_moduleBase,
@@ -2558,12 +2576,12 @@ private:
 		if (!m_initialized) {
 			return;
 		}
-		const auto& addrs = GetInternalInteropAddresses(m_moduleBase);
-		if (!addrs.ok) {
+		if (!IsGenericArrayInteropSupported(m_moduleBase)) {
 			m_initialized = false;
 			return;
 		}
 
+		const auto& addrs = GetInternalInteropAddresses(m_moduleBase);
 		const auto destroyFn = ResolveInternalAddress<FnThiscallVoid>(
 			m_moduleBase,
 			addrs.genericArrayDestroy);
@@ -7864,7 +7882,7 @@ bool TryFormatWholePageTextDirectByEditor(
 	}
 
 	std::string interopTrace;
-	if (!IsVersionLockedInternalInteropSupported(&interopTrace)) {
+	if (!IsGenericArrayInteropSupported(moduleBase, &interopTrace)) {
 		if (outTrace != nullptr) {
 			*outTrace = "direct_formatter_unsupported|" + interopTrace;
 		}
@@ -8050,6 +8068,67 @@ bool CopyWholePageTextByEditor(
 	}
 	AppendPageEditTraceLine("CopyWholePageTextByEditor.success");
 	return true;
+}
+
+bool ReadWholePageTextForVerification(
+	std::uintptr_t editorObject,
+	std::uintptr_t moduleBase,
+	std::string* outCode,
+	NativeRealPageAccessResult* outResult)
+{
+	if (outCode != nullptr) {
+		outCode->clear();
+	}
+	if (outResult != nullptr) {
+		*outResult = {};
+		outResult->editorObject = editorObject;
+	}
+	if (editorObject == 0 || moduleBase == 0 || outCode == nullptr) {
+		if (outResult != nullptr) {
+			outResult->trace = "invalid_argument";
+		}
+		return false;
+	}
+
+	std::string directCode;
+	std::string directTrace;
+	if (TryFormatWholePageTextDirectByEditor(editorObject, moduleBase, &directCode, &directTrace) &&
+		!directCode.empty()) {
+		*outCode = std::move(directCode);
+		if (outResult != nullptr) {
+			outResult->ok = true;
+			outResult->editorObject = editorObject;
+			outResult->usedClipboardEmulation = false;
+			outResult->capturedCustomFormat = false;
+			outResult->textBytes = outCode->size();
+			outResult->pageCode = *outCode;
+			outResult->trace = "read_by_direct_formatter|" + directTrace;
+		}
+		return true;
+	}
+
+	NativeRealPageAccessResult copyResult{};
+	if (CopyWholePageTextByEditor(editorObject, moduleBase, outCode, &copyResult)) {
+		if (outResult != nullptr) {
+			*outResult = copyResult;
+			outResult->trace =
+				"read_by_copy_fallback|" +
+				(directTrace.empty() ? std::string("direct_formatter_failed") : directTrace) +
+				"|" +
+				copyResult.trace;
+		}
+		return true;
+	}
+
+	if (outResult != nullptr) {
+		*outResult = copyResult;
+		outResult->trace =
+			"verify_read_failed|" +
+			(directTrace.empty() ? std::string("direct_formatter_failed") : directTrace) +
+			"|" +
+			copyResult.trace;
+	}
+	return false;
 }
 
 bool ReplaceWholePageByCustomClipboardPayload(
@@ -8448,7 +8527,7 @@ bool TryRollbackRealPageCode(
 
 	std::string verifyCode;
 	NativeRealPageAccessResult verifyResult{};
-	if (!CopyWholePageTextByEditor(editorObject, moduleBase, &verifyCode, &verifyResult)) {
+	if (!ReadWholePageTextForVerification(editorObject, moduleBase, &verifyCode, &verifyResult)) {
 		if (outTrace != nullptr) {
 			*outTrace = rollbackWriteTrace + "|rollback_verify_read_failed|" + verifyResult.trace;
 		}
@@ -8550,19 +8629,8 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 				: "|rollback_failed|" + rollbackTrace;
 	};
 
-	std::string selectTrace;
-	if (!InvokeEditorCommandWithFallback(
-			editorObject,
-			moduleBase,
-			kEditorCmdSelectAll,
-			&selectTrace)) {
-		AppendPageEditTraceLine("ReplaceRealPageCode.select_all_failed|" + selectTrace);
-		if (outResult != nullptr) {
-			outResult->trace = "select_all_failed|" + selectTrace;
-		}
-		return false;
-	}
-	AppendPageEditTraceLine("ReplaceRealPageCode.after_select_all|" + selectTrace);
+	const std::string rangePrepareTrace = "range_prepare_by_write_strategy";
+	AppendPageEditTraceLine("ReplaceRealPageCode.range_prepare_deferred|" + rangePrepareTrace);
 
 	std::string replaceTrace;
 	std::string writeStrategyTrace =
@@ -8629,7 +8697,7 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	if (!replaceOk) {
 		if (outResult != nullptr) {
 			outResult->trace =
-				selectTrace +
+				rangePrepareTrace +
 				"|replace_failed|" +
 				replaceTrace;
 		}
@@ -8644,7 +8712,7 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 			outResult->usedClipboardEmulation = usedClipboardEmulationForWrite;
 			outResult->textBytes = normalizedNewPageCode.size();
 			outResult->trace =
-				selectTrace +
+				rangePrepareTrace +
 				"|" +
 				writeStrategyTrace +
 				"|" +
@@ -8657,10 +8725,10 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	std::string verifyCode;
 	NativeRealPageAccessResult verifyResult{};
 	AppendPageEditTraceLine("ReplaceRealPageCode.before_verify_read");
-	if (!CopyWholePageTextByEditor(editorObject, moduleBase, &verifyCode, &verifyResult)) {
+	if (!ReadWholePageTextForVerification(editorObject, moduleBase, &verifyCode, &verifyResult)) {
 		AppendPageEditTraceLine("ReplaceRealPageCode.verify_read_failed|" + verifyResult.trace);
 		std::string failureTrace =
-			selectTrace +
+			rangePrepareTrace +
 			"|" +
 			writeStrategyTrace +
 			"|" +
@@ -8684,7 +8752,7 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	if (!VerifyRealPageCodeMatches(normalizedNewPageCode, verifyCode, &verifyMode, &verifySummary)) {
 		AppendPageEditTraceLine("ReplaceRealPageCode.verify_mismatch|" + verifySummary);
 		std::string failureTrace =
-			selectTrace +
+			rangePrepareTrace +
 			"|" +
 			writeStrategyTrace +
 			"|" +
@@ -8708,7 +8776,7 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 		outResult->textBytes = verifyCode.size();
 		outResult->pageCode = verifyCode;
 		outResult->trace =
-			selectTrace +
+			rangePrepareTrace +
 			"|" +
 			writeStrategyTrace +
 			"|" +
@@ -9313,13 +9381,40 @@ bool GetRealPageCodeByEditorObject(
 		return false;
 	}
 
-	if (CopyWholePageTextByEditor(editorObject, moduleBase, outCode, outResult)) {
+	std::string directCode;
+	std::string directTrace;
+	if (TryFormatWholePageTextDirectByEditor(editorObject, moduleBase, &directCode, &directTrace) &&
+		!directCode.empty()) {
+		*outCode = std::move(directCode);
 		if (outResult != nullptr) {
 			outResult->ok = true;
+			outResult->editorObject = editorObject;
+			outResult->usedClipboardEmulation = false;
+			outResult->capturedCustomFormat = false;
+			outResult->textBytes = outCode->size();
+			outResult->pageCode = *outCode;
+			outResult->trace = "read_by_direct_formatter|" + directTrace;
 		}
 		return true;
 	}
 
+	if (CopyWholePageTextByEditor(editorObject, moduleBase, outCode, outResult)) {
+		if (outResult != nullptr) {
+			outResult->ok = true;
+			outResult->trace =
+				"read_by_copy_fallback|" +
+				(directTrace.empty() ? std::string("direct_formatter_failed") : directTrace) +
+				"|" +
+				outResult->trace;
+		}
+		return true;
+	}
+
+	if (outResult != nullptr && outResult->trace.empty()) {
+		outResult->trace =
+			"read_failed|" +
+			(directTrace.empty() ? std::string("direct_formatter_failed") : directTrace);
+	}
 	return false;
 }
 

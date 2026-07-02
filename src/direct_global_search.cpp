@@ -235,13 +235,16 @@ bool HasUnsafeDirectGlobalSearchLayoutSupport(
 std::uintptr_t ResolveUniqueCodeAddress(
     const char* label,
     const char* pattern,
-    std::uintptr_t moduleBase) {
+    std::uintptr_t moduleBase,
+    bool emitFailureLog = false) {
     const auto matches = FindSelfModelMemoryAll(pattern);
     if (matches.size() != 1) {
-        OutputStringToELog(std::format(
-            "[DirectGlobalSearch] resolve {} failed, matchCount={}",
-            label,
-            matches.size()));
+        if (emitFailureLog) {
+            OutputStringToELog(std::format(
+                "[DirectGlobalSearch] resolve {} failed, matchCount={}",
+                label,
+                matches.size()));
+        }
         return 0;
     }
     return NormalizeRuntimeAddress(static_cast<std::uintptr_t>(matches.front()), moduleBase);
@@ -250,18 +253,21 @@ std::uintptr_t ResolveUniqueCodeAddress(
 std::uintptr_t ResolveUniqueCodeAddressFromPatterns(
     const char* label,
     std::initializer_list<const char*> patterns,
-    std::uintptr_t moduleBase) {
+    std::uintptr_t moduleBase,
+    bool emitFailureLog = false) {
     size_t patternIndex = 0;
     for (const char* pattern : patterns) {
         const auto matches = FindSelfModelMemoryAll(pattern);
         if (matches.size() == 1) {
             return NormalizeRuntimeAddress(static_cast<std::uintptr_t>(matches.front()), moduleBase);
         }
-        OutputStringToELog(std::format(
-            "[DirectGlobalSearch] resolve {} pattern#{} failed, matchCount={}",
-            label,
-            patternIndex,
-            matches.size()));
+        if (emitFailureLog) {
+            OutputStringToELog(std::format(
+                "[DirectGlobalSearch] resolve {} pattern#{} failed, matchCount={}",
+                label,
+                patternIndex,
+                matches.size()));
+        }
         ++patternIndex;
     }
     return 0;
@@ -271,13 +277,16 @@ std::uintptr_t ResolveUniqueImmAddress(
     const char* label,
     const char* pattern,
     size_t immOffset,
-    std::uintptr_t moduleBase) {
+    std::uintptr_t moduleBase,
+    bool emitFailureLog = false) {
     const auto matches = FindSelfModelMemoryAll(pattern);
     if (matches.size() != 1) {
-        OutputStringToELog(std::format(
-            "[DirectGlobalSearch] resolve {} failed, matchCount={}",
-            label,
-            matches.size()));
+        if (emitFailureLog) {
+            OutputStringToELog(std::format(
+                "[DirectGlobalSearch] resolve {} failed, matchCount={}",
+                label,
+                matches.size()));
+        }
         return 0;
     }
     return ReadNormalizedImm32(static_cast<std::uintptr_t>(matches.front()), immOffset, moduleBase);
@@ -563,15 +572,16 @@ bool DebugIsDirectGlobalSearchSupportedImpl(
         return false;
     }
 
-    if (!HasNativeSearchAddresses(moduleBase)) {
+    const auto& openAddrs = GetOpenCodeTargetAddresses(moduleBase);
+    if (!openAddrs.ok) {
         if (outTrace != nullptr) {
-            *outTrace = "resolve_native_addresses_failed";
+            *outTrace = "resolve_open_code_target_addresses_failed|" + openAddrs.trace;
         }
         return false;
     }
 
     if (outTrace != nullptr) {
-        *outTrace = "direct_global_search_supported";
+        *outTrace = "direct_global_search_editor_resolve_supported|" + openAddrs.trace;
     }
     return true;
 }
