@@ -668,7 +668,7 @@ void PopulateSourceEditModeCombo(HWND hCombo, AISourceEditMode selected)
 
 	SendMessageA(hCombo, CB_RESETCONTENT, 0, 0);
 	const std::string realPageLabel = Utf8ToLocalText("真实页优先");
-	const std::string mirrorLabel = Utf8ToLocalText("解包镜像基准");
+	const std::string mirrorLabel = Utf8ToLocalText("解包镜像基准（测试）");
 	const int idxRealPage = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(realPageLabel.c_str())));
 	const int idxMirror = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(mirrorLabel.c_str())));
 	SendMessageA(hCombo, CB_SETITEMDATA, idxRealPage, static_cast<LPARAM>(AISourceEditMode::RealPageFirst));

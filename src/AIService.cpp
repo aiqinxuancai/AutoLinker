@@ -3676,7 +3676,7 @@ std::string AIService::SourceEditModeDisplayName(AISourceEditMode mode)
 {
 	switch (mode) {
 	case AISourceEditMode::MirrorSourceBase:
-		return "解包镜像基准";
+		return "解包镜像基准（测试）";
 	case AISourceEditMode::RealPageFirst:
 	default:
 		return "真实页优先";
