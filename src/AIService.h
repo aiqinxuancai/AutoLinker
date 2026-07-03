@@ -33,10 +33,17 @@ enum class AIThinkingLevel {
 	High = 3
 };
 
+// AI 源码编辑基准模式。
+enum class AISourceEditMode {
+	RealPageFirst = 0,
+	MirrorSourceBase = 1
+};
+
 // AI 设置。
 struct AISettings {
 	AIProtocolType protocolType = AIProtocolType::OpenAI;
 	AIThinkingLevel thinkingLevel = AIThinkingLevel::Off;
+	AISourceEditMode sourceEditMode = AISourceEditMode::RealPageFirst;
 	std::string baseUrl;
 	std::string apiKey;
 	std::string model;
@@ -105,6 +112,9 @@ public:
 	static AIThinkingLevel ParseThinkingLevel(const std::string& text);
 	static std::string ThinkingLevelToString(AIThinkingLevel thinkingLevel);
 	static std::string ThinkingLevelDisplayName(AIThinkingLevel thinkingLevel);
+	static AISourceEditMode ParseSourceEditMode(const std::string& text);
+	static std::string SourceEditModeToString(AISourceEditMode mode);
+	static std::string SourceEditModeDisplayName(AISourceEditMode mode);
 	// 校验自定义请求头多行文本格式。
 	static bool ValidateCustomHeadersText(const std::string& headerText, std::string& outError);
 	// 测试当前 AI 配置的接口连通性。

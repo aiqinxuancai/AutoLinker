@@ -28,6 +28,8 @@ namespace {
 
 constexpr std::uintptr_t kImageBase = 0x400000;
 constexpr int kEditorCmdSelectAll = 0x01010023;
+constexpr int kEditorCmdMoveCaretNext = 0x01010037;
+constexpr int kEditorCmdMoveCaretToEnd = 0x01010039;
 constexpr int kEditorCmdDeleteSelection = 0x02020003;
 constexpr int kEditorCmdPaste = 0x02020005;
 constexpr int kEditorCmdCopy = 0x02030001;
@@ -6965,6 +6967,10 @@ const char* DescribeEditorCommand(int command)
 	switch (command) {
 	case kEditorCmdSelectAll:
 		return "select_all";
+	case kEditorCmdMoveCaretNext:
+		return "move_caret_next";
+	case kEditorCmdMoveCaretToEnd:
+		return "move_caret_to_end";
 	case kEditorCmdDeleteSelection:
 		return "delete_selection";
 	case kEditorCmdPaste:
@@ -6984,6 +6990,60 @@ void SettleEditorAfterCommand(DWORD waitMs = 60)
 		Sleep(10);
 	} while (GetTickCount() < deadline);
 	PumpPendingMessages();
+}
+
+bool CollapseEditorSelectionAfterWholePageWrite(
+	std::uintptr_t editorObject,
+	std::uintptr_t moduleBase,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+
+	std::string endTrace;
+	if (InvokeEditorCommand(
+			editorObject,
+			moduleBase,
+			kEditorCmdMoveCaretToEnd,
+			kEditorDispatchDefaultFlags,
+			nullptr,
+			nullptr,
+			&endTrace)) {
+		SettleEditorAfterCommand(20);
+		if (outTrace != nullptr) {
+			*outTrace = "collapse_selection_ok|move_caret_to_end|" + endTrace;
+		}
+		return true;
+	}
+
+	std::string nextTrace;
+	if (InvokeEditorCommand(
+			editorObject,
+			moduleBase,
+			kEditorCmdMoveCaretNext,
+			kEditorDispatchDefaultFlags,
+			nullptr,
+			nullptr,
+			&nextTrace)) {
+		SettleEditorAfterCommand(20);
+		if (outTrace != nullptr) {
+			*outTrace =
+				"collapse_selection_ok|move_caret_next|" +
+				nextTrace +
+				"|move_caret_to_end_failed|" +
+				endTrace;
+		}
+		return true;
+	}
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			"collapse_selection_failed"
+			"|move_caret_to_end=" + endTrace +
+			"|move_caret_next=" + nextTrace;
+	}
+	return false;
 }
 
 bool InvokeEditorCommandByRoute(
@@ -8705,6 +8765,8 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	}
 
 	if (skipVerifyRead) {
+		std::string collapseTrace;
+		CollapseEditorSelectionAfterWholePageWrite(editorObject, moduleBase, &collapseTrace);
 		AppendPageEditTraceLine("ReplaceRealPageCode.verify_skipped|reason=requested");
 		AppendPageEditTraceLine("ReplaceRealPageCode.success");
 		if (outResult != nullptr) {
@@ -8717,6 +8779,7 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 				writeStrategyTrace +
 				"|" +
 				replaceTrace +
+				(collapseTrace.empty() ? std::string() : ("|" + collapseTrace)) +
 				"|verify_skipped_requested";
 		}
 		return true;
@@ -8768,6 +8831,8 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	if (verifyMode == "structural") {
 		AppendPageEditTraceLine("ReplaceRealPageCode.verify_structural_ok|" + verifySummary);
 	}
+	std::string collapseTrace;
+	CollapseEditorSelectionAfterWholePageWrite(editorObject, moduleBase, &collapseTrace);
 	AppendPageEditTraceLine("ReplaceRealPageCode.success");
 
 	if (outResult != nullptr) {
@@ -8781,6 +8846,7 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 			writeStrategyTrace +
 			"|" +
 			replaceTrace +
+			(collapseTrace.empty() ? std::string() : ("|" + collapseTrace)) +
 			"|verify_ok_" +
 			verifyMode +
 			"|" +

@@ -53,6 +53,7 @@ constexpr int IDC_CFG_PROFILE_ADD = 1013;
 constexpr int IDC_CFG_PROFILE_RENAME = 1014;
 constexpr int IDC_CFG_PROFILE_DELETE = 1015;
 constexpr int IDC_CFG_PROFILE_ADD_PRESET = 1016;
+constexpr int IDC_CFG_SOURCE_EDIT_MODE = 1017;
 constexpr int IDC_CFG_SAVE = 1;
 constexpr int IDC_CFG_CANCEL = 2;
 constexpr UINT kAIConfigNativePresetMenuBase = 30000;
@@ -524,6 +525,7 @@ struct AIConfigDialogContext {
 	HWND hApiKey = nullptr;
 	HWND hModel = nullptr;
 	HWND hThinkingLevel = nullptr;
+	HWND hSourceEditMode = nullptr;
 	HWND hTavilyApiKey = nullptr;
 	HWND hExtraPrompt = nullptr;
 	HWND hCustomHeaders = nullptr;
@@ -658,6 +660,39 @@ AIProtocolType GetSelectedProtocol(HWND hCombo)
 	}
 }
 
+void PopulateSourceEditModeCombo(HWND hCombo, AISourceEditMode selected)
+{
+	if (hCombo == nullptr) {
+		return;
+	}
+
+	SendMessageA(hCombo, CB_RESETCONTENT, 0, 0);
+	const std::string realPageLabel = Utf8ToLocalText("真实页优先");
+	const std::string mirrorLabel = Utf8ToLocalText("解包镜像基准");
+	const int idxRealPage = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(realPageLabel.c_str())));
+	const int idxMirror = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(mirrorLabel.c_str())));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxRealPage, static_cast<LPARAM>(AISourceEditMode::RealPageFirst));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxMirror, static_cast<LPARAM>(AISourceEditMode::MirrorSourceBase));
+	SendMessageA(hCombo, CB_SETCURSEL, selected == AISourceEditMode::MirrorSourceBase ? idxMirror : idxRealPage, 0);
+}
+
+AISourceEditMode GetSelectedSourceEditMode(HWND hCombo)
+{
+	if (hCombo == nullptr) {
+		return AISourceEditMode::RealPageFirst;
+	}
+
+	const int selected = static_cast<int>(SendMessageA(hCombo, CB_GETCURSEL, 0, 0));
+	if (selected == CB_ERR) {
+		return AISourceEditMode::RealPageFirst;
+	}
+
+	const LRESULT data = SendMessageA(hCombo, CB_GETITEMDATA, selected, 0);
+	return static_cast<AISourceEditMode>(data) == AISourceEditMode::MirrorSourceBase
+		? AISourceEditMode::MirrorSourceBase
+		: AISourceEditMode::RealPageFirst;
+}
+
 void ApplyProfileValuesToSettings(const std::map<std::string, std::string>& values, AISettings& settings)
 {
 	settings.protocolType = AIService::ParseProtocolType([&]() {
@@ -673,7 +708,6 @@ void ApplyProfileValuesToSettings(const std::map<std::string, std::string>& valu
 	if (const auto it = values.find("model"); it != values.end()) settings.model = it->second;
 	if (const auto it = values.find("system_prompt_extra"); it != values.end()) settings.extraSystemPrompt = it->second;
 	if (const auto it = values.find("custom_headers"); it != values.end()) settings.customHeadersText = it->second;
-	if (const auto it = values.find("tavily_api_key"); it != values.end()) settings.tavilyApiKey = it->second;
 	if (const auto it = values.find("timeout_ms"); it != values.end()) {
 		try { settings.timeoutMs = (std::max)(1000, std::stoi(it->second)); } catch (...) {}
 	}
@@ -695,7 +729,6 @@ std::map<std::string, std::string> BuildProfileValuesFromSettings(const AISettin
 		{ "model", settings.model },
 		{ "system_prompt_extra", settings.extraSystemPrompt },
 		{ "custom_headers", settings.customHeadersText },
-		{ "tavily_api_key", settings.tavilyApiKey },
 		{ "timeout_ms", std::to_string(settings.timeoutMs) },
 		{ "temperature", std::format("{:.2f}", settings.temperature) },
 		{ "context_window", std::to_string(settings.contextWindowTokens) }
@@ -707,12 +740,16 @@ std::vector<AIConfigProfileEntry> LoadProfileEntriesFromJsonConfig(AIJsonConfig&
 	std::vector<AIConfigProfileEntry> entries;
 	const std::vector<AIJsonConfigProfileSnapshot> snapshots = jsonConfig.getProfilesLocal();
 	outActiveProfileId = jsonConfig.getActiveProfileId();
+	const AISourceEditMode globalSourceEditMode = ioSettings.sourceEditMode;
+	const std::string globalTavilyApiKey = ioSettings.tavilyApiKey;
 
 	for (const auto& snapshot : snapshots) {
 		AIConfigProfileEntry entry;
 		entry.id = snapshot.id;
 		entry.name = snapshot.name;
 		entry.settings = {};
+		entry.settings.sourceEditMode = globalSourceEditMode;
+		entry.settings.tavilyApiKey = globalTavilyApiKey;
 		ApplyProfileValuesToSettings(snapshot.values, entry.settings);
 		entries.push_back(std::move(entry));
 	}
@@ -730,6 +767,8 @@ std::vector<AIConfigProfileEntry> LoadProfileEntriesFromJsonConfig(AIJsonConfig&
 	for (const auto& entry : entries) {
 		if (entry.id == outActiveProfileId) {
 			ioSettings = entry.settings;
+			ioSettings.sourceEditMode = globalSourceEditMode;
+			ioSettings.tavilyApiKey = globalTavilyApiKey;
 			foundActive = true;
 			break;
 		}
@@ -737,6 +776,8 @@ std::vector<AIConfigProfileEntry> LoadProfileEntriesFromJsonConfig(AIJsonConfig&
 	if (!foundActive) {
 		outActiveProfileId = entries.front().id;
 		ioSettings = entries.front().settings;
+		ioSettings.sourceEditMode = globalSourceEditMode;
+		ioSettings.tavilyApiKey = globalTavilyApiKey;
 	}
 	return entries;
 }
@@ -853,6 +894,7 @@ AISettings ReadAISettingsFromNativeDialog(AIConfigDialogContext* ctx)
 	next = *ctx->settings;
 	next.protocolType = GetSelectedProtocol(ctx->hProtocol);
 	next.thinkingLevel = GetSelectedThinkingLevel(ctx->hThinkingLevel);
+	next.sourceEditMode = GetSelectedSourceEditMode(ctx->hSourceEditMode);
 	next.baseUrl = GetEditTextA(ctx->hBaseUrl);
 	next.apiKey = GetEditTextA(ctx->hApiKey);
 	next.model = GetEditTextA(ctx->hModel);
@@ -869,6 +911,7 @@ void ApplyAISettingsToNativeDialog(AIConfigDialogContext* ctx, const AISettings&
 	}
 	PopulateProtocolCombo(ctx->hProtocol, settings.protocolType);
 	PopulateThinkingLevelCombo(ctx->hThinkingLevel, settings.thinkingLevel);
+	PopulateSourceEditModeCombo(ctx->hSourceEditMode, settings.sourceEditMode);
 	SetEditTextA(ctx->hBaseUrl, settings.baseUrl);
 	SetEditTextA(ctx->hApiKey, settings.apiKey);
 	SetEditTextA(ctx->hModel, settings.model);
@@ -950,9 +993,10 @@ void AddNativePresetProfile(HWND hWnd, AIConfigDialogContext* ctx, const AIConfi
 	if (ctx == nullptr || ctx->settings == nullptr) {
 		return;
 	}
+	const AISettings current = ReadAISettingsFromNativeDialog(ctx);
 	const int oldIndex = FindProfileIndexById(ctx->profiles, ctx->activeProfileId);
 	if (oldIndex >= 0) {
-		ctx->profiles[static_cast<size_t>(oldIndex)].settings = ReadAISettingsFromNativeDialog(ctx);
+		ctx->profiles[static_cast<size_t>(oldIndex)].settings = current;
 	}
 
 	AIConfigProfileEntry entry;
@@ -961,8 +1005,10 @@ void AddNativePresetProfile(HWND hWnd, AIConfigDialogContext* ctx, const AIConfi
 	entry.settings = {};
 	entry.settings.protocolType = site.protocol;
 	entry.settings.thinkingLevel = AIThinkingLevel::Off;
+	entry.settings.sourceEditMode = current.sourceEditMode;
 	entry.settings.baseUrl = site.baseUrl == nullptr ? std::string() : site.baseUrl;
 	entry.settings.model = model == nullptr ? std::string() : model;
+	entry.settings.tavilyApiKey = current.tavilyApiKey;
 
 	ctx->profiles.push_back(std::move(entry));
 	ctx->activeProfileId = ctx->profiles.back().id;
@@ -1455,10 +1501,15 @@ bool StartAIConfigModelListFetch(HWND hWnd, const AISettings& settings)
 	return true;
 }
 
-std::string BuildAIConfigWebViewSettingsJson(const std::vector<AIConfigProfileEntry>& profiles, const std::string& activeProfileId)
+std::string BuildAIConfigWebViewSettingsJson(
+	const std::vector<AIConfigProfileEntry>& profiles,
+	const std::string& activeProfileId,
+	const AISettings& globalSettings)
 {
 	nlohmann::json initialSettings;
 	initialSettings["activeProfileId"] = LocalToUtf8Text(activeProfileId);
+	initialSettings["sourceEditMode"] = AIService::SourceEditModeToString(globalSettings.sourceEditMode);
+	initialSettings["tavilyApiKey"] = LocalToUtf8Text(globalSettings.tavilyApiKey);
 	initialSettings["profiles"] = nlohmann::json::array();
 	for (const auto& profile : profiles) {
 		nlohmann::json item;
@@ -1471,7 +1522,6 @@ std::string BuildAIConfigWebViewSettingsJson(const std::vector<AIConfigProfileEn
 		item["model"] = LocalToUtf8Text(profile.settings.model);
 		item["extraPrompt"] = LocalToUtf8Text(profile.settings.extraSystemPrompt);
 		item["customHeaders"] = LocalToUtf8Text(profile.settings.customHeadersText);
-		item["tavilyApiKey"] = LocalToUtf8Text(profile.settings.tavilyApiKey);
 		item["contextWindow"] = profile.settings.contextWindowTokens;
 		initialSettings["profiles"].push_back(std::move(item));
 	}
@@ -1579,6 +1629,13 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			120, 184, 180, 220, hWnd, reinterpret_cast<HMENU>(IDC_CFG_THINKING_LEVEL), nullptr, nullptr);
 		PopulateThinkingLevelCombo(ctx->hThinkingLevel, ctx->settings->thinkingLevel);
 
+		HWND hSourceEditModeLabel = CreateWindowW(L"STATIC", L"\u6e90\u7801\u7f16\u8f91\u6a21\u5f0f(\u5168\u5c40):", WS_CHILD | WS_VISIBLE,
+			16, 218, 120, 20, hWnd, nullptr, nullptr, nullptr);
+		ctx->hSourceEditMode = CreateWindowExA(0, "COMBOBOX", "",
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+			120, 216, 180, 220, hWnd, reinterpret_cast<HMENU>(IDC_CFG_SOURCE_EDIT_MODE), nullptr, nullptr);
+		PopulateSourceEditModeCombo(ctx->hSourceEditMode, ctx->settings->sourceEditMode);
+
 		const std::wstring getKeyLinkText =
 			L"<a href=\"https://right.codes/register?aff=3dc87885\">从转发平台获取Key</a>";
 		HWND hGetKeyLink = CreateWindowExW(0, L"SysLink",
@@ -1599,7 +1656,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			hGetKeyLink = ctx->hGetKeyLink;
 		}
 
-		HWND hTavilyApiKeyLabel = CreateWindowA("STATIC", "Tavily API Key:", WS_CHILD | WS_VISIBLE,
+		HWND hTavilyApiKeyLabel = CreateWindowA("STATIC", "Tavily Key(Global):", WS_CHILD | WS_VISIBLE,
 			16, 248, 100, 20, hWnd, nullptr, nullptr, nullptr);
 		ctx->hTavilyApiKey = CreateWindowExA(0, "EDIT", ctx->settings->tavilyApiKey.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | ES_PASSWORD,
@@ -1624,7 +1681,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		HWND hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
 			530, 486, 90, 28, hWnd, reinterpret_cast<HMENU>(IDC_CFG_CANCEL), nullptr, nullptr);
 
-		std::array<HWND, 26> controls = {
+		std::array controls = {
 			hProfileLabel,
 			ctx->hProfileCombo,
 			hAddProfile,
@@ -1637,6 +1694,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			hApiKeyLabel,
 			hModelLabel,
 			hThinkingLabel,
+			hSourceEditModeLabel,
 			hTavilyApiKeyLabel,
 			ctx->hGetKeyLink,
 			hExtraPromptLabel,
@@ -1645,6 +1703,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			ctx->hApiKey,
 			ctx->hModel,
 			ctx->hThinkingLevel,
+			ctx->hSourceEditMode,
 			ctx->hTavilyApiKey,
 			ctx->hExtraPrompt,
 			ctx->hCustomHeaders,
@@ -1669,16 +1728,21 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		}
 
 		if (id == IDC_CFG_PROFILE_COMBO && HIWORD(wParam) == CBN_SELCHANGE) {
+			const AISettings current = ReadAISettingsFromNativeDialog(ctx);
 			const int oldIndex = FindProfileIndexById(ctx->profiles, ctx->activeProfileId);
 			if (oldIndex >= 0) {
-				ctx->profiles[oldIndex].settings = ReadAISettingsFromNativeDialog(ctx);
+				ctx->profiles[oldIndex].settings = current;
 			}
 			const int selected = static_cast<int>(SendMessageA(ctx->hProfileCombo, CB_GETCURSEL, 0, 0));
 			if (selected != CB_ERR) {
 				const LRESULT itemData = SendMessageA(ctx->hProfileCombo, CB_GETITEMDATA, selected, 0);
 				if (itemData >= 0 && itemData < static_cast<LRESULT>(ctx->profiles.size())) {
 					ctx->activeProfileId = ctx->profiles[static_cast<size_t>(itemData)].id;
-					*ctx->settings = ctx->profiles[static_cast<size_t>(itemData)].settings;
+					AISettings selectedSettings = ctx->profiles[static_cast<size_t>(itemData)].settings;
+					selectedSettings.sourceEditMode = current.sourceEditMode;
+					selectedSettings.tavilyApiKey = current.tavilyApiKey;
+					ctx->profiles[static_cast<size_t>(itemData)].settings = selectedSettings;
+					*ctx->settings = selectedSettings;
 					ApplyAISettingsToNativeDialog(ctx, *ctx->settings);
 				}
 			}
@@ -1694,14 +1758,17 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 				MessageBoxA(hWnd, "配置组名称不能为空。", "AI Config", MB_ICONWARNING | MB_OK);
 				return 0;
 			}
+			const AISettings current = ReadAISettingsFromNativeDialog(ctx);
 			const int oldIndex = FindProfileIndexById(ctx->profiles, ctx->activeProfileId);
 			if (oldIndex >= 0) {
-				ctx->profiles[oldIndex].settings = ReadAISettingsFromNativeDialog(ctx);
+				ctx->profiles[oldIndex].settings = current;
 			}
 			AIConfigProfileEntry entry;
 			entry.id = std::format("profile_{}", GetTickCount64());
 			entry.name = name;
 			entry.settings = {};
+			entry.settings.sourceEditMode = current.sourceEditMode;
+			entry.settings.tavilyApiKey = current.tavilyApiKey;
 			ctx->profiles.push_back(std::move(entry));
 			ctx->activeProfileId = ctx->profiles.back().id;
 			*ctx->settings = ctx->profiles.back().settings;
@@ -1746,8 +1813,11 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			if (MessageBoxA(hWnd, confirmText.c_str(), "AI Config", MB_ICONQUESTION | MB_YESNO) != IDYES) {
 				return 0;
 			}
+			const AISettings current = ReadAISettingsFromNativeDialog(ctx);
 			ctx->profiles.erase(ctx->profiles.begin() + index);
 			ctx->activeProfileId = ctx->profiles.front().id;
+			ctx->profiles.front().settings.sourceEditMode = current.sourceEditMode;
+			ctx->profiles.front().settings.tavilyApiKey = current.tavilyApiKey;
 			*ctx->settings = ctx->profiles.front().settings;
 			PopulateProfileCombo(ctx->hProfileCombo, ctx->profiles, ctx->activeProfileId);
 			ApplyAISettingsToNativeDialog(ctx, *ctx->settings);
@@ -1769,6 +1839,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 				MessageBoxA(hWnd, "保存 AI 配置组失败。", "AI Config", MB_ICONERROR | MB_OK);
 				return 0;
 			}
+			AIService::SaveSettings(*ctx->jsonConfig, next);
 			*ctx->settings = next;
 			ctx->accepted = true;
 			DestroyWindow(hWnd);
@@ -1864,7 +1935,6 @@ AISettings ReadAISettingsFromWebProfilePayload(const AISettings& current, const 
 	next.model = Utf8ToLocalText(data.value("model", ""));
 	next.extraSystemPrompt = Utf8ToLocalText(data.value("extraPrompt", ""));
 	next.customHeadersText = Utf8ToLocalText(data.value("customHeaders", ""));
-	next.tavilyApiKey = Utf8ToLocalText(data.value("tavilyApiKey", ""));
 	next.contextWindowTokens = (std::max)(0, data.value("contextWindow", 0));
 	return next;
 }
@@ -1880,6 +1950,12 @@ bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* c
 	}
 
 	const std::string activeProfileId = Utf8ToLocalText(data.value("activeProfileId", ""));
+	AISettings globalSettings = *ctx->settings;
+	globalSettings.sourceEditMode = AIService::ParseSourceEditMode(data.value(
+		"sourceEditMode",
+		AIService::SourceEditModeToString(globalSettings.sourceEditMode)));
+	globalSettings.tavilyApiKey = Utf8ToLocalText(data.value("tavilyApiKey", ""));
+
 	std::vector<AIConfigProfileEntry> nextProfiles;
 	nextProfiles.reserve(data["profiles"].size());
 	bool activeProfileFound = false;
@@ -1891,7 +1967,7 @@ bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* c
 		AIConfigProfileEntry entry;
 		entry.id = Utf8ToLocalText(item.value("id", ""));
 		entry.name = Utf8ToLocalText(item.value("name", ""));
-		entry.settings = ReadAISettingsFromWebProfilePayload({}, item);
+		entry.settings = ReadAISettingsFromWebProfilePayload(globalSettings, item);
 		if (entry.id.empty() || entry.name.empty()) {
 			return false;
 		}
@@ -1918,6 +1994,7 @@ bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* c
 		MessageBoxA(hWnd, "保存 AI 配置组失败。", "AI Config", MB_ICONERROR | MB_OK);
 		return false;
 	}
+	AIService::SaveSettings(*ctx->jsonConfig, activeSettings);
 
 	ctx->profiles = nextProfiles;
 	ctx->activeProfileId = activeProfileId;
@@ -1999,7 +2076,7 @@ void ApplyAIConfigWebViewSettings(AIConfigWebViewDialogContext* ctx)
 		return;
 	}
 
-	const std::string settingsJsonUtf8 = BuildAIConfigWebViewSettingsJson(ctx->profiles, ctx->activeProfileId);
+	const std::string settingsJsonUtf8 = BuildAIConfigWebViewSettingsJson(ctx->profiles, ctx->activeProfileId, *ctx->settings);
 	const std::wstring settingsJsonWide = Utf8ToWide(settingsJsonUtf8);
 	if (settingsJsonWide.empty()) {
 		OutputStringToELog("[AI Config][WebView2] settings json conversion failed");
@@ -2106,6 +2183,10 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 															break;
 														}
 													}
+													next.sourceEditMode = AIService::ParseSourceEditMode(data.value(
+														"sourceEditMode",
+														AIService::SourceEditModeToString(next.sourceEditMode)));
+													next.tavilyApiKey = Utf8ToLocalText(data.value("tavilyApiKey", ""));
 													if (ValidateAISettingsForConnection(hWnd, next) &&
 														StartAIConfigConnectionTest(hWnd, next, true)) {
 														SetAIConfigWebViewTestBusy(messageCtx, true);

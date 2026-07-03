@@ -18,6 +18,8 @@
 #include <vector>
 
 #include "..\\thirdparty\\json.hpp"
+#include "AIService.h"
+#include "ConfigManager.h"
 #include "IDEFacade.h"
 #include "EideInternalTextBridge.h"
 #include "Global.h"
@@ -61,6 +63,17 @@ struct ProgramTreeItemInfo {
 	std::string typeName;
 };
 
+struct SourceEditBaseForAI {
+	std::string baseCode;
+	std::string currentCode;
+	std::string trace;
+	std::string sourceMode;
+	std::string codeKind;
+	bool cacheRefreshed = false;
+	bool mirrorMode = false;
+	std::uintptr_t editorObject = 0;
+};
+
 constexpr const char* kProgramTreeConstantTablePageNameForAI = "常量表...";
 constexpr const char* kProgramTreeUserDataTypePageNameForAI = "自定义数据类型";
 constexpr const char* kProgramTreeDllCommandPageNameForAI = "Dll命令";
@@ -80,6 +93,83 @@ void PutPageCodeCacheEntryForAI(
 	const std::string& code,
 	const PageCodeCacheEntry* existingEntry,
 	PageCodeCacheEntry* outSavedEntry);
+
+AISourceEditMode GetActiveSourceEditModeForAI()
+{
+	AIJsonConfig* aiJsonConfig = GetAIChatAIJsonConfigForTooling();
+	ConfigManager* configManager = GetAIChatConfigManagerForTooling();
+	AISettings settings = {};
+	if (aiJsonConfig != nullptr && AIService::LoadSettings(*aiJsonConfig, configManager, settings)) {
+		return settings.sourceEditMode;
+	}
+	return AISourceEditMode::RealPageFirst;
+}
+
+std::string SourceEditModeStringForAI(AISourceEditMode mode)
+{
+	return AIService::SourceEditModeToString(mode);
+}
+
+std::vector<std::string> SplitLinesForNumberedViewForAI(const std::string& text)
+{
+	std::vector<std::string> lines;
+	std::string current;
+	for (size_t i = 0; i < text.size(); ++i) {
+		const char ch = text[i];
+		if (ch == '\r') {
+			if (i + 1 < text.size() && text[i + 1] == '\n') {
+				++i;
+			}
+			lines.push_back(current);
+			current.clear();
+		}
+		else if (ch == '\n') {
+			lines.push_back(current);
+			current.clear();
+		}
+		else {
+			current.push_back(ch);
+		}
+	}
+	if (!current.empty() || text.empty() || text.back() == '\n' || text.back() == '\r') {
+		lines.push_back(current);
+	}
+	return lines;
+}
+
+int GetJsonIntArgumentForAI(const nlohmann::json& args, const char* key, int defaultValue)
+{
+	if (!args.contains(key) || !args[key].is_number_integer()) {
+		return defaultValue;
+	}
+	return args[key].get<int>();
+}
+
+std::string BuildNumberedViewForAI(
+	const std::vector<std::string>& lines,
+	int offset,
+	int limit,
+	int& outReturned,
+	bool& outTruncated)
+{
+	outReturned = 0;
+	outTruncated = false;
+	const int total = static_cast<int>(lines.size());
+	const int start = (std::clamp)(offset, 0, total);
+	const int maxLines = limit <= 0 ? 20000 : (std::clamp)(limit, 1, 20000);
+	const int end = (std::min)(total, start + maxLines);
+	outTruncated = end < total;
+
+	std::string view;
+	for (int i = start; i < end; ++i) {
+		view += std::to_string(i + 1);
+		view += "\t";
+		view += lines[static_cast<size_t>(i)];
+		view += "\n";
+		++outReturned;
+	}
+	return view;
+}
 
 static std::string TrimAsciiCopy(const std::string& text)
 {
@@ -1330,6 +1420,65 @@ bool TryResolveRealPageWriteBaseForAI(
 	return true;
 }
 
+bool TryResolveSourceEditBaseForAI(
+	const ProgramTreeItemInfo& item,
+	const std::string& filePathUtf8,
+	const std::string& expectedBaseHash,
+	SourceEditBaseForAI& outBase,
+	std::string& outError)
+{
+	outBase = {};
+	outError.clear();
+
+	const AISourceEditMode mode = GetActiveSourceEditModeForAI();
+	outBase.sourceMode = SourceEditModeStringForAI(mode);
+	if (mode != AISourceEditMode::MirrorSourceBase) {
+		PageCodeCacheEntry cacheEntry;
+		if (!TryResolveRealPageWriteBaseForAI(
+				item,
+				expectedBaseHash,
+				false,
+				outBase.baseCode,
+				cacheEntry,
+				outBase.trace,
+				outBase.currentCode,
+				outBase.cacheRefreshed,
+				outError,
+				&outBase.editorObject)) {
+			return false;
+		}
+		outBase.codeKind = "real_source";
+		return true;
+	}
+
+	std::string mirrorCode;
+	std::string mirrorError;
+	if (!TryReadWorkspaceMirrorTextLocalForAI(filePathUtf8, mirrorCode, mirrorError)) {
+		outBase.trace = "source_edit_mode=mirror_source_base|mirror_read_failed:" + mirrorError;
+		outError = mirrorError.empty() ? "read workspace mirror file failed" : mirrorError;
+		return false;
+	}
+
+	outBase.baseCode = NormalizeRealCodeLineBreaksToCrLf(mirrorCode);
+	outBase.currentCode = outBase.baseCode;
+	outBase.trace =
+		std::string("source_edit_mode=mirror_source_base") +
+		"|write_base=workspace_mirror" +
+		"|real_page_read=skipped";
+	outBase.cacheRefreshed = false;
+	outBase.mirrorMode = true;
+	outBase.codeKind = "mirror_source";
+
+	const std::string normalizedExpectedHash = ToLowerAsciiCopyLocal(TrimAsciiCopy(expectedBaseHash));
+	const std::string mirrorHash = BuildStableTextHashForRealCode(outBase.baseCode);
+	if (!normalizedExpectedHash.empty() && mirrorHash != normalizedExpectedHash) {
+		outError = "expected_base_hash mismatch; mirror write base refreshed from workspace mirror";
+		return false;
+	}
+
+	return true;
+}
+
 bool TryWriteRealPageCodeForAI(
 	const ProgramTreeItemInfo& item,
 	const std::string& baseCode,
@@ -1341,7 +1490,8 @@ bool TryWriteRealPageCodeForAI(
 	bool& outRollbackAttempted,
 	bool& outRollbackSucceeded,
 	std::string& outError,
-	std::uintptr_t preferredEditorObject = 0)
+	std::uintptr_t preferredEditorObject = 0,
+	const std::string* snapshotBaseCode = nullptr)
 {
 	outSnapshot = {};
 	outFinalCode.clear();
@@ -1350,15 +1500,19 @@ bool TryWriteRealPageCodeForAI(
 	outRollbackSucceeded = false;
 	outError.clear();
 
+	const std::string& rollbackBaseCode =
+		(snapshotBaseCode != nullptr && !snapshotBaseCode->empty()) ? *snapshotBaseCode : baseCode;
+
 	PageCodeCacheEntry existingEntry;
 	const bool hasCache = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, existingEntry);
-	PutPageCodeCacheEntryForAI(item, baseCode, hasCache ? &existingEntry : nullptr, &existingEntry);
-	if (!PageCodeCacheManager::Instance().AddSnapshot(item.name, item.typeKey, baseCode, snapshotNote, outSnapshot)) {
+	PutPageCodeCacheEntryForAI(item, rollbackBaseCode, hasCache ? &existingEntry : nullptr, &existingEntry);
+	if (!PageCodeCacheManager::Instance().AddSnapshot(item.name, item.typeKey, rollbackBaseCode, snapshotNote, outSnapshot)) {
 		outError = "add page snapshot failed";
 		return false;
 	}
 
 	const std::string normalizedBaseCode = NormalizeRealCodeLineBreaksToCrLf(baseCode);
+	const std::string normalizedRollbackBaseCode = NormalizeRealCodeLineBreaksToCrLf(rollbackBaseCode);
 	const std::string normalizedNewCode = NormalizeRealCodeLineBreaksToCrLf(newCode);
 	const std::string preparedExpectedCode = NormalizeRealCodeLineBreaksToCrLf(
 		PrepareAssemblyVariablesForRealPageWrite(normalizedNewCode));
@@ -1379,7 +1533,7 @@ bool TryWriteRealPageCodeForAI(
 			item.itemData,
 			moduleBase,
 			normalizedNewCode,
-			&normalizedBaseCode,
+			&normalizedRollbackBaseCode,
 			&fixedTableWriteResult);
 		const auto fixedTableWriteMs = ElapsedToolMs(fixedTableWriteStart);
 		outRollbackAttempted = fixedTableWriteResult.rollbackAttempted;
@@ -1411,7 +1565,7 @@ bool TryWriteRealPageCodeForAI(
 		bool fallbackRollbackSucceeded = false;
 		if (!TryWriteFixedTableRealPageCodeByPasteForAI(
 				item,
-				normalizedBaseCode,
+				normalizedRollbackBaseCode,
 				normalizedNewCode,
 				fallbackFinalCode,
 				fallbackTrace,
@@ -1444,13 +1598,13 @@ bool TryWriteRealPageCodeForAI(
 			preferredEditorObject,
 			moduleBase,
 			normalizedNewCode,
-			&normalizedBaseCode,
+			&normalizedRollbackBaseCode,
 			&writeResult)
 		: e571::ReplaceRealPageCodeByProgramTreeItemData(
 			item.itemData,
 			moduleBase,
 			normalizedNewCode,
-			&normalizedBaseCode,
+			&normalizedRollbackBaseCode,
 			&writeResult);
 	const auto writeMs = ElapsedToolMs(writeStart);
 	outRollbackAttempted = writeResult.rollbackAttempted;
@@ -2253,6 +2407,7 @@ bool TryReadMappedRealPageCodeForAI(
 
 std::string ExecuteMappedEditFileToolForAI(
 	const nlohmann::json& args,
+	const std::string& filePathUtf8,
 	const ProgramTreeItemInfo& item,
 	bool& outOk)
 {
@@ -2273,37 +2428,36 @@ std::string ExecuteMappedEditFileToolForAI(
 	}
 
 	std::string error;
-	std::string baseCode;
-	PageCodeCacheEntry cachedEntry;
-	std::string trace;
-	std::string currentCode;
-	bool cacheRefreshed = false;
-	std::uintptr_t baseEditorObject = 0;
+	SourceEditBaseForAI editBase;
 	LogToolStageForAI("edit_file", "before_read_base", totalStart);
-	if (!TryResolveRealPageWriteBaseForAI(item, std::string(), false, baseCode, cachedEntry, trace, currentCode, cacheRefreshed, error, &baseEditorObject)) {
+	if (!TryResolveSourceEditBaseForAI(item, filePathUtf8, std::string(), editBase, error)) {
 		LogToolStageForAI(
 			"edit_file",
 			"after_read_base_failed|error=" + LocalToUtf8Text(error) +
-				"|trace=" + LocalToUtf8Text(trace),
+				"|trace=" + LocalToUtf8Text(editBase.trace),
 			totalStart);
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error;
 		r["page_name"] = LocalToUtf8Text(item.name);
 		r["type_key"] = item.typeKey;
-		r["trace"] = LocalToUtf8Text(trace);
-		r["cache_refreshed"] = cacheRefreshed;
-		if (!currentCode.empty()) {
-			r["code"] = LocalToUtf8Text(currentCode);
-			r["code_hash"] = BuildStableTextHashForRealCode(currentCode);
+		r["trace"] = LocalToUtf8Text(editBase.trace);
+		r["source_edit_mode"] = editBase.sourceMode.empty() ? SourceEditModeStringForAI(GetActiveSourceEditModeForAI()) : editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
+		r["cache_refreshed"] = editBase.cacheRefreshed;
+		if (!editBase.currentCode.empty()) {
+			r["code"] = LocalToUtf8Text(editBase.currentCode);
+			r["code_hash"] = BuildStableTextHashForRealCode(editBase.currentCode);
 		}
 		return JsonToLocalTextForAI(r);
 	}
+	const std::string& baseCode = editBase.baseCode;
 	LogToolStageForAI(
 		"edit_file",
 		"after_read_base_ok|bytes=" + std::to_string(baseCode.size()) +
-			"|editor_object=" + std::to_string(baseEditorObject) +
-			"|trace=" + LocalToUtf8Text(trace),
+			"|editor_object=" + std::to_string(editBase.editorObject) +
+			"|source_edit_mode=" + editBase.sourceMode +
+			"|trace=" + LocalToUtf8Text(editBase.trace),
 		totalStart);
 
 	size_t matchCount = 0;
@@ -2313,14 +2467,18 @@ std::string ExecuteMappedEditFileToolForAI(
 			"edit_file",
 			"replace_match_failed|match_count=" + std::to_string(matchCount),
 			totalStart);
+		const std::string baseLabel = editBase.mirrorMode ? "workspace mirror source" : "real IDE page";
 		nlohmann::json r;
 		r["ok"] = false;
-		r["error"] = matchCount == 0 ? "old_text not found in real IDE page" : "old_text matched multiple times in real IDE page";
-		r["hint"] = "old_text must be copied exactly from the returned real IDE page code; preserve line breaks, indentation and full-width punctuation. Use write_file when replacing a large block.";
+		r["error"] = matchCount == 0 ? "old_text not found in active edit base" : "old_text matched multiple times in active edit base";
+		r["hint"] = "old_text must be copied exactly from the active edit base; preserve line breaks, indentation and full-width punctuation. Use write_file when replacing a large block.";
+		r["active_edit_base"] = baseLabel;
 		r["match_count"] = matchCount;
 		r["page_name"] = LocalToUtf8Text(item.name);
 		r["type_key"] = item.typeKey;
-		r["trace"] = LocalToUtf8Text(trace);
+		r["trace"] = LocalToUtf8Text(editBase.trace);
+		r["source_edit_mode"] = editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
 		return JsonToLocalTextForAI(r);
@@ -2336,7 +2494,9 @@ std::string ExecuteMappedEditFileToolForAI(
 		r["type_name"] = LocalToUtf8Text(item.typeName);
 		r["item_data"] = item.itemData;
 		r["match_count"] = matchCount;
-		r["code_kind"] = "real_source";
+		r["source_edit_mode"] = editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
+		r["code_kind"] = editBase.codeKind.empty() ? "real_source" : editBase.codeKind;
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
 		outOk = true;
@@ -2347,10 +2507,11 @@ std::string ExecuteMappedEditFileToolForAI(
 	std::string finalCode;
 	bool rollbackAttempted = false;
 	bool rollbackSucceeded = false;
+	std::string writeTrace;
 	LogToolStageForAI(
 		"edit_file",
 		"before_write|bytes=" + std::to_string(replacedCode.size()) +
-			"|editor_object=" + std::to_string(baseEditorObject),
+			"|editor_object=" + std::to_string(editBase.editorObject),
 		totalStart);
 	if (!TryWriteRealPageCodeForAI(
 			item,
@@ -2359,22 +2520,24 @@ std::string ExecuteMappedEditFileToolForAI(
 			"edit_file",
 			snapshot,
 			finalCode,
-			trace,
+			writeTrace,
 			rollbackAttempted,
 			rollbackSucceeded,
 			error,
-			baseEditorObject)) {
+			editBase.editorObject)) {
 		LogToolStageForAI(
 			"edit_file",
 			"after_write_failed|error=" + LocalToUtf8Text(error) +
-				"|trace=" + LocalToUtf8Text(trace),
+				"|trace=" + LocalToUtf8Text(writeTrace),
 			totalStart);
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error;
 		r["page_name"] = LocalToUtf8Text(item.name);
 		r["type_key"] = item.typeKey;
-		r["trace"] = LocalToUtf8Text(trace);
+		r["trace"] = LocalToUtf8Text(editBase.trace + "|" + writeTrace);
+		r["source_edit_mode"] = editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
 		r["rollback_attempted"] = rollbackAttempted;
 		r["rollback_succeeded"] = rollbackSucceeded;
 		return JsonToLocalTextForAI(r);
@@ -2382,7 +2545,7 @@ std::string ExecuteMappedEditFileToolForAI(
 	LogToolStageForAI(
 		"edit_file",
 		"after_write_ok|bytes=" + std::to_string(finalCode.size()) +
-			"|trace=" + LocalToUtf8Text(trace),
+			"|trace=" + LocalToUtf8Text(writeTrace),
 		totalStart);
 
 	const auto hunks = BuildRealPageStructuredPatch(baseCode, finalCode);
@@ -2393,7 +2556,9 @@ std::string ExecuteMappedEditFileToolForAI(
 	r["type_name"] = LocalToUtf8Text(item.typeName);
 	r["item_data"] = item.itemData;
 	r["match_count"] = matchCount;
-	r["trace"] = LocalToUtf8Text(trace);
+	r["trace"] = LocalToUtf8Text(editBase.trace + "|" + writeTrace);
+	r["source_edit_mode"] = editBase.sourceMode;
+	r["base_code_kind"] = editBase.codeKind;
 	r["rollback_attempted"] = rollbackAttempted;
 	r["rollback_succeeded"] = rollbackSucceeded;
 	r["snapshot_id"] = snapshot.snapshotId;
@@ -2409,6 +2574,7 @@ std::string ExecuteMappedEditFileToolForAI(
 
 std::string ExecuteMappedMultiEditFileToolForAI(
 	const nlohmann::json& args,
+	const std::string& filePathUtf8,
 	const ProgramTreeItemInfo& item,
 	bool& outOk)
 {
@@ -2429,26 +2595,24 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 		return R"({"ok":false,"error":"edits is required"})";
 	}
 
-	std::string baseCode;
-	PageCodeCacheEntry cacheEntry;
-	std::string trace;
-	std::string currentCode;
-	bool cacheRefreshed = false;
-	std::uintptr_t baseEditorObject = 0;
-	if (!TryResolveRealPageWriteBaseForAI(item, std::string(), false, baseCode, cacheEntry, trace, currentCode, cacheRefreshed, error, &baseEditorObject)) {
+	SourceEditBaseForAI editBase;
+	if (!TryResolveSourceEditBaseForAI(item, filePathUtf8, std::string(), editBase, error)) {
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error;
 		r["page_name"] = LocalToUtf8Text(item.name);
 		r["type_key"] = item.typeKey;
-		r["trace"] = LocalToUtf8Text(trace);
-		r["cache_refreshed"] = cacheRefreshed;
-		if (!currentCode.empty()) {
-			r["code"] = LocalToUtf8Text(currentCode);
-			r["code_hash"] = BuildStableTextHashForRealCode(currentCode);
+		r["trace"] = LocalToUtf8Text(editBase.trace);
+		r["source_edit_mode"] = editBase.sourceMode.empty() ? SourceEditModeStringForAI(GetActiveSourceEditModeForAI()) : editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
+		r["cache_refreshed"] = editBase.cacheRefreshed;
+		if (!editBase.currentCode.empty()) {
+			r["code"] = LocalToUtf8Text(editBase.currentCode);
+			r["code_hash"] = BuildStableTextHashForRealCode(editBase.currentCode);
 		}
 		return JsonToLocalTextForAI(r);
 	}
+	const std::string& baseCode = editBase.baseCode;
 
 	std::string candidateCode;
 	std::vector<RealPageTextEditApplyResult> applyResults;
@@ -2474,7 +2638,9 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 		r["results"] = std::move(resultRows);
 		r["page_name"] = LocalToUtf8Text(item.name);
 		r["type_key"] = item.typeKey;
-		r["trace"] = LocalToUtf8Text(trace);
+		r["trace"] = LocalToUtf8Text(editBase.trace);
+		r["source_edit_mode"] = editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
 		return JsonToLocalTextForAI(r);
@@ -2487,7 +2653,9 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 		r["results"] = std::move(resultRows);
 		r["page_name"] = LocalToUtf8Text(item.name);
 		r["type_key"] = item.typeKey;
-		r["trace"] = LocalToUtf8Text(trace);
+		r["trace"] = LocalToUtf8Text(editBase.trace);
+		r["source_edit_mode"] = editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
 		return JsonToLocalTextForAI(r);
@@ -2502,6 +2670,8 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 		r["type_key"] = item.typeKey;
 		r["type_name"] = LocalToUtf8Text(item.typeName);
 		r["item_data"] = item.itemData;
+		r["source_edit_mode"] = editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
 		outOk = true;
@@ -2512,6 +2682,7 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 	std::string finalCode;
 	bool rollbackAttempted = false;
 	bool rollbackSucceeded = false;
+	std::string writeTrace;
 	if (!TryWriteRealPageCodeForAI(
 			item,
 			baseCode,
@@ -2519,16 +2690,18 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 			"multi_edit_file",
 			snapshot,
 			finalCode,
-			trace,
+			writeTrace,
 			rollbackAttempted,
 			rollbackSucceeded,
 			error,
-			baseEditorObject)) {
+			editBase.editorObject)) {
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error;
 		r["results"] = std::move(resultRows);
-		r["trace"] = LocalToUtf8Text(trace);
+		r["trace"] = LocalToUtf8Text(editBase.trace + "|" + writeTrace);
+		r["source_edit_mode"] = editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
 		r["rollback_attempted"] = rollbackAttempted;
 		r["rollback_succeeded"] = rollbackSucceeded;
 		return JsonToLocalTextForAI(r);
@@ -2543,7 +2716,9 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 	r["item_data"] = item.itemData;
 	r["results"] = std::move(resultRows);
 	r["applied_count"] = appliedCount;
-	r["trace"] = LocalToUtf8Text(trace);
+	r["trace"] = LocalToUtf8Text(editBase.trace + "|" + writeTrace);
+	r["source_edit_mode"] = editBase.sourceMode;
+	r["base_code_kind"] = editBase.codeKind;
 	r["rollback_attempted"] = rollbackAttempted;
 	r["rollback_succeeded"] = rollbackSucceeded;
 	r["snapshot_id"] = snapshot.snapshotId;
@@ -2559,6 +2734,7 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 
 std::string ExecuteMappedWriteFileToolForAI(
 	const nlohmann::json& args,
+	const std::string& filePathUtf8,
 	const ProgramTreeItemInfo& item,
 	bool& outOk)
 {
@@ -2571,26 +2747,24 @@ std::string ExecuteMappedWriteFileToolForAI(
 	}
 
 	std::string error;
-	std::string baseCode;
-	PageCodeCacheEntry cacheEntry;
-	std::string trace;
-	std::string currentCode;
-	bool cacheRefreshed = false;
-	std::uintptr_t baseEditorObject = 0;
-	if (!TryResolveRealPageWriteBaseForAI(item, expectedBaseHash, false, baseCode, cacheEntry, trace, currentCode, cacheRefreshed, error, &baseEditorObject)) {
+	SourceEditBaseForAI editBase;
+	if (!TryResolveSourceEditBaseForAI(item, filePathUtf8, expectedBaseHash, editBase, error)) {
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error;
 		r["page_name"] = LocalToUtf8Text(item.name);
 		r["type_key"] = item.typeKey;
-		r["trace"] = LocalToUtf8Text(trace);
-		r["cache_refreshed"] = cacheRefreshed;
-		if (!currentCode.empty()) {
-			r["code"] = LocalToUtf8Text(currentCode);
-			r["code_hash"] = BuildStableTextHashForRealCode(currentCode);
+		r["trace"] = LocalToUtf8Text(editBase.trace);
+		r["source_edit_mode"] = editBase.sourceMode.empty() ? SourceEditModeStringForAI(GetActiveSourceEditModeForAI()) : editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
+		r["cache_refreshed"] = editBase.cacheRefreshed;
+		if (!editBase.currentCode.empty()) {
+			r["code"] = LocalToUtf8Text(editBase.currentCode);
+			r["code_hash"] = BuildStableTextHashForRealCode(editBase.currentCode);
 		}
 		return JsonToLocalTextForAI(r);
 	}
+	const std::string& baseCode = editBase.baseCode;
 
 	std::string preparedFullCode = fullCode;
 	if (item.typeKey == "const_resource") {
@@ -2605,6 +2779,8 @@ std::string ExecuteMappedWriteFileToolForAI(
 		r["type_key"] = item.typeKey;
 		r["type_name"] = LocalToUtf8Text(item.typeName);
 		r["item_data"] = item.itemData;
+		r["source_edit_mode"] = editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
 		r["code_hash"] = BuildStableTextHashForRealCode(baseCode);
 		r["code"] = LocalToUtf8Text(baseCode);
 		outOk = true;
@@ -2615,6 +2791,7 @@ std::string ExecuteMappedWriteFileToolForAI(
 	std::string finalCode;
 	bool rollbackAttempted = false;
 	bool rollbackSucceeded = false;
+	std::string writeTrace;
 	if (!TryWriteRealPageCodeForAI(
 			item,
 			baseCode,
@@ -2622,15 +2799,17 @@ std::string ExecuteMappedWriteFileToolForAI(
 			"write_file",
 			snapshot,
 			finalCode,
-			trace,
+			writeTrace,
 			rollbackAttempted,
 			rollbackSucceeded,
 			error,
-			baseEditorObject)) {
+			editBase.editorObject)) {
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error;
-		r["trace"] = LocalToUtf8Text(trace);
+		r["trace"] = LocalToUtf8Text(editBase.trace + "|" + writeTrace);
+		r["source_edit_mode"] = editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
 		r["rollback_attempted"] = rollbackAttempted;
 		r["rollback_succeeded"] = rollbackSucceeded;
 		return JsonToLocalTextForAI(r);
@@ -2643,7 +2822,9 @@ std::string ExecuteMappedWriteFileToolForAI(
 	r["type_key"] = item.typeKey;
 	r["type_name"] = LocalToUtf8Text(item.typeName);
 	r["item_data"] = item.itemData;
-	r["trace"] = LocalToUtf8Text(trace);
+	r["trace"] = LocalToUtf8Text(editBase.trace + "|" + writeTrace);
+	r["source_edit_mode"] = editBase.sourceMode;
+	r["base_code_kind"] = editBase.codeKind;
 	r["rollback_attempted"] = rollbackAttempted;
 	r["rollback_succeeded"] = rollbackSucceeded;
 	r["snapshot_id"] = snapshot.snapshotId;
@@ -2659,6 +2840,7 @@ std::string ExecuteMappedWriteFileToolForAI(
 
 std::string ExecuteMappedDiffFileToolForAI(
 	const nlohmann::json& args,
+	const std::string& filePathUtf8,
 	const ProgramTreeItemInfo& item,
 	bool& outOk)
 {
@@ -2673,24 +2855,22 @@ std::string ExecuteMappedDiffFileToolForAI(
 	const bool failOnUnmatched = GetJsonBoolArgument(args, "fail_on_unmatched", true);
 
 	std::string error;
-	std::string baseCode;
-	PageCodeCacheEntry cacheEntry;
-	std::string trace;
-	std::string currentCode;
-	bool cacheRefreshed = false;
-	std::uintptr_t baseEditorObject = 0;
-	if (!TryResolveRealPageWriteBaseForAI(item, std::string(), false, baseCode, cacheEntry, trace, currentCode, cacheRefreshed, error, &baseEditorObject)) {
+	SourceEditBaseForAI editBase;
+	if (!TryResolveSourceEditBaseForAI(item, filePathUtf8, std::string(), editBase, error)) {
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error.empty() ? "read real page code failed" : error;
-		r["trace"] = LocalToUtf8Text(trace);
-		r["cache_refreshed"] = cacheRefreshed;
-		if (!currentCode.empty()) {
-			r["code"] = LocalToUtf8Text(currentCode);
-			r["code_hash"] = BuildStableTextHashForRealCode(currentCode);
+		r["trace"] = LocalToUtf8Text(editBase.trace);
+		r["source_edit_mode"] = editBase.sourceMode.empty() ? SourceEditModeStringForAI(GetActiveSourceEditModeForAI()) : editBase.sourceMode;
+		r["base_code_kind"] = editBase.codeKind;
+		r["cache_refreshed"] = editBase.cacheRefreshed;
+		if (!editBase.currentCode.empty()) {
+			r["code"] = LocalToUtf8Text(editBase.currentCode);
+			r["code_hash"] = BuildStableTextHashForRealCode(editBase.currentCode);
 		}
 		return JsonToLocalTextForAI(r);
 	}
+	const std::string& baseCode = editBase.baseCode;
 
 	std::string candidateCode;
 	nlohmann::json editResults = nlohmann::json::array();
@@ -2758,7 +2938,9 @@ std::string ExecuteMappedDiffFileToolForAI(
 	r["type_key"] = item.typeKey;
 	r["type_name"] = LocalToUtf8Text(item.typeName);
 	r["item_data"] = item.itemData;
-	r["trace"] = LocalToUtf8Text(trace);
+	r["trace"] = LocalToUtf8Text(editBase.trace);
+	r["source_edit_mode"] = editBase.sourceMode;
+	r["base_code_kind"] = editBase.codeKind;
 	r["from_cache"] = false;
 	r["base_hash"] = BuildStableTextHashForRealCode(baseCode);
 	r["new_hash"] = BuildStableTextHashForRealCode(candidateCode);
@@ -2977,17 +3159,57 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		"file_mapped_tool",
 		"before_execute_mapped_tool|tool=" + publicToolName,
 		totalStart);
-	if (publicToolName == "edit_file") {
-		resultLocal = ExecuteMappedEditFileToolForAI(args, programItem, outOk);
+	if (publicToolName == "read_real_file") {
+		std::string realCode;
+		e571::NativeRealPageAccessResult accessResult{};
+		if (!TryReadRealPageCodeForAI(programItem, realCode, accessResult, error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "copy real page code failed" : error;
+			r["trace"] = LocalToUtf8Text(accessResult.trace);
+			resultLocal = JsonToLocalTextForAI(r);
+			outOk = false;
+		}
+		else {
+			PageCodeCacheEntry cacheEntry;
+			PutPageCodeCacheEntryForAI(programItem, realCode, nullptr, &cacheEntry);
+			const int offset = (std::max)(0, GetJsonIntArgumentForAI(args, "offset", 0));
+			const int limit = GetJsonIntArgumentForAI(args, "limit", 0);
+			const std::vector<std::string> lines = SplitLinesForNumberedViewForAI(realCode);
+			int returnedLines = 0;
+			bool truncated = false;
+			const std::string content = BuildNumberedViewForAI(lines, offset, limit, returnedLines, truncated);
+			nlohmann::json r;
+			r["ok"] = true;
+			r["page_name"] = LocalToUtf8Text(programItem.name);
+			r["type_key"] = programItem.typeKey;
+			r["type_name"] = LocalToUtf8Text(programItem.typeName);
+			r["item_data"] = programItem.itemData;
+			r["source_edit_mode"] = SourceEditModeStringForAI(GetActiveSourceEditModeForAI());
+			r["code_kind"] = "real_source";
+			r["code_hash"] = cacheEntry.codeHash;
+			r["total_lines"] = lines.size();
+			r["offset"] = offset;
+			r["returned_lines"] = returnedLines;
+			r["truncated"] = truncated;
+			r["content"] = LocalToUtf8Text(content);
+			r["code"] = LocalToUtf8Text(realCode);
+			r["trace"] = LocalToUtf8Text(accessResult.trace);
+			resultLocal = JsonToLocalTextForAI(r);
+			outOk = true;
+		}
+	}
+	else if (publicToolName == "edit_file") {
+		resultLocal = ExecuteMappedEditFileToolForAI(args, filePathUtf8, programItem, outOk);
 	}
 	else if (publicToolName == "multi_edit_file") {
-		resultLocal = ExecuteMappedMultiEditFileToolForAI(args, programItem, outOk);
+		resultLocal = ExecuteMappedMultiEditFileToolForAI(args, filePathUtf8, programItem, outOk);
 	}
 	else if (publicToolName == "write_file") {
-		resultLocal = ExecuteMappedWriteFileToolForAI(args, programItem, outOk);
+		resultLocal = ExecuteMappedWriteFileToolForAI(args, filePathUtf8, programItem, outOk);
 	}
 	else if (publicToolName == "diff_file") {
-		resultLocal = ExecuteMappedDiffFileToolForAI(args, programItem, outOk);
+		resultLocal = ExecuteMappedDiffFileToolForAI(args, filePathUtf8, programItem, outOk);
 	}
 	else if (publicToolName == "restore_file_snapshot") {
 		resultLocal = ExecuteMappedRestoreFileSnapshotToolForAI(args, programItem, outOk);
@@ -3183,6 +3405,9 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 
 	if (toolName == "edit_file") {
 		return ExecuteFileMappedRealPageToolForAI(toolName, argumentsJson, true, outOk);
+	}
+	if (toolName == "read_real_file") {
+		return ExecuteFileMappedRealPageToolForAI(toolName, argumentsJson, false, outOk);
 	}
 	if (toolName == "multi_edit_file") {
 		return ExecuteFileMappedRealPageToolForAI(toolName, argumentsJson, true, outOk);

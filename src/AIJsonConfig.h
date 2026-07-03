@@ -29,11 +29,23 @@ public:
     // 获取配置值并转换为本地编码（ANSI/GBK），供 MFC 对话框直接使用。
     std::string getValueLocal(const std::string& key) const;
 
+    // 获取全局配置值（UTF-8 编码），不随当前配置组切换。
+    std::string getGlobalValue(const std::string& key) const;
+
+    // 获取全局配置值并转换为本地编码（ANSI/GBK）。
+    std::string getGlobalValueLocal(const std::string& key) const;
+
     // 设置配置值（本地编码，自动转 UTF-8 后持久化）。
     void setValue(const std::string& key, const std::string& localValue);
 
     // 批量设置多个配置值（本地编码），只写盘一次。
     void setValues(const std::map<std::string, std::string>& localPairs);
+
+    // 删除当前配置组中的指定键。
+    void removeValues(const std::vector<std::string>& keys);
+
+    // 批量设置全局配置值（本地编码），只写盘一次。
+    void setGlobalValues(const std::map<std::string, std::string>& localPairs);
 
     // 是否含有任何配置数据。
     bool hasAnyData() const;
@@ -66,6 +78,7 @@ private:
 
     std::filesystem::path m_filePath;
     std::string m_activeProfileId;
+    std::map<std::string, std::string> m_globalValues;
     std::vector<StoredProfile> m_profiles;
 };
 

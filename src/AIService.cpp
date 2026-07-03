@@ -1408,7 +1408,21 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "read_file"},
-		{"description", "Read one text file from the current e-packager workspace mirror. Call refresh_workspace_mirror once before this in each conversation round when fresh IDE edits may exist. Returns cat -n style numbered text. Paths are mirror-relative."},
+		{"description", "Read one text file from the current e-packager workspace mirror. Call refresh_workspace_mirror once before this in each conversation round when fresh IDE edits may exist. Returns cat -n style numbered mirror text. Paths are mirror-relative."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"file_path", {{"type", "string"}}},
+				{"offset", {{"type", "integer"}, {"minimum", 0}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 20000}}}
+			}},
+			{"required", nlohmann::json::array({"file_path"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "read_real_file"},
+		{"description", "Read one current-project source file directly from the live IDE page mapped by mirror-relative file_path. Returns real_source code, code_hash and cat -n style content. When this tool is available, call it immediately before edit_file/multi_edit_file/write_file/diff_file for the same file_path, and base old_text/full_code/expected_base_hash on its real_source/code_hash."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1422,7 +1436,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "edit_file"},
-		{"description", "Edit one current-project source file by mirror-relative file_path. Internally maps file_path to the real IDE page, reads the real page text by whole-page copy, replaces exactly one old_text occurrence, writes back by whole-page paste, then invalidates the workspace mirror."},
+		{"description", "Edit one current-project source file by mirror-relative file_path. Writes go to the live IDE page and invalidate the workspace mirror."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1436,7 +1450,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "multi_edit_file"},
-		{"description", "Apply multiple text edits to one current-project source file. The write path uses the real IDE page as its base, not the unpacked mirror copy."},
+		{"description", "Apply multiple text edits to one current-project source file. Writes go to the live IDE page and invalidate the workspace mirror."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1460,7 +1474,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "write_file"},
-		{"description", "Overwrite one current-project source file with full_code. Internally reads the real IDE page as the base by whole-page copy and writes back by whole-page paste, then invalidates the workspace mirror."},
+		{"description", "Overwrite one current-project source file with full_code. expected_base_hash may be provided to detect stale source before writing. Writes go to the live IDE page and invalidate the workspace mirror."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1639,9 +1653,36 @@ nlohmann::json BuildPublicToolCatalog()
 	NormalizeJsonStringsToUtf8InPlace(tools);
 	return tools;
 }
-nlohmann::json BuildChatToolDefinitions()
+
+bool IsRealPageReadToolVisible(AISourceEditMode mode)
 {
-	const nlohmann::json catalog = BuildPublicToolCatalog();
+	return mode == AISourceEditMode::RealPageFirst;
+}
+
+nlohmann::json FilterToolCatalogForSourceEditMode(const nlohmann::json& catalog, AISourceEditMode mode)
+{
+	if (IsRealPageReadToolVisible(mode)) {
+		return catalog;
+	}
+
+	nlohmann::json filtered = nlohmann::json::array();
+	for (const auto& item : catalog) {
+		if (item.is_object() && item.value("name", std::string()) == "read_real_file") {
+			continue;
+		}
+		filtered.push_back(item);
+	}
+	return filtered;
+}
+
+nlohmann::json BuildConfiguredToolCatalog(const AISettings& settings)
+{
+	return FilterToolCatalogForSourceEditMode(BuildPublicToolCatalog(), settings.sourceEditMode);
+}
+
+nlohmann::json BuildChatToolDefinitions(const AISettings& settings)
+{
+	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings);
 	nlohmann::json tools = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		tools.push_back({
@@ -1753,7 +1794,10 @@ bool ContainsAnyText(const std::string& text, std::initializer_list<std::string_
 	return false;
 }
 
-std::vector<std::string> SelectGeminiToolNames(const std::vector<AIChatMessage>& contextMessages, bool minimal)
+std::vector<std::string> SelectGeminiToolNames(
+	const std::vector<AIChatMessage>& contextMessages,
+	bool minimal,
+	AISourceEditMode sourceEditMode)
 {
 	const std::string text = CollectGeminiToolRoutingText(contextMessages);
 	std::vector<std::string> names;
@@ -1762,11 +1806,14 @@ std::vector<std::string> SelectGeminiToolNames(const std::vector<AIChatMessage>&
 		AddUniqueToolName(names, "get_current_eide_info");
 		AddUniqueToolName(names, "get_current_page_info");
 	};
-	const auto addFileReadTools = [&names]() {
+	const auto addFileReadTools = [&names, sourceEditMode]() {
 		AddUniqueToolName(names, "refresh_workspace_mirror");
 		AddUniqueToolName(names, "list_files");
 		AddUniqueToolName(names, "search_code");
 		AddUniqueToolName(names, "read_file");
+		if (IsRealPageReadToolVisible(sourceEditMode)) {
+			AddUniqueToolName(names, "read_real_file");
+		}
 	};
 	const auto addSearchTools = [&names]() {
 		AddUniqueToolName(names, "refresh_workspace_mirror");
@@ -1824,17 +1871,17 @@ std::vector<std::string> SelectGeminiToolNames(const std::vector<AIChatMessage>&
 		AddUniqueToolName(names, "get_current_page_info");
 	}
 
-	const size_t maxTools = minimal ? 6u : 12u;
+	const size_t maxTools = minimal ? 8u : 12u;
 	if (names.size() > maxTools) {
 		names.resize(maxTools);
 	}
 	return names;
 }
 
-nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>& contextMessages, bool minimal)
+nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>& contextMessages, bool minimal, const AISettings& settings)
 {
-	const nlohmann::json catalog = BuildPublicToolCatalog();
-	const std::vector<std::string> selectedNames = SelectGeminiToolNames(contextMessages, minimal);
+	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings);
+	const std::vector<std::string> selectedNames = SelectGeminiToolNames(contextMessages, minimal, settings.sourceEditMode);
 	nlohmann::json declarations = nlohmann::json::array();
 	for (const std::string& name : selectedNames) {
 		const nlohmann::json item = FindToolCatalogItemByName(catalog, name);
@@ -1852,9 +1899,9 @@ nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>& contextMessage
 		: nlohmann::json::array({ {{"functionDeclarations", declarations}} });
 }
 
-nlohmann::json BuildResponsesToolDefinitions()
+nlohmann::json BuildResponsesToolDefinitions(const AISettings& settings)
 {
-	const nlohmann::json catalog = BuildPublicToolCatalog();
+	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings);
 	nlohmann::json tools = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		tools.push_back({
@@ -1884,6 +1931,10 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 	}
 
 	const std::string projectType = DetectProjectTypeText();
+	const bool mirrorSourceBase = settings.sourceEditMode == AISourceEditMode::MirrorSourceBase;
+	const std::string sourceReadRule = mirrorSourceBase
+		? "4) 用 list_files 定位文件，用 search_code 搜索内容；需要源码文本时用 read_file；写入工具以 read_file 的镜像文本作为匹配和哈希基准。\n"
+		: "4) 用 list_files 定位文件，用 search_code 搜索内容；可用 read_file 查看解包镜像；编辑当前工程源码前，先用 read_real_file 读取同一 file_path 的 IDE 真实页文本。\n";
 	{
 		std::string prompt =
 			"你是AutoLinker，一个内置于易语言IDE的插件形式的助手。\n"
@@ -1891,19 +1942,23 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"当前项目名称：" + (projectName.empty() ? std::string("未知") : projectName) + "\n\n"
 			"当前项目类型：" + projectType + "\n\n"
 			"统一源码工具规则：\n"
-			"1) 所有源码读取、搜索和列出都基于 e-packager 解包出的当前工程镜像。路径一律是镜像内相对路径。\n"
+			"1) list_files / search_code / read_file 基于 e-packager 解包出的当前工程镜像，路径一律是镜像内相对路径；read_file 返回 mirror_source。\n"
 			"2) 每轮对话第一次 list_files / search_code / read_file 前，先调用一次 refresh_workspace_mirror，以读取用户可能在 IDE 中手工修改后的最新内存源码。\n"
 			"3) refresh_workspace_mirror 会优先用 e-packager unpack --main-only 只刷新当前 .e/.ec 主工程代码，避免重复导出模块和支持库。\n"
-			"4) 用 list_files 定位文件，用 search_code 搜索内容，用 read_file 读取具体文件。\n"
+			+ sourceReadRule +
 			"5) 修改当前工程源码时只能用 edit_file / multi_edit_file / write_file / diff_file / restore_file_snapshot，并以 file_path 作为目标。\n"
-			"6) edit_file 和 write_file 内部会把 file_path 映射到 IDE 真实程序项，通过整页复制读取真实页作为基准，再通过整页粘贴写回；不要假设解包镜像本身会被直接写入。\n"
-			"7) 写入成功后镜像会过期，下次 read_file / search_code / list_files 会重新解包以反映最新 IDE 内存状态。\n"
-			"8) src/*.xml 是窗口界面 XML，只读；窗口程序集代码应编辑对应 src/*.txt。\n"
-			"9) ecom/、elib/、header/ 是依赖/公开信息参考，可读可搜但不可写。\n"
-			"10) 固定表文件 src/.数据类型.txt、src/.DLL声明.txt、src/.常量.txt、src/.全局变量.txt 可作为对应真实表页的编辑目标。\n"
-			"11) 需要预览改动用 diff_file；需要回滚最近写入用 restore_file_snapshot。\n"
-			"12) 通常我们只读取常量，不编辑和写入常量值，因为会覆盖一些长文本常量无法正确覆盖，所以我们通常用固定的程序集变量或局部变量来写固定的值，但需要给与一些注释，不要看起来像是魔法数字或文本。\n"
-			"13) 只有用户要求编译验证时，才调用compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type 和可用编译模式。\n\n"
+			+ std::string(mirrorSourceBase
+				? "6) edit_file / multi_edit_file / write_file / diff_file 的匹配和 expected_base_hash 校验基于 read_file 的镜像文本；大块修改优先基于 read_file 生成 full_code 后调用 write_file，避免反复 exact old_text 失败。\n"
+				  "7) 写入前不会读取真实页源码；写入仍会按 file_path 映射到 IDE 程序项并整页写回。\n"
+				: "6) 当前工具列表提供 read_real_file：编辑 src/*.txt 或固定表文件前，必须先对同一 file_path 调用 read_real_file；edit_file / multi_edit_file / write_file / diff_file 的 old_text、full_code 和 expected_base_hash 应基于 read_real_file 返回的 real_source/code_hash，不要用 read_file 的 mirror_source 作为编辑基准。\n"
+				  "7) edit_file / write_file 会把 file_path 映射到 IDE 真实程序项，基于真实页文本匹配，再整页写回。\n")
+			+ "8) 写入成功后镜像会过期，下次 read_file / search_code / list_files 会重新解包以反映最新 IDE 内存状态。\n"
+			"9) src/*.xml 是窗口界面 XML，只读；窗口程序集代码应编辑对应 src/*.txt。\n"
+			"10) ecom/、elib/、header/ 是依赖/公开信息参考，可读可搜但不可写。\n"
+			"11) 固定表文件 src/.数据类型.txt、src/.DLL声明.txt、src/.常量.txt、src/.全局变量.txt 可作为对应真实表页的编辑目标。\n"
+			"12) 需要预览改动用 diff_file；需要回滚最近写入用 restore_file_snapshot。\n"
+			"13) 通常我们只读取常量，不编辑和写入常量值，因为会覆盖一些长文本常量无法正确覆盖，所以我们通常用固定的程序集变量或局部变量来写固定的值，但需要给与一些注释，不要看起来像是魔法数字或文本。\n"
+			"14) 只有用户要求编译验证时，才调用compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type 和可用编译模式。\n\n"
 			"其他工具：\n"
 			"- 需要确认当前页名/页类型时用 get_current_page_info，不要臆测当前页。\n"
 			"- 涉及联网、查文档、搜最新资料时用 search_web_tavily 搜索、extract_web_document 取正文、fetch_url 取原始响应。\n"
@@ -2117,10 +2172,10 @@ std::string BuildJsonHeadersOnly(const AISettings& settings)
 	}, settings);
 }
 
-nlohmann::json BuildClaudeTools()
+nlohmann::json BuildClaudeTools(const AISettings& settings)
 {
 	nlohmann::json out = nlohmann::json::array();
-	const nlohmann::json openAiTools = BuildChatToolDefinitions();
+	const nlohmann::json openAiTools = BuildChatToolDefinitions(settings);
 	for (const auto& tool : openAiTools) {
 		if (!tool.contains("function") || !tool["function"].is_object()) {
 			continue;
@@ -2135,10 +2190,10 @@ nlohmann::json BuildClaudeTools()
 	return out;
 }
 
-nlohmann::json BuildGeminiTools()
+nlohmann::json BuildGeminiTools(const AISettings& settings)
 {
 	nlohmann::json declarations = nlohmann::json::array();
-	const nlohmann::json openAiTools = BuildChatToolDefinitions();
+	const nlohmann::json openAiTools = BuildChatToolDefinitions(settings);
 	for (const auto& tool : openAiTools) {
 		if (!tool.contains("function") || !tool["function"].is_object()) {
 			continue;
@@ -2744,7 +2799,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 		return result;
 	}
 	const std::string endpoint = BuildClaudeEndpoint(settings.baseUrl);
-	const nlohmann::json tools = BuildClaudeTools();
+	const nlohmann::json tools = BuildClaudeTools(settings);
 
 	std::string systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings));
 	nlohmann::json messages = nlohmann::json::array();
@@ -2948,7 +3003,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 	}
 	std::string endpoint = BuildGeminiEndpoint(settings.baseUrl, LocalToUtf8(settings.model), false);
 	endpoint = AppendQueryParam(endpoint, "key", settings.apiKey);
-	nlohmann::json tools = BuildGeminiTools(contextMessages, false);
+	nlohmann::json tools = BuildGeminiTools(contextMessages, false, settings);
 
 	bool degradedRequestMode = false;
 	std::string systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, degradedRequestMode));
@@ -3007,7 +3062,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 			if (!degradedRequestMode && IsGeminiResourceExhaustedResponse(statusCode, responseBody)) {
 				degradedRequestMode = true;
 				systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, degradedRequestMode));
-				tools = BuildGeminiTools(contextMessages, true);
+				tools = BuildGeminiTools(contextMessages, true, settings);
 				--round;
 				continue;
 			}
@@ -3125,7 +3180,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		return result;
 	}
 	const std::string endpoint = BuildOpenAIResponsesEndpoint(settings.baseUrl);
-	const nlohmann::json tools = BuildResponsesToolDefinitions();
+	const nlohmann::json tools = BuildResponsesToolDefinitions(settings);
 
 	nlohmann::json input = nlohmann::json::array();
 	for (const AIChatMessage& msg : contextMessages) {
@@ -3316,7 +3371,6 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 				{ "model",              "ai.model"                },
 				{ "system_prompt_extra","ai.system_prompt_extra"  },
 				{ "custom_headers",     "ai.custom_headers"       },
-				{ "tavily_api_key",     "ai.tavily_api_key"       },
 				{ "timeout_ms",         "ai.timeout_ms"           },
 				{ "temperature",        "ai.temperature"          },
 				{ "context_window",     "ai.context_window"       },
@@ -3331,18 +3385,29 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 			if (!toMigrate.empty()) {
 				jsonConfig.setValues(toMigrate);
 			}
+			std::map<std::string, std::string> globalToMigrate;
+			if (const std::string val = iniConfig->getValue("ai.source_edit_mode"); !val.empty()) {
+				globalToMigrate["source_edit_mode"] = val;
+			}
+			if (const std::string val = iniConfig->getValue("ai.tavily_api_key"); !val.empty()) {
+				globalToMigrate["tavily_api_key"] = val;
+			}
+			if (!globalToMigrate.empty()) {
+				jsonConfig.setGlobalValues(globalToMigrate);
+			}
 		}
 	}
 
 	// 从 JSON 读取设置（getValueLocal 将 UTF-8 转换为本地编码供 AISettings 使用）
 	outSettings.protocolType     = ParseProtocolType(jsonConfig.getValue("protocol_type"));
 	outSettings.thinkingLevel    = ParseThinkingLevel(jsonConfig.getValue("thinking_level"));
+	outSettings.sourceEditMode   = ParseSourceEditMode(jsonConfig.getGlobalValue("source_edit_mode"));
 	outSettings.baseUrl          = jsonConfig.getValueLocal("base_url");
 	outSettings.apiKey           = jsonConfig.getValueLocal("api_key");
 	outSettings.model            = jsonConfig.getValueLocal("model");
 	outSettings.extraSystemPrompt= jsonConfig.getValueLocal("system_prompt_extra");
 	outSettings.customHeadersText= jsonConfig.getValueLocal("custom_headers");
-	outSettings.tavilyApiKey     = jsonConfig.getValueLocal("tavily_api_key");
+	outSettings.tavilyApiKey     = jsonConfig.getGlobalValueLocal("tavily_api_key");
 
 	const std::string timeoutValue = jsonConfig.getValue("timeout_ms");
 	if (!timeoutValue.empty()) {
@@ -3387,10 +3452,17 @@ void AIService::SaveSettings(AIJsonConfig& jsonConfig, const AISettings& setting
 		{ "model",               settings.model                              },
 		{ "system_prompt_extra", settings.extraSystemPrompt                  },
 		{ "custom_headers",      settings.customHeadersText                  },
-		{ "tavily_api_key",      settings.tavilyApiKey                       },
 		{ "timeout_ms",          std::to_string(settings.timeoutMs)          },
 		{ "temperature",         std::format("{:.2f}", settings.temperature) },
 		{ "context_window",      std::to_string(settings.contextWindowTokens) },
+	});
+	jsonConfig.removeValues({
+		"source_edit_mode",
+		"tavily_api_key"
+	});
+	jsonConfig.setGlobalValues({
+		{ "source_edit_mode", SourceEditModeToString(settings.sourceEditMode) },
+		{ "tavily_api_key",   settings.tavilyApiKey }
 	});
 }
 
@@ -3571,6 +3643,43 @@ std::string AIService::ThinkingLevelDisplayName(AIThinkingLevel thinkingLevel)
 	case AIThinkingLevel::Off:
 	default:
 		return "关闭";
+	}
+}
+
+AISourceEditMode AIService::ParseSourceEditMode(const std::string& text)
+{
+	const std::string v = ToLowerAsciiCopy(Trim(text));
+	if (v == "mirror_source_base" ||
+		v == "mirror_direct_write" ||
+		v == "mirror" ||
+		v == "mirror_first" ||
+		v == "mirror_direct" ||
+		v == "e_packager" ||
+		v == "epackager") {
+		return AISourceEditMode::MirrorSourceBase;
+	}
+	return AISourceEditMode::RealPageFirst;
+}
+
+std::string AIService::SourceEditModeToString(AISourceEditMode mode)
+{
+	switch (mode) {
+	case AISourceEditMode::MirrorSourceBase:
+		return "mirror_source_base";
+	case AISourceEditMode::RealPageFirst:
+	default:
+		return "real_page_first";
+	}
+}
+
+std::string AIService::SourceEditModeDisplayName(AISourceEditMode mode)
+{
+	switch (mode) {
+	case AISourceEditMode::MirrorSourceBase:
+		return "解包镜像基准";
+	case AISourceEditMode::RealPageFirst:
+	default:
+		return "真实页优先";
 	}
 }
 
@@ -3930,7 +4039,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 		requestMessages.push_back(std::move(requestMessage));
 	}
 
-	const nlohmann::json tools = BuildChatToolDefinitions();
+	const nlohmann::json tools = BuildChatToolDefinitions(settings);
 	const int maxToolRounds = kMaxToolRounds;
 
 	for (int round = 0; round < maxToolRounds; ++round) {
@@ -4133,7 +4242,15 @@ AIChatResult AIService::ExecuteChatWithTools(
 
 std::string AIService::BuildPublicToolCatalogJson()
 {
-	return BuildPublicToolCatalog().dump();
+	AISettings settings = {};
+	try {
+		AIJsonConfig jsonConfig;
+		LoadSettings(jsonConfig, nullptr, settings);
+	}
+	catch (...) {
+		settings = {};
+	}
+	return BuildConfiguredToolCatalog(settings).dump();
 }
 
 std::string AIService::NormalizeModelOutputToCode(const std::string& modelText)

@@ -9,6 +9,11 @@
 
 namespace {
 
+bool IsReservedRootKey(const std::string& key)
+{
+    return key == "active_profile_id" || key == "profiles";
+}
+
 // 检查字符串是否为合法 UTF-8 编码
 bool IsValidUtf8(const std::string& s)
 {
@@ -122,6 +127,17 @@ std::string AIJsonConfig::getValueLocal(const std::string& key) const
     return Utf8ToLocal(getValue(key));
 }
 
+std::string AIJsonConfig::getGlobalValue(const std::string& key) const
+{
+    const auto it = m_globalValues.find(key);
+    return it != m_globalValues.end() ? it->second : std::string();
+}
+
+std::string AIJsonConfig::getGlobalValueLocal(const std::string& key) const
+{
+    return Utf8ToLocal(getGlobalValue(key));
+}
+
 void AIJsonConfig::setValue(const std::string& key, const std::string& localValue)
 {
     ensureWritableProfile();
@@ -146,10 +162,33 @@ void AIJsonConfig::setValues(const std::map<std::string, std::string>& localPair
     save();
 }
 
+void AIJsonConfig::removeValues(const std::vector<std::string>& keys)
+{
+    StoredProfile* active = findActiveProfile();
+    if (active == nullptr) {
+        return;
+    }
+    for (const auto& key : keys) {
+        active->values.erase(key);
+    }
+    save();
+}
+
+void AIJsonConfig::setGlobalValues(const std::map<std::string, std::string>& localPairs)
+{
+    for (const auto& [k, v] : localPairs) {
+        if (IsReservedRootKey(k)) {
+            continue;
+        }
+        m_globalValues[k] = LocalToUtf8(v);
+    }
+    save();
+}
+
 bool AIJsonConfig::hasAnyData() const
 {
     const StoredProfile* active = findActiveProfile();
-    return active != nullptr && !active->values.empty();
+    return !m_globalValues.empty() || (active != nullptr && !active->values.empty());
 }
 
 bool AIJsonConfig::hasKey(const std::string& key) const
@@ -217,6 +256,7 @@ void AIJsonConfig::load()
 {
     m_profiles.clear();
     m_activeProfileId.clear();
+    m_globalValues.clear();
     if (!std::filesystem::exists(m_filePath)) {
         return;
     }
@@ -232,6 +272,13 @@ void AIJsonConfig::load()
         }
 
         if (j.contains("profiles") && j["profiles"].is_array()) {
+            for (const auto& [key, val] : j.items()) {
+                if (IsReservedRootKey(key)) {
+                    continue;
+                }
+                m_globalValues[key] = val.is_string() ? val.get<std::string>() : val.dump();
+            }
+
             for (const auto& item : j["profiles"]) {
                 if (!item.is_object()) {
                     continue;
@@ -283,6 +330,11 @@ void AIJsonConfig::save() const
 {
     try {
         nlohmann::json j = nlohmann::json::object();
+        for (const auto& [key, value] : m_globalValues) {
+            if (!IsReservedRootKey(key)) {
+                j[key] = value;
+            }
+        }
         j["active_profile_id"] = m_activeProfileId;
         j["profiles"] = nlohmann::json::array();
         for (const auto& profile : m_profiles) {

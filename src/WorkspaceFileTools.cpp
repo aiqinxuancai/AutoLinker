@@ -13,6 +13,7 @@
 
 #include "..\\thirdparty\\json.hpp"
 
+#include "RealPageCodeToolSupport.h"
 #include "WorkspaceMirror.h"
 
 namespace WorkspaceFileTools {
@@ -344,6 +345,7 @@ std::string ExecuteReadFile(const std::string& argumentsJson, bool& outOk)
 	}
 
 	const std::string text = DecodeTextToUtf8(std::move(bytes));
+	const std::string hashText = NormalizeRealCodeLineBreaksToCrLf(Utf8ToLocalText(text));
 	const auto lines = SplitLinesUtf8(text);
 	int returned = 0;
 	bool lineTruncated = false;
@@ -352,6 +354,8 @@ std::string ExecuteReadFile(const std::string& argumentsJson, bool& outOk)
 	json r;
 	r["ok"] = true;
 	r["file_path"] = relativePath;
+	r["code_kind"] = "mirror_source";
+	r["code_hash"] = BuildStableTextHashForRealCode(hashText);
 	r["total_lines"] = lines.size();
 	r["offset"] = offset;
 	r["returned_lines"] = returned;

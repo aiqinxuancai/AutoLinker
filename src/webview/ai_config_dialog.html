@@ -21,6 +21,9 @@
 	<main class="flex flex-1 flex-col bg-white">
 		<section class="min-w-0 p-5">
 			<div class="space-y-4">
+				<section class="rounded-lg border border-slate-200 bg-white p-4">
+					<h2 class="mb-3 text-[12px] font-semibold uppercase tracking-wide text-slate-500">API 配置组</h2>
+					<div class="space-y-4">
 				<div>
 					<label for="profileSelect" class="ui-label">配置组</label>
 					<div class="flex flex-wrap items-center gap-2">
@@ -97,6 +100,18 @@
 					<textarea id="customHeaders" class="ui-textarea min-h-[3.5rem]" placeholder="Authorization: Bearer xxx&#10;X-Provider: custom"></textarea>
 					<p class="mt-1.5 text-[12px] text-slate-500">每行一个 Header: Value，可覆盖内置请求头</p>
 				</div>
+					</div>
+				</section>
+
+				<section class="rounded-lg border border-slate-200 bg-slate-50 p-4">
+					<h2 class="mb-3 text-[12px] font-semibold uppercase tracking-wide text-slate-500">全局源码设置</h2>
+					<label for="sourceEditMode" class="ui-label">源码编辑模式</label>
+					<select id="sourceEditMode" class="ui-select">
+						<option value="real_page_first">真实页优先</option>
+						<option value="mirror_source_base">解包镜像基准</option>
+					</select>
+					<p class="mt-1.5 text-[12px] leading-5 text-slate-500">此设置独立于 API 配置组。真实页优先会在编辑前读取 IDE 页面；解包镜像基准会按 read_file 的镜像源码匹配并写回页面。</p>
+				</section>
 
 				<section class="rounded-lg border border-slate-200 bg-slate-50 p-4">
 					<h2 class="mb-3 text-[12px] font-semibold uppercase tracking-wide text-slate-500">Tavily 联网搜索</h2>
@@ -105,7 +120,7 @@
 						<input id="tavilyApiKey" class="ui-input min-w-0 flex-1" type="password" placeholder="用于 search_web_tavily" autocomplete="off">
 						<button id="toggleTavilyKey" class="ui-btn w-16 px-0" type="button">显示</button>
 					</div>
-					<p class="mt-3 text-[12px] leading-5 text-slate-500">这个 Key 仅供 <span class="ui-code">search_web_tavily</span> 工具使用，不影响主模型配置。</p>
+					<p class="mt-3 text-[12px] leading-5 text-slate-500">此 Key 独立于 API 配置组，仅供 <span class="ui-code">search_web_tavily</span> 工具使用，不影响主模型配置。</p>
 				</section>
 			</div>
 		</section>
@@ -138,6 +153,8 @@ var o=this&&this.__importDefault||function(e){return e&&e.__esModule?e:{default:
 <script>
 const initialSettings = {
 	activeProfileId: "default",
+	sourceEditMode: "real_page_first",
+	tavilyApiKey: "",
 	profiles: [{
 		id: "default",
 		name: "\u9ED8\u8BA4",
@@ -148,7 +165,6 @@ const initialSettings = {
 		model: "",
 		extraPrompt: "",
 		customHeaders: "",
-		tavilyApiKey: "",
 		contextWindow: 0
 	}]
 };
@@ -416,7 +432,6 @@ function cloneProfile(profile) {
 		model: profile.model || "",
 		extraPrompt: profile.extraPrompt || "",
 		customHeaders: profile.customHeaders || "",
-		tavilyApiKey: profile.tavilyApiKey || "",
 		contextWindow: profile.contextWindow || 0
 	};
 }
@@ -442,7 +457,6 @@ function saveCurrentFormToActiveProfile() {
 	current.model = $("model").value || "";
 	current.extraPrompt = $("extraPrompt").value || "";
 	current.customHeaders = $("customHeaders").value || "";
-	current.tavilyApiKey = $("tavilyApiKey").value || "";
 	current.contextWindow = parseInt($("contextWindow").value, 10) || 0;
 }
 
@@ -481,7 +495,6 @@ function applyProfileToForm(profile) {
 	setField("model", profile.model);
 	setField("extraPrompt", profile.extraPrompt);
 	setField("customHeaders", profile.customHeaders);
-	setField("tavilyApiKey", profile.tavilyApiKey);
 	if ($("contextWindow")) {
 		$("contextWindow").value = profile.contextWindow ? String(profile.contextWindow) : "";
 	}
@@ -494,6 +507,8 @@ function buildPayload() {
 	saveCurrentFormToActiveProfile();
 	return {
 		activeProfileId: _activeProfileId,
+		sourceEditMode: $("sourceEditMode").value || "real_page_first",
+		tavilyApiKey: $("tavilyApiKey").value || "",
 		profiles: _profiles.map(function(profile) { return cloneProfile(profile); })
 	};
 }
@@ -562,6 +577,8 @@ function applyInitial(settings) {
 		_profiles = initialSettings.profiles.map(cloneProfile);
 		_activeProfileId = _profiles[0].id;
 	}
+	setField("sourceEditMode", next.sourceEditMode || "real_page_first");
+	setField("tavilyApiKey", next.tavilyApiKey || "");
 	renderProfileSelect();
 	applyProfileToForm(findProfile(_activeProfileId));
 }
@@ -634,7 +651,7 @@ $("addProfileBtn").addEventListener("click", function() {
 		model: "",
 		extraPrompt: "",
 		customHeaders: "",
-		tavilyApiKey: ""
+		contextWindow: 0
 	});
 	_activeProfileId = id;
 	renderProfileSelect();
@@ -804,7 +821,6 @@ function currentFormProfilePayload() {
 		model: $("model").value || "",
 		extraPrompt: $("extraPrompt").value || "",
 		customHeaders: $("customHeaders").value || "",
-		tavilyApiKey: $("tavilyApiKey").value || "",
 		contextWindow: parseInt($("contextWindow").value, 10) || 0
 	};
 }
@@ -888,7 +904,7 @@ function createProfileFromPreset(site, model) {
 		model: model,
 		extraPrompt: "",
 		customHeaders: "",
-		tavilyApiKey: ""
+		contextWindow: 0
 	};
 	_profiles.push(profile);
 	_activeProfileId = id;
