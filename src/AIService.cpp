@@ -1547,8 +1547,47 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "refresh_dependency_catalog"},
+		{"description", "Explicit-user-request only. Refresh AutoLinker dependency catalog cache for available .ec modules under ecom and .fne support libraries under lib."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"force", {{"type", "boolean"}, {"description", "Rebuild cache directories. Defaults to false."}}},
+				{"wait", {{"type", "boolean"}, {"description", "Wait until refresh finishes. Defaults to true."}}},
+				{"timeout_ms", {{"type", "integer"}, {"minimum", 0}, {"maximum", 600000}, {"description", "0 means wait indefinitely when wait=true."}}}
+			}},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "search_available_modules"},
+		{"description", "Explicit-user-request only. Search currently available .ec modules from the E-language ecom directory by module name, path, or cached main source."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"query", {{"type", "string"}, {"description", "Module name, file name, path or source keyword. Empty query lists top cached modules."}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}},
+				{"include_snippets", {{"type", "boolean"}}}
+			}},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "search_available_support_libraries"},
+		{"description", "Explicit-user-request only. Search currently available .fne support libraries from the E-language lib directory by library name, file name, path, or decoded GetNewInf information."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"query", {{"type", "string"}, {"description", "Support library name, file name, path, command name or type keyword. Empty query lists top cached libraries."}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}},
+				{"include_snippets", {{"type", "boolean"}}}
+			}},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "list_imported_modules"},
-		{"description", "List .ec modules currently imported by the active E-language project."},
+		{"description", "Explicit-user-request only. List .ec modules currently imported by the active E-language project."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", nlohmann::json::object()},
@@ -1557,25 +1596,39 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "add_module_to_project"},
-		{"description", "Import one .ec module into the current project by module_path or module_name. After a successful add, AutoLinker performs a full refresh_workspace_mirror."},
+		{"description", "Explicit-user-request only. Import one .ec module into the current project by module_path or module_name. Real import requires allow_blocking_import=true."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
 				{"module_path", {{"type", "string"}, {"description", "Absolute .ec file path."}}},
-				{"module_name", {{"type", "string"}, {"description", "Module name or file name to resolve from the E-language module directory."}}}
+				{"module_name", {{"type", "string"}, {"description", "Module name or file name to resolve from the E-language module directory."}}},
+				{"prefer_new_method", {{"type", "boolean"}, {"description", "Optional diagnostic switch. false uses the legacy IDE import path; true tries the newer AddECOM2 path first."}}},
+				{"allow_blocking_import", {{"type", "boolean"}, {"description", "Required true to execute the real IDE module import call. Default false only resolves the module and avoids blocking MCP if the IDE API hangs."}}}
 			}},
 			{"additionalProperties", false}
 		}}
 	});
 	tools.push_back({
 		{"name", "remove_module_from_project"},
-		{"description", "Remove one imported .ec module from the current project by module_index, module_path, or module_name. After a successful removal, AutoLinker performs a full refresh_workspace_mirror."},
+		{"description", "Explicit-user-request only. Remove one imported .ec module from the current project by module_index, module_path, or module_name."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
 				{"module_index", {{"type", "integer"}, {"minimum", 0}}},
 				{"module_path", {{"type", "string"}}},
 				{"module_name", {{"type", "string"}}}
+			}},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "add_support_library_to_project"},
+		{"description", "Explicit-user-request only. Add one .fne support library to the current project by library_path or library_name, then verify it is loaded."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"library_path", {{"type", "string"}, {"description", "Absolute .fne file path, or path relative to the E-language lib directory."}}},
+				{"library_name", {{"type", "string"}, {"description", "Support library name or file name to resolve from the E-language lib directory."}}}
 			}},
 			{"additionalProperties", false}
 		}}
@@ -1680,9 +1733,190 @@ nlohmann::json BuildConfiguredToolCatalog(const AISettings& settings)
 	return FilterToolCatalogForSourceEditMode(BuildPublicToolCatalog(), settings.sourceEditMode);
 }
 
+bool ContainsAnyText(const std::string& text, std::initializer_list<std::string_view> needles);
+
+std::string CollectLatestUserToolRoutingText(const std::vector<AIChatMessage>& contextMessages)
+{
+	for (auto it = contextMessages.rbegin(); it != contextMessages.rend(); ++it) {
+		if (ToLowerAsciiCopy(AIService::Trim(it->role)) != "user") {
+			continue;
+		}
+		std::string text = it->content;
+		if (!it->rawMessageJsonUtf8.empty()) {
+			text.push_back('\n');
+			text += it->rawMessageJsonUtf8;
+		}
+		return text;
+	}
+	return std::string();
+}
+
+bool IsDependencyManagementToolName(const std::string& name)
+{
+	return name == "refresh_dependency_catalog" ||
+		name == "search_available_modules" ||
+		name == "search_available_support_libraries" ||
+		name == "list_imported_modules" ||
+		name == "add_module_to_project" ||
+		name == "remove_module_from_project" ||
+		name == "add_support_library_to_project";
+}
+
+bool HasExplicitModuleSearchIntent(const std::string& text)
+{
+	return ContainsAnyText(text, { "search_available_modules" }) ||
+		(ContainsAnyText(text, { "搜索", "查找", "查询", "列出", "有哪些", "可用", "available", "search", "list" }) &&
+		 ContainsAnyText(text, { "模块", "ECOM", ".ec", "module" }));
+}
+
+bool HasExplicitSupportLibrarySearchIntent(const std::string& text)
+{
+	return ContainsAnyText(text, { "search_available_support_libraries" }) ||
+		(ContainsAnyText(text, { "搜索", "查找", "查询", "列出", "有哪些", "可用", "available", "search", "list" }) &&
+		 ContainsAnyText(text, { "支持库", "support library", ".fne", ".fnr" }));
+}
+
+bool HasExplicitDependencyRefreshIntent(const std::string& text)
+{
+	return ContainsAnyText(text, { "refresh_dependency_catalog" }) ||
+		(ContainsAnyText(text, { "刷新", "重建", "更新", "refresh", "rebuild" }) &&
+		 ContainsAnyText(text, { "依赖目录", "依赖缓存", "模块缓存", "支持库缓存", "dependency catalog", "catalog cache" }));
+}
+
+bool HasExplicitImportedModuleListIntent(const std::string& text)
+{
+	return ContainsAnyText(text, {
+		"list_imported_modules",
+		"列出已导入模块",
+		"查看已导入模块",
+		"当前导入的模块",
+		"已导入的模块",
+		"imported modules"
+	});
+}
+
+bool HasExplicitModuleAddIntent(const std::string& text)
+{
+	return ContainsAnyText(text, { "add_module_to_project" }) ||
+		(ContainsAnyText(text, { "添加", "新增", "引入", "导入", "加入", "add", "import" }) &&
+		 ContainsAnyText(text, { "模块", "ECOM", ".ec", "module" }));
+}
+
+bool HasExplicitModuleRemoveIntent(const std::string& text)
+{
+	return ContainsAnyText(text, { "remove_module_from_project" }) ||
+		(ContainsAnyText(text, { "删除", "移除", "去掉", "取消导入", "卸载", "remove", "delete" }) &&
+		 ContainsAnyText(text, { "模块", "ECOM", ".ec", "module" }));
+}
+
+bool HasExplicitSupportLibraryAddIntent(const std::string& text)
+{
+	return ContainsAnyText(text, { "add_support_library_to_project" }) ||
+		(ContainsAnyText(text, { "添加", "新增", "引入", "导入", "加入", "add", "import" }) &&
+		 ContainsAnyText(text, { "支持库", "support library", ".fne", ".fnr" }));
+}
+
+bool HasDependencyManagementDenyIntent(const std::string& text)
+{
+	return ContainsAnyText(text, {
+			"不要调用",
+			"不能调用",
+			"禁止调用",
+			"不要使用",
+			"禁止使用",
+			"无需调用",
+			"不需要调用"
+		}) &&
+		ContainsAnyText(text, {
+			"依赖管理",
+			"模块",
+			"ECOM",
+			"支持库",
+			"refresh_dependency_catalog",
+			"search_available_modules",
+			"search_available_support_libraries",
+			"list_imported_modules",
+			"add_module_to_project",
+			"remove_module_from_project",
+			"add_support_library_to_project"
+		});
+}
+
+bool IsDependencyManagementToolExplicitlyRequested(const std::string& name, const std::string& latestUserText)
+{
+	if (HasDependencyManagementDenyIntent(latestUserText)) {
+		return false;
+	}
+	if (name == "refresh_dependency_catalog") {
+		return HasExplicitDependencyRefreshIntent(latestUserText);
+	}
+	if (name == "search_available_modules") {
+		return HasExplicitModuleSearchIntent(latestUserText);
+	}
+	if (name == "search_available_support_libraries") {
+		return HasExplicitSupportLibrarySearchIntent(latestUserText);
+	}
+	if (name == "list_imported_modules") {
+		return HasExplicitImportedModuleListIntent(latestUserText);
+	}
+	if (name == "add_module_to_project") {
+		return HasExplicitModuleAddIntent(latestUserText);
+	}
+	if (name == "remove_module_from_project") {
+		return HasExplicitModuleRemoveIntent(latestUserText);
+	}
+	if (name == "add_support_library_to_project") {
+		return HasExplicitSupportLibraryAddIntent(latestUserText);
+	}
+	return true;
+}
+
+nlohmann::json FilterDependencyManagementToolsForExplicitRequest(
+	const nlohmann::json& catalog,
+	const std::vector<AIChatMessage>& contextMessages)
+{
+	const std::string latestUserText = CollectLatestUserToolRoutingText(contextMessages);
+	nlohmann::json filtered = nlohmann::json::array();
+	for (const auto& item : catalog) {
+		const std::string name = item.is_object() ? item.value("name", std::string()) : std::string();
+		if (IsDependencyManagementToolName(name) &&
+			!IsDependencyManagementToolExplicitlyRequested(name, latestUserText)) {
+			continue;
+		}
+		filtered.push_back(item);
+	}
+	return filtered;
+}
+
+nlohmann::json BuildConfiguredToolCatalog(
+	const AISettings& settings,
+	const std::vector<AIChatMessage>& contextMessages)
+{
+	return FilterDependencyManagementToolsForExplicitRequest(BuildConfiguredToolCatalog(settings), contextMessages);
+}
+
 nlohmann::json BuildChatToolDefinitions(const AISettings& settings)
 {
 	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings);
+	nlohmann::json tools = nlohmann::json::array();
+	for (const auto& item : catalog) {
+		tools.push_back({
+			{"type", "function"},
+			{"function", {
+				{"name", item.value("name", "")},
+				{"description", item.value("description", "")},
+				{"parameters", item.contains("inputSchema") ? item["inputSchema"] : nlohmann::json::object()}
+			}}
+		});
+	}
+	return tools;
+}
+
+nlohmann::json BuildChatToolDefinitions(
+	const AISettings& settings,
+	const std::vector<AIChatMessage>& contextMessages)
+{
+	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings, contextMessages);
 	nlohmann::json tools = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		tools.push_back({
@@ -1800,6 +2034,7 @@ std::vector<std::string> SelectGeminiToolNames(
 	AISourceEditMode sourceEditMode)
 {
 	const std::string text = CollectGeminiToolRoutingText(contextMessages);
+	const std::string latestUserText = CollectLatestUserToolRoutingText(contextMessages);
 	std::vector<std::string> names;
 
 	const auto addCoreReadTools = [&names]() {
@@ -1853,9 +2088,31 @@ std::vector<std::string> SelectGeminiToolNames(
 	}
 	if (ContainsAnyText(text, { "模块", "ECOM", ".ec", "module", "支持库", "support library", ".fne", ".fnr" })) {
 		addFileReadTools();
-		AddUniqueToolName(names, "list_imported_modules");
-		AddUniqueToolName(names, "add_module_to_project");
-		AddUniqueToolName(names, "remove_module_from_project");
+		if (HasExplicitDependencyRefreshIntent(latestUserText)) {
+			AddUniqueToolName(names, "refresh_dependency_catalog");
+		}
+		if (HasExplicitModuleSearchIntent(latestUserText)) {
+			AddUniqueToolName(names, "refresh_dependency_catalog");
+			AddUniqueToolName(names, "search_available_modules");
+		}
+		if (HasExplicitSupportLibrarySearchIntent(latestUserText)) {
+			AddUniqueToolName(names, "refresh_dependency_catalog");
+			AddUniqueToolName(names, "search_available_support_libraries");
+		}
+		if (HasExplicitImportedModuleListIntent(latestUserText)) {
+			AddUniqueToolName(names, "list_imported_modules");
+		}
+		if (HasExplicitModuleAddIntent(latestUserText)) {
+			AddUniqueToolName(names, "refresh_dependency_catalog");
+			AddUniqueToolName(names, "add_module_to_project");
+		}
+		if (HasExplicitModuleRemoveIntent(latestUserText)) {
+			AddUniqueToolName(names, "remove_module_from_project");
+		}
+		if (HasExplicitSupportLibraryAddIntent(latestUserText)) {
+			AddUniqueToolName(names, "refresh_dependency_catalog");
+			AddUniqueToolName(names, "add_support_library_to_project");
+		}
 	}
 	if (ContainsAnyText(text, { "PowerShell", "powershell", "命令行", "执行命令" })) {
 		AddUniqueToolName(names, "run_powershell_command");
@@ -1880,7 +2137,7 @@ std::vector<std::string> SelectGeminiToolNames(
 
 nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>& contextMessages, bool minimal, const AISettings& settings)
 {
-	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings);
+	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings, contextMessages);
 	const std::vector<std::string> selectedNames = SelectGeminiToolNames(contextMessages, minimal, settings.sourceEditMode);
 	nlohmann::json declarations = nlohmann::json::array();
 	for (const std::string& name : selectedNames) {
@@ -1899,9 +2156,11 @@ nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>& contextMessage
 		: nlohmann::json::array({ {{"functionDeclarations", declarations}} });
 }
 
-nlohmann::json BuildResponsesToolDefinitions(const AISettings& settings)
+nlohmann::json BuildResponsesToolDefinitions(
+	const AISettings& settings,
+	const std::vector<AIChatMessage>& contextMessages)
 {
-	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings);
+	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings, contextMessages);
 	nlohmann::json tools = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		tools.push_back({
@@ -1958,7 +2217,8 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"11) 固定表文件 src/.数据类型.txt、src/.DLL声明.txt、src/.常量.txt、src/.全局变量.txt 可作为对应真实表页的编辑目标。\n"
 			"12) 需要预览改动用 diff_file；需要回滚最近写入用 restore_file_snapshot。\n"
 			"13) 通常我们只读取常量，不编辑和写入常量值，因为会覆盖一些长文本常量无法正确覆盖，所以我们通常用固定的程序集变量或局部变量来写固定的值，但需要给与一些注释，不要看起来像是魔法数字或文本。\n"
-			"14) 只有用户要求编译验证时，才调用compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type 和可用编译模式。\n\n"
+			"14) 只有用户要求编译验证时，才调用compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type 和可用编译模式。\n"
+			"15) 除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用 refresh_dependency_catalog、search_available_modules、search_available_support_libraries、list_imported_modules、add_module_to_project、remove_module_from_project、add_support_library_to_project。\n\n"
 			"其他工具：\n"
 			"- 需要确认当前页名/页类型时用 get_current_page_info，不要臆测当前页。\n"
 			"- 涉及联网、查文档、搜最新资料时用 search_web_tavily 搜索、extract_web_document 取正文、fetch_url 取原始响应。\n"
@@ -2008,6 +2268,7 @@ std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal
 		"回答要直接、准确，优先使用已提供的工具获取工程上下文。\n"
 		"不要臆测当前页面、模块、支持库或源码内容。\n"
 		"如果需要读取网页或文档，优先调用 extract_web_document；需要原始响应时调用 fetch_url。\n"
+		"除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用依赖管理工具。\n"
 		"如果工具不可用或调用失败，说明限制并基于已有信息继续。\n"
 		"只输出对用户有用的结果，不输出内部推理过程。\n";
 
@@ -2172,10 +2433,12 @@ std::string BuildJsonHeadersOnly(const AISettings& settings)
 	}, settings);
 }
 
-nlohmann::json BuildClaudeTools(const AISettings& settings)
+nlohmann::json BuildClaudeTools(
+	const AISettings& settings,
+	const std::vector<AIChatMessage>& contextMessages)
 {
 	nlohmann::json out = nlohmann::json::array();
-	const nlohmann::json openAiTools = BuildChatToolDefinitions(settings);
+	const nlohmann::json openAiTools = BuildChatToolDefinitions(settings, contextMessages);
 	for (const auto& tool : openAiTools) {
 		if (!tool.contains("function") || !tool["function"].is_object()) {
 			continue;
@@ -2799,7 +3062,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 		return result;
 	}
 	const std::string endpoint = BuildClaudeEndpoint(settings.baseUrl);
-	const nlohmann::json tools = BuildClaudeTools(settings);
+	const nlohmann::json tools = BuildClaudeTools(settings, contextMessages);
 
 	std::string systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings));
 	nlohmann::json messages = nlohmann::json::array();
@@ -3180,7 +3443,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		return result;
 	}
 	const std::string endpoint = BuildOpenAIResponsesEndpoint(settings.baseUrl);
-	const nlohmann::json tools = BuildResponsesToolDefinitions(settings);
+	const nlohmann::json tools = BuildResponsesToolDefinitions(settings, contextMessages);
 
 	nlohmann::json input = nlohmann::json::array();
 	for (const AIChatMessage& msg : contextMessages) {
@@ -4039,7 +4302,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 		requestMessages.push_back(std::move(requestMessage));
 	}
 
-	const nlohmann::json tools = BuildChatToolDefinitions(settings);
+	const nlohmann::json tools = BuildChatToolDefinitions(settings, contextMessages);
 	const int maxToolRounds = kMaxToolRounds;
 
 	for (int round = 0; round < maxToolRounds; ++round) {

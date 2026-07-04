@@ -20,6 +20,7 @@
 #include "..\\thirdparty\\json.hpp"
 #include "AIService.h"
 #include "ConfigManager.h"
+#include "DependencyCatalogCache.h"
 #include "IDEFacade.h"
 #include "EideInternalTextBridge.h"
 #include "Global.h"
@@ -88,6 +89,7 @@ bool VerifyRealPageCodeMatchesForAI(
 	const std::string& expectedCode,
 	const std::string& actualCode,
 	std::string* outMode);
+void AppendFullMirrorRefreshResult(nlohmann::json& r);
 void PutPageCodeCacheEntryForAI(
 	const ProgramTreeItemInfo& item,
 	const std::string& code,
@@ -333,6 +335,11 @@ std::string JsonToLocalTextForAI(nlohmann::json value)
 	// 工具结果可能混入 IDE/MFC 返回的本地编码字符串，统一转 UTF-8 后再序列化。
 	NormalizeJsonStringsToUtf8ForAI(value);
 	return Utf8ToLocalText(value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+
+std::string JsonUtf8ToAsciiTextForAI(const nlohmann::json& value)
+{
+	return value.dump(-1, ' ', true, nlohmann::json::error_handler_t::replace);
 }
 
 std::string GetCurrentProcessPathForAI()
@@ -1930,6 +1937,25 @@ bool ResolveAvailableModulePathForAI(
 		return false;
 	}
 
+	DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(false);
+	std::string catalogPath;
+	std::vector<DependencyCatalogCache::ModuleEntry> catalogCandidates;
+	std::string catalogError;
+	if (DependencyCatalogCache::Instance().ResolveModulePath(
+			trimmedName,
+			std::string(),
+			catalogPath,
+			&catalogCandidates,
+			catalogError)) {
+		outResolvedPath = catalogPath;
+		return true;
+	}
+	if (catalogError == "module name is ambiguous" && outCandidates != nullptr) {
+		for (const auto& candidate : catalogCandidates) {
+			outCandidates->push_back(candidate.pathLocal);
+		}
+	}
+
 	std::vector<std::string> paths;
 	if (!TryListAvailableModulePathsForAI(paths, &outError, outRootPath)) {
 		return false;
@@ -1986,6 +2012,704 @@ std::filesystem::path GetAvailableModuleDirectoryForAI()
 	catch (...) {
 		return std::filesystem::path();
 	}
+}
+
+std::string DependencyRefreshStateToStringForAI(DependencyCatalogCache::RefreshState state)
+{
+	switch (state) {
+	case DependencyCatalogCache::RefreshState::Idle:
+		return "idle";
+	case DependencyCatalogCache::RefreshState::Running:
+		return "running";
+	case DependencyCatalogCache::RefreshState::Ready:
+		return "ready";
+	case DependencyCatalogCache::RefreshState::Failed:
+		return "failed";
+	default:
+		return "unknown";
+	}
+}
+
+void AppendDependencyCatalogStatusForAI(nlohmann::json& r)
+{
+	const DependencyCatalogCache::Status status = DependencyCatalogCache::Instance().GetStatus();
+	nlohmann::json row;
+	row["state"] = DependencyRefreshStateToStringForAI(status.state);
+	row["has_snapshot"] = status.hasSnapshot;
+	row["running"] = status.running;
+	row["refresh_generation"] = status.refreshGeneration;
+	row["last_duration_ms"] = status.lastDurationMs;
+	row["module_count"] = status.moduleCount;
+	row["library_count"] = status.libraryCount;
+	row["decoded_module_count"] = status.decodedModuleCount;
+	row["decoded_library_count"] = status.decodedLibraryCount;
+	row["cache_root"] = LocalToUtf8Text(status.cacheRootLocal);
+	row["ecom_root"] = LocalToUtf8Text(status.ecomRootLocal);
+	row["lib_root"] = LocalToUtf8Text(status.libRootLocal);
+	if (!status.lastErrorLocal.empty()) {
+		row["last_error"] = LocalToUtf8Text(status.lastErrorLocal);
+	}
+	r["catalog_status"] = std::move(row);
+}
+
+bool IsPathSameForAI(const std::string& left, const std::string& right)
+{
+	if (TrimAsciiCopy(left).empty() || TrimAsciiCopy(right).empty()) {
+		return false;
+	}
+	try {
+		return EqualsInsensitiveForAI(
+			std::filesystem::path(left).lexically_normal().string(),
+			std::filesystem::path(right).lexically_normal().string());
+	}
+	catch (...) {
+		return EqualsInsensitiveForAI(left, right);
+	}
+}
+
+bool IsModuleImportedForAI(const std::string& modulePathLocal)
+{
+	std::vector<std::string> paths;
+	std::string error;
+	if (!TryListImportedModulePathsForAI(paths, &error)) {
+		return false;
+	}
+	for (const auto& path : paths) {
+		if (IsPathSameForAI(path, modulePathLocal)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+std::string NormalizeSupportLibraryLookupNameForAI(const std::string& text)
+{
+	std::string value = TrimAsciiCopy(text);
+	if (value.size() >= 2 &&
+		((value.front() == '"' && value.back() == '"') ||
+			(value.front() == '\'' && value.back() == '\''))) {
+		value = value.substr(1, value.size() - 2);
+	}
+	try {
+		std::filesystem::path path(value);
+		if (path.has_extension()) {
+			const std::string ext = ToLowerAsciiCopyLocal(path.extension().string());
+			if (ext == ".fne" || ext == ".fnr") {
+				value = path.stem().string();
+			}
+		}
+	}
+	catch (...) {
+	}
+	return TrimAsciiCopy(value);
+}
+
+bool TryListLoadedSupportLibraryInfoForAI(std::vector<std::string>& outRows, std::string& outError)
+{
+	outRows.clear();
+	outError.clear();
+
+	int count = 0;
+	if (!IDEFacade::Instance().RunGetNumLib(count)) {
+		outError = "RunGetNumLib failed";
+		return false;
+	}
+	for (int i = 0; i < count; ++i) {
+		std::string text;
+		if (IDEFacade::Instance().RunGetLibInfoText(i, text) && !TrimAsciiCopy(text).empty()) {
+			outRows.push_back(text);
+		}
+	}
+	return true;
+}
+
+bool IsSupportLibraryLoadedForAI(
+	const std::string& libraryNameLocal,
+	const std::string& fileNameLocal,
+	int* outIndex = nullptr,
+	std::string* outInfoText = nullptr)
+{
+	if (outIndex != nullptr) {
+		*outIndex = -1;
+	}
+	if (outInfoText != nullptr) {
+		outInfoText->clear();
+	}
+
+	std::vector<std::string> rows;
+	std::string error;
+	if (!TryListLoadedSupportLibraryInfoForAI(rows, error)) {
+		return false;
+	}
+
+	const std::string libraryName = NormalizeSupportLibraryLookupNameForAI(libraryNameLocal);
+	const std::string fileStem = NormalizeSupportLibraryLookupNameForAI(fileNameLocal);
+	for (size_t i = 0; i < rows.size(); ++i) {
+		const std::string& row = rows[i];
+		const bool nameMatched = !libraryName.empty() && row.find(libraryName) != std::string::npos;
+		const bool fileMatched = !fileStem.empty() && row.find(fileStem) != std::string::npos;
+		if (!nameMatched && !fileMatched) {
+			continue;
+		}
+		if (outIndex != nullptr) {
+			*outIndex = static_cast<int>(i);
+		}
+		if (outInfoText != nullptr) {
+			*outInfoText = row;
+		}
+		return true;
+	}
+	return false;
+}
+
+bool IsSupportLibraryDirectiveTargetForAI(const ProgramTreeItemInfo& item)
+{
+	return item.typeKey == "assembly" || item.typeKey == "class_module";
+}
+
+bool TryResolveSupportLibraryDirectiveTargetForAI(
+	ProgramTreeItemInfo& outItem,
+	std::string& outTrace,
+	std::string& outError)
+{
+	outItem = {};
+	outTrace.clear();
+	outError.clear();
+
+	std::string currentName;
+	std::string currentType;
+	std::string currentTrace;
+	if (IDEFacade::Instance().GetCurrentPageName(currentName, &currentType, &currentTrace)) {
+		ProgramTreeItemInfo currentItem;
+		std::string currentError;
+		if (TryGetProgramItemByNameForAI(currentName, "all", currentItem, currentError) &&
+			IsSupportLibraryDirectiveTargetForAI(currentItem)) {
+			outItem = currentItem;
+			outTrace = "target=current_page|page=" + currentName + "|type=" + currentItem.typeKey + "|" + currentTrace;
+			return true;
+		}
+		outTrace = "current_page_not_usable|page=" + currentName + "|type=" + currentType + "|error=" + currentError;
+	}
+	else {
+		outTrace = "current_page_name_failed|" + currentTrace;
+	}
+
+	std::vector<ProgramTreeItemInfo> items;
+	if (!TryListProgramTreeItemsForAI(items, &outError)) {
+		return false;
+	}
+	for (const auto& item : items) {
+		if (item.typeKey == "assembly") {
+			outItem = item;
+			outTrace += "|target=first_assembly|page=" + item.name;
+			return true;
+		}
+	}
+	for (const auto& item : items) {
+		if (item.typeKey == "class_module") {
+			outItem = item;
+			outTrace += "|target=first_class_module|page=" + item.name;
+			return true;
+		}
+	}
+
+	outError = "no assembly or class module page found for support library directive";
+	return false;
+}
+
+bool CodeHasSupportLibraryDirectiveForAI(const std::string& code, const std::string& libraryNameLocal)
+{
+	const std::string target = NormalizeSupportLibraryLookupNameForAI(libraryNameLocal);
+	for (const auto& line : SplitRealCodeLines(NormalizeRealCodeLineBreaksToCrLf(code))) {
+		const std::string trimmed = TrimAsciiCopy(line);
+		if (trimmed.rfind(".支持库", 0) != 0) {
+			continue;
+		}
+		const std::string name = NormalizeSupportLibraryLookupNameForAI(trimmed.substr(std::string(".支持库").size()));
+		if (EqualsInsensitiveForAI(name, target)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+std::vector<std::string> ExtractSupportLibraryDirectiveNamesForAI(const std::string& code)
+{
+	std::vector<std::string> names;
+	for (const auto& line : SplitRealCodeLines(NormalizeRealCodeLineBreaksToCrLf(code))) {
+		const std::string trimmed = TrimAsciiCopy(line);
+		if (trimmed.rfind(".支持库", 0) != 0) {
+			continue;
+		}
+		const std::string name = NormalizeSupportLibraryLookupNameForAI(trimmed.substr(std::string(".支持库").size()));
+		if (name.empty()) {
+			continue;
+		}
+		bool exists = false;
+		for (const std::string& existing : names) {
+			if (EqualsInsensitiveForAI(existing, name)) {
+				exists = true;
+				break;
+			}
+		}
+		if (!exists) {
+			names.push_back(name);
+		}
+	}
+	return names;
+}
+
+std::string InsertSupportLibraryDirectiveForAI(const std::string& code, const std::string& libraryNameLocal)
+{
+	const std::string normalizedCode = NormalizeRealCodeLineBreaksToCrLf(code);
+	if (CodeHasSupportLibraryDirectiveForAI(normalizedCode, libraryNameLocal)) {
+		return normalizedCode;
+	}
+
+	std::vector<std::string> lines = SplitRealCodeLines(normalizedCode);
+	const std::string directive = ".支持库 " + NormalizeSupportLibraryLookupNameForAI(libraryNameLocal);
+	size_t insertIndex = 0;
+	for (size_t i = 0; i < lines.size(); ++i) {
+		const std::string trimmed = TrimAsciiCopy(lines[i]);
+		if (trimmed.rfind(".支持库", 0) == 0) {
+			insertIndex = i + 1;
+		}
+	}
+	if (insertIndex == 0) {
+		for (size_t i = 0; i < lines.size(); ++i) {
+			const std::string trimmed = TrimAsciiCopy(lines[i]);
+			if (trimmed.rfind(".版本", 0) == 0) {
+				insertIndex = i + 1;
+				break;
+			}
+		}
+	}
+	lines.insert(lines.begin() + static_cast<std::ptrdiff_t>((std::min)(insertIndex, lines.size())), directive);
+	return JoinRealCodeLines(lines);
+}
+
+std::string Utf8FileStemFromMirrorRelativePathForAI(std::string relativePathUtf8)
+{
+	std::replace(relativePathUtf8.begin(), relativePathUtf8.end(), '\\', '/');
+	const size_t slash = relativePathUtf8.find_last_of('/');
+	std::string fileName = slash == std::string::npos ? relativePathUtf8 : relativePathUtf8.substr(slash + 1);
+	const size_t dot = fileName.find_last_of('.');
+	if (dot != std::string::npos) {
+		fileName.erase(dot);
+	}
+	return fileName;
+}
+
+bool IsMirrorTextSourceFileForAI(std::string relativePathUtf8)
+{
+	std::replace(relativePathUtf8.begin(), relativePathUtf8.end(), '\\', '/');
+	const std::string lowered = ToLowerAsciiCopyLocal(relativePathUtf8);
+	return lowered.rfind("src/", 0) == 0 &&
+		lowered.size() > 4 &&
+		lowered.substr(lowered.size() - 4) == ".txt";
+}
+
+bool TryReadSupportLibraryDirectiveMirrorCodeForAI(
+	const ProgramTreeItemInfo& item,
+	std::string& outCode,
+	std::string& outRelativePathUtf8,
+	std::string& outTrace)
+{
+	outCode.clear();
+	outRelativePathUtf8.clear();
+	outTrace.clear();
+
+	std::vector<std::string> files;
+	std::string listError;
+	if (!WorkspaceMirror::ListMirrorFiles(files, listError)) {
+		outTrace = "mirror_list_failed:" + listError;
+		return false;
+	}
+
+	const std::string itemNameUtf8 = LocalToUtf8Text(item.name);
+	for (const std::string& relativePath : files) {
+		if (!IsMirrorTextSourceFileForAI(relativePath)) {
+			continue;
+		}
+		const std::string stemUtf8 = Utf8FileStemFromMirrorRelativePathForAI(relativePath);
+		if (stemUtf8 != itemNameUtf8 && !EqualsInsensitiveForAI(Utf8ToLocalText(stemUtf8), item.name)) {
+			continue;
+		}
+
+		std::string code;
+		std::string readError;
+		if (!TryReadWorkspaceMirrorTextLocalForAI(relativePath, code, readError)) {
+			outTrace = "mirror_read_failed:" + readError + "|path=" + Utf8ToLocalText(relativePath);
+			return false;
+		}
+		outCode = NormalizeRealCodeLineBreaksToCrLf(code);
+		outRelativePathUtf8 = relativePath;
+		outTrace = "mirror_read_ok|path=" + Utf8ToLocalText(relativePath);
+		return true;
+	}
+
+	outTrace = "mirror_source_page_not_found|page=" + item.name;
+	return false;
+}
+
+std::string MergeSupportLibraryDirectivesFromMirrorForAI(
+	const std::string& baseCode,
+	const std::string& mirrorCode,
+	int& outMergedCount)
+{
+	outMergedCount = 0;
+	std::string merged = NormalizeRealCodeLineBreaksToCrLf(baseCode);
+	for (const std::string& name : ExtractSupportLibraryDirectiveNamesForAI(mirrorCode)) {
+		if (CodeHasSupportLibraryDirectiveForAI(merged, name)) {
+			continue;
+		}
+		merged = InsertSupportLibraryDirectiveForAI(merged, name);
+		++outMergedCount;
+	}
+	return merged;
+}
+
+std::string BuildRefreshDependencyCatalogJsonForAI(const std::string& argumentsJson, bool& outOk)
+{
+	outOk = false;
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return JsonToLocalTextForAI(r);
+	}
+
+	const bool force = args.contains("force") && args["force"].is_boolean() ? args["force"].get<bool>() : false;
+	const bool wait = args.contains("wait") && args["wait"].is_boolean() ? args["wait"].get<bool>() : true;
+	const int timeoutMs = args.contains("timeout_ms") && args["timeout_ms"].is_number_integer()
+		? (std::clamp)(args["timeout_ms"].get<int>(), 0, 600000)
+		: 0;
+
+	if (!wait) {
+		DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(force);
+		nlohmann::json r;
+		r["ok"] = true;
+		r["started"] = true;
+		r["waited"] = false;
+		AppendDependencyCatalogStatusForAI(r);
+		outOk = true;
+		return JsonUtf8ToAsciiTextForAI(r);
+	}
+
+	DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(force);
+	const bool idle = DependencyCatalogCache::Instance().WaitForIdle(static_cast<unsigned int>(timeoutMs));
+	const DependencyCatalogCache::Status status = DependencyCatalogCache::Instance().GetStatus();
+	nlohmann::json r;
+	r["ok"] = idle && status.state == DependencyCatalogCache::RefreshState::Ready;
+	r["started"] = true;
+	r["waited"] = idle;
+	if (!idle) {
+		r["error"] = "dependency catalog refresh timeout";
+	}
+	else if (status.state != DependencyCatalogCache::RefreshState::Ready) {
+		r["error"] = status.lastErrorLocal.empty() ? "dependency catalog refresh failed" : status.lastErrorLocal;
+	}
+	AppendDependencyCatalogStatusForAI(r);
+	outOk = r["ok"].get<bool>();
+	return JsonUtf8ToAsciiTextForAI(r);
+}
+
+std::string BuildSearchAvailableModulesJsonForAI(const std::string& argumentsJson, bool& outOk)
+{
+	outOk = false;
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return JsonToLocalTextForAI(r);
+	}
+
+	DependencyCatalogCache::SearchOptions options;
+	options.queryUtf8 = args.contains("query") && args["query"].is_string() ? args["query"].get<std::string>() : std::string();
+	options.limit = args.contains("limit") && args["limit"].is_number_integer() ? args["limit"].get<int>() : 50;
+	options.includeSnippets = !args.contains("include_snippets") || !args["include_snippets"].is_boolean() || args["include_snippets"].get<bool>();
+	const auto results = DependencyCatalogCache::Instance().SearchModules(options);
+
+	nlohmann::json rows = nlohmann::json::array();
+	for (const auto& result : results) {
+		nlohmann::json row;
+		row["module_name"] = LocalToUtf8Text(result.entry.moduleNameLocal);
+		row["file_name"] = LocalToUtf8Text(result.entry.fileNameLocal);
+		row["path"] = LocalToUtf8Text(result.entry.pathLocal);
+		row["cache_path"] = LocalToUtf8Text(result.entry.cachePathLocal);
+		row["decoded"] = result.entry.decoded;
+		row["imported"] = IsModuleImportedForAI(result.entry.pathLocal);
+		row["score"] = result.score;
+		if (!result.entry.decodeErrorLocal.empty()) {
+			row["decode_error"] = LocalToUtf8Text(result.entry.decodeErrorLocal);
+		}
+		if (!result.snippetUtf8.empty()) {
+			row["snippet"] = result.snippetUtf8;
+		}
+		rows.push_back(std::move(row));
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["query"] = options.queryUtf8;
+	r["count"] = rows.size();
+	r["results"] = std::move(rows);
+	AppendDependencyCatalogStatusForAI(r);
+	outOk = true;
+	return JsonUtf8ToAsciiTextForAI(r);
+}
+
+std::string BuildSearchAvailableSupportLibrariesJsonForAI(const std::string& argumentsJson, bool& outOk)
+{
+	outOk = false;
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return JsonToLocalTextForAI(r);
+	}
+
+	DependencyCatalogCache::SearchOptions options;
+	options.queryUtf8 = args.contains("query") && args["query"].is_string() ? args["query"].get<std::string>() : std::string();
+	options.limit = args.contains("limit") && args["limit"].is_number_integer() ? args["limit"].get<int>() : 50;
+	options.includeSnippets = !args.contains("include_snippets") || !args["include_snippets"].is_boolean() || args["include_snippets"].get<bool>();
+	const auto results = DependencyCatalogCache::Instance().SearchLibraries(options);
+
+	nlohmann::json rows = nlohmann::json::array();
+	for (const auto& result : results) {
+		int loadedIndex = -1;
+		const bool loaded = IsSupportLibraryLoadedForAI(
+			result.entry.libraryNameLocal,
+			result.entry.fileNameLocal,
+			&loadedIndex,
+			nullptr);
+		nlohmann::json row;
+		row["library_name"] = LocalToUtf8Text(result.entry.libraryNameLocal);
+		row["file_name"] = LocalToUtf8Text(result.entry.fileNameLocal);
+		row["path"] = LocalToUtf8Text(result.entry.pathLocal);
+		row["cache_path"] = LocalToUtf8Text(result.entry.cachePathLocal);
+		row["decoded"] = result.entry.decoded;
+		row["loaded"] = loaded;
+		if (loadedIndex >= 0) {
+			row["loaded_index"] = loadedIndex;
+		}
+		row["score"] = result.score;
+		if (!result.entry.decodeErrorLocal.empty()) {
+			row["decode_error"] = LocalToUtf8Text(result.entry.decodeErrorLocal);
+		}
+		if (!result.snippetUtf8.empty()) {
+			row["snippet"] = result.snippetUtf8;
+		}
+		rows.push_back(std::move(row));
+	}
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["query"] = options.queryUtf8;
+	r["count"] = rows.size();
+	r["results"] = std::move(rows);
+	AppendDependencyCatalogStatusForAI(r);
+	outOk = true;
+	return JsonUtf8ToAsciiTextForAI(r);
+}
+
+std::string BuildAddSupportLibraryToProjectJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	outOk = false;
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return JsonToLocalTextForAI(r);
+	}
+
+	DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(false);
+	DependencyCatalogCache::Instance().WaitForIdle(30000);
+
+	const std::string libraryName = args.contains("library_name") && args["library_name"].is_string()
+		? Utf8ToLocalText(args["library_name"].get<std::string>())
+		: std::string();
+	const std::string libraryPath = args.contains("library_path") && args["library_path"].is_string()
+		? Utf8ToLocalText(args["library_path"].get<std::string>())
+		: std::string();
+
+	DependencyCatalogCache::LibraryEntry entry;
+	std::vector<DependencyCatalogCache::LibraryEntry> candidates;
+	std::string resolveError;
+	if (!DependencyCatalogCache::Instance().ResolveLibrary(
+			libraryName,
+			libraryPath,
+			entry,
+			&candidates,
+			resolveError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = resolveError.empty() ? "support library not found" : resolveError;
+		if (!candidates.empty()) {
+			nlohmann::json rows = nlohmann::json::array();
+			for (const auto& candidate : candidates) {
+				rows.push_back({
+					{"library_name", LocalToUtf8Text(candidate.libraryNameLocal)},
+					{"file_name", LocalToUtf8Text(candidate.fileNameLocal)},
+					{"path", LocalToUtf8Text(candidate.pathLocal)},
+					{"decoded", candidate.decoded}
+				});
+			}
+			r["candidates"] = std::move(rows);
+		}
+		AppendDependencyCatalogStatusForAI(r);
+		return JsonUtf8ToAsciiTextForAI(r);
+	}
+
+	const std::string normalizedLibraryName = NormalizeSupportLibraryLookupNameForAI(entry.libraryNameLocal);
+	if (normalizedLibraryName.empty()) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "resolved support library name is empty";
+		r["library_path"] = LocalToUtf8Text(entry.pathLocal);
+		return JsonUtf8ToAsciiTextForAI(r);
+	}
+
+	ProgramTreeItemInfo targetItem;
+	std::string targetTrace;
+	std::string targetError;
+	if (!TryResolveSupportLibraryDirectiveTargetForAI(targetItem, targetTrace, targetError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = targetError.empty() ? "resolve support library directive target failed" : targetError;
+		r["trace"] = LocalToUtf8Text(targetTrace);
+		r["library_name"] = LocalToUtf8Text(normalizedLibraryName);
+		r["library_path"] = LocalToUtf8Text(entry.pathLocal);
+		return JsonUtf8ToAsciiTextForAI(r);
+	}
+
+	std::string baseCode;
+	e571::NativeRealPageAccessResult readResult{};
+	std::string readError;
+	if (!TryReadRealPageCodeForAI(targetItem, baseCode, readResult, readError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = readError.empty() ? "read directive target page failed" : readError;
+		r["trace"] = LocalToUtf8Text(targetTrace + "|" + readResult.trace);
+		r["library_name"] = LocalToUtf8Text(normalizedLibraryName);
+		r["target_page"] = LocalToUtf8Text(targetItem.name);
+		r["target_type"] = targetItem.typeKey;
+		return JsonUtf8ToAsciiTextForAI(r);
+	}
+
+	std::string writeBaseCode = baseCode;
+	std::string mirrorDirectiveTrace;
+	std::string mirrorDirectivePathUtf8;
+	std::string mirrorCode;
+	int mergedDirectiveCount = 0;
+	if (TryReadSupportLibraryDirectiveMirrorCodeForAI(targetItem, mirrorCode, mirrorDirectivePathUtf8, mirrorDirectiveTrace)) {
+		writeBaseCode = MergeSupportLibraryDirectivesFromMirrorForAI(baseCode, mirrorCode, mergedDirectiveCount);
+	}
+
+	const bool directiveAlreadyExists = CodeHasSupportLibraryDirectiveForAI(writeBaseCode, normalizedLibraryName);
+	std::string finalCode = writeBaseCode;
+	bool writeSucceeded = false;
+	bool rollbackAttempted = false;
+	bool rollbackSucceeded = false;
+	std::string writeTrace;
+	PageCodeSnapshotEntry snapshot;
+	if (!directiveAlreadyExists) {
+		const std::string newCode = InsertSupportLibraryDirectiveForAI(writeBaseCode, normalizedLibraryName);
+		if (BuildStableTextHashForRealCode(newCode) != BuildStableTextHashForRealCode(writeBaseCode)) {
+			std::string writeError;
+			if (!TryWriteRealPageCodeForAI(
+					targetItem,
+					writeBaseCode,
+					newCode,
+					"add_support_library_to_project",
+					snapshot,
+					finalCode,
+					writeTrace,
+					rollbackAttempted,
+					rollbackSucceeded,
+					writeError)) {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["error"] = writeError.empty() ? "write support library directive failed" : writeError;
+				r["trace"] = LocalToUtf8Text(targetTrace + "|" + readResult.trace + "|" + mirrorDirectiveTrace + "|" + writeTrace);
+				r["library_name"] = LocalToUtf8Text(normalizedLibraryName);
+				r["library_path"] = LocalToUtf8Text(entry.pathLocal);
+				r["target_page"] = LocalToUtf8Text(targetItem.name);
+				r["target_type"] = targetItem.typeKey;
+				r["merged_support_directive_count"] = mergedDirectiveCount;
+				r["support_directive_mirror_trace"] = LocalToUtf8Text(mirrorDirectiveTrace);
+				r["rollback_attempted"] = rollbackAttempted;
+				r["rollback_succeeded"] = rollbackSucceeded;
+				return JsonUtf8ToAsciiTextForAI(r);
+			}
+			writeSucceeded = true;
+		}
+	}
+
+	const bool refreshCalled = IDEFacade::Instance().RunRefrushLib();
+	Sleep(200);
+	int loadedAfterIndex = -1;
+	std::string loadedAfterInfo;
+	const bool verified = IsSupportLibraryLoadedForAI(
+		normalizedLibraryName,
+		entry.fileNameLocal,
+		&loadedAfterIndex,
+		&loadedAfterInfo);
+
+	nlohmann::json r;
+	r["ok"] = verified;
+	r["library_name"] = LocalToUtf8Text(normalizedLibraryName);
+	r["file_name"] = LocalToUtf8Text(entry.fileNameLocal);
+	r["library_path"] = LocalToUtf8Text(entry.pathLocal);
+	r["cache_path"] = LocalToUtf8Text(entry.cachePathLocal);
+	r["method"] = "source_directive_internal";
+	r["already_loaded"] = directiveAlreadyExists && verified;
+	r["directive_already_exists"] = directiveAlreadyExists;
+	r["added"] = writeSucceeded || directiveAlreadyExists;
+	r["write_succeeded"] = writeSucceeded;
+	r["verified"] = verified;
+	r["refresh_called"] = refreshCalled;
+	r["target_page"] = LocalToUtf8Text(targetItem.name);
+	r["target_type"] = targetItem.typeKey;
+	r["merged_support_directive_count"] = mergedDirectiveCount;
+	r["support_directive_mirror_trace"] = LocalToUtf8Text(mirrorDirectiveTrace);
+	if (!mirrorDirectivePathUtf8.empty()) {
+		r["support_directive_mirror_path"] = mirrorDirectivePathUtf8;
+	}
+	r["trace"] = LocalToUtf8Text(targetTrace + "|" + readResult.trace + "|" + mirrorDirectiveTrace + "|" + writeTrace);
+	r["rollback_attempted"] = rollbackAttempted;
+	r["rollback_succeeded"] = rollbackSucceeded;
+	if (!snapshot.snapshotId.empty()) {
+		r["snapshot_id"] = snapshot.snapshotId;
+	}
+	if (loadedAfterIndex >= 0) {
+		r["loaded_index"] = loadedAfterIndex;
+	}
+	if (!verified) {
+		r["error"] = "support library directive was written but library load verification failed";
+		r["warning"] = LocalToUtf8Text("当前实现通过源码页 .支持库 指令加入支持库；如果 IDE 未立即载入，请保存/重开工程或在支持库设置中确认。");
+		return JsonUtf8ToAsciiTextForAI(r);
+	}
+
+	AppendFullMirrorRefreshResult(r);
+	outOk = true;
+	return JsonUtf8ToAsciiTextForAI(r);
 }
 
 std::vector<std::string> SplitLinesCopyForAI(const std::string& text)
@@ -2167,6 +2891,7 @@ void AppendFullMirrorRefreshResult(nlohmann::json& r);
 
 std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
 {
+	const auto totalStart = ToolPerfClock::now();
 	nlohmann::json args;
 	try {
 		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
@@ -2184,6 +2909,12 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 	const std::string modulePath = args.contains("module_path") && args["module_path"].is_string()
 		? Utf8ToLocalText(args["module_path"].get<std::string>())
 		: std::string();
+	const bool preferNewMethod = args.contains("prefer_new_method") && args["prefer_new_method"].is_boolean()
+		? args["prefer_new_method"].get<bool>()
+		: false;
+	const bool allowBlockingImport = args.contains("allow_blocking_import") && args["allow_blocking_import"].is_boolean()
+		? args["allow_blocking_import"].get<bool>()
+		: false;
 
 	std::string resolvedPath;
 	std::string searchRoot;
@@ -2211,6 +2942,11 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 		}
 		return JsonToLocalTextForAI(r);
 	}
+	LogToolStageForAI(
+		"add_module_to_project",
+		"resolved|path=" + LocalToUtf8Text(resolvedPath) +
+			"|prefer_new_method=" + std::to_string(preferNewMethod ? 1 : 0),
+		totalStart);
 
 	IDEFacade& ide = IDEFacade::Instance();
 	const int existingIndex = ide.FindECOMIndex(resolvedPath);
@@ -2228,8 +2964,44 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 		return JsonToLocalTextForAI(r);
 	}
 
-	const bool addedByNewMethod = ide.AddECOM2(resolvedPath);
-	const bool added = addedByNewMethod || ide.AddECOM(resolvedPath);
+	if (!allowBlockingImport) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "module import requires allow_blocking_import=true; E IDE module import APIs can block the MCP main-thread tool call";
+		r["resolved"] = true;
+		r["add_blocked"] = true;
+		r["allow_blocking_import_required"] = true;
+		r["module_path"] = LocalToUtf8Text(resolvedPath);
+		r["module_name"] = LocalToUtf8Text(GetFileStemForAI(resolvedPath));
+		r["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(resolvedPath));
+		r["warning"] = LocalToUtf8Text("已解析到可用模块，但默认不执行可能卡死 IDE 的导入调用；确认要真实导入时传 allow_blocking_import=true。");
+		return JsonToLocalTextForAI(r);
+	}
+
+	bool addedByNewMethod = false;
+	bool added = false;
+	std::string addTrace;
+	if (preferNewMethod) {
+		LogToolStageForAI("add_module_to_project", "before_add_ecom2", totalStart);
+		addedByNewMethod = ide.AddECOM2(resolvedPath);
+		addTrace += std::string("AddECOM2=") + (addedByNewMethod ? "1" : "0");
+		LogToolStageForAI("add_module_to_project", "after_add_ecom2|ok=" + std::to_string(addedByNewMethod ? 1 : 0), totalStart);
+		if (!addedByNewMethod) {
+			LogToolStageForAI("add_module_to_project", "before_add_ecom_legacy_after_new_failed", totalStart);
+			added = ide.AddECOM(resolvedPath);
+			addTrace += std::string("|AddECOM=") + (added ? "1" : "0");
+			LogToolStageForAI("add_module_to_project", "after_add_ecom_legacy|ok=" + std::to_string(added ? 1 : 0), totalStart);
+		}
+		else {
+			added = true;
+		}
+	}
+	else {
+		LogToolStageForAI("add_module_to_project", "before_add_ecom_legacy", totalStart);
+		added = ide.AddECOM(resolvedPath);
+		addTrace += std::string("AddECOM=") + (added ? "1" : "0");
+		LogToolStageForAI("add_module_to_project", "after_add_ecom_legacy|ok=" + std::to_string(added ? 1 : 0), totalStart);
+	}
 	if (!added) {
 		nlohmann::json r;
 		r["ok"] = false;
@@ -2237,6 +3009,7 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 		r["module_path"] = LocalToUtf8Text(resolvedPath);
 		r["module_name"] = LocalToUtf8Text(GetFileStemForAI(resolvedPath));
 		r["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(resolvedPath));
+		r["add_trace"] = addTrace;
 		return JsonToLocalTextForAI(r);
 	}
 
@@ -2249,6 +3022,7 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 		r["module_name"] = LocalToUtf8Text(GetFileStemForAI(resolvedPath));
 		r["file_name"] = LocalToUtf8Text(GetFileNameOnlyForAI(resolvedPath));
 		r["add_method"] = addedByNewMethod ? "AddECOM2" : "AddECOM";
+		r["add_trace"] = addTrace;
 		AppendFullMirrorRefreshResult(r);
 		return JsonToLocalTextForAI(r);
 	}
@@ -2262,6 +3036,7 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 	r["added"] = true;
 	r["module_index"] = moduleIndex;
 	r["add_method"] = addedByNewMethod ? "AddECOM2" : "AddECOM";
+	r["add_trace"] = addTrace;
 	r["warning"] = LocalToUtf8Text("模块已加入当前工程。后续可用 list_imported_modules 确认导入状态，或通过 refresh_workspace_mirror 刷新后使用 list_files/search_code/read_file 读取镜像内容。");
 	AppendFullMirrorRefreshResult(r);
 	outOk = true;
@@ -3524,6 +4299,18 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		return JsonToLocalTextForAI(r);
 	}
 
+	if (toolName == "refresh_dependency_catalog") {
+		return BuildRefreshDependencyCatalogJsonForAI(argumentsJson, outOk);
+	}
+
+	if (toolName == "search_available_modules") {
+		return BuildSearchAvailableModulesJsonForAI(argumentsJson, outOk);
+	}
+
+	if (toolName == "search_available_support_libraries") {
+		return BuildSearchAvailableSupportLibrariesJsonForAI(argumentsJson, outOk);
+	}
+
 	if (toolName == "list_imported_modules") {
 		return BuildListImportedModulesJsonOnMainThread(outOk);
 	}
@@ -3534,6 +4321,10 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 
 	if (toolName == "remove_module_from_project") {
 		return BuildRemoveModuleFromProjectJsonOnMainThread(argumentsJson, outOk);
+	}
+
+	if (toolName == "add_support_library_to_project") {
+		return BuildAddSupportLibraryToProjectJsonOnMainThread(argumentsJson, outOk);
 	}
 
 	if (toolName == "compile_with_output_path") {

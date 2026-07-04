@@ -15,6 +15,7 @@
 #include "AIChatTooling.h"
 #include "AIChatFeature.h"
 #include "AIConfigDialog.h"
+#include "DependencyCatalogCache.h"
 #include "EcSwitchConfigDialog.h"
 #include "ECOMEx.h"
 #include "EPackagerIntegration.h"
@@ -418,6 +419,9 @@ bool FneInit()
 	TraceInitStep("开始初始化 Local MCP");
 	LocalMcpServer::Initialize();
 	TraceInitStep("Local MCP 初始化完成");
+	TraceInitStep("启动模块/支持库缓存后台刷新");
+	DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(false);
+	TraceInitStep("模块/支持库缓存后台刷新已触发");
 	ResolveCompileDebugStartAddressesForInit();
 	TraceInitStep("开始安装文件与编译相关 Hook");
 	StartHookCreateFileA();

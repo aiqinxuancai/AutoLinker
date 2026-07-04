@@ -690,6 +690,9 @@ std::string ExecuteToolCallImpl(
 		toolName == "refresh_workspace_mirror" ||
 		toolName == "get_current_page_info" ||
 		toolName == "get_current_eide_info" ||
+		toolName == "refresh_dependency_catalog" ||
+		toolName == "search_available_modules" ||
+		toolName == "search_available_support_libraries" ||
 		toolName == "edit_file" ||
 		toolName == "multi_edit_file" ||
 		toolName == "write_file" ||
@@ -698,6 +701,7 @@ std::string ExecuteToolCallImpl(
 		toolName == "list_imported_modules" ||
 		toolName == "add_module_to_project" ||
 		toolName == "remove_module_from_project" ||
+		toolName == "add_support_library_to_project" ||
 		toolName == "compile_with_output_path") {
 		std::string resultJson;
 		if (!RequestToolExecutionFromMainThread(toolName, argumentsJson, resultJson, outOk)) {

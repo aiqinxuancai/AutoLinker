@@ -59,6 +59,9 @@
     <ClCompile Include="src\AIJsonConfig.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\DependencyCatalogCache.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\EideInternalTextBridge.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -232,6 +235,9 @@
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\ConfigManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DependencyCatalogCache.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\EPackagerIntegration.h">

@@ -470,6 +470,7 @@
     <ClCompile Include="src\EPackagerIntegration.cpp" />
     <ClCompile Include="src\ConfigManager.cpp" />
     <ClCompile Include="src\AIJsonConfig.cpp" />
+    <ClCompile Include="src\DependencyCatalogCache.cpp" />
     <ClCompile Include="src\EideInternalTextBridge.cpp" />
     <ClCompile Include="src\EcSwitchConfigDialog.cpp" />
     <ClCompile Include="src\ForceLinkLibConfigDialog.cpp" />
@@ -547,6 +548,7 @@
     <ClInclude Include="src\WorkspaceMirror.h" />
     <ClInclude Include="src\WorkspaceFileTools.h" />
     <ClInclude Include="src\ConfigManager.h" />
+    <ClInclude Include="src\DependencyCatalogCache.h" />
     <ClInclude Include="src\EPackagerIntegration.h" />
     <ClInclude Include="src\EcSwitchConfigDialog.h" />
     <ClInclude Include="src\EideInternalTextBridge.h" />
