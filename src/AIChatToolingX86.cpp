@@ -4032,8 +4032,27 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		result["code_kind"] = "fixed_table_real_page";
 	}
 	if (ok && invalidateOnWrite && !noChanges) {
-		WorkspaceMirror::InvalidateMirror();
-		result["workspace_mirror_invalidated"] = true;
+		bool mirrorUpdated = false;
+		std::string mirrorUpdateError;
+		if (!item.fixedTable &&
+			GetActiveSourceEditModeForAI() == AISourceEditMode::MirrorSourceBase &&
+			result.contains("code") &&
+			result["code"].is_string()) {
+			const std::string finalCodeLocal = Utf8ToLocalText(result["code"].get<std::string>());
+			mirrorUpdated = WorkspaceMirror::UpdateMirrorTextFile(filePathUtf8, finalCodeLocal, mirrorUpdateError);
+			if (mirrorUpdated) {
+				result["workspace_mirror_updated"] = true;
+				result["workspace_mirror_invalidated"] = false;
+			}
+		}
+
+		if (!mirrorUpdated) {
+			WorkspaceMirror::InvalidateMirror();
+			result["workspace_mirror_invalidated"] = true;
+			if (!mirrorUpdateError.empty()) {
+				result["workspace_mirror_update_error"] = LocalToUtf8Text(mirrorUpdateError);
+			}
+		}
 
 		if (item.fixedTable) {
 			result["code_kind"] = "fixed_table_real_page";

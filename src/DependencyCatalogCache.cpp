@@ -995,22 +995,12 @@ bool DependencyCatalogCache::RefreshInternal(bool force, std::string& outErrorLo
 		entry.fileNameLocal = PathFileNameLocal(path);
 		entry.libraryNameLocal = PathStemLocal(path);
 		entry.pathLocal = path.lexically_normal().string();
-
-		std::string infoLocal;
-		std::string decodedName;
-		std::string decodeError;
-		if (DecodeLibraryInfo(path, decodedName, infoLocal, decodeError)) {
-			entry.decoded = true;
-			entry.libraryNameLocal = decodedName.empty() ? entry.libraryNameLocal : decodedName;
-			entry.infoTextLocal = infoLocal;
-			++decodedLibraries;
-		}
-		else {
-			entry.decodeErrorLocal = decodeError;
-			entry.infoTextLocal = infoLocal.empty()
-				? ("文件: " + entry.pathLocal + "\r\n支持库名: " + entry.libraryNameLocal + "\r\n解码失败: " + decodeError + "\r\n")
-				: infoLocal;
-		}
+		entry.decoded = false;
+		entry.decodeErrorLocal = "skipped: support library GetNewInf decode is not run inside the IDE process";
+		entry.infoTextLocal =
+			"文件: " + entry.pathLocal + "\r\n" +
+			"支持库名: " + entry.libraryNameLocal + "\r\n" +
+			"解码状态: 已跳过。为避免第三方 .fne 在 IDE 进程内 LoadLibrary/GetNewInf 崩溃，当前缓存只索引文件名和路径。\r\n";
 
 		const std::filesystem::path cachePath = BuildUniqueCachePath(libCacheRoot, entry.libraryNameLocal, entry.pathLocal, ".txt");
 		entry.cachePathLocal = cachePath.string();

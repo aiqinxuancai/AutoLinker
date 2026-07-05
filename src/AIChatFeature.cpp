@@ -232,6 +232,22 @@ struct AIChatAsyncResult {
 	AIChatResult chatResult = {};
 };
 
+struct AIChatDebugRunRequest {
+	std::string promptLocal;
+	int timeoutMs = 120000;
+	bool clearSession = true;
+	bool autoAllowWrites = true;
+	bool restoreAutoAllow = true;
+	bool previousAutoAllow = false;
+	bool started = false;
+	bool ok = false;
+	bool done = false;
+	unsigned long long requestId = 0;
+	std::string errorLocal;
+	std::mutex mutex;
+	std::condition_variable cv;
+};
+
 struct ContextUsageSnapshot {
 	bool available = false;
 	bool estimated = true;
@@ -293,12 +309,17 @@ unsigned long long g_nextToolApprovalId = 1;
 UINT g_msgAIChatDone = 0;
 UINT g_msgAIChatToolDialog = 0;
 UINT g_msgAIChatToolExec = 0;
+UINT g_msgAIChatDebugRun = 0;
+std::condition_variable g_chatRequestDoneCv;
+unsigned long long g_lastCompletedRequestId = 0;
+AIChatResult g_lastCompletedChatResult = {};
 std::atomic_bool g_clearHistoryInProgress = false;
 bool g_webView2RuntimeChecked = false;
 bool g_webView2RuntimeAvailable = false;
 
 void RefreshChatDialog(HWND hWnd);
 void RequestClearChatHistoryAsync();
+void ClearChatHistory();
 void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text);
 void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatClearConfirmedUi(HWND hWnd, ChatDialogContext* ctx);
@@ -328,6 +349,7 @@ void PostRefreshDialog();
 void AppendAgentActivity(unsigned long long requestId, const std::string& line);
 std::wstring WideFromUtf8Text(const std::string& text);
 bool StartChatRequest(const std::string& userInput);
+void HandleDebugRunAIChatRequest(LPARAM lParam);
 void HideWebViewToolApproval(ChatDialogContext* ctx);
 unsigned long long GetPendingToolApprovalId();
 void CompletePendingToolApproval(
@@ -1225,6 +1247,37 @@ std::string AutoAllowModeLabelLocal(bool enabled)
 		: LocalFromWide(L"\u8be2\u95ee");
 }
 
+const char* SessionRoleName(SessionRole role)
+{
+	switch (role)
+	{
+	case SessionRole::User:
+		return "user";
+	case SessionRole::Assistant:
+		return "assistant";
+	case SessionRole::Tool:
+		return "tool";
+	case SessionRole::System:
+	default:
+		return "system";
+	}
+}
+
+std::string TruncateUtf8ForDebug(std::string text, size_t maxBytes)
+{
+	if (text.size() <= maxBytes) {
+		return text;
+	}
+	text.resize(maxBytes);
+	text += "...";
+	return text;
+}
+
+std::string DumpJsonUtf8(const nlohmann::json& value)
+{
+	return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
 std::string AutoAllowModeTitleLocal(bool enabled)
 {
 	return enabled
@@ -1238,6 +1291,9 @@ bool IsPlanModeWriteBlockedTool(const std::string& toolName)
 		_stricmp(toolName.c_str(), "multi_edit_file") == 0 ||
 		_stricmp(toolName.c_str(), "write_file") == 0 ||
 		_stricmp(toolName.c_str(), "restore_file_snapshot") == 0 ||
+		_stricmp(toolName.c_str(), "add_module_to_project") == 0 ||
+		_stricmp(toolName.c_str(), "remove_module_from_project") == 0 ||
+		_stricmp(toolName.c_str(), "add_support_library_to_project") == 0 ||
 		_stricmp(toolName.c_str(), "compile_with_output_path") == 0 ||
 		_stricmp(toolName.c_str(), "run_powershell_command") == 0;
 }
@@ -1247,7 +1303,10 @@ bool IsToolRequiringWriteApproval(const std::string& toolName)
 	return _stricmp(toolName.c_str(), "edit_file") == 0 ||
 		_stricmp(toolName.c_str(), "multi_edit_file") == 0 ||
 		_stricmp(toolName.c_str(), "write_file") == 0 ||
-		_stricmp(toolName.c_str(), "restore_file_snapshot") == 0;
+		_stricmp(toolName.c_str(), "restore_file_snapshot") == 0 ||
+		_stricmp(toolName.c_str(), "add_module_to_project") == 0 ||
+		_stricmp(toolName.c_str(), "remove_module_from_project") == 0 ||
+		_stricmp(toolName.c_str(), "add_support_library_to_project") == 0;
 }
 
 std::string BuildPlanModeToolBlockedResult(const std::string& toolName)
@@ -1259,6 +1318,17 @@ std::string BuildPlanModeToolBlockedResult(const std::string& toolName)
 		(toolName.empty() ? std::string("unknown_tool") : toolName);
 	r["plan_mode"] = true;
 	r["requires_plan_approval"] = true;
+	return Utf8ToLocalText(r.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+
+std::string BuildDependencyManagementToolBlockedResult(const std::string& toolName)
+{
+	nlohmann::json r;
+	r["ok"] = false;
+	r["error"] =
+		"dependency management tool requires an explicit request in the latest user message: " +
+		(toolName.empty() ? std::string("unknown_tool") : toolName);
+	r["requires_explicit_user_request"] = true;
 	return Utf8ToLocalText(r.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 }
 
@@ -1295,6 +1365,33 @@ std::string GetJsonStringArgumentUtf8(const nlohmann::json& args, const char* ke
 		return std::string();
 	}
 	return args[key].get<std::string>();
+}
+
+int GetJsonIntArgument(const nlohmann::json& args, const char* key, int defaultValue)
+{
+	if (!args.is_object() || key == nullptr || !args.contains(key)) {
+		return defaultValue;
+	}
+	const auto& value = args[key];
+	if (value.is_number_integer()) {
+		return value.get<int>();
+	}
+	if (value.is_number()) {
+		return static_cast<int>(value.get<double>());
+	}
+	return defaultValue;
+}
+
+bool GetJsonBoolArgument(const nlohmann::json& args, const char* key, bool defaultValue)
+{
+	if (!args.is_object() || key == nullptr || !args.contains(key)) {
+		return defaultValue;
+	}
+	const auto& value = args[key];
+	if (value.is_boolean()) {
+		return value.get<bool>();
+	}
+	return defaultValue;
 }
 
 std::string TruncateUtf8ForToolApproval(std::string text, size_t maxBytes)
@@ -4011,7 +4108,8 @@ void RunAIChatWorker(void* pParams)
 					request->settings,
 					[
 						cancellation = request->cancellation,
-						requestId = request->requestId
+						requestId = request->requestId,
+						contextMessages = request->contextMessages
 					](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
 						if (ShouldBlockToolForCurrentPlanMode(toolName)) {
 							outOk = false;
@@ -4020,6 +4118,15 @@ void RunAIChatWorker(void* pParams)
 								LocalFromWide(L"\u8ba1\u5212\u672a\u6279\u51c6\uff0c\u5df2\u62e6\u622a\u5de5\u5177\uff1a") +
 								(toolName.empty() ? std::string("<unknown>") : toolName));
 							return BuildPlanModeToolBlockedResult(toolName);
+						}
+						if (AIService::IsDependencyManagementTool(toolName) &&
+							!AIService::IsDependencyManagementToolAllowedForContext(toolName, contextMessages)) {
+							outOk = false;
+							AppendAgentActivity(
+								requestId,
+								LocalFromWide(L"\u672a\u660e\u786e\u8bf7\u6c42\uff0c\u5df2\u62e6\u622a\u4f9d\u8d56\u7ba1\u7406\u5de5\u5177\uff1a") +
+								(toolName.empty() ? std::string("<unknown>") : toolName));
+							return BuildDependencyManagementToolBlockedResult(toolName);
 						}
 						AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, false, false));
 						std::string toolResult = ExecuteToolCall(
@@ -4154,6 +4261,57 @@ void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& te
 	if (!StartChatRequest(trimmed)) {
 		RefreshChatDialog(hWnd);
 	}
+}
+
+void HandleDebugRunAIChatRequest(LPARAM lParam)
+{
+	auto* request = reinterpret_cast<AIChatDebugRunRequest*>(lParam);
+	if (request == nullptr) {
+		return;
+	}
+
+	bool started = false;
+	bool ok = false;
+	bool previousAutoAllow = false;
+	unsigned long long requestId = 0;
+	std::string errorLocal;
+
+	if (request->clearSession) {
+		ClearChatHistory();
+	}
+
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		previousAutoAllow = g_session.autoAllowWrites;
+		if (request->autoAllowWrites && !g_session.autoAllowWrites) {
+			g_session.autoAllowWrites = true;
+			SavePersistedAutoAllowWrites(g_session.autoAllowWrites);
+		}
+	}
+
+	started = StartChatRequest(request->promptLocal);
+	if (started) {
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		requestId = g_session.activeRequestId;
+		ok = requestId != 0;
+		if (!ok) {
+			errorLocal = "chat request started without active request id";
+		}
+	}
+	else {
+		errorLocal = "StartChatRequest failed";
+	}
+
+	{
+		std::lock_guard<std::mutex> guard(request->mutex);
+		request->started = started;
+		request->ok = ok;
+		request->requestId = requestId;
+		request->previousAutoAllow = previousAutoAllow;
+		request->errorLocal = errorLocal;
+		request->done = true;
+	}
+	request->cv.notify_one();
 }
 
 void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx)
@@ -4752,6 +4910,8 @@ void HandleChatTaskDone(LPARAM lParam)
 		g_session.cancellation.reset();
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
+		g_lastCompletedRequestId = result->requestId;
+		g_lastCompletedChatResult = result->chatResult;
 
 		if (result->chatResult.hasUsage && result->chatResult.promptTokens > 0) {
 			g_session.lastInputTokens = result->chatResult.promptTokens;
@@ -4883,6 +5043,7 @@ void HandleChatTaskDone(LPARAM lParam)
 		CompactHistoryLocked(g_session);
 	}
 
+	g_chatRequestDoneCv.notify_all();
 	PostRefreshDialog();
 	SaveChatSessionSnapshotNow();
 }
@@ -6070,6 +6231,193 @@ void FocusChatInputControl()
 	}
 }
 
+nlohmann::json BuildDebugToolEventJson(const AIChatToolEvent& evt)
+{
+	nlohmann::json row;
+	row["name"] = evt.name;
+	row["ok"] = evt.ok;
+	row["arguments"] = TruncateUtf8ForDebug(LocalToUtf8Text(evt.argumentsJson), 2000);
+	const std::string resultUtf8 = LocalToUtf8Text(evt.resultJson);
+	row["result"] = TruncateUtf8ForDebug(resultUtf8, 4000);
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(resultUtf8);
+		if (parsed.is_object()) {
+			nlohmann::json summary;
+			for (const char* key : {
+				"ok",
+				"error",
+				"source_edit_mode",
+				"base_code_kind",
+				"code_kind",
+				"workspace_mirror_updated",
+				"workspace_mirror_invalidated",
+				"requested_mode",
+				"refresh_mode",
+				"file_count"
+			}) {
+				if (parsed.contains(key)) {
+					summary[key] = parsed[key];
+				}
+			}
+			if (!summary.empty()) {
+				row["summary"] = std::move(summary);
+			}
+		}
+	}
+	catch (...) {
+	}
+	return row;
+}
+
+nlohmann::json BuildDebugSessionMessagesJson(size_t keepCount)
+{
+	nlohmann::json rows = nlohmann::json::array();
+	const size_t total = g_session.messages.size();
+	const size_t begin = total > keepCount ? total - keepCount : 0;
+	for (size_t i = begin; i < total; ++i) {
+		const SessionMessage& msg = g_session.messages[i];
+		rows.push_back({
+			{"role", SessionRoleName(msg.role)},
+			{"visible", msg.visibleInHistory},
+			{"include_in_context", msg.includeInContext},
+			{"content", TruncateUtf8ForDebug(LocalToUtf8Text(msg.content), 2000)}
+		});
+	}
+	return rows;
+}
+
+std::string ExecuteDebugRunAIChatTool(const std::string& argumentsJson, bool& outOk)
+{
+	outOk = false;
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		return DumpJsonUtf8({ {"ok", false}, {"error", std::string("invalid arguments json: ") + ex.what()} });
+	}
+
+	const std::string promptUtf8 = GetJsonStringArgumentUtf8(args, "prompt");
+	const std::string promptLocal = Utf8ToLocalText(promptUtf8);
+	if (TrimAsciiCopy(promptLocal).empty()) {
+		return DumpJsonUtf8({ {"ok", false}, {"error", "prompt is required"} });
+	}
+	if (g_mainWindow == nullptr || !IsWindow(g_mainWindow) || g_msgAIChatDebugRun == 0) {
+		return DumpJsonUtf8({ {"ok", false}, {"error", "AI chat is not initialized"} });
+	}
+
+	AIChatDebugRunRequest request;
+	request.promptLocal = promptLocal;
+	request.timeoutMs = (std::max)(1000, (std::min)(GetJsonIntArgument(args, "timeout_ms", 180000), 600000));
+	request.clearSession = GetJsonBoolArgument(args, "clear_session", true);
+	request.autoAllowWrites = GetJsonBoolArgument(args, "auto_allow_writes", true);
+	request.restoreAutoAllow = GetJsonBoolArgument(args, "restore_auto_allow", true);
+
+	const auto wallStart = std::chrono::steady_clock::now();
+	DWORD_PTR sendResult = 0;
+	if (SendMessageTimeoutA(
+		g_mainWindow,
+		g_msgAIChatDebugRun,
+		0,
+		reinterpret_cast<LPARAM>(&request),
+		SMTO_ABORTIFHUNG,
+		15000,
+		&sendResult) == 0) {
+		return DumpJsonUtf8({ {"ok", false}, {"error", "send debug chat request failed or timed out"} });
+	}
+
+	{
+		std::unique_lock<std::mutex> lock(request.mutex);
+		if (!request.ok) {
+			if (request.restoreAutoAllow && request.autoAllowWrites) {
+				std::lock_guard<std::mutex> sessionGuard(g_session.mutex);
+				if (g_session.autoAllowWrites != request.previousAutoAllow) {
+					g_session.autoAllowWrites = request.previousAutoAllow;
+					SavePersistedAutoAllowWrites(g_session.autoAllowWrites);
+				}
+			}
+			return DumpJsonUtf8({
+				{"ok", false},
+				{"started", request.started},
+				{"error", LocalToUtf8Text(request.errorLocal)}
+			});
+		}
+	}
+
+	bool timedOut = false;
+	AIChatResult chatResult;
+	long long sessionElapsedMs = 0;
+	nlohmann::json messages = nlohmann::json::array();
+	{
+		std::unique_lock<std::mutex> lock(g_session.mutex);
+		const bool completed = g_chatRequestDoneCv.wait_for(
+			lock,
+			std::chrono::milliseconds(request.timeoutMs),
+			[&request]() {
+				return g_lastCompletedRequestId == request.requestId && !g_session.requestInFlight;
+			});
+		if (!completed) {
+			timedOut = true;
+			if (g_session.cancellation != nullptr) {
+				g_session.cancellation->RequestCancel();
+			}
+		}
+		else {
+			chatResult = g_lastCompletedChatResult;
+		}
+		sessionElapsedMs = g_session.accumulatedElapsedMs;
+		messages = BuildDebugSessionMessagesJson(8);
+	}
+
+	if (request.restoreAutoAllow && request.autoAllowWrites) {
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (g_session.autoAllowWrites != request.previousAutoAllow) {
+			g_session.autoAllowWrites = request.previousAutoAllow;
+			SavePersistedAutoAllowWrites(g_session.autoAllowWrites);
+		}
+	}
+
+	const auto wallElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - wallStart).count();
+	if (timedOut) {
+		return DumpJsonUtf8({
+			{"ok", false},
+			{"request_id", request.requestId},
+			{"timed_out", true},
+			{"timeout_ms", request.timeoutMs},
+			{"wall_elapsed_ms", wallElapsedMs},
+			{"session_elapsed_ms", sessionElapsedMs},
+			{"messages", std::move(messages)}
+		});
+	}
+
+	nlohmann::json toolEvents = nlohmann::json::array();
+	for (const AIChatToolEvent& evt : chatResult.toolEvents) {
+		toolEvents.push_back(BuildDebugToolEventJson(evt));
+	}
+
+	nlohmann::json result;
+	result["ok"] = true;
+	result["request_id"] = request.requestId;
+	result["chat_ok"] = chatResult.ok;
+	result["chat_error"] = LocalToUtf8Text(chatResult.error);
+	result["chat_cancelled"] = chatResult.cancelled;
+	result["tool_rounds_exceeded"] = chatResult.toolRoundsExceeded;
+	result["http_status"] = chatResult.httpStatus;
+	result["elapsed_ms"] = sessionElapsedMs;
+	result["wall_elapsed_ms"] = wallElapsedMs;
+	result["tool_count"] = chatResult.toolEvents.size();
+	result["tools"] = std::move(toolEvents);
+	result["assistant_content"] = TruncateUtf8ForDebug(LocalToUtf8Text(chatResult.content), 4000);
+	result["messages"] = std::move(messages);
+	if (chatResult.hasUsage) {
+		result["prompt_tokens"] = chatResult.promptTokens;
+		result["total_tokens"] = chatResult.totalTokens;
+	}
+	outOk = chatResult.ok;
+	return DumpJsonUtf8(result);
+}
+
 namespace AIChatFeature {
 void Initialize(HWND mainWindow, ConfigManager* configManager, AIJsonConfig* aiJsonConfig)
 {
@@ -6085,6 +6433,7 @@ void Initialize(HWND mainWindow, ConfigManager* configManager, AIJsonConfig* aiJ
 	g_msgAIChatDone = RegisterWindowMessageA("AutoLinker.AIChat.Done");
 	g_msgAIChatToolDialog = RegisterWindowMessageA("AutoLinker.AIChat.ToolDialog");
 	g_msgAIChatToolExec = RegisterWindowMessageA("AutoLinker.AIChat.ToolExec");
+	g_msgAIChatDebugRun = RegisterWindowMessageA("AutoLinker.AIChat.DebugRun");
 	EnsureTabCreated();
 }
 
@@ -6168,6 +6517,10 @@ bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 	if (g_msgAIChatToolExec != 0 && uMsg == g_msgAIChatToolExec) {
 		return HandleToolExecRequest(lParam);
 	}
+	if (g_msgAIChatDebugRun != 0 && uMsg == g_msgAIChatDebugRun) {
+		HandleDebugRunAIChatRequest(lParam);
+		return true;
+	}
 	return false;
 }
 
@@ -6186,6 +6539,11 @@ bool ExecutePublicTool(const std::string& toolName, const std::string& arguments
 	outOk = false;
 	if (TrimAsciiCopy(toolName).empty()) {
 		return false;
+	}
+
+	if (_stricmp(toolName.c_str(), "debug_run_ai_chat_once") == 0) {
+		outResultJsonUtf8 = ExecuteDebugRunAIChatTool(argumentsJson, outOk);
+		return true;
 	}
 
 	bool toolOk = false;

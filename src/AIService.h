@@ -129,6 +129,11 @@ public:
 		const std::function<bool()>& cancelCallback = {},
 		HttpRequestCancellation* cancelContext = nullptr);
 	static std::string BuildPublicToolCatalogJson();
+	// 判断模块/支持库管理工具是否允许由当前最新用户请求触发。
+	static bool IsDependencyManagementTool(const std::string& toolName);
+	static bool IsDependencyManagementToolAllowedForContext(
+		const std::string& toolName,
+		const std::vector<AIChatMessage>& contextMessages);
 	static std::string NormalizeModelOutputToCode(const std::string& modelText);
 	static std::string Trim(const std::string& text);
 

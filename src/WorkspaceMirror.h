@@ -32,6 +32,12 @@ bool RefreshMirror(std::string& outError, std::string* outMode = nullptr, Refres
 // 标记镜像已过期，下一次读取/搜索/列出时惰性重建。
 void InvalidateMirror();
 
+// 将一次成功写回 IDE 的源码同步到当前镜像文件，避免后续读搜重复解包。
+bool UpdateMirrorTextFile(
+	const std::string& filePathUtf8,
+	const std::string& textLocal,
+	std::string& outError);
+
 // 清理当前镜像目录并重置状态。
 void ResetAndCleanup();
 

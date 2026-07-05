@@ -684,6 +684,7 @@ std::string ExecuteToolCallImpl(
 	}
 
 	if (toolName == "read_file" ||
+		toolName == "read_files" ||
 		toolName == "read_real_file" ||
 		toolName == "search_code" ||
 		toolName == "list_files" ||

@@ -25,6 +25,9 @@ constexpr size_t kMaxReadBytes = 1024 * 1024;
 constexpr int kDefaultListLimit = 500;
 constexpr int kDefaultSearchLimit = 200;
 constexpr int kDefaultReadLimit = 2000;
+constexpr int kDefaultBatchReadLimit = 1200;
+constexpr int kMaxBatchReadFiles = 24;
+constexpr int kMaxBatchReadTotalLines = 12000;
 
 std::wstring WideFromCodePage(const std::string& text, UINT codePage, DWORD flags = 0)
 {
@@ -112,6 +115,19 @@ std::string ToLowerAscii(std::string text)
 		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
 	}
 	return text;
+}
+
+std::string TrimAsciiCopy(const std::string& text)
+{
+	size_t begin = 0;
+	size_t end = text.size();
+	while (begin < end && std::isspace(static_cast<unsigned char>(text[begin]))) {
+		++begin;
+	}
+	while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1]))) {
+		--end;
+	}
+	return text.substr(begin, end - begin);
 }
 
 int ClampInt(int value, int minValue, int maxValue)
@@ -313,6 +329,54 @@ std::string BuildError(const std::string& error)
 	return ToolResultToLocalJson(r);
 }
 
+bool BuildReadFileRow(
+	const std::string& filePath,
+	int offset,
+	int limit,
+	json& outRow,
+	std::string& outError)
+{
+	outRow = json::object();
+	outError.clear();
+
+	std::filesystem::path fullPath;
+	std::string relativePath;
+	std::string error;
+	if (!WorkspaceMirror::ResolveFilePath(filePath, fullPath, relativePath, error)) {
+		outError = error;
+		return false;
+	}
+
+	std::string bytes;
+	bool fileTruncated = false;
+	if (!ReadFileBytesLimited(fullPath, bytes, fileTruncated, error)) {
+		outError = error;
+		return false;
+	}
+	if (LooksBinary(bytes)) {
+		outError = "read_file only supports text files: " + relativePath;
+		return false;
+	}
+
+	const std::string text = DecodeTextToUtf8(std::move(bytes));
+	const std::string hashText = NormalizeRealCodeLineBreaksToCrLf(Utf8ToLocalText(text));
+	const auto lines = SplitLinesUtf8(text);
+	int returned = 0;
+	bool lineTruncated = false;
+	const std::string view = BuildNumberedView(lines, offset, limit, returned, lineTruncated);
+
+	outRow["ok"] = true;
+	outRow["file_path"] = relativePath;
+	outRow["code_kind"] = "mirror_source";
+	outRow["code_hash"] = BuildStableTextHashForRealCode(hashText);
+	outRow["total_lines"] = lines.size();
+	outRow["offset"] = offset;
+	outRow["returned_lines"] = returned;
+	outRow["truncated"] = fileTruncated || lineTruncated;
+	outRow["content"] = view;
+	return true;
+}
+
 std::string ExecuteReadFile(const std::string& argumentsJson, bool& outOk)
 {
 	outOk = false;
@@ -328,40 +392,139 @@ std::string ExecuteReadFile(const std::string& argumentsJson, bool& outOk)
 	const int offset = (std::max)(0, GetJsonInt(args, "offset", 0));
 	const int limit = GetJsonInt(args, "limit", 0);
 
-	std::filesystem::path fullPath;
-	std::string relativePath;
+	json r;
 	std::string error;
-	if (!WorkspaceMirror::ResolveFilePath(filePath, fullPath, relativePath, error)) {
+	if (!BuildReadFileRow(filePath, offset, limit, r, error)) {
 		return BuildError(error);
 	}
+	outOk = true;
+	return ToolResultToLocalJson(r);
+}
 
-	std::string bytes;
-	bool fileTruncated = false;
-	if (!ReadFileBytesLimited(fullPath, bytes, fileTruncated, error)) {
-		return BuildError(error);
+struct BatchReadRequest {
+	std::string filePath;
+	int offset = 0;
+	int limit = kDefaultBatchReadLimit;
+};
+
+void AddBatchReadRequest(
+	std::vector<BatchReadRequest>& requests,
+	const BatchReadRequest& request,
+	bool& outRequestTruncated)
+{
+	if (TrimAsciiCopy(request.filePath).empty()) {
+		return;
 	}
-	if (LooksBinary(bytes)) {
-		return BuildError("read_file only supports text files: " + relativePath);
+	const auto exists = std::find_if(
+		requests.begin(),
+		requests.end(),
+		[&request](const BatchReadRequest& item) {
+			return NormalizeSlash(item.filePath) == NormalizeSlash(request.filePath);
+		});
+	if (exists != requests.end()) {
+		return;
+	}
+	if (static_cast<int>(requests.size()) >= kMaxBatchReadFiles) {
+		outRequestTruncated = true;
+		return;
+	}
+	requests.push_back(request);
+}
+
+std::string ExecuteReadFiles(const std::string& argumentsJson, bool& outOk)
+{
+	outOk = false;
+	json args;
+	try {
+		args = argumentsJson.empty() ? json::object() : json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		return BuildError(std::string("invalid arguments json: ") + ex.what());
 	}
 
-	const std::string text = DecodeTextToUtf8(std::move(bytes));
-	const std::string hashText = NormalizeRealCodeLineBreaksToCrLf(Utf8ToLocalText(text));
-	const auto lines = SplitLinesUtf8(text);
-	int returned = 0;
-	bool lineTruncated = false;
-	const std::string view = BuildNumberedView(lines, offset, limit, returned, lineTruncated);
+	const int defaultOffset = (std::max)(0, GetJsonInt(args, "offset", 0));
+	const int defaultLimit = ClampInt(GetJsonInt(args, "limit", kDefaultBatchReadLimit), 1, kDefaultReadLimit);
+	std::vector<BatchReadRequest> requests;
+	bool requestTruncated = false;
+
+	if (args.contains("file_paths") && args["file_paths"].is_array()) {
+		for (const auto& item : args["file_paths"]) {
+			if (!item.is_string()) {
+				continue;
+			}
+			BatchReadRequest request;
+			request.filePath = item.get<std::string>();
+			request.offset = defaultOffset;
+			request.limit = defaultLimit;
+			AddBatchReadRequest(requests, request, requestTruncated);
+		}
+	}
+	if (args.contains("files") && args["files"].is_array()) {
+		for (const auto& item : args["files"]) {
+			BatchReadRequest request;
+			request.offset = defaultOffset;
+			request.limit = defaultLimit;
+			if (item.is_string()) {
+				request.filePath = item.get<std::string>();
+			}
+			else if (item.is_object()) {
+				request.filePath = GetJsonStringUtf8(item, "file_path");
+				request.offset = (std::max)(0, GetJsonInt(item, "offset", defaultOffset));
+				request.limit = ClampInt(GetJsonInt(item, "limit", defaultLimit), 1, kDefaultReadLimit);
+			}
+			AddBatchReadRequest(requests, request, requestTruncated);
+		}
+	}
+
+	if (requests.empty()) {
+		return BuildError("read_files requires file_paths or files");
+	}
+
+	json rows = json::array();
+	int okCount = 0;
+	int errorCount = 0;
+	int returnedLines = 0;
+	bool outputTruncated = requestTruncated;
+
+	for (const BatchReadRequest& request : requests) {
+		if (returnedLines >= kMaxBatchReadTotalLines) {
+			outputTruncated = true;
+			break;
+		}
+		json row;
+		const int remainingLines = kMaxBatchReadTotalLines - returnedLines;
+		const int effectiveLimit = (std::min)(request.limit, remainingLines);
+		std::string error;
+		if (BuildReadFileRow(request.filePath, request.offset, effectiveLimit, row, error)) {
+			++okCount;
+			returnedLines += row.value("returned_lines", 0);
+			if (row.value("truncated", false)) {
+				outputTruncated = true;
+			}
+		}
+		else {
+			++errorCount;
+			row["ok"] = false;
+			row["file_path"] = request.filePath;
+			row["error"] = error;
+		}
+		rows.push_back(std::move(row));
+	}
 
 	json r;
-	r["ok"] = true;
-	r["file_path"] = relativePath;
+	r["ok"] = okCount > 0;
+	r["all_ok"] = errorCount == 0 && !outputTruncated;
 	r["code_kind"] = "mirror_source";
-	r["code_hash"] = BuildStableTextHashForRealCode(hashText);
-	r["total_lines"] = lines.size();
-	r["offset"] = offset;
-	r["returned_lines"] = returned;
-	r["truncated"] = fileTruncated || lineTruncated;
-	r["content"] = view;
-	outOk = true;
+	r["files"] = std::move(rows);
+	r["requested"] = requests.size();
+	r["returned"] = r["files"].size();
+	r["ok_count"] = okCount;
+	r["error_count"] = errorCount;
+	r["returned_lines"] = returnedLines;
+	r["truncated"] = outputTruncated;
+	r["max_files"] = kMaxBatchReadFiles;
+	r["max_total_lines"] = kMaxBatchReadTotalLines;
+	outOk = okCount > 0;
 	return ToolResultToLocalJson(r);
 }
 
@@ -444,29 +607,29 @@ json BuildContextLines(const std::vector<std::string>& lines, int center, int co
 	return rows;
 }
 
-std::string ExecuteSearchCode(const std::string& argumentsJson, bool& outOk)
+json BuildSearchErrorJson(const std::string& error)
 {
-	outOk = false;
-	json args;
-	try {
-		args = argumentsJson.empty() ? json::object() : json::parse(argumentsJson);
-	}
-	catch (const std::exception& ex) {
-		return BuildError(std::string("invalid arguments json: ") + ex.what());
-	}
+	json r;
+	r["ok"] = false;
+	r["error"] = error;
+	return r;
+}
 
-	const std::string pattern = GetJsonStringUtf8(args, "pattern");
+json ExecuteSearchCodeQuery(
+	const std::string& pattern,
+	const std::string& glob,
+	const std::string& outputMode,
+	bool caseInsensitive,
+	bool regexMode,
+	int context,
+	int headLimit)
+{
 	if (pattern.empty()) {
-		return BuildError("pattern is required");
+		return BuildSearchErrorJson("pattern is required");
 	}
-	const std::string glob = GetJsonStringUtf8(args, "glob");
-	const std::string outputMode = GetJsonStringUtf8(args, "output_mode").empty()
-		? "content"
-		: GetJsonStringUtf8(args, "output_mode");
-	const bool caseInsensitive = GetJsonBool(args, "case_insensitive", false);
-	const bool regexMode = GetJsonBool(args, "regex", true);
-	const int context = ClampInt(GetJsonInt(args, "context", 0), 0, 20);
-	const int headLimit = ClampInt(GetJsonInt(args, "head_limit", kDefaultSearchLimit), 1, 2000);
+	if (outputMode != "content" && outputMode != "files_with_matches" && outputMode != "count") {
+		return BuildSearchErrorJson("output_mode must be content, files_with_matches, or count");
+	}
 
 	std::regex compiledRegex;
 	const std::regex* regexPtr = nullptr;
@@ -478,14 +641,14 @@ std::string ExecuteSearchCode(const std::string& argumentsJson, bool& outOk)
 			regexPtr = &compiledRegex;
 		}
 		catch (const std::exception& ex) {
-			return BuildError(std::string("invalid regex pattern: ") + ex.what());
+			return BuildSearchErrorJson(std::string("invalid regex pattern: ") + ex.what());
 		}
 	}
 
 	std::vector<std::string> files;
 	std::string error;
 	if (!WorkspaceMirror::ListMirrorFiles(files, error)) {
-		return BuildError(error);
+		return BuildSearchErrorJson(error);
 	}
 
 	json results = json::array();
@@ -520,7 +683,6 @@ std::string ExecuteSearchCode(const std::string& argumentsJson, bool& outOk)
 		const auto lines = SplitLinesUtf8(DecodeTextToUtf8(std::move(bytes)));
 
 		int fileMatches = 0;
-		json contentRows = json::array();
 		for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
 			const std::string& line = lines[static_cast<size_t>(i)];
 			if (!LineMatches(line, pattern, regexMode, caseInsensitive, regexPtr)) {
@@ -561,10 +723,6 @@ std::string ExecuteSearchCode(const std::string& argumentsJson, bool& outOk)
 		}
 	}
 
-	if (outputMode != "content" && outputMode != "files_with_matches" && outputMode != "count") {
-		return BuildError("output_mode must be content, files_with_matches, or count");
-	}
-
 	json r;
 	r["ok"] = true;
 	r["pattern"] = pattern;
@@ -576,7 +734,91 @@ std::string ExecuteSearchCode(const std::string& argumentsJson, bool& outOk)
 	r["match_count"] = totalMatches;
 	r["skipped_binary"] = skippedBinary;
 	r["truncated"] = truncated;
-	outOk = true;
+	return r;
+}
+
+std::vector<std::string> GetSearchPatterns(const json& args, bool& outPatternListTruncated)
+{
+	std::vector<std::string> patterns;
+	const auto addPattern = [&patterns, &outPatternListTruncated](const std::string& pattern) {
+		if (TrimAsciiCopy(pattern).empty()) {
+			return;
+		}
+		const auto exists = std::find(patterns.begin(), patterns.end(), pattern);
+		if (exists != patterns.end()) {
+			return;
+		}
+		if (patterns.size() >= 16) {
+			outPatternListTruncated = true;
+			return;
+		}
+		patterns.push_back(pattern);
+	};
+
+	addPattern(GetJsonStringUtf8(args, "pattern"));
+	if (args.contains("patterns") && args["patterns"].is_array()) {
+		for (const auto& item : args["patterns"]) {
+			if (item.is_string()) {
+				addPattern(item.get<std::string>());
+			}
+		}
+	}
+	return patterns;
+}
+
+std::string ExecuteSearchCode(const std::string& argumentsJson, bool& outOk)
+{
+	outOk = false;
+	json args;
+	try {
+		args = argumentsJson.empty() ? json::object() : json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		return BuildError(std::string("invalid arguments json: ") + ex.what());
+	}
+
+	const std::string glob = GetJsonStringUtf8(args, "glob");
+	const std::string outputMode = GetJsonStringUtf8(args, "output_mode").empty()
+		? "content"
+		: GetJsonStringUtf8(args, "output_mode");
+	const bool caseInsensitive = GetJsonBool(args, "case_insensitive", false);
+	const bool regexMode = GetJsonBool(args, "regex", true);
+	const int context = ClampInt(GetJsonInt(args, "context", 0), 0, 20);
+	const int headLimit = ClampInt(GetJsonInt(args, "head_limit", kDefaultSearchLimit), 1, 2000);
+	bool patternListTruncated = false;
+	const std::vector<std::string> patterns = GetSearchPatterns(args, patternListTruncated);
+	if (patterns.empty()) {
+		return BuildError("pattern or patterns is required");
+	}
+
+	if (patterns.size() == 1 && !patternListTruncated) {
+		const json r = ExecuteSearchCodeQuery(patterns.front(), glob, outputMode, caseInsensitive, regexMode, context, headLimit);
+		outOk = r.value("ok", false);
+		return ToolResultToLocalJson(r);
+	}
+
+	json queries = json::array();
+	bool anyOk = false;
+	bool anyTruncated = patternListTruncated;
+	for (const std::string& pattern : patterns) {
+		json row = ExecuteSearchCodeQuery(pattern, glob, outputMode, caseInsensitive, regexMode, context, headLimit);
+		anyOk = anyOk || row.value("ok", false);
+		anyTruncated = anyTruncated || row.value("truncated", false);
+		queries.push_back(std::move(row));
+	}
+
+	json r;
+	r["ok"] = anyOk;
+	r["batch"] = true;
+	r["regex"] = regexMode;
+	r["case_insensitive"] = caseInsensitive;
+	r["output_mode"] = outputMode;
+	r["glob"] = glob;
+	r["queries"] = std::move(queries);
+	r["requested"] = patterns.size();
+	r["returned"] = r["queries"].size();
+	r["truncated"] = anyTruncated;
+	outOk = anyOk;
 	return ToolResultToLocalJson(r);
 }
 
@@ -584,13 +826,16 @@ std::string ExecuteSearchCode(const std::string& argumentsJson, bool& outOk)
 
 bool CanHandleTool(const std::string& toolName)
 {
-	return toolName == "read_file" || toolName == "list_files" || toolName == "search_code";
+	return toolName == "read_file" || toolName == "read_files" || toolName == "list_files" || toolName == "search_code";
 }
 
 std::string ExecuteTool(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
 {
 	if (toolName == "read_file") {
 		return ExecuteReadFile(argumentsJson, outOk);
+	}
+	if (toolName == "read_files") {
+		return ExecuteReadFiles(argumentsJson, outOk);
 	}
 	if (toolName == "list_files") {
 		return ExecuteListFiles(argumentsJson, outOk);

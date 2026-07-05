@@ -1366,7 +1366,7 @@ nlohmann::json BuildPublicToolCatalog()
 	nlohmann::json tools = nlohmann::json::array();
 	tools.push_back({
 		{"name", "refresh_workspace_mirror"},
-		{"description", "Refresh the current e-packager workspace mirror from the live IDE project memory before reading source. Call this once before the first list_files/search_code/read_file in each conversation round, especially after the user may have edited code manually in the IDE. mode=auto keeps the default strategy, main_only refreshes only the main source files, and full rebuilds the complete mirror including dependency modules/support libraries."},
+		{"description", "Refresh the current e-packager workspace mirror from the live IDE project memory before reading source. Call this once before the first list_files/search_code/read_file/read_files in each conversation round, especially after the user may have edited code manually in the IDE. mode=auto keeps the default strategy, main_only refreshes only the main source files when a mirror exists and falls back to a full rebuild when needed, and full rebuilds the complete mirror including dependency modules/support libraries."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1390,11 +1390,12 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "search_code"},
-		{"description", "Search text inside the current e-packager workspace mirror. Call refresh_workspace_mirror once before this in each conversation round when fresh IDE edits may exist. Searches current project source plus unpacked dependencies/resources exposed as text; use glob to narrow scope."},
+		{"description", "Search text inside the current e-packager workspace mirror. Call refresh_workspace_mirror once before this in each conversation round when fresh IDE edits may exist. Searches current project source plus unpacked dependencies/resources exposed as text; use glob to narrow scope, set context>0 when search snippets can avoid follow-up reads, and use patterns to search several function names/keywords in one call."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
-				{"pattern", {{"type", "string"}, {"description", "Regex pattern by default; set regex=false for literal substring search."}}},
+				{"pattern", {{"type", "string"}, {"description", "Single regex pattern by default; set regex=false for literal substring search."}}},
+				{"patterns", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Optional batch of regex patterns or literal substrings using the same regex/case/glob/context options. Use this instead of repeated search_code calls."}}},
 				{"glob", {{"type", "string"}, {"description", "Optional file glob filter such as src/**/*.txt."}}},
 				{"output_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"files_with_matches", "content", "count"})}}},
 				{"regex", {{"type", "boolean"}, {"description", "Defaults to true."}}},
@@ -1402,7 +1403,6 @@ nlohmann::json BuildPublicToolCatalog()
 				{"context", {{"type", "integer"}, {"minimum", 0}, {"maximum", 20}}},
 				{"head_limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}}}
 			}},
-			{"required", nlohmann::json::array({"pattern"})},
 			{"additionalProperties", false}
 		}}
 	});
@@ -1417,6 +1417,29 @@ nlohmann::json BuildPublicToolCatalog()
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 20000}}}
 			}},
 			{"required", nlohmann::json::array({"file_path"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "read_files"},
+		{"description", "Batch read multiple text files from the current e-packager workspace mirror in one tool call. Prefer this after list_files/search_code when several candidate files must be inspected. Returns per-file code_hash and cat -n style numbered mirror text. Paths are mirror-relative."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"file_paths", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Simple list of mirror-relative file paths."}}},
+				{"files", {{"type", "array"}, {"items", {
+					{"type", "object"},
+					{"properties", {
+						{"file_path", {{"type", "string"}}},
+						{"offset", {{"type", "integer"}, {"minimum", 0}}},
+						{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}}}
+					}},
+					{"required", nlohmann::json::array({"file_path"})},
+					{"additionalProperties", false}
+				}}, {"description", "Optional per-file offset/limit entries."}}},
+				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Default offset for file_paths/files entries."}}},
+				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}, {"description", "Default per-file line limit."}}}
+			}},
 			{"additionalProperties", false}
 		}}
 	});
@@ -1436,7 +1459,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "edit_file"},
-		{"description", "Edit one current-project source file by mirror-relative file_path. Writes go to the live IDE page and invalidate the workspace mirror."},
+		{"description", "Edit one current-project source file by mirror-relative file_path. Writes go to the live IDE page. In mirror-source-base mode, successful writes update the workspace mirror in place when possible; fixed-table writes or mirror sync failures invalidate the mirror."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1450,7 +1473,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "multi_edit_file"},
-		{"description", "Apply multiple text edits to one current-project source file. Writes go to the live IDE page and invalidate the workspace mirror."},
+		{"description", "Apply multiple text edits to one current-project source file. Writes go to the live IDE page. In mirror-source-base mode, successful writes update the workspace mirror in place when possible; fixed-table writes or mirror sync failures invalidate the mirror."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1474,7 +1497,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "write_file"},
-		{"description", "Overwrite one current-project source file with full_code. expected_base_hash may be provided to detect stale source before writing. Writes go to the live IDE page and invalidate the workspace mirror."},
+		{"description", "Overwrite one current-project source file with full_code. expected_base_hash may be provided to detect stale source before writing. Writes go to the live IDE page. In mirror-source-base mode, successful writes update the workspace mirror in place when possible; fixed-table writes or mirror sync failures invalidate the mirror."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1897,7 +1920,7 @@ nlohmann::json BuildConfiguredToolCatalog(
 
 nlohmann::json BuildChatToolDefinitions(const AISettings& settings)
 {
-	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings);
+	const nlohmann::json catalog = FilterDependencyManagementToolsForExplicitRequest(BuildConfiguredToolCatalog(settings), {});
 	nlohmann::json tools = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		tools.push_back({
@@ -2046,6 +2069,7 @@ std::vector<std::string> SelectGeminiToolNames(
 		AddUniqueToolName(names, "list_files");
 		AddUniqueToolName(names, "search_code");
 		AddUniqueToolName(names, "read_file");
+		AddUniqueToolName(names, "read_files");
 		if (IsRealPageReadToolVisible(sourceEditMode)) {
 			AddUniqueToolName(names, "read_real_file");
 		}
@@ -2054,6 +2078,7 @@ std::vector<std::string> SelectGeminiToolNames(
 		AddUniqueToolName(names, "refresh_workspace_mirror");
 		AddUniqueToolName(names, "search_code");
 		AddUniqueToolName(names, "read_file");
+		AddUniqueToolName(names, "read_files");
 	};
 	const auto addEditTools = [&names]() {
 		AddUniqueToolName(names, "edit_file");
@@ -2192,8 +2217,8 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 	const std::string projectType = DetectProjectTypeText();
 	const bool mirrorSourceBase = settings.sourceEditMode == AISourceEditMode::MirrorSourceBase;
 	const std::string sourceReadRule = mirrorSourceBase
-		? "4) 用 list_files 定位文件，用 search_code 搜索内容；需要源码文本时用 read_file；写入工具以 read_file 的镜像文本作为匹配和哈希基准。\n"
-		: "4) 用 list_files 定位文件，用 search_code 搜索内容；可用 read_file 查看解包镜像；编辑当前工程源码前，先用 read_real_file 读取同一 file_path 的 IDE 真实页文本。\n";
+		? "4) 用 list_files 定位文件，用 search_code 搜索内容；多个基础函数名/关键字用 search_code.patterns 一次批量搜索；需要同时查看多个候选源码时优先用 read_files，单文件才用 read_file；写入工具以 read_file/read_files 的镜像文本作为匹配和哈希基准。\n"
+		: "4) 用 list_files 定位文件，用 search_code 搜索内容；多个基础函数名/关键字用 search_code.patterns 一次批量搜索；需要同时查看多个候选源码时优先用 read_files，单文件才用 read_file；可用 read_file/read_files 查看解包镜像；编辑当前工程源码前，先用 read_real_file 读取同一 file_path 的 IDE 真实页文本。\n";
 	{
 		std::string prompt =
 			"你是AutoLinker，一个内置于易语言IDE的插件形式的助手。\n"
@@ -2201,17 +2226,17 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"当前项目名称：" + (projectName.empty() ? std::string("未知") : projectName) + "\n\n"
 			"当前项目类型：" + projectType + "\n\n"
 			"统一源码工具规则：\n"
-			"1) list_files / search_code / read_file 基于 e-packager 解包出的当前工程镜像，路径一律是镜像内相对路径；read_file 返回 mirror_source。\n"
-			"2) 每轮对话第一次 list_files / search_code / read_file 前，先调用一次 refresh_workspace_mirror，以读取用户可能在 IDE 中手工修改后的最新内存源码。\n"
-			"3) refresh_workspace_mirror 会优先用 e-packager unpack --main-only 只刷新当前 .e/.ec 主工程代码，避免重复导出模块和支持库。\n"
+			"1) list_files / search_code / read_file / read_files 基于 e-packager 解包出的当前工程镜像，路径一律是镜像内相对路径；read_file/read_files 返回 mirror_source。\n"
+			"2) 每轮对话第一次 list_files / search_code / read_file / read_files 前，先调用一次 refresh_workspace_mirror，以读取用户可能在 IDE 中手工修改后的最新内存源码。\n"
+			"3) refresh_workspace_mirror 会优先用 e-packager unpack --main-only 只刷新当前 .e/.ec 主工程代码；没有可复用镜像时会完整构建一次。\n"
 			+ sourceReadRule +
 			"5) 修改当前工程源码时只能用 edit_file / multi_edit_file / write_file / diff_file / restore_file_snapshot，并以 file_path 作为目标。\n"
 			+ std::string(mirrorSourceBase
-				? "6) edit_file / multi_edit_file / write_file / diff_file 的匹配和 expected_base_hash 校验基于 read_file 的镜像文本；大块修改优先基于 read_file 生成 full_code 后调用 write_file，避免反复 exact old_text 失败。\n"
+				? "6) edit_file / multi_edit_file / write_file / diff_file 的匹配和 expected_base_hash 校验基于 read_file/read_files 的镜像文本；大块修改优先基于 read_file/read_files 生成 full_code 后调用 write_file，避免反复 exact old_text 失败。\n"
 				  "7) 写入前不会读取真实页源码；写入仍会按 file_path 映射到 IDE 程序项并整页写回。\n"
 				: "6) 当前工具列表提供 read_real_file：编辑 src/*.txt 或固定表文件前，必须先对同一 file_path 调用 read_real_file；edit_file / multi_edit_file / write_file / diff_file 的 old_text、full_code 和 expected_base_hash 应基于 read_real_file 返回的 real_source/code_hash，不要用 read_file 的 mirror_source 作为编辑基准。\n"
 				  "7) edit_file / write_file 会把 file_path 映射到 IDE 真实程序项，基于真实页文本匹配，再整页写回。\n")
-			+ "8) 写入成功后镜像会过期，下次 read_file / search_code / list_files 会重新解包以反映最新 IDE 内存状态。\n"
+			+ "8) 写入成功后优先同步当前镜像；只有固定表或同步失败时镜像才会过期并在下次 read_file / read_files / search_code / list_files 时重新解包。\n"
 			"9) src/*.xml 是窗口界面 XML，只读；窗口程序集代码应编辑对应 src/*.txt。\n"
 			"10) ecom/、elib/、header/ 是依赖/公开信息参考，可读可搜但不可写。\n"
 			"11) 固定表文件 src/.数据类型.txt、src/.DLL声明.txt、src/.常量.txt、src/.全局变量.txt 可作为对应真实表页的编辑目标。\n"
@@ -4513,7 +4538,32 @@ std::string AIService::BuildPublicToolCatalogJson()
 	catch (...) {
 		settings = {};
 	}
-	return BuildConfiguredToolCatalog(settings).dump();
+	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings);
+	nlohmann::json filtered = nlohmann::json::array();
+	for (const auto& item : catalog) {
+		const std::string name = item.is_object() ? item.value("name", std::string()) : std::string();
+		if (IsDependencyManagementToolName(name)) {
+			continue;
+		}
+		filtered.push_back(item);
+	}
+	return filtered.dump();
+}
+
+bool AIService::IsDependencyManagementTool(const std::string& toolName)
+{
+	return IsDependencyManagementToolName(toolName);
+}
+
+bool AIService::IsDependencyManagementToolAllowedForContext(
+	const std::string& toolName,
+	const std::vector<AIChatMessage>& contextMessages)
+{
+	if (!IsDependencyManagementToolName(toolName)) {
+		return true;
+	}
+	const std::string latestUserText = CollectLatestUserToolRoutingText(contextMessages);
+	return IsDependencyManagementToolExplicitlyRequested(toolName, latestUserText);
 }
 
 std::string AIService::NormalizeModelOutputToCode(const std::string& modelText)

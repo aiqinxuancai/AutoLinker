@@ -112,6 +112,13 @@ std::string LocalFromUtf8(const std::string& text)
 	return wide.empty() && !text.empty() ? text : StringFromWideCodePage(wide, kEideCodePage);
 }
 
+std::string Utf8FromLocal(const std::string& text)
+{
+	constexpr UINT kEideCodePage = 936;
+	const std::wstring wide = WideFromCodePage(text, kEideCodePage);
+	return wide.empty() && !text.empty() ? text : StringFromWideCodePage(wide, CP_UTF8);
+}
+
 std::string Utf8FromPath(const std::filesystem::path& path)
 {
 	return Utf8FromWide(path.wstring());
@@ -200,6 +207,23 @@ bool ReadUtf8File(const std::filesystem::path& path, std::string& outText)
 		static_cast<unsigned char>(outText[1]) == 0xBB &&
 		static_cast<unsigned char>(outText[2]) == 0xBF) {
 		outText.erase(0, 3);
+	}
+	return true;
+}
+
+bool WriteUtf8BomFile(const std::filesystem::path& path, const std::string& textUtf8, std::string& outError)
+{
+	std::ofstream file(path, std::ios::binary | std::ios::trunc);
+	if (!file) {
+		outError = "open mirror file for write failed: " + Utf8FromPath(path);
+		return false;
+	}
+	const unsigned char bom[] = { 0xEF, 0xBB, 0xBF };
+	file.write(reinterpret_cast<const char*>(bom), sizeof(bom));
+	file.write(textUtf8.data(), static_cast<std::streamsize>(textUtf8.size()));
+	if (!file.good()) {
+		outError = "write mirror file failed: " + Utf8FromPath(path);
+		return false;
 	}
 	return true;
 }
@@ -720,13 +744,12 @@ bool RefreshMirror(std::string& outError, std::string* outMode, RefreshMode mode
 		return true;
 	}
 
-	if (mode == RefreshMode::MainOnly) {
-		return false;
-	}
-
 	if (!outError.empty()) {
 		OutputStringToELog("[WorkspaceMirror] main-only refresh failed, rebuilding mirror: " + outError);
 		outError.clear();
+	}
+	else if (mode == RefreshMode::MainOnly) {
+		OutputStringToELog("[WorkspaceMirror] main-only refresh unavailable, rebuilding mirror");
 	}
 	if (!RebuildMirrorLocked(sourcePath, outError)) {
 		return false;
@@ -741,6 +764,44 @@ void InvalidateMirror()
 {
 	std::lock_guard<std::mutex> guard(g_mutex);
 	g_state.valid = false;
+}
+
+bool UpdateMirrorTextFile(
+	const std::string& filePathUtf8,
+	const std::string& textLocal,
+	std::string& outError)
+{
+	std::lock_guard<std::mutex> guard(g_mutex);
+	outError.clear();
+	if (!EnsureMirrorFreshLocked(outError)) {
+		return false;
+	}
+
+	std::filesystem::path relativePath;
+	std::string relativePathUtf8;
+	if (!BuildSafeRelativePath(filePathUtf8, relativePath, relativePathUtf8, outError)) {
+		return false;
+	}
+
+	const std::filesystem::path fullPath = g_state.mirrorRoot / relativePath;
+	if (!IsPathInside(g_state.mirrorRoot, fullPath)) {
+		outError = "file_path resolves outside workspace mirror";
+		return false;
+	}
+
+	std::error_code ec;
+	if (!std::filesystem::exists(fullPath, ec) || !std::filesystem::is_regular_file(fullPath, ec)) {
+		outError = "file not found in workspace mirror: " + relativePathUtf8;
+		return false;
+	}
+
+	if (!WriteUtf8BomFile(fullPath, Utf8FromLocal(textLocal), outError)) {
+		return false;
+	}
+
+	g_state.valid = true;
+	OutputStringToELog("[WorkspaceMirror] mirror text file updated: " + relativePathUtf8);
+	return true;
 }
 
 void ResetAndCleanup()
