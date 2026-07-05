@@ -12,10 +12,12 @@
 #include <filesystem>
 #include <fstream>
 #include <format>
+#include <initializer_list>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <process.h>
+#include <set>
 #include <Shellapi.h>
 #include <string>
 #include <vector>
@@ -33,6 +35,7 @@
 #include "ConfigManager.h"
 #include "AIChatTooling.h"
 #include "AIChatToolingInternal.h"
+#include "GameAnalyticsClient.h"
 #include "Global.h"
 #include "IDEFacade.h"
 #include "PathHelper.h"
@@ -75,6 +78,8 @@ constexpr UINT WM_AUTOLINKER_AI_CHAT_DENY_TOOL = WM_APP + 221;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_AUTO_ALLOW_TOOL = WM_APP + 222;
 constexpr UINT_PTR kHistoryWebViewFlushTimerId = 0xA17;
 constexpr UINT_PTR kSessionTimingTimerId = 0xA18;
+constexpr UINT_PTR kRemoteConfigPollTimerId = 0xA19;
+constexpr int kRemoteConfigPollMaxTicks = 20;
 
 constexpr int IDC_AI_CHAT_HISTORY = 2101;
 constexpr int IDC_AI_CHAT_INPUT = 2102;
@@ -117,6 +122,7 @@ constexpr const char* kChatHomeUrl =
 	"https://github.com/aiqinxuancai/AutoLinker";
 constexpr const char* kChatReleasesUrl =
 	"https://github.com/aiqinxuancai/AutoLinker/releases";
+constexpr const char* kNewsLinkRemoteConfigKey = "NEWS-LINK";
 constexpr const char* kAutoAllowWritesConfigKey = "ai.chat.auto_allow_writes";
 
 enum class SessionRole {
@@ -212,6 +218,7 @@ struct ChatDialogContext {
 	bool webViewReady = false;
 	bool webViewContentReady = false;
 	bool webViewFlushScheduled = false;
+	int remoteConfigPollTicksRemaining = 0;
 	std::string pendingHistoryHtml;
 	AIChatStoredSessionListEntry pendingRestoreSession;
 	std::vector<AIChatStoredSessionListEntry> lastSessionMenuEntries;
@@ -2537,12 +2544,15 @@ void FocusWebViewInput(ChatDialogContext* ctx)
 	ExecuteWebViewScript(ctx, L"window.autolinkerFocusInput();");
 }
 
+bool IsHttpOrHttpsUrl(const std::string& url);
+
 bool IsAllowedChatExternalUrl(const std::string& url)
 {
 	return _stricmp(url.c_str(), kChatMcpGuideUrl) == 0 ||
 		_stricmp(url.c_str(), kChatAgentWhitepaperUrl) == 0 ||
 		_stricmp(url.c_str(), kChatHomeUrl) == 0 ||
-		_stricmp(url.c_str(), kChatReleasesUrl) == 0;
+		_stricmp(url.c_str(), kChatReleasesUrl) == 0 ||
+		IsHttpOrHttpsUrl(url);
 }
 
 void OpenChatExternalUrl(HWND owner, const std::string& url)
@@ -2564,6 +2574,16 @@ void FocusChatComposerInput(ChatDialogContext* ctx)
 	else if (ctx->hInput != nullptr) {
 		SetFocus(ctx->hInput);
 	}
+}
+
+void StartRemoteConfigHomePolling(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx == nullptr || hWnd == nullptr || !IsWindow(hWnd)) {
+		return;
+	}
+	GameAnalyticsClient::RefreshRemoteConfigsAsync();
+	ctx->remoteConfigPollTicksRemaining = kRemoteConfigPollMaxTicks;
+	SetTimer(hWnd, kRemoteConfigPollTimerId, 1000, nullptr);
 }
 
 bool QueryClearChatHistoryAvailability(bool& needConfirm)
@@ -3092,6 +3112,260 @@ std::string RoleLabel(SessionRole role)
 		return LocalFromWide(L"\u5de5\u5177");
 	default:
 		return LocalFromWide(L"\u7cfb\u7edf");
+	}
+}
+
+bool IsHttpOrHttpsUrl(const std::string& url)
+{
+	const std::string trimmed = ToLowerAsciiCopySimple(TrimAsciiCopy(url));
+	return trimmed.rfind("https://", 0) == 0 || trimmed.rfind("http://", 0) == 0;
+}
+
+std::string FirstJsonStringValue(const nlohmann::json& value, std::initializer_list<const char*> keys)
+{
+	if (!value.is_object()) {
+		return std::string();
+	}
+	for (const char* key : keys) {
+		if (key != nullptr && value.contains(key) && value[key].is_string()) {
+			const std::string text = TrimAsciiCopy(value[key].get<std::string>());
+			if (!text.empty()) {
+				return text;
+			}
+		}
+	}
+	return std::string();
+}
+
+std::string NormalizeNewsTitleKey(const std::string& titleUtf8, const std::string& fallbackUtf8)
+{
+	std::string key = TrimAsciiCopy(titleUtf8);
+	if (key.empty()) {
+		key = TrimAsciiCopy(fallbackUtf8);
+	}
+	return ToLowerAsciiCopySimple(key);
+}
+
+bool TryRememberNewsTitle(
+	std::set<std::string>& seenTitles,
+	const std::string& titleUtf8,
+	const std::string& fallbackUtf8)
+{
+	const std::string key = NormalizeNewsTitleKey(titleUtf8, fallbackUtf8);
+	if (key.empty()) {
+		return true;
+	}
+	return seenTitles.insert(key).second;
+}
+
+void AppendNewsTextItemHtml(
+	std::string& html,
+	const std::string& titleUtf8,
+	const std::string& textUtf8,
+	int& count,
+	std::set<std::string>& seenTitles)
+{
+	if (count >= 6) {
+		return;
+	}
+
+	const std::string text = TrimAsciiCopy(textUtf8);
+	if (text.empty()) {
+		return;
+	}
+
+	if (!TryRememberNewsTitle(seenTitles, titleUtf8, text)) {
+		return;
+	}
+
+	const std::string titleLocal = Utf8ToLocalText(TrimAsciiCopy(titleUtf8));
+	const std::string textLocal = Utf8ToLocalText(text);
+	html += "<div class=\"news-config-text\">";
+	if (!titleLocal.empty() && titleLocal != textLocal) {
+		html += "<div class=\"news-config-text-title\">";
+		html += EscapeHtml(titleLocal);
+		html += "</div>";
+	}
+	html += "<div>";
+	html += EscapeHtml(textLocal);
+	html += "</div></div>";
+	++count;
+}
+
+void AppendNewsLinkHtml(
+	std::string& html,
+	const std::string& titleUtf8,
+	const std::string& url,
+	int& count,
+	std::set<std::string>& seenTitles)
+{
+	if (count >= 6) {
+		return;
+	}
+
+	if (url.empty() || !IsHttpOrHttpsUrl(url)) {
+		return;
+	}
+
+	std::string title = TrimAsciiCopy(titleUtf8);
+	if (title.empty()) {
+		title = url;
+	}
+	if (!TryRememberNewsTitle(seenTitles, title, url)) {
+		return;
+	}
+
+	const std::string titleLocal = Utf8ToLocalText(title);
+	html += "<a class=\"mcp-guide-link news-link\" href=\"";
+	html += EscapeHtmlAttribute(url);
+	html += "\">";
+	html += EscapeHtml(titleLocal);
+	html += "</a>";
+	++count;
+}
+
+void AppendNewsConfigItemHtml(
+	std::string& html,
+	const nlohmann::json& item,
+	int& count,
+	std::set<std::string>& seenTitles)
+{
+	if (count >= 6) {
+		return;
+	}
+
+	if (item.is_string()) {
+		const std::string text = TrimAsciiCopy(item.get<std::string>());
+		if (IsHttpOrHttpsUrl(text)) {
+			AppendNewsLinkHtml(html, text, text, count, seenTitles);
+		}
+		else {
+			AppendNewsTextItemHtml(html, std::string(), text, count, seenTitles);
+		}
+		return;
+	}
+	if (!item.is_object()) {
+		return;
+	}
+
+	const std::string title = FirstJsonStringValue(item, { "title", "text", "name", "label", "caption" });
+	const std::string url = FirstJsonStringValue(item, { "url", "link", "href" });
+	if (!url.empty()) {
+		AppendNewsLinkHtml(html, title, url, count, seenTitles);
+		return;
+	}
+
+	const std::string body = FirstJsonStringValue(item, {
+		"content",
+		"description",
+		"desc",
+		"summary",
+		"message",
+		"body"
+	});
+	if (!body.empty()) {
+		AppendNewsTextItemHtml(html, title, body, count, seenTitles);
+		return;
+	}
+	if (!title.empty()) {
+		AppendNewsTextItemHtml(html, std::string(), title, count, seenTitles);
+		return;
+	}
+
+	for (auto it = item.begin(); it != item.end() && count < 6; ++it) {
+		if (!it.value().is_string()) {
+			continue;
+		}
+		const std::string key = it.key();
+		const std::string value = TrimAsciiCopy(it.value().get<std::string>());
+		if (IsHttpOrHttpsUrl(value)) {
+			AppendNewsLinkHtml(html, key, value, count, seenTitles);
+		}
+		else {
+			AppendNewsTextItemHtml(html, key, value, count, seenTitles);
+		}
+	}
+}
+
+void AppendNewsLinkItemsHtml(
+	std::string& html,
+	const nlohmann::json& value,
+	int& count,
+	std::set<std::string>& seenTitles)
+{
+	if (count >= 6) {
+		return;
+	}
+	if (value.is_string()) {
+		const std::string nestedJson = TrimAsciiCopy(value.get<std::string>());
+		if (!nestedJson.empty() && (nestedJson.front() == '[' || nestedJson.front() == '{')) {
+			try {
+				AppendNewsLinkItemsHtml(html, nlohmann::json::parse(nestedJson), count, seenTitles);
+				return;
+			}
+			catch (...) {
+			}
+		}
+		AppendNewsConfigItemHtml(html, value, count, seenTitles);
+		return;
+	}
+	if (value.is_array()) {
+		for (const auto& item : value) {
+			AppendNewsConfigItemHtml(html, item, count, seenTitles);
+			if (count >= 6) {
+				break;
+			}
+		}
+		return;
+	}
+	if (!value.is_object()) {
+		return;
+	}
+
+	bool appendedNested = false;
+	for (const char* key : { "items", "links", "news", "data", "NEWS-LINK" }) {
+		if (value.contains(key) &&
+			(value[key].is_array() || value[key].is_object() || value[key].is_string())) {
+			AppendNewsLinkItemsHtml(html, value[key], count, seenTitles);
+			appendedNested = true;
+			if (count >= 6) {
+				return;
+			}
+		}
+	}
+	if (!appendedNested) {
+		AppendNewsConfigItemHtml(html, value, count, seenTitles);
+	}
+}
+
+std::string BuildRemoteNewsLinksHtml()
+{
+	const auto rawValue = GameAnalyticsClient::GetRemoteConfigValue(kNewsLinkRemoteConfigKey);
+	if (!rawValue.has_value() || TrimAsciiCopy(*rawValue).empty()) {
+		return std::string();
+	}
+
+	try {
+		nlohmann::json parsed = nlohmann::json::parse(*rawValue);
+		if (parsed.is_string()) {
+			const std::string nestedJson = TrimAsciiCopy(parsed.get<std::string>());
+			if (!nestedJson.empty() && (nestedJson.front() == '[' || nestedJson.front() == '{')) {
+				parsed = nlohmann::json::parse(nestedJson);
+			}
+		}
+		std::string html;
+		int count = 0;
+		std::set<std::string> seenTitles;
+		AppendNewsLinkItemsHtml(html, parsed, count, seenTitles);
+		if (html.empty()) {
+			OutputStringToELog("[AI Chat][Remote Config] NEWS-LINK parsed but no displayable items");
+			return std::string();
+		}
+		return "<div class=\"empty-state-news\">" + html + "</div>";
+	}
+	catch (const std::exception& ex) {
+		OutputStringToELog(std::format("[AI Chat][Remote Config] NEWS-LINK parse failed: {}", ex.what()));
+		return std::string();
 	}
 }
 
@@ -3757,6 +4031,7 @@ std::string BuildHistoryHtmlLocked(
 		body += "<div class=\"empty-state\"><div class=\"empty-state-title\">";
 		body += EscapeHtml(LocalFromWide(L"需要做点什么？"));
 		body += "</div><div class=\"empty-state-links\">";
+		body += BuildRemoteNewsLinksHtml();
 		body += "<a class=\"mcp-guide-link\" href=\"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE\">";
 		body += EscapeHtml(LocalFromWide(L"Codex连接AutoLinker MCP"));
 		body += "</a><a class=\"mcp-guide-link\" href=\"https://github.com/aiqinxuancai/Awesome-E-Agent\">";
@@ -5280,6 +5555,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 
 		RefreshChatDialog(hWnd);
 		TryInitializeHistoryWebView(hWnd, ctx);
+		StartRemoteConfigHomePolling(hWnd, ctx);
 		SetFocus(ctx->hInput);
 		return 0;
 	}
@@ -5386,6 +5662,30 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		}
 		if (ctx != nullptr && wParam == kSessionTimingTimerId) {
 			RefreshSessionTimingOnly(hWnd, ctx);
+			return 0;
+		}
+		if (ctx != nullptr && wParam == kRemoteConfigPollTimerId) {
+			const auto snapshot = GameAnalyticsClient::GetRemoteConfigs();
+			if (snapshot.ready || !snapshot.error.empty() || ctx->remoteConfigPollTicksRemaining <= 0) {
+				KillTimer(hWnd, kRemoteConfigPollTimerId);
+				ctx->remoteConfigPollTicksRemaining = 0;
+				if (!snapshot.ready) {
+					OutputStringToELog(std::format(
+						"[AI Chat][Remote Config] polling stopped ready=0 status={} error={}",
+						snapshot.httpStatus,
+						snapshot.error));
+				}
+				else if (snapshot.values.find(kNewsLinkRemoteConfigKey) == snapshot.values.end()) {
+					OutputStringToELog(std::format(
+						"[AI Chat][Remote Config] {} not found, keys={}",
+						kNewsLinkRemoteConfigKey,
+						snapshot.values.size()));
+				}
+			}
+			else {
+				--ctx->remoteConfigPollTicksRemaining;
+			}
+			RefreshChatDialog(hWnd);
 			return 0;
 		}
 		break;
@@ -5519,6 +5819,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		}
 		KillTimer(hWnd, kHistoryWebViewFlushTimerId);
 		KillTimer(hWnd, kSessionTimingTimerId);
+		KillTimer(hWnd, kRemoteConfigPollTimerId);
 		ctx->webView = nullptr;
 		ctx->webViewController = nullptr;
 		ctx->webViewEnvironment = nullptr;

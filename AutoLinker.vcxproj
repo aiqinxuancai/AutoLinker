@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -475,6 +475,7 @@
     <ClCompile Include="src\EcSwitchConfigDialog.cpp" />
     <ClCompile Include="src\ForceLinkLibConfigDialog.cpp" />
     <ClCompile Include="src\ForceLinkLibManager.cpp" />
+    <ClCompile Include="src\GameAnalyticsClient.cpp" />
     <ClCompile Include="src\direct_global_search.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
@@ -555,6 +556,7 @@
     <ClInclude Include="src\EideProjectBinarySerializer.h" />
     <ClInclude Include="src\ForceLinkLibConfigDialog.h" />
     <ClInclude Include="src\ForceLinkLibManager.h" />
+    <ClInclude Include="src\GameAnalyticsClient.h" />
     <ClInclude Include="src\direct_global_search.hpp" />
     <ClInclude Include="src\ECOMEx.h" />
     <ClInclude Include="src\Global.h" />

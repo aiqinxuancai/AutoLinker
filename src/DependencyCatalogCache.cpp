@@ -587,7 +587,7 @@ DependencyCatalogCache& DependencyCatalogCache::Instance()
 	return instance;
 }
 
-void DependencyCatalogCache::StartAsyncRefreshIfNeeded(bool force)
+void DependencyCatalogCache::StartAsyncRefreshIfNeeded(bool force, bool silent)
 {
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
@@ -600,12 +600,12 @@ void DependencyCatalogCache::StartAsyncRefreshIfNeeded(bool force)
 		++m_refreshGeneration;
 	}
 
-	std::thread([this, force]() {
-		RefreshWorker(force);
+	std::thread([this, force, silent]() {
+		RefreshWorker(force, silent);
 	}).detach();
 }
 
-bool DependencyCatalogCache::RefreshNow(bool force, std::string& outErrorLocal)
+bool DependencyCatalogCache::RefreshNow(bool force, std::string& outErrorLocal, bool silent)
 {
 	{
 		std::unique_lock<std::mutex> lock(m_mutex);
@@ -618,7 +618,7 @@ bool DependencyCatalogCache::RefreshNow(bool force, std::string& outErrorLocal)
 		++m_refreshGeneration;
 	}
 
-	RefreshWorker(force);
+	RefreshWorker(force, silent);
 	const Status status = GetStatus();
 	outErrorLocal = status.lastErrorLocal;
 	return status.state == RefreshState::Ready;
@@ -890,10 +890,10 @@ bool DependencyCatalogCache::ResolveLibrary(
 	return true;
 }
 
-void DependencyCatalogCache::RefreshWorker(bool force)
+void DependencyCatalogCache::RefreshWorker(bool force, bool silent)
 {
 	std::string error;
-	const bool ok = RefreshInternal(force, error);
+	const bool ok = RefreshInternal(force, silent, error);
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
 		m_state = ok ? RefreshState::Ready : RefreshState::Failed;
@@ -903,7 +903,7 @@ void DependencyCatalogCache::RefreshWorker(bool force)
 	m_cv.notify_all();
 }
 
-bool DependencyCatalogCache::RefreshInternal(bool force, std::string& outErrorLocal)
+bool DependencyCatalogCache::RefreshInternal(bool force, bool silent, std::string& outErrorLocal)
 {
 	outErrorLocal.clear();
 	const auto start = Clock::now();
@@ -917,7 +917,9 @@ bool DependencyCatalogCache::RefreshInternal(bool force, std::string& outErrorLo
 	const std::filesystem::path ecomCacheRoot = cacheRoot / "EcomInfo";
 	const std::filesystem::path libCacheRoot = cacheRoot / "LibInfo";
 
-	Logger::Instance().WriteAndIde("DependencyCatalog", "开始刷新模块/支持库缓存");
+	if (!silent) {
+		Logger::Instance().WriteAndIde("DependencyCatalog", "开始刷新模块/支持库缓存");
+	}
 
 	std::error_code ec;
 	std::filesystem::create_directories(ecomCacheRoot, ec);
@@ -981,11 +983,13 @@ bool DependencyCatalogCache::RefreshInternal(bool force, std::string& outErrorLo
 		m_hasSnapshot = true;
 	}
 
-	Logger::Instance().WriteAndIde(
-		"DependencyCatalog",
-		"已发布初始依赖快照 modules=" + std::to_string(modules.size()) +
-			" libs=" + std::to_string(libraries.size()) +
-			" elapsed_ms=" + std::to_string(elapsedMs()));
+	if (!silent) {
+		Logger::Instance().WriteAndIde(
+			"DependencyCatalog",
+			"已发布初始依赖快照 modules=" + std::to_string(modules.size()) +
+				" libs=" + std::to_string(libraries.size()) +
+				" elapsed_ms=" + std::to_string(elapsedMs()));
+	}
 
 	size_t decodedModules = 0;
 	size_t decodedLibraries = 0;
@@ -1106,13 +1110,15 @@ bool DependencyCatalogCache::RefreshInternal(bool force, std::string& outErrorLo
 		m_hasSnapshot = true;
 	}
 
-	Logger::Instance().WriteAndIde(
-		"DependencyCatalog",
-		"刷新完成 state=" + RefreshStateToLogText(RefreshState::Ready) +
-			" modules=" + std::to_string(SnapshotModules().size()) +
-			" libs=" + std::to_string(SnapshotLibraries().size()) +
-			" decoded_modules=" + std::to_string(decodedModules) +
-			" decoded_libs=" + std::to_string(decodedLibraries) +
-			" elapsed_ms=" + std::to_string(durationMs));
+	if (!silent) {
+		Logger::Instance().WriteAndIde(
+			"DependencyCatalog",
+			"刷新完成 state=" + RefreshStateToLogText(RefreshState::Ready) +
+				" modules=" + std::to_string(SnapshotModules().size()) +
+				" libs=" + std::to_string(SnapshotLibraries().size()) +
+				" decoded_modules=" + std::to_string(decodedModules) +
+				" decoded_libs=" + std::to_string(decodedLibraries) +
+				" elapsed_ms=" + std::to_string(durationMs));
+	}
 	return true;
 }

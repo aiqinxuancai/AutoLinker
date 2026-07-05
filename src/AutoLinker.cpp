@@ -20,6 +20,7 @@
 #include "ECOMEx.h"
 #include "EPackagerIntegration.h"
 #include "ForceLinkLibConfigDialog.h"
+#include "GameAnalyticsClient.h"
 #include "Global.h"
 #include "HeadlessCompileRunner.h"
 #include "IDEFacade.h"
@@ -251,6 +252,7 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 		return 0;
 	}
 	if (uMsg == WM_NCDESTROY) {
+		GameAnalyticsClient::Shutdown();
 		LocalMcpServer::Shutdown();
 		AIChatFeature::Shutdown();
 		WorkspaceMirror::ResetAndCleanup();
@@ -419,9 +421,15 @@ bool FneInit()
 	TraceInitStep("开始初始化 Local MCP");
 	LocalMcpServer::Initialize();
 	TraceInitStep("Local MCP 初始化完成");
-	TraceInitStep("启动模块/支持库缓存后台刷新");
-	DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(false);
-	TraceInitStep("模块/支持库缓存后台刷新已触发");
+	if (!headlessCompileMode) {
+		TraceInitStep("开始初始化 GameAnalytics");
+		GameAnalyticsClient::Initialize(&g_configManager);
+		TraceInitStep("GameAnalytics 初始化已触发");
+	}
+	else {
+		TraceInitStep("无头编译模式：跳过 GameAnalytics 初始化");
+	}
+	DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(false, true);
 	ResolveCompileDebugStartAddressesForInit();
 	TraceInitStep("开始安装文件与编译相关 Hook");
 	StartHookCreateFileA();

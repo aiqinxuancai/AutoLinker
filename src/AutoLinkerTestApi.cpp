@@ -10,6 +10,7 @@
 #include "AIChatTooling.h"
 #include "AIService.h"
 #include "AutoLinkerVersion.h"
+#include "GameAnalyticsClient.h"
 #include "PathHelper.h"
 #include "Version.h"
 
@@ -787,6 +788,11 @@ extern "C" int AutoLinkerTest_ExtractBetweenDashes(const char* text, char* buffe
 extern "C" int AutoLinkerTest_GetVersionText(char* buffer, int bufferSize)
 {
 	return CopyStringToBuffer(AUTOLINKER_VERSION, buffer, bufferSize);
+}
+
+extern "C" int AutoLinkerTest_RunGameAnalyticsSelfTest(char* buffer, int bufferSize)
+{
+	return CopyStringToBuffer(GameAnalyticsClient::BuildSelfTestReportJson(), buffer, bufferSize);
 }
 
 extern "C" int AutoLinkerTest_RunDeepSeekModelIntegrationTest(

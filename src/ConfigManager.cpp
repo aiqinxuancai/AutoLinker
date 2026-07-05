@@ -62,6 +62,7 @@ std::string ConfigManager::getValue(const std::string& key)
     std::string k = key;
     std::transform(k.begin(), k.end(), k.begin(),
         [](unsigned char c) { return std::tolower(c); });
+    std::lock_guard<std::mutex> lock(configMutex);
     const auto it = configData.find(k);
     return it != configData.end() ? it->second : std::string();
 }
@@ -71,12 +72,14 @@ void ConfigManager::setValue(const std::string& key, const std::string& value)
     std::string k = key;
     std::transform(k.begin(), k.end(), k.begin(),
         [](unsigned char c) { return std::tolower(c); });
+    std::lock_guard<std::mutex> lock(configMutex);
     configData[k] = value;
     saveConfig();
 }
 
 void ConfigManager::loadConfig()
 {
+    std::lock_guard<std::mutex> lock(configMutex);
     std::ifstream configFile(configFilePath);
     std::string line;
     while (std::getline(configFile, line)) {

@@ -1541,6 +1541,9 @@ int RunStringCommand(const std::string& commandName, const std::string& input)
 	else if (commandName == "version-text") {
 		result = AutoLinkerTest_GetVersionText(buffer, static_cast<int>(sizeof(buffer)));
 	}
+	else if (commandName == "gameanalytics-self-test") {
+		result = AutoLinkerTest_RunGameAnalyticsSelfTest(buffer, static_cast<int>(sizeof(buffer)));
+	}
 
 	if (result < 0) {
 		return PrintStringResult(commandName.c_str(), result, buffer);
@@ -1559,6 +1562,7 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest linker-krnln <link-command>" << std::endl;
 	std::cout << "  AutoLinkerTest between-dashes <text>" << std::endl;
 	std::cout << "  AutoLinkerTest version-text" << std::endl;
+	std::cout << "  AutoLinkerTest gameanalytics-self-test" << std::endl;
 	std::cout << "  AutoLinkerTest deepseek-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest openai-chat-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest openai-responses-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
@@ -1618,6 +1622,20 @@ int main(int argc, char* argv[])
 		}
 		char buffer[524288] = {};
 		const int result = AutoLinkerTest_GetVersionText(buffer, static_cast<int>(sizeof(buffer)));
+		if (result < 0) {
+			return PrintStringResult(commandName.c_str(), result, buffer);
+		}
+		std::cout << buffer << std::endl;
+		return EXIT_SUCCESS;
+	}
+
+	if (commandName == "gameanalytics-self-test") {
+		if (argc != 2) {
+			PrintUsage();
+			return EXIT_FAILURE;
+		}
+		char buffer[524288] = {};
+		const int result = AutoLinkerTest_RunGameAnalyticsSelfTest(buffer, static_cast<int>(sizeof(buffer)));
 		if (result < 0) {
 			return PrintStringResult(commandName.c_str(), result, buffer);
 		}

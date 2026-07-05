@@ -73,11 +73,11 @@ public:
 
 	static DependencyCatalogCache& Instance();
 
-	// 若当前没有刷新任务，启动后台刷新；force=true 时会重建缓存。
-	void StartAsyncRefreshIfNeeded(bool force);
+	// 若当前没有刷新任务，启动后台刷新；force=true 时会重建缓存；silent=true 时不输出刷新日志。
+	void StartAsyncRefreshIfNeeded(bool force, bool silent = false);
 
-	// 同步刷新，供显式 MCP 工具和测试使用。
-	bool RefreshNow(bool force, std::string& outErrorLocal);
+	// 同步刷新，供显式 MCP 工具和测试使用；silent=true 时不输出刷新日志。
+	bool RefreshNow(bool force, std::string& outErrorLocal, bool silent = false);
 
 	// 等待正在运行的刷新任务结束。
 	bool WaitForIdle(unsigned int timeoutMs);
@@ -106,8 +106,8 @@ public:
 private:
 	DependencyCatalogCache() = default;
 
-	void RefreshWorker(bool force);
-	bool RefreshInternal(bool force, std::string& outErrorLocal);
+	void RefreshWorker(bool force, bool silent);
+	bool RefreshInternal(bool force, bool silent, std::string& outErrorLocal);
 
 	mutable std::mutex m_mutex;
 	std::condition_variable m_cv;
