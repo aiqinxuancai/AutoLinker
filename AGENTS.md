@@ -46,8 +46,8 @@ MSBuild.exe ..\\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platfo
 
 如果需要测试当前支持库，请先将AutoLinker.fne覆盖至"C:\Users\aiqin\OneDrive\e5.6\lib"（需关闭e主程序才能解除AutoLinker.fne的占用），然后执行并调用：
 
-当前主要开发基于："C:\Users\aiqin\OneDrive\e5.6\e571.exe"
-需要兼容版本："C:\Users\aiqin\OneDrive\e5.6\e5.95.exe"
+当前主要开发基于："C:\Users\aiqin\OneDrive\e5.6\e5.95.exe"
+如果必要的话，测试此版本兼容："C:\Users\aiqin\OneDrive\e5.6\e571.exe"
 
 打开当前代码目录下的"test_a.e"文件。
 
