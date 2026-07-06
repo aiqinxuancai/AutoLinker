@@ -737,8 +737,109 @@ body {
 	line-height: 1.2;
 }
 
+.tool-transcript-role {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.tool-call-status {
+	flex: 0 0 auto;
+	border-radius: 5px;
+	background: #e8edf7;
+	color: #5d6475;
+	padding: 1px 6px;
+	font-size: 10px;
+	line-height: 1.3;
+	font-weight: 700;
+}
+
+.tool-call-status.running {
+	background: #dce9ff;
+	color: #1e66f5;
+}
+
+.tool-call-status.ok {
+	background: #dff3e6;
+	color: #1b7f37;
+}
+
+.tool-call-status.failed {
+	background: #fde2e1;
+	color: #b42318;
+}
+
+.tool-transcript-card {
+	border-color: #d7dce6;
+	background: #f8fafc;
+	padding: 0;
+}
+
+.tool-transcript-card .tool-transcript-io {
+	max-height: calc(1.6em * 3 + 12px);
+	overflow-x: hidden;
+	overflow-y: auto;
+	margin: 0;
+	padding: 6px 8px;
+	font-family: "Cascadia Mono", "Cascadia Code", Consolas, "JetBrains Mono", "SF Mono", "Courier New", monospace;
+	font-size: 12px;
+	line-height: 1.6;
+	white-space: pre-wrap;
+	word-break: break-word;
+	overflow-wrap: anywhere;
+}
+
 .plan-content {
 	color: #374151;
+}
+
+.body .plan-step-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: grid;
+	gap: 6px;
+}
+
+.plan-step {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	min-width: 0;
+}
+
+.plan-step-status {
+	flex: 0 0 44px;
+	box-sizing: border-box;
+	border-radius: 5px;
+	background: #e8edf7;
+	color: #5d6475;
+	padding: 1px 6px;
+	font-size: 10px;
+	line-height: 1.4;
+	font-weight: 700;
+	text-align: center;
+}
+
+.plan-step-text {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.plan-step.completed .plan-step-text {
+	text-decoration: line-through;
+	color: #7b8190;
+}
+
+.plan-step.completed .plan-step-status {
+	background: #dff3e6;
+	color: #1b7f37;
+}
+
+.plan-step.in-progress .plan-step-status {
+	background: #dce9ff;
+	color: #1e66f5;
 }
 
 .plan-card-actions {
@@ -1166,8 +1267,42 @@ body,
 	background: var(--al-plan-bg);
 	border-color: var(--al-plan-border);
 }
+.tool-transcript-card {
+	background: var(--al-system-msg-bg);
+	border-color: var(--al-soft-border);
+}
+.tool-transcript-card .tool-transcript-io {
+	background: var(--al-diff-bg);
+	color: var(--al-plan-text);
+}
+.tool-call-status {
+	background: var(--al-chip-bg);
+	color: var(--al-muted-text);
+}
+.tool-call-status.running {
+	color: var(--al-primary);
+}
+.tool-call-status.ok {
+	color: var(--al-success);
+}
+.tool-call-status.failed {
+	color: var(--al-danger);
+}
 .plan-card-head,
 .plan-content { color: var(--al-plan-text); }
+.plan-step-status {
+	background: var(--al-chip-bg);
+	color: var(--al-muted-text);
+}
+.plan-step.completed .plan-step-text {
+	color: var(--al-muted-text);
+}
+.plan-step.completed .plan-step-status {
+	color: var(--al-success);
+}
+.plan-step.in-progress .plan-step-status {
+	color: var(--al-primary);
+}
 .tool-approval,
 .session-status,
 .session-menu,

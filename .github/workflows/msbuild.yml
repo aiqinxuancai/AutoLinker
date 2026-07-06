@@ -10,6 +10,11 @@ env:
   BUILD_CONFIGURATION: fne_release
   BUILD_PLATFORM: x86
   LANG: zh_CN.UTF-8
+  MIRROR_RELEASE_OWNER: aiqinxuancai
+  MIRROR_RELEASE_REPO: AutoLinker
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -114,3 +119,43 @@ jobs:
         prerelease: ${{ steps.release_meta.outputs.prerelease }}
         makeLatest: ${{ steps.release_meta.outputs.make_latest }}
         token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Resolve Mirror Release Target
+      id: mirror_repo_meta
+      shell: pwsh
+      env:
+        MIRROR_TOKEN: ${{ secrets.AUTOLINKER_MIRROR_RELEASE_TOKEN }}
+      run: |
+        if ([string]::IsNullOrWhiteSpace($env:MIRROR_TOKEN)) {
+          throw "Missing AUTOLINKER_MIRROR_RELEASE_TOKEN secret. It must have Contents: write permission for $env:MIRROR_RELEASE_OWNER/$env:MIRROR_RELEASE_REPO."
+        }
+
+        $headers = @{
+          Accept = "application/vnd.github+json"
+          Authorization = "Bearer $env:MIRROR_TOKEN"
+          "X-GitHub-Api-Version" = "2022-11-28"
+          "User-Agent" = "AutoLinkerP-release-mirror"
+        }
+        $repo = Invoke-RestMethod -Uri "https://api.github.com/repos/$env:MIRROR_RELEASE_OWNER/$env:MIRROR_RELEASE_REPO" -Headers $headers
+        if ([string]::IsNullOrWhiteSpace($repo.default_branch)) {
+          throw "Unable to resolve default branch for $env:MIRROR_RELEASE_OWNER/$env:MIRROR_RELEASE_REPO."
+        }
+
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "default_branch=$($repo.default_branch)"
+        Write-Output "mirror_target=$env:MIRROR_RELEASE_OWNER/$env:MIRROR_RELEASE_REPO@$($repo.default_branch)"
+
+    - name: Mirror Release to AutoLinker
+      uses: ncipollo/release-action@v1
+      with:
+        owner: ${{ env.MIRROR_RELEASE_OWNER }}
+        repo: ${{ env.MIRROR_RELEASE_REPO }}
+        tag: ${{ steps.release_meta.outputs.raw_tag }}
+        commit: ${{ steps.mirror_repo_meta.outputs.default_branch }}
+        name: AutoLinker ${{ steps.release_meta.outputs.version_label }}
+        artifacts: "AutoLinker-${{steps.release_meta.outputs.version_label}}.zip"
+        bodyFile: release_notes.md
+        prerelease: ${{ steps.release_meta.outputs.prerelease }}
+        makeLatest: ${{ steps.release_meta.outputs.make_latest }}
+        allowUpdates: true
+        replacesArtifacts: true
+        token: ${{ secrets.AUTOLINKER_MIRROR_RELEASE_TOKEN }}

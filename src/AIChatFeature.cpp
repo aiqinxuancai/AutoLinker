@@ -124,6 +124,8 @@ constexpr const char* kChatReleasesUrl =
 	"https://github.com/aiqinxuancai/AutoLinker/releases";
 constexpr const char* kNewsLinkRemoteConfigKey = "NEWS-LINK";
 constexpr const char* kAutoAllowWritesConfigKey = "ai.chat.auto_allow_writes";
+constexpr const char* kUpdatePlanMessageMarker = "@@AUTOLINKER_UPDATE_PLAN@@\n";
+constexpr const char* kToolTranscriptMessageMarker = "@@AUTOLINKER_TOOL_TRANSCRIPT@@\n";
 
 enum class SessionRole {
 	System,
@@ -350,6 +352,8 @@ bool BeginRestoreStoredChatSessionUi(HWND hWnd, ChatDialogContext* ctx, const AI
 bool RestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry& selected);
 bool TryPromptAndRestoreRecentChatSession(HWND hWnd);
 bool IsStopRequestedLocked(const AIChatSessionState& state);
+void EnsureChatSessionBindingLocked(AIChatSessionState& state);
+void CompactHistoryLocked(AIChatSessionState& state);
 std::string DescribeMissingChatSettingField(const std::string& missingField);
 bool QueryChatSettingsState(AISettings& outSettings, std::string* outMissingField = nullptr);
 void PostRefreshDialog();
@@ -1581,6 +1585,265 @@ bool ExtractProposedPlanContent(const std::string& text, std::string& outPlan)
 	}
 	outPlan = TrimAsciiCopy(text.substr(contentBegin, end - contentBegin));
 	return !outPlan.empty();
+}
+
+std::string NormalizeUpdatePlanStatus(std::string status)
+{
+	status = LowerAsciiCopy(TrimAsciiCopy(status));
+	if (status == "in-progress" || status == "in progress") {
+		status = "in_progress";
+	}
+	return status;
+}
+
+bool IsValidUpdatePlanStatus(const std::string& status)
+{
+	return status == "pending" ||
+		status == "in_progress" ||
+		status == "completed";
+}
+
+std::string UpdatePlanStatusLabelLocal(const std::string& status)
+{
+	if (status == "completed") {
+		return LocalFromWide(L"\u5b8c\u6210");
+	}
+	if (status == "in_progress") {
+		return LocalFromWide(L"\u8fdb\u884c\u4e2d");
+	}
+	return LocalFromWide(L"\u5f85\u5904\u7406");
+}
+
+std::string CollapsePlanStepForDisplayLocal(const std::string& stepUtf8)
+{
+	std::string stepLocal = NormalizeCodeForEIDE(Utf8ToLocalText(stepUtf8));
+	for (char& ch : stepLocal) {
+		if (ch == '\r' || ch == '\n' || ch == '\t') {
+			ch = ' ';
+		}
+	}
+	return TrimAsciiCopy(stepLocal);
+}
+
+std::string ReadUpdatePlanStepUtf8(const nlohmann::json& item)
+{
+	if (!item.is_object()) {
+		return std::string();
+	}
+	if (item.contains("step") && item["step"].is_string()) {
+		return item["step"].get<std::string>();
+	}
+	if (item.contains("content") && item["content"].is_string()) {
+		return item["content"].get<std::string>();
+	}
+	return std::string();
+}
+
+std::string BuildUpdatePlanToolResultLocal(const nlohmann::json& resultUtf8)
+{
+	return Utf8ToLocalText(resultUtf8.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+
+bool IsUpdatePlanToolName(const std::string& toolName)
+{
+	return _stricmp(toolName.c_str(), "update_plan") == 0;
+}
+
+bool IsUpdatePlanToolEvent(const AIChatToolEvent& evt)
+{
+	return IsUpdatePlanToolName(evt.name);
+}
+
+bool ExtractJsonStringField(const nlohmann::json& value, const char* key, std::string& out)
+{
+	if (!value.is_object() || key == nullptr || !value.contains(key) || !value[key].is_string()) {
+		return false;
+	}
+	out = value[key].get<std::string>();
+	return true;
+}
+
+std::string NormalizeSingleLineForTranscript(std::string text)
+{
+	text = NormalizeCodeForEIDE(text);
+	for (char& ch : text) {
+		if (ch == '\r' || ch == '\n' || ch == '\t') {
+			ch = ' ';
+		}
+	}
+	return TrimAsciiCopy(text);
+}
+
+std::string TruncateTextWithEllipsis(std::string text, size_t maxChars)
+{
+	if (text.size() <= maxChars) {
+		return text;
+	}
+	if (maxChars <= 3) {
+		text.resize(maxChars);
+		return text;
+	}
+	text.resize(maxChars - 3);
+	text += "...";
+	return text;
+}
+
+std::string PrettyJsonForTranscript(const std::string& jsonText)
+{
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(jsonText);
+		return Utf8ToLocalText(parsed.dump(2, ' ', false, nlohmann::json::error_handler_t::replace));
+	}
+	catch (...) {
+		return Utf8ToLocalText(jsonText);
+	}
+}
+
+std::string BuildToolInvocationTextLocal(const std::string& toolName, const std::string& argumentsJsonLocalOrUtf8)
+{
+	const std::string tool = TrimAsciiCopy(toolName).empty() ? std::string("<unknown>") : TrimAsciiCopy(toolName);
+	const std::string argumentsLocal = PrettyJsonForTranscript(LocalToUtf8Text(argumentsJsonLocalOrUtf8));
+
+	if (_stricmp(tool.c_str(), "run_powershell_command") == 0) {
+		try {
+			const nlohmann::json args = nlohmann::json::parse(LocalToUtf8Text(argumentsJsonLocalOrUtf8));
+			std::string commandUtf8;
+			if (ExtractJsonStringField(args, "command", commandUtf8)) {
+				return NormalizeSingleLineForTranscript(Utf8ToLocalText(commandUtf8));
+			}
+		}
+		catch (...) {
+		}
+	}
+
+	return tool + "(" + TruncateTextWithEllipsis(NormalizeSingleLineForTranscript(argumentsLocal), 260) + ")";
+}
+
+std::string BuildToolResultPreviewLocal(const std::string& resultJsonLocal)
+{
+	std::string preview;
+	try {
+		const nlohmann::json result = nlohmann::json::parse(LocalToUtf8Text(resultJsonLocal));
+		auto appendField = [&preview, &result](const char* key, const char* label) {
+			if (!result.is_object() || key == nullptr || !result.contains(key)) {
+				return;
+			}
+			const auto& value = result[key];
+			std::string textUtf8;
+			if (value.is_string()) {
+				textUtf8 = value.get<std::string>();
+			}
+			else if (value.is_number() || value.is_boolean()) {
+				textUtf8 = value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			}
+			else if (value.is_array() || value.is_object()) {
+				textUtf8 = value.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
+			}
+			if (textUtf8.empty()) {
+				return;
+			}
+			if (!preview.empty()) {
+				preview += "\r\n";
+			}
+			preview += label;
+			preview += ": ";
+			preview += Utf8ToLocalText(textUtf8);
+		};
+
+		appendField("error", "error");
+		appendField("file_path", "file");
+		appendField("code_kind", "code_kind");
+		appendField("count", "count");
+		appendField("returned", "returned");
+		appendField("ok_count", "ok_count");
+		appendField("error_count", "error_count");
+		appendField("total_lines", "total_lines");
+		appendField("returned_lines", "returned_lines");
+		appendField("truncated", "truncated");
+		appendField("files_with_matches", "files_with_matches");
+		appendField("stdout", "stdout");
+		appendField("stderr", "stderr");
+		appendField("output_window_text", "output");
+		appendField("content", "content");
+		appendField("files", "files");
+		appendField("results", "results");
+		appendField("body_text", "body");
+		appendField("plain_text", "text");
+		appendField("excerpt", "excerpt");
+		appendField("note", "note");
+		appendField("warning", "warning");
+		appendField("file_count", "file_count");
+		appendField("matched_count", "matched_count");
+		appendField("result_count", "result_count");
+
+		if (preview.empty()) {
+			preview = PrettyJsonForTranscript(LocalToUtf8Text(resultJsonLocal));
+		}
+	}
+	catch (...) {
+		preview = resultJsonLocal;
+	}
+
+	const std::string normalized = NormalizeCodeForEIDE(preview);
+	if (normalized.size() <= 900) {
+		return normalized;
+	}
+	return TruncateTextWithEllipsis(normalized, 900);
+}
+
+std::string BuildToolTranscriptMessageLocal(
+	const std::string& phase,
+	const std::string& toolName,
+	const std::string& argumentsJsonLocal,
+	const std::string& resultJsonLocal,
+	bool ok)
+{
+	nlohmann::json payload;
+	payload["phase"] = phase;
+	payload["tool"] = LocalToUtf8Text(toolName);
+	payload["invocation"] = LocalToUtf8Text(BuildToolInvocationTextLocal(toolName, argumentsJsonLocal));
+	payload["arguments"] = LocalToUtf8Text(PrettyJsonForTranscript(LocalToUtf8Text(argumentsJsonLocal)));
+	payload["ok"] = ok;
+	if (!resultJsonLocal.empty()) {
+		payload["result_preview"] = LocalToUtf8Text(BuildToolResultPreviewLocal(resultJsonLocal));
+	}
+	return std::string(kToolTranscriptMessageMarker) +
+		Utf8ToLocalText(payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+
+bool ExtractToolTranscriptMessage(
+	const std::string& content,
+	std::string& phaseOut,
+	std::string& invocationOut,
+	std::string& resultPreviewOut,
+	bool& okOut)
+{
+	phaseOut.clear();
+	invocationOut.clear();
+	resultPreviewOut.clear();
+	okOut = false;
+	if (content.rfind(kToolTranscriptMessageMarker, 0) != 0) {
+		return false;
+	}
+
+	try {
+		const std::string jsonLocal = content.substr(std::strlen(kToolTranscriptMessageMarker));
+		const nlohmann::json payload = nlohmann::json::parse(LocalToUtf8Text(jsonLocal));
+		std::string phaseUtf8;
+		std::string invocationUtf8;
+		std::string previewUtf8;
+		ExtractJsonStringField(payload, "phase", phaseUtf8);
+		ExtractJsonStringField(payload, "invocation", invocationUtf8);
+		ExtractJsonStringField(payload, "result_preview", previewUtf8);
+		phaseOut = Utf8ToLocalText(phaseUtf8);
+		invocationOut = Utf8ToLocalText(invocationUtf8);
+		resultPreviewOut = Utf8ToLocalText(previewUtf8);
+		okOut = payload.contains("ok") && payload["ok"].is_boolean() && payload["ok"].get<bool>();
+		return !invocationOut.empty();
+	}
+	catch (...) {
+		return false;
+	}
 }
 
 AIChatStoredSession BuildStoredSessionFromLockedState(const AIChatSessionState& state)
@@ -3863,6 +4126,157 @@ std::string RenderAutoWriteCardHtml(
 	return html;
 }
 
+std::string RenderToolTranscriptCardHtml(
+	const std::string& phase,
+	const std::string& invocation,
+	const std::string& resultPreview,
+	bool ok)
+{
+	const bool running = _stricmp(phase.c_str(), "running") == 0;
+	std::string blockText;
+	blockText += running ? "Running " : "Ran ";
+	blockText += invocation;
+	if (!running) {
+		blockText += "\r\n\r\n--- ";
+		blockText += LocalFromWide(L"\u8fd4\u56de");
+		blockText += " ---\r\n";
+		blockText += TrimAsciiCopy(resultPreview).empty()
+			? LocalFromWide(L"\uff08\u7a7a\uff09")
+			: resultPreview;
+	}
+	else {
+		blockText += "\r\n\r\n--- ";
+		blockText += LocalFromWide(L"\u8fd4\u56de");
+		blockText += " ---\r\n";
+		blockText += LocalFromWide(L"\u7b49\u5f85\u5de5\u5177\u8fd4\u56de...");
+	}
+
+	std::string html;
+	html += "<div class=\"plan-card tool-transcript-card\"><pre class=\"tool-transcript-io\">";
+	html += RenderPlainTextToHtml(blockText);
+	html += "</pre></div>";
+	return html;
+}
+
+std::string RenderToolTranscriptStatusBadgeHtml(const std::string& phase, bool ok)
+{
+	const bool running = _stricmp(phase.c_str(), "running") == 0;
+	std::string html;
+	html += "<span class=\"tool-call-status ";
+	if (running) {
+		html += "running\">";
+		html += EscapeHtml(LocalFromWide(L"\u8fd0\u884c\u4e2d"));
+	}
+	else {
+		html += ok ? "ok\">ok" : "failed\">failed";
+	}
+	html += "</span>";
+	return html;
+}
+
+std::string ClassNameForUpdatePlanStatusLabel(const std::string& label)
+{
+	const std::string lower = LowerAsciiCopy(TrimAsciiCopy(label));
+	if (label == UpdatePlanStatusLabelLocal("completed") || lower == "completed") {
+		return "completed";
+	}
+	if (label == UpdatePlanStatusLabelLocal("in_progress") ||
+		lower == "in_progress" ||
+		lower == "in-progress" ||
+		lower == "in progress") {
+		return "in-progress";
+	}
+	return "pending";
+}
+
+std::string RenderUpdatePlanContentHtml(const std::string& planText)
+{
+	const std::string normalized = NormalizeNewlinesLf(planText);
+	std::string html;
+	bool inList = false;
+	bool inParagraph = false;
+	bool firstParagraphLine = true;
+
+	auto closeList = [&]() {
+		if (inList) {
+			html += "</ul>";
+			inList = false;
+		}
+	};
+	auto closeParagraph = [&]() {
+		if (inParagraph) {
+			html += "</p>";
+			inParagraph = false;
+			firstParagraphLine = true;
+		}
+	};
+
+	size_t begin = 0;
+	while (begin <= normalized.size()) {
+		const size_t end = normalized.find('\n', begin);
+		const std::string line = (end == std::string::npos)
+			? normalized.substr(begin)
+			: normalized.substr(begin, end - begin);
+		const std::string trimmed = TrimAsciiCopy(line);
+
+		if (trimmed.empty()) {
+			closeParagraph();
+			closeList();
+			if (end == std::string::npos) {
+				break;
+			}
+			begin = end + 1;
+			continue;
+		}
+
+		if (line.rfind("- [", 0) == 0) {
+			const size_t close = line.find("] ", 3);
+			if (close != std::string::npos && close > 3) {
+				closeParagraph();
+				if (!inList) {
+					html += "<ul class=\"plan-step-list\">";
+					inList = true;
+				}
+				const std::string label = line.substr(3, close - 3);
+				const std::string step = line.substr(close + 2);
+				html += "<li class=\"plan-step ";
+				html += ClassNameForUpdatePlanStatusLabel(label);
+				html += "\"><span class=\"plan-step-status\">";
+				html += EscapeHtml(label);
+				html += "</span><span class=\"plan-step-text\">";
+				html += RenderInlineMarkdownToHtml(step);
+				html += "</span></li>";
+				if (end == std::string::npos) {
+					break;
+				}
+				begin = end + 1;
+				continue;
+			}
+		}
+
+		closeList();
+		if (!inParagraph) {
+			html += "<p>";
+			inParagraph = true;
+			firstParagraphLine = true;
+		}
+		if (!firstParagraphLine) {
+			html += "<br/>";
+		}
+		html += RenderInlineMarkdownToHtml(trimmed);
+		firstParagraphLine = false;
+
+		if (end == std::string::npos) {
+			break;
+		}
+		begin = end + 1;
+	}
+
+	closeParagraph();
+	closeList();
+	return html;
+}
+
 std::string BuildHistoryHtmlLocked(
 	const AIChatSessionState& state,
 	bool settingsReady,
@@ -3891,7 +4305,7 @@ std::string BuildHistoryHtmlLocked(
 		html += "</span><span class=\"plan-status\">";
 		html += EscapeHtml(statusText);
 		html += "</span></div><div class=\"plan-content\">";
-		html += RenderMarkdownToHtml(planText);
+		html += RenderUpdatePlanContentHtml(planText);
 		html += "</div>";
 		if (canApprove) {
 			html += "<div class=\"plan-card-actions\">";
@@ -3917,6 +4331,21 @@ std::string BuildHistoryHtmlLocked(
 			html += EscapeHtml(RoleLabel(SessionRole::Tool));
 			html += "</div><div class=\"body\">";
 			html += RenderAutoWriteCardHtml(awFile, awSummary, awDiff);
+			html += "</div></section>";
+			return;
+		}
+		std::string transcriptPhase;
+		std::string transcriptInvocation;
+		std::string transcriptPreview;
+		bool transcriptOk = false;
+		if (role == SessionRole::Tool &&
+			ExtractToolTranscriptMessage(content, transcriptPhase, transcriptInvocation, transcriptPreview, transcriptOk)) {
+			html += "<section class=\"msg tool\"><div class=\"role tool-transcript-role\"><span>";
+			html += EscapeHtml(RoleLabel(SessionRole::Tool));
+			html += "</span>";
+			html += RenderToolTranscriptStatusBadgeHtml(transcriptPhase, transcriptOk);
+			html += "</div><div class=\"body\">";
+			html += RenderToolTranscriptCardHtml(transcriptPhase, transcriptInvocation, transcriptPreview, transcriptOk);
 			html += "</div></section>";
 			return;
 		}
@@ -3991,39 +4420,9 @@ std::string BuildHistoryHtmlLocked(
 	}
 
 	if (state.requestInFlight) {
-		const bool stopRequested = IsStopRequestedLocked(state);
 		const std::string preview = TrimAsciiCopy(state.streamingAssistantPreview);
-		std::string activityText;
-		for (const std::string& line : state.agentActivityLines) {
-			if (!activityText.empty()) {
-				activityText += "\r\n";
-			}
-			activityText += line;
-		}
 		if (!preview.empty()) {
 			appendMessageCard(body, SessionRole::Assistant, "AI", state.streamingAssistantPreview, true);
-			appendMessageCard(
-				body,
-				SessionRole::System,
-				LocalFromWide(L"系统"),
-				stopRequested
-					? LocalFromWide(L"已发出停止请求，等待当前步骤结束...")
-					: (activityText.empty()
-						? LocalFromWide(L"AI 正在生成（流式）...")
-						: activityText),
-				false);
-		}
-		else {
-			appendMessageCard(
-				body,
-				SessionRole::System,
-				LocalFromWide(L"系统"),
-				stopRequested
-					? LocalFromWide(L"正在中断 AI 请求...")
-					: (activityText.empty()
-						? LocalFromWide(L"等待 AI 返回...")
-						: activityText),
-				false);
 		}
 	}
 
@@ -4077,6 +4476,10 @@ std::string BuildHistoryTextLocked(
 		std::string awSummary;
 		std::string awDiff;
 		std::string proposedPlan;
+		std::string transcriptPhase;
+		std::string transcriptInvocation;
+		std::string transcriptPreview;
+		bool transcriptOk = false;
 		if (ExtractAutoWriteDiffMessage(msg.content, awFile, awSummary, awDiff)) {
 			text += LocalFromWide(L"\u5df2\u81ea\u52a8\u5199\u5165");
 			if (!awFile.empty()) {
@@ -4095,39 +4498,30 @@ std::string BuildHistoryTextLocked(
 			text += LocalFromWide(L"\u5b9e\u65bd\u8ba1\u5212\uff1a\r\n");
 			text += proposedPlan;
 		}
+		else if (msg.role == SessionRole::Tool &&
+			ExtractToolTranscriptMessage(msg.content, transcriptPhase, transcriptInvocation, transcriptPreview, transcriptOk)) {
+			const bool running = _stricmp(transcriptPhase.c_str(), "running") == 0;
+			text += running ? "Running " : "Ran ";
+			text += transcriptInvocation;
+			if (!running) {
+				text += transcriptOk ? " (ok)" : " (failed)";
+			}
+			if (!running && !TrimAsciiCopy(transcriptPreview).empty()) {
+				text += "\r\n";
+				text += transcriptPreview;
+			}
+		}
 		else {
 			text += msg.content;
 		}
 		text += "\r\n\r\n";
 	}
 	if (state.requestInFlight) {
-		const bool stopRequested = IsStopRequestedLocked(state);
 		const std::string preview = TrimAsciiCopy(state.streamingAssistantPreview);
-		std::string activityText;
-		for (const std::string& line : state.agentActivityLines) {
-			if (!activityText.empty()) {
-				activityText += "\r\n";
-			}
-			activityText += line;
-		}
 		if (!preview.empty()) {
 			text += "[AI]\r\n";
 			text += state.streamingAssistantPreview;
 			text += "\r\n\r\n";
-			text += "[" + LocalFromWide(L"\u7cfb\u7edf") + "]\r\n"
-				+ (stopRequested
-					? LocalFromWide(L"\u5df2\u53d1\u51fa\u505c\u6b62\u8bf7\u6c42\uff0c\u7b49\u5f85\u5f53\u524d\u6b65\u9aa4\u7ed3\u675f...")
-					: (activityText.empty()
-						? LocalFromWide(L"AI \u6b63\u5728\u751f\u6210\uff08\u6d41\u5f0f\uff09...")
-						: activityText)) + "\r\n";
-		}
-		else {
-			text += "[" + LocalFromWide(L"\u7cfb\u7edf") + "]\r\n"
-				+ (stopRequested
-					? LocalFromWide(L"\u6b63\u5728\u4e2d\u65ad AI \u8bf7\u6c42...")
-					: (activityText.empty()
-						? LocalFromWide(L"\u7b49\u5f85 AI \u8fd4\u56de...")
-						: activityText)) + "\r\n";
 		}
 	}
 	return text;
@@ -4231,6 +4625,107 @@ std::string BuildAgentActivityLine(const std::string& toolName, bool done, bool 
 		return LocalFromWide(L"\u6b63\u5728\u8c03\u7528\u5de5\u5177\uff1a") + displayName;
 	}
 	return LocalFromWide(L"\u5de5\u5177\u5b8c\u6210\uff1a") + displayName + (ok ? " (ok)" : " (failed)");
+}
+
+void UpsertToolTranscriptMessage(
+	unsigned long long requestId,
+	const std::string& phase,
+	const std::string& toolName,
+	const std::string& argumentsJsonUtf8,
+	const std::string& resultJsonLocal,
+	bool ok)
+{
+	if (IsUpdatePlanToolName(toolName)) {
+		return;
+	}
+
+	const std::string invocation = BuildToolInvocationTextLocal(toolName, Utf8ToLocalText(argumentsJsonUtf8));
+	const std::string content = BuildToolTranscriptMessageLocal(
+		phase,
+		toolName,
+		Utf8ToLocalText(argumentsJsonUtf8),
+		resultJsonLocal,
+		ok);
+
+	bool needsRefresh = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight || g_session.activeRequestId != requestId) {
+			return;
+		}
+		for (auto it = g_session.messages.rbegin(); it != g_session.messages.rend(); ++it) {
+			if (it->role == SessionRole::User && it->visibleInHistory) {
+				break;
+			}
+			if (it->role == SessionRole::Tool &&
+				it->visibleInHistory &&
+				!it->includeInContext &&
+				it->content.rfind(kToolTranscriptMessageMarker, 0) == 0) {
+				std::string existingPhase;
+				std::string existingInvocation;
+				std::string existingPreview;
+				bool existingOk = false;
+				if (ExtractToolTranscriptMessage(
+						it->content,
+						existingPhase,
+						existingInvocation,
+						existingPreview,
+						existingOk) &&
+					existingInvocation == invocation &&
+					_stricmp(existingPhase.c_str(), "running") == 0) {
+					it->content = content;
+					needsRefresh = true;
+					break;
+				}
+			}
+		}
+
+		if (!needsRefresh) {
+			g_session.messages.push_back(SessionMessage{
+				SessionRole::Tool,
+				content,
+				false,
+				true,
+				"",
+				""
+			});
+			needsRefresh = true;
+		}
+	}
+	if (needsRefresh) {
+		PostRefreshDialog();
+	}
+}
+
+bool FlushStreamingAssistantPreviewToHistory(unsigned long long requestId)
+{
+	bool flushed = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight || g_session.activeRequestId != requestId) {
+			return false;
+		}
+
+		const std::string content = NormalizeCodeForEIDE(g_session.streamingAssistantPreview);
+		g_session.streamingAssistantPreview.clear();
+		if (TrimAsciiCopy(content).empty()) {
+			return false;
+		}
+
+		g_session.messages.push_back(SessionMessage{
+			SessionRole::Assistant,
+			content,
+			false,
+			true,
+			"",
+			""
+		});
+		flushed = true;
+	}
+	if (flushed) {
+		PostRefreshDialog();
+	}
+	return flushed;
 }
 
 void AppendAgentActivity(unsigned long long requestId, const std::string& line)
@@ -4386,13 +4881,16 @@ void RunAIChatWorker(void* pParams)
 						requestId = request->requestId,
 						contextMessages = request->contextMessages
 					](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
+						FlushStreamingAssistantPreviewToHistory(requestId);
 						if (ShouldBlockToolForCurrentPlanMode(toolName)) {
 							outOk = false;
 							AppendAgentActivity(
 								requestId,
 								LocalFromWide(L"\u8ba1\u5212\u672a\u6279\u51c6\uff0c\u5df2\u62e6\u622a\u5de5\u5177\uff1a") +
 								(toolName.empty() ? std::string("<unknown>") : toolName));
-							return BuildPlanModeToolBlockedResult(toolName);
+							const std::string blockedResult = BuildPlanModeToolBlockedResult(toolName);
+							UpsertToolTranscriptMessage(requestId, "ran", toolName, argumentsJson, blockedResult, false);
+							return blockedResult;
 						}
 						if (AIService::IsDependencyManagementTool(toolName) &&
 							!AIService::IsDependencyManagementToolAllowedForContext(toolName, contextMessages)) {
@@ -4401,9 +4899,14 @@ void RunAIChatWorker(void* pParams)
 								requestId,
 								LocalFromWide(L"\u672a\u660e\u786e\u8bf7\u6c42\uff0c\u5df2\u62e6\u622a\u4f9d\u8d56\u7ba1\u7406\u5de5\u5177\uff1a") +
 								(toolName.empty() ? std::string("<unknown>") : toolName));
-							return BuildDependencyManagementToolBlockedResult(toolName);
+							const std::string blockedResult = BuildDependencyManagementToolBlockedResult(toolName);
+							UpsertToolTranscriptMessage(requestId, "ran", toolName, argumentsJson, blockedResult, false);
+							return blockedResult;
 						}
-						AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, false, false));
+						if (!IsUpdatePlanToolName(toolName)) {
+							AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, false, false));
+						}
+						UpsertToolTranscriptMessage(requestId, "running", toolName, argumentsJson, "", false);
 						std::string toolResult = ExecuteToolCall(
 							toolName,
 							argumentsJson,
@@ -4412,7 +4915,10 @@ void RunAIChatWorker(void* pParams)
 							[cancellation]() {
 								return cancellation != nullptr && cancellation->IsCancelled();
 							});
-						AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, true, outOk));
+						UpsertToolTranscriptMessage(requestId, "ran", toolName, argumentsJson, toolResult, outOk);
+						if (!IsUpdatePlanToolName(toolName)) {
+							AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, true, outOk));
+						}
 						return toolResult;
 					},
 					[requestId = request->requestId](const std::string& deltaText) {
@@ -5137,32 +5643,32 @@ void AppendToolEventHistoryMessagesLocked(AIChatSessionState& state, const AICha
 		return;
 	}
 
+	std::vector<AIChatToolEvent> visibleEvents;
+	visibleEvents.reserve(chatResult.toolEvents.size());
+	for (const auto& evt : chatResult.toolEvents) {
+		if (!IsUpdatePlanToolEvent(evt)) {
+			visibleEvents.push_back(evt);
+		}
+	}
+	if (visibleEvents.empty()) {
+		return;
+	}
+
 	const bool shouldSummarize =
 		chatResult.toolRoundsExceeded ||
 		chatResult.cancelled ||
 		!chatResult.ok ||
-		chatResult.toolEvents.size() > 16;
-	if (shouldSummarize && chatResult.toolEvents.size() > 8) {
+		visibleEvents.size() > 16;
+	if (shouldSummarize) {
 		state.messages.push_back(SessionMessage{
 			SessionRole::Tool,
-			BuildToolEventSummaryLine(chatResult.toolEvents),
+			BuildToolEventSummaryLine(visibleEvents),
 			false,
 			true,
 			"",
 			""
 		});
 		return;
-	}
-
-	for (const auto& evt : chatResult.toolEvents) {
-		state.messages.push_back(SessionMessage{
-			SessionRole::Tool,
-			BuildToolEventHistoryLine(evt),
-			false,
-			true,
-			"",
-			""
-		});
 	}
 }
 
@@ -6851,6 +7357,164 @@ bool ExecutePublicTool(const std::string& toolName, const std::string& arguments
 	const std::string resultJsonLocal = ExecuteToolCall(toolName, argumentsJson, toolOk, false);
 	outResultJsonUtf8 = LocalToUtf8Text(resultJsonLocal);
 	outOk = toolOk;
+	return true;
+}
+
+bool UpdatePlanFromTool(const std::string& argumentsJsonUtf8, std::string& outResultJsonLocal, bool& outOk)
+{
+	outResultJsonLocal.clear();
+	outOk = false;
+
+	nlohmann::json args = nlohmann::json::object();
+	try {
+		args = argumentsJsonUtf8.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJsonUtf8);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		outResultJsonLocal = BuildUpdatePlanToolResultLocal(r);
+		return true;
+	}
+
+	const nlohmann::json* planArray = nullptr;
+	if (args.contains("plan") && args["plan"].is_array()) {
+		planArray = &args["plan"];
+	}
+	else if (args.contains("items") && args["items"].is_array()) {
+		planArray = &args["items"];
+	}
+	if (planArray == nullptr) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "plan must be an array";
+		outResultJsonLocal = BuildUpdatePlanToolResultLocal(r);
+		return true;
+	}
+	if (planArray->empty()) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "plan must contain at least one item";
+		outResultJsonLocal = BuildUpdatePlanToolResultLocal(r);
+		return true;
+	}
+
+	std::string explanationUtf8;
+	if (args.contains("explanation") && args["explanation"].is_string()) {
+		explanationUtf8 = AIService::Trim(args["explanation"].get<std::string>());
+	}
+	else if (args.contains("summary") && args["summary"].is_string()) {
+		explanationUtf8 = AIService::Trim(args["summary"].get<std::string>());
+	}
+
+	nlohmann::json normalizedPlan = nlohmann::json::array();
+	std::string planTextLocal;
+	if (!explanationUtf8.empty()) {
+		planTextLocal += NormalizeCodeForEIDE(Utf8ToLocalText(explanationUtf8));
+		planTextLocal += "\r\n\r\n";
+	}
+
+	int completedCount = 0;
+	int inProgressCount = 0;
+	int pendingCount = 0;
+	for (const auto& item : *planArray) {
+		const std::string stepUtf8 = AIService::Trim(ReadUpdatePlanStepUtf8(item));
+		const std::string status = NormalizeUpdatePlanStatus(
+			item.is_object() && item.contains("status") && item["status"].is_string()
+				? item["status"].get<std::string>()
+				: std::string("pending"));
+		if (stepUtf8.empty()) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "plan item step is required";
+			outResultJsonLocal = BuildUpdatePlanToolResultLocal(r);
+			return true;
+		}
+		if (!IsValidUpdatePlanStatus(status)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "plan item status must be pending, in_progress, or completed";
+			outResultJsonLocal = BuildUpdatePlanToolResultLocal(r);
+			return true;
+		}
+
+		if (status == "completed") {
+			++completedCount;
+		}
+		else if (status == "in_progress") {
+			++inProgressCount;
+		}
+		else {
+			++pendingCount;
+		}
+
+		planTextLocal += "- [";
+		planTextLocal += UpdatePlanStatusLabelLocal(status);
+		planTextLocal += "] ";
+		planTextLocal += CollapsePlanStepForDisplayLocal(stepUtf8);
+		planTextLocal += "\r\n";
+
+		normalizedPlan.push_back({
+			{"step", stepUtf8},
+			{"status", status}
+		});
+	}
+
+	if (inProgressCount > 1) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "at most one plan item can be in_progress";
+		outResultJsonLocal = BuildUpdatePlanToolResultLocal(r);
+		return true;
+	}
+
+	const std::string trimmedPlanLocal = TrimAsciiCopy(planTextLocal);
+	if (trimmedPlanLocal.empty()) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "plan text is empty";
+		outResultJsonLocal = BuildUpdatePlanToolResultLocal(r);
+		return true;
+	}
+
+	PlanModeState planModeState = PlanModeState::Normal;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		EnsureChatSessionBindingLocked(g_session);
+		g_session.pendingPlan = trimmedPlanLocal;
+		planModeState = g_session.planModeState;
+
+		std::string planMessage = kUpdatePlanMessageMarker;
+		planMessage += "<proposed_plan>\r\n";
+		planMessage += trimmedPlanLocal;
+		planMessage += "\r\n</proposed_plan>";
+
+		g_session.messages.push_back(SessionMessage{
+			SessionRole::Assistant,
+			planMessage,
+			false,
+			true,
+			"",
+			""
+		});
+		CompactHistoryLocked(g_session);
+	}
+
+	SaveChatSessionSnapshotNow();
+	PostRefreshDialog();
+
+	nlohmann::json r;
+	r["ok"] = true;
+	r["plan"] = normalizedPlan;
+	r["item_count"] = normalizedPlan.size();
+	r["completed_count"] = completedCount;
+	r["in_progress_count"] = inProgressCount;
+	r["pending_count"] = pendingCount;
+	r["updated_existing_card"] = false;
+	r["plan_mode_state"] = PlanModeStateToString(planModeState);
+	r["plan_text"] = LocalToUtf8Text(trimmedPlanLocal);
+	outOk = true;
+	outResultJsonLocal = BuildUpdatePlanToolResultLocal(r);
 	return true;
 }
 

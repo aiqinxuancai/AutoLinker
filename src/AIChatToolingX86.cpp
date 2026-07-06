@@ -19,6 +19,7 @@
 
 #include "..\\thirdparty\\json.hpp"
 #include "AIService.h"
+#include "AIChatFeature.h"
 #include "ConfigManager.h"
 #include "DependencyCatalogCache.h"
 #include "IDEFacade.h"
@@ -4118,6 +4119,18 @@ bool TryReadMappedRealPageCodeForAI(
 std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
 {
 	outOk = false;
+
+	if (toolName == "update_plan") {
+		std::string resultJsonLocal;
+		if (AIChatFeature::UpdatePlanFromTool(argumentsJson, resultJsonLocal, outOk)) {
+			return resultJsonLocal;
+		}
+
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "update_plan failed";
+		return JsonToLocalTextForAI(r);
+	}
 
 	if (toolName == "refresh_workspace_mirror") {
 		nlohmann::json args = nlohmann::json::object();

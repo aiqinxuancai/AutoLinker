@@ -1376,6 +1376,27 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "update_plan"},
+		{"description", "Update the visible task plan for multi-step work. Use this to keep progress current; it does not modify source code and does not replace the <proposed_plan> approval flow when the user explicitly entered plan mode."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"explanation", {{"type", "string"}, {"description", "Optional short note about why the plan changed."}}},
+				{"plan", {{"type", "array"}, {"items", {
+					{"type", "object"},
+					{"properties", {
+						{"step", {{"type", "string"}}},
+						{"status", {{"type", "string"}, {"enum", nlohmann::json::array({"pending", "in_progress", "completed"})}}}
+					}},
+					{"required", nlohmann::json::array({"step", "status"})},
+					{"additionalProperties", false}
+				}}, {"description", "Task steps. At most one item may be in_progress."}}}
+			}},
+			{"required", nlohmann::json::array({"plan"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "list_files"},
 		{"description", "List files in the current e-packager workspace mirror. Paths are relative to the mirror root. Call refresh_workspace_mirror once before this in each conversation round when fresh IDE edits may exist. By default focuses on src, ecom, elib and header text areas."},
 		{"inputSchema", {
@@ -2059,6 +2080,7 @@ std::vector<std::string> SelectGeminiToolNames(
 	const std::string text = CollectGeminiToolRoutingText(contextMessages);
 	const std::string latestUserText = CollectLatestUserToolRoutingText(contextMessages);
 	std::vector<std::string> names;
+	AddUniqueToolName(names, "update_plan");
 
 	const auto addCoreReadTools = [&names]() {
 		AddUniqueToolName(names, "get_current_eide_info");
@@ -2245,6 +2267,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"14) 只有用户要求编译验证时，才调用compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type 和可用编译模式。\n"
 			"15) 除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用 refresh_dependency_catalog、search_available_modules、search_available_support_libraries、list_imported_modules、add_module_to_project、remove_module_from_project、add_support_library_to_project。\n\n"
 			"其他工具：\n"
+			"- 复杂任务或多步骤执行时，用 update_plan 更新当前计划和进度；它只更新对话里的计划卡片，不修改源码，也不替代计划模式下需要审批的 <proposed_plan>。\n"
 			"- 需要确认当前页名/页类型时用 get_current_page_info，不要臆测当前页。\n"
 			"- 涉及联网、查文档、搜最新资料时用 search_web_tavily 搜索、extract_web_document 取正文、fetch_url 取原始响应。\n"
 			"- 需要本地命令时用 run_powershell_command（会经用户确认后执行）。\n\n"
@@ -2292,6 +2315,7 @@ std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal
 		"你是 AutoLinker 内置的易语言项目助手。\n"
 		"回答要直接、准确，优先使用已提供的工具获取工程上下文。\n"
 		"不要臆测当前页面、模块、支持库或源码内容。\n"
+		"复杂任务或多步骤执行时，用 update_plan 更新当前计划和进度。\n"
 		"如果需要读取网页或文档，优先调用 extract_web_document；需要原始响应时调用 fetch_url。\n"
 		"除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用依赖管理工具。\n"
 		"如果工具不可用或调用失败，说明限制并基于已有信息继续。\n"
@@ -3207,6 +3231,9 @@ AIChatResult ExecuteChatWithToolsClaude(
 			}
 			return result;
 		}
+		if (streamCallback && !textUtf8.empty()) {
+			streamCallback(Utf8ToLocal(textUtf8));
+		}
 
 		if (parsed.contains("content") && parsed["content"].is_array()) {
 			nlohmann::json assistantMessage = {
@@ -3410,6 +3437,9 @@ AIChatResult ExecuteChatWithToolsGemini(
 			}
 			return result;
 		}
+		if (streamCallback && !textUtf8.empty()) {
+			streamCallback(Utf8ToLocal(textUtf8));
+		}
 
 		contents.push_back(candidateContent);
 
@@ -3578,6 +3608,9 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 				streamCallback(result.content);
 			}
 			return result;
+		}
+		if (streamCallback && !textUtf8.empty()) {
+			streamCallback(Utf8ToLocal(textUtf8));
 		}
 
 		AppendResponsesOutputItemsToInput(parsed, input);
@@ -4429,6 +4462,10 @@ AIChatResult AIService::ExecuteChatWithTools(
 
 		// Tool-call path.
 		if (message.contains("tool_calls") && message["tool_calls"].is_array() && !message["tool_calls"].empty()) {
+			const std::string toolIntroUtf8 = MergeMessageContentUtf8(message);
+			if (!streamState.sawDataEvent && streamCallback && !toolIntroUtf8.empty()) {
+				streamCallback(Utf8ToLocal(toolIntroUtf8));
+			}
 			if (IsDeepSeekCompatibleSettings(settings)) {
 				EnsureDeepSeekAssistantMessageCompat(message);
 			}

@@ -687,6 +687,7 @@ std::string ExecuteToolCallImpl(
 		toolName == "read_files" ||
 		toolName == "read_real_file" ||
 		toolName == "search_code" ||
+		toolName == "update_plan" ||
 		toolName == "list_files" ||
 		toolName == "refresh_workspace_mirror" ||
 		toolName == "get_current_page_info" ||
