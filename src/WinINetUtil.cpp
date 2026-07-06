@@ -1,12 +1,106 @@
 ﻿#include "WinINetUtil.h"
 
 #include <cstring>
+#include <format>
 
 #pragma comment(lib, "wininet.lib")
 
 namespace {
 constexpr int kHttpStatusCancelled = 499;
 constexpr const char* kCancelledResponseText = "Request cancelled";
+
+const char* WinInetErrorName(DWORD error)
+{
+	switch (error)
+	{
+	case ERROR_INTERNET_TIMEOUT:
+		return "ERROR_INTERNET_TIMEOUT";
+	case ERROR_INTERNET_NAME_NOT_RESOLVED:
+		return "ERROR_INTERNET_NAME_NOT_RESOLVED";
+	case ERROR_INTERNET_CANNOT_CONNECT:
+		return "ERROR_INTERNET_CANNOT_CONNECT";
+	case ERROR_INTERNET_CONNECTION_ABORTED:
+		return "ERROR_INTERNET_CONNECTION_ABORTED";
+	case ERROR_INTERNET_CONNECTION_RESET:
+		return "ERROR_INTERNET_CONNECTION_RESET";
+	case ERROR_INTERNET_OPERATION_CANCELLED:
+		return "ERROR_INTERNET_OPERATION_CANCELLED";
+	case ERROR_INTERNET_SEC_CERT_DATE_INVALID:
+		return "ERROR_INTERNET_SEC_CERT_DATE_INVALID";
+	case ERROR_INTERNET_SEC_CERT_CN_INVALID:
+		return "ERROR_INTERNET_SEC_CERT_CN_INVALID";
+	case ERROR_INTERNET_INVALID_CA:
+		return "ERROR_INTERNET_INVALID_CA";
+	case ERROR_INTERNET_CLIENT_AUTH_CERT_NEEDED:
+		return "ERROR_INTERNET_CLIENT_AUTH_CERT_NEEDED";
+	case ERROR_INTERNET_SECURITY_CHANNEL_ERROR:
+		return "ERROR_INTERNET_SECURITY_CHANNEL_ERROR";
+	case ERROR_INTERNET_DISCONNECTED:
+		return "ERROR_INTERNET_DISCONNECTED";
+	case ERROR_INTERNET_PROXY_SERVER_UNREACHABLE:
+		return "ERROR_INTERNET_PROXY_SERVER_UNREACHABLE";
+	default:
+		return "";
+	}
+}
+
+std::string TrimMessage(std::string text)
+{
+	while (!text.empty() &&
+		(text.back() == '\r' ||
+			text.back() == '\n' ||
+			text.back() == ' ' ||
+			text.back() == '\t' ||
+			text.back() == '.')) {
+		text.pop_back();
+	}
+	return text;
+}
+
+std::string FormatSystemErrorMessage(DWORD error)
+{
+	char* buffer = nullptr;
+	DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_FROM_SYSTEM;
+	DWORD length = FormatMessageA(flags, nullptr, error, 0, reinterpret_cast<LPSTR>(&buffer), 0, nullptr);
+	if (length == 0) {
+		HMODULE wininet = GetModuleHandleA("wininet.dll");
+		if (wininet == nullptr) {
+			wininet = LoadLibraryA("wininet.dll");
+		}
+		if (wininet != nullptr) {
+			flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_FROM_HMODULE;
+			length = FormatMessageA(flags, wininet, error, 0, reinterpret_cast<LPSTR>(&buffer), 0, nullptr);
+		}
+	}
+
+	std::string message;
+	if (length > 0 && buffer != nullptr) {
+		message.assign(buffer, length);
+	}
+	if (buffer != nullptr) {
+		LocalFree(buffer);
+	}
+	return TrimMessage(message);
+}
+
+std::string FormatInternetFailure(const char* operation, DWORD error)
+{
+	const char* name = WinInetErrorName(error);
+	std::string text = std::format(
+		"{} failed, wininet_error={}",
+		operation == nullptr ? "WinINet" : operation,
+		error);
+	if (name != nullptr && name[0] != '\0') {
+		text += " ";
+		text += name;
+	}
+	const std::string message = FormatSystemErrorMessage(error);
+	if (!message.empty()) {
+		text += ": ";
+		text += message;
+	}
+	return text;
+}
 } // namespace
 
 void HttpRequestCancellation::CloseHandleLocked(HINTERNET& handle)
@@ -161,7 +255,7 @@ std::pair<std::string, int> PerformPostRequestCore(
 
     hInternet = InternetOpenA("HttpPostApp", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
     if (!hInternet) {
-        return std::make_pair("Error in InternetOpen", 0);
+        return std::make_pair(FormatInternetFailure("InternetOpen", GetLastError()), 0);
     }
     if (cancellation != nullptr) {
         cancellation->AttachInternetHandle(hInternet);
@@ -186,8 +280,9 @@ std::pair<std::string, int> PerformPostRequestCore(
     urlComp.dwUrlPathLength = static_cast<DWORD>(sizeof(urlPath));
 
     if (!InternetCrackUrlA(url.c_str(), static_cast<DWORD>(url.length()), 0, &urlComp)) {
+        const DWORD error = GetLastError();
         closeInternet();
-        return std::make_pair("Error in InternetCrackUrl", 0);
+        return std::make_pair(FormatInternetFailure("InternetCrackUrl", error), 0);
     }
 
     if (urlComp.nScheme == INTERNET_SCHEME_HTTPS) {
@@ -207,11 +302,12 @@ std::pair<std::string, int> PerformPostRequestCore(
         0,
         0);
     if (!hConnect) {
+        const DWORD error = GetLastError();
         if (cancellation != nullptr && cancellation->IsCancelled()) {
             return cancelledResult();
         }
         closeInternet();
-        return std::make_pair("Error in InternetConnect", 0);
+        return std::make_pair(FormatInternetFailure("InternetConnect", error), 0);
     }
     if (cancellation != nullptr) {
         cancellation->AttachConnectionHandle(hConnect);
@@ -222,12 +318,13 @@ std::pair<std::string, int> PerformPostRequestCore(
 
     hRequest = HttpOpenRequestA(hConnect, "POST", urlComp.lpszUrlPath, nullptr, nullptr, nullptr, dwFlags, 0);
     if (!hRequest) {
+        const DWORD error = GetLastError();
         if (cancellation != nullptr && cancellation->IsCancelled()) {
             return cancelledResult();
         }
         closeConnect();
         closeInternet();
-        return std::make_pair("Error in HttpOpenRequest", 0);
+        return std::make_pair(FormatInternetFailure("HttpOpenRequest", error), 0);
     }
     if (cancellation != nullptr) {
         cancellation->AttachRequestHandle(hRequest);
@@ -242,11 +339,12 @@ std::pair<std::string, int> PerformPostRequestCore(
         static_cast<DWORD>(customHeaders.length()),
         const_cast<char*>(postData.data()),
         static_cast<DWORD>(postData.size()))) {
+        const DWORD error = GetLastError();
         if (cancellation != nullptr && cancellation->IsCancelled()) {
             return cancelledResult();
         }
         cleanupAll();
-        return std::make_pair("Error in HttpSendRequest", 0);
+        return std::make_pair(FormatInternetFailure("HttpSendRequest", error), 0);
     }
     if (cancellation != nullptr && cancellation->IsCancelled()) {
         return cancelledResult();
@@ -356,7 +454,7 @@ std::pair<std::string, int> PerformGetRequest(const std::string& url, const std:
     hInternet = InternetOpenA("HttpGetApp", INTERNET_OPEN_TYPE_PRECONFIG, NULL, NULL, 0);
 
     if (!hInternet) {
-        return std::make_pair("Error in InternetOpen", 0);
+        return std::make_pair(FormatInternetFailure("InternetOpen", GetLastError()), 0);
     }
 
     InternetSetOption(hInternet, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
@@ -376,8 +474,9 @@ std::pair<std::string, int> PerformGetRequest(const std::string& url, const std:
 
     // 解析 URL
     if (!InternetCrackUrlA(url.c_str(), static_cast<DWORD>(url.length()), 0, &urlComp)) {
+        const DWORD error = GetLastError();
         InternetCloseHandle(hInternet);
-        return std::make_pair("Error in InternetCrackUrl", 0);
+        return std::make_pair(FormatInternetFailure("InternetCrackUrl", error), 0);
     }
 
     // 根据 URL 是 HTTP 还是 HTTPS 设置标志
@@ -391,25 +490,28 @@ std::pair<std::string, int> PerformGetRequest(const std::string& url, const std:
     // 连接到 HTTP 服务器
     hConnect = InternetConnectA(hInternet, urlComp.lpszHostName, urlComp.nPort, NULL, NULL, INTERNET_SERVICE_HTTP, 0, 0);
     if (!hConnect) {
+        const DWORD error = GetLastError();
         InternetCloseHandle(hInternet);
-        return std::make_pair("Error in InternetConnect", 0);
+        return std::make_pair(FormatInternetFailure("InternetConnect", error), 0);
     }
 
     // 创建 HTTP 请求句柄
     hRequest = HttpOpenRequestA(hConnect, "GET", urlComp.lpszUrlPath, NULL, NULL, NULL, dwFlags, 0);
     if (!hRequest) {
+        const DWORD error = GetLastError();
         InternetCloseHandle(hConnect);
         InternetCloseHandle(hInternet);
-        return std::make_pair("Error in HttpOpenRequest", 0);
+        return std::make_pair(FormatInternetFailure("HttpOpenRequest", error), 0);
     }
 
     // 准备自定义头部和发送请求
     std::string headers = customHeaders;
     if (!HttpSendRequestA(hRequest, headers.c_str(), static_cast<DWORD>(headers.length()), NULL, 0)) {
+        const DWORD error = GetLastError();
         InternetCloseHandle(hRequest);
         InternetCloseHandle(hConnect);
         InternetCloseHandle(hInternet);
-        return std::make_pair("Error in HttpSendRequest", 0);
+        return std::make_pair(FormatInternetFailure("HttpSendRequest", error), 0);
     }
 
     length = static_cast<DWORD>(sizeof(statusCodeStr));

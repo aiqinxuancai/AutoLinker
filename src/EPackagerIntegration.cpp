@@ -557,7 +557,9 @@ bool FetchLatestRelease(LatestReleaseInfo& outInfo, std::string& outError)
 	OutputStringToELog("[e-packager] 正在检查最新版本...");
 	auto response = PerformGetRequest(kLatestReleaseApi, kGitHubHeaders, 60000, false, false);
 	if (response.second != 200) {
-		outError = std::format("GitHub API HTTP {}", response.second);
+		outError = response.second == 0
+			? std::string("GitHub API 请求失败，未收到 HTTP 响应")
+			: std::format("GitHub API HTTP {}", response.second);
 		if (!response.first.empty()) {
 			outError += ": " + response.first.substr(0, (std::min<size_t>)(response.first.size(), 300));
 		}
@@ -635,7 +637,9 @@ bool DownloadZip(const LatestReleaseInfo& info, const std::filesystem::path& zip
 	OutputStringToELog(std::format("[e-packager] 开始下载：{}", info.downloadUrl));
 	auto response = PerformGetRequest(info.downloadUrl, kGitHubHeaders, 300000, false, false);
 	if (response.second != 200) {
-		outError = std::format("下载失败，HTTP {}", response.second);
+		outError = response.second == 0
+			? std::string("下载失败，未收到 HTTP 响应")
+			: std::format("下载失败，HTTP {}", response.second);
 		if (!response.first.empty()) {
 			outError += ": " + response.first.substr(0, (std::min<size_t>)(response.first.size(), 300));
 		}
