@@ -42,7 +42,6 @@ constexpr const char* kManufacturer = "microsoft";
 constexpr const char* kDevice = "windows";
 constexpr int kHttpTimeoutMs = 8000;
 constexpr size_t kMaxPendingEvents = 128;
-constexpr std::chrono::seconds kHeartbeatInterval(60);
 
 constexpr const char* kConfigEnabled = "gameanalytics.enabled";
 constexpr const char* kConfigUserId = "gameanalytics.user_id";
@@ -71,9 +70,6 @@ struct ClientState {
 	std::string sessionId;
 	int sessionNum = 1;
 	std::string osVersion = "windows 10.0.0";
-	std::chrono::steady_clock::time_point nextHeartbeatAt{
-		std::chrono::steady_clock::duration::max()
-	};
 	std::vector<nlohmann::json> pendingEvents;
 	std::deque<WorkerTask> tasks;
 	GameAnalyticsClient::RemoteConfigSnapshot remoteConfigs;
@@ -413,19 +409,6 @@ nlohmann::json BuildSharedAnnotationsLocked()
 	return event;
 }
 
-nlohmann::json BuildDesignEventLocked(const char* eventId)
-{
-	nlohmann::json event = BuildSharedAnnotationsLocked();
-	event["category"] = "design";
-	event["event_id"] = eventId;
-	return event;
-}
-
-nlohmann::json BuildHeartbeatEventLocked()
-{
-	return BuildDesignEventLocked("Session:Heartbeat");
-}
-
 nlohmann::json BuildStartupEventLocked()
 {
 	nlohmann::json event = BuildSharedAnnotationsLocked();
@@ -746,19 +729,7 @@ void WorkerMain()
 					break;
 				}
 
-				const auto now = std::chrono::steady_clock::now();
-				if (g_state.initialized &&
-					g_state.enabled &&
-					g_state.collectorEnabled &&
-					now >= g_state.nextHeartbeatAt) {
-					PushEventLocked(BuildHeartbeatEventLocked());
-					g_state.nextHeartbeatAt = now + kHeartbeatInterval;
-					task = WorkerTask::FlushEvents;
-					hasTask = true;
-					break;
-				}
-
-				g_cv.wait_until(lock, g_state.nextHeartbeatAt, []() {
+				g_cv.wait(lock, []() {
 					return g_state.shuttingDown || !g_state.tasks.empty();
 				});
 			}
@@ -903,15 +874,12 @@ bool LifecycleEventFormatOk()
 	g_state.remoteConfigs.values["NEWS-LINK"] = R"([{"title":"AutoLinker"}])";
 
 	const nlohmann::json startup = BuildStartupEventLocked();
-	const nlohmann::json heartbeat = BuildHeartbeatEventLocked();
 	const nlohmann::json sessionEnd = BuildSessionEndEventLocked();
 	g_state = saved;
 
 	return startup.value("category", "") == "user" &&
 		startup.contains("event_uuid") &&
 		!startup.contains("event_id") &&
-		heartbeat.value("category", "") == "design" &&
-		heartbeat.value("event_id", "") == "Session:Heartbeat" &&
 		sessionEnd.value("category", "") == "session_end" &&
 		sessionEnd.contains("length") &&
 		sessionEnd["length"].is_number_integer() &&
@@ -999,7 +967,6 @@ void Initialize(ConfigManager* configManager)
 	g_state.sessionId = GenerateUuidLower();
 	g_state.osVersion = GetWindowsVersionString();
 	g_state.sessionStartUnix = UnixTimeSeconds();
-	g_state.nextHeartbeatAt = std::chrono::steady_clock::now() + kHeartbeatInterval;
 	g_state.initialized = true;
 	g_state.tasks.push_back(WorkerTask::Init);
 
