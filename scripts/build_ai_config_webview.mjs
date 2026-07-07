@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+﻿import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,6 +15,7 @@ const templates = [
 	{ src: "linker_config_dialog.src.html", out: "linker_config_dialog.html" },
 	{ src: "ec_switch_config_dialog.src.html", out: "ec_switch_config_dialog.html" },
 	{ src: "force_link_lib_config_dialog.src.html", out: "force_link_lib_config_dialog.html" },
+	{ src: "project_agents_config_dialog.src.html", out: "project_agents_config_dialog.html" },
 	{ src: "ai_chat_theme_config_dialog.src.html", out: "ai_chat_theme_config_dialog.html" }
 ];
 

@@ -71,6 +71,9 @@
     <ClCompile Include="src\ForceLinkLibConfigDialog.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\ProjectAgentsConfigDialog.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\ForceLinkLibManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -255,6 +258,9 @@
     <ClInclude Include="src\ForceLinkLibManager.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="src\ProjectAgentsConfigDialog.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
     <ClInclude Include="src\GameAnalyticsClient.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -402,6 +408,12 @@
       <Filter>AI</Filter>
     </None>
     <None Include="src\webview\force_link_lib_config_dialog.src.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\project_agents_config_dialog.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\project_agents_config_dialog.src.html">
       <Filter>AI</Filter>
     </None>
   </ItemGroup>

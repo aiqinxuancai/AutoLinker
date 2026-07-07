@@ -29,6 +29,7 @@
 #include "MemFind.h"
 #include "MouseBack.h"
 #include "PathHelper.h"
+#include "ProjectAgentsConfigDialog.h"
 #include "Version.h"
 #include "WorkspaceMirror.h"
 #include "WinINetUtil.h"
@@ -133,6 +134,11 @@ void ShowAISettingsAddIn()
 	OutputStringToELog("AI配置已保存");
 }
 
+void ShowProjectAgentsSettingsAddIn()
+{
+	ShowProjectAgentsConfigDialog(g_hwnd);
+}
+
 void UpdateEPackagerComponentAddIn()
 {
 	EPackagerIntegration::RunToolUpdateInBackground();
@@ -160,11 +166,12 @@ void ShowAIChatThemeSettingsAddIn()
 
 const auto& GetAddInMenuEntries()
 {
-	static const std::array<AddInMenuEntry, 9> kEntries = { {
+	static const std::array<AddInMenuEntry, 10> kEntries = { {
 		{ "打开项目目录", "这是个用作测试的辅助工具功能。", &OpenProjectDirectoryAddIn },
 		{ "打开AutoLinker配置目录", "这是个用作测试的辅助工具功能。", &OpenAutoLinkerConfigDirectoryAddIn },
 		{ "打开E语言目录", "这是个用作测试的辅助工具功能。", &OpenELanguageDirectoryAddIn },
 		{ "AutoLinker AI接口设置", "编辑AI接口地址、API Key、模型和提示词等配置。", &ShowAISettingsAddIn },
+		{ "AutoLinker 当前程序AGENTS.md设置", "编辑当前源程序同目录同名的 .AGENTS.md 项目规范文件。", &ShowProjectAgentsSettingsAddIn },
 		{ "AutoLinker AI对话配色设置", "编辑 AI 对话界面的多套颜色方案。", &ShowAIChatThemeSettingsAddIn },
 		{ "AutoLinker 链接器设置", "查看并编辑 AutoLinker/Config 下的 link.ini 链接器配置。", &ShowLinkerSettingsAddIn },
 		{ "AutoLinker EC模块自动切换设置", "配置调试用动态 ec 与编译用静态 ec 的成对自动切换规则。", &ShowEcSwitchSettingsAddIn },

@@ -474,6 +474,7 @@
     <ClCompile Include="src\EideInternalTextBridge.cpp" />
     <ClCompile Include="src\EcSwitchConfigDialog.cpp" />
     <ClCompile Include="src\ForceLinkLibConfigDialog.cpp" />
+    <ClCompile Include="src\ProjectAgentsConfigDialog.cpp" />
     <ClCompile Include="src\ForceLinkLibManager.cpp" />
     <ClCompile Include="src\GameAnalyticsClient.cpp" />
     <ClCompile Include="src\direct_global_search.cpp">
@@ -556,6 +557,7 @@
     <ClInclude Include="src\EideProjectBinarySerializer.h" />
     <ClInclude Include="src\ForceLinkLibConfigDialog.h" />
     <ClInclude Include="src\ForceLinkLibManager.h" />
+    <ClInclude Include="src\ProjectAgentsConfigDialog.h" />
     <ClInclude Include="src\GameAnalyticsClient.h" />
     <ClInclude Include="src\direct_global_search.hpp" />
     <ClInclude Include="src\ECOMEx.h" />
@@ -603,6 +605,8 @@
     <None Include="src\webview\ec_switch_config_dialog.src.html" />
     <None Include="src\webview\force_link_lib_config_dialog.html" />
     <None Include="src\webview\force_link_lib_config_dialog.src.html" />
+    <None Include="src\webview\project_agents_config_dialog.html" />
+    <None Include="src\webview\project_agents_config_dialog.src.html" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

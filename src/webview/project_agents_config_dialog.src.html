@@ -1,0 +1,142 @@
+﻿<!doctype html>
+<html class="h-full overflow-hidden">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light only">
+<style>
+/*__AUTOLINKER_AI_CONFIG_CSS__*/
+</style>
+</head>
+<body class="h-full overflow-hidden font-sans text-[13px]">
+<div class="flex h-full min-h-0 flex-col overflow-hidden bg-white">
+	<header class="shrink-0 border-b border-slate-200 bg-white px-5 py-3">
+		<div class="flex items-center justify-between gap-3">
+			<div class="min-w-0">
+				<h1 class="text-lg font-semibold leading-6 text-slate-950">AutoLinker 当前程序 AGENTS.md 设置</h1>
+				<p id="filePathText" class="mt-0.5 truncate text-[12px] text-slate-500"></p>
+			</div>
+			<span id="fileStateBadge" class="shrink-0 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-[12px] text-slate-500">未加载</span>
+		</div>
+	</header>
+
+	<main class="flex min-h-0 flex-1 flex-col bg-white p-5">
+		<div class="mb-2 flex items-center justify-between gap-3">
+			<div class="min-w-0">
+				<label for="agentsContent" class="ui-label mb-0">项目规范内容</label>
+				<p id="sourcePathText" class="mt-1 truncate text-[12px] text-slate-400"></p>
+			</div>
+			<div class="flex shrink-0 gap-2">
+				<button id="templateBtn" class="ui-btn" type="button">插入模板</button>
+				<button id="clearBtn" class="ui-btn" type="button">清空</button>
+			</div>
+		</div>
+		<textarea id="agentsContent" class="ui-textarea min-h-0 flex-1 font-mono text-[13px] leading-5" spellcheck="false" placeholder="在这里填写当前易语言程序的开发规范、命名规则、AI 协作要求等内容。"></textarea>
+	</main>
+
+	<footer class="flex shrink-0 items-center justify-between gap-2 border-t border-slate-200 bg-white px-5 py-3">
+		<span id="statusText" class="min-w-0 truncate text-[12px] text-slate-500"></span>
+		<div class="flex shrink-0 gap-2">
+			<button id="cancelBtn" class="ui-btn" type="button">取消</button>
+			<button id="saveBtn" class="ui-btn ui-btn-primary" type="button" disabled>保存</button>
+		</div>
+	</footer>
+</div>
+<script>
+/*__AUTOLINKER_PRELINE_JS__*/
+</script>
+<script>
+var _payload = null;
+var _initialContent = "";
+var _dirty = false;
+
+function $(id) { return document.getElementById(id); }
+
+function post(payload) {
+	if (window.chrome && window.chrome.webview) {
+		window.chrome.webview.postMessage(JSON.stringify(payload));
+	}
+}
+
+function setStatus(text) {
+	$("statusText").textContent = text || "";
+}
+
+function recomputeDirty() {
+	_dirty = $("agentsContent").value !== _initialContent;
+	$("saveBtn").disabled = !_dirty;
+}
+
+function defaultTemplate() {
+	return [
+		"# AGENTS.md",
+		"",
+		"## 项目规范",
+		"",
+		"* 使用易语言语法和当前项目已有命名风格。",
+		"* 修改代码前先理解当前页和相关模块的职责。",
+		"* 保持改动范围聚焦，避免无关重构。",
+		"* 生成代码后说明关键修改点和需要验证的功能。"
+	].join("\n");
+}
+
+window.autolinkerApplyProjectAgentsConfig = function(payload) {
+	_payload = payload || {};
+	_initialContent = _payload.content || "";
+	$("agentsContent").value = _initialContent;
+	$("filePathText").textContent = _payload.agentsPath || "";
+	$("sourcePathText").textContent = _payload.sourcePath ? ("当前源文件：" + _payload.sourcePath) : "";
+	$("fileStateBadge").textContent = _payload.exists ? "已存在" : "新建文件";
+	recomputeDirty();
+	setStatus("");
+	$("agentsContent").focus();
+};
+
+window.autolinkerProjectAgentsSaveResult = function(result) {
+	var data = result || {};
+	setStatus(data.message || (data.ok ? "已保存" : "保存失败"));
+	if (data.ok) {
+		_initialContent = (typeof data.content === "string") ? data.content : $("agentsContent").value;
+		$("agentsContent").value = _initialContent;
+		$("fileStateBadge").textContent = data.exists === false ? "新建文件" : "已存在";
+		recomputeDirty();
+	} else if (data.message) {
+		window.alert(data.message);
+		recomputeDirty();
+	}
+};
+
+document.addEventListener("DOMContentLoaded", function () {
+	$("agentsContent").addEventListener("input", recomputeDirty);
+	$("templateBtn").addEventListener("click", function () {
+		var area = $("agentsContent");
+		if (area.value && !window.confirm("当前内容不为空，是否追加模板？")) {
+			return;
+		}
+		area.value = area.value ? (area.value.replace(/\s+$/g, "") + "\n\n" + defaultTemplate()) : defaultTemplate();
+		recomputeDirty();
+		area.focus();
+	});
+	$("clearBtn").addEventListener("click", function () {
+		if (!$("agentsContent").value || window.confirm("确定清空当前 AGENTS.md 内容吗？")) {
+			$("agentsContent").value = "";
+			recomputeDirty();
+			$("agentsContent").focus();
+		}
+	});
+	$("cancelBtn").addEventListener("click", function () { post({ action: "cancel" }); });
+	$("saveBtn").addEventListener("click", function () {
+		if (!_dirty) { return; }
+		$("saveBtn").disabled = true;
+		setStatus("正在保存...");
+		post({
+			action: "save",
+			data: {
+				content: $("agentsContent").value
+			}
+		});
+	});
+});
+</script>
+</body>
+</html>
+
