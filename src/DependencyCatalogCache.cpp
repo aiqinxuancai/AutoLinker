@@ -187,6 +187,23 @@ bool WriteTextUtf8Bom(const std::filesystem::path& path, const std::string& text
 	return file.good();
 }
 
+bool TryReadExistingTextFileUtf8(const std::filesystem::path& path, std::string& outTextUtf8)
+{
+	outTextUtf8.clear();
+	std::string bytes;
+	if (!ReadFileBytesLimited(path, bytes)) {
+		return false;
+	}
+	outTextUtf8 = BytesToUtf8Text(std::move(bytes));
+	return true;
+}
+
+bool ExistingCachePathAvailable(const std::filesystem::path& path)
+{
+	std::error_code ec;
+	return std::filesystem::exists(path, ec) && !ec;
+}
+
 std::string PathStemLocal(const std::filesystem::path& path)
 {
 	return path.stem().string();
@@ -1008,9 +1025,22 @@ bool DependencyCatalogCache::RefreshInternal(bool force, bool silent, std::strin
 
 		const std::filesystem::path cachePath = BuildUniqueCachePath(libCacheRoot, entry.libraryNameLocal, entry.pathLocal, ".txt");
 		entry.cachePathLocal = cachePath.string();
-		std::string writeError;
-		if (!WriteTextUtf8Bom(cachePath, LocalToUtf8(entry.infoTextLocal), writeError) && entry.decodeErrorLocal.empty()) {
-			entry.decodeErrorLocal = "write cache failed: " + writeError;
+		const bool hasExistingCache = !force && ExistingCachePathAvailable(cachePath);
+		if (hasExistingCache) {
+			std::string cachedInfoUtf8;
+			if (TryReadExistingTextFileUtf8(cachePath, cachedInfoUtf8)) {
+				entry.infoTextLocal = Utf8ToLocal(cachedInfoUtf8);
+				entry.decodeErrorLocal = "skipped: cache already exists";
+			}
+			else {
+				entry.decodeErrorLocal = "skipped: cache already exists but cannot be read";
+			}
+		}
+		else {
+			std::string writeError;
+			if (!WriteTextUtf8Bom(cachePath, LocalToUtf8(entry.infoTextLocal), writeError) && entry.decodeErrorLocal.empty()) {
+				entry.decodeErrorLocal = "write cache failed: " + writeError;
+			}
 		}
 		entry.searchTextUtf8 =
 			LocalToUtf8(entry.libraryNameLocal) + "\n" +
@@ -1048,7 +1078,18 @@ bool DependencyCatalogCache::RefreshInternal(bool force, bool silent, std::strin
 		const std::filesystem::path cachePath = BuildUniqueCachePath(ecomCacheRoot, entry.moduleNameLocal, entry.pathLocal, "");
 		entry.cachePathLocal = cachePath.string();
 
-		if (!toolReady) {
+		const bool hasExistingCache = !force && ExistingCachePathAvailable(cachePath);
+		if (hasExistingCache) {
+			entry.searchTextUtf8 = CollectTextFilesUtf8(cachePath);
+			entry.decoded = !entry.searchTextUtf8.empty();
+			if (entry.decoded) {
+				++decodedModules;
+			}
+			else {
+				entry.decodeErrorLocal = "skipped: cache already exists but no indexable text was found";
+			}
+		}
+		else if (!toolReady) {
 			entry.decodeErrorLocal = toolError.empty() ? "e-packager unavailable" : toolError;
 		}
 		else {
