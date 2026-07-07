@@ -5208,9 +5208,9 @@ void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx)
 		HideChatConfirmInPage(ctx);
 		LayoutAIChatDialog(hWnd, ctx);
 	}
-	OutputStringToELog("[AI Chat] open config dialog from chat page");
+	Logger::Instance().WriteGbk("[AutoLinker][AI Chat] open config dialog from chat page");
 	if (!ShowAIConfigDialog(g_mainWindow != nullptr ? g_mainWindow : hWnd, *g_aiJsonConfig, settings)) {
-		OutputStringToELog("[AI Chat] AI config cancelled from chat page");
+		Logger::Instance().WriteGbk("[AutoLinker][AI Chat] AI config cancelled from chat page");
 		if (ctx != nullptr) {
 			if (ctx->webViewDesired) {
 				FocusWebViewInput(ctx);
