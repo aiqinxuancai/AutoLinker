@@ -360,6 +360,7 @@ bool FneInit()
 	}
 
 	TraceInitStep("进入 FneInit");
+	Logger::Instance().Open(GetAutoLinkerLogFilePath("autolinker.log").string());
 	OutputStringToELog("开始初始化");
 	const bool headlessCompileMode = HeadlessCompileRunner::HasHeadlessCompileRequest();
 

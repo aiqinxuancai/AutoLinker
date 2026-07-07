@@ -30,6 +30,21 @@ void Logger::Open(const std::string& filePath)
 	m_file.flush();
 }
 
+void Logger::OpenIfNeeded(const std::string& filePath)
+{
+	std::lock_guard<std::mutex> lock(m_mutex);
+	if (m_file.is_open()) {
+		return;
+	}
+	m_file.open(filePath, std::ios::trunc | std::ios::binary);
+	if (!m_file.is_open()) {
+		return;
+	}
+	static const char kBom[] = "\xEF\xBB\xBF";
+	m_file.write(kBom, 3);
+	m_file.flush();
+}
+
 std::string Logger::BuildTimestamp()
 {
 	SYSTEMTIME localTime = {};

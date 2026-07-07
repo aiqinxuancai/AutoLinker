@@ -1222,8 +1222,8 @@ void Initialize()
 	g_pageNameHint.clear();
 	g_pageTypeHint.clear();
 
-	// 打开 MCP 日志文件（每次启动覆盖）
-	Logger::Instance().Open(GetAutoLinkerLogFilePath("autolinker.log").string());
+	// FneInit 通常已打开主日志；直接初始化 MCP 时再兜底打开。
+	Logger::Instance().OpenIfNeeded(GetAutoLinkerLogFilePath("autolinker.log").string());
 
 	g_serverThread = std::thread(ServerThreadMain);
 }

@@ -15,6 +15,9 @@ public:
 	// filePath 为完整路径，父目录须已存在
 	void Open(const std::string& filePath);
 
+	// 若日志文件尚未打开，则打开日志文件；已打开时保持现有文件不变。
+	void OpenIfNeeded(const std::string& filePath);
+
 	// 写入一条日志到文件（category 如 "MCP"、"Tool"、"Init"；空字符串则省略 [category] 前缀）
 	// 格式：[时间戳] [category] message\r\n  或  [时间戳] message\r\n（category 为空时）
 	void Write(const std::string& category, const std::string& message);

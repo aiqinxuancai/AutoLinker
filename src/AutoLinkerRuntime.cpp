@@ -140,8 +140,8 @@ void HandleCurrentSourceFilePathChanged(const std::string& previousPath, const s
 	e571::ProjectBinarySerializer::Instance().ClearVerifiedSerializerContext();
 	PageCodeCacheManager::Instance().Clear();
 
-	OutputStringToELog(std::format(
-		"[SourceContext] source_changed old={} new={} serializer_context=cleared page_code_cache=cleared",
+	Logger::Instance().WriteGbk(std::format(
+		"[AutoLinker][SourceContext] source_changed old={} new={} serializer_context=cleared page_code_cache=cleared",
 		DescribeSourcePathForRuntimeLog(previousPath),
 		DescribeSourcePathForRuntimeLog(currentPath)));
 

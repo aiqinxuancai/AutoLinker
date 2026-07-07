@@ -38,6 +38,7 @@
 #include "GameAnalyticsClient.h"
 #include "Global.h"
 #include "IDEFacade.h"
+#include "Logger.h"
 #include "PathHelper.h"
 #include "ResourceTextLoader.h"
 #include "WorkspaceMirror.h"
@@ -2074,8 +2075,8 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 	}
 	WorkspaceMirror::ResetAndCleanup();
 	if (!previousSourcePath.empty() || !currentSourcePath.empty()) {
-		OutputStringToELog(std::format(
-			"[AI Chat][Session] source rebind old={} new={} history_reset={}",
+		Logger::Instance().WriteGbk(std::format(
+			"[AutoLinker][AI Chat][Session] source rebind old={} new={} history_reset={}",
 			previousSourcePath.empty() ? "<empty>" : previousSourcePath,
 			currentSourcePath.empty() ? "<empty>" : currentSourcePath,
 			hadHistory ? 1 : 0));

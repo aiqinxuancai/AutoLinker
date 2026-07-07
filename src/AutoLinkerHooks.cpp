@@ -20,6 +20,7 @@
 #include "Global.h"
 #include "HeadlessCompileRunner.h"
 #include "IDEFacade.h"
+#include "Logger.h"
 #include "MemFind.h"
 #include "PathHelper.h"
 #include "StringHelper.h"
@@ -666,8 +667,8 @@ void StartHookCreateFileA()
 					projectSerializeToFileRva));
 		}
 		if (originalProjectSerializeToFile != nullptr && projectSerializeToFileRva != 0) {
-			OutputStringToELog(std::format(
-				"[ProjectBinarySerializer] hook serialize_to_file rva=0x{:X} via={}",
+			Logger::Instance().WriteGbk(std::format(
+				"[AutoLinker][ProjectBinarySerializer] hook serialize_to_file rva=0x{:X} via={}",
 				projectSerializeToFileRva,
 				"pattern"));
 			DetourAttach(&(PVOID&)originalProjectSerializeToFile, MyProjectSerializeToFile);
