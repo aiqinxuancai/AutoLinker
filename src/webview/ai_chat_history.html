@@ -1170,7 +1170,10 @@ body,
 	color: var(--al-text);
 }
 
-.topbar { background: var(--al-toolbar-bg); }
+.topbar {
+	background: var(--al-toolbar-bg);
+	border-bottom: 1px solid var(--al-border);
+}
 .topbar-brand { color: var(--al-brand); }
 .update-tag {
 	background: linear-gradient(110deg, var(--al-brand), var(--al-primary));
@@ -1187,17 +1190,55 @@ body,
 .btn,
 .msg,
 .role,
-.body { color: var(--al-text); }
+.body,
+.page-msgbox,
+.session-menu { color: var(--al-text); }
+.mode-chip,
+.muted,
+.session-item-time,
+.session-empty,
+.tool-approval-meta { color: var(--al-muted-text); }
 .top-action:hover,
 .send-icon-btn,
 .stop-icon-btn,
-.body a { color: var(--al-link-text); }
+.body a,
+.empty-state-links a,
+.news-config-text-title { color: var(--al-link-text); }
 .top-action.active,
 .mode-chip.active,
 .session-status.working,
 .plan-status {
 	background: var(--al-chip-bg);
 	color: var(--al-primary);
+}
+.top-action:focus-visible,
+.mode-chip:focus-visible,
+.send-icon-btn:focus-visible,
+.stop-icon-btn:focus-visible {
+	outline-color: var(--al-primary);
+}
+.mode-chip:hover { color: var(--al-muted-text); }
+.mode-chip.active,
+.session-status.working {
+	border-color: var(--al-primary);
+}
+.session-status.done {
+	background: var(--al-chip-bg);
+	border-color: var(--al-success);
+}
+.news-config-text {
+	background: var(--al-panel-bg);
+	border-color: var(--al-soft-border);
+	color: var(--al-text);
+}
+.empty-state-links a {
+	background: rgba(30, 102, 245, .06);
+	border-color: rgba(30, 102, 245, .26);
+}
+.empty-state-links a:hover {
+	background: var(--al-primary);
+	border-color: var(--al-primary);
+	color: #fff;
 }
 .composer {
 	background: var(--al-composer-bg);
@@ -1209,12 +1250,19 @@ body,
 	color: var(--al-text);
 }
 #chat-input::placeholder { color: var(--al-placeholder); }
-#chat-input:focus { border-color: var(--al-primary); }
+#chat-input:focus {
+	border-color: var(--al-primary);
+	box-shadow: 0 0 0 1px var(--al-primary);
+}
 .btn {
 	background: var(--al-button-bg);
 	border-color: var(--al-soft-border);
+	color: var(--al-text);
 }
-.btn:hover { background: var(--al-button-hover-bg); }
+.btn:hover {
+	background: var(--al-button-hover-bg);
+	border-color: var(--al-border);
+}
 .btn.primary {
 	background: var(--al-primary);
 	border-color: var(--al-primary);
@@ -1223,6 +1271,28 @@ body,
 .btn.primary:hover {
 	background: var(--al-primary-hover);
 	border-color: var(--al-primary-hover);
+}
+.btn.danger {
+	background: var(--al-danger);
+	border-color: var(--al-danger);
+	color: #fff;
+}
+.btn.danger:hover {
+	background: var(--al-danger);
+	border-color: var(--al-danger);
+	filter: brightness(.92);
+}
+.send-icon-btn:hover,
+.stop-icon-btn:hover { color: var(--al-primary-hover); }
+.send-icon-btn:disabled,
+.stop-icon-btn:disabled { color: var(--al-subtle-text); }
+.stop-icon-btn::before {
+	border-color: var(--al-chip-bg);
+	border-top-color: currentColor;
+}
+.stop-icon-btn:disabled::before {
+	border-color: var(--al-soft-border);
+	border-top-color: currentColor;
 }
 .msg { border-bottom-color: var(--al-border); }
 .msg.user { background: var(--al-user-msg-bg); }
@@ -1280,12 +1350,15 @@ body,
 	color: var(--al-muted-text);
 }
 .tool-call-status.running {
+	background: var(--al-chip-bg);
 	color: var(--al-primary);
 }
 .tool-call-status.ok {
+	background: var(--al-chip-bg);
 	color: var(--al-success);
 }
 .tool-call-status.failed {
+	background: var(--al-chip-bg);
 	color: var(--al-danger);
 }
 .plan-card-head,
@@ -1303,21 +1376,56 @@ body,
 .plan-step.in-progress .plan-step-status {
 	color: var(--al-primary);
 }
+.clear-confirm {
+	background: var(--al-approval-bg);
+	border-color: var(--al-danger);
+}
+.clear-confirm-text {
+	color: var(--al-plan-text);
+}
 .tool-approval,
-.session-status,
-.session-menu,
-.session-item {
+.session-status {
 	background: var(--al-approval-bg);
 	color: var(--al-text);
 	border-color: var(--al-soft-border);
 }
+.tool-approval-title,
+.tool-approval-meta b {
+	color: var(--al-plan-text);
+}
+.tool-approval-tool {
+	background: var(--al-panel-bg);
+	border-color: var(--al-soft-border);
+	color: var(--al-text);
+}
 .tool-approval-preview {
 	background: var(--al-diff-bg);
 	color: var(--al-plan-text);
+	border-color: var(--al-soft-border);
 }
 .tool-approval-preview .diff-add { color: var(--al-diff-add); }
 .tool-approval-preview .diff-del { color: var(--al-diff-del); }
 .tool-approval-preview .diff-hunk { color: var(--al-primary); }
+.session-menu,
+.page-msgbox {
+	background: var(--al-panel-bg);
+	border-color: var(--al-soft-border);
+}
+.session-item,
+.session-empty {
+	background: transparent;
+	color: var(--al-text);
+}
+.session-item:hover {
+	background: var(--al-button-hover-bg);
+}
+.session-item-title,
+.page-msgbox-title {
+	color: var(--al-plan-text);
+}
+.page-msgbox-text {
+	color: var(--al-text);
+}
 .context-usage.warn { color: var(--al-warning); }
 .context-usage.danger { color: var(--al-danger); }
 .session-status.done,

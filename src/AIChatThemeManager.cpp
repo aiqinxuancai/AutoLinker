@@ -194,6 +194,76 @@ ThemeEntry BuildDefaultTheme()
 	return entry;
 }
 
+const std::vector<std::string>& GetColorKeyOrder()
+{
+	static const std::vector<std::string> keys = {
+		"pageBg",
+		"toolbarBg",
+		"brand",
+		"primary",
+		"primaryHover",
+		"accent",
+		"border",
+		"softBorder",
+		"panelBg",
+
+		"text",
+		"mutedText",
+		"subtleText",
+		"roleText",
+		"bodyText",
+		"linkText",
+		"placeholder",
+
+		"userMsgBg",
+		"assistantMsgBg",
+		"systemMsgBg",
+		"toolMsgBg",
+		"planMsgBg",
+
+		"composerBg",
+		"inputBg",
+		"inputBorder",
+		"buttonBg",
+		"buttonHoverBg",
+
+		"inlineCodeBg",
+		"codeBlockBg",
+		"codeText",
+		"planBg",
+		"planBorder",
+		"planText",
+		"chipBg",
+		"approvalBg",
+		"diffBg",
+		"diffAdd",
+		"diffDel",
+
+		"success",
+		"warning",
+		"danger"
+	};
+	return keys;
+}
+
+std::vector<std::string> BuildConfigColorKeys()
+{
+	const nlohmann::json defaults = GetDefaultColors();
+	std::vector<std::string> keys;
+	std::set<std::string> seen;
+	for (const std::string& key : GetColorKeyOrder()) {
+		if (defaults.contains(key) && seen.insert(key).second) {
+			keys.push_back(key);
+		}
+	}
+	for (const auto& item : defaults.items()) {
+		if (seen.insert(item.key()).second) {
+			keys.push_back(item.key());
+		}
+	}
+	return keys;
+}
+
 bool TryParseThemeFile(const std::filesystem::path& path, ThemeEntry& outEntry)
 {
 	try {
@@ -388,9 +458,8 @@ std::string BuildConfigPayloadJson()
 	nlohmann::json payload;
 	payload["currentThemeId"] = LoadCurrentTheme().id;
 	payload["colorKeys"] = nlohmann::json::array();
-	const nlohmann::json defaults = GetDefaultColors();
-	for (const auto& item : defaults.items()) {
-		payload["colorKeys"].push_back(item.key());
+	for (const std::string& key : BuildConfigColorKeys()) {
+		payload["colorKeys"].push_back(key);
 	}
 	payload["themes"] = nlohmann::json::array();
 	payload["themes"].push_back(ThemeEntryToJson(BuildDefaultTheme()));

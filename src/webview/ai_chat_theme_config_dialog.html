@@ -82,33 +82,31 @@ var o=this&&this.__importDefault||function(e){return e&&e.__esModule?e:{default:
 <script>
 var COLOR_LABELS = {
 	pageBg: "页面背景",
-	text: "基础文字",
-	mutedText: "次级文字",
-	subtleText: "弱提示文字",
-	brand: "品牌文字",
+	toolbarBg: "顶部栏背景",
+	brand: "品牌标题",
 	primary: "主色",
 	primaryHover: "主色悬停",
 	accent: "强调色",
-	success: "成功色",
-	warning: "警告色",
-	danger: "危险色",
 	border: "主边框",
 	softBorder: "弱边框",
-	panelBg: "面板背景",
-	toolbarBg: "顶部栏背景",
+	panelBg: "弹层面板背景",
+	text: "基础文字",
+	mutedText: "次级文字",
+	subtleText: "弱提示文字",
+	roleText: "角色标题文字",
+	bodyText: "消息正文文字",
+	linkText: "链接文字",
+	placeholder: "占位文字",
+	userMsgBg: "用户消息背景",
+	assistantMsgBg: "AI 回复背景",
+	systemMsgBg: "系统消息背景",
+	toolMsgBg: "工具消息背景",
+	planMsgBg: "计划消息背景",
 	composerBg: "输入区背景",
 	inputBg: "输入框背景",
 	inputBorder: "输入框边框",
 	buttonBg: "按钮背景",
 	buttonHoverBg: "按钮悬停",
-	userMsgBg: "用户发言块",
-	assistantMsgBg: "系统回复块",
-	systemMsgBg: "系统消息块",
-	toolMsgBg: "工具消息块",
-	planMsgBg: "计划消息块",
-	roleText: "角色标题文字",
-	bodyText: "消息正文文字",
-	linkText: "链接文字",
 	inlineCodeBg: "行内代码背景",
 	codeBlockBg: "代码块背景",
 	codeText: "代码文字",
@@ -120,7 +118,9 @@ var COLOR_LABELS = {
 	diffBg: "差异预览背景",
 	diffAdd: "差异新增",
 	diffDel: "差异删除",
-	placeholder: "占位文字"
+	success: "成功色",
+	warning: "警告色",
+	danger: "危险色"
 };
 var _themes = [];
 var _colorKeys = [];
@@ -258,6 +258,7 @@ function renderPreview() {
 	var top = document.createElement("div");
 	top.className = "flex h-9 items-center justify-between px-3";
 	top.style.background = c.toolbarBg;
+	top.style.borderBottom = "1px solid " + c.border;
 	top.innerHTML = '<strong style="color:' + c.brand + '">AUTOLINKER</strong><span style="color:' + c.subtleText + '">上下文 18%</span>';
 	var history = document.createElement("div");
 	history.className = "min-h-0 flex-1 overflow-auto";
@@ -267,15 +268,19 @@ function renderPreview() {
 		'<div style="color:' + c.bodyText + '">请生成一个带日志输出的初始化函数。</div></section>' +
 		'<section style="background:' + c.assistantMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
 		'<div style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">AI</div>' +
-		'<div style="color:' + c.bodyText + '">可以这样组织：<code style="background:' + c.inlineCodeBg + ';padding:1px 4px;border-radius:4px">Init()</code>' +
+		'<div style="color:' + c.bodyText + '">可以这样组织：<a style="color:' + c.linkText + ';text-decoration:none" href="#">查看说明</a> <code style="background:' + c.inlineCodeBg + ';padding:1px 4px;border-radius:4px">Init()</code>' +
 		'<pre style="margin-top:8px;background:' + c.codeBlockBg + ';color:' + c.codeText + ';border-radius:6px;padding:10px;white-space:pre-wrap">bool Init() {\\n    return true;\\n}</pre></div></section>' +
-		'<section style="background:' + c.planMsgBg + ';padding:10px 12px"><div style="border:1px solid ' + c.planBorder + ';background:' + c.planBg + ';color:' + c.planText + ';padding:10px;border-radius:8px">实施计划 <span style="background:' + c.chipBg + ';color:' + c.primary + ';padding:2px 6px;border-radius:5px">预览</span></div></section>';
+		'<section style="background:' + c.toolMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
+		'<div style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">工具 <span style="background:' + c.chipBg + ';color:' + c.success + ';padding:1px 6px;border-radius:5px;font-size:10px">完成</span></div>' +
+		'<pre style="margin:0;background:' + c.diffBg + ';color:' + c.planText + ';border-radius:6px;padding:8px;white-space:pre-wrap"><span style="color:' + c.diffAdd + '">+ 新增日志输出</span>\\n<span style="color:' + c.diffDel + '">- 删除旧提示</span></pre></section>' +
+		'<section style="background:' + c.planMsgBg + ';padding:10px 12px"><div style="border:1px solid ' + c.planBorder + ';background:' + c.planBg + ';color:' + c.planText + ';padding:10px;border-radius:8px">实施计划 <span style="background:' + c.chipBg + ';color:' + c.primary + ';padding:2px 6px;border-radius:5px">预览</span></div></section>' +
+		'<section style="background:' + c.systemMsgBg + ';padding:10px 12px"><div style="border:1px solid ' + c.softBorder + ';background:' + c.approvalBg + ';color:' + c.text + ';padding:8px;border-radius:8px">写入审批 <span style="color:' + c.warning + '">等待确认</span></div></section>';
 	var composer = document.createElement("div");
 	composer.className = "border-t p-3";
 	composer.style.borderColor = c.border;
 	composer.style.background = c.composerBg;
 	composer.innerHTML = '<textarea readonly style="width:100%;height:64px;border:1px solid ' + c.inputBorder + ';background:' + c.inputBg + ';color:' + c.text + ';border-radius:6px;padding:8px;resize:none">输入消息...</textarea>' +
-		'<div style="margin-top:8px;text-align:right"><button style="border:1px solid ' + c.primary + ';background:' + c.primary + ';color:#fff;border-radius:6px;padding:6px 14px">发送</button></div>';
+		'<div style="margin-top:8px;display:flex;align-items:center;justify-content:space-between"><span style="color:' + c.mutedText + '">自动允许</span><button style="border:1px solid ' + c.primary + ';background:' + c.primary + ';color:#fff;border-radius:6px;padding:6px 14px">发送</button></div>';
 	frame.appendChild(top);
 	frame.appendChild(history);
 	frame.appendChild(composer);
