@@ -1,10 +1,13 @@
 ﻿#include <cstdlib>
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <format>
+#include <fcntl.h>
 #include <iostream>
+#include <io.h>
 #include <string>
 #include <thread>
 #include <vector>
@@ -475,6 +478,136 @@ std::string DumpJsonCompactSafe(const nlohmann::json& value)
 std::string DumpJsonPrettySafe(const nlohmann::json& value)
 {
 	return value.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+bool ReadStdioMcpFrame(std::string& outBody)
+{
+	outBody.clear();
+	std::string headers;
+	char ch = '\0';
+	while (std::cin.get(ch)) {
+		headers.push_back(ch);
+		if (headers.size() >= 4 && headers.substr(headers.size() - 4) == "\r\n\r\n") {
+			break;
+		}
+		if (headers.size() >= 2 && headers.substr(headers.size() - 2) == "\n\n") {
+			break;
+		}
+		if (headers.size() > 64 * 1024) {
+			return false;
+		}
+	}
+	if (headers.empty()) {
+		return false;
+	}
+
+	size_t contentLength = 0;
+	size_t begin = 0;
+	while (begin <= headers.size()) {
+		size_t end = headers.find_first_of("\r\n", begin);
+		std::string line = end == std::string::npos ? headers.substr(begin) : headers.substr(begin, end - begin);
+		if (end == std::string::npos) {
+			begin = headers.size() + 1;
+		}
+		else if (headers[end] == '\r' && end + 1 < headers.size() && headers[end + 1] == '\n') {
+			begin = end + 2;
+		}
+		else {
+			begin = end + 1;
+		}
+		std::string lower = line;
+		std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+			return static_cast<char>(std::tolower(c));
+		});
+		const std::string marker = "content-length:";
+		if (lower.rfind(marker, 0) != 0) {
+			continue;
+		}
+		contentLength = static_cast<size_t>(std::strtoull(line.c_str() + marker.size(), nullptr, 10));
+		break;
+	}
+	if (contentLength == 0) {
+		return false;
+	}
+	outBody.assign(contentLength, '\0');
+	std::cin.read(outBody.data(), static_cast<std::streamsize>(contentLength));
+	return static_cast<size_t>(std::cin.gcount()) == contentLength;
+}
+
+void WriteStdioMcpFrame(const nlohmann::json& value)
+{
+	const std::string body = DumpJsonCompactSafe(value);
+	std::cout << "Content-Length: " << body.size() << "\r\n\r\n" << body;
+	std::cout.flush();
+}
+
+int RunMockMcpStdioServer()
+{
+	_setmode(_fileno(stdin), _O_BINARY);
+	_setmode(_fileno(stdout), _O_BINARY);
+
+	for (;;) {
+		std::string body;
+		if (!ReadStdioMcpFrame(body)) {
+			return EXIT_SUCCESS;
+		}
+		const nlohmann::json request = nlohmann::json::parse(body, nullptr, false);
+		if (request.is_discarded() || !request.is_object()) {
+			continue;
+		}
+		const std::string method = request.value("method", std::string());
+		if (method == "notifications/initialized") {
+			continue;
+		}
+
+		nlohmann::json response = {
+			{"jsonrpc", "2.0"}
+		};
+		if (request.contains("id")) {
+			response["id"] = request["id"];
+		}
+		if (method == "initialize") {
+			response["result"] = {
+				{"protocolVersion", "2025-11-25"},
+				{"capabilities", {{"tools", nlohmann::json::object()}}},
+				{"serverInfo", {{"name", "AutoLinkerTest Mock Stdio MCP"}, {"version", "1.0"}}}
+			};
+		}
+		else if (method == "tools/list") {
+			response["result"] = {
+				{"tools", nlohmann::json::array({
+					{
+						{"name", "echo"},
+						{"description", "Echo text from stdio MCP."},
+						{"inputSchema", {
+							{"type", "object"},
+							{"properties", {
+								{"text", {{"type", "string"}, {"description", "Text to echo."}}}
+							}},
+							{"required", nlohmann::json::array({"text"})},
+							{"additionalProperties", false}
+						}}
+					}
+				})}
+			};
+		}
+		else if (method == "tools/call") {
+			const nlohmann::json params = request.value("params", nlohmann::json::object());
+			const nlohmann::json args = params.value("arguments", nlohmann::json::object());
+			const std::string text = args.value("text", std::string());
+			response["result"] = {
+				{"content", nlohmann::json::array({
+					{{"type", "text"}, {"text", "mock echo: " + text}}
+				})},
+				{"structuredContent", {{"echo", text}, {"transport", "stdio"}}},
+				{"isError", false}
+			};
+		}
+		else {
+			response["result"] = nlohmann::json::object();
+		}
+		WriteStdioMcpFrame(response);
+	}
 }
 
 void AppendTraceLine(const std::filesystem::path& path, const std::string& line)
@@ -1581,6 +1714,9 @@ int main(int argc, char* argv[])
 	}
 
 	const std::string commandName = argv[1];
+	if (commandName == "mock-mcp-stdio") {
+		return RunMockMcpStdioServer();
+	}
 	if (commandName == "headless-compile") {
 		return RunHeadlessCompile(argc, argv);
 	}

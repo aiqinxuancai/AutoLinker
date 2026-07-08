@@ -71,6 +71,28 @@ bool IsValidHeaderName(const std::string& name)
 	return true;
 }
 
+std::string NormalizeTransport(std::string text)
+{
+	text = TrimAscii(text);
+	std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+		return static_cast<char>(std::tolower(ch));
+	});
+	if (text == "stdio") {
+		return "stdio";
+	}
+	return "streamable_http";
+}
+
+bool IsStdioTransport(const AIChatMcpServerConfig& server)
+{
+	return NormalizeTransport(server.transport) == "stdio";
+}
+
+bool LooksLikeStdioServerJson(const nlohmann::json& item)
+{
+	return item.is_object() && item.contains("command") && item["command"].is_string();
+}
+
 long long CurrentUnixMs()
 {
 	const auto now = std::chrono::system_clock::now();
@@ -117,6 +139,54 @@ std::string JsonStringValue(const nlohmann::json& value, const char* key)
 	return value[key].get<std::string>();
 }
 
+void ReadStringArray(const nlohmann::json& value, std::vector<std::string>& out)
+{
+	out.clear();
+	if (!value.is_array()) {
+		return;
+	}
+	for (const auto& item : value) {
+		if (item.is_string()) {
+			out.push_back(item.get<std::string>());
+		}
+	}
+}
+
+void ReadEnvConfig(const nlohmann::json& value, std::vector<AIChatMcpEnvConfig>& out)
+{
+	out.clear();
+	if (value.is_object()) {
+		for (const auto& item : value.items()) {
+			AIChatMcpEnvConfig env;
+			env.name = TrimAscii(item.key());
+			if (item.value().is_string()) {
+				env.value = item.value().get<std::string>();
+			}
+			else if (!item.value().is_null()) {
+				env.value = item.value().dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			}
+			if (!env.name.empty()) {
+				out.push_back(std::move(env));
+			}
+		}
+		return;
+	}
+	if (!value.is_array()) {
+		return;
+	}
+	for (const auto& item : value) {
+		if (!item.is_object()) {
+			continue;
+		}
+		AIChatMcpEnvConfig env;
+		env.name = TrimAscii(JsonStringValue(item, "name"));
+		env.value = JsonStringValue(item, "value");
+		if (!env.name.empty()) {
+			out.push_back(std::move(env));
+		}
+	}
+}
+
 } // namespace
 
 namespace AIChatMcpConfigStore {
@@ -132,17 +202,40 @@ std::string BuildDefaultConfigJson()
 	config.servers.push_back({
 		"ida-pro",
 		"IDA Pro",
+		"streamable_http",
 		"http://127.0.0.1:8765/mcp",
+		"",
+		{},
+		"",
 		false,
 		120000,
+		{},
 		{}
 	});
 	config.servers.push_back({
 		"design-mcp",
 		"Design MCP",
+		"streamable_http",
 		"http://127.0.0.1:8770/mcp",
+		"",
+		{},
+		"",
 		false,
 		120000,
+		{},
+		{}
+	});
+	config.servers.push_back({
+		"stdio-example",
+		"本地 stdio MCP 示例",
+		"stdio",
+		"",
+		"npx",
+		{"-y", "@modelcontextprotocol/server-filesystem", "D:\\git"},
+		"",
+		false,
+		120000,
+		{},
 		{}
 	});
 	return SerializeConfigJson(config, true);
@@ -176,14 +269,38 @@ bool ParseConfigJson(const std::string& jsonText, AIChatMcpConfig& outConfig, st
 			AIChatMcpServerConfig server;
 			server.id = SanitizeId(JsonStringValue(item, "id"));
 			server.name = TrimAscii(JsonStringValue(item, "name"));
+			server.transport = NormalizeTransport(JsonStringValue(item, "transport"));
 			server.url = TrimAscii(JsonStringValue(item, "url"));
+			server.command = TrimAscii(JsonStringValue(item, "command"));
+			if (!item.contains("transport") && !server.command.empty()) {
+				server.transport = "stdio";
+			}
+			server.workingDirectory = TrimAscii(JsonStringValue(item, "working_directory"));
+			if (server.workingDirectory.empty()) {
+				server.workingDirectory = TrimAscii(JsonStringValue(item, "cwd"));
+			}
+			if (item.contains("arguments")) {
+				ReadStringArray(item["arguments"], server.arguments);
+			}
+			else if (item.contains("args")) {
+				ReadStringArray(item["args"], server.arguments);
+			}
+			if (item.contains("env")) {
+				ReadEnvConfig(item["env"], server.env);
+			}
 			server.enabled = item.value("enabled", false);
 			server.timeoutMs = (std::clamp)(item.value("timeout_ms", 120000), 1000, 600000);
 			if (server.name.empty()) {
 				server.name = server.id;
 			}
-			if (server.url.empty()) {
-				if (server.enabled) {
+			if (server.enabled) {
+				if (IsStdioTransport(server)) {
+					if (server.command.empty()) {
+						outError = std::format("enabled MCP stdio server '{}' requires command", server.id);
+						return false;
+					}
+				}
+				else if (server.url.empty()) {
 					outError = std::format("enabled MCP server '{}' requires url", server.id);
 					return false;
 				}
@@ -210,6 +327,55 @@ bool ParseConfigJson(const std::string& jsonText, AIChatMcpConfig& outConfig, st
 					}
 					server.headers.push_back(std::move(header));
 				}
+			}
+			outConfig.servers.push_back(std::move(server));
+		}
+	}
+
+	if (root.contains("mcpServers")) {
+		if (!root["mcpServers"].is_object()) {
+			outError = "mcpServers must be an object";
+			return false;
+		}
+		for (const auto& namedServer : root["mcpServers"].items()) {
+			const nlohmann::json& item = namedServer.value();
+			if (!item.is_object()) {
+				continue;
+			}
+			AIChatMcpServerConfig server;
+			server.id = SanitizeId(namedServer.key());
+			server.name = TrimAscii(JsonStringValue(item, "name"));
+			if (server.name.empty()) {
+				server.name = namedServer.key();
+			}
+			server.transport = NormalizeTransport(JsonStringValue(item, "transport"));
+			server.url = TrimAscii(JsonStringValue(item, "url"));
+			server.command = TrimAscii(JsonStringValue(item, "command"));
+			if (LooksLikeStdioServerJson(item)) {
+				server.transport = "stdio";
+			}
+			server.workingDirectory = TrimAscii(JsonStringValue(item, "working_directory"));
+			if (server.workingDirectory.empty()) {
+				server.workingDirectory = TrimAscii(JsonStringValue(item, "cwd"));
+			}
+			if (item.contains("arguments")) {
+				ReadStringArray(item["arguments"], server.arguments);
+			}
+			else if (item.contains("args")) {
+				ReadStringArray(item["args"], server.arguments);
+			}
+			if (item.contains("env")) {
+				ReadEnvConfig(item["env"], server.env);
+			}
+			server.enabled = item.value("enabled", true);
+			server.timeoutMs = (std::clamp)(item.value("timeout_ms", 120000), 1000, 600000);
+			if (server.enabled && IsStdioTransport(server) && server.command.empty()) {
+				outError = std::format("enabled MCP stdio server '{}' requires command", server.id);
+				return false;
+			}
+			if (server.enabled && !IsStdioTransport(server) && server.url.empty()) {
+				outError = std::format("enabled MCP server '{}' requires url", server.id);
+				return false;
 			}
 			outConfig.servers.push_back(std::move(server));
 		}
@@ -248,7 +414,11 @@ std::string SerializeConfigJson(const AIChatMcpConfig& config, bool pretty)
 		nlohmann::json item = {
 			{"id", server.id},
 			{"name", server.name},
+			{"transport", IsStdioTransport(server) ? "stdio" : "streamable_http"},
 			{"url", server.url},
+			{"command", server.command},
+			{"arguments", server.arguments},
+			{"working_directory", server.workingDirectory},
 			{"enabled", server.enabled},
 			{"timeout_ms", server.timeoutMs}
 		};
@@ -257,6 +427,13 @@ std::string SerializeConfigJson(const AIChatMcpConfig& config, bool pretty)
 			item["headers"].push_back({
 				{"name", header.name},
 				{"value", header.value}
+			});
+		}
+		item["env"] = nlohmann::json::array();
+		for (const auto& env : server.env) {
+			item["env"].push_back({
+				{"name", env.name},
+				{"value", env.value}
 			});
 		}
 		root["servers"].push_back(std::move(item));

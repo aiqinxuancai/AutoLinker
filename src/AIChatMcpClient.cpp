@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <functional>
 #include <format>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <sstream>
 #include <unordered_map>
 
@@ -70,6 +72,11 @@ std::string TrimAscii(std::string text)
 	return text;
 }
 
+bool IsStdioTransport(const AIChatMcpServerConfig& server)
+{
+	return ToLowerAscii(TrimAscii(server.transport)) == "stdio";
+}
+
 bool IsValidUtf8(const std::string& text)
 {
 	if (text.empty()) {
@@ -124,6 +131,125 @@ std::string Utf8ToLocalText(const std::string& text)
 		return text;
 	}
 	return local;
+}
+
+std::wstring Utf8ToWideText(const std::string& text)
+{
+	if (text.empty()) {
+		return std::wstring();
+	}
+	const int wideLen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+	if (wideLen > 0) {
+		std::wstring wide(static_cast<size_t>(wideLen), L'\0');
+		if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), wide.data(), wideLen) > 0) {
+			return wide;
+		}
+	}
+
+	const int localWideLen = MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+	if (localWideLen <= 0) {
+		return std::wstring();
+	}
+	std::wstring wide(static_cast<size_t>(localWideLen), L'\0');
+	if (MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), wide.data(), localWideLen) <= 0) {
+		return std::wstring();
+	}
+	return wide;
+}
+
+std::wstring QuoteCommandLineArgument(const std::wstring& arg)
+{
+	if (arg.empty()) {
+		return L"\"\"";
+	}
+	bool needsQuote = false;
+	for (wchar_t ch : arg) {
+		if (ch == L' ' || ch == L'\t' || ch == L'\n' || ch == L'\r' || ch == L'"') {
+			needsQuote = true;
+			break;
+		}
+	}
+	if (!needsQuote) {
+		return arg;
+	}
+
+	std::wstring quoted = L"\"";
+	size_t backslashes = 0;
+	for (wchar_t ch : arg) {
+		if (ch == L'\\') {
+			++backslashes;
+			continue;
+		}
+		if (ch == L'"') {
+			quoted.append(backslashes * 2 + 1, L'\\');
+			quoted.push_back(L'"');
+			backslashes = 0;
+			continue;
+		}
+		quoted.append(backslashes, L'\\');
+		backslashes = 0;
+		quoted.push_back(ch);
+	}
+	quoted.append(backslashes * 2, L'\\');
+	quoted.push_back(L'"');
+	return quoted;
+}
+
+std::wstring BuildStdioCommandLine(const AIChatMcpServerConfig& server)
+{
+	std::wstring commandLine = QuoteCommandLineArgument(Utf8ToWideText(server.command));
+	for (const auto& arg : server.arguments) {
+		commandLine.push_back(L' ');
+		commandLine += QuoteCommandLineArgument(Utf8ToWideText(arg));
+	}
+	return commandLine;
+}
+
+std::wstring BuildStdioEnvironmentBlock(const AIChatMcpServerConfig& server)
+{
+	if (server.env.empty()) {
+		return std::wstring();
+	}
+
+	LPWCH currentEnv = GetEnvironmentStringsW();
+	std::unordered_map<std::wstring, std::wstring> values;
+	if (currentEnv != nullptr) {
+		for (LPWCH p = currentEnv; *p != L'\0';) {
+			std::wstring entry = p;
+			const size_t eq = entry.find(L'=');
+			if (eq != std::wstring::npos && eq > 0) {
+				values[entry.substr(0, eq)] = entry.substr(eq + 1);
+			}
+			p += entry.size() + 1;
+		}
+		FreeEnvironmentStringsW(currentEnv);
+	}
+
+	for (const auto& env : server.env) {
+		const std::wstring name = Utf8ToWideText(env.name);
+		if (!name.empty()) {
+			values[name] = Utf8ToWideText(env.value);
+		}
+	}
+
+	std::vector<std::wstring> keys;
+	keys.reserve(values.size());
+	for (const auto& item : values) {
+		keys.push_back(item.first);
+	}
+	std::sort(keys.begin(), keys.end(), [](const std::wstring& left, const std::wstring& right) {
+		return _wcsicmp(left.c_str(), right.c_str()) < 0;
+	});
+
+	std::wstring block;
+	for (const auto& key : keys) {
+		block += key;
+		block.push_back(L'=');
+		block += values[key];
+		block.push_back(L'\0');
+	}
+	block.push_back(L'\0');
+	return block;
 }
 
 uint64_t Fnv1a64(const std::string& text)
@@ -707,10 +833,17 @@ void LogMcpJsonRpcRequest(const AIChatMcpServerConfig& server, const std::string
 	nlohmann::json logged = {
 		{"server_id", server.id},
 		{"server_name", server.name},
-		{"url", server.url},
+		{"transport", IsStdioTransport(server) ? "stdio" : "streamable_http"},
 		{"method", method},
 		{"params", params}
 	};
+	if (IsStdioTransport(server)) {
+		logged["command"] = server.command;
+		logged["arguments"] = server.arguments;
+	}
+	else {
+		logged["url"] = server.url;
+	}
 	const std::string headers = RedactHeadersForLog(server);
 	if (!headers.empty()) {
 		logged["headers"] = headers;
@@ -758,6 +891,381 @@ nlohmann::json BuildRpcRequest(int id, const std::string& method, const nlohmann
 	}
 	return request;
 }
+
+class StdioMcpSession {
+public:
+	StdioMcpSession() = default;
+	~StdioMcpSession()
+	{
+		Close();
+	}
+
+	StdioMcpSession(const StdioMcpSession&) = delete;
+	StdioMcpSession& operator=(const StdioMcpSession&) = delete;
+
+	bool Start(const AIChatMcpServerConfig& server, std::string& outError)
+	{
+		outError.clear();
+		if (server.command.empty()) {
+			outError = "stdio command is empty";
+			return false;
+		}
+
+		SECURITY_ATTRIBUTES sa = {};
+		sa.nLength = sizeof(sa);
+		sa.bInheritHandle = TRUE;
+		sa.lpSecurityDescriptor = nullptr;
+
+		HANDLE childStdInRead = nullptr;
+		HANDLE childStdInWrite = nullptr;
+		HANDLE childStdOutRead = nullptr;
+		HANDLE childStdOutWrite = nullptr;
+		HANDLE childStdErrWrite = nullptr;
+		if (!CreatePipe(&childStdInRead, &childStdInWrite, &sa, 0) ||
+			!CreatePipe(&childStdOutRead, &childStdOutWrite, &sa, 0)) {
+			outError = "CreatePipe failed";
+			CloseHandleIfValid(childStdInRead);
+			CloseHandleIfValid(childStdInWrite);
+			CloseHandleIfValid(childStdOutRead);
+			CloseHandleIfValid(childStdOutWrite);
+			return false;
+		}
+		childStdErrWrite = CreateFileW(
+			L"NUL",
+			GENERIC_WRITE,
+			FILE_SHARE_READ | FILE_SHARE_WRITE,
+			&sa,
+			OPEN_EXISTING,
+			FILE_ATTRIBUTE_NORMAL,
+			nullptr);
+		if (childStdErrWrite == INVALID_HANDLE_VALUE) {
+			childStdErrWrite = nullptr;
+		}
+		SetHandleInformation(childStdInWrite, HANDLE_FLAG_INHERIT, 0);
+		SetHandleInformation(childStdOutRead, HANDLE_FLAG_INHERIT, 0);
+
+		STARTUPINFOW si = {};
+		si.cb = sizeof(si);
+		si.dwFlags = STARTF_USESTDHANDLES;
+		si.hStdInput = childStdInRead;
+		si.hStdOutput = childStdOutWrite;
+		si.hStdError = childStdErrWrite != nullptr ? childStdErrWrite : GetStdHandle(STD_ERROR_HANDLE);
+
+		std::wstring commandLine = BuildStdioCommandLine(server);
+		std::wstring workingDirectory = Utf8ToWideText(server.workingDirectory);
+		std::wstring environmentBlock = BuildStdioEnvironmentBlock(server);
+		PROCESS_INFORMATION pi = {};
+		const BOOL created = CreateProcessW(
+			nullptr,
+			commandLine.empty() ? nullptr : commandLine.data(),
+			nullptr,
+			nullptr,
+			TRUE,
+			CREATE_NO_WINDOW | (environmentBlock.empty() ? 0 : CREATE_UNICODE_ENVIRONMENT),
+			environmentBlock.empty() ? nullptr : environmentBlock.data(),
+			workingDirectory.empty() ? nullptr : workingDirectory.c_str(),
+			&si,
+			&pi);
+
+		CloseHandleIfValid(childStdInRead);
+		CloseHandleIfValid(childStdOutWrite);
+		CloseHandleIfValid(childStdErrWrite);
+		if (!created) {
+			const DWORD error = GetLastError();
+			CloseHandleIfValid(childStdInWrite);
+			CloseHandleIfValid(childStdOutRead);
+			outError = std::format("CreateProcessW failed, error={}", error);
+			return false;
+		}
+
+		processHandle_ = pi.hProcess;
+		threadHandle_ = pi.hThread;
+		stdinWrite_ = childStdInWrite;
+		stdoutRead_ = childStdOutRead;
+		return true;
+	}
+
+	JsonRpcResult Post(
+		const AIChatMcpServerConfig& server,
+		const std::string& method,
+		const nlohmann::json& params,
+		int id,
+		bool notification,
+		HttpRequestCancellation* cancellation)
+	{
+		const nlohmann::json request = BuildRpcRequest(id, method, params, notification);
+		const std::string body = request.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		const auto start = std::chrono::steady_clock::now();
+		JsonRpcResult result;
+		if (!WriteFrame(body)) {
+			result.error = "stdio write failed";
+			LogElapsed(server, method, result, start);
+			return result;
+		}
+		if (notification) {
+			result.ok = true;
+			result.httpStatus = 202;
+			LogElapsed(server, method, result, start);
+			return result;
+		}
+
+		nlohmann::json responsePayload;
+		std::string error;
+		if (!ReadJsonRpcResponse(server.timeoutMs, cancellation, id, responsePayload, error)) {
+			result.cancelled = cancellation != nullptr && cancellation->IsCancelled();
+			result.httpStatus = result.cancelled ? 499 : 0;
+			result.error = error.empty() ? "stdio read failed" : error;
+			LogElapsed(server, method, result, start);
+			return result;
+		}
+
+		result.payload = std::move(responsePayload);
+		if (result.payload.contains("error")) {
+			result.error = result.payload["error"].is_object()
+				? result.payload["error"].dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)
+				: result.payload["error"].dump();
+			LogElapsed(server, method, result, start);
+			return result;
+		}
+		result.ok = true;
+		result.httpStatus = 200;
+		LogElapsed(server, method, result, start);
+		return result;
+	}
+
+	void Close()
+	{
+		CloseHandleIfValid(stdinWrite_);
+		CloseHandleIfValid(stdoutRead_);
+		if (processHandle_ != nullptr) {
+			DWORD exitCode = 0;
+			if (GetExitCodeProcess(processHandle_, &exitCode) && exitCode == STILL_ACTIVE) {
+				TerminateProcess(processHandle_, 0);
+			}
+		}
+		CloseHandleIfValid(threadHandle_);
+		CloseHandleIfValid(processHandle_);
+	}
+
+private:
+	static void CloseHandleIfValid(HANDLE& handle)
+	{
+		if (handle != nullptr && handle != INVALID_HANDLE_VALUE) {
+			CloseHandle(handle);
+		}
+		handle = nullptr;
+	}
+
+	void LogElapsed(
+		const AIChatMcpServerConfig& server,
+		const std::string& method,
+		const JsonRpcResult& result,
+		const std::chrono::steady_clock::time_point& start)
+	{
+		const double elapsedMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+		LogMcpJsonRpcResponse(server, method, result, elapsedMs);
+	}
+
+	bool WriteAll(const std::string& text)
+	{
+		size_t writtenTotal = 0;
+		while (writtenTotal < text.size()) {
+			DWORD written = 0;
+			const DWORD chunk = static_cast<DWORD>((std::min)(text.size() - writtenTotal, static_cast<size_t>(64 * 1024)));
+			if (!WriteFile(stdinWrite_, text.data() + writtenTotal, chunk, &written, nullptr) || written == 0) {
+				return false;
+			}
+			writtenTotal += written;
+		}
+		return true;
+	}
+
+	bool WriteFrame(const std::string& body)
+	{
+		if (stdinWrite_ == nullptr) {
+			return false;
+		}
+		const std::string frame = "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+		return WriteAll(frame);
+	}
+
+	bool ReadAvailable(std::string& buffer)
+	{
+		DWORD available = 0;
+		if (!PeekNamedPipe(stdoutRead_, nullptr, 0, nullptr, &available, nullptr)) {
+			return false;
+		}
+		if (available == 0) {
+			return true;
+		}
+		std::string chunk(static_cast<size_t>(available), '\0');
+		DWORD read = 0;
+		if (!ReadFile(stdoutRead_, chunk.data(), available, &read, nullptr)) {
+			return false;
+		}
+		chunk.resize(static_cast<size_t>(read));
+		buffer += chunk;
+		return true;
+	}
+
+	static std::optional<size_t> TryParseContentLength(const std::string& headerText)
+	{
+		size_t begin = 0;
+		while (begin <= headerText.size()) {
+			size_t end = headerText.find_first_of("\r\n", begin);
+			std::string line = end == std::string::npos ? headerText.substr(begin) : headerText.substr(begin, end - begin);
+			if (end == std::string::npos) {
+				begin = headerText.size() + 1;
+			}
+			else if (headerText[end] == '\r' && end + 1 < headerText.size() && headerText[end + 1] == '\n') {
+				begin = end + 2;
+			}
+			else {
+				begin = end + 1;
+			}
+			const std::string lower = ToLowerAscii(TrimAscii(line));
+			const std::string marker = "content-length:";
+			if (lower.rfind(marker, 0) != 0) {
+				continue;
+			}
+			try {
+				return static_cast<size_t>(std::stoull(TrimAscii(line.substr(marker.size()))));
+			}
+			catch (...) {
+				return std::nullopt;
+			}
+		}
+		return std::nullopt;
+	}
+
+	bool TryExtractFrame(std::string& buffer, std::string& outBody, std::string& outError)
+	{
+		const size_t headerEnd = buffer.find("\r\n\r\n");
+		const size_t delimiterSize = 4;
+		size_t actualHeaderEnd = headerEnd;
+		size_t actualDelimiterSize = delimiterSize;
+		if (actualHeaderEnd == std::string::npos) {
+			actualHeaderEnd = buffer.find("\n\n");
+			actualDelimiterSize = 2;
+		}
+		if (actualHeaderEnd == std::string::npos) {
+			return false;
+		}
+		const std::string headerText = buffer.substr(0, actualHeaderEnd);
+		const std::optional<size_t> contentLength = TryParseContentLength(headerText);
+		if (!contentLength) {
+			outError = "stdio frame missing Content-Length";
+			return false;
+		}
+		const size_t bodyStart = actualHeaderEnd + actualDelimiterSize;
+		if (buffer.size() < bodyStart + *contentLength) {
+			outError.clear();
+			return false;
+		}
+		outBody = buffer.substr(bodyStart, *contentLength);
+		buffer.erase(0, bodyStart + *contentLength);
+		return true;
+	}
+
+	static bool JsonRpcIdsEqual(const nlohmann::json& value, int expectedId)
+	{
+		if (value.is_number_integer()) {
+			return value.get<int>() == expectedId;
+		}
+		if (value.is_number_unsigned()) {
+			return value.get<unsigned int>() == static_cast<unsigned int>(expectedId);
+		}
+		if (value.is_string()) {
+			return value.get<std::string>() == std::to_string(expectedId);
+		}
+		return false;
+	}
+
+	bool ReadJsonRpcResponse(
+		int timeoutMs,
+		HttpRequestCancellation* cancellation,
+		int expectedId,
+		nlohmann::json& outPayload,
+		std::string& outError)
+	{
+		outPayload = nlohmann::json::object();
+		outError.clear();
+		for (;;) {
+			std::string frameBody;
+			if (!ReadFrame(timeoutMs, cancellation, frameBody, outError)) {
+				return false;
+			}
+
+			nlohmann::json parsed = nlohmann::json::parse(frameBody, nullptr, false);
+			if (parsed.is_discarded() || !parsed.is_object()) {
+				outError = "failed to parse JSON-RPC response";
+				return false;
+			}
+			if (!parsed.contains("id")) {
+				const std::string method = parsed.value("method", std::string());
+				if (!method.empty()) {
+					LogMcpLine("skip stdio MCP notification: " + method);
+				}
+				continue;
+			}
+			if (!JsonRpcIdsEqual(parsed["id"], expectedId)) {
+				LogMcpLine(std::format(
+					"skip stdio MCP response with unexpected id, expected={} actual={}",
+					expectedId,
+					parsed["id"].dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)));
+				continue;
+			}
+
+			outPayload = std::move(parsed);
+			return true;
+		}
+	}
+
+	bool ReadFrame(int timeoutMs, HttpRequestCancellation* cancellation, std::string& outBody, std::string& outError)
+	{
+		outBody.clear();
+		outError.clear();
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds((std::max)(1000, timeoutMs));
+		for (;;) {
+			if (cancellation != nullptr && cancellation->IsCancelled()) {
+				outError = "request cancelled";
+				return false;
+			}
+			if (TryExtractFrame(readBuffer_, outBody, outError)) {
+				return true;
+			}
+			if (!outError.empty()) {
+				return false;
+			}
+			if (!ReadAvailable(readBuffer_)) {
+				outError = "stdio read failed or process exited";
+				return false;
+			}
+			if (TryExtractFrame(readBuffer_, outBody, outError)) {
+				return true;
+			}
+			if (!outError.empty()) {
+				return false;
+			}
+			DWORD exitCode = 0;
+			if (processHandle_ != nullptr && GetExitCodeProcess(processHandle_, &exitCode) && exitCode != STILL_ACTIVE) {
+				outError = std::format("stdio process exited with code {}", exitCode);
+				return false;
+			}
+			if (std::chrono::steady_clock::now() >= deadline) {
+				outError = "stdio read timed out";
+				return false;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+		}
+	}
+
+	HANDLE processHandle_ = nullptr;
+	HANDLE threadHandle_ = nullptr;
+	HANDLE stdinWrite_ = nullptr;
+	HANDLE stdoutRead_ = nullptr;
+	std::string readBuffer_;
+};
 
 std::optional<nlohmann::json> ParseJsonObject(const std::string& text)
 {
@@ -858,7 +1366,7 @@ JsonRpcResult ParseJsonRpcResponseBody(const HttpResponseDetails& response)
 	return result;
 }
 
-JsonRpcResult PostJsonRpc(
+JsonRpcResult PostHttpJsonRpc(
 	const AIChatMcpServerConfig& server,
 	const std::string& method,
 	const nlohmann::json& params,
@@ -888,7 +1396,7 @@ JsonRpcResult PostJsonRpc(
 	return result;
 }
 
-bool InitializeSession(
+bool InitializeHttpSession(
 	const AIChatMcpServerConfig& server,
 	std::string& sessionId,
 	std::string& outError,
@@ -905,7 +1413,7 @@ bool InitializeSession(
 			{"version", AUTOLINKER_VERSION}
 		}}
 	};
-	JsonRpcResult init = PostJsonRpc(server, "initialize", params, 1, false, sessionId, cancellation);
+	JsonRpcResult init = PostHttpJsonRpc(server, "initialize", params, 1, false, sessionId, cancellation);
 	if (!init.ok) {
 		outError = init.error.empty() ? "initialize failed" : init.error;
 		return false;
@@ -920,7 +1428,7 @@ bool InitializeSession(
 	}
 
 	nlohmann::json initializedParams = nlohmann::json::object();
-	JsonRpcResult initialized = PostJsonRpc(server, "notifications/initialized", initializedParams, 0, true, sessionId, cancellation);
+	JsonRpcResult initialized = PostHttpJsonRpc(server, "notifications/initialized", initializedParams, 0, true, sessionId, cancellation);
 	if (!initialized.ok && initialized.httpStatus != 202 && initialized.httpStatus != 204) {
 		outError = initialized.error.empty() ? "notifications/initialized failed" : initialized.error;
 		return false;
@@ -928,20 +1436,56 @@ bool InitializeSession(
 	return true;
 }
 
-bool ListToolsFromServer(
+bool InitializeStdioSession(
+	StdioMcpSession& session,
 	const AIChatMcpServerConfig& server,
-	std::vector<AIChatMcpToolInfo>& outTools,
 	std::string& outError,
 	HttpRequestCancellation* cancellation)
 {
-	outTools.clear();
 	outError.clear();
-	std::string sessionId;
-	if (!InitializeSession(server, sessionId, outError, cancellation)) {
+	nlohmann::json params = {
+		{"protocolVersion", kMcpProtocolVersion},
+		{"capabilities", nlohmann::json::object()},
+		{"clientInfo", {
+			{"name", "AutoLinker"},
+			{"version", AUTOLINKER_VERSION}
+		}}
+	};
+	LogMcpJsonRpcRequest(server, "initialize", params);
+	JsonRpcResult init = session.Post(server, "initialize", params, 1, false, cancellation);
+	if (!init.ok) {
+		outError = init.error.empty() ? "initialize failed" : init.error;
 		return false;
 	}
 
-	JsonRpcResult listed = PostJsonRpc(server, "tools/list", nlohmann::json::object(), 2, false, sessionId, cancellation);
+	const nlohmann::json result = init.payload.value("result", nlohmann::json::object());
+	const std::string protocolVersion = result.value("protocolVersion", std::string());
+	if (!protocolVersion.empty() &&
+		protocolVersion != kMcpProtocolVersion &&
+		protocolVersion != kMcpCompatProtocolVersion) {
+		LogMcpLine(std::format("server {} returned MCP protocolVersion {}", server.id, protocolVersion));
+	}
+
+	nlohmann::json initializedParams = nlohmann::json::object();
+	LogMcpJsonRpcRequest(server, "notifications/initialized", initializedParams);
+	JsonRpcResult initialized = session.Post(server, "notifications/initialized", initializedParams, 0, true, cancellation);
+	if (!initialized.ok && initialized.httpStatus != 202 && initialized.httpStatus != 204) {
+		outError = initialized.error.empty() ? "notifications/initialized failed" : initialized.error;
+		return false;
+	}
+	return true;
+}
+
+bool ListToolsFromInitializedTransport(
+	const AIChatMcpServerConfig& server,
+	const std::function<JsonRpcResult()>& listCall,
+	std::vector<AIChatMcpToolInfo>& outTools,
+	std::string& outError)
+{
+	outTools.clear();
+	outError.clear();
+
+	JsonRpcResult listed = listCall();
 	if (!listed.ok) {
 		outError = listed.error.empty() ? "tools/list failed" : listed.error;
 		return false;
@@ -980,6 +1524,47 @@ bool ListToolsFromServer(
 	return true;
 }
 
+bool ListToolsFromServer(
+	const AIChatMcpServerConfig& server,
+	std::vector<AIChatMcpToolInfo>& outTools,
+	std::string& outError,
+	HttpRequestCancellation* cancellation)
+{
+	outTools.clear();
+	outError.clear();
+	if (IsStdioTransport(server)) {
+		StdioMcpSession session;
+		if (!session.Start(server, outError)) {
+			return false;
+		}
+		if (!InitializeStdioSession(session, server, outError, cancellation)) {
+			return false;
+		}
+		return ListToolsFromInitializedTransport(
+			server,
+			[&session, &server, cancellation]() {
+				nlohmann::json params = nlohmann::json::object();
+				LogMcpJsonRpcRequest(server, "tools/list", params);
+				return session.Post(server, "tools/list", params, 2, false, cancellation);
+			},
+			outTools,
+			outError);
+	}
+
+	std::string sessionId;
+	if (!InitializeHttpSession(server, sessionId, outError, cancellation)) {
+		return false;
+	}
+
+	return ListToolsFromInitializedTransport(
+		server,
+		[&server, &sessionId, cancellation]() {
+			return PostHttpJsonRpc(server, "tools/list", nlohmann::json::object(), 2, false, sessionId, cancellation);
+		},
+		outTools,
+		outError);
+}
+
 nlohmann::json BuildCatalogItem(const AIChatMcpToolInfo& tool)
 {
 	std::string description = tool.description;
@@ -1012,7 +1597,15 @@ std::vector<AIChatMcpToolInfo> RefreshToolsLocked(const AIChatMcpConfig& config,
 	std::vector<AIChatMcpToolInfo> tools;
 	std::unordered_map<std::string, McpToolMapping> mappings;
 	for (const auto& server : config.servers) {
-		if (!server.enabled || TrimAscii(server.url).empty()) {
+		if (!server.enabled) {
+			continue;
+		}
+		if (IsStdioTransport(server)) {
+			if (TrimAscii(server.command).empty()) {
+				continue;
+			}
+		}
+		else if (TrimAscii(server.url).empty()) {
 			continue;
 		}
 		std::vector<AIChatMcpToolInfo> serverTools;
@@ -1233,17 +1826,31 @@ AIChatMcpExecutionResult CallMcpTool(
 		return BuildErrorExecutionResult(&mapping, "MCP tool arguments must be a JSON object", false, false, 0);
 	}
 
-	std::string sessionId;
-	std::string error;
-	if (!InitializeSession(mapping.server, sessionId, error, cancellation)) {
-		return BuildErrorExecutionResult(&mapping, error.empty() ? "initialize failed" : error, false, false, 0);
-	}
-
 	nlohmann::json params = {
 		{"name", mapping.tool.originalName},
 		{"arguments", arguments}
 	};
-	JsonRpcResult called = PostJsonRpc(mapping.server, "tools/call", params, 2, false, sessionId, cancellation);
+	JsonRpcResult called;
+	if (IsStdioTransport(mapping.server)) {
+		std::string error;
+		StdioMcpSession session;
+		if (!session.Start(mapping.server, error)) {
+			return BuildErrorExecutionResult(&mapping, error.empty() ? "stdio process start failed" : error, false, false, 0);
+		}
+		if (!InitializeStdioSession(session, mapping.server, error, cancellation)) {
+			return BuildErrorExecutionResult(&mapping, error.empty() ? "initialize failed" : error, false, false, 0);
+		}
+		LogMcpJsonRpcRequest(mapping.server, "tools/call", params);
+		called = session.Post(mapping.server, "tools/call", params, 2, false, cancellation);
+	}
+	else {
+		std::string sessionId;
+		std::string error;
+		if (!InitializeHttpSession(mapping.server, sessionId, error, cancellation)) {
+			return BuildErrorExecutionResult(&mapping, error.empty() ? "initialize failed" : error, false, false, 0);
+		}
+		called = PostHttpJsonRpc(mapping.server, "tools/call", params, 2, false, sessionId, cancellation);
+	}
 	if (!called.ok) {
 		return BuildErrorExecutionResult(
 			&mapping,

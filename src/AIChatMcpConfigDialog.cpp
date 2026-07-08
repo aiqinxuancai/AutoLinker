@@ -25,6 +25,7 @@ constexpr int kCancelId = 1103;
 constexpr int kTemplateId = 1104;
 constexpr UINT_PTR kMcpWebViewInitTimerId = 0xAD01;
 constexpr UINT kMcpWebViewInitTimeoutMs = 12000;
+constexpr const wchar_t* kMcpDialogTitle = L"AutoLinker MCP 设置";
 
 struct McpConfigDialogContext {
 	HWND hEdit = nullptr;
@@ -52,6 +53,108 @@ struct McpWebViewRunResult {
 	bool saved = false;
 	bool fallbackRequested = false;
 };
+
+HMODULE GetCurrentModuleHandleLocal()
+{
+	HMODULE module = nullptr;
+	GetModuleHandleExW(
+		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		reinterpret_cast<LPCWSTR>(&GetCurrentModuleHandleLocal),
+		&module);
+	return module;
+}
+
+HICON LoadAppIconHandleLocal(int cx, int cy)
+{
+	const HMODULE module = GetCurrentModuleHandleLocal();
+	if (module == nullptr) {
+		return nullptr;
+	}
+	return reinterpret_cast<HICON>(LoadImageW(
+		module,
+		MAKEINTRESOURCEW(IDI_APP_ICON),
+		IMAGE_ICON,
+		cx,
+		cy,
+		LR_DEFAULTCOLOR));
+}
+
+HICON GetAppIconLargeLocal()
+{
+	static HICON s_largeIcon = LoadAppIconHandleLocal(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+	return s_largeIcon;
+}
+
+HICON GetAppIconSmallLocal()
+{
+	static HICON s_smallIcon = LoadAppIconHandleLocal(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+	return s_smallIcon;
+}
+
+void ApplyWindowIconLocal(HWND hWnd)
+{
+	if (hWnd == nullptr) {
+		return;
+	}
+	SendMessageW(hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(GetAppIconLargeLocal()));
+	SendMessageW(hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(GetAppIconSmallLocal()));
+}
+
+void CenterWindowOnOwnerOrScreenLocal(HWND hDialog, HWND owner)
+{
+	if (hDialog == nullptr || !IsWindow(hDialog)) {
+		return;
+	}
+
+	RECT dlgRc = {};
+	if (GetWindowRect(hDialog, &dlgRc) == FALSE) {
+		return;
+	}
+	const int dlgW = dlgRc.right - dlgRc.left;
+	const int dlgH = dlgRc.bottom - dlgRc.top;
+
+	RECT refRc = {};
+	bool haveRef = false;
+	if (owner != nullptr && IsWindow(owner) && !IsIconic(owner)) {
+		haveRef = GetWindowRect(owner, &refRc) != FALSE;
+	}
+	if (!haveRef) {
+		HMONITOR hMon = MonitorFromWindow(hDialog, MONITOR_DEFAULTTOPRIMARY);
+		MONITORINFO mi = {};
+		mi.cbSize = sizeof(mi);
+		if (GetMonitorInfoW(hMon, &mi)) {
+			refRc = mi.rcWork;
+			haveRef = true;
+		}
+	}
+	if (!haveRef) {
+		return;
+	}
+
+	int x = refRc.left + ((refRc.right - refRc.left) - dlgW) / 2;
+	int y = refRc.top + ((refRc.bottom - refRc.top) - dlgH) / 2;
+
+	HMONITOR hMon = MonitorFromPoint(POINT{ x + dlgW / 2, y + dlgH / 2 }, MONITOR_DEFAULTTONEAREST);
+	MONITORINFO mi = {};
+	mi.cbSize = sizeof(mi);
+	if (GetMonitorInfoW(hMon, &mi)) {
+		const RECT& work = mi.rcWork;
+		if (x + dlgW > work.right) {
+			x = work.right - dlgW;
+		}
+		if (y + dlgH > work.bottom) {
+			y = work.bottom - dlgH;
+		}
+		if (x < work.left) {
+			x = work.left;
+		}
+		if (y < work.top) {
+			y = work.top;
+		}
+	}
+
+	SetWindowPos(hDialog, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
 
 std::string ReadCurrentConfigText()
 {
@@ -631,6 +734,7 @@ void RunMcpModalWindow(HWND owner, HWND hWnd, DoneGetter doneGetter)
 		EnableWindow(owner, FALSE);
 	}
 	if (hWnd != nullptr && IsWindow(hWnd)) {
+		CenterWindowOnOwnerOrScreenLocal(hWnd, owner);
 		ShowWindow(hWnd, SW_SHOW);
 		UpdateWindow(hWnd);
 	}
@@ -652,20 +756,23 @@ void RunMcpModalWindow(HWND owner, HWND hWnd, DoneGetter doneGetter)
 bool ShowAIChatMcpConfigDialogNative(HWND owner)
 {
 	const wchar_t* className = L"AutoLinkerAIChatMcpConfigDialogWindow";
-	WNDCLASSW wc = {};
+	WNDCLASSEXW wc = {};
+	wc.cbSize = sizeof(wc);
 	wc.lpfnWndProc = McpConfigDialogProc;
 	wc.hInstance = GetModuleHandleW(nullptr);
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
 	wc.lpszClassName = className;
-	RegisterClassW(&wc);
+	wc.hIcon = GetAppIconLargeLocal();
+	wc.hIconSm = GetAppIconSmallLocal();
+	RegisterClassExW(&wc);
 
 	McpConfigDialogContext ctx = {};
 	ctx.owner = owner;
 	HWND hWnd = CreateWindowExW(
 		WS_EX_DLGMODALFRAME,
 		className,
-		L"外部 MCP 服务器",
+		kMcpDialogTitle,
 		WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
 		CW_USEDEFAULT,
 		CW_USEDEFAULT,
@@ -679,6 +786,8 @@ bool ShowAIChatMcpConfigDialogNative(HWND owner)
 		return false;
 	}
 
+	ApplyWindowIconLocal(hWnd);
+	SetWindowTextW(hWnd, kMcpDialogTitle);
 	RunMcpModalWindow(owner, hWnd, [&ctx]() { return ctx.done; });
 	return ctx.saved;
 }
@@ -693,19 +802,22 @@ McpWebViewRunResult ShowAIChatMcpConfigDialogWebView(HWND owner)
 	}
 
 	const wchar_t* className = L"AutoLinkerAIChatMcpConfigWebViewDialogWindow";
-	WNDCLASSW wc = {};
+	WNDCLASSEXW wc = {};
+	wc.cbSize = sizeof(wc);
 	wc.lpfnWndProc = McpWebViewDialogProc;
 	wc.hInstance = GetModuleHandleW(nullptr);
 	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
 	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
 	wc.lpszClassName = className;
-	RegisterClassW(&wc);
+	wc.hIcon = GetAppIconLargeLocal();
+	wc.hIconSm = GetAppIconSmallLocal();
+	RegisterClassExW(&wc);
 
 	McpWebViewDialogContext ctx = {};
 	HWND hWnd = CreateWindowExW(
 		WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
 		className,
-		L"外部 MCP 服务器",
+		kMcpDialogTitle,
 		WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME,
 		CW_USEDEFAULT,
 		CW_USEDEFAULT,
@@ -721,6 +833,8 @@ McpWebViewRunResult ShowAIChatMcpConfigDialogWebView(HWND owner)
 		return result;
 	}
 
+	ApplyWindowIconLocal(hWnd);
+	SetWindowTextW(hWnd, kMcpDialogTitle);
 	RunMcpModalWindow(owner, hWnd, [&ctx]() { return ctx.done; });
 	result.saved = ctx.saved;
 	result.fallbackRequested = ctx.fallbackRequested;

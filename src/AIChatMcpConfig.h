@@ -10,14 +10,25 @@ struct AIChatMcpHeaderConfig {
 	std::string value;
 };
 
+// MCP stdio 环境变量配置。
+struct AIChatMcpEnvConfig {
+	std::string name;
+	std::string value;
+};
+
 // 外部 MCP 服务器配置。
 struct AIChatMcpServerConfig {
 	std::string id;
 	std::string name;
+	std::string transport = "streamable_http";
 	std::string url;
+	std::string command;
+	std::vector<std::string> arguments;
+	std::string workingDirectory;
 	bool enabled = false;
 	int timeoutMs = 120000;
 	std::vector<AIChatMcpHeaderConfig> headers;
+	std::vector<AIChatMcpEnvConfig> env;
 };
 
 // MCP 工具自动允许授权。

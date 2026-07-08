@@ -509,14 +509,14 @@ bool RunMcpMockRoundtripSelfTest(nlohmann::json& outCheck)
 		}
 
 		AIChatMcpConfig config;
-		config.servers.push_back({
-			"mock-mcp",
-			"Mock MCP",
-			server.Url(),
-			true,
-			30000,
-			{}
-		});
+		AIChatMcpServerConfig mcpServer;
+		mcpServer.id = "mock-mcp";
+		mcpServer.name = "Mock MCP";
+		mcpServer.transport = "streamable_http";
+		mcpServer.url = server.Url();
+		mcpServer.enabled = true;
+		mcpServer.timeoutMs = 30000;
+		config.servers.push_back(std::move(mcpServer));
 		if (!AIChatMcpConfigStore::Save(config, &error)) {
 			outCheck["error"] = error;
 			return false;
@@ -548,6 +548,76 @@ bool RunMcpMockRoundtripSelfTest(nlohmann::json& outCheck)
 		outCheck["ok"] = approved && execution.ok && execution.resultJsonLocal.find("mock echo") != std::string::npos;
 		if (!outCheck.value("ok", false)) {
 			outCheck["error"] = execution.errorUtf8.empty() ? "mock tools/call failed" : execution.errorUtf8;
+		}
+		return outCheck.value("ok", false);
+	}
+	catch (const std::exception& ex) {
+		outCheck["error"] = ex.what();
+		return false;
+	}
+	catch (...) {
+		outCheck["error"] = "unknown exception";
+		return false;
+	}
+}
+
+bool RunMcpStdioRoundtripSelfTest(nlohmann::json& outCheck)
+{
+	outCheck = {
+		{"name", "mock_stdio_roundtrip"},
+		{"ok", false}
+	};
+
+	ScopedMcpConfigBackup configBackup;
+	std::string error;
+	try {
+		char modulePath[MAX_PATH] = {};
+		if (GetModuleFileNameA(nullptr, modulePath, static_cast<DWORD>(sizeof(modulePath))) <= 0) {
+			outCheck["error"] = "GetModuleFileNameA failed";
+			return false;
+		}
+
+		AIChatMcpConfig config;
+		AIChatMcpServerConfig server;
+		server.id = "mock-stdio";
+		server.name = "Mock Stdio";
+		server.transport = "stdio";
+		server.command = modulePath;
+		server.arguments = { "mock-mcp-stdio" };
+		server.enabled = true;
+		server.timeoutMs = 30000;
+		config.servers.push_back(std::move(server));
+		if (!AIChatMcpConfigStore::Save(config, &error)) {
+			outCheck["error"] = error;
+			return false;
+		}
+
+		const std::vector<AIChatMcpToolInfo> tools = AIChatMcpClient::LoadEnabledTools();
+		outCheck["listed_tool_count"] = tools.size();
+		auto it = std::find_if(tools.begin(), tools.end(), [](const AIChatMcpToolInfo& tool) {
+			return tool.serverId == "mock-stdio" && tool.originalName == "echo";
+		});
+		if (it == tools.end()) {
+			outCheck["error"] = "mock stdio echo tool not listed";
+			return false;
+		}
+		outCheck["model_tool_name"] = it->modelName;
+
+		bool approved = false;
+		const AIChatMcpExecutionResult execution = AIChatMcpClient::ExecuteTool(
+			it->modelName,
+			R"({"text":"stdio-ok"})",
+			[&approved](const AIChatMcpApprovalContext&, bool& outAutoAllow) {
+				approved = true;
+				outAutoAllow = false;
+				return true;
+			});
+		outCheck["approval_called"] = approved;
+		outCheck["execution_ok"] = execution.ok;
+		outCheck["result"] = execution.resultJsonLocal;
+		outCheck["ok"] = approved && execution.ok && execution.resultJsonLocal.find("mock echo") != std::string::npos;
+		if (!outCheck.value("ok", false)) {
+			outCheck["error"] = execution.errorUtf8.empty() ? "mock stdio tools/call failed" : execution.errorUtf8;
 		}
 		return outCheck.value("ok", false);
 	}
@@ -1201,6 +1271,10 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	nlohmann::json mockRoundtripCheck;
 	RunMcpMockRoundtripSelfTest(mockRoundtripCheck);
 	report["checks"].push_back(mockRoundtripCheck);
+
+	nlohmann::json mockStdioRoundtripCheck;
+	RunMcpStdioRoundtripSelfTest(mockStdioRoundtripCheck);
+	report["checks"].push_back(mockStdioRoundtripCheck);
 
 	bool ok = report.value("ok", false);
 	for (const auto& check : report["checks"]) {

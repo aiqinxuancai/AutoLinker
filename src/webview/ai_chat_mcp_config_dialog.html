@@ -99,6 +99,16 @@ function headersToText(headers) {
 	}).join("\n");
 }
 
+function envToText(env) {
+	return (env || []).map(function(item) {
+		return (item.name || "") + "=" + (item.value || "");
+	}).join("\n");
+}
+
+function argumentsToText(args) {
+	return (args || []).join("\n");
+}
+
 function parseHeaders(text, label) {
 	var headers = [];
 	var lines = String(text || "").split(/\r?\n/);
@@ -121,14 +131,50 @@ function parseHeaders(text, label) {
 	return headers;
 }
 
+function parseEnv(text, label) {
+	var env = [];
+	var lines = String(text || "").split(/\r?\n/);
+	for (var i = 0; i < lines.length; i++) {
+		var line = trimText(lines[i]);
+		if (!line) {
+			continue;
+		}
+		var eq = line.indexOf("=");
+		if (eq <= 0) {
+			throw new Error(label + " 环境变量第 " + (i + 1) + " 行格式无效，需要 NAME=VALUE。");
+		}
+		var name = trimText(line.slice(0, eq));
+		var value = line.slice(eq + 1);
+		if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+			throw new Error(label + " 环境变量第 " + (i + 1) + " 行名称无效。");
+		}
+		env.push({ name: name, value: value });
+	}
+	return env;
+}
+
+function parseArguments(text) {
+	return String(text || "").split(/\r?\n/).map(function(line) {
+		return trimText(line);
+	}).filter(function(line) {
+		return !!line;
+	});
+}
+
 function normalizeServer(server) {
+	var transport = server.transport === "stdio" ? "stdio" : "streamable_http";
 	return {
 		id: server.id || slugify(server.name || server.url || ""),
 		name: server.name || server.id || "MCP Server",
+		transport: transport,
 		url: server.url || "",
+		command: server.command || "",
+		arguments: Array.isArray(server.arguments) ? server.arguments : (Array.isArray(server.args) ? server.args : []),
+		working_directory: server.working_directory || server.cwd || "",
 		enabled: !!server.enabled,
 		timeout_ms: parseInt(server.timeout_ms, 10) || 120000,
-		headers: Array.isArray(server.headers) ? server.headers : []
+		headers: Array.isArray(server.headers) ? server.headers : [],
+		env: Array.isArray(server.env) ? server.env : []
 	};
 }
 
@@ -155,10 +201,22 @@ function render() {
 				'<div><label class="ui-label">ID</label><input class="server-id ui-input" data-index="' + index + '" value="' + escapeHtml(server.id) + '" autocomplete="off"></div>' +
 				'<div><label class="ui-label">名称</label><input class="server-name ui-input" data-index="' + index + '" value="' + escapeHtml(server.name) + '" autocomplete="off"></div>' +
 			'</div>' +
-			'<div class="mt-3"><label class="ui-label">Streamable HTTP URL</label><input class="server-url ui-input" data-index="' + index + '" value="' + escapeHtml(server.url) + '" placeholder="http://127.0.0.1:8765/mcp" autocomplete="off"></div>' +
-			'<div class="mt-3 grid gap-3 md:grid-cols-[160px_1fr]">' +
+			'<div class="mt-3 grid gap-3 md:grid-cols-[180px_1fr]">' +
+				'<div><label class="ui-label">传输</label><select class="server-transport ui-input" data-index="' + index + '">' +
+					'<option value="streamable_http"' + (server.transport !== "stdio" ? " selected" : "") + '>Streamable HTTP</option>' +
+					'<option value="stdio"' + (server.transport === "stdio" ? " selected" : "") + '>stdio 本地进程</option>' +
+				'</select></div>' +
 				'<div><label class="ui-label">超时 ms</label><input class="server-timeout ui-input" type="number" min="1000" max="600000" step="1000" data-index="' + index + '" value="' + escapeHtml(server.timeout_ms) + '"></div>' +
-				'<div><label class="ui-label">Headers</label><textarea class="server-headers ui-textarea min-h-[4.5rem]" data-index="' + index + '" placeholder="Authorization: Bearer xxx">' + escapeHtml(headersToText(server.headers)) + '</textarea></div>' +
+			'</div>' +
+			'<div class="http-fields mt-3" ' + (server.transport === "stdio" ? "hidden" : "") + '>' +
+				'<label class="ui-label">Streamable HTTP URL</label><input class="server-url ui-input" data-index="' + index + '" value="' + escapeHtml(server.url) + '" placeholder="http://127.0.0.1:8765/mcp" autocomplete="off">' +
+				'<div class="mt-3"><label class="ui-label">Headers</label><textarea class="server-headers ui-textarea min-h-[4.5rem]" data-index="' + index + '" placeholder="Authorization: Bearer xxx">' + escapeHtml(headersToText(server.headers)) + '</textarea></div>' +
+			'</div>' +
+			'<div class="stdio-fields mt-3 space-y-3" ' + (server.transport === "stdio" ? "" : "hidden") + '>' +
+				'<div><label class="ui-label">命令</label><input class="server-command ui-input" data-index="' + index + '" value="' + escapeHtml(server.command) + '" placeholder="node / python / npx / uvx / C:\\\\path\\\\server.exe" autocomplete="off"></div>' +
+				'<div><label class="ui-label">参数（每行一个）</label><textarea class="server-arguments ui-textarea min-h-[4.5rem]" data-index="' + index + '" placeholder="server.js\\n--stdio">' + escapeHtml(argumentsToText(server.arguments)) + '</textarea></div>' +
+				'<div><label class="ui-label">工作目录</label><input class="server-working-directory ui-input" data-index="' + index + '" value="' + escapeHtml(server.working_directory) + '" placeholder="可选" autocomplete="off"></div>' +
+				'<div><label class="ui-label">环境变量（每行 NAME=VALUE）</label><textarea class="server-env ui-textarea min-h-[4.5rem]" data-index="' + index + '" placeholder="API_KEY=xxx">' + escapeHtml(envToText(server.env)) + '</textarea></div>' +
 			'</div>';
 		list.appendChild(card);
 	});
@@ -173,11 +231,14 @@ function collect() {
 	for (var i = 0; i < cards.length; i++) {
 		var id = trimText(cards[i].querySelector(".server-id").value);
 		var name = trimText(cards[i].querySelector(".server-name").value);
+		var transport = cards[i].querySelector(".server-transport").value === "stdio" ? "stdio" : "streamable_http";
 		var url = trimText(cards[i].querySelector(".server-url").value);
+		var command = trimText(cards[i].querySelector(".server-command").value);
+		var workingDirectory = trimText(cards[i].querySelector(".server-working-directory").value);
 		var enabled = cards[i].querySelector(".server-enabled").checked;
 		var timeout = parseInt(cards[i].querySelector(".server-timeout").value, 10) || 120000;
 		if (!id) {
-			id = slugify(name || url);
+			id = slugify(name || url || command);
 		}
 		if (ids[id]) {
 			throw new Error("服务器 ID 重复：" + id);
@@ -186,17 +247,25 @@ function collect() {
 		if (!name) {
 			throw new Error("服务器名称不能为空。");
 		}
-		if (enabled && !/^https?:\/\//i.test(url)) {
+		if (enabled && transport === "streamable_http" && !/^https?:\/\//i.test(url)) {
 			throw new Error("已启用服务器必须填写 http:// 或 https:// URL。");
+		}
+		if (enabled && transport === "stdio" && !command) {
+			throw new Error("已启用 stdio 服务器必须填写命令。");
 		}
 		timeout = Math.max(1000, Math.min(600000, timeout));
 		servers.push({
 			id: id,
 			name: name,
+			transport: transport,
 			url: url,
+			command: command,
+			arguments: parseArguments(cards[i].querySelector(".server-arguments").value),
+			working_directory: workingDirectory,
 			enabled: enabled,
 			timeout_ms: timeout,
-			headers: parseHeaders(cards[i].querySelector(".server-headers").value, name)
+			headers: parseHeaders(cards[i].querySelector(".server-headers").value, name),
+			env: parseEnv(cards[i].querySelector(".server-env").value, name)
 		});
 	}
 	return {
@@ -210,10 +279,15 @@ function addServer(server) {
 	state.servers.push(normalizeServer(server || {
 		id: "mcp-" + Date.now(),
 		name: "MCP Server",
+		transport: "streamable_http",
 		url: "http://127.0.0.1:8765/mcp",
+		command: "",
+		arguments: [],
+		working_directory: "",
 		enabled: false,
 		timeout_ms: 120000,
-		headers: []
+		headers: [],
+		env: []
 	}));
 	render();
 }
@@ -240,8 +314,9 @@ $("resetExampleBtn").addEventListener("click", function() {
 	state = {
 		version: 1,
 		servers: [
-			{ id: "ida-pro", name: "IDA Pro", url: "http://127.0.0.1:8765/mcp", enabled: false, timeout_ms: 120000, headers: [] },
-			{ id: "design-mcp", name: "Design MCP", url: "http://127.0.0.1:8770/mcp", enabled: false, timeout_ms: 120000, headers: [] }
+			{ id: "ida-pro", name: "IDA Pro", transport: "streamable_http", url: "http://127.0.0.1:8765/mcp", command: "", arguments: [], working_directory: "", enabled: false, timeout_ms: 120000, headers: [], env: [] },
+			{ id: "design-mcp", name: "Design MCP", transport: "streamable_http", url: "http://127.0.0.1:8770/mcp", command: "", arguments: [], working_directory: "", enabled: false, timeout_ms: 120000, headers: [], env: [] },
+			{ id: "stdio-example", name: "本地 stdio MCP 示例", transport: "stdio", url: "", command: "npx", arguments: ["-y", "@modelcontextprotocol/server-filesystem", "D:\\git"], working_directory: "", enabled: false, timeout_ms: 120000, headers: [], env: [] }
 		],
 		approval_grants: []
 	};
@@ -269,6 +344,20 @@ $("serverList").addEventListener("click", function(e) {
 		state.servers.splice(index, 1);
 		render();
 	}
+});
+
+$("serverList").addEventListener("change", function(e) {
+	var select = e.target && e.target.closest ? e.target.closest(".server-transport") : null;
+	if (!select) {
+		return;
+	}
+	var card = select.closest("section");
+	if (!card) {
+		return;
+	}
+	var isStdio = select.value === "stdio";
+	card.querySelector(".http-fields").hidden = isStdio;
+	card.querySelector(".stdio-fields").hidden = !isStdio;
 });
 
 $("saveBtn").addEventListener("click", function() {
