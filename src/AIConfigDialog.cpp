@@ -61,6 +61,7 @@ constexpr UINT kAIConfigNativePresetMenuBase = 30000;
 constexpr int IDC_PREVIEW_EDIT = 1101;
 constexpr int IDC_PREVIEW_OK = 1;
 constexpr int IDC_PREVIEW_SECONDARY = 1102;
+constexpr int IDC_PREVIEW_TERTIARY = 1103;
 constexpr int IDC_PREVIEW_CANCEL = 2;
 
 constexpr int IDC_INPUT_EDIT = 1201;
@@ -577,6 +578,7 @@ struct AIPreviewWebViewDialogContext {
 	std::string content;
 	std::string primaryText;
 	std::string secondaryText;
+	std::string tertiaryText;
 	AIPreviewAction action = AIPreviewAction::Cancel;
 	bool fallbackRequested = false;
 	bool webViewReady = false;
@@ -2408,6 +2410,7 @@ std::string BuildAIPreviewWebViewPayloadJson(const AIPreviewWebViewDialogContext
 	payload["content"] = LocalToUtf8Text(ctx.content);
 	payload["primaryText"] = LocalToUtf8Text(ctx.primaryText);
 	payload["secondaryText"] = LocalToUtf8Text(ctx.secondaryText);
+	payload["tertiaryText"] = LocalToUtf8Text(ctx.tertiaryText);
 	return payload.dump();
 }
 
@@ -2558,6 +2561,10 @@ void StartAIPreviewWebView(HWND hWnd, AIPreviewWebViewDialogContext* ctx)
 											}
 											else if (action == "secondary") {
 												messageCtx->action = AIPreviewAction::SecondaryConfirm;
+												DestroyWindow(hWnd);
+											}
+											else if (action == "tertiary") {
+												messageCtx->action = AIPreviewAction::TertiaryConfirm;
 												DestroyWindow(hWnd);
 											}
 											else if (action == "cancel") {
@@ -2739,10 +2746,12 @@ struct AIPreviewDialogContext {
 	std::string content;
 	std::string primaryText;
 	std::string secondaryText;
+	std::string tertiaryText;
 	AIPreviewAction action = AIPreviewAction::Cancel;
 	HWND hEdit = nullptr;
 	HWND hPrimary = nullptr;
 	HWND hSecondary = nullptr;
+	HWND hTertiary = nullptr;
 	HWND hCancel = nullptr;
 };
 
@@ -2764,7 +2773,7 @@ void LayoutAIPreviewDialog(HWND hWnd, AIPreviewDialogContext* ctx)
 	GetClientRect(hWnd, &rc);
 	const int margin = 14;
 	const int gap = 8;
-	const int buttonW = 120;
+	const int buttonW = ctx->tertiaryText.empty() ? 120 : 150;
 	const int buttonH = 30;
 
 	int right = static_cast<int>(rc.right) - margin;
@@ -2776,6 +2785,10 @@ void LayoutAIPreviewDialog(HWND hWnd, AIPreviewDialogContext* ctx)
 	}
 	if (ctx->hSecondary != nullptr) {
 		MoveWindow(ctx->hSecondary, right - buttonW, buttonTop, buttonW, buttonH, TRUE);
+		right -= (buttonW + gap);
+	}
+	if (ctx->hTertiary != nullptr) {
+		MoveWindow(ctx->hTertiary, right - buttonW, buttonTop, buttonW, buttonH, TRUE);
 		right -= (buttonW + gap);
 	}
 	if (ctx->hPrimary != nullptr) {
@@ -2824,6 +2837,12 @@ LRESULT CALLBACK AIPreviewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 				460, 474, 120, 30, hWnd,
 				reinterpret_cast<HMENU>(IDC_PREVIEW_SECONDARY), nullptr, nullptr);
 		}
+		if (!ctx->tertiaryText.empty()) {
+			ctx->hTertiary = CreateWindowA("BUTTON", ctx->tertiaryText.c_str(),
+				WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+				330, 474, 150, 30, hWnd,
+				reinterpret_cast<HMENU>(IDC_PREVIEW_TERTIARY), nullptr, nullptr);
+		}
 
 		ctx->hCancel = CreateWindowW(L"BUTTON", L"\u53D6\u6D88",
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
@@ -2833,6 +2852,7 @@ LRESULT CALLBACK AIPreviewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 		SetDefaultFont(ctx->hEdit);
 		SetDefaultFont(ctx->hPrimary);
 		SetDefaultFont(ctx->hSecondary);
+		SetDefaultFont(ctx->hTertiary);
 		SetDefaultFont(ctx->hCancel);
 		LayoutAIPreviewDialog(hWnd, ctx);
 		SetFocus(ctx->hPrimary != nullptr ? ctx->hPrimary : ctx->hEdit);
@@ -2866,6 +2886,11 @@ LRESULT CALLBACK AIPreviewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 		}
 		if (id == IDC_PREVIEW_SECONDARY) {
 			ctx->action = AIPreviewAction::SecondaryConfirm;
+			DestroyWindow(hWnd);
+			return 0;
+		}
+		if (id == IDC_PREVIEW_TERTIARY) {
+			ctx->action = AIPreviewAction::TertiaryConfirm;
 			DestroyWindow(hWnd);
 			return 0;
 		}
@@ -3164,7 +3189,8 @@ AIPreviewAction ShowAIPreviewDialogNative(
 	const std::string& title,
 	const std::string& content,
 	const std::string& primaryText,
-	const std::string& secondaryText)
+	const std::string& secondaryText,
+	const std::string& tertiaryText)
 {
 	ComCtl6ActivationScope themeScope;
 	INITCOMMONCONTROLSEX icex = {};
@@ -3188,6 +3214,7 @@ AIPreviewAction ShowAIPreviewDialogNative(
 	ctx.content = content;
 	ctx.primaryText = primaryText.empty() ? "\u786E\u5B9A" : primaryText;
 	ctx.secondaryText = secondaryText;
+	ctx.tertiaryText = tertiaryText;
 	ctx.action = AIPreviewAction::Cancel;
 
 	HWND hDialog = CreateWindowExA(
@@ -3216,7 +3243,8 @@ AIPreviewWebViewRunResult ShowAIPreviewDialogWebView(
 	const std::string& title,
 	const std::string& content,
 	const std::string& primaryText,
-	const std::string& secondaryText)
+	const std::string& secondaryText,
+	const std::string& tertiaryText)
 {
 	AIPreviewWebViewRunResult result = {};
 	if (!IsWebView2RuntimeAvailableWithTag("AI Preview")) {
@@ -3247,6 +3275,7 @@ AIPreviewWebViewRunResult ShowAIPreviewDialogWebView(
 	ctx.content = content;
 	ctx.primaryText = primaryText.empty() ? "\u786E\u5B9A" : primaryText;
 	ctx.secondaryText = secondaryText;
+	ctx.tertiaryText = tertiaryText;
 	ctx.action = AIPreviewAction::Cancel;
 
 	HWND hDialog = CreateWindowExA(
@@ -3279,17 +3308,19 @@ AIPreviewAction ShowAIPreviewDialogEx(
 	const std::string& title,
 	const std::string& content,
 	const std::string& primaryText,
-	const std::string& secondaryText)
+	const std::string& secondaryText,
+	const std::string& tertiaryText)
 {
 	const AIPreviewWebViewRunResult webViewResult = ShowAIPreviewDialogWebView(
 		owner,
 		title,
 		content,
 		primaryText,
-		secondaryText);
+		secondaryText,
+		tertiaryText);
 	if (webViewResult.fallbackRequested) {
 		OutputStringToELog("[AI Preview][WebView2] fallback to native dialog");
-		return ShowAIPreviewDialogNative(owner, title, content, primaryText, secondaryText);
+		return ShowAIPreviewDialogNative(owner, title, content, primaryText, secondaryText, tertiaryText);
 	}
 	return webViewResult.action;
 }

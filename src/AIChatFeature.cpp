@@ -4818,10 +4818,15 @@ bool RequestConfirmationFromMainThread(
 	const std::string& primaryText,
 	const std::string& secondaryText,
 	bool& outAccepted,
-	bool& outSecondaryAccepted)
+	bool& outSecondaryAccepted,
+	const std::string& tertiaryText = "",
+	bool* outTertiaryAccepted = nullptr)
 {
 	outAccepted = false;
 	outSecondaryAccepted = false;
+	if (outTertiaryAccepted != nullptr) {
+		*outTertiaryAccepted = false;
+	}
 	if (g_mainWindow == nullptr || !IsWindow(g_mainWindow)) {
 		return false;
 	}
@@ -4832,6 +4837,7 @@ bool RequestConfirmationFromMainThread(
 	request.content = content;
 	request.primaryText = primaryText;
 	request.secondaryText = secondaryText;
+	request.tertiaryText = tertiaryText;
 	if (g_msgAIChatToolDialog == 0) {
 		return false;
 	}
@@ -4846,6 +4852,9 @@ bool RequestConfirmationFromMainThread(
 
 	outAccepted = request.accepted;
 	outSecondaryAccepted = request.secondaryAccepted;
+	if (outTertiaryAccepted != nullptr) {
+		*outTertiaryAccepted = request.tertiaryAccepted;
+	}
 	return true;
 }
 
@@ -6411,21 +6420,25 @@ bool HandleToolDialogRequest(LPARAM lParam)
 
 	bool accepted = false;
 	bool secondaryAccepted = false;
+	bool tertiaryAccepted = false;
 	if (request->kind == ToolDialogRequest::Kind::Confirmation) {
 		const AIPreviewAction action = ShowAIPreviewDialogEx(
 			g_mainWindow,
 			request->title.empty() ? "AI Tool Confirmation" : request->title,
 			request->content,
 			request->primaryText,
-			request->secondaryText);
+			request->secondaryText,
+			request->tertiaryText);
 		accepted = action == AIPreviewAction::PrimaryConfirm;
 		secondaryAccepted = action == AIPreviewAction::SecondaryConfirm;
+		tertiaryAccepted = action == AIPreviewAction::TertiaryConfirm;
 	}
 
 	{
 		std::lock_guard<std::mutex> guard(request->mutex);
 		request->accepted = accepted;
 		request->secondaryAccepted = secondaryAccepted;
+		request->tertiaryAccepted = tertiaryAccepted;
 		request->done = true;
 	}
 	request->cv.notify_one();
@@ -6686,9 +6699,19 @@ bool RequestConfirmationForTooling(
 	const std::string& primaryText,
 	const std::string& secondaryText,
 	bool& outAccepted,
-	bool& outSecondaryAccepted)
+	bool& outSecondaryAccepted,
+	const std::string& tertiaryText,
+	bool* outTertiaryAccepted)
 {
-	return RequestConfirmationFromMainThread(title, content, primaryText, secondaryText, outAccepted, outSecondaryAccepted);
+	return RequestConfirmationFromMainThread(
+		title,
+		content,
+		primaryText,
+		secondaryText,
+		outAccepted,
+		outSecondaryAccepted,
+		tertiaryText,
+		outTertiaryAccepted);
 }
 
 bool EnsureChatHostWindowCreated();

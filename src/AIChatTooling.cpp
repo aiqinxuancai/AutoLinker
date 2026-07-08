@@ -475,8 +475,9 @@ std::string ExecuteToolCallImpl(
 		const AIChatMcpExecutionResult result = AIChatMcpClient::ExecuteTool(
 			toolName,
 			argumentsJson,
-			[](const AIChatMcpApprovalContext& context, bool& outAutoAllow) {
+			[](const AIChatMcpApprovalContext& context, bool& outAutoAllow, bool& outAutoAllowServer) {
 				outAutoAllow = false;
+				outAutoAllowServer = false;
 				nlohmann::json parsedArgs = nlohmann::json::parse(context.argumentsJsonUtf8, nullptr, false);
 				std::string preview = parsedArgs.is_discarded()
 					? context.argumentsJsonUtf8
@@ -501,17 +502,21 @@ std::string ExecuteToolCallImpl(
 				content += Utf8ToLocalText(preview);
 				bool accepted = false;
 				bool secondaryAccepted = false;
+				bool tertiaryAccepted = false;
 				if (!RequestConfirmationForTooling(
 						LocalFromWide(L"批准外部 MCP 工具调用"),
 						content,
 						LocalFromWide(L"允许本次"),
 						LocalFromWide(L"自动允许该工具"),
 						accepted,
-						secondaryAccepted)) {
+						secondaryAccepted,
+						LocalFromWide(L"允许此 MCP 全部方法"),
+						&tertiaryAccepted)) {
 					return false;
 				}
 				outAutoAllow = secondaryAccepted;
-				return accepted || secondaryAccepted;
+				outAutoAllowServer = tertiaryAccepted;
+				return accepted || secondaryAccepted || tertiaryAccepted;
 			},
 			cancelCallback,
 			cancellation);

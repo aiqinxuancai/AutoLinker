@@ -122,6 +122,12 @@ p {
 	color: #fff;
 }
 
+.btn.tertiary {
+	background: #2f6f4e;
+	border-color: #2f6f4e;
+	color: #fff;
+}
+
 .btn[hidden] {
 	display: none !important;
 }
@@ -167,6 +173,7 @@ p {
 	</div>
 	<div class="footer">
 		<button id="cancelBtn" class="btn" type="button">&#x53D6;&#x6D88;</button>
+		<button id="tertiaryBtn" class="btn tertiary" type="button" hidden>&#x7B2C;&#x4E09;&#x64CD;&#x4F5C;</button>
 		<button id="secondaryBtn" class="btn secondary" type="button" hidden>&#x6B21;&#x8981;&#x64CD;&#x4F5C;</button>
 		<button id="primaryBtn" class="btn primary" type="button">&#x786E;&#x5B9A;</button>
 	</div>
@@ -176,7 +183,8 @@ const initialPreview = {
 	title: "",
 	content: "",
 	primaryText: "\u786E\u5B9A",
-	secondaryText: ""
+	secondaryText: "",
+	tertiaryText: ""
 };
 
 function $(id) {
@@ -201,7 +209,7 @@ function applyPreview(preview) {
 	setText("dialogTitle", next.title || "AutoLinker AI Preview");
 	setText(
 		"dialogSubtitle",
-		next.secondaryText
+		(next.secondaryText || next.tertiaryText)
 			? "\u8BF7\u786E\u8BA4\u4EE5\u4E0B\u5185\u5BB9\uFF0C\u53EF\u4EE5\u9009\u62E9\u4E0D\u540C\u7684\u540E\u7EED\u52A8\u4F5C\u3002"
 			: "\u8BF7\u786E\u8BA4\u4EE5\u4E0B\u5185\u5BB9\uFF0C\u786E\u8BA4\u540E\u5C06\u7EE7\u7EED\u6267\u884C\u3002");
 	setText("contentView", next.content || "");
@@ -217,6 +225,15 @@ function applyPreview(preview) {
 		secondary.hidden = !hasSecondary;
 		if (hasSecondary) {
 			secondary.textContent = next.secondaryText;
+		}
+	}
+
+	const tertiary = $("tertiaryBtn");
+	if (tertiary) {
+		const hasTertiary = !!(next.tertiaryText && next.tertiaryText.length);
+		tertiary.hidden = !hasTertiary;
+		if (hasTertiary) {
+			tertiary.textContent = next.tertiaryText;
 		}
 	}
 }
@@ -237,6 +254,10 @@ $("primaryBtn").addEventListener("click", function() {
 
 $("secondaryBtn").addEventListener("click", function() {
 	post({ action: "secondary" });
+});
+
+$("tertiaryBtn").addEventListener("click", function() {
+	post({ action: "tertiary" });
 });
 
 $("cancelBtn").addEventListener("click", function() {

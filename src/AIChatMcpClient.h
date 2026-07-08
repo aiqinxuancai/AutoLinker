@@ -53,7 +53,10 @@ nlohmann::json AppendMcpToolsToCatalog(const nlohmann::json& baseCatalog);
 AIChatMcpExecutionResult ExecuteTool(
 	const std::string& modelToolName,
 	const std::string& argumentsJsonUtf8,
-	const std::function<bool(const AIChatMcpApprovalContext& context, bool& outAutoAllow)>& approvalCallback,
+	const std::function<bool(
+		const AIChatMcpApprovalContext& context,
+		bool& outAutoAllow,
+		bool& outAutoAllowServer)>& approvalCallback,
 	const std::function<bool()>& cancelCallback = {},
 	HttpRequestCancellation* cancellation = nullptr);
 // 构造无 IDE 依赖的自检报告。

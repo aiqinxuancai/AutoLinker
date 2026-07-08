@@ -537,17 +537,59 @@ bool RunMcpMockRoundtripSelfTest(nlohmann::json& outCheck)
 		const AIChatMcpExecutionResult execution = AIChatMcpClient::ExecuteTool(
 			it->modelName,
 			R"({"text":"\u4e2d\u6587\u53c2\u6570"})",
-			[&approved](const AIChatMcpApprovalContext&, bool& outAutoAllow) {
+			[&approved](const AIChatMcpApprovalContext&, bool& outAutoAllow, bool& outAutoAllowServer) {
 				approved = true;
-				outAutoAllow = true;
+				outAutoAllow = false;
+				outAutoAllowServer = true;
 				return true;
+			});
+		AIChatMcpConfig savedConfig;
+		const bool loadedSavedConfig = AIChatMcpConfigStore::Load(savedConfig, &error);
+		const bool serverGrantSaved = loadedSavedConfig && std::any_of(
+			savedConfig.approvalGrants.begin(),
+			savedConfig.approvalGrants.end(),
+			[](const AIChatMcpApprovalGrant& grant) {
+				return grant.serverId == "mock-mcp" &&
+					grant.toolName == "*" &&
+					grant.schemaHash == "*";
+			});
+		bool secondApprovalCalled = false;
+		const AIChatMcpExecutionResult secondExecution = AIChatMcpClient::ExecuteTool(
+			it->modelName,
+			R"({"text":"server-grant"})",
+			[&secondApprovalCalled](const AIChatMcpApprovalContext&, bool& outAutoAllow, bool& outAutoAllowServer) {
+				secondApprovalCalled = true;
+				outAutoAllow = false;
+				outAutoAllowServer = false;
+				return false;
 			});
 		outCheck["approval_called"] = approved;
 		outCheck["execution_ok"] = execution.ok;
 		outCheck["result"] = execution.resultJsonLocal;
-		outCheck["ok"] = approved && execution.ok && execution.resultJsonLocal.find("mock echo") != std::string::npos;
+		outCheck["server_grant_saved"] = serverGrantSaved;
+		outCheck["second_approval_called"] = secondApprovalCalled;
+		outCheck["second_execution_ok"] = secondExecution.ok;
+		outCheck["second_result"] = secondExecution.resultJsonLocal;
+		outCheck["ok"] = approved &&
+			execution.ok &&
+			execution.resultJsonLocal.find("mock echo") != std::string::npos &&
+			serverGrantSaved &&
+			!secondApprovalCalled &&
+			secondExecution.ok &&
+			secondExecution.resultJsonLocal.find("mock echo") != std::string::npos;
 		if (!outCheck.value("ok", false)) {
-			outCheck["error"] = execution.errorUtf8.empty() ? "mock tools/call failed" : execution.errorUtf8;
+			if (!loadedSavedConfig) {
+				outCheck["error"] = error.empty() ? "reload MCP config failed" : error;
+			}
+			else if (!execution.errorUtf8.empty()) {
+				outCheck["error"] = execution.errorUtf8;
+			}
+			else if (!secondExecution.errorUtf8.empty()) {
+				outCheck["error"] = secondExecution.errorUtf8;
+			}
+			else {
+				outCheck["error"] = "mock tools/call or server approval grant failed";
+			}
 		}
 		return outCheck.value("ok", false);
 	}
@@ -607,9 +649,10 @@ bool RunMcpStdioRoundtripSelfTest(nlohmann::json& outCheck)
 		const AIChatMcpExecutionResult execution = AIChatMcpClient::ExecuteTool(
 			it->modelName,
 			R"({"text":"stdio-ok"})",
-			[&approved](const AIChatMcpApprovalContext&, bool& outAutoAllow) {
+			[&approved](const AIChatMcpApprovalContext&, bool& outAutoAllow, bool& outAutoAllowServer) {
 				approved = true;
 				outAutoAllow = false;
+				outAutoAllowServer = false;
 				return true;
 			});
 		outCheck["approval_called"] = approved;

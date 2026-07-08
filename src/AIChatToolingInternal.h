@@ -31,8 +31,10 @@ struct ToolDialogRequest {
 	std::string content;
 	std::string primaryText;
 	std::string secondaryText;
+	std::string tertiaryText;
 	bool accepted = false;          // 用户点击了主确认按钮。
 	bool secondaryAccepted = false; // 用户点击了次确认按钮。
+	bool tertiaryAccepted = false;  // 用户点击了第三确认按钮。
 	bool done = false;
 	std::mutex mutex;
 	std::condition_variable cv;
@@ -53,4 +55,6 @@ bool RequestConfirmationForTooling(
 	const std::string& primaryText,
 	const std::string& secondaryText,
 	bool& outAccepted,
-	bool& outSecondaryAccepted);
+	bool& outSecondaryAccepted,
+	const std::string& tertiaryText = "",
+	bool* outTertiaryAccepted = nullptr);

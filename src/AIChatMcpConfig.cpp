@@ -511,9 +511,13 @@ bool HasApprovalGrant(
 	const std::string& schemaHash)
 {
 	for (const auto& grant : config.approvalGrants) {
-		if (grant.serverId == serverId &&
-			grant.toolName == toolName &&
-			grant.schemaHash == schemaHash) {
+		if (grant.serverId != serverId) {
+			continue;
+		}
+		if (grant.toolName == "*" && grant.schemaHash == "*") {
+			return true;
+		}
+		if (grant.toolName == toolName && grant.schemaHash == schemaHash) {
 			return true;
 		}
 	}

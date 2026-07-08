@@ -31,7 +31,7 @@ struct AIChatMcpServerConfig {
 	std::vector<AIChatMcpEnvConfig> env;
 };
 
-// MCP 工具自动允许授权。
+// MCP 工具自动允许授权。toolName/schemaHash 同为 "*" 表示整个 MCP 服务器授权。
 struct AIChatMcpApprovalGrant {
 	std::string serverId;
 	std::string toolName;

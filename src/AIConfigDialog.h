@@ -10,7 +10,8 @@
 enum class AIPreviewAction {
 	Cancel = 0,
 	PrimaryConfirm = 1,
-	SecondaryConfirm = 2
+	SecondaryConfirm = 2,
+	TertiaryConfirm = 3
 };
 
 bool ShowAIConfigDialog(HWND owner, AIJsonConfig& jsonConfig, AISettings& ioSettings);
@@ -24,6 +25,7 @@ AIPreviewAction ShowAIPreviewDialogEx(
 	const std::string& title,
 	const std::string& content,
 	const std::string& primaryText = "",
-	const std::string& secondaryText = "");
+	const std::string& secondaryText = "",
+	const std::string& tertiaryText = "");
 bool ShowAIPreviewDialog(HWND owner, const std::string& title, const std::string& content, const std::string& confirmText = "");
 bool ShowAITextInputDialog(HWND owner, const std::string& title, const std::string& hint, std::string& ioText);

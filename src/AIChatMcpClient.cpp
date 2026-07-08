@@ -1816,6 +1816,20 @@ void SaveGrant(const McpToolMapping& mapping)
 	}
 }
 
+void SaveServerGrant(const McpToolMapping& mapping)
+{
+	AIChatMcpConfig config;
+	std::string error;
+	if (!AIChatMcpConfigStore::Load(config, &error)) {
+		LogMcpLine("load MCP config before server grant failed: " + error);
+		return;
+	}
+	AIChatMcpConfigStore::UpsertApprovalGrant(config, mapping.tool.serverId, "*", "*");
+	if (!AIChatMcpConfigStore::Save(config, &error)) {
+		LogMcpLine("save MCP server approval grant failed: " + error);
+	}
+}
+
 AIChatMcpExecutionResult CallMcpTool(
 	const McpToolMapping& mapping,
 	const std::string& argumentsJsonUtf8,
@@ -1901,7 +1915,10 @@ nlohmann::json AppendMcpToolsToCatalog(const nlohmann::json& baseCatalog)
 AIChatMcpExecutionResult ExecuteTool(
 	const std::string& modelToolName,
 	const std::string& argumentsJsonUtf8,
-	const std::function<bool(const AIChatMcpApprovalContext& context, bool& outAutoAllow)>& approvalCallback,
+	const std::function<bool(
+		const AIChatMcpApprovalContext& context,
+		bool& outAutoAllow,
+		bool& outAutoAllowServer)>& approvalCallback,
 	const std::function<bool()>& cancelCallback,
 	HttpRequestCancellation* cancellation)
 {
@@ -1926,10 +1943,14 @@ AIChatMcpExecutionResult ExecuteTool(
 		approval.argumentsJsonUtf8 = argumentsJsonUtf8;
 
 		bool autoAllow = false;
-		if (!approvalCallback(approval, autoAllow)) {
+		bool autoAllowServer = false;
+		if (!approvalCallback(approval, autoAllow, autoAllowServer)) {
 			return BuildErrorExecutionResult(&mapping, "MCP tool execution denied by user", true, false, 0);
 		}
-		if (autoAllow) {
+		if (autoAllowServer) {
+			SaveServerGrant(mapping);
+		}
+		else if (autoAllow) {
 			SaveGrant(mapping);
 		}
 	}
