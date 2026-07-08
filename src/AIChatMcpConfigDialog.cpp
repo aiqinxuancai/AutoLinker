@@ -290,7 +290,7 @@ std::string BuildMcpWebViewConfigJson()
 			config.version = 1;
 		}
 	}
-	return AIChatMcpConfigStore::SerializeConfigJson(config, false);
+	return AIChatMcpConfigStore::SerializeConfigForUi(config);
 }
 
 void ExecuteMcpWebViewScript(McpWebViewDialogContext* ctx, const std::wstring& script)
@@ -351,7 +351,9 @@ bool TrySaveWebConfig(HWND hWnd, McpWebViewDialogContext* ctx, const nlohmann::j
 
 	std::string error;
 	const std::string configText = data.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
-	if (!AIChatMcpConfigStore::SaveJsonText(configText, &error)) {
+	// The WebView only edits the servers array; preserve the on-disk mcpServers
+	// block so read-only external servers survive a save.
+	if (!AIChatMcpConfigStore::SaveJsonText(configText, &error, /*preserveMissingMcpServers=*/true)) {
 		MessageBoxW(
 			hWnd,
 			Utf8ToWide(error.empty() ? std::string("保存失败。") : error).c_str(),

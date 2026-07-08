@@ -482,62 +482,33 @@ std::string DumpJsonPrettySafe(const nlohmann::json& value)
 
 bool ReadStdioMcpFrame(std::string& outBody)
 {
+	// MCP stdio transport: one newline-delimited JSON message per line.
 	outBody.clear();
-	std::string headers;
-	char ch = '\0';
-	while (std::cin.get(ch)) {
-		headers.push_back(ch);
-		if (headers.size() >= 4 && headers.substr(headers.size() - 4) == "\r\n\r\n") {
-			break;
+	std::string line;
+	while (std::getline(std::cin, line)) {
+		if (!line.empty() && line.back() == '\r') {
+			line.pop_back();
 		}
-		if (headers.size() >= 2 && headers.substr(headers.size() - 2) == "\n\n") {
-			break;
+		bool onlyWhitespace = true;
+		for (const char c : line) {
+			if (c != ' ' && c != '\t') {
+				onlyWhitespace = false;
+				break;
+			}
 		}
-		if (headers.size() > 64 * 1024) {
-			return false;
-		}
-	}
-	if (headers.empty()) {
-		return false;
-	}
-
-	size_t contentLength = 0;
-	size_t begin = 0;
-	while (begin <= headers.size()) {
-		size_t end = headers.find_first_of("\r\n", begin);
-		std::string line = end == std::string::npos ? headers.substr(begin) : headers.substr(begin, end - begin);
-		if (end == std::string::npos) {
-			begin = headers.size() + 1;
-		}
-		else if (headers[end] == '\r' && end + 1 < headers.size() && headers[end + 1] == '\n') {
-			begin = end + 2;
-		}
-		else {
-			begin = end + 1;
-		}
-		std::string lower = line;
-		std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
-			return static_cast<char>(std::tolower(c));
-		});
-		const std::string marker = "content-length:";
-		if (lower.rfind(marker, 0) != 0) {
+		if (onlyWhitespace) {
 			continue;
 		}
-		contentLength = static_cast<size_t>(std::strtoull(line.c_str() + marker.size(), nullptr, 10));
-		break;
+		outBody = line;
+		return true;
 	}
-	if (contentLength == 0) {
-		return false;
-	}
-	outBody.assign(contentLength, '\0');
-	std::cin.read(outBody.data(), static_cast<std::streamsize>(contentLength));
-	return static_cast<size_t>(std::cin.gcount()) == contentLength;
+	return false;
 }
 
 void WriteStdioMcpFrame(const nlohmann::json& value)
 {
 	const std::string body = DumpJsonCompactSafe(value);
-	std::cout << "Content-Length: " << body.size() << "\r\n\r\n" << body;
+	std::cout << body << "\n";
 	std::cout.flush();
 }
 

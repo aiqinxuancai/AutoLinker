@@ -32,6 +32,9 @@ struct McpToolMapping {
 
 struct McpToolCache {
 	std::mutex mutex;
+	// Serializes refreshes so their blocking network/subprocess I/O runs without
+	// holding `mutex`; cache readers only ever take `mutex` briefly.
+	std::mutex refreshMutex;
 	std::chrono::steady_clock::time_point refreshedAt = {};
 	std::string configFingerprint;
 	std::vector<AIChatMcpToolInfo> tools;
@@ -211,14 +214,38 @@ std::wstring BuildStdioEnvironmentBlock(const AIChatMcpServerConfig& server)
 		return std::wstring();
 	}
 
+	// Windows environment variable names are case-insensitive, so we key the
+	// merge on an upper-cased name to let a user override (e.g. PATH) replace an
+	// inherited variable of different casing (Path) instead of producing a
+	// duplicate, malformed block. The original casing is preserved for output.
+	const auto foldName = [](const std::wstring& name) {
+		std::wstring folded = name;
+		for (wchar_t& ch : folded) {
+			ch = static_cast<wchar_t>(::towupper(ch));
+		}
+		return folded;
+	};
+	// Find the '=' that separates name from value. Windows per-drive current
+	// directory variables are stored as "=C:=C:\path" (leading '='), so the real
+	// separator is searched starting after a possible leading '='.
+	const auto separatorPos = [](const std::wstring& entry) {
+		return entry.find(L'=', entry.rfind(L'=', 0) == 0 ? 1 : 0);
+	};
+
+	struct EnvValue {
+		std::wstring name;  // original casing preserved for the block
+		std::wstring value;
+	};
+	std::unordered_map<std::wstring, EnvValue> values;
+
 	LPWCH currentEnv = GetEnvironmentStringsW();
-	std::unordered_map<std::wstring, std::wstring> values;
 	if (currentEnv != nullptr) {
 		for (LPWCH p = currentEnv; *p != L'\0';) {
 			std::wstring entry = p;
-			const size_t eq = entry.find(L'=');
+			const size_t eq = separatorPos(entry);
 			if (eq != std::wstring::npos && eq > 0) {
-				values[entry.substr(0, eq)] = entry.substr(eq + 1);
+				const std::wstring name = entry.substr(0, eq);
+				values[foldName(name)] = { name, entry.substr(eq + 1) };
 			}
 			p += entry.size() + 1;
 		}
@@ -227,9 +254,14 @@ std::wstring BuildStdioEnvironmentBlock(const AIChatMcpServerConfig& server)
 
 	for (const auto& env : server.env) {
 		const std::wstring name = Utf8ToWideText(env.name);
-		if (!name.empty()) {
-			values[name] = Utf8ToWideText(env.value);
+		if (name.empty()) {
+			continue;
 		}
+		const std::wstring folded = foldName(name);
+		auto it = values.find(folded);
+		// Preserve the inherited casing when overriding an existing variable.
+		const std::wstring outName = it != values.end() ? it->second.name : name;
+		values[folded] = { outName, Utf8ToWideText(env.value) };
 	}
 
 	std::vector<std::wstring> keys;
@@ -237,15 +269,14 @@ std::wstring BuildStdioEnvironmentBlock(const AIChatMcpServerConfig& server)
 	for (const auto& item : values) {
 		keys.push_back(item.first);
 	}
-	std::sort(keys.begin(), keys.end(), [](const std::wstring& left, const std::wstring& right) {
-		return _wcsicmp(left.c_str(), right.c_str()) < 0;
-	});
+	std::sort(keys.begin(), keys.end());
 
 	std::wstring block;
 	for (const auto& key : keys) {
-		block += key;
+		const EnvValue& value = values[key];
+		block += value.name;
 		block.push_back(L'=');
-		block += values[key];
+		block += value.value;
 		block.push_back(L'\0');
 	}
 	block.push_back(L'\0');
@@ -1085,7 +1116,11 @@ private:
 		if (stdinWrite_ == nullptr) {
 			return false;
 		}
-		const std::string frame = "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n" + body;
+		// MCP stdio transport: messages are newline-delimited JSON and MUST NOT
+		// contain embedded newlines. The compact dump used by callers never emits
+		// newlines, so a single trailing '\n' fully frames the message.
+		std::string frame = body;
+		frame.push_back('\n');
 		return WriteAll(frame);
 	}
 
@@ -1108,63 +1143,31 @@ private:
 		return true;
 	}
 
-	static std::optional<size_t> TryParseContentLength(const std::string& headerText)
-	{
-		size_t begin = 0;
-		while (begin <= headerText.size()) {
-			size_t end = headerText.find_first_of("\r\n", begin);
-			std::string line = end == std::string::npos ? headerText.substr(begin) : headerText.substr(begin, end - begin);
-			if (end == std::string::npos) {
-				begin = headerText.size() + 1;
-			}
-			else if (headerText[end] == '\r' && end + 1 < headerText.size() && headerText[end + 1] == '\n') {
-				begin = end + 2;
-			}
-			else {
-				begin = end + 1;
-			}
-			const std::string lower = ToLowerAscii(TrimAscii(line));
-			const std::string marker = "content-length:";
-			if (lower.rfind(marker, 0) != 0) {
-				continue;
-			}
-			try {
-				return static_cast<size_t>(std::stoull(TrimAscii(line.substr(marker.size()))));
-			}
-			catch (...) {
-				return std::nullopt;
-			}
-		}
-		return std::nullopt;
-	}
-
+	// Extract one newline-delimited message from the buffer (MCP stdio transport).
+	// Returns the raw line (CR trimmed) without the delimiter; empty lines are
+	// skipped so blank separators between messages do not produce empty frames.
 	bool TryExtractFrame(std::string& buffer, std::string& outBody, std::string& outError)
 	{
-		const size_t headerEnd = buffer.find("\r\n\r\n");
-		const size_t delimiterSize = 4;
-		size_t actualHeaderEnd = headerEnd;
-		size_t actualDelimiterSize = delimiterSize;
-		if (actualHeaderEnd == std::string::npos) {
-			actualHeaderEnd = buffer.find("\n\n");
-			actualDelimiterSize = 2;
+		outError.clear();
+		size_t searchFrom = 0;
+		for (;;) {
+			const size_t newline = buffer.find('\n', searchFrom);
+			if (newline == std::string::npos) {
+				return false;
+			}
+			size_t lineEnd = newline;
+			if (lineEnd > 0 && buffer[lineEnd - 1] == '\r') {
+				--lineEnd;
+			}
+			std::string line = buffer.substr(0, lineEnd);
+			buffer.erase(0, newline + 1);
+			if (TrimAscii(line).empty()) {
+				searchFrom = 0;
+				continue;
+			}
+			outBody = std::move(line);
+			return true;
 		}
-		if (actualHeaderEnd == std::string::npos) {
-			return false;
-		}
-		const std::string headerText = buffer.substr(0, actualHeaderEnd);
-		const std::optional<size_t> contentLength = TryParseContentLength(headerText);
-		if (!contentLength) {
-			outError = "stdio frame missing Content-Length";
-			return false;
-		}
-		const size_t bodyStart = actualHeaderEnd + actualDelimiterSize;
-		if (buffer.size() < bodyStart + *contentLength) {
-			outError.clear();
-			return false;
-		}
-		outBody = buffer.substr(bodyStart, *contentLength);
-		buffer.erase(0, bodyStart + *contentLength);
-		return true;
 	}
 
 	static bool JsonRpcIdsEqual(const nlohmann::json& value, int expectedId)
@@ -1198,8 +1201,11 @@ private:
 
 			nlohmann::json parsed = nlohmann::json::parse(frameBody, nullptr, false);
 			if (parsed.is_discarded() || !parsed.is_object()) {
-				outError = "failed to parse JSON-RPC response";
-				return false;
+				// The MCP spec forbids servers from writing non-message data to
+				// stdout, but some launchers emit banners/warnings. Skip such lines
+				// rather than aborting the whole exchange.
+				LogMcpLine("skip non-JSON stdio line: " + TrimAscii(frameBody).substr(0, 200));
+				continue;
 			}
 			if (!parsed.contains("id")) {
 				const std::string method = parsed.value("method", std::string());
@@ -1276,6 +1282,21 @@ std::optional<nlohmann::json> ParseJsonObject(const std::string& text)
 	return std::nullopt;
 }
 
+// Compare a JSON-RPC "id" value against the integer id we sent.
+bool JsonRpcIdMatchesValue(const nlohmann::json& value, int expectedId)
+{
+	if (value.is_number_integer()) {
+		return value.get<long long>() == static_cast<long long>(expectedId);
+	}
+	if (value.is_number_unsigned()) {
+		return value.get<unsigned long long>() == static_cast<unsigned long long>(expectedId);
+	}
+	if (value.is_string()) {
+		return value.get<std::string>() == std::to_string(expectedId);
+	}
+	return false;
+}
+
 std::vector<nlohmann::json> ParseSseJsonObjects(const std::string& body)
 {
 	std::vector<nlohmann::json> objects;
@@ -1319,7 +1340,7 @@ std::vector<nlohmann::json> ParseSseJsonObjects(const std::string& body)
 	return objects;
 }
 
-JsonRpcResult ParseJsonRpcResponseBody(const HttpResponseDetails& response)
+JsonRpcResult ParseJsonRpcResponseBody(const HttpResponseDetails& response, int expectedId, bool notification)
 {
 	JsonRpcResult result;
 	result.httpStatus = response.statusCode;
@@ -1334,6 +1355,7 @@ JsonRpcResult ParseJsonRpcResponseBody(const HttpResponseDetails& response)
 		return result;
 	}
 	if (TrimAscii(response.body).empty()) {
+		// Notifications/responses are answered with 202 Accepted and no body.
 		result.ok = true;
 		result.payload = nlohmann::json::object();
 		return result;
@@ -1347,22 +1369,40 @@ JsonRpcResult ParseJsonRpcResponseBody(const HttpResponseDetails& response)
 		candidates = ParseSseJsonObjects(response.body);
 	}
 
+	// A JSON-RPC request must be answered by the object whose "id" matches the
+	// one we sent. The server MAY interleave notifications/requests (no matching
+	// id) before the response, so we must correlate rather than take the first.
+	const nlohmann::json* matched = nullptr;
 	for (const auto& candidate : candidates) {
-		if (!candidate.is_object()) {
+		if (!candidate.is_object() || !candidate.contains("id")) {
 			continue;
 		}
-		result.payload = candidate;
-		if (candidate.contains("error")) {
-			result.error = candidate["error"].is_object()
-				? candidate["error"].dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)
-				: candidate["error"].dump();
-			return result;
+		if (JsonRpcIdMatchesValue(candidate["id"], expectedId)) {
+			matched = &candidate;
+			break;
 		}
-		result.ok = true;
+	}
+
+	// Notifications have no response id; accept the first object as a courtesy.
+	if (matched == nullptr && notification && !candidates.empty() && candidates.front().is_object()) {
+		matched = &candidates.front();
+	}
+
+	if (matched == nullptr) {
+		result.error = candidates.empty()
+			? "failed to parse JSON-RPC response"
+			: std::format("no JSON-RPC response matched id={}", expectedId);
 		return result;
 	}
 
-	result.error = "failed to parse JSON-RPC response";
+	result.payload = *matched;
+	if (matched->contains("error")) {
+		result.error = (*matched)["error"].is_object()
+			? (*matched)["error"].dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)
+			: (*matched)["error"].dump();
+		return result;
+	}
+	result.ok = true;
 	return result;
 }
 
@@ -1387,7 +1427,7 @@ JsonRpcResult PostHttpJsonRpc(
 		false,
 		true,
 		cancellation);
-	JsonRpcResult result = ParseJsonRpcResponseBody(http);
+	JsonRpcResult result = ParseJsonRpcResponseBody(http, id, notification);
 	if (!result.sessionId.empty()) {
 		sessionId = result.sessionId;
 	}
@@ -1592,7 +1632,17 @@ std::string BuildConfigFingerprint(const AIChatMcpConfig& config)
 	return AIChatMcpConfigStore::SerializeConfigJson(copy, false);
 }
 
-std::vector<AIChatMcpToolInfo> RefreshToolsLocked(const AIChatMcpConfig& config, const std::string& fingerprint)
+// Whether the cache is fresh for `fingerprint`. Caller must hold data mutex.
+bool IsToolCacheFreshLocked(const std::string& fingerprint, std::chrono::steady_clock::time_point now)
+{
+	return g_toolCache.configFingerprint == fingerprint &&
+		!g_toolCache.tools.empty() &&
+		now - g_toolCache.refreshedAt < kToolCacheTtl;
+}
+
+// Query every enabled server for its tools. Performs blocking network/subprocess
+// I/O and MUST NOT be called while holding g_toolCache.mutex.
+std::vector<AIChatMcpToolInfo> RefreshTools(const AIChatMcpConfig& config, const std::string& fingerprint)
 {
 	std::vector<AIChatMcpToolInfo> tools;
 	std::unordered_map<std::string, McpToolMapping> mappings;
@@ -1622,6 +1672,8 @@ std::vector<AIChatMcpToolInfo> RefreshToolsLocked(const AIChatMcpConfig& config,
 			tools.push_back(std::move(tool));
 		}
 	}
+
+	std::lock_guard<std::mutex> guard(g_toolCache.mutex);
 	g_toolCache.configFingerprint = fingerprint;
 	g_toolCache.refreshedAt = std::chrono::steady_clock::now();
 	g_toolCache.tools = tools;
@@ -1638,15 +1690,27 @@ std::vector<AIChatMcpToolInfo> LoadEnabledToolsInternal(bool forceRefresh)
 		return {};
 	}
 	const std::string fingerprint = BuildConfigFingerprint(config);
-	std::lock_guard<std::mutex> guard(g_toolCache.mutex);
-	const auto now = std::chrono::steady_clock::now();
-	if (!forceRefresh &&
-		g_toolCache.configFingerprint == fingerprint &&
-		!g_toolCache.tools.empty() &&
-		now - g_toolCache.refreshedAt < kToolCacheTtl) {
-		return g_toolCache.tools;
+
+	// Fast path: a valid cache is served under the data mutex only, so a slow or
+	// hung server cannot block cache reads.
+	if (!forceRefresh) {
+		std::lock_guard<std::mutex> guard(g_toolCache.mutex);
+		if (IsToolCacheFreshLocked(fingerprint, std::chrono::steady_clock::now())) {
+			return g_toolCache.tools;
+		}
 	}
-	return RefreshToolsLocked(config, fingerprint);
+
+	// Serialize refreshes on a dedicated mutex so their blocking I/O does not
+	// hold the data mutex. Re-check under it in case another thread just
+	// refreshed while we were waiting.
+	std::lock_guard<std::mutex> refreshGuard(g_toolCache.refreshMutex);
+	if (!forceRefresh) {
+		std::lock_guard<std::mutex> guard(g_toolCache.mutex);
+		if (IsToolCacheFreshLocked(fingerprint, std::chrono::steady_clock::now())) {
+			return g_toolCache.tools;
+		}
+	}
+	return RefreshTools(config, fingerprint);
 }
 
 bool FindToolMapping(const std::string& modelToolName, McpToolMapping& outMapping)
@@ -1824,10 +1888,34 @@ void SaveServerGrant(const McpToolMapping& mapping)
 		LogMcpLine("load MCP config before server grant failed: " + error);
 		return;
 	}
-	AIChatMcpConfigStore::UpsertApprovalGrant(config, mapping.tool.serverId, "*", "*");
+	// "Allow all methods of this MCP" authorizes every tool the server currently
+	// exposes, recorded per-tool with its real schema hash. This keeps the
+	// convenience of a single approval while still re-prompting when the server
+	// later adds a new tool or changes an existing tool's input schema, rather
+	// than a blanket "*"/"*" grant that would silently trust anything.
+	size_t granted = 0;
+	{
+		std::lock_guard<std::mutex> guard(g_toolCache.mutex);
+		for (const auto& tool : g_toolCache.tools) {
+			if (tool.serverId != mapping.tool.serverId) {
+				continue;
+			}
+			AIChatMcpConfigStore::UpsertApprovalGrant(config, tool.serverId, tool.originalName, tool.schemaHash);
+			++granted;
+		}
+	}
+	// Always include the tool being approved, even if the cache is momentarily
+	// empty or out of date.
+	AIChatMcpConfigStore::UpsertApprovalGrant(
+		config,
+		mapping.tool.serverId,
+		mapping.tool.originalName,
+		mapping.tool.schemaHash);
 	if (!AIChatMcpConfigStore::Save(config, &error)) {
 		LogMcpLine("save MCP server approval grant failed: " + error);
+		return;
 	}
+	LogMcpLine(std::format("saved server-wide MCP grant for '{}' covering {} tool(s)", mapping.tool.serverId, granted));
 }
 
 AIChatMcpExecutionResult CallMcpTool(

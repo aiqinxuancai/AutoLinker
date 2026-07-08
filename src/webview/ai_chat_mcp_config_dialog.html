@@ -174,7 +174,8 @@ function normalizeServer(server) {
 		enabled: !!server.enabled,
 		timeout_ms: parseInt(server.timeout_ms, 10) || 120000,
 		headers: Array.isArray(server.headers) ? server.headers : [],
-		env: Array.isArray(server.env) ? server.env : []
+		env: Array.isArray(server.env) ? server.env : [],
+		read_only: !!server.read_only
 	};
 }
 
@@ -188,35 +189,40 @@ function render() {
 		if (server.enabled) {
 			enabledCount++;
 		}
+		var ro = !!server.read_only;
+		var dis = ro ? " disabled" : "";
 		var card = document.createElement("section");
-		card.className = "rounded-lg border border-slate-200 bg-white p-4";
+		card.className = "rounded-lg border border-slate-200 bg-white p-4" + (ro ? " opacity-90" : "");
+		card.setAttribute("data-read-only", ro ? "1" : "0");
 		card.innerHTML =
 			'<div class="flex flex-wrap items-center justify-between gap-2">' +
 				'<label class="inline-flex items-center gap-2 text-[13px] font-semibold text-slate-900">' +
-					'<input class="server-enabled h-4 w-4" type="checkbox" data-index="' + index + '"' + (server.enabled ? " checked" : "") + '>启用' +
+					'<input class="server-enabled h-4 w-4" type="checkbox" data-index="' + index + '"' + (server.enabled ? " checked" : "") + dis + '>启用' +
 				'</label>' +
-				'<button class="remove-server ui-btn" type="button" data-index="' + index + '">删除</button>' +
+				(ro
+					? '<span class="ui-badge rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500" title="来自 mcpServers 段，由外部配置管理，此处只读">只读 (mcpServers)</span>'
+					: '<button class="remove-server ui-btn" type="button" data-index="' + index + '">删除</button>') +
 			'</div>' +
 			'<div class="mt-3 grid gap-3 md:grid-cols-2">' +
-				'<div><label class="ui-label">ID</label><input class="server-id ui-input" data-index="' + index + '" value="' + escapeHtml(server.id) + '" autocomplete="off"></div>' +
-				'<div><label class="ui-label">名称</label><input class="server-name ui-input" data-index="' + index + '" value="' + escapeHtml(server.name) + '" autocomplete="off"></div>' +
+				'<div><label class="ui-label">ID</label><input class="server-id ui-input" data-index="' + index + '" value="' + escapeHtml(server.id) + '" autocomplete="off"' + dis + '></div>' +
+				'<div><label class="ui-label">名称</label><input class="server-name ui-input" data-index="' + index + '" value="' + escapeHtml(server.name) + '" autocomplete="off"' + dis + '></div>' +
 			'</div>' +
 			'<div class="mt-3 grid gap-3 md:grid-cols-[180px_1fr]">' +
-				'<div><label class="ui-label">传输</label><select class="server-transport ui-input" data-index="' + index + '">' +
+				'<div><label class="ui-label">传输</label><select class="server-transport ui-input" data-index="' + index + '"' + dis + '>' +
 					'<option value="streamable_http"' + (server.transport !== "stdio" ? " selected" : "") + '>Streamable HTTP</option>' +
 					'<option value="stdio"' + (server.transport === "stdio" ? " selected" : "") + '>stdio 本地进程</option>' +
 				'</select></div>' +
-				'<div><label class="ui-label">超时 ms</label><input class="server-timeout ui-input" type="number" min="1000" max="600000" step="1000" data-index="' + index + '" value="' + escapeHtml(server.timeout_ms) + '"></div>' +
+				'<div><label class="ui-label">超时 ms</label><input class="server-timeout ui-input" type="number" min="1000" max="600000" step="1000" data-index="' + index + '" value="' + escapeHtml(server.timeout_ms) + '"' + dis + '></div>' +
 			'</div>' +
 			'<div class="http-fields mt-3" ' + (server.transport === "stdio" ? "hidden" : "") + '>' +
-				'<label class="ui-label">Streamable HTTP URL</label><input class="server-url ui-input" data-index="' + index + '" value="' + escapeHtml(server.url) + '" placeholder="http://127.0.0.1:8765/mcp" autocomplete="off">' +
-				'<div class="mt-3"><label class="ui-label">Headers</label><textarea class="server-headers ui-textarea min-h-[4.5rem]" data-index="' + index + '" placeholder="Authorization: Bearer xxx">' + escapeHtml(headersToText(server.headers)) + '</textarea></div>' +
+				'<label class="ui-label">Streamable HTTP URL</label><input class="server-url ui-input" data-index="' + index + '" value="' + escapeHtml(server.url) + '" placeholder="http://127.0.0.1:8765/mcp" autocomplete="off"' + dis + '>' +
+				'<div class="mt-3"><label class="ui-label">Headers</label><textarea class="server-headers ui-textarea min-h-[4.5rem]" data-index="' + index + '" placeholder="Authorization: Bearer xxx"' + dis + '>' + escapeHtml(headersToText(server.headers)) + '</textarea></div>' +
 			'</div>' +
 			'<div class="stdio-fields mt-3 space-y-3" ' + (server.transport === "stdio" ? "" : "hidden") + '>' +
-				'<div><label class="ui-label">命令</label><input class="server-command ui-input" data-index="' + index + '" value="' + escapeHtml(server.command) + '" placeholder="node / python / npx / uvx / C:\\\\path\\\\server.exe" autocomplete="off"></div>' +
-				'<div><label class="ui-label">参数（每行一个）</label><textarea class="server-arguments ui-textarea min-h-[4.5rem]" data-index="' + index + '" placeholder="server.js\\n--stdio">' + escapeHtml(argumentsToText(server.arguments)) + '</textarea></div>' +
-				'<div><label class="ui-label">工作目录</label><input class="server-working-directory ui-input" data-index="' + index + '" value="' + escapeHtml(server.working_directory) + '" placeholder="可选" autocomplete="off"></div>' +
-				'<div><label class="ui-label">环境变量（每行 NAME=VALUE）</label><textarea class="server-env ui-textarea min-h-[4.5rem]" data-index="' + index + '" placeholder="API_KEY=xxx">' + escapeHtml(envToText(server.env)) + '</textarea></div>' +
+				'<div><label class="ui-label">命令</label><input class="server-command ui-input" data-index="' + index + '" value="' + escapeHtml(server.command) + '" placeholder="node / python / npx / uvx / C:\\\\path\\\\server.exe" autocomplete="off"' + dis + '></div>' +
+				'<div><label class="ui-label">参数（每行一个）</label><textarea class="server-arguments ui-textarea min-h-[4.5rem]" data-index="' + index + '" placeholder="server.js\\n--stdio"' + dis + '>' + escapeHtml(argumentsToText(server.arguments)) + '</textarea></div>' +
+				'<div><label class="ui-label">工作目录</label><input class="server-working-directory ui-input" data-index="' + index + '" value="' + escapeHtml(server.working_directory) + '" placeholder="可选" autocomplete="off"' + dis + '></div>' +
+				'<div><label class="ui-label">环境变量（每行 NAME=VALUE）</label><textarea class="server-env ui-textarea min-h-[4.5rem]" data-index="' + index + '" placeholder="API_KEY=xxx"' + dis + '>' + escapeHtml(envToText(server.env)) + '</textarea></div>' +
 			'</div>';
 		list.appendChild(card);
 	});
@@ -229,6 +235,11 @@ function collect() {
 	var ids = {};
 	var cards = document.querySelectorAll("#serverList section");
 	for (var i = 0; i < cards.length; i++) {
+		// Read-only servers come from the mcpServers block; the backend preserves
+		// that block verbatim, so we must not emit them into the servers array.
+		if (cards[i].getAttribute("data-read-only") === "1") {
+			continue;
+		}
 		var id = trimText(cards[i].querySelector(".server-id").value);
 		var name = trimText(cards[i].querySelector(".server-name").value);
 		var transport = cards[i].querySelector(".server-transport").value === "stdio" ? "stdio" : "streamable_http";

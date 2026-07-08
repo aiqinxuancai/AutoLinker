@@ -545,13 +545,18 @@ bool RunMcpMockRoundtripSelfTest(nlohmann::json& outCheck)
 			});
 		AIChatMcpConfig savedConfig;
 		const bool loadedSavedConfig = AIChatMcpConfigStore::Load(savedConfig, &error);
+		// "Allow all methods" now snapshots per-tool grants (server id + tool name
+		// + real schema hash) for every currently-known tool instead of a blanket
+		// "*"/"*" wildcard, so new/changed tools still re-prompt. Verify the echo
+		// tool's grant was recorded with its actual schema hash.
+		const std::string grantedSchemaHash = it->schemaHash;
 		const bool serverGrantSaved = loadedSavedConfig && std::any_of(
 			savedConfig.approvalGrants.begin(),
 			savedConfig.approvalGrants.end(),
-			[](const AIChatMcpApprovalGrant& grant) {
+			[&grantedSchemaHash](const AIChatMcpApprovalGrant& grant) {
 				return grant.serverId == "mock-mcp" &&
-					grant.toolName == "*" &&
-					grant.schemaHash == "*";
+					grant.toolName == "echo" &&
+					grant.schemaHash == grantedSchemaHash;
 			});
 		bool secondApprovalCalled = false;
 		const AIChatMcpExecutionResult secondExecution = AIChatMcpClient::ExecuteTool(
@@ -672,6 +677,126 @@ bool RunMcpStdioRoundtripSelfTest(nlohmann::json& outCheck)
 		outCheck["error"] = "unknown exception";
 		return false;
 	}
+}
+
+// Regression coverage for MCP config parsing invariants added during the MCP
+// review: mcpServers preservation on save, CRLF header-injection rejection,
+// duplicate-id de-duplication, and explicit-transport handling.
+bool RunMcpConfigInvariantsSelfTest(nlohmann::json& outCheck)
+{
+	outCheck = { {"name", "config_invariants"}, {"ok", false} };
+	std::vector<std::string> failures;
+	ScopedMcpConfigBackup configBackup;
+
+	// 1. mcpServers block survives a servers-only save (WebView-style edit), but a
+	//    native raw-JSON save that drops it deletes it.
+	{
+		const std::string source = R"({
+			"version": 1,
+			"servers": [ {"id":"http-a","name":"A","transport":"streamable_http","url":"http://127.0.0.1:9/mcp","enabled":false} ],
+			"mcpServers": { "extern": {"command":"npx","args":["-y","srv"]} }
+		})";
+		AIChatMcpConfig parsed;
+		std::string error;
+		if (!AIChatMcpConfigStore::ParseConfigJson(source, parsed, error)) {
+			failures.push_back("parse mcpServers config failed: " + error);
+		}
+		else {
+			const bool externReadOnly = std::any_of(parsed.servers.begin(), parsed.servers.end(),
+				[](const AIChatMcpServerConfig& s) { return s.id == "extern" && s.readOnly && s.transport == "stdio"; });
+			if (!externReadOnly) {
+				failures.push_back("mcpServers entry not parsed as read-only stdio");
+			}
+		}
+
+		// Seed disk with the full config, then emulate a WebView save (servers only)
+		// with preserve=true: mcpServers must survive.
+		const std::string uiSave = R"({"version":1,"servers":[{"id":"http-a","name":"A","transport":"streamable_http","url":"http://127.0.0.1:9/mcp","enabled":false}],"approval_grants":[]})";
+		if (!AIChatMcpConfigStore::SaveJsonText(source, &error) ||
+			!AIChatMcpConfigStore::SaveJsonText(uiSave, &error, /*preserveMissingMcpServers=*/true)) {
+			failures.push_back("seed or WebView-style save failed: " + error);
+		}
+		else {
+			AIChatMcpConfig afterWeb;
+			AIChatMcpConfigStore::Load(afterWeb, nullptr);
+			const bool preserved = std::any_of(afterWeb.servers.begin(), afterWeb.servers.end(),
+				[](const AIChatMcpServerConfig& s) { return s.id == "extern" && s.readOnly; });
+			const bool noDup = std::count_if(afterWeb.servers.begin(), afterWeb.servers.end(),
+				[](const AIChatMcpServerConfig& s) { return s.id == "extern"; }) == 1;
+			if (!preserved) {
+				failures.push_back("mcpServers lost after WebView-style (preserve) save");
+			}
+			if (!noDup) {
+				failures.push_back("read-only server duplicated after preserve save");
+			}
+		}
+
+		// Emulate the native raw-JSON editor dropping mcpServers with preserve=false:
+		// the block must actually be deleted.
+		if (!AIChatMcpConfigStore::SaveJsonText(source, &error) ||
+			!AIChatMcpConfigStore::SaveJsonText(uiSave, &error, /*preserveMissingMcpServers=*/false)) {
+			failures.push_back("seed or native-style save failed: " + error);
+		}
+		else {
+			AIChatMcpConfig afterNative;
+			AIChatMcpConfigStore::Load(afterNative, nullptr);
+			const bool stillThere = std::any_of(afterNative.servers.begin(), afterNative.servers.end(),
+				[](const AIChatMcpServerConfig& s) { return s.id == "extern"; });
+			if (stillThere) {
+				failures.push_back("native-editor deletion of mcpServers was silently reverted");
+			}
+		}
+	}
+
+	// 2. CRLF in a header value is rejected (HTTP header injection).
+	{
+		const std::string source = R"({"servers":[{"id":"h","name":"H","transport":"streamable_http","url":"http://127.0.0.1:9/mcp","enabled":false,"headers":[{"name":"X-Test","value":"a\r\nAuthorization: bad"}]}]})";
+		AIChatMcpConfig parsed;
+		std::string error;
+		if (AIChatMcpConfigStore::ParseConfigJson(source, parsed, error)) {
+			failures.push_back("CRLF header value was accepted");
+		}
+	}
+
+	// 3. Colliding sanitized ids are made unique instead of overwriting.
+	{
+		const std::string source = R"({"servers":[
+			{"id":"My Server","name":"one","transport":"streamable_http","url":"http://127.0.0.1:9/mcp","enabled":false},
+			{"id":"my-server","name":"two","transport":"streamable_http","url":"http://127.0.0.1:9/mcp","enabled":false}
+		]})";
+		AIChatMcpConfig parsed;
+		std::string error;
+		if (!AIChatMcpConfigStore::ParseConfigJson(source, parsed, error)) {
+			failures.push_back("parse colliding-id config failed: " + error);
+		}
+		else if (parsed.servers.size() != 2 || parsed.servers[0].id == parsed.servers[1].id) {
+			failures.push_back("colliding server ids were not de-duplicated");
+		}
+	}
+
+	// 4. Explicit streamable_http transport is not overridden by a stray command.
+	{
+		const std::string source = R"({"mcpServers":{"x":{"transport":"streamable_http","url":"http://127.0.0.1:9/mcp","command":"leftover","enabled":false}}})";
+		AIChatMcpConfig parsed;
+		std::string error;
+		if (!AIChatMcpConfigStore::ParseConfigJson(source, parsed, error)) {
+			failures.push_back("parse explicit-transport config failed: " + error);
+		}
+		else {
+			const bool http = std::any_of(parsed.servers.begin(), parsed.servers.end(),
+				[](const AIChatMcpServerConfig& s) { return s.id == "x" && s.transport == "streamable_http"; });
+			if (!http) {
+				failures.push_back("explicit streamable_http overridden to stdio by command");
+			}
+		}
+	}
+
+	outCheck["ok"] = failures.empty();
+	if (!failures.empty()) {
+		outCheck["error"] = failures.front();
+		outCheck["failures"] = failures;
+	}
+	return failures.empty();
 }
 
 int RunOpenAIIntegrationTestInternal(
@@ -1318,6 +1443,10 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	nlohmann::json mockStdioRoundtripCheck;
 	RunMcpStdioRoundtripSelfTest(mockStdioRoundtripCheck);
 	report["checks"].push_back(mockStdioRoundtripCheck);
+
+	nlohmann::json configInvariantsCheck;
+	RunMcpConfigInvariantsSelfTest(configInvariantsCheck);
+	report["checks"].push_back(configInvariantsCheck);
 
 	bool ok = report.value("ok", false);
 	for (const auto& check : report["checks"]) {

@@ -20,6 +20,7 @@
 #include <set>
 #include <Shellapi.h>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <tlhelp32.h>
 #include <wrl.h>
@@ -326,6 +327,9 @@ UINT g_msgAIChatDone = 0;
 UINT g_msgAIChatToolDialog = 0;
 UINT g_msgAIChatToolExec = 0;
 UINT g_msgAIChatDebugRun = 0;
+std::mutex g_toolDialogRequestMutex;
+std::unordered_map<UINT_PTR, std::shared_ptr<ToolDialogRequest>> g_pendingToolDialogRequests;
+UINT_PTR g_nextToolDialogRequestId = 1;
 std::condition_variable g_chatRequestDoneCv;
 unsigned long long g_lastCompletedRequestId = 0;
 AIChatResult g_lastCompletedChatResult = {};
@@ -1565,8 +1569,10 @@ void FinishToolExecutionRequest(ToolExecutionRequest* request, bool ok, const st
 		request->ok = ok;
 		request->resultJson = resultJson;
 		request->done = true;
+		// Notify under the lock so the waiter cannot wake, return, and destroy
+		// the condition_variable before notify_one() runs.
+		request->cv.notify_one();
 	}
-	request->cv.notify_one();
 }
 
 std::string LowerAsciiCopy(std::string text)
@@ -4812,6 +4818,47 @@ bool EnsureChatSettingsReady(AISettings& settings)
 	return true;
 }
 
+UINT_PTR RegisterToolDialogRequest(const std::shared_ptr<ToolDialogRequest>& request)
+{
+	if (request == nullptr) {
+		return 0;
+	}
+
+	std::lock_guard<std::mutex> guard(g_toolDialogRequestMutex);
+	const UINT_PTR id = g_nextToolDialogRequestId++;
+	if (g_nextToolDialogRequestId == 0) {
+		g_nextToolDialogRequestId = 1;
+	}
+	g_pendingToolDialogRequests[id] = request;
+	return id;
+}
+
+std::shared_ptr<ToolDialogRequest> TakeToolDialogRequest(UINT_PTR id)
+{
+	if (id == 0) {
+		return nullptr;
+	}
+
+	std::lock_guard<std::mutex> guard(g_toolDialogRequestMutex);
+	const auto it = g_pendingToolDialogRequests.find(id);
+	if (it == g_pendingToolDialogRequests.end()) {
+		return nullptr;
+	}
+	std::shared_ptr<ToolDialogRequest> request = it->second;
+	g_pendingToolDialogRequests.erase(it);
+	return request;
+}
+
+void CancelToolDialogRequest(UINT_PTR id)
+{
+	if (id == 0) {
+		return;
+	}
+
+	std::lock_guard<std::mutex> guard(g_toolDialogRequestMutex);
+	g_pendingToolDialogRequests.erase(id);
+}
+
 bool RequestConfirmationFromMainThread(
 	const std::string& title,
 	const std::string& content,
@@ -4831,29 +4878,44 @@ bool RequestConfirmationFromMainThread(
 		return false;
 	}
 
-	ToolDialogRequest request = {};
-	request.kind = ToolDialogRequest::Kind::Confirmation;
-	request.title = title;
-	request.content = content;
-	request.primaryText = primaryText;
-	request.secondaryText = secondaryText;
-	request.tertiaryText = tertiaryText;
 	if (g_msgAIChatToolDialog == 0) {
 		return false;
 	}
-	if (PostMessage(g_mainWindow, g_msgAIChatToolDialog, 0, reinterpret_cast<LPARAM>(&request)) == FALSE) {
+
+	// Shared ownership: the main-thread handler takes the request from a registry
+	// by id. If this worker times out first, it removes the registry entry so a
+	// later stale message is ignored without leaking a handoff object.
+	auto request = std::make_shared<ToolDialogRequest>();
+	request->kind = ToolDialogRequest::Kind::Confirmation;
+	request->title = title;
+	request->content = content;
+	request->primaryText = primaryText;
+	request->secondaryText = secondaryText;
+	request->tertiaryText = tertiaryText;
+
+	const UINT_PTR requestId = RegisterToolDialogRequest(request);
+	if (requestId == 0) {
+		return false;
+	}
+	if (PostMessage(g_mainWindow, g_msgAIChatToolDialog, 0, static_cast<LPARAM>(requestId)) == FALSE) {
+		CancelToolDialogRequest(requestId);
 		return false;
 	}
 
-	std::unique_lock<std::mutex> lock(request.mutex);
-	if (!request.cv.wait_for(lock, std::chrono::minutes(20), [&request]() { return request.done; })) {
-		return false;
-	}
+	{
+		std::unique_lock<std::mutex> lock(request->mutex);
+		if (!request->cv.wait_for(lock, std::chrono::minutes(20), [&request]() { return request->done; })) {
+			// Timed out: remove the pending entry if the main thread has not taken
+			// it yet. If it has, that handler owns a shared reference until done.
+			CancelToolDialogRequest(requestId);
+			return false;
+		}
 
-	outAccepted = request.accepted;
-	outSecondaryAccepted = request.secondaryAccepted;
-	if (outTertiaryAccepted != nullptr) {
-		*outTertiaryAccepted = request.tertiaryAccepted;
+		outAccepted = request->accepted;
+		outSecondaryAccepted = request->secondaryAccepted;
+		if (outTertiaryAccepted != nullptr) {
+			*outTertiaryAccepted = request->tertiaryAccepted;
+		}
 	}
 	return true;
 }
@@ -6413,7 +6475,8 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 
 bool HandleToolDialogRequest(LPARAM lParam)
 {
-	auto* request = reinterpret_cast<ToolDialogRequest*>(lParam);
+	const auto requestId = static_cast<UINT_PTR>(lParam);
+	std::shared_ptr<ToolDialogRequest> request = TakeToolDialogRequest(requestId);
 	if (request == nullptr) {
 		return true;
 	}
@@ -6440,8 +6503,10 @@ bool HandleToolDialogRequest(LPARAM lParam)
 		request->secondaryAccepted = secondaryAccepted;
 		request->tertiaryAccepted = tertiaryAccepted;
 		request->done = true;
+		// Notify while holding the lock: even if the waiting worker had already
+		// timed out, our shared reference keeps the cv alive for this call.
+		request->cv.notify_one();
 	}
-	request->cv.notify_one();
 	return true;
 }
 
