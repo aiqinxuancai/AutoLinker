@@ -2807,6 +2807,11 @@ std::string NormalizeRealPageCodeLineForStructuralCompareForAI(const std::string
 	return normalized;
 }
 
+bool IsFullLineCommentForStructuralCompareForAI(const std::string& trimmedLine)
+{
+	return !trimmedLine.empty() && trimmedLine.front() == '\'';
+}
+
 std::vector<std::string> BuildRealPageStructuralFingerprintForAI(const std::string& text)
 {
 	const std::vector<std::string> lines = SplitRealCodeLines(
@@ -2816,7 +2821,9 @@ std::vector<std::string> BuildRealPageStructuralFingerprintForAI(const std::stri
 	fingerprint.reserve(lines.size());
 	for (const auto& line : lines) {
 		const std::string trimmedLine = TrimAsciiCopy(line);
-		if (trimmedLine.empty() || trimmedLine.rfind(".支持库", 0) == 0) {
+		if (trimmedLine.empty() ||
+			trimmedLine.rfind(".支持库", 0) == 0 ||
+			IsFullLineCommentForStructuralCompareForAI(trimmedLine)) {
 			continue;
 		}
 
