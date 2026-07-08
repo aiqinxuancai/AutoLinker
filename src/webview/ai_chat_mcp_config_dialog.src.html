@@ -1,0 +1,274 @@
+﻿<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light only">
+<style>
+/*__AUTOLINKER_AI_CONFIG_CSS__*/
+</style>
+</head>
+<body class="font-sans text-[13px] text-slate-900">
+<div class="flex min-h-full flex-col bg-white">
+	<header class="border-b border-slate-200 bg-white px-5 py-3">
+		<div class="flex items-center justify-between gap-3">
+			<div>
+				<h1 class="text-lg font-semibold leading-6 text-slate-950">外部 MCP 服务器</h1>
+				<p class="mt-1 text-[12px] leading-5 text-slate-500">AI 对话会把已启用服务器的 tools 合并到工具列表，调用前默认请求确认。</p>
+			</div>
+			<div class="flex items-center gap-2">
+				<button id="addServerBtn" class="ui-btn" type="button">新增服务器</button>
+				<button id="resetExampleBtn" class="ui-btn" type="button">示例</button>
+			</div>
+		</div>
+	</header>
+
+	<main class="min-h-0 flex-1 overflow-auto bg-white p-5">
+		<section class="rounded-lg border border-slate-200 bg-slate-50 p-4">
+			<div class="flex flex-wrap items-center justify-between gap-3">
+				<div>
+					<h2 class="text-[12px] font-semibold uppercase tracking-wide text-slate-500">服务器列表</h2>
+					<p id="summaryText" class="mt-1 text-[12px] leading-5 text-slate-500">0 个服务器</p>
+				</div>
+				<button id="clearGrantsBtn" class="ui-btn" type="button">清空自动允许</button>
+			</div>
+			<div id="serverList" class="mt-4 space-y-3"></div>
+			<div id="emptyState" class="mt-4 rounded-md border border-dashed border-slate-300 bg-white p-5 text-center text-[12px] text-slate-500" hidden>
+				还没有 MCP 服务器。
+			</div>
+		</section>
+	</main>
+
+	<footer class="flex flex-col-reverse gap-2 border-t border-slate-200 bg-white px-5 py-3 sm:flex-row sm:items-center sm:justify-end">
+		<button id="cancelBtn" class="ui-btn" type="button">取消</button>
+		<button id="saveBtn" class="ui-btn ui-btn-primary" type="button">保存</button>
+	</footer>
+</div>
+<script>
+/*__AUTOLINKER_PRELINE_JS__*/
+</script>
+<script>
+var state = {
+	version: 1,
+	servers: [],
+	approval_grants: []
+};
+
+function $(id) {
+	return document.getElementById(id);
+}
+
+function post(payload) {
+	if (window.chrome && window.chrome.webview) {
+		window.chrome.webview.postMessage(JSON.stringify(payload));
+	}
+}
+
+function trimText(value) {
+	return (value || "").trim();
+}
+
+function escapeHtml(text) {
+	return String(text || "").replace(/[&<>"']/g, function(ch) {
+		return ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch];
+	});
+}
+
+function slugify(text) {
+	var s = trimText(text).toLowerCase().replace(/[^a-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
+	return s || ("server-" + Date.now());
+}
+
+function headersToText(headers) {
+	return (headers || []).map(function(h) {
+		return (h.name || "") + ": " + (h.value || "");
+	}).join("\n");
+}
+
+function parseHeaders(text, label) {
+	var headers = [];
+	var lines = String(text || "").split(/\r?\n/);
+	for (var i = 0; i < lines.length; i++) {
+		var line = trimText(lines[i]);
+		if (!line) {
+			continue;
+		}
+		var colon = line.indexOf(":");
+		if (colon <= 0) {
+			throw new Error(label + " Headers 第 " + (i + 1) + " 行格式无效，需要 Header: Value。");
+		}
+		var name = trimText(line.slice(0, colon));
+		var value = trimText(line.slice(colon + 1));
+		if (!/^[!-9;-~]+$/.test(name)) {
+			throw new Error(label + " Headers 第 " + (i + 1) + " 行 Header 名称无效。");
+		}
+		headers.push({ name: name, value: value });
+	}
+	return headers;
+}
+
+function normalizeServer(server) {
+	return {
+		id: server.id || slugify(server.name || server.url || ""),
+		name: server.name || server.id || "MCP Server",
+		url: server.url || "",
+		enabled: !!server.enabled,
+		timeout_ms: parseInt(server.timeout_ms, 10) || 120000,
+		headers: Array.isArray(server.headers) ? server.headers : []
+	};
+}
+
+function render() {
+	var list = $("serverList");
+	var empty = $("emptyState");
+	var enabledCount = 0;
+	list.innerHTML = "";
+	state.servers = (state.servers || []).map(normalizeServer);
+	state.servers.forEach(function(server, index) {
+		if (server.enabled) {
+			enabledCount++;
+		}
+		var card = document.createElement("section");
+		card.className = "rounded-lg border border-slate-200 bg-white p-4";
+		card.innerHTML =
+			'<div class="flex flex-wrap items-center justify-between gap-2">' +
+				'<label class="inline-flex items-center gap-2 text-[13px] font-semibold text-slate-900">' +
+					'<input class="server-enabled h-4 w-4" type="checkbox" data-index="' + index + '"' + (server.enabled ? " checked" : "") + '>启用' +
+				'</label>' +
+				'<button class="remove-server ui-btn" type="button" data-index="' + index + '">删除</button>' +
+			'</div>' +
+			'<div class="mt-3 grid gap-3 md:grid-cols-2">' +
+				'<div><label class="ui-label">ID</label><input class="server-id ui-input" data-index="' + index + '" value="' + escapeHtml(server.id) + '" autocomplete="off"></div>' +
+				'<div><label class="ui-label">名称</label><input class="server-name ui-input" data-index="' + index + '" value="' + escapeHtml(server.name) + '" autocomplete="off"></div>' +
+			'</div>' +
+			'<div class="mt-3"><label class="ui-label">Streamable HTTP URL</label><input class="server-url ui-input" data-index="' + index + '" value="' + escapeHtml(server.url) + '" placeholder="http://127.0.0.1:8765/mcp" autocomplete="off"></div>' +
+			'<div class="mt-3 grid gap-3 md:grid-cols-[160px_1fr]">' +
+				'<div><label class="ui-label">超时 ms</label><input class="server-timeout ui-input" type="number" min="1000" max="600000" step="1000" data-index="' + index + '" value="' + escapeHtml(server.timeout_ms) + '"></div>' +
+				'<div><label class="ui-label">Headers</label><textarea class="server-headers ui-textarea min-h-[4.5rem]" data-index="' + index + '" placeholder="Authorization: Bearer xxx">' + escapeHtml(headersToText(server.headers)) + '</textarea></div>' +
+			'</div>';
+		list.appendChild(card);
+	});
+	empty.hidden = state.servers.length > 0;
+	$("summaryText").textContent = state.servers.length + " 个服务器，" + enabledCount + " 个已启用，" + (state.approval_grants || []).length + " 条自动允许记录";
+}
+
+function collect() {
+	var servers = [];
+	var ids = {};
+	var cards = document.querySelectorAll("#serverList section");
+	for (var i = 0; i < cards.length; i++) {
+		var id = trimText(cards[i].querySelector(".server-id").value);
+		var name = trimText(cards[i].querySelector(".server-name").value);
+		var url = trimText(cards[i].querySelector(".server-url").value);
+		var enabled = cards[i].querySelector(".server-enabled").checked;
+		var timeout = parseInt(cards[i].querySelector(".server-timeout").value, 10) || 120000;
+		if (!id) {
+			id = slugify(name || url);
+		}
+		if (ids[id]) {
+			throw new Error("服务器 ID 重复：" + id);
+		}
+		ids[id] = true;
+		if (!name) {
+			throw new Error("服务器名称不能为空。");
+		}
+		if (enabled && !/^https?:\/\//i.test(url)) {
+			throw new Error("已启用服务器必须填写 http:// 或 https:// URL。");
+		}
+		timeout = Math.max(1000, Math.min(600000, timeout));
+		servers.push({
+			id: id,
+			name: name,
+			url: url,
+			enabled: enabled,
+			timeout_ms: timeout,
+			headers: parseHeaders(cards[i].querySelector(".server-headers").value, name)
+		});
+	}
+	return {
+		version: state.version || 1,
+		servers: servers,
+		approval_grants: state.approval_grants || []
+	};
+}
+
+function addServer(server) {
+	state.servers.push(normalizeServer(server || {
+		id: "mcp-" + Date.now(),
+		name: "MCP Server",
+		url: "http://127.0.0.1:8765/mcp",
+		enabled: false,
+		timeout_ms: 120000,
+		headers: []
+	}));
+	render();
+}
+
+window.autolinkerApplyMcpConfig = function(config) {
+	state = config || state;
+	if (!Array.isArray(state.servers)) {
+		state.servers = [];
+	}
+	if (!Array.isArray(state.approval_grants)) {
+		state.approval_grants = [];
+	}
+	render();
+};
+
+$("addServerBtn").addEventListener("click", function() {
+	addServer();
+});
+
+$("resetExampleBtn").addEventListener("click", function() {
+	if (!confirm("用示例覆盖当前编辑内容？")) {
+		return;
+	}
+	state = {
+		version: 1,
+		servers: [
+			{ id: "ida-pro", name: "IDA Pro", url: "http://127.0.0.1:8765/mcp", enabled: false, timeout_ms: 120000, headers: [] },
+			{ id: "design-mcp", name: "Design MCP", url: "http://127.0.0.1:8770/mcp", enabled: false, timeout_ms: 120000, headers: [] }
+		],
+		approval_grants: []
+	};
+	render();
+});
+
+$("clearGrantsBtn").addEventListener("click", function() {
+	if (!state.approval_grants || !state.approval_grants.length) {
+		alert("当前没有自动允许记录。");
+		return;
+	}
+	if (confirm("清空所有 MCP 自动允许记录？")) {
+		state.approval_grants = [];
+		render();
+	}
+});
+
+$("serverList").addEventListener("click", function(e) {
+	var remove = e.target && e.target.closest ? e.target.closest(".remove-server") : null;
+	if (!remove) {
+		return;
+	}
+	var index = parseInt(remove.getAttribute("data-index"), 10);
+	if (index >= 0 && confirm("删除这个 MCP 服务器？")) {
+		state.servers.splice(index, 1);
+		render();
+	}
+});
+
+$("saveBtn").addEventListener("click", function() {
+	try {
+		post({ action: "save", data: collect() });
+	} catch (err) {
+		alert(err && err.message ? err.message : String(err));
+	}
+});
+
+$("cancelBtn").addEventListener("click", function() {
+	post({ action: "cancel" });
+});
+
+render();
+</script>
+</body>
+</html>

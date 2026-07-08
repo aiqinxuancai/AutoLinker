@@ -136,6 +136,13 @@ body {
 	pointer-events: none;
 }
 
+.top-action.mcp-action {
+	width: 36px;
+	font-size: 10px;
+	font-weight: 700;
+	letter-spacing: 0;
+}
+
 .history {
 	flex: 1 1 auto;
 	min-height: 0;
@@ -1459,6 +1466,7 @@ body,
 					<circle cx="12" cy="12" r="3"></circle>
 				</svg>
 			</button>
+			<button id="mcp-settings-btn" class="top-action mcp-action" type="button" title="&#x5916;&#x90E8; MCP &#x670D;&#x52A1;&#x5668;" aria-label="&#x5916;&#x90E8; MCP &#x670D;&#x52A1;&#x5668;">MCP</button>
 		</div>
 		<div id="session-menu" class="session-menu" hidden></div>
 	</div>
@@ -1641,6 +1649,7 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	var newSession = document.getElementById("new-session-btn");
 	var restore = document.getElementById("restore-btn");
 	var settings = document.getElementById("settings-btn");
+	var mcpSettings = document.getElementById("mcp-settings-btn");
 	var planMode = document.getElementById("plan-mode-btn");
 	var autoAllow = document.getElementById("auto-allow-btn");
 	var clearConfirm = document.getElementById("clear-confirm");
@@ -1666,6 +1675,9 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	}
 	if (settings) {
 		settings.disabled = isBusy;
+	}
+	if (mcpSettings) {
+		mcpSettings.disabled = isBusy;
 	}
 	if (planMode) {
 		planMode.disabled = isBusy;
@@ -1837,6 +1849,7 @@ window.autolinkerHideToolApproval = function() {
 	var newSession = document.getElementById("new-session-btn");
 	var restore = document.getElementById("restore-btn");
 	var settings = document.getElementById("settings-btn");
+	var mcpSettings = document.getElementById("mcp-settings-btn");
 	var planMode = document.getElementById("plan-mode-btn");
 	var autoAllow = document.getElementById("auto-allow-btn");
 	var clearConfirm = document.getElementById("clear-confirm");
@@ -2041,6 +2054,14 @@ window.autolinkerHideToolApproval = function() {
 			hideClearConfirm();
 			hideRestoreConfirm();
 			post({ action: "open_settings" });
+		});
+	}
+	if (mcpSettings) {
+		mcpSettings.addEventListener("click", function() {
+			hideSessionMenu();
+			hideClearConfirm();
+			hideRestoreConfirm();
+			post({ action: "open_mcp_settings" });
 		});
 	}
 	if (planMode) {

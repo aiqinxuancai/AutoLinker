@@ -107,6 +107,15 @@
     <ClCompile Include="src\AIChatFeature.cpp">
       <Filter>AI</Filter>
     </ClCompile>
+    <ClCompile Include="src\AIChatMcpClient.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AIChatMcpConfig.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
+    <ClCompile Include="src\AIChatMcpConfigDialog.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
     <ClCompile Include="src\AIChatSessionStore.cpp">
       <Filter>AI</Filter>
     </ClCompile>
@@ -214,6 +223,15 @@
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIChatFeature.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AIChatMcpClient.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AIChatMcpConfig.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AIChatMcpConfigDialog.h">
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIChatSessionStore.h">
@@ -372,6 +390,12 @@
       <Filter>AI</Filter>
     </None>
     <None Include="src\webview\ai_chat_history.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\ai_chat_mcp_config_dialog.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\ai_chat_mcp_config_dialog.src.html">
       <Filter>AI</Filter>
     </None>
     <None Include="src\webview\ai_chat_theme_config_dialog.html">

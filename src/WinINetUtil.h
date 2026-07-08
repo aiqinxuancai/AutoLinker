@@ -7,6 +7,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <vector>
 
 // HTTP request cancellation context.
 class HttpRequestCancellation {
@@ -34,8 +35,33 @@ private:
 	HINTERNET requestHandle_ = nullptr;
 };
 
+// HTTP response header entry.
+struct HttpResponseHeaderEntry {
+	std::string name;
+	std::string value;
+};
+
+// HTTP response with body, status and headers.
+struct HttpResponseDetails {
+	std::string body;
+	int statusCode = 0;
+	std::vector<HttpResponseHeaderEntry> headers;
+
+	std::string GetHeaderValue(const std::string& name) const;
+};
+
 // Execute HTTP POST.
 std::pair<std::string, int> PerformPostRequest(
+	const std::string& url,
+	const std::string& postData,
+	const std::string& customHeaders = "",
+	int timeout = 200000,
+	bool AutoCookies = true,
+	bool NeverRedirect = true,
+	HttpRequestCancellation* cancellation = nullptr);
+
+// Execute HTTP POST and return response headers.
+HttpResponseDetails PerformPostRequestDetailed(
 	const std::string& url,
 	const std::string& postData,
 	const std::string& customHeaders = "",

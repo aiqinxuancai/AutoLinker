@@ -11,6 +11,7 @@
 
 #include "..\\thirdparty\\json.hpp"
 
+#include "AIChatMcpClient.h"
 #include "AIJsonConfig.h"
 #include "ConfigManager.h"
 #include "Global.h"
@@ -1774,7 +1775,8 @@ nlohmann::json FilterToolCatalogForSourceEditMode(const nlohmann::json& catalog,
 
 nlohmann::json BuildConfiguredToolCatalog(const AISettings& settings)
 {
-	return FilterToolCatalogForSourceEditMode(BuildPublicToolCatalog(), settings.sourceEditMode);
+	return AIChatMcpClient::AppendMcpToolsToCatalog(
+		FilterToolCatalogForSourceEditMode(BuildPublicToolCatalog(), settings.sourceEditMode));
 }
 
 bool ContainsAnyText(const std::string& text, std::initializer_list<std::string_view> needles);
@@ -2010,7 +2012,7 @@ nlohmann::json SanitizeGeminiSchema(const nlohmann::json& schema)
 	}
 
 	nlohmann::json out = nlohmann::json::object();
-	if (schema.contains("type") && schema["type"].is_string()) {
+	if (schema.contains("type") && (schema["type"].is_string() || schema["type"].is_array())) {
 		out["type"] = schema["type"];
 	}
 	if (schema.contains("description") && schema["description"].is_string()) {
@@ -2025,8 +2027,35 @@ nlohmann::json SanitizeGeminiSchema(const nlohmann::json& schema)
 	if (schema.contains("format") && schema["format"].is_string()) {
 		out["format"] = schema["format"];
 	}
+	if (schema.contains("pattern") && schema["pattern"].is_string()) {
+		out["pattern"] = schema["pattern"];
+	}
 	if (schema.contains("nullable") && schema["nullable"].is_boolean()) {
 		out["nullable"] = schema["nullable"];
+	}
+	const auto copyNumber = [&schema, &out](const char* key) {
+		if (schema.contains(key) && schema[key].is_number()) {
+			out[key] = schema[key];
+		}
+	};
+	copyNumber("minimum");
+	copyNumber("maximum");
+	copyNumber("exclusiveMinimum");
+	copyNumber("exclusiveMaximum");
+	copyNumber("multipleOf");
+	copyNumber("minLength");
+	copyNumber("maxLength");
+	copyNumber("minItems");
+	copyNumber("maxItems");
+	copyNumber("minProperties");
+	copyNumber("maxProperties");
+	if (schema.contains("additionalProperties")) {
+		if (schema["additionalProperties"].is_boolean()) {
+			out["additionalProperties"] = schema["additionalProperties"];
+		}
+		else if (schema["additionalProperties"].is_object()) {
+			out["additionalProperties"] = SanitizeGeminiSchema(schema["additionalProperties"]);
+		}
 	}
 	if (schema.contains("items") && schema["items"].is_object()) {
 		out["items"] = SanitizeGeminiSchema(schema["items"]);
@@ -2038,6 +2067,19 @@ nlohmann::json SanitizeGeminiSchema(const nlohmann::json& schema)
 		}
 		out["properties"] = std::move(properties);
 	}
+	const auto copyCombinator = [&schema, &out](const char* key) {
+		if (!schema.contains(key) || !schema[key].is_array()) {
+			return;
+		}
+		nlohmann::json values = nlohmann::json::array();
+		for (const auto& item : schema[key]) {
+			values.push_back(SanitizeGeminiSchema(item));
+		}
+		out[key] = std::move(values);
+	};
+	copyCombinator("anyOf");
+	copyCombinator("oneOf");
+	copyCombinator("allOf");
 	return out;
 }
 
@@ -2197,6 +2239,52 @@ nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>& contextMessage
 			{"description", TruncateGeminiDescription(item.value("description", ""))},
 			{"parameters", item.contains("inputSchema") ? SanitizeGeminiSchema(item["inputSchema"]) : nlohmann::json::object()}
 		});
+	}
+
+	const std::string routingText = CollectGeminiToolRoutingText(contextMessages);
+	std::vector<std::pair<int, nlohmann::json>> scoredMcpTools;
+	for (const auto& item : catalog) {
+		if (!item.is_object()) {
+			continue;
+		}
+		const std::string name = item.value("name", std::string());
+		if (!AIChatMcpClient::IsMcpModelToolName(name)) {
+			continue;
+		}
+		int score = 1;
+		if (item.contains("x_autolinker_mcp") && item["x_autolinker_mcp"].is_object()) {
+			const auto& meta = item["x_autolinker_mcp"];
+			const std::string serverName = meta.value("server_name", std::string());
+			const std::string toolName = meta.value("tool_name", std::string());
+			if (!serverName.empty() && ContainsAsciiInsensitive(routingText, serverName)) {
+				score += 20;
+			}
+			if (!toolName.empty() && ContainsAsciiInsensitive(routingText, toolName)) {
+				score += 30;
+			}
+		}
+		if (ContainsAnyText(routingText, { "MCP", "mcp", "IDA", "ida", "逆向", "反编译", "设计", "生成设计" })) {
+			score += 5;
+		}
+		scoredMcpTools.push_back({ score, item });
+	}
+	std::sort(scoredMcpTools.begin(), scoredMcpTools.end(), [](const auto& left, const auto& right) {
+		return left.first > right.first;
+	});
+	const size_t maxGeminiTools = minimal ? 8u : 12u;
+	const size_t maxMcpTools = minimal ? 2u : 4u;
+	size_t appendedMcpTools = 0;
+	for (const auto& scored : scoredMcpTools) {
+		if (declarations.size() >= maxGeminiTools || appendedMcpTools >= maxMcpTools) {
+			break;
+		}
+		const auto& item = scored.second;
+		declarations.push_back({
+			{"name", item.value("name", "")},
+			{"description", TruncateGeminiDescription(item.value("description", ""))},
+			{"parameters", item.contains("inputSchema") ? SanitizeGeminiSchema(item["inputSchema"]) : nlohmann::json::object()}
+		});
+		++appendedMcpTools;
 	}
 	return declarations.empty()
 		? nlohmann::json::array()

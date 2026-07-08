@@ -1,5 +1,6 @@
 ﻿#include "AIChatTooling.h"
 #include "AIChatToolingInternal.h"
+#include "AIChatMcpClient.h"
 #include "AIService.h"
 #include "ConfigManager.h"
 #include "Global.h"
@@ -465,9 +466,58 @@ std::string ExecuteToolCallImpl(
 	const std::string& toolName,
 	const std::string& argumentsJson,
 	bool& outOk,
-	const std::function<bool()>& cancelCallback)
+	const std::function<bool()>& cancelCallback,
+	HttpRequestCancellation* cancellation)
 {
 	outOk = false;
+
+	if (AIChatMcpClient::IsMcpModelToolName(toolName)) {
+		const AIChatMcpExecutionResult result = AIChatMcpClient::ExecuteTool(
+			toolName,
+			argumentsJson,
+			[](const AIChatMcpApprovalContext& context, bool& outAutoAllow) {
+				outAutoAllow = false;
+				nlohmann::json parsedArgs = nlohmann::json::parse(context.argumentsJsonUtf8, nullptr, false);
+				std::string preview = parsedArgs.is_discarded()
+					? context.argumentsJsonUtf8
+					: parsedArgs.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
+				if (preview.size() > 16000) {
+					preview.resize(16000);
+					preview += "\n... truncated ...";
+				}
+				std::string content;
+				content += LocalFromWide(L"外部 MCP 服务器将收到本次工具调用参数。");
+				content += "\r\n\r\n";
+				content += LocalFromWide(L"服务器：");
+				content += Utf8ToLocalText(context.serverName.empty() ? context.serverId : context.serverName);
+				content += "\r\n";
+				content += LocalFromWide(L"工具：");
+				content += Utf8ToLocalText(context.toolName);
+				content += "\r\n";
+				content += LocalFromWide(L"Schema：");
+				content += context.schemaHash;
+				content += "\r\n\r\n";
+				content += LocalFromWide(L"参数：\r\n");
+				content += Utf8ToLocalText(preview);
+				bool accepted = false;
+				bool secondaryAccepted = false;
+				if (!RequestConfirmationForTooling(
+						LocalFromWide(L"批准外部 MCP 工具调用"),
+						content,
+						LocalFromWide(L"允许本次"),
+						LocalFromWide(L"自动允许该工具"),
+						accepted,
+						secondaryAccepted)) {
+					return false;
+				}
+				outAutoAllow = secondaryAccepted;
+				return accepted || secondaryAccepted;
+			},
+			cancelCallback,
+			cancellation);
+		outOk = result.ok;
+		return result.resultJsonLocal;
+	}
 
 	if (toolName == "run_powershell_command") {
 		std::string commandUtf8;
@@ -725,15 +775,16 @@ std::string ExecuteToolCall(
 	const std::string& argumentsJson,
 	bool& outOk,
 	bool enableLog,
-	const std::function<bool()>& cancelCallback)
+	const std::function<bool()>& cancelCallback,
+	HttpRequestCancellation* cancellation)
 {
 	if (!enableLog) {
-		return ExecuteToolCallImpl(toolName, argumentsJson, outOk, cancelCallback);
+		return ExecuteToolCallImpl(toolName, argumentsJson, outOk, cancelCallback, cancellation);
 	}
 
 	LogInternalToolRequest(toolName, argumentsJson);
 	const auto startTime = std::chrono::steady_clock::now();
-	const std::string result = ExecuteToolCallImpl(toolName, argumentsJson, outOk, cancelCallback);
+	const std::string result = ExecuteToolCallImpl(toolName, argumentsJson, outOk, cancelCallback, cancellation);
 	const double elapsedMs = std::chrono::duration<double, std::milli>(
 		std::chrono::steady_clock::now() - startTime).count();
 	LogInternalToolResponse(toolName, result, elapsedMs);

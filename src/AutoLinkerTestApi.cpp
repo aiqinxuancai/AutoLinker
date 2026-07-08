@@ -1,18 +1,29 @@
 ﻿#include "AutoLinkerTestApi.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
 #include "..\\thirdparty\\json.hpp"
 
 #include "AIChatTooling.h"
+#include "AIChatMcpClient.h"
+#include "AIChatMcpConfig.h"
 #include "AIService.h"
 #include "AutoLinkerVersion.h"
 #include "GameAnalyticsClient.h"
 #include "PathHelper.h"
 #include "Version.h"
+
+#pragma comment(lib, "Ws2_32.lib")
 
 namespace {
 
@@ -196,6 +207,358 @@ std::vector<AIChatMessage> BuildFollowupMessagesFromChatResult(
 std::string DumpJsonPrettySafe(const nlohmann::json& value)
 {
 	return value.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+std::string ReadFileBinary(const std::filesystem::path& path)
+{
+	std::ifstream input(path, std::ios::binary);
+	if (!input.is_open()) {
+		return std::string();
+	}
+	return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+bool WriteFileBinary(const std::filesystem::path& path, const std::string& text)
+{
+	std::error_code ec;
+	const auto parent = path.parent_path();
+	if (!parent.empty()) {
+		std::filesystem::create_directories(parent, ec);
+	}
+	std::ofstream output(path, std::ios::binary | std::ios::trunc);
+	if (!output.is_open()) {
+		return false;
+	}
+	output.write(text.data(), static_cast<std::streamsize>(text.size()));
+	return output.good();
+}
+
+class MockMcpHttpServer {
+public:
+	~MockMcpHttpServer()
+	{
+		Stop();
+	}
+
+	bool Start(std::string& outError)
+	{
+		outError.clear();
+		WSADATA wsa = {};
+		if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+			outError = "WSAStartup failed";
+			return false;
+		}
+		wsaStarted_ = true;
+
+		listenSocket_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+		if (listenSocket_ == INVALID_SOCKET) {
+			outError = "socket failed";
+			return false;
+		}
+
+		sockaddr_in addr = {};
+		addr.sin_family = AF_INET;
+		addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		addr.sin_port = 0;
+		if (bind(listenSocket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+			outError = "bind failed";
+			return false;
+		}
+		if (listen(listenSocket_, SOMAXCONN) == SOCKET_ERROR) {
+			outError = "listen failed";
+			return false;
+		}
+
+		sockaddr_in bound = {};
+		int boundLen = sizeof(bound);
+		if (getsockname(listenSocket_, reinterpret_cast<sockaddr*>(&bound), &boundLen) == SOCKET_ERROR) {
+			outError = "getsockname failed";
+			return false;
+		}
+		port_ = ntohs(bound.sin_port);
+		stop_.store(false);
+		thread_ = std::thread([this]() { Run(); });
+		return true;
+	}
+
+	void Stop()
+	{
+		stop_.store(true);
+		if (listenSocket_ != INVALID_SOCKET) {
+			closesocket(listenSocket_);
+			listenSocket_ = INVALID_SOCKET;
+		}
+		if (thread_.joinable()) {
+			thread_.join();
+		}
+		if (wsaStarted_) {
+			WSACleanup();
+			wsaStarted_ = false;
+		}
+	}
+
+	std::string Url() const
+	{
+		return "http://127.0.0.1:" + std::to_string(port_) + "/mcp";
+	}
+
+private:
+	void Run()
+	{
+		while (!stop_.load()) {
+			fd_set readSet = {};
+			FD_ZERO(&readSet);
+			FD_SET(listenSocket_, &readSet);
+			timeval timeout = {};
+			timeout.tv_sec = 0;
+			timeout.tv_usec = 200000;
+			const int selected = select(0, &readSet, nullptr, nullptr, &timeout);
+			if (selected <= 0 || stop_.load()) {
+				continue;
+			}
+			SOCKET client = accept(listenSocket_, nullptr, nullptr);
+			if (client == INVALID_SOCKET) {
+				continue;
+			}
+			HandleClient(client);
+			closesocket(client);
+		}
+	}
+
+	static std::string BuildHttpResponse(int status, const std::string& body, bool includeSessionHeader)
+	{
+		const char* statusText = status == 202 ? "Accepted" : "OK";
+		std::string response = "HTTP/1.1 " + std::to_string(status) + " " + statusText + "\r\n";
+		response += "Connection: close\r\n";
+		response += "Content-Type: application/json\r\n";
+		if (includeSessionHeader) {
+			response += "Mcp-Session-Id: mock-session\r\n";
+		}
+		response += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
+		response += body;
+		return response;
+	}
+
+	static int ParseContentLength(const std::string& headers)
+	{
+		const std::string marker = "Content-Length:";
+		size_t pos = headers.find(marker);
+		if (pos == std::string::npos) {
+			pos = headers.find("content-length:");
+		}
+		if (pos == std::string::npos) {
+			return 0;
+		}
+		pos += marker.size();
+		while (pos < headers.size() && (headers[pos] == ' ' || headers[pos] == '\t')) {
+			++pos;
+		}
+		size_t end = pos;
+		while (end < headers.size() && headers[end] >= '0' && headers[end] <= '9') {
+			++end;
+		}
+		try {
+			return std::stoi(headers.substr(pos, end - pos));
+		}
+		catch (...) {
+			return 0;
+		}
+	}
+
+	static std::string BuildRpcBody(const nlohmann::json& request)
+	{
+		const std::string method = request.value("method", std::string());
+		nlohmann::json response = {
+			{"jsonrpc", "2.0"}
+		};
+		if (request.contains("id")) {
+			response["id"] = request["id"];
+		}
+
+		if (method == "initialize") {
+			response["result"] = {
+				{"protocolVersion", "2025-11-25"},
+				{"capabilities", {{"tools", nlohmann::json::object()}}},
+				{"serverInfo", {{"name", "AutoLinkerTest Mock MCP"}, {"version", "1.0"}}}
+			};
+		}
+		else if (method == "tools/list") {
+			response["result"] = {
+				{"tools", nlohmann::json::array({
+					{
+						{"name", "echo"},
+						{"description", "Echo UTF-8 text for AutoLinker MCP tests."},
+						{"inputSchema", {
+							{"type", "object"},
+							{"properties", {
+								{"text", {{"type", "string"}, {"description", "Text to echo."}}}
+							}},
+							{"required", nlohmann::json::array({"text"})},
+							{"additionalProperties", false}
+						}}
+					}
+				})}
+			};
+		}
+		else if (method == "tools/call") {
+			const nlohmann::json params = request.value("params", nlohmann::json::object());
+			const nlohmann::json args = params.value("arguments", nlohmann::json::object());
+			const std::string text = args.value("text", std::string());
+			response["result"] = {
+				{"content", nlohmann::json::array({
+					{{"type", "text"}, {"text", "mock echo: " + text}}
+				})},
+				{"structuredContent", {{"echo", text}, {"utf8", "测试通过"}}},
+				{"isError", false}
+			};
+		}
+		else {
+			response["result"] = nlohmann::json::object();
+		}
+		return response.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	}
+
+	void HandleClient(SOCKET client)
+	{
+		std::string requestText;
+		char buffer[4096] = {};
+		while (requestText.find("\r\n\r\n") == std::string::npos) {
+			const int received = recv(client, buffer, sizeof(buffer), 0);
+			if (received <= 0) {
+				return;
+			}
+			requestText.append(buffer, static_cast<size_t>(received));
+			if (requestText.size() > 1024 * 1024) {
+				return;
+			}
+		}
+		const size_t headerEnd = requestText.find("\r\n\r\n");
+		const std::string headers = requestText.substr(0, headerEnd);
+		const int contentLength = ParseContentLength(headers);
+		while (static_cast<int>(requestText.size() - headerEnd - 4) < contentLength) {
+			const int received = recv(client, buffer, sizeof(buffer), 0);
+			if (received <= 0) {
+				return;
+			}
+			requestText.append(buffer, static_cast<size_t>(received));
+		}
+		const std::string body = requestText.substr(headerEnd + 4, static_cast<size_t>(contentLength));
+		const nlohmann::json request = nlohmann::json::parse(body, nullptr, false);
+		if (request.is_discarded()) {
+			const std::string response = BuildHttpResponse(200, R"({"jsonrpc":"2.0","error":{"code":-32700,"message":"parse error"}})", true);
+			send(client, response.data(), static_cast<int>(response.size()), 0);
+			return;
+		}
+		if (request.value("method", std::string()) == "notifications/initialized") {
+			const std::string response = BuildHttpResponse(202, "", true);
+			send(client, response.data(), static_cast<int>(response.size()), 0);
+			return;
+		}
+		const std::string responseBody = BuildRpcBody(request);
+		const std::string response = BuildHttpResponse(200, responseBody, true);
+		send(client, response.data(), static_cast<int>(response.size()), 0);
+	}
+
+	bool wsaStarted_ = false;
+	SOCKET listenSocket_ = INVALID_SOCKET;
+	unsigned short port_ = 0;
+	std::atomic_bool stop_{ false };
+	std::thread thread_;
+};
+
+class ScopedMcpConfigBackup {
+public:
+	ScopedMcpConfigBackup()
+		: path_(AIChatMcpConfigStore::GetConfigPath()),
+		  hadConfig_(std::filesystem::exists(path_)),
+		  backup_(hadConfig_ ? ReadFileBinary(path_) : std::string())
+	{
+	}
+
+	~ScopedMcpConfigBackup()
+	{
+		std::error_code ec;
+		if (hadConfig_) {
+			WriteFileBinary(path_, backup_);
+		}
+		else {
+			std::filesystem::remove(path_, ec);
+		}
+	}
+
+private:
+	std::filesystem::path path_;
+	bool hadConfig_ = false;
+	std::string backup_;
+};
+
+bool RunMcpMockRoundtripSelfTest(nlohmann::json& outCheck)
+{
+	outCheck = {
+		{"name", "mock_streamable_http_roundtrip"},
+		{"ok", false}
+	};
+
+	ScopedMcpConfigBackup configBackup;
+	MockMcpHttpServer server;
+	std::string error;
+	try {
+		if (!server.Start(error)) {
+			outCheck["error"] = error;
+			return false;
+		}
+
+		AIChatMcpConfig config;
+		config.servers.push_back({
+			"mock-mcp",
+			"Mock MCP",
+			server.Url(),
+			true,
+			30000,
+			{}
+		});
+		if (!AIChatMcpConfigStore::Save(config, &error)) {
+			outCheck["error"] = error;
+			return false;
+		}
+
+		const std::vector<AIChatMcpToolInfo> tools = AIChatMcpClient::LoadEnabledTools();
+		outCheck["listed_tool_count"] = tools.size();
+		auto it = std::find_if(tools.begin(), tools.end(), [](const AIChatMcpToolInfo& tool) {
+			return tool.serverId == "mock-mcp" && tool.originalName == "echo";
+		});
+		if (it == tools.end()) {
+			outCheck["error"] = "mock echo tool not listed";
+			return false;
+		}
+		outCheck["model_tool_name"] = it->modelName;
+
+		bool approved = false;
+		const AIChatMcpExecutionResult execution = AIChatMcpClient::ExecuteTool(
+			it->modelName,
+			R"({"text":"\u4e2d\u6587\u53c2\u6570"})",
+			[&approved](const AIChatMcpApprovalContext&, bool& outAutoAllow) {
+				approved = true;
+				outAutoAllow = true;
+				return true;
+			});
+		outCheck["approval_called"] = approved;
+		outCheck["execution_ok"] = execution.ok;
+		outCheck["result"] = execution.resultJsonLocal;
+		outCheck["ok"] = approved && execution.ok && execution.resultJsonLocal.find("mock echo") != std::string::npos;
+		if (!outCheck.value("ok", false)) {
+			outCheck["error"] = execution.errorUtf8.empty() ? "mock tools/call failed" : execution.errorUtf8;
+		}
+		return outCheck.value("ok", false);
+	}
+	catch (const std::exception& ex) {
+		outCheck["error"] = ex.what();
+		return false;
+	}
+	catch (...) {
+		outCheck["error"] = "unknown exception";
+		return false;
+	}
 }
 
 int RunOpenAIIntegrationTestInternal(
@@ -793,6 +1156,58 @@ extern "C" int AutoLinkerTest_GetVersionText(char* buffer, int bufferSize)
 extern "C" int AutoLinkerTest_RunGameAnalyticsSelfTest(char* buffer, int bufferSize)
 {
 	return CopyStringToBuffer(GameAnalyticsClient::BuildSelfTestReportJson(), buffer, bufferSize);
+}
+
+extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
+{
+	nlohmann::json report = nlohmann::json::parse(AIChatMcpClient::BuildSelfTestReportJson(), nullptr, false);
+	if (report.is_discarded() || !report.is_object()) {
+		report = {
+			{"ok", false},
+			{"name", "mcp-self-test"},
+			{"checks", nlohmann::json::array()}
+		};
+	}
+	if (!report.contains("checks") || !report["checks"].is_array()) {
+		report["checks"] = nlohmann::json::array();
+	}
+
+	nlohmann::json publicCatalogCheck = {
+		{"name", "public_catalog_excludes_mcp"},
+		{"ok", true}
+	};
+	try {
+		const nlohmann::json catalog = nlohmann::json::parse(AIService::BuildPublicToolCatalogJson(), nullptr, false);
+		if (catalog.is_discarded() || !catalog.is_array()) {
+			publicCatalogCheck["ok"] = false;
+			publicCatalogCheck["error"] = "public catalog is not array";
+		}
+		else {
+			for (const auto& item : catalog) {
+				if (item.is_object() && AIChatMcpClient::IsMcpModelToolName(item.value("name", std::string()))) {
+					publicCatalogCheck["ok"] = false;
+					publicCatalogCheck["error"] = "public catalog contains MCP tool";
+					break;
+				}
+			}
+		}
+	}
+	catch (const std::exception& ex) {
+		publicCatalogCheck["ok"] = false;
+		publicCatalogCheck["error"] = ex.what();
+	}
+	report["checks"].push_back(publicCatalogCheck);
+
+	nlohmann::json mockRoundtripCheck;
+	RunMcpMockRoundtripSelfTest(mockRoundtripCheck);
+	report["checks"].push_back(mockRoundtripCheck);
+
+	bool ok = report.value("ok", false);
+	for (const auto& check : report["checks"]) {
+		ok = ok && check.value("ok", false);
+	}
+	report["ok"] = ok;
+	return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
 }
 
 extern "C" int AutoLinkerTest_RunDeepSeekModelIntegrationTest(

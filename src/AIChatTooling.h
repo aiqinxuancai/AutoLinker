@@ -3,6 +3,8 @@
 #include <functional>
 #include <string>
 
+class HttpRequestCancellation;
+
 // 在主线程执行工具调用。
 std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::string& argumentsJson, bool& outOk);
 
@@ -12,4 +14,5 @@ std::string ExecuteToolCall(
 	const std::string& argumentsJson,
 	bool& outOk,
 	bool enableLog = true,
-	const std::function<bool()>& cancelCallback = {});
+	const std::function<bool()>& cancelCallback = {},
+	HttpRequestCancellation* cancellation = nullptr);

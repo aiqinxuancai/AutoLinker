@@ -1,0 +1,374 @@
+﻿#include "AIChatMcpConfig.h"
+
+#include <Windows.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cctype>
+#include <fstream>
+#include <format>
+#include <system_error>
+
+#include "..\\thirdparty\\json.hpp"
+
+#include "PathHelper.h"
+
+namespace {
+
+std::string TrimAscii(std::string text)
+{
+	while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r' || text.back() == '\n')) {
+		text.pop_back();
+	}
+	size_t begin = 0;
+	while (begin < text.size() && (text[begin] == ' ' || text[begin] == '\t' || text[begin] == '\r' || text[begin] == '\n')) {
+		++begin;
+	}
+	if (begin > 0) {
+		text.erase(0, begin);
+	}
+	return text;
+}
+
+std::string SanitizeId(std::string text)
+{
+	text = TrimAscii(text);
+	std::string out;
+	out.reserve(text.size());
+	for (char ch : text) {
+		const unsigned char uch = static_cast<unsigned char>(ch);
+		if ((uch >= 'a' && uch <= 'z') ||
+			(uch >= 'A' && uch <= 'Z') ||
+			(uch >= '0' && uch <= '9')) {
+			out.push_back(static_cast<char>(std::tolower(uch)));
+		}
+		else if (ch == '-' || ch == '_' || ch == '.') {
+			out.push_back(ch);
+		}
+		else if (!out.empty() && out.back() != '-') {
+			out.push_back('-');
+		}
+	}
+	while (!out.empty() && (out.back() == '-' || out.back() == '_' || out.back() == '.')) {
+		out.pop_back();
+	}
+	if (out.empty()) {
+		return "mcp-server";
+	}
+	return out;
+}
+
+bool IsValidHeaderName(const std::string& name)
+{
+	if (name.empty()) {
+		return false;
+	}
+	for (const unsigned char ch : name) {
+		if (ch <= 32 || ch >= 127 || ch == ':') {
+			return false;
+		}
+	}
+	return true;
+}
+
+long long CurrentUnixMs()
+{
+	const auto now = std::chrono::system_clock::now();
+	return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+}
+
+std::string ReadTextFile(const std::filesystem::path& path, std::string& outError)
+{
+	outError.clear();
+	std::ifstream input(path, std::ios::binary);
+	if (!input.is_open()) {
+		outError = "open config failed";
+		return std::string();
+	}
+	return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+
+bool WriteTextFile(const std::filesystem::path& path, const std::string& text, std::string& outError)
+{
+	outError.clear();
+	std::error_code ec;
+	const std::filesystem::path parent = path.parent_path();
+	if (!parent.empty()) {
+		std::filesystem::create_directories(parent, ec);
+		if (ec) {
+			outError = "create config directory failed: " + ec.message();
+			return false;
+		}
+	}
+	std::ofstream output(path, std::ios::binary | std::ios::trunc);
+	if (!output.is_open()) {
+		outError = "open config for write failed";
+		return false;
+	}
+	output.write(text.data(), static_cast<std::streamsize>(text.size()));
+	return output.good();
+}
+
+std::string JsonStringValue(const nlohmann::json& value, const char* key)
+{
+	if (!value.is_object() || key == nullptr || !value.contains(key) || !value[key].is_string()) {
+		return std::string();
+	}
+	return value[key].get<std::string>();
+}
+
+} // namespace
+
+namespace AIChatMcpConfigStore {
+
+std::filesystem::path GetConfigPath()
+{
+	return GetAutoLinkerDirectoryPath() / "AIChatMcpConfig.json";
+}
+
+std::string BuildDefaultConfigJson()
+{
+	AIChatMcpConfig config;
+	config.servers.push_back({
+		"ida-pro",
+		"IDA Pro",
+		"http://127.0.0.1:8765/mcp",
+		false,
+		120000,
+		{}
+	});
+	config.servers.push_back({
+		"design-mcp",
+		"Design MCP",
+		"http://127.0.0.1:8770/mcp",
+		false,
+		120000,
+		{}
+	});
+	return SerializeConfigJson(config, true);
+}
+
+bool ParseConfigJson(const std::string& jsonText, AIChatMcpConfig& outConfig, std::string& outError)
+{
+	outError.clear();
+	outConfig = {};
+
+	nlohmann::json root = nlohmann::json::parse(jsonText, nullptr, false);
+	if (root.is_discarded() || !root.is_object()) {
+		outError = "MCP config must be a JSON object";
+		return false;
+	}
+
+	outConfig.version = root.value("version", 1);
+	if (outConfig.version <= 0) {
+		outConfig.version = 1;
+	}
+
+	if (root.contains("servers")) {
+		if (!root["servers"].is_array()) {
+			outError = "servers must be an array";
+			return false;
+		}
+		for (const auto& item : root["servers"]) {
+			if (!item.is_object()) {
+				continue;
+			}
+			AIChatMcpServerConfig server;
+			server.id = SanitizeId(JsonStringValue(item, "id"));
+			server.name = TrimAscii(JsonStringValue(item, "name"));
+			server.url = TrimAscii(JsonStringValue(item, "url"));
+			server.enabled = item.value("enabled", false);
+			server.timeoutMs = (std::clamp)(item.value("timeout_ms", 120000), 1000, 600000);
+			if (server.name.empty()) {
+				server.name = server.id;
+			}
+			if (server.url.empty()) {
+				if (server.enabled) {
+					outError = std::format("enabled MCP server '{}' requires url", server.id);
+					return false;
+				}
+			}
+
+			if (item.contains("headers")) {
+				if (!item["headers"].is_array()) {
+					outError = std::format("server '{}' headers must be an array", server.id);
+					return false;
+				}
+				for (const auto& headerItem : item["headers"]) {
+					if (!headerItem.is_object()) {
+						continue;
+					}
+					AIChatMcpHeaderConfig header;
+					header.name = TrimAscii(JsonStringValue(headerItem, "name"));
+					header.value = JsonStringValue(headerItem, "value");
+					if (header.name.empty() && header.value.empty()) {
+						continue;
+					}
+					if (!IsValidHeaderName(header.name)) {
+						outError = std::format("server '{}' has invalid header name '{}'", server.id, header.name);
+						return false;
+					}
+					server.headers.push_back(std::move(header));
+				}
+			}
+			outConfig.servers.push_back(std::move(server));
+		}
+	}
+
+	if (root.contains("approval_grants")) {
+		if (!root["approval_grants"].is_array()) {
+			outError = "approval_grants must be an array";
+			return false;
+		}
+		for (const auto& item : root["approval_grants"]) {
+			if (!item.is_object()) {
+				continue;
+			}
+			AIChatMcpApprovalGrant grant;
+			grant.serverId = SanitizeId(JsonStringValue(item, "server_id"));
+			grant.toolName = JsonStringValue(item, "tool_name");
+			grant.schemaHash = JsonStringValue(item, "schema_hash");
+			grant.createdAtUnixMs = item.value("created_at_unix_ms", 0LL);
+			grant.updatedAtUnixMs = item.value("updated_at_unix_ms", 0LL);
+			if (!grant.serverId.empty() && !grant.toolName.empty() && !grant.schemaHash.empty()) {
+				outConfig.approvalGrants.push_back(std::move(grant));
+			}
+		}
+	}
+
+	return true;
+}
+
+std::string SerializeConfigJson(const AIChatMcpConfig& config, bool pretty)
+{
+	nlohmann::json root = nlohmann::json::object();
+	root["version"] = config.version <= 0 ? 1 : config.version;
+	root["servers"] = nlohmann::json::array();
+	for (const auto& server : config.servers) {
+		nlohmann::json item = {
+			{"id", server.id},
+			{"name", server.name},
+			{"url", server.url},
+			{"enabled", server.enabled},
+			{"timeout_ms", server.timeoutMs}
+		};
+		item["headers"] = nlohmann::json::array();
+		for (const auto& header : server.headers) {
+			item["headers"].push_back({
+				{"name", header.name},
+				{"value", header.value}
+			});
+		}
+		root["servers"].push_back(std::move(item));
+	}
+
+	root["approval_grants"] = nlohmann::json::array();
+	for (const auto& grant : config.approvalGrants) {
+		root["approval_grants"].push_back({
+			{"server_id", grant.serverId},
+			{"tool_name", grant.toolName},
+			{"schema_hash", grant.schemaHash},
+			{"created_at_unix_ms", grant.createdAtUnixMs},
+			{"updated_at_unix_ms", grant.updatedAtUnixMs}
+		});
+	}
+
+	return pretty
+		? root.dump(4, ' ', false, nlohmann::json::error_handler_t::replace)
+		: root.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+bool Load(AIChatMcpConfig& outConfig, std::string* outError)
+{
+	outConfig = {};
+	const std::filesystem::path path = GetConfigPath();
+	if (!std::filesystem::exists(path)) {
+		outConfig.version = 1;
+		return true;
+	}
+
+	std::string error;
+	const std::string text = ReadTextFile(path, error);
+	if (!error.empty()) {
+		if (outError != nullptr) {
+			*outError = error;
+		}
+		return false;
+	}
+	if (!ParseConfigJson(text, outConfig, error)) {
+		if (outError != nullptr) {
+			*outError = error;
+		}
+		return false;
+	}
+	return true;
+}
+
+bool Save(const AIChatMcpConfig& config, std::string* outError)
+{
+	std::string error;
+	const bool ok = WriteTextFile(GetConfigPath(), SerializeConfigJson(config, true), error);
+	if (!ok && outError != nullptr) {
+		*outError = error.empty() ? "write config failed" : error;
+	}
+	return ok;
+}
+
+bool SaveJsonText(const std::string& jsonText, std::string* outError)
+{
+	AIChatMcpConfig parsed;
+	std::string error;
+	if (!ParseConfigJson(jsonText, parsed, error)) {
+		if (outError != nullptr) {
+			*outError = error;
+		}
+		return false;
+	}
+	return Save(parsed, outError);
+}
+
+bool HasApprovalGrant(
+	const AIChatMcpConfig& config,
+	const std::string& serverId,
+	const std::string& toolName,
+	const std::string& schemaHash)
+{
+	for (const auto& grant : config.approvalGrants) {
+		if (grant.serverId == serverId &&
+			grant.toolName == toolName &&
+			grant.schemaHash == schemaHash) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void UpsertApprovalGrant(
+	AIChatMcpConfig& config,
+	const std::string& serverId,
+	const std::string& toolName,
+	const std::string& schemaHash)
+{
+	const long long now = CurrentUnixMs();
+	for (auto& grant : config.approvalGrants) {
+		if (grant.serverId == serverId &&
+			grant.toolName == toolName &&
+			grant.schemaHash == schemaHash) {
+			grant.updatedAtUnixMs = now;
+			if (grant.createdAtUnixMs == 0) {
+				grant.createdAtUnixMs = now;
+			}
+			return;
+		}
+	}
+
+	AIChatMcpApprovalGrant grant;
+	grant.serverId = serverId;
+	grant.toolName = toolName;
+	grant.schemaHash = schemaHash;
+	grant.createdAtUnixMs = now;
+	grant.updatedAtUnixMs = now;
+	config.approvalGrants.push_back(std::move(grant));
+}
+
+} // namespace AIChatMcpConfigStore

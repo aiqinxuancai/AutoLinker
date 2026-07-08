@@ -1,5 +1,7 @@
 ﻿#include "WinINetUtil.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <format>
 
@@ -8,6 +10,65 @@
 namespace {
 constexpr int kHttpStatusCancelled = 499;
 constexpr const char* kCancelledResponseText = "Request cancelled";
+
+std::string ToLowerAsciiCopy(std::string text)
+{
+	std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
+		return static_cast<char>(std::tolower(ch));
+	});
+	return text;
+}
+
+std::string TrimAscii(std::string text)
+{
+	while (!text.empty() && (text.back() == ' ' || text.back() == '\t' || text.back() == '\r' || text.back() == '\n')) {
+		text.pop_back();
+	}
+	size_t begin = 0;
+	while (begin < text.size() && (text[begin] == ' ' || text[begin] == '\t' || text[begin] == '\r' || text[begin] == '\n')) {
+		++begin;
+	}
+	if (begin > 0) {
+		text.erase(0, begin);
+	}
+	return text;
+}
+
+std::vector<HttpResponseHeaderEntry> ParseRawResponseHeaders(const std::string& rawHeaders)
+{
+	std::vector<HttpResponseHeaderEntry> headers;
+	size_t begin = 0;
+	while (begin <= rawHeaders.size()) {
+		size_t end = rawHeaders.find_first_of("\r\n", begin);
+		std::string line = end == std::string::npos
+			? rawHeaders.substr(begin)
+			: rawHeaders.substr(begin, end - begin);
+		if (end == std::string::npos) {
+			begin = rawHeaders.size() + 1;
+		}
+		else if (rawHeaders[end] == '\r' && end + 1 < rawHeaders.size() && rawHeaders[end + 1] == '\n') {
+			begin = end + 2;
+		}
+		else {
+			begin = end + 1;
+		}
+
+		if (line.empty() || line.rfind("HTTP/", 0) == 0) {
+			continue;
+		}
+		const size_t colon = line.find(':');
+		if (colon == std::string::npos) {
+			continue;
+		}
+		HttpResponseHeaderEntry entry;
+		entry.name = TrimAscii(line.substr(0, colon));
+		entry.value = TrimAscii(line.substr(colon + 1));
+		if (!entry.name.empty()) {
+			headers.push_back(std::move(entry));
+		}
+	}
+	return headers;
+}
 
 const char* WinInetErrorName(DWORD error)
 {
@@ -179,8 +240,19 @@ void HttpRequestCancellation::CloseRegisteredRequestHandle(HINTERNET handle)
 	CloseRegisteredHandleLocked(requestHandle_, handle);
 }
 
+std::string HttpResponseDetails::GetHeaderValue(const std::string& name) const
+{
+	const std::string loweredName = ToLowerAsciiCopy(name);
+	for (const auto& header : headers) {
+		if (ToLowerAsciiCopy(header.name) == loweredName) {
+			return header.value;
+		}
+	}
+	return std::string();
+}
+
 namespace {
-std::pair<std::string, int> PerformPostRequestCore(
+HttpResponseDetails PerformPostRequestCore(
     const std::string& url,
     const std::string& postData,
     const std::string& customHeaders,
@@ -234,9 +306,21 @@ std::pair<std::string, int> PerformPostRequestCore(
         closeConnect();
         closeInternet();
     };
-    const auto cancelledResult = [&]() -> std::pair<std::string, int> {
+    const auto makeResult = [&]() -> HttpResponseDetails {
+        HttpResponseDetails result;
+        result.body = response;
+        result.statusCode = static_cast<int>(statusCode);
+        return result;
+    };
+    const auto errorResult = [](const std::string& message, int status = 0) -> HttpResponseDetails {
+        HttpResponseDetails result;
+        result.body = message;
+        result.statusCode = status;
+        return result;
+    };
+    const auto cancelledResult = [&]() -> HttpResponseDetails {
         cleanupAll();
-        return std::make_pair(std::string(kCancelledResponseText), kHttpStatusCancelled);
+        return errorResult(std::string(kCancelledResponseText), kHttpStatusCancelled);
     };
 
     DWORD dwFlags = INTERNET_FLAG_RELOAD | INTERNET_FLAG_DONT_CACHE |
@@ -255,7 +339,7 @@ std::pair<std::string, int> PerformPostRequestCore(
 
     hInternet = InternetOpenA("HttpPostApp", INTERNET_OPEN_TYPE_PRECONFIG, nullptr, nullptr, 0);
     if (!hInternet) {
-        return std::make_pair(FormatInternetFailure("InternetOpen", GetLastError()), 0);
+        return errorResult(FormatInternetFailure("InternetOpen", GetLastError()));
     }
     if (cancellation != nullptr) {
         cancellation->AttachInternetHandle(hInternet);
@@ -282,7 +366,7 @@ std::pair<std::string, int> PerformPostRequestCore(
     if (!InternetCrackUrlA(url.c_str(), static_cast<DWORD>(url.length()), 0, &urlComp)) {
         const DWORD error = GetLastError();
         closeInternet();
-        return std::make_pair(FormatInternetFailure("InternetCrackUrl", error), 0);
+        return errorResult(FormatInternetFailure("InternetCrackUrl", error));
     }
 
     if (urlComp.nScheme == INTERNET_SCHEME_HTTPS) {
@@ -307,7 +391,7 @@ std::pair<std::string, int> PerformPostRequestCore(
             return cancelledResult();
         }
         closeInternet();
-        return std::make_pair(FormatInternetFailure("InternetConnect", error), 0);
+        return errorResult(FormatInternetFailure("InternetConnect", error));
     }
     if (cancellation != nullptr) {
         cancellation->AttachConnectionHandle(hConnect);
@@ -324,7 +408,7 @@ std::pair<std::string, int> PerformPostRequestCore(
         }
         closeConnect();
         closeInternet();
-        return std::make_pair(FormatInternetFailure("HttpOpenRequest", error), 0);
+        return errorResult(FormatInternetFailure("HttpOpenRequest", error));
     }
     if (cancellation != nullptr) {
         cancellation->AttachRequestHandle(hRequest);
@@ -344,7 +428,7 @@ std::pair<std::string, int> PerformPostRequestCore(
             return cancelledResult();
         }
         cleanupAll();
-        return std::make_pair(FormatInternetFailure("HttpSendRequest", error), 0);
+        return errorResult(FormatInternetFailure("HttpSendRequest", error));
     }
     if (cancellation != nullptr && cancellation->IsCancelled()) {
         return cancelledResult();
@@ -358,6 +442,20 @@ std::pair<std::string, int> PerformPostRequestCore(
         }
         catch (...) {
             statusCode = 0;
+        }
+    }
+
+    std::string rawHeaders;
+    DWORD rawHeaderLength = 0;
+    if (!HttpQueryInfoA(hRequest, HTTP_QUERY_RAW_HEADERS_CRLF, nullptr, &rawHeaderLength, nullptr) &&
+        GetLastError() == ERROR_INSUFFICIENT_BUFFER &&
+        rawHeaderLength > 0) {
+        rawHeaders.resize(static_cast<size_t>(rawHeaderLength), '\0');
+        if (HttpQueryInfoA(hRequest, HTTP_QUERY_RAW_HEADERS_CRLF, rawHeaders.data(), &rawHeaderLength, nullptr)) {
+            rawHeaders.resize(static_cast<size_t>(rawHeaderLength));
+        }
+        else {
+            rawHeaders.clear();
         }
     }
 
@@ -389,11 +487,34 @@ std::pair<std::string, int> PerformPostRequestCore(
 
     cleanupAll();
 
-    return std::make_pair(response, static_cast<int>(statusCode));
+    HttpResponseDetails result = makeResult();
+    result.headers = ParseRawResponseHeaders(rawHeaders);
+    return result;
 }
 } // namespace
 
 std::pair<std::string, int> PerformPostRequest(
+    const std::string& url,
+    const std::string& postData,
+    const std::string& customHeaders,
+    int timeout,
+    bool AutoCookies,
+	bool NeverRedirect,
+	HttpRequestCancellation* cancellation)
+{
+    const HttpResponseDetails details = PerformPostRequestCore(
+        url,
+        postData,
+        customHeaders,
+        timeout,
+        AutoCookies,
+        NeverRedirect,
+        nullptr,
+        cancellation);
+    return std::make_pair(details.body, details.statusCode);
+}
+
+HttpResponseDetails PerformPostRequestDetailed(
     const std::string& url,
     const std::string& postData,
     const std::string& customHeaders,
@@ -420,10 +541,10 @@ std::pair<std::string, int> PerformPostRequestStreaming(
     const std::string& customHeaders,
     int timeout,
     bool AutoCookies,
-    bool NeverRedirect,
-    HttpRequestCancellation* cancellation)
+	bool NeverRedirect,
+	HttpRequestCancellation* cancellation)
 {
-    return PerformPostRequestCore(
+    const HttpResponseDetails details = PerformPostRequestCore(
         url,
         postData,
         customHeaders,
@@ -432,6 +553,7 @@ std::pair<std::string, int> PerformPostRequestStreaming(
         NeverRedirect,
         &onChunk,
         cancellation);
+    return std::make_pair(details.body, details.statusCode);
 }
 
 std::pair<std::string, int> PerformGetRequest(const std::string& url, const std::string& customHeaders, int timeout, bool AutoCookies, bool NeverRedirect) {

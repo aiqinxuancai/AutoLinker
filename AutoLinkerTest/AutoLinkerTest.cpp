@@ -1563,6 +1563,7 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest between-dashes <text>" << std::endl;
 	std::cout << "  AutoLinkerTest version-text" << std::endl;
 	std::cout << "  AutoLinkerTest gameanalytics-self-test" << std::endl;
+	std::cout << "  AutoLinkerTest mcp-self-test" << std::endl;
 	std::cout << "  AutoLinkerTest deepseek-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest openai-chat-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest openai-responses-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
@@ -1641,6 +1642,26 @@ int main(int argc, char* argv[])
 		}
 		std::cout << buffer << std::endl;
 		return EXIT_SUCCESS;
+	}
+
+	if (commandName == "mcp-self-test") {
+		if (argc != 2) {
+			PrintUsage();
+			return EXIT_FAILURE;
+		}
+		char buffer[524288] = {};
+		const int result = AutoLinkerTest_RunAIChatMcpSelfTest(buffer, static_cast<int>(sizeof(buffer)));
+		if (result < 0) {
+			return PrintStringResult(commandName.c_str(), result, buffer);
+		}
+		std::cout << buffer << std::endl;
+		try {
+			const nlohmann::json parsed = nlohmann::json::parse(buffer);
+			return parsed.value("ok", false) ? EXIT_SUCCESS : EXIT_FAILURE;
+		}
+		catch (...) {
+			return EXIT_FAILURE;
+		}
 	}
 
 	PrintUsage();
