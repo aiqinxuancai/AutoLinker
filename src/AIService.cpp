@@ -3946,6 +3946,31 @@ bool ResolveVersionedFamilyWindow(
 	return true;
 }
 
+bool ResolveGpt5Window(const std::string& model, int& outWindow)
+{
+	int minor = 0;
+	if (!ParseFamilyMinorVersion(model, "gpt-5", minor)) {
+		return false;
+	}
+
+	const bool compactVariant =
+		model.find("-mini") != std::string::npos ||
+		model.find("-nano") != std::string::npos ||
+		model.find("-codex") != std::string::npos;
+	if (compactVariant) {
+		outWindow = 400000;
+		return true;
+	}
+
+	const bool proVariant = model.find("-pro") != std::string::npos;
+	if (minor >= 5) {
+		outWindow = proVariant ? 1050000 : 1000000;
+		return true;
+	}
+	outWindow = minor >= 4 ? 1050000 : 400000;
+	return true;
+}
+
 } // namespace
 
 int AIService::ResolveContextWindowTokens(const AISettings& settings)
@@ -3956,15 +3981,19 @@ int AIService::ResolveContextWindowTokens(const AISettings& settings)
 
 	const std::string m = ToLowerAsciiCopy(settings.model);
 
-	// P2a: 版本递增族 —— 未登记的更高小版本继承上一代窗口（窗口值核实于 2026-06）。
+	// P2a: OpenAI GPT-5 系列 —— 5.4/pro 为 1.05M，5.5 主模型为 1M，mini/nano/codex 仍按 400K。
+	int gpt5Window = 0;
+	if (ResolveGpt5Window(m, gpt5Window)) {
+		return gpt5Window;
+	}
+
+	// P2b: 版本递增族 —— 未登记的更高小版本继承上一代窗口（窗口值核实于 2026-07）。
 	// versions 按 minor 升序，主版本号写在前缀里。
 	struct VersionedFamily { const char* prefix; const FamilyMinorWindow* versions; size_t count; };
-	static const FamilyMinorWindow kGpt5[]    = { { 0, 400000 }, { 5, 1050000 } };       // 5→400k, 5.5→1.05M
 	static const FamilyMinorWindow kOpus4[]   = { { 0, 200000 }, { 1, 200000 }, { 6, 1000000 }, { 7, 1000000 }, { 8, 1000000 } };
 	static const FamilyMinorWindow kSonnet4[] = { { 5, 200000 }, { 6, 1000000 } };
 	static const FamilyMinorWindow kHaiku4[]  = { { 5, 200000 } };
 	static const VersionedFamily kFamilies[] = {
-		{ "gpt-5",    kGpt5,    sizeof(kGpt5) / sizeof(kGpt5[0]) },
 		{ "opus-4",   kOpus4,   sizeof(kOpus4) / sizeof(kOpus4[0]) },
 		{ "sonnet-4", kSonnet4, sizeof(kSonnet4) / sizeof(kSonnet4[0]) },
 		{ "haiku-4",  kHaiku4,  sizeof(kHaiku4) / sizeof(kHaiku4[0]) },
@@ -3976,7 +4005,7 @@ int AIService::ResolveContextWindowTokens(const AISettings& settings)
 		}
 	}
 
-	// P2b: 子串表 —— 不规则命名或非递增族。更具体的在前。
+	// P2c: 子串表 —— 不规则命名或非递增族。更具体的在前。
 	struct Entry { const char* key; int window; };
 	static const Entry kTable[] = {
 		// OpenAI（gpt-5 系由上面的版本族处理）
@@ -3991,6 +4020,7 @@ int AIService::ResolveContextWindowTokens(const AISettings& settings)
 		// Anthropic Claude（opus/sonnet/haiku-4 系由版本族处理）
 		{ "fable-5",        1000000 },
 		{ "mythos-5",       1000000 },
+		{ "sonnet-5",       1000000 },
 		{ "claude",          200000 }, // 兜底：未识别的 Claude 一律按 200K
 		// Google Gemini —— 1.5/2.x/3 普遍 1M+
 		{ "gemini-1.5-pro", 2097152 },
@@ -3999,12 +4029,48 @@ int AIService::ResolveContextWindowTokens(const AISettings& settings)
 		{ "gemini-2.0",     1048576 },
 		{ "gemini-3",       1048576 },
 		{ "gemini",         1048576 },
-		// DeepSeek
+		// DeepSeek —— V4/官方 chat/reasoner 别名为 1M，旧 R1/V3.2 保持 128K
+		{ "deepseek-v4",    1000000 },
+		{ "deepseek-chat",  1000000 },
+		{ "deepseek-reasoner", 1000000 },
+		{ "deepseek-v3.2",   128000 },
+		{ "deepseek-r1",     128000 },
 		{ "deepseek",        128000 },
+		// 智谱 GLM
+		{ "glm-5.2",        1000000 },
+		{ "glm-5.1",         200000 },
+		{ "glm-5-turbo",     200000 },
+		{ "glm-5",           200000 },
+		{ "glm-4.7",         200000 },
+		{ "glm-4.6",         200000 },
+		{ "glm-4.5",         128000 },
+		// 通义千问 Qwen
+		{ "qwen3.7",        1000000 },
+		{ "qwen3.6",        1000000 },
+		{ "qwen3-coder-plus", 1000000 },
+		{ "qwen3-coder-flash", 1000000 },
+		{ "qwen3-coder-next", 262144 },
+		{ "qwen3-coder",     262144 },
+		{ "qwen3.5",         262144 },
+		{ "qwen-plus",      1000000 },
+		{ "qwen-max",        262144 },
+		// Kimi / Moonshot
+		{ "kimi-k2",         262144 },
+		{ "kimi",            262144 },
+		{ "moonshot-v1-128k", 131072 },
+		{ "moonshot-v1-32k",   32768 },
+		{ "moonshot-v1-8k",     8192 },
+		// 豆包
+		{ "doubao-seed-2.0", 262144 },
+		{ "doubao-seed-1.8", 262144 },
+		// MiniMax
+		{ "minimax-m3",     1000000 },
+		{ "minimax-m2",      196608 },
+		{ "minimax",         196608 },
 	};
 	for (const auto& e : kTable) {
 		if (m.find(e.key) != std::string::npos) {
-			return e.window; // P2b: 子串表
+			return e.window; // P2c: 子串表
 		}
 	}
 	return 200000; // P3: 默认（保守）
