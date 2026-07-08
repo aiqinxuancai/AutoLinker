@@ -1344,46 +1344,6 @@ void AppendPageEditTraceLine(const std::string& text)
 	out.flush();
 }
 
-// [TEMP-DIAG verify-mismatch-dump] 临时诊断：把 verify 失配时的 expected/actual 全文各写一份到日志目录，
-// 供离线精确 diff（判断失配是否只由注释/变量重排造成）。定位完成后连同调用点一起删除。
-void DumpVerifyMismatchSnapshot(
-	const std::string& tag,
-	const std::string& expectedText,
-	const std::string& actualText)
-{
-	SYSTEMTIME st{};
-	::GetLocalTime(&st);
-	const auto pad = [](unsigned value, size_t width) {
-		std::string text = std::to_string(value);
-		while (text.size() < width) {
-			text.insert(text.begin(), '0');
-		}
-		return text;
-	};
-	const std::string stamp =
-		pad(st.wHour, 2) + pad(st.wMinute, 2) + pad(st.wSecond, 2) + "_" + pad(st.wMilliseconds, 3);
-
-	const auto writeOne = [&](const char* suffix, const std::string& body) {
-		const std::string fileName =
-			std::string("verify_mismatch_") + tag + "_" + stamp + "_" + suffix + ".txt";
-		std::ofstream out(
-			GetAutoLinkerLogFilePath(fileName),
-			std::ios::out | std::ios::trunc | std::ios::binary);
-		if (out.is_open()) {
-			out.write(body.data(), static_cast<std::streamsize>(body.size()));
-			out.flush();
-		}
-	};
-
-	writeOne("expected", expectedText);
-	writeOne("actual", actualText);
-	AppendPageEditTraceLine(
-		"DumpVerifyMismatchSnapshot|tag=" + tag +
-		"|stamp=" + stamp +
-		"|expected_bytes=" + std::to_string(expectedText.size()) +
-		"|actual_bytes=" + std::to_string(actualText.size()));
-}
-
 bool DuplicateGlobalHandle(HANDLE sourceHandle, HANDLE* outHandle)
 {
 	if (outHandle != nullptr) {
@@ -3720,7 +3680,7 @@ std::vector<std::string> BuildPageCodeStructuralFingerprint(const std::string& t
 		start = end + 1;
 	}
 
-	return lines;
+	return NormalizeStructuralFingerprintForIdeRewrite(lines);
 }
 
 std::string BuildStructuralMismatchSummary(
@@ -8882,8 +8842,6 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 	std::string verifySummary;
 	if (!VerifyRealPageCodeMatches(normalizedNewPageCode, verifyCode, &verifyMode, &verifySummary)) {
 		AppendPageEditTraceLine("ReplaceRealPageCode.verify_mismatch|" + verifySummary);
-		// [TEMP-DIAG verify-mismatch-dump] 落盘 expected/actual 原文，供离线精确定位。定位后删除本行。
-		DumpVerifyMismatchSnapshot("editor_obj", normalizedNewPageCode, verifyCode);
 		std::string failureTrace =
 			rangePrepareTrace +
 			"|" +
@@ -8978,8 +8936,6 @@ bool ReplaceRealPageCodeByEditorWindowInternal(
 	std::string verifySummary;
 	if (!VerifyRealPageCodeMatches(normalizedNewPageCode, verifyCode, &verifyMode, &verifySummary)) {
 		AppendPageEditTraceLine("ReplaceRealPageCodeByWindow.verify_mismatch|" + verifySummary);
-		// [TEMP-DIAG verify-mismatch-dump] 落盘 expected/actual 原文，供离线精确定位。定位后删除本行。
-		DumpVerifyMismatchSnapshot("by_window", normalizedNewPageCode, verifyCode);
 		if (outResult != nullptr) {
 			outResult->trace =
 				replaceTrace +

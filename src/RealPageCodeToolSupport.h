@@ -32,6 +32,10 @@ std::string NormalizeRealCodeLineBreaksToCrLf(const std::string& text);
 std::string NormalizeRealCodeLineBreaksToLf(const std::string& text);
 std::string PrepareAssemblyVariablesForRealPageWrite(const std::string& text);
 std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string& text);
+// 消除 IDE 存盘对结构指纹的等价改写（补空 .否则 / 页尾裸 .子程序），使写入与读回指纹可比。
+// 入参为「已去空白」的逐行 token 序列。
+std::vector<std::string> NormalizeStructuralFingerprintForIdeRewrite(
+	const std::vector<std::string>& fingerprint);
 std::vector<std::string> SplitRealCodeLines(const std::string& text);
 std::string JoinRealCodeLines(const std::vector<std::string>& lines);
 

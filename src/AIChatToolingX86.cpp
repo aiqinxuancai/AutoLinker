@@ -2832,7 +2832,7 @@ std::vector<std::string> BuildRealPageStructuralFingerprintForAI(const std::stri
 			fingerprint.push_back(normalizedLine);
 		}
 	}
-	return fingerprint;
+	return NormalizeStructuralFingerprintForIdeRewrite(fingerprint);
 }
 
 bool VerifyRealPageCodeMatchesForAI(

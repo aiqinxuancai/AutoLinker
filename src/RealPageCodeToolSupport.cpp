@@ -16,6 +16,11 @@ constexpr std::string_view kDirectiveAssembly = ".程序集";
 // 易语言默认基类标注。声明 `.程序集 X, <对象>` 与 `.程序集 X` 完全等价：
 // IDE 会把显式的默认基类省略掉再存，读回时即变成无基类形式。比较时需归一化两者。
 constexpr std::string_view kDefaultBaseClassToken = "<对象>";
+// 结构指纹里的条件语句 token（已去空白后的形态）。
+constexpr std::string_view kFingerprintTokenOtherwise = ".否则";
+constexpr std::string_view kFingerprintTokenEndIf = ".如果结束";
+// 去空白后「无子程序名」的裸 .子程序 token（真实子程序声明必带名字，去空白后形如 ".子程序xxx"）。
+constexpr std::string_view kFingerprintTokenBareSubroutine = ".子程序";
 
 struct DiffOp {
 	char type = ' ';
@@ -342,6 +347,33 @@ std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string
 	}
 
 	return changed ? JoinRealCodeLines(lines) : text;
+}
+
+// 消除 IDE 存盘对结构指纹的等价性改写，使写入与读回的指纹可比。
+// 传入的每个元素是「已去空白」的单行 token（见 NormalizePageCodeLineForStructuralCompare）。
+// 处理两类 IDE 自动补全（均为语义等价、非内容丢失）：
+//  1) 给无 else 的 .如果 块补空 .否则：去掉紧邻 .如果结束 之前的 .否则 token。
+//     该规则对写入与读回对称——真实的空 .否则 会在两侧同样被去掉，不会凭空造出或消除差异。
+//  2) 页尾追加裸 .子程序（无名字）+ 把程序集级注释搬到页尾孤儿化：去掉去空白后恰为 ".子程序" 的 token。
+//     真实子程序声明必带名字，去空白后形如 ".子程序名字"，绝不会精确等于 ".子程序"。
+std::vector<std::string> NormalizeStructuralFingerprintForIdeRewrite(
+	const std::vector<std::string>& fingerprint)
+{
+	std::vector<std::string> normalized;
+	normalized.reserve(fingerprint.size());
+	for (size_t i = 0; i < fingerprint.size(); ++i) {
+		const std::string& token = fingerprint[i];
+		if (token == kFingerprintTokenOtherwise &&
+			i + 1 < fingerprint.size() &&
+			fingerprint[i + 1] == kFingerprintTokenEndIf) {
+			continue;
+		}
+		if (token == kFingerprintTokenBareSubroutine) {
+			continue;
+		}
+		normalized.push_back(token);
+	}
+	return normalized;
 }
 
 std::string BuildStableTextHashForRealCode(const std::string& text)
