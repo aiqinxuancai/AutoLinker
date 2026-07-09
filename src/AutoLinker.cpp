@@ -15,7 +15,6 @@
 #include "AIChatTooling.h"
 #include "AIChatFeature.h"
 #include "AIConfigDialog.h"
-#include "DependencyCatalogCache.h"
 #include "EcSwitchConfigDialog.h"
 #include "ECOMEx.h"
 #include "EPackagerIntegration.h"
@@ -437,7 +436,6 @@ bool FneInit()
 	else {
 		TraceInitStep("无头编译模式：跳过 GameAnalytics 初始化");
 	}
-	DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(false, true);
 	ResolveCompileDebugStartAddressesForInit();
 	TraceInitStep("开始安装文件与编译相关 Hook");
 	StartHookCreateFileA();

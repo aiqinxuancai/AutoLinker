@@ -1938,7 +1938,6 @@ bool ResolveAvailableModulePathForAI(
 		return false;
 	}
 
-	DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(false);
 	std::string catalogPath;
 	std::vector<DependencyCatalogCache::ModuleEntry> catalogCandidates;
 	std::string catalogError;
@@ -2053,6 +2052,21 @@ void AppendDependencyCatalogStatusForAI(nlohmann::json& r)
 	r["catalog_status"] = std::move(row);
 }
 
+bool EnsureDependencyCatalogSnapshotForSearchForAI(std::string& outError)
+{
+	outError.clear();
+	DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(false);
+	DependencyCatalogCache::Instance().WaitForIdle(0);
+
+	const DependencyCatalogCache::Status status = DependencyCatalogCache::Instance().GetStatus();
+	if (status.hasSnapshot) {
+		return true;
+	}
+
+	outError = status.lastErrorLocal.empty() ? "dependency catalog refresh failed" : status.lastErrorLocal;
+	return false;
+}
+
 bool IsPathSameForAI(const std::string& left, const std::string& right)
 {
 	if (TrimAsciiCopy(left).empty() || TrimAsciiCopy(right).empty()) {
@@ -2103,6 +2117,104 @@ std::string NormalizeSupportLibraryLookupNameForAI(const std::string& text)
 	catch (...) {
 	}
 	return TrimAsciiCopy(value);
+}
+
+bool IsSupportLibraryFileForAI(const std::filesystem::path& path)
+{
+	const std::string ext = ToLowerAsciiCopyLocal(path.extension().string());
+	return ext == ".fne" || ext == ".fnr";
+}
+
+DependencyCatalogCache::LibraryEntry BuildSupportLibraryEntryFromPathForAI(const std::filesystem::path& path)
+{
+	DependencyCatalogCache::LibraryEntry entry;
+	entry.fileNameLocal = path.filename().string();
+	entry.libraryNameLocal = path.stem().string();
+	entry.pathLocal = NormalizePathForAI(path.string());
+	entry.decoded = false;
+	entry.decodeErrorLocal = "not cached";
+	return entry;
+}
+
+bool TryResolveAvailableSupportLibraryByNameForAI(
+	const std::string& libraryNameLocal,
+	DependencyCatalogCache::LibraryEntry& outEntry,
+	std::vector<DependencyCatalogCache::LibraryEntry>& outCandidates,
+	std::string& outError)
+{
+	outEntry = {};
+	outCandidates.clear();
+	outError.clear();
+
+	const std::string name = NormalizeSupportLibraryLookupNameForAI(libraryNameLocal);
+	if (name.empty()) {
+		outError = "library_name or library_path is required";
+		return false;
+	}
+
+	const std::filesystem::path root = std::filesystem::path(GetBasePath()) / "lib";
+	std::error_code ec;
+	if (!std::filesystem::exists(root, ec) || !std::filesystem::is_directory(root, ec)) {
+		outError = "support library root not found";
+		return false;
+	}
+
+	const std::string loweredName = ToLowerAsciiCopyLocal(name);
+	std::vector<DependencyCatalogCache::LibraryEntry> exactMatched;
+	std::vector<DependencyCatalogCache::LibraryEntry> fuzzyMatched;
+	const auto options = std::filesystem::directory_options::skip_permission_denied;
+	for (std::filesystem::recursive_directory_iterator it(root, options, ec), end; it != end; it.increment(ec)) {
+		if (ec) {
+			ec.clear();
+			continue;
+		}
+
+		const auto& dirEntry = *it;
+		if (!dirEntry.is_regular_file(ec) || ec || !IsSupportLibraryFileForAI(dirEntry.path())) {
+			ec.clear();
+			continue;
+		}
+
+		DependencyCatalogCache::LibraryEntry entry = BuildSupportLibraryEntryFromPathForAI(dirEntry.path());
+		std::string relativePath;
+		try {
+			relativePath = NormalizePathForAI(dirEntry.path().lexically_relative(root).string());
+		}
+		catch (...) {
+			relativePath.clear();
+		}
+
+		const std::string fileLookupName = NormalizeSupportLibraryLookupNameForAI(entry.fileNameLocal);
+		const std::string libraryLookupName = NormalizeSupportLibraryLookupNameForAI(entry.libraryNameLocal);
+		if (EqualsInsensitiveForAI(libraryLookupName, name) ||
+			EqualsInsensitiveForAI(fileLookupName, name) ||
+			EqualsInsensitiveForAI(entry.fileNameLocal, libraryNameLocal) ||
+			EqualsInsensitiveForAI(entry.pathLocal, libraryNameLocal) ||
+			(!relativePath.empty() && EqualsInsensitiveForAI(relativePath, libraryNameLocal))) {
+			exactMatched.push_back(std::move(entry));
+			continue;
+		}
+
+		if (ToLowerAsciiCopyLocal(entry.libraryNameLocal).find(loweredName) != std::string::npos ||
+			ToLowerAsciiCopyLocal(entry.fileNameLocal).find(loweredName) != std::string::npos ||
+			(!relativePath.empty() && ToLowerAsciiCopyLocal(relativePath).find(loweredName) != std::string::npos)) {
+			fuzzyMatched.push_back(std::move(entry));
+		}
+	}
+
+	const std::vector<DependencyCatalogCache::LibraryEntry>& matched = exactMatched.empty() ? fuzzyMatched : exactMatched;
+	outCandidates = matched;
+	if (matched.empty()) {
+		outError = "support library not found in lib directory";
+		return false;
+	}
+	if (matched.size() > 1) {
+		outError = "support library name is ambiguous";
+		return false;
+	}
+
+	outEntry = matched.front();
+	return true;
 }
 
 bool TryListLoadedSupportLibraryInfoForAI(std::vector<std::string>& outRows, std::string& outError)
@@ -2437,6 +2549,16 @@ std::string BuildSearchAvailableModulesJsonForAI(const std::string& argumentsJso
 	options.queryUtf8 = args.contains("query") && args["query"].is_string() ? args["query"].get<std::string>() : std::string();
 	options.limit = args.contains("limit") && args["limit"].is_number_integer() ? args["limit"].get<int>() : 50;
 	options.includeSnippets = !args.contains("include_snippets") || !args["include_snippets"].is_boolean() || args["include_snippets"].get<bool>();
+
+	std::string refreshError;
+	if (!EnsureDependencyCatalogSnapshotForSearchForAI(refreshError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = refreshError;
+		r["query"] = options.queryUtf8;
+		AppendDependencyCatalogStatusForAI(r);
+		return JsonUtf8ToAsciiTextForAI(r);
+	}
 	const auto results = DependencyCatalogCache::Instance().SearchModules(options);
 
 	nlohmann::json rows = nlohmann::json::array();
@@ -2486,6 +2608,16 @@ std::string BuildSearchAvailableSupportLibrariesJsonForAI(const std::string& arg
 	options.queryUtf8 = args.contains("query") && args["query"].is_string() ? args["query"].get<std::string>() : std::string();
 	options.limit = args.contains("limit") && args["limit"].is_number_integer() ? args["limit"].get<int>() : 50;
 	options.includeSnippets = !args.contains("include_snippets") || !args["include_snippets"].is_boolean() || args["include_snippets"].get<bool>();
+
+	std::string refreshError;
+	if (!EnsureDependencyCatalogSnapshotForSearchForAI(refreshError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = refreshError;
+		r["query"] = options.queryUtf8;
+		AppendDependencyCatalogStatusForAI(r);
+		return JsonUtf8ToAsciiTextForAI(r);
+	}
 	const auto results = DependencyCatalogCache::Instance().SearchLibraries(options);
 
 	nlohmann::json rows = nlohmann::json::array();
@@ -2540,9 +2672,6 @@ std::string BuildAddSupportLibraryToProjectJsonOnMainThread(const std::string& a
 		return JsonToLocalTextForAI(r);
 	}
 
-	DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(false);
-	DependencyCatalogCache::Instance().WaitForIdle(30000);
-
 	const std::string libraryName = args.contains("library_name") && args["library_name"].is_string()
 		? Utf8ToLocalText(args["library_name"].get<std::string>())
 		: std::string();
@@ -2553,12 +2682,20 @@ std::string BuildAddSupportLibraryToProjectJsonOnMainThread(const std::string& a
 	DependencyCatalogCache::LibraryEntry entry;
 	std::vector<DependencyCatalogCache::LibraryEntry> candidates;
 	std::string resolveError;
-	if (!DependencyCatalogCache::Instance().ResolveLibrary(
+	bool resolved = DependencyCatalogCache::Instance().ResolveLibrary(
 			libraryName,
 			libraryPath,
 			entry,
 			&candidates,
-			resolveError)) {
+			resolveError);
+	if (!resolved && TrimAsciiCopy(libraryPath).empty() && !TrimAsciiCopy(libraryName).empty()) {
+		resolved = TryResolveAvailableSupportLibraryByNameForAI(
+			libraryName,
+			entry,
+			candidates,
+			resolveError);
+	}
+	if (!resolved) {
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = resolveError.empty() ? "support library not found" : resolveError;

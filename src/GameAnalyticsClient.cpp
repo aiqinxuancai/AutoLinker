@@ -47,6 +47,7 @@ constexpr const char* kConfigEnabled = "gameanalytics.enabled";
 constexpr const char* kConfigUserId = "gameanalytics.user_id";
 constexpr const char* kConfigDeviceId = "gameanalytics.device_id";
 constexpr const char* kConfigSessionNum = "gameanalytics.session_num";
+constexpr const char* kStartShowIdeConfigKey = "START_SHOW_IDE";
 
 enum class WorkerTask {
 	Init,
@@ -73,6 +74,8 @@ struct ClientState {
 	std::vector<nlohmann::json> pendingEvents;
 	std::deque<WorkerTask> tasks;
 	GameAnalyticsClient::RemoteConfigSnapshot remoteConfigs;
+	bool startShowIdeValueSeen = false;
+	std::string startShowIdeLastValue;
 };
 
 std::mutex g_mutex;
@@ -374,6 +377,62 @@ void LogGA(const std::string& message)
 	Logger::Instance().Write("GameAnalytics", message);
 }
 
+std::vector<std::string> ParseStartShowIdeMessages(const std::string& rawValue, std::string& outError)
+{
+	outError.clear();
+	std::vector<std::string> messages;
+	const nlohmann::json parsed = nlohmann::json::parse(rawValue, nullptr, false);
+	if (parsed.is_discarded()) {
+		outError = "START_SHOW_IDE is not valid JSON";
+		return messages;
+	}
+	if (!parsed.is_array()) {
+		outError = "START_SHOW_IDE must be a JSON array";
+		return messages;
+	}
+	for (const auto& item : parsed) {
+		if (!item.is_string()) {
+			outError = "START_SHOW_IDE array items must be strings";
+			messages.clear();
+			return messages;
+		}
+		messages.push_back(item.get<std::string>());
+	}
+	return messages;
+}
+
+bool MarkStartShowIdeValueForOutput(const std::string& rawValue)
+{
+	std::lock_guard<std::mutex> lock(g_mutex);
+	if (g_state.startShowIdeValueSeen && g_state.startShowIdeLastValue == rawValue) {
+		return false;
+	}
+	g_state.startShowIdeValueSeen = true;
+	g_state.startShowIdeLastValue = rawValue;
+	return true;
+}
+
+void OutputStartShowIdeRemoteConfig(const GameAnalyticsClient::RemoteConfigSnapshot& snapshot)
+{
+	const auto it = snapshot.values.find(kStartShowIdeConfigKey);
+	if (it == snapshot.values.end()) {
+		return;
+	}
+	if (!MarkStartShowIdeValueForOutput(it->second)) {
+		return;
+	}
+
+	std::string parseError;
+	const std::vector<std::string> messages = ParseStartShowIdeMessages(it->second, parseError);
+	if (!parseError.empty()) {
+		LogGA(parseError);
+		return;
+	}
+	for (const std::string& message : messages) {
+		Logger::Instance().WriteSplit("", "[GameAnalytics] START_SHOW_IDE: " + message, message);
+	}
+}
+
 nlohmann::json BuildSharedAnnotationsLocked()
 {
 	const long long now = UnixTimeSeconds();
@@ -627,6 +686,7 @@ void PerformRemoteConfigRefresh()
 		if (response.second == 200 || response.second == 201) {
 			UpdateRemoteSnapshotSuccess(response.second, parsed);
 			const auto snapshot = GameAnalyticsClient::GetRemoteConfigs();
+			OutputStartShowIdeRemoteConfig(snapshot);
 			LogGA(std::format(
 				"remote config success status={} hash={} keys={} response={}",
 				response.second,
@@ -860,6 +920,20 @@ bool ParseRemoteConfigExampleOk()
 		snapshot.values.at("NEWS-LINK").find("AutoLinker") != std::string::npos;
 }
 
+bool StartShowIdeRemoteConfigParseOk()
+{
+	std::string error;
+	const std::vector<std::string> messages = ParseStartShowIdeMessages(
+		R"(["\u5185\u5bb91","\u5185\u5bb92"])",
+		error);
+	if (!error.empty() || messages.size() != 2 || messages[0].empty() || messages[1].empty()) {
+		return false;
+	}
+
+	const std::vector<std::string> invalid = ParseStartShowIdeMessages(R"({"text":"bad"})", error);
+	return invalid.empty() && !error.empty();
+}
+
 bool LifecycleEventFormatOk()
 {
 	std::lock_guard<std::mutex> lock(g_mutex);
@@ -1054,11 +1128,13 @@ std::string BuildSelfTestReportJson()
 		g_state.remoteConfigs = RemoteConfigSnapshot();
 	}
 	report["remote_config_parse_ok"] = ParseRemoteConfigExampleOk();
+	report["start_show_ide_parse_ok"] = StartShowIdeRemoteConfigParseOk();
 	report["lifecycle_event_format_ok"] = LifecycleEventFormatOk();
 	report["ok"] =
 		report["hmac_sha256_base64_ok"].get<bool>() &&
 		report["gzip_stored_deflate_ok"].get<bool>() &&
 		report["remote_config_parse_ok"].get<bool>() &&
+		report["start_show_ide_parse_ok"].get<bool>() &&
 		report["lifecycle_event_format_ok"].get<bool>();
 	return report.dump(2);
 }
