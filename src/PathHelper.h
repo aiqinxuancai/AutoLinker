@@ -11,6 +11,9 @@ std::string GetBasePath();
 // 获取 AutoLinker 工作目录路径（主程序目录/AutoLinker）。
 std::filesystem::path GetAutoLinkerDirectoryPath();
 
+// 获取 AutoLinker 临时缓存目录路径（系统 Temp/AutoLinker/Cache），若目录不存在则自动创建。
+std::filesystem::path GetAutoLinkerCacheDirectoryPath();
+
 // 获取 AutoLinker 日志目录路径，若目录不存在则自动创建。
 std::filesystem::path GetAutoLinkerLogDirectoryPath();
 

@@ -89,6 +89,30 @@ std::string GetBasePath() {
 std::filesystem::path GetAutoLinkerDirectoryPath() {
     return std::filesystem::path(GetBasePath()) / "AutoLinker";
 }
+std::filesystem::path GetAutoLinkerCacheDirectoryPath() {
+    wchar_t tempPathBuffer[MAX_PATH] = {};
+    const DWORD tempPathLength = GetTempPathW(
+        static_cast<DWORD>(sizeof(tempPathBuffer) / sizeof(tempPathBuffer[0])),
+        tempPathBuffer);
+
+    std::filesystem::path tempPath;
+    if (tempPathLength > 0 &&
+        tempPathLength < static_cast<DWORD>(sizeof(tempPathBuffer) / sizeof(tempPathBuffer[0]))) {
+        tempPath = tempPathBuffer;
+    }
+    else {
+        std::error_code ec;
+        tempPath = std::filesystem::temp_directory_path(ec);
+        if (ec || tempPath.empty()) {
+            tempPath = std::filesystem::path(GetBasePath());
+        }
+    }
+
+    std::filesystem::path dir = tempPath / "AutoLinker" / "Cache";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return dir;
+}
 std::filesystem::path GetAutoLinkerLogDirectoryPath() {
     std::filesystem::path dir = GetAutoLinkerLogDirectoryPathRaw();
     std::error_code ec;

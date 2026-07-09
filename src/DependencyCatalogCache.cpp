@@ -930,7 +930,7 @@ bool DependencyCatalogCache::RefreshInternal(bool force, bool silent, std::strin
 	const std::filesystem::path basePath(GetBasePath());
 	const std::filesystem::path ecomRoot = basePath / "ecom";
 	const std::filesystem::path libRoot = basePath / "lib";
-	const std::filesystem::path cacheRoot = GetAutoLinkerDirectoryPath() / "Cache";
+	const std::filesystem::path cacheRoot = GetAutoLinkerCacheDirectoryPath();
 	const std::filesystem::path ecomCacheRoot = cacheRoot / "EcomInfo";
 	const std::filesystem::path libCacheRoot = cacheRoot / "LibInfo";
 
