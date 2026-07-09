@@ -8700,22 +8700,90 @@ bool TryRollbackRealPageCode(
 
 	std::string rollbackWriteTrace;
 	if (hasExpectedPageCode) {
-		if (!ReplaceWholePageByTextPaste(
+		std::string directRollbackTrace;
+		const DWORD directRollbackStartTick = GetTickCount();
+		AppendPageEditTraceLine(
+			"TryRollbackRealPageCode.before_direct_package|elapsed_ms=" +
+			std::to_string(GetTickCount() - rollbackStartTick));
+		if (ReplaceWholePageByE595DirectTextPackage(
 				editorObject,
 				moduleBase,
 				*expectedPageCode,
 				deleteSelectionFirst,
-				&rollbackWriteTrace)) {
-			if (outTrace != nullptr) {
-				*outTrace =
-					"rollback_text_failed|rollback_ms=" +
+				&directRollbackTrace)) {
+			const DWORD directRollbackElapsed = GetTickCount() - directRollbackStartTick;
+			AppendPageEditTraceLine(
+				"TryRollbackRealPageCode.direct_package_ok|direct_ms=" +
+				std::to_string(directRollbackElapsed) +
+				"|elapsed_ms=" +
+				std::to_string(GetTickCount() - rollbackStartTick) +
+				"|" +
+				directRollbackTrace);
+			rollbackWriteTrace =
+				"rollback_direct_package|direct_ms=" +
+				std::to_string(directRollbackElapsed) +
+				"|" +
+				directRollbackTrace;
+		}
+		else {
+			const DWORD directRollbackElapsed = GetTickCount() - directRollbackStartTick;
+			AppendPageEditTraceLine(
+				"TryRollbackRealPageCode.direct_package_failed|direct_ms=" +
+				std::to_string(directRollbackElapsed) +
+				"|fallback=text_paste|elapsed_ms=" +
+				std::to_string(GetTickCount() - rollbackStartTick) +
+				"|" +
+				directRollbackTrace);
+
+			std::string textRollbackTrace;
+			const DWORD textRollbackStartTick = GetTickCount();
+			if (!ReplaceWholePageByTextPaste(
+					editorObject,
+					moduleBase,
+					*expectedPageCode,
+					deleteSelectionFirst,
+					&textRollbackTrace)) {
+				const DWORD textRollbackElapsed = GetTickCount() - textRollbackStartTick;
+				AppendPageEditTraceLine(
+					"TryRollbackRealPageCode.text_paste_failed|text_ms=" +
+					std::to_string(textRollbackElapsed) +
+					"|elapsed_ms=" +
 					std::to_string(GetTickCount() - rollbackStartTick) +
 					"|" +
-					rollbackWriteTrace;
+					textRollbackTrace);
+				if (outTrace != nullptr) {
+					*outTrace =
+						"rollback_write_failed|direct_ms=" +
+						std::to_string(directRollbackElapsed) +
+						"|text_ms=" +
+						std::to_string(textRollbackElapsed) +
+						"|rollback_ms=" +
+						std::to_string(GetTickCount() - rollbackStartTick) +
+						"|direct_package_failed|" +
+						directRollbackTrace +
+						"|text_paste_failed|" +
+						textRollbackTrace;
+				}
+				return false;
 			}
-			return false;
+			const DWORD textRollbackElapsed = GetTickCount() - textRollbackStartTick;
+			AppendPageEditTraceLine(
+				"TryRollbackRealPageCode.text_paste_ok|text_ms=" +
+				std::to_string(textRollbackElapsed) +
+				"|elapsed_ms=" +
+				std::to_string(GetTickCount() - rollbackStartTick) +
+				"|" +
+				textRollbackTrace);
+			rollbackWriteTrace =
+				"rollback_direct_package_failed|direct_ms=" +
+				std::to_string(directRollbackElapsed) +
+				"|" +
+				directRollbackTrace +
+				"|rollback_text_paste_fallback|text_ms=" +
+				std::to_string(textRollbackElapsed) +
+				"|" +
+				textRollbackTrace;
 		}
-		rollbackWriteTrace = "rollback_text_paste|" + rollbackWriteTrace;
 	}
 	else {
 		if (!ReplaceWholePageByCustomClipboardPayload(

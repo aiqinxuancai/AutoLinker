@@ -17,6 +17,7 @@ constexpr std::string_view kDirectiveAssembly = ".程序集";
 // IDE 会把显式的默认基类省略掉再存，读回时即变成无基类形式。比较时需归一化两者。
 constexpr std::string_view kDefaultBaseClassToken = "<对象>";
 // 结构指纹里的条件语句 token（已去空白后的形态）。
+constexpr std::string_view kFingerprintTokenVersionPrefix = ".版本";
 constexpr std::string_view kFingerprintTokenOtherwise = ".否则";
 constexpr std::string_view kFingerprintTokenEndIf = ".如果结束";
 // 去空白后「无子程序名」的裸 .子程序 token（真实子程序声明必带名字，去空白后形如 ".子程序xxx"）。
@@ -54,6 +55,63 @@ bool StartsWithLocal(const std::string& text, std::string_view prefix)
 {
 	return text.size() >= prefix.size() &&
 		std::equal(prefix.begin(), prefix.end(), text.begin());
+}
+
+bool HasIdeControlTokenBoundary(const std::string& token, size_t keywordSize)
+{
+	if (token.size() == keywordSize) {
+		return true;
+	}
+	const unsigned char next = static_cast<unsigned char>(token[keywordSize]);
+	return next == '(';
+}
+
+bool IsIdeOptionalLeadingDotControlToken(const std::string& token)
+{
+	if (token.empty() || token.front() == '.') {
+		return false;
+	}
+
+	static constexpr std::string_view kIdeControlKeywords[] = {
+		"如果真",
+		"如果",
+		"否则",
+		"如果结束",
+		"计次循环首",
+		"计次循环尾",
+		"判断开始",
+		"判断",
+		"默认",
+		"判断结束",
+		"循环判断首",
+		"循环判断尾",
+		"变量循环首",
+		"变量循环尾",
+		"到循环尾",
+		"跳出循环",
+		"返回",
+	};
+
+	for (const std::string_view keyword : kIdeControlKeywords) {
+		if (StartsWithLocal(token, keyword) &&
+			HasIdeControlTokenBoundary(token, keyword.size())) {
+			return true;
+		}
+	}
+	return false;
+}
+
+std::string NormalizeIdeOptionalLeadingDotToken(const std::string& token)
+{
+	if (!IsIdeOptionalLeadingDotControlToken(token)) {
+		return token;
+	}
+	return "." + token;
+}
+
+bool IsVersionFingerprintToken(const std::string& token)
+{
+	return StartsWithLocal(token, kFingerprintTokenVersionPrefix);
 }
 
 size_t CountOccurrencesLocal(const std::string& text, const std::string& needle)
@@ -351,10 +409,12 @@ std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string
 
 // 消除 IDE 存盘对结构指纹的等价性改写，使写入与读回的指纹可比。
 // 传入的每个元素是「已去空白」的单行 token（见 NormalizePageCodeLineForStructuralCompare）。
-// 处理两类 IDE 自动补全（均为语义等价、非内容丢失）：
-//  1) 给无 else 的 .如果 块补空 .否则：去掉紧邻 .如果结束 之前的 .否则 token。
+// 处理四类 IDE 自动改写（均为语义等价、非内容丢失）：
+//  1) 有些读回路径会带 .版本 页头，有些不会：结构比较时忽略该页头 token。
+//  2) e5.95 会把部分控制语句前导点省略：把 如果真(...) 等归一为 .如果真(...)。
+//  3) 给无 else 的 .如果 块补空 .否则：去掉紧邻 .如果结束 之前的 .否则 token。
 //     该规则对写入与读回对称——真实的空 .否则 会在两侧同样被去掉，不会凭空造出或消除差异。
-//  2) 页尾追加裸 .子程序（无名字）+ 把程序集级注释搬到页尾孤儿化：去掉去空白后恰为 ".子程序" 的 token。
+//  4) 页尾追加裸 .子程序（无名字）+ 把程序集级注释搬到页尾孤儿化：去掉去空白后恰为 ".子程序" 的 token。
 //     真实子程序声明必带名字，去空白后形如 ".子程序名字"，绝不会精确等于 ".子程序"。
 std::vector<std::string> NormalizeStructuralFingerprintForIdeRewrite(
 	const std::vector<std::string>& fingerprint)
@@ -362,16 +422,19 @@ std::vector<std::string> NormalizeStructuralFingerprintForIdeRewrite(
 	std::vector<std::string> normalized;
 	normalized.reserve(fingerprint.size());
 	for (size_t i = 0; i < fingerprint.size(); ++i) {
-		const std::string& token = fingerprint[i];
+		std::string token = NormalizeIdeOptionalLeadingDotToken(fingerprint[i]);
+		if (IsVersionFingerprintToken(token)) {
+			continue;
+		}
 		if (token == kFingerprintTokenOtherwise &&
 			i + 1 < fingerprint.size() &&
-			fingerprint[i + 1] == kFingerprintTokenEndIf) {
+			NormalizeIdeOptionalLeadingDotToken(fingerprint[i + 1]) == kFingerprintTokenEndIf) {
 			continue;
 		}
 		if (token == kFingerprintTokenBareSubroutine) {
 			continue;
 		}
-		normalized.push_back(token);
+		normalized.push_back(std::move(token));
 	}
 	return normalized;
 }

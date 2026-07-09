@@ -1634,7 +1634,9 @@ bool TryWriteRealPageCodeForAI(
 
 	if (!writeOk) {
 		outTrace = writeTrace;
-		outError = "whole page paste failed";
+		outError = writeResult.trace.find("verify_") != std::string::npos
+			? "whole page write verify failed"
+			: "whole page write failed";
 		return false;
 	}
 
