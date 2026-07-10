@@ -1614,7 +1614,7 @@ void ServerThreadMain()
 		return;
 	}
 	g_running.store(true);
-	Logger::Instance().Write("LocalMCP", std::format(
+	LogMcp(std::format(
 		"本地 MCP 服务已启动：http://{}:{}/mcp",
 		kBindHost,
 		boundPort));

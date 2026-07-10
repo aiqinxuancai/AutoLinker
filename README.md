@@ -79,9 +79,9 @@ AutoLinker 挂接了 IDE 的“开始调试 / 开始编译”入口：触发时�
 ### ⭐服务地址
 - 默认监听：`http://127.0.0.1:19207/mcp`
 - 如果端口 `19207` 被占用，会自动尝试 `19208` 起的后续端口。
-- 启动成功后，`autolinker.log` 会记录类似日志（不显示在 IDE 输出窗口）：
+- 启动成功后，IDE 输出窗口和 `autolinker.log` 会记录类似日志：
   ```text
-  [LocalMCP] 本地 MCP 服务已启动：http://127.0.0.1:19207/mcp
+  [AutoLinker][LocalMCP] 本地 MCP 服务已启动：http://127.0.0.1:19207/mcp
   ```
 
 ### ⭐协议说明
