@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <format>
 #include <string>
 #include <thread>
 #include <vector>
@@ -17,15 +18,105 @@
 #include "AIChatTooling.h"
 #include "AIChatMcpClient.h"
 #include "AIChatMcpConfig.h"
+#include "AIChatToolPolicy.h"
 #include "AIService.h"
 #include "AutoLinkerVersion.h"
 #include "GameAnalyticsClient.h"
+#include "LocalMcpServer.h"
 #include "PathHelper.h"
 #include "Version.h"
+#include "WorkspaceFileTools.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 
 namespace {
+
+bool RunAIChatToolPolicySelfTest(nlohmann::json& outCheck)
+{
+	outCheck = {
+		{"name", "ai_chat_tool_policy"},
+		{"ok", false}
+	};
+
+	AIChatToolPolicy::Session duplicatePolicy;
+	const std::string readArgs = R"({"file_path":"src/Test.txt","offset":0,"limit":10})";
+	const auto firstRead = duplicatePolicy.BeforeToolCall("read_file", readArgs);
+	duplicatePolicy.AfterToolCall(
+		"read_file",
+		readArgs,
+		R"({"ok":true,"file_path":"src/Test.txt","offset":0,"returned_lines":10,"content":"1\ta\n"})",
+		true);
+	const auto duplicateRead = duplicatePolicy.BeforeToolCall("read_file", readArgs);
+
+	AIChatToolPolicy::Session batchCoveragePolicy;
+	const std::string batchReadArgs =
+		R"({"files":[{"file_path":"src/Batch.txt","offset":0,"limit":10}]})";
+	const auto firstBatchRead = batchCoveragePolicy.BeforeToolCall("read_files", batchReadArgs);
+	batchCoveragePolicy.AfterToolCall(
+		"read_files",
+		batchReadArgs,
+		R"({"ok":true,"files":[{"ok":true,"file_path":"src/Batch.txt","offset":0,"returned_lines":10,"total_lines":30,"total_lines_complete":true,"content":"1\ta\n10\tz\n"}]})",
+		true);
+	const auto overlappingBatchRead = batchCoveragePolicy.BeforeToolCall(
+		"read_files",
+		R"({"files":[{"file_path":"src/Batch.txt","offset":5,"limit":15}]})");
+	const nlohmann::json overlapResult = nlohmann::json::parse(
+		overlappingBatchRead.resultJsonUtf8,
+		nullptr,
+		false);
+	const bool overlapSuggestionOk =
+		!overlappingBatchRead.allowed &&
+		overlappingBatchRead.reason == "overlapping_read_range" &&
+		overlapResult.is_object() &&
+		overlapResult.contains("suggested_missing_ranges") &&
+		overlapResult["suggested_missing_ranges"].is_array() &&
+		overlapResult["suggested_missing_ranges"].size() == 1 &&
+		overlapResult["suggested_missing_ranges"][0].value("offset", -1) == 10 &&
+		overlapResult["suggested_missing_ranges"][0].value("limit", -1) == 10;
+
+	AIChatToolPolicy::Session budgetPolicy;
+	bool budgetCallsAllowed = true;
+	for (int i = 0; i < AIChatToolPolicy::kHardExplorationCallLimit; ++i) {
+		const std::string args = std::format(R"({{"pattern":"item{}","regex":false}})", i);
+		const auto decision = budgetPolicy.BeforeToolCall("search_code", args);
+		budgetCallsAllowed = budgetCallsAllowed && decision.allowed;
+		budgetPolicy.AfterToolCall("search_code", args, R"({"ok":true,"results":[]})", true);
+	}
+	const auto overBudget = budgetPolicy.BeforeToolCall(
+		"search_code",
+		R"({"pattern":"over-budget","regex":false})");
+
+	AIChatToolPolicy::Session writePolicy;
+	const std::string writeArgs = R"({"file_path":"src/Test.txt","full_code":"x"})";
+	const auto writeDecision = writePolicy.BeforeToolCall("write_file", writeArgs);
+	const std::string writeNotice = writePolicy.AfterToolCall(
+		"write_file",
+		writeArgs,
+		R"({"ok":true,"verified":true,"new_hash":"abc"})",
+		true);
+	const bool prefersLowThinking = writePolicy.PreferLowThinkingForNextRound();
+	const auto postWriteRead = writePolicy.BeforeToolCall(
+		"read_files",
+		R"({"file_paths":["src/Test.txt"]})");
+
+	const bool ok = firstRead.allowed &&
+		!duplicateRead.allowed &&
+		firstBatchRead.allowed &&
+		overlapSuggestionOk &&
+		budgetCallsAllowed &&
+		!overBudget.allowed &&
+		writeDecision.allowed &&
+		!writeNotice.empty() &&
+		prefersLowThinking &&
+		!postWriteRead.allowed;
+	outCheck["ok"] = ok;
+	outCheck["duplicate_reason"] = duplicateRead.reason;
+	outCheck["batch_overlap_reason"] = overlappingBatchRead.reason;
+	outCheck["batch_overlap_result"] = overlapResult;
+	outCheck["budget_reason"] = overBudget.reason;
+	outCheck["post_write_reason"] = postWriteRead.reason;
+	return ok;
+}
 
 int CopyStringToBuffer(const std::string& value, char* buffer, int bufferSize)
 {
@@ -1421,13 +1512,32 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 			publicCatalogCheck["error"] = "public catalog is not array";
 		}
 		else {
+			bool hasReadCodeItem = false;
+			bool hasRequiredRefreshDescription = false;
 			for (const auto& item : catalog) {
 				if (item.is_object() && AIChatMcpClient::IsMcpModelToolName(item.value("name", std::string()))) {
 					publicCatalogCheck["ok"] = false;
 					publicCatalogCheck["error"] = "public catalog contains MCP tool";
 					break;
 				}
+				if (!item.is_object()) {
+					continue;
+				}
+				const std::string name = item.value("name", std::string());
+				if (name == "read_code_item") {
+					hasReadCodeItem = true;
+				}
+				if (name == "refresh_workspace_mirror" &&
+					item.value("description", std::string()).find("MUST") != std::string::npos) {
+					hasRequiredRefreshDescription = true;
+				}
 			}
+			if (!hasReadCodeItem || !hasRequiredRefreshDescription) {
+				publicCatalogCheck["ok"] = false;
+				publicCatalogCheck["error"] = "public catalog missing read_code_item or explicit MCP refresh requirement";
+			}
+			publicCatalogCheck["has_read_code_item"] = hasReadCodeItem;
+			publicCatalogCheck["has_required_refresh_description"] = hasRequiredRefreshDescription;
 		}
 	}
 	catch (const std::exception& ex) {
@@ -1435,6 +1545,49 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		publicCatalogCheck["error"] = ex.what();
 	}
 	report["checks"].push_back(publicCatalogCheck);
+
+	nlohmann::json toolPolicyCheck;
+	RunAIChatToolPolicySelfTest(toolPolicyCheck);
+	report["checks"].push_back(std::move(toolPolicyCheck));
+
+	nlohmann::json optimizationCheck = nlohmann::json::parse(
+		AIService::BuildAgentOptimizationSelfTestJson(),
+		nullptr,
+		false);
+	if (optimizationCheck.is_discarded() || !optimizationCheck.is_object()) {
+		optimizationCheck = {
+			{"name", "agent-optimization-self-test"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
+	report["checks"].push_back(std::move(optimizationCheck));
+
+	nlohmann::json paginationCheck = nlohmann::json::parse(
+		WorkspaceFileTools::BuildPaginationSelfTestJson(),
+		nullptr,
+		false);
+	if (paginationCheck.is_discarded() || !paginationCheck.is_object()) {
+		paginationCheck = {
+			{"name", "workspace-file-pagination"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
+	report["checks"].push_back(std::move(paginationCheck));
+
+	nlohmann::json refreshGateCheck = nlohmann::json::parse(
+		LocalMcpServer::BuildWorkspaceRefreshGateSelfTestJson(),
+		nullptr,
+		false);
+	if (refreshGateCheck.is_discarded() || !refreshGateCheck.is_object()) {
+		refreshGateCheck = {
+			{"name", "external_mcp_workspace_refresh_gate"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
+	report["checks"].push_back(std::move(refreshGateCheck));
 
 	nlohmann::json mockRoundtripCheck;
 	RunMcpMockRoundtripSelfTest(mockRoundtripCheck);

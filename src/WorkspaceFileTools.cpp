@@ -224,10 +224,16 @@ bool GlobMatches(const std::string& relativePath, const std::string& glob)
 	}
 }
 
-bool ReadFileBytesLimited(const std::filesystem::path& path, std::string& outBytes, bool& outTruncated, std::string& outError)
+bool ReadFileBytesLimited(
+	const std::filesystem::path& path,
+	std::string& outBytes,
+	bool& outTruncated,
+	size_t& outTotalBytes,
+	std::string& outError)
 {
 	outBytes.clear();
 	outTruncated = false;
+	outTotalBytes = 0;
 	outError.clear();
 
 	std::ifstream file(path, std::ios::binary);
@@ -236,6 +242,7 @@ bool ReadFileBytesLimited(const std::filesystem::path& path, std::string& outByt
 		return false;
 	}
 	outBytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+	outTotalBytes = outBytes.size();
 	if (outBytes.size() > kMaxReadBytes) {
 		outBytes.resize(kMaxReadBytes);
 		outTruncated = true;
@@ -313,6 +320,110 @@ std::string BuildNumberedView(const std::vector<std::string>& lines, int offset,
 	return stream.str();
 }
 
+json BuildOffsetRange(int begin, int end)
+{
+	return {
+		{"start_offset", begin},
+		{"end_offset_exclusive", end}
+	};
+}
+
+void AppendResultPaginationMetadata(
+	json& result,
+	int requestedOffset,
+	int returned,
+	int totalResults)
+{
+	const int effectiveOffset = ClampInt(requestedOffset, 0, totalResults);
+	const int endOffset = (std::min)(totalResults, effectiveOffset + (std::max)(0, returned));
+	const bool hasMore = endOffset < totalResults;
+	result["requested_offset"] = requestedOffset;
+	result["offset"] = effectiveOffset;
+	result["returned"] = returned;
+	result["total_results"] = totalResults;
+	result["has_more"] = hasMore;
+	if (hasMore) {
+		result["next_offset"] = endOffset;
+	}
+	else {
+		result["next_offset"] = nullptr;
+	}
+	result["visible_result_range"] = returned > 0
+		? BuildOffsetRange(effectiveOffset, endOffset)
+		: json(nullptr);
+	json omittedRanges = json::array();
+	if (effectiveOffset > 0) {
+		omittedRanges.push_back(BuildOffsetRange(0, effectiveOffset));
+	}
+	if (hasMore) {
+		omittedRanges.push_back(BuildOffsetRange(endOffset, totalResults));
+	}
+	result["omitted_result_ranges"] = std::move(omittedRanges);
+}
+
+void AppendLinePaginationMetadata(
+	json& result,
+	int requestedOffset,
+	int effectiveOffset,
+	int returned,
+	int totalLines)
+{
+	const int endOffset = (std::min)(totalLines, effectiveOffset + (std::max)(0, returned));
+	const bool hasMore = endOffset < totalLines;
+	result["requested_offset"] = requestedOffset;
+	result["offset"] = effectiveOffset;
+	result["has_more"] = hasMore;
+	if (hasMore) {
+		result["next_offset"] = endOffset;
+	}
+	else {
+		result["next_offset"] = nullptr;
+	}
+	result["visible_line_range"] = returned > 0
+		? json({
+			{"start_line", effectiveOffset + 1},
+			{"end_line", endOffset}
+		})
+		: json(nullptr);
+	json omittedRanges = json::array();
+	if (effectiveOffset > 0) {
+		omittedRanges.push_back({
+			{"start_line", 1},
+			{"end_line", effectiveOffset}
+		});
+	}
+	if (hasMore) {
+		omittedRanges.push_back({
+			{"start_line", endOffset + 1},
+			{"end_line", totalLines}
+		});
+	}
+	result["omitted_line_ranges"] = std::move(omittedRanges);
+}
+
+void AppendSourceByteMetadata(
+	json& result,
+	size_t returnedBytes,
+	size_t totalBytes,
+	bool truncated)
+{
+	result["source_bytes_returned"] = returnedBytes;
+	result["source_total_bytes"] = totalBytes;
+	result["source_bytes_truncated"] = truncated;
+	result["visible_source_byte_range"] = {
+		{"start_offset", 0},
+		{"end_offset_exclusive", returnedBytes}
+	};
+	json omittedRanges = json::array();
+	if (truncated && totalBytes > returnedBytes) {
+		omittedRanges.push_back({
+			{"start_offset", returnedBytes},
+			{"end_offset_exclusive", totalBytes}
+		});
+	}
+	result["omitted_source_byte_ranges"] = std::move(omittedRanges);
+}
+
 std::string ToolResultToLocalJson(const json& result)
 {
 	// 页面内容/搜索命中可能含非法 UTF-8 字节（如易语言字节集里的 GBK 字节 0xB5）。
@@ -349,7 +460,8 @@ bool BuildReadFileRow(
 
 	std::string bytes;
 	bool fileTruncated = false;
-	if (!ReadFileBytesLimited(fullPath, bytes, fileTruncated, error)) {
+	size_t totalBytes = 0;
+	if (!ReadFileBytesLimited(fullPath, bytes, fileTruncated, totalBytes, error)) {
 		outError = error;
 		return false;
 	}
@@ -358,22 +470,28 @@ bool BuildReadFileRow(
 		return false;
 	}
 
+	const size_t returnedBytes = bytes.size();
 	const std::string text = DecodeTextToUtf8(std::move(bytes));
 	const std::string hashText = NormalizeRealCodeLineBreaksToCrLf(Utf8ToLocalText(text));
 	const auto lines = SplitLinesUtf8(text);
+	const int totalLines = static_cast<int>(lines.size());
+	const int effectiveOffset = ClampInt(offset, 0, totalLines);
 	int returned = 0;
 	bool lineTruncated = false;
-	const std::string view = BuildNumberedView(lines, offset, limit, returned, lineTruncated);
+	const std::string view = BuildNumberedView(lines, effectiveOffset, limit, returned, lineTruncated);
 
 	outRow["ok"] = true;
 	outRow["file_path"] = relativePath;
 	outRow["code_kind"] = "mirror_source";
 	outRow["code_hash"] = BuildStableTextHashForRealCode(hashText);
-	outRow["total_lines"] = lines.size();
-	outRow["offset"] = offset;
+	outRow["code_hash_complete"] = !fileTruncated;
+	outRow["total_lines"] = totalLines;
+	outRow["total_lines_complete"] = !fileTruncated;
 	outRow["returned_lines"] = returned;
-	outRow["truncated"] = fileTruncated || lineTruncated;
+	outRow["truncated"] = fileTruncated || effectiveOffset > 0 || lineTruncated;
 	outRow["content"] = view;
+	AppendLinePaginationMetadata(outRow, offset, effectiveOffset, returned, totalLines);
+	AppendSourceByteMetadata(outRow, returnedBytes, totalBytes, fileTruncated);
 	return true;
 }
 
@@ -409,8 +527,7 @@ struct BatchReadRequest {
 
 void AddBatchReadRequest(
 	std::vector<BatchReadRequest>& requests,
-	const BatchReadRequest& request,
-	bool& outRequestTruncated)
+	const BatchReadRequest& request)
 {
 	if (TrimAsciiCopy(request.filePath).empty()) {
 		return;
@@ -419,16 +536,23 @@ void AddBatchReadRequest(
 		requests.begin(),
 		requests.end(),
 		[&request](const BatchReadRequest& item) {
-			return NormalizeSlash(item.filePath) == NormalizeSlash(request.filePath);
+			return ToLowerAscii(NormalizeSlash(item.filePath)) ==
+				ToLowerAscii(NormalizeSlash(request.filePath));
 		});
 	if (exists != requests.end()) {
 		return;
 	}
-	if (static_cast<int>(requests.size()) >= kMaxBatchReadFiles) {
-		outRequestTruncated = true;
-		return;
-	}
 	requests.push_back(request);
+}
+
+json BuildBatchReadRequestJson(const BatchReadRequest& request, size_t requestIndex)
+{
+	return {
+		{"request_index", requestIndex},
+		{"file_path", request.filePath},
+		{"offset", request.offset},
+		{"limit", request.limit}
+	};
 }
 
 std::string ExecuteReadFiles(const std::string& argumentsJson, bool& outOk)
@@ -445,7 +569,6 @@ std::string ExecuteReadFiles(const std::string& argumentsJson, bool& outOk)
 	const int defaultOffset = (std::max)(0, GetJsonInt(args, "offset", 0));
 	const int defaultLimit = ClampInt(GetJsonInt(args, "limit", kDefaultBatchReadLimit), 1, kDefaultReadLimit);
 	std::vector<BatchReadRequest> requests;
-	bool requestTruncated = false;
 
 	if (args.contains("file_paths") && args["file_paths"].is_array()) {
 		for (const auto& item : args["file_paths"]) {
@@ -456,7 +579,7 @@ std::string ExecuteReadFiles(const std::string& argumentsJson, bool& outOk)
 			request.filePath = item.get<std::string>();
 			request.offset = defaultOffset;
 			request.limit = defaultLimit;
-			AddBatchReadRequest(requests, request, requestTruncated);
+			AddBatchReadRequest(requests, request);
 		}
 	}
 	if (args.contains("files") && args["files"].is_array()) {
@@ -472,7 +595,7 @@ std::string ExecuteReadFiles(const std::string& argumentsJson, bool& outOk)
 				request.offset = (std::max)(0, GetJsonInt(item, "offset", defaultOffset));
 				request.limit = ClampInt(GetJsonInt(item, "limit", defaultLimit), 1, kDefaultReadLimit);
 			}
-			AddBatchReadRequest(requests, request, requestTruncated);
+			AddBatchReadRequest(requests, request);
 		}
 	}
 
@@ -484,11 +607,20 @@ std::string ExecuteReadFiles(const std::string& argumentsJson, bool& outOk)
 	int okCount = 0;
 	int errorCount = 0;
 	int returnedLines = 0;
-	bool outputTruncated = requestTruncated;
+	const size_t scheduledCount = (std::min)(requests.size(), static_cast<size_t>(kMaxBatchReadFiles));
+	bool outputTruncated = scheduledCount < requests.size();
+	json omittedRequests = json::array();
+	for (size_t i = scheduledCount; i < requests.size(); ++i) {
+		omittedRequests.push_back(BuildBatchReadRequestJson(requests[i], i));
+	}
 
-	for (const BatchReadRequest& request : requests) {
+	for (size_t requestIndex = 0; requestIndex < scheduledCount; ++requestIndex) {
+		const BatchReadRequest& request = requests[requestIndex];
 		if (returnedLines >= kMaxBatchReadTotalLines) {
 			outputTruncated = true;
+			for (size_t i = requestIndex; i < scheduledCount; ++i) {
+				omittedRequests.push_back(BuildBatchReadRequestJson(requests[i], i));
+			}
 			break;
 		}
 		json row;
@@ -508,6 +640,7 @@ std::string ExecuteReadFiles(const std::string& argumentsJson, bool& outOk)
 			row["file_path"] = request.filePath;
 			row["error"] = error;
 		}
+		row["request_index"] = requestIndex;
 		rows.push_back(std::move(row));
 	}
 
@@ -517,11 +650,20 @@ std::string ExecuteReadFiles(const std::string& argumentsJson, bool& outOk)
 	r["code_kind"] = "mirror_source";
 	r["files"] = std::move(rows);
 	r["requested"] = requests.size();
+	r["scheduled"] = scheduledCount;
 	r["returned"] = r["files"].size();
 	r["ok_count"] = okCount;
 	r["error_count"] = errorCount;
 	r["returned_lines"] = returnedLines;
 	r["truncated"] = outputTruncated;
+	r["omitted_requests"] = std::move(omittedRequests);
+	r["omitted_request_count"] = r["omitted_requests"].size();
+	if (!r["omitted_requests"].empty()) {
+		r["next_request_index"] = r["omitted_requests"][0].value("request_index", 0);
+	}
+	else {
+		r["next_request_index"] = nullptr;
+	}
 	r["max_files"] = kMaxBatchReadFiles;
 	r["max_total_lines"] = kMaxBatchReadTotalLines;
 	outOk = okCount > 0;
@@ -541,6 +683,7 @@ std::string ExecuteListFiles(const std::string& argumentsJson, bool& outOk)
 
 	const std::string glob = GetJsonStringUtf8(args, "glob");
 	const std::string pathPrefix = NormalizeSlash(GetJsonStringUtf8(args, "path"));
+	const int offset = (std::max)(0, GetJsonInt(args, "offset", 0));
 	const int limit = ClampInt(GetJsonInt(args, "limit", kDefaultListLimit), 1, 5000);
 
 	std::vector<std::string> files;
@@ -561,8 +704,9 @@ std::string ExecuteListFiles(const std::string& argumentsJson, bool& outOk)
 		if (glob.empty() && pathPrefix.empty() && !IsDefaultVisiblePath(file)) {
 			continue;
 		}
+		const int resultOffset = matched;
 		++matched;
-		if (static_cast<int>(rows.size()) < limit) {
+		if (resultOffset >= offset && static_cast<int>(rows.size()) < limit) {
 			rows.push_back(file);
 		}
 	}
@@ -571,8 +715,9 @@ std::string ExecuteListFiles(const std::string& argumentsJson, bool& outOk)
 	r["ok"] = true;
 	r["files"] = std::move(rows);
 	r["count"] = matched;
-	r["returned"] = r["files"].size();
-	r["truncated"] = matched > limit;
+	const int returned = static_cast<int>(r["files"].size());
+	AppendResultPaginationMetadata(r, offset, returned, matched);
+	r["truncated"] = r["offset"].get<int>() > 0 || r["has_more"].get<bool>();
 	outOk = true;
 	return ToolResultToLocalJson(r);
 }
@@ -622,7 +767,8 @@ json ExecuteSearchCodeQuery(
 	bool caseInsensitive,
 	bool regexMode,
 	int context,
-	int headLimit)
+	int offset,
+	int pageLimit)
 {
 	if (pattern.empty()) {
 		return BuildSearchErrorJson("pattern is required");
@@ -654,8 +800,10 @@ json ExecuteSearchCodeQuery(
 	json results = json::array();
 	int filesWithMatches = 0;
 	int totalMatches = 0;
+	int totalResults = 0;
 	int skippedBinary = 0;
-	bool truncated = false;
+	int sourceFilesTruncated = 0;
+	size_t sourceBytesOmitted = 0;
 
 	for (const std::string& file : files) {
 		if (!glob.empty() && !GlobMatches(file, glob)) {
@@ -673,8 +821,15 @@ json ExecuteSearchCodeQuery(
 
 		std::string bytes;
 		bool fileTruncated = false;
-		if (!ReadFileBytesLimited(fullPath, bytes, fileTruncated, error)) {
+		size_t totalBytes = 0;
+		if (!ReadFileBytesLimited(fullPath, bytes, fileTruncated, totalBytes, error)) {
 			continue;
+		}
+		if (fileTruncated) {
+			++sourceFilesTruncated;
+			if (totalBytes > bytes.size()) {
+				sourceBytesOmitted += totalBytes - bytes.size();
+			}
 		}
 		if (LooksBinary(bytes)) {
 			++skippedBinary;
@@ -690,7 +845,12 @@ json ExecuteSearchCodeQuery(
 			}
 			++fileMatches;
 			++totalMatches;
-			if (outputMode == "content" && static_cast<int>(results.size()) < headLimit) {
+			if (outputMode == "content") {
+				const int resultOffset = totalResults;
+				++totalResults;
+				if (resultOffset < offset || static_cast<int>(results.size()) >= pageLimit) {
+					continue;
+				}
 				json row;
 				row["file_path"] = file;
 				row["line_number"] = i + 1;
@@ -706,19 +866,19 @@ json ExecuteSearchCodeQuery(
 			continue;
 		}
 		++filesWithMatches;
-		if (outputMode == "files_with_matches" && static_cast<int>(results.size()) < headLimit) {
-			results.push_back(file);
-		}
-		else if (outputMode == "count" && static_cast<int>(results.size()) < headLimit) {
-			results.push_back({
-				{"file_path", file},
-				{"count", fileMatches}
-			});
-		}
-		if (static_cast<int>(results.size()) >= headLimit) {
-			truncated = true;
-			if (outputMode != "content") {
-				break;
+		if (outputMode != "content") {
+			const int resultOffset = totalResults;
+			++totalResults;
+			if (resultOffset >= offset && static_cast<int>(results.size()) < pageLimit) {
+				if (outputMode == "files_with_matches") {
+					results.push_back(file);
+				}
+				else {
+					results.push_back({
+						{"file_path", file},
+						{"count", fileMatches}
+					});
+				}
 			}
 		}
 	}
@@ -733,8 +893,199 @@ json ExecuteSearchCodeQuery(
 	r["files_with_matches"] = filesWithMatches;
 	r["match_count"] = totalMatches;
 	r["skipped_binary"] = skippedBinary;
-	r["truncated"] = truncated;
+	r["source_files_truncated"] = sourceFilesTruncated;
+	r["source_bytes_omitted"] = sourceBytesOmitted;
+	r["results_complete"] = sourceFilesTruncated == 0;
+	const int returned = static_cast<int>(r["results"].size());
+	AppendResultPaginationMetadata(r, offset, returned, totalResults);
+	r["page_limit"] = pageLimit;
+	r["truncated"] = r["offset"].get<int>() > 0 ||
+		r["has_more"].get<bool>() ||
+		sourceFilesTruncated > 0;
 	return r;
+}
+
+bool IsTopLevelDeclarationDirective(const std::string& directiveLower)
+{
+	return directiveLower == ".子程序" ||
+		directiveLower == ".程序集" ||
+		directiveLower == ".窗口程序集" ||
+		directiveLower == ".类模块" ||
+		directiveLower == ".程序集变量" ||
+		directiveLower == ".全局变量" ||
+		directiveLower == ".dll命令" ||
+		directiveLower == ".dll声明" ||
+		directiveLower == ".数据类型" ||
+		directiveLower == ".常量" ||
+		directiveLower == ".图片资源" ||
+		directiveLower == ".声音资源";
+}
+
+bool TryParseTopLevelDeclaration(
+	const std::string& line,
+	std::string& outDirective,
+	std::string& outName)
+{
+	outDirective.clear();
+	outName.clear();
+	const std::string trimmed = TrimAsciiCopy(line);
+	if (trimmed.empty() || trimmed.front() != '.') {
+		return false;
+	}
+	const size_t directiveEnd = trimmed.find_first_of(" \t");
+	if (directiveEnd == std::string::npos) {
+		return false;
+	}
+	outDirective = ToLowerAscii(trimmed.substr(0, directiveEnd));
+	if (!IsTopLevelDeclarationDirective(outDirective)) {
+		return false;
+	}
+	const size_t nameBegin = trimmed.find_first_not_of(" \t", directiveEnd);
+	if (nameBegin == std::string::npos) {
+		return false;
+	}
+	const size_t nameEnd = trimmed.find(',', nameBegin);
+	outName = TrimAsciiCopy(trimmed.substr(
+		nameBegin,
+		nameEnd == std::string::npos ? std::string::npos : nameEnd - nameBegin));
+	return !outName.empty();
+}
+
+std::string ExecuteReadCodeItem(const std::string& argumentsJson, bool& outOk)
+{
+	outOk = false;
+	json args;
+	try {
+		args = argumentsJson.empty() ? json::object() : json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		return BuildError(std::string("invalid arguments json: ") + ex.what());
+	}
+
+	const std::string filePath = GetJsonStringUtf8(args, "file_path");
+	const std::string itemName = TrimAsciiCopy(GetJsonStringUtf8(args, "item_name"));
+	if (filePath.empty() || itemName.empty()) {
+		return BuildError("read_code_item requires file_path and item_name");
+	}
+
+	std::filesystem::path fullPath;
+	std::string relativePath;
+	std::string error;
+	if (!WorkspaceMirror::ResolveFilePath(filePath, fullPath, relativePath, error)) {
+		return BuildError(error);
+	}
+
+	std::string bytes;
+	bool fileTruncated = false;
+	size_t totalBytes = 0;
+	if (!ReadFileBytesLimited(fullPath, bytes, fileTruncated, totalBytes, error)) {
+		return BuildError(error);
+	}
+	if (LooksBinary(bytes)) {
+		return BuildError("read_code_item only supports text files: " + relativePath);
+	}
+
+	const size_t returnedBytes = bytes.size();
+	const std::string text = DecodeTextToUtf8(std::move(bytes));
+	const std::vector<std::string> lines = SplitLinesUtf8(text);
+	std::vector<int> matches;
+	std::vector<std::string> matchDirectives;
+	for (int i = 0; i < static_cast<int>(lines.size()); ++i) {
+		std::string directive;
+		std::string name;
+		if (!TryParseTopLevelDeclaration(lines[static_cast<size_t>(i)], directive, name)) {
+			continue;
+		}
+		if (ToLowerAscii(name) == ToLowerAscii(itemName)) {
+			matches.push_back(i);
+			matchDirectives.push_back(std::move(directive));
+		}
+	}
+
+	if (matches.empty()) {
+		json r;
+		r["ok"] = false;
+		r["error"] = fileTruncated
+			? "code item not found in visible file prefix; source file was truncated"
+			: "code item not found";
+		r["file_path"] = relativePath;
+		r["item_name"] = itemName;
+		r["search_complete"] = !fileTruncated;
+		AppendSourceByteMetadata(r, returnedBytes, totalBytes, fileTruncated);
+		return ToolResultToLocalJson(r);
+	}
+	if (matches.size() > 1) {
+		json candidates = json::array();
+		for (size_t i = 0; i < matches.size(); ++i) {
+			candidates.push_back({
+				{"line_number", matches[i] + 1},
+				{"directive", matchDirectives[i]}
+			});
+		}
+		json r;
+		r["ok"] = false;
+		r["error"] = "code item name matched multiple declarations";
+		r["file_path"] = relativePath;
+		r["item_name"] = itemName;
+		r["candidates"] = std::move(candidates);
+		r["search_complete"] = !fileTruncated;
+		AppendSourceByteMetadata(r, returnedBytes, totalBytes, fileTruncated);
+		return ToolResultToLocalJson(r);
+	}
+
+	const int start = matches.front();
+	int end = static_cast<int>(lines.size());
+	bool foundNextDeclaration = false;
+	for (int i = start + 1; i < static_cast<int>(lines.size()); ++i) {
+		std::string directive;
+		std::string name;
+		if (TryParseTopLevelDeclaration(lines[static_cast<size_t>(i)], directive, name)) {
+			end = i;
+			foundNextDeclaration = true;
+			break;
+		}
+	}
+
+	std::ostringstream content;
+	for (int i = start; i < end; ++i) {
+		content << (i + 1) << "\t" << lines[static_cast<size_t>(i)] << "\n";
+	}
+
+	const std::string hashText = NormalizeRealCodeLineBreaksToCrLf(Utf8ToLocalText(text));
+	json r;
+	r["ok"] = true;
+	r["file_path"] = relativePath;
+	r["code_kind"] = "mirror_source";
+	r["code_hash"] = BuildStableTextHashForRealCode(hashText);
+	r["code_hash_complete"] = !fileTruncated;
+	r["item_name"] = itemName;
+	r["directive"] = matchDirectives.front();
+	r["start_line"] = start + 1;
+	r["end_line"] = end;
+	r["returned_lines"] = end - start;
+	r["total_lines"] = lines.size();
+	r["total_lines_complete"] = !fileTruncated;
+	r["item_complete"] = foundNextDeclaration || !fileTruncated;
+	r["truncated"] = !r["item_complete"].get<bool>();
+	r["content"] = content.str();
+	AppendSourceByteMetadata(r, returnedBytes, totalBytes, fileTruncated);
+
+	if (GetJsonBool(args, "include_references", false)) {
+		const std::string referenceGlob = GetJsonStringUtf8(args, "reference_glob");
+		const int referenceLimit = ClampInt(GetJsonInt(args, "reference_limit", 20), 1, 50);
+		r["references"] = ExecuteSearchCodeQuery(
+			itemName,
+			referenceGlob,
+			"content",
+			false,
+			false,
+			1,
+			0,
+			referenceLimit);
+	}
+
+	outOk = true;
+	return ToolResultToLocalJson(r);
 }
 
 std::vector<std::string> GetSearchPatterns(const json& args, bool& outPatternListTruncated)
@@ -784,6 +1135,7 @@ std::string ExecuteSearchCode(const std::string& argumentsJson, bool& outOk)
 	const bool caseInsensitive = GetJsonBool(args, "case_insensitive", false);
 	const bool regexMode = GetJsonBool(args, "regex", true);
 	const int context = ClampInt(GetJsonInt(args, "context", 0), 0, 20);
+	const int offset = (std::max)(0, GetJsonInt(args, "offset", 0));
 	const int headLimit = ClampInt(GetJsonInt(args, "head_limit", kDefaultSearchLimit), 1, 2000);
 	bool patternListTruncated = false;
 	const std::vector<std::string> patterns = GetSearchPatterns(args, patternListTruncated);
@@ -792,7 +1144,15 @@ std::string ExecuteSearchCode(const std::string& argumentsJson, bool& outOk)
 	}
 
 	if (patterns.size() == 1 && !patternListTruncated) {
-		const json r = ExecuteSearchCodeQuery(patterns.front(), glob, outputMode, caseInsensitive, regexMode, context, headLimit);
+		const json r = ExecuteSearchCodeQuery(
+			patterns.front(),
+			glob,
+			outputMode,
+			caseInsensitive,
+			regexMode,
+			context,
+			offset,
+			headLimit);
 		outOk = r.value("ok", false);
 		return ToolResultToLocalJson(r);
 	}
@@ -800,10 +1160,20 @@ std::string ExecuteSearchCode(const std::string& argumentsJson, bool& outOk)
 	json queries = json::array();
 	bool anyOk = false;
 	bool anyTruncated = patternListTruncated;
+	bool anyHasMore = false;
 	for (const std::string& pattern : patterns) {
-		json row = ExecuteSearchCodeQuery(pattern, glob, outputMode, caseInsensitive, regexMode, context, headLimit);
+		json row = ExecuteSearchCodeQuery(
+			pattern,
+			glob,
+			outputMode,
+			caseInsensitive,
+			regexMode,
+			context,
+			offset,
+			headLimit);
 		anyOk = anyOk || row.value("ok", false);
 		anyTruncated = anyTruncated || row.value("truncated", false);
+		anyHasMore = anyHasMore || row.value("has_more", false);
 		queries.push_back(std::move(row));
 	}
 
@@ -814,9 +1184,12 @@ std::string ExecuteSearchCode(const std::string& argumentsJson, bool& outOk)
 	r["case_insensitive"] = caseInsensitive;
 	r["output_mode"] = outputMode;
 	r["glob"] = glob;
+	r["offset"] = offset;
+	r["page_limit"] = headLimit;
 	r["queries"] = std::move(queries);
 	r["requested"] = patterns.size();
 	r["returned"] = r["queries"].size();
+	r["has_more"] = anyHasMore;
 	r["truncated"] = anyTruncated;
 	outOk = anyOk;
 	return ToolResultToLocalJson(r);
@@ -826,7 +1199,11 @@ std::string ExecuteSearchCode(const std::string& argumentsJson, bool& outOk)
 
 bool CanHandleTool(const std::string& toolName)
 {
-	return toolName == "read_file" || toolName == "read_files" || toolName == "list_files" || toolName == "search_code";
+	return toolName == "read_file" ||
+		toolName == "read_files" ||
+		toolName == "read_code_item" ||
+		toolName == "list_files" ||
+		toolName == "search_code";
 }
 
 std::string ExecuteTool(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
@@ -837,6 +1214,9 @@ std::string ExecuteTool(const std::string& toolName, const std::string& argument
 	if (toolName == "read_files") {
 		return ExecuteReadFiles(argumentsJson, outOk);
 	}
+	if (toolName == "read_code_item") {
+		return ExecuteReadCodeItem(argumentsJson, outOk);
+	}
 	if (toolName == "list_files") {
 		return ExecuteListFiles(argumentsJson, outOk);
 	}
@@ -845,6 +1225,45 @@ std::string ExecuteTool(const std::string& toolName, const std::string& argument
 	}
 	outOk = false;
 	return BuildError("unknown workspace file tool: " + toolName);
+}
+
+std::string BuildPaginationSelfTestJson()
+{
+	json resultPage;
+	AppendResultPaginationMetadata(resultPage, 10, 5, 30);
+	json linePage;
+	AppendLinePaginationMetadata(linePage, 20, 20, 10, 100);
+	json sourcePage;
+	AppendSourceByteMetadata(sourcePage, 1024, 4096, true);
+
+	const bool resultPageOk =
+		resultPage.value("offset", -1) == 10 &&
+		resultPage.value("next_offset", -1) == 15 &&
+		resultPage.value("total_results", -1) == 30 &&
+		resultPage["omitted_result_ranges"].is_array() &&
+		resultPage["omitted_result_ranges"].size() == 2 &&
+		resultPage["omitted_result_ranges"][0].value("start_offset", -1) == 0 &&
+		resultPage["omitted_result_ranges"][0].value("end_offset_exclusive", -1) == 10 &&
+		resultPage["omitted_result_ranges"][1].value("start_offset", -1) == 15 &&
+		resultPage["omitted_result_ranges"][1].value("end_offset_exclusive", -1) == 30;
+	const bool linePageOk =
+		linePage.value("next_offset", -1) == 30 &&
+		linePage["visible_line_range"].value("start_line", -1) == 21 &&
+		linePage["visible_line_range"].value("end_line", -1) == 30 &&
+		linePage["omitted_line_ranges"].size() == 2;
+	const bool sourcePageOk =
+		sourcePage.value("source_bytes_truncated", false) &&
+		sourcePage["omitted_source_byte_ranges"].size() == 1 &&
+		sourcePage["omitted_source_byte_ranges"][0].value("start_offset", 0u) == 1024u &&
+		sourcePage["omitted_source_byte_ranges"][0].value("end_offset_exclusive", 0u) == 4096u;
+
+	return json({
+		{"name", "workspace-file-pagination"},
+		{"ok", resultPageOk && linePageOk && sourcePageOk},
+		{"result_page", std::move(resultPage)},
+		{"line_page", std::move(linePage)},
+		{"source_page", std::move(sourcePage)}
+	}).dump();
 }
 
 } // namespace WorkspaceFileTools

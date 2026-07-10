@@ -22,6 +22,9 @@ std::string GetInstanceId();
 // 获取当前 MCP 完整地址
 std::string GetEndpoint();
 
+// 构建外部 MCP 首次刷新门禁的内部自测报告。
+std::string BuildWorkspaceRefreshGateSelfTestJson();
+
 // 更新当前实例的易语言上下文提示
 void UpdateInstanceHints(
 	const std::string& sourceFilePath,

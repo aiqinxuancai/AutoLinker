@@ -46,6 +46,13 @@ std::string g_instanceId;
 std::string g_sourceFilePathHint;
 std::string g_pageNameHint;
 std::string g_pageTypeHint;
+std::atomic_ullong g_mcpSessionCounter = 1;
+
+struct ExternalMcpSessionState {
+	bool workspaceRefreshed = false;
+};
+
+std::unordered_map<std::string, ExternalMcpSessionState> g_externalMcpSessions;
 
 struct HttpRequest {
 	std::string method;
@@ -539,6 +546,63 @@ std::string GenerateInstanceId()
 	return std::format("pid-{}-{:X}", GetCurrentProcessId(), GetTickCount64());
 }
 
+bool IsValidMcpSessionId(const std::string& sessionId)
+{
+	if (sessionId.empty() || sessionId.size() > 128) {
+		return false;
+	}
+	for (const unsigned char ch : sessionId) {
+		if (std::isalnum(ch) == 0 && ch != '-' && ch != '_' && ch != '.') {
+			return false;
+		}
+	}
+	return true;
+}
+
+std::string GenerateMcpSessionId()
+{
+	return std::format(
+		"mcp-{}-{:X}-{}",
+		GetCurrentProcessId(),
+		GetTickCount64(),
+		g_mcpSessionCounter.fetch_add(1));
+}
+
+bool RequiresExternalWorkspaceRefresh(const std::string& toolName)
+{
+	return toolName == "list_files" ||
+		toolName == "search_code" ||
+		toolName == "read_file" ||
+		toolName == "read_files" ||
+		toolName == "read_code_item" ||
+		toolName == "read_real_file" ||
+		toolName == "edit_file" ||
+		toolName == "multi_edit_file" ||
+		toolName == "write_file" ||
+		toolName == "diff_file";
+}
+
+bool IsExternalWorkspaceRefreshed(const std::string& sessionId)
+{
+	std::lock_guard<std::mutex> lock(g_stateMutex);
+	const auto it = g_externalMcpSessions.find(sessionId);
+	return it != g_externalMcpSessions.end() && it->second.workspaceRefreshed;
+}
+
+void SetExternalWorkspaceRefreshed(const std::string& sessionId, bool refreshed)
+{
+	std::lock_guard<std::mutex> lock(g_stateMutex);
+	g_externalMcpSessions[sessionId].workspaceRefreshed = refreshed;
+}
+
+void ResetExternalWorkspaceRefreshStatesLocked()
+{
+	for (auto& [sessionId, state] : g_externalMcpSessions) {
+		(void)sessionId;
+		state.workspaceRefreshed = false;
+	}
+}
+
 LocalMcpInstanceRegistry::InstanceRecord BuildCurrentInstanceRecord()
 {
 	LocalMcpInstanceRegistry::InstanceRecord record;
@@ -687,7 +751,8 @@ std::string BuildHttpResponse(
 	int statusCode,
 	const char* statusText,
 	const char* contentType,
-	const std::string& body)
+	const std::string& body,
+	const std::string& extraHeaders = std::string())
 {
 	return std::format(
 		"HTTP/1.1 {} {}\r\n"
@@ -697,12 +762,15 @@ std::string BuildHttpResponse(
 		"Cache-Control: no-store\r\n"
 		"Access-Control-Allow-Origin: *\r\n"
 		"Access-Control-Allow-Headers: content-type, mcp-session-id\r\n"
+		"Access-Control-Expose-Headers: mcp-session-id\r\n"
 		"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+		"{}"
 		"\r\n{}",
 		statusCode,
 		statusText,
 		contentType,
 		body.size(),
+		extraHeaders,
 		body);
 }
 
@@ -711,9 +779,10 @@ void SendHttpResponse(
 	int statusCode,
 	const char* statusText,
 	const char* contentType,
-	const std::string& body)
+	const std::string& body,
+	const std::string& extraHeaders = std::string())
 {
-	const std::string response = BuildHttpResponse(statusCode, statusText, contentType, body);
+	const std::string response = BuildHttpResponse(statusCode, statusText, contentType, body, extraHeaders);
 	size_t sentTotal = 0;
 	while (sentTotal < response.size()) {
 		const int sent = send(
@@ -786,7 +855,11 @@ bool TryBuildToolListResult(nlohmann::json& outResult, std::string& outError)
 	}
 }
 
-bool TryBuildToolCallResult(const nlohmann::json& params, nlohmann::json& outResult, std::string& outError)
+bool TryBuildToolCallResult(
+	const nlohmann::json& params,
+	const std::string& sessionId,
+	nlohmann::json& outResult,
+	std::string& outError)
 {
 	if (!params.is_object()) {
 		outError = "tools/call params must be object";
@@ -805,9 +878,22 @@ bool TryBuildToolCallResult(const nlohmann::json& params, nlohmann::json& outRes
 
 	std::string resultJsonUtf8;
 	bool toolOk = false;
-	if (!AIChatFeature::ExecutePublicTool(toolName, arguments.dump(), resultJsonUtf8, toolOk)) {
-		outError = "tool execution transport failed";
-		return false;
+	if (RequiresExternalWorkspaceRefresh(toolName) && !IsExternalWorkspaceRefreshed(sessionId)) {
+		resultJsonUtf8 = nlohmann::json({
+			{"ok", false},
+			{"error", "workspace_refresh_required"},
+			{"required_tool", "refresh_workspace_mirror"},
+			{"hint", "External MCP clients must call refresh_workspace_mirror successfully before source read/edit tools in each MCP session."}
+		}).dump();
+	}
+	else {
+		if (!AIChatFeature::ExecutePublicTool(toolName, arguments.dump(), resultJsonUtf8, toolOk)) {
+			outError = "tool execution transport failed";
+			return false;
+		}
+		if (toolName == "refresh_workspace_mirror" && toolOk) {
+			SetExternalWorkspaceRefreshed(sessionId, true);
+		}
 	}
 
 	bool isError = !toolOk;
@@ -840,10 +926,16 @@ bool TryBuildToolCallResult(const nlohmann::json& params, nlohmann::json& outRes
 	return true;
 }
 
-bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::string& outBody, McpLogContext* outLogContext)
+bool TryHandleJsonRpc(
+	const HttpRequest& request,
+	int& outStatusCode,
+	std::string& outBody,
+	std::string& outResponseSessionId,
+	McpLogContext* outLogContext)
 {
 	outStatusCode = 200;
 	outBody.clear();
+	outResponseSessionId.clear();
 	if (outLogContext != nullptr) {
 		*outLogContext = {};
 	}
@@ -893,6 +985,11 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 	const std::string method = payload["method"].get<std::string>();
 	const bool hasId = payload.contains("id");
 	const nlohmann::json params = payload.contains("params") ? payload["params"] : nlohmann::json::object();
+	std::string requestSessionId = "legacy";
+	if (const auto it = request.headers.find("mcp-session-id");
+		it != request.headers.end() && IsValidMcpSessionId(it->second)) {
+		requestSessionId = it->second;
+	}
 
 	if (method == "notifications/initialized") {
 		outStatusCode = 202;
@@ -909,6 +1006,14 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 	}
 
 	if (method == "initialize") {
+		outResponseSessionId = requestSessionId == "legacy" ? GenerateMcpSessionId() : requestSessionId;
+		{
+			std::lock_guard<std::mutex> lock(g_stateMutex);
+			g_externalMcpSessions[outResponseSessionId].workspaceRefreshed = false;
+			if (requestSessionId == "legacy") {
+				g_externalMcpSessions["legacy"].workspaceRefreshed = false;
+			}
+		}
 		const nlohmann::json result = BuildInitializeResult();
 		SetMcpLogResponseJson(outLogContext, result);
 		outBody = DumpJsonSafe(BuildJsonRpcResult(id, result));
@@ -934,7 +1039,7 @@ bool TryHandleJsonRpc(const HttpRequest& request, int& outStatusCode, std::strin
 	if (method == "tools/call") {
 		nlohmann::json result;
 		std::string error;
-		if (!TryBuildToolCallResult(params, result, error)) {
+		if (!TryBuildToolCallResult(params, requestSessionId, result, error)) {
 			SetMcpLogResponseJson(outLogContext, {
 				{"code", -32602},
 				{"message", error}
@@ -1010,8 +1115,9 @@ void HandleClientImpl(SOCKET clientSock)
 
 	int statusCode = 200;
 	std::string responseBody;
+	std::string responseSessionId;
 	McpLogContext handledLogContext;
-	if (!TryHandleJsonRpc(request, statusCode, responseBody, &handledLogContext)) {
+	if (!TryHandleJsonRpc(request, statusCode, responseBody, responseSessionId, &handledLogContext)) {
 		const double elapsedMs = std::chrono::duration<double, std::milli>(
 			std::chrono::steady_clock::now() - startTime).count();
 		logContext.responseName = handledLogContext.responseName.empty() ? logContext.responseName : handledLogContext.responseName;
@@ -1045,7 +1151,16 @@ void HandleClientImpl(SOCKET clientSock)
 	const double elapsedMs = std::chrono::duration<double, std::milli>(
 		std::chrono::steady_clock::now() - startTime).count();
 	LogMcpResponse(logContext, elapsedMs);
-	SendHttpResponse(clientSock, statusCode, statusText, "application/json; charset=utf-8", responseBody);
+	const std::string sessionHeader = responseSessionId.empty()
+		? std::string()
+		: "Mcp-Session-Id: " + responseSessionId + "\r\n";
+	SendHttpResponse(
+		clientSock,
+		statusCode,
+		statusText,
+		"application/json; charset=utf-8",
+		responseBody,
+		sessionHeader);
 }
 
 // 防御纵深：单个连接的任何未捕获异常（如非法 UTF-8 经 .dump() 抛 type_error）不得逃出到
@@ -1221,6 +1336,7 @@ void Initialize()
 	g_sourceFilePathHint.clear();
 	g_pageNameHint.clear();
 	g_pageTypeHint.clear();
+	g_externalMcpSessions.clear();
 
 	// FneInit 通常已打开主日志；直接初始化 MCP 时再兜底打开。
 	Logger::Instance().OpenIfNeeded(GetAutoLinkerLogFilePath("autolinker.log").string());
@@ -1266,10 +1382,45 @@ std::string GetEndpoint()
 	return BuildEndpointForPort(g_boundPort.load());
 }
 
+std::string BuildWorkspaceRefreshGateSelfTestJson()
+{
+	const std::string sessionId = "self-test-refresh-gate";
+	SetExternalWorkspaceRefreshed(sessionId, false);
+	nlohmann::json result;
+	std::string error;
+	const bool handled = TryBuildToolCallResult(
+		{
+			{"name", "read_files"},
+			{"arguments", {{"file_paths", nlohmann::json::array({"src/Test.txt"})}}}
+		},
+		sessionId,
+		result,
+		error);
+	{
+		std::lock_guard<std::mutex> lock(g_stateMutex);
+		g_externalMcpSessions.erase(sessionId);
+	}
+	const bool blocked = handled &&
+		result.value("isError", false) &&
+		result.contains("structuredContent") &&
+		result["structuredContent"].is_object() &&
+		result["structuredContent"].value("error", std::string()) == "workspace_refresh_required";
+	return nlohmann::json({
+		{"name", "external_mcp_workspace_refresh_gate"},
+		{"ok", blocked},
+		{"handled", handled},
+		{"error", error},
+		{"result", result}
+	}).dump();
+}
+
 void UpdateInstanceHints(const std::string& sourceFilePath, const std::string& pageName, const std::string& pageType)
 {
 	{
 		std::lock_guard<std::mutex> lock(g_stateMutex);
+		if (g_sourceFilePathHint != sourceFilePath) {
+			ResetExternalWorkspaceRefreshStatesLocked();
+		}
 		g_sourceFilePathHint = sourceFilePath;
 		g_pageNameHint = pageName;
 		g_pageTypeHint = pageType;

@@ -740,6 +740,7 @@ std::string ExecuteToolCallImpl(
 
 	if (toolName == "read_file" ||
 		toolName == "read_files" ||
+		toolName == "read_code_item" ||
 		toolName == "read_real_file" ||
 		toolName == "search_code" ||
 		toolName == "update_plan" ||

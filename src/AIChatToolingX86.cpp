@@ -4208,6 +4208,14 @@ std::string ExecuteFileMappedRealPageToolForAI(
 			result["post_write_real_page_refreshed"] = true;
 		}
 	}
+	if (ok && invalidateOnWrite) {
+		result["verified"] = true;
+		if (result.contains("code_hash") && result["code_hash"].is_string()) {
+			result["new_hash"] = result["code_hash"];
+		}
+		result["mirror_updated"] = result.value("workspace_mirror_updated", false) || noChanges;
+		result["verification_note"] = "write completed with internal structural verification; do not re-read only for confirmation";
+	}
 
 	if (!ok &&
 		!item.fixedTable &&
