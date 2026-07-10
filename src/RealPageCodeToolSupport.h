@@ -32,6 +32,8 @@ std::string NormalizeRealCodeLineBreaksToCrLf(const std::string& text);
 std::string NormalizeRealCodeLineBreaksToLf(const std::string& text);
 std::string PrepareAssemblyVariablesForRealPageWrite(const std::string& text);
 std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string& text);
+// 比较真实页源码时消除 IDE 对运算符符号的自动换形差异。
+std::string NormalizeRealPageOperatorFormsForCompare(const std::string& text);
 // 消除 IDE 存盘对结构指纹的等价改写（.版本页头 / 控制语句前导点 / 补空 .否则 / 页尾裸 .子程序），使写入与读回指纹可比。
 // 入参为「已去空白」的逐行 token 序列。
 std::vector<std::string> NormalizeStructuralFingerprintForIdeRewrite(

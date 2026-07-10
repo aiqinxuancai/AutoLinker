@@ -3568,7 +3568,9 @@ std::string NormalizeLineBreakToLf(const std::string& text)
 std::string NormalizePageCodeForLooseCompare(const std::string& text)
 {
 	const std::string normalized =
-		NormalizeLineBreakToLf(NormalizeRealPageAssemblyVariableAliasesForCompare(text));
+		NormalizeLineBreakToLf(
+			NormalizeRealPageOperatorFormsForCompare(
+				NormalizeRealPageAssemblyVariableAliasesForCompare(text)));
 	std::string result;
 	result.reserve(normalized.size());
 	bool lastKeptLineBlank = false;
@@ -3653,7 +3655,9 @@ bool IsFullLineCommentForStructuralCompare(const std::string& trimmedLine)
 std::vector<std::string> BuildPageCodeStructuralFingerprint(const std::string& text)
 {
 	const std::string normalized =
-		NormalizeLineBreakToLf(NormalizeRealPageAssemblyVariableAliasesForCompare(text));
+		NormalizeLineBreakToLf(
+			NormalizeRealPageOperatorFormsForCompare(
+				NormalizeRealPageAssemblyVariableAliasesForCompare(text)));
 	std::vector<std::string> lines;
 
 	size_t start = 0;

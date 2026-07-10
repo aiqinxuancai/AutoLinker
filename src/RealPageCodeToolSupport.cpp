@@ -30,6 +30,11 @@ struct DiffOp {
 	int beforeNewLine = 0;
 };
 
+struct OperatorForm {
+	std::string_view text;
+	char canonical = '\0';
+};
+
 std::string TrimAsciiCopyLocal(const std::string& text)
 {
 	size_t begin = 0;
@@ -405,6 +410,61 @@ std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string
 	}
 
 	return changed ? JoinRealCodeLines(lines) : text;
+}
+
+std::string NormalizeRealPageOperatorFormsForCompare(const std::string& text)
+{
+	static constexpr OperatorForm kOperatorForms[] = {
+		{ "＋", '+' },
+		{ "－", '-' },
+		{ "＊", '*' },
+		{ "×", '*' },
+		{ "／", '/' },
+		{ "÷", '/' },
+		{ "＝", '=' },
+	};
+
+	std::string normalized;
+	normalized.reserve(text.size());
+	bool inString = false;
+
+	for (size_t i = 0; i < text.size();) {
+		const char ch = text[i];
+		if (ch == '"') {
+			normalized.push_back(ch);
+			if (inString && i + 1 < text.size() && text[i + 1] == '"') {
+				normalized.push_back(text[i + 1]);
+				i += 2;
+				continue;
+			}
+			inString = !inString;
+			++i;
+			continue;
+		}
+
+		if (!inString) {
+			bool matched = false;
+			for (const auto& form : kOperatorForms) {
+				if (form.text.empty() || i + form.text.size() > text.size()) {
+					continue;
+				}
+				if (text.compare(i, form.text.size(), form.text.data(), form.text.size()) == 0) {
+					normalized.push_back(form.canonical);
+					i += form.text.size();
+					matched = true;
+					break;
+				}
+			}
+			if (matched) {
+				continue;
+			}
+		}
+
+		normalized.push_back(ch);
+		++i;
+	}
+
+	return normalized;
 }
 
 // 消除 IDE 存盘对结构指纹的等价性改写，使写入与读回的指纹可比。

@@ -2877,7 +2877,8 @@ std::string NormalizeLineBreaksForAI(std::string text)
 std::string NormalizeRealPageCodeForLooseCompareForAI(const std::string& text)
 {
 	const std::string normalized = NormalizeRealCodeLineBreaksToCrLf(
-		NormalizeRealPageAssemblyVariableAliasesForCompare(text));
+		NormalizeRealPageOperatorFormsForCompare(
+			NormalizeRealPageAssemblyVariableAliasesForCompare(text)));
 	std::string result;
 	result.reserve(normalized.size());
 	bool lastKeptLineBlank = false;
@@ -2955,7 +2956,8 @@ std::vector<std::string> BuildRealPageStructuralFingerprintForAI(const std::stri
 {
 	const std::vector<std::string> lines = SplitRealCodeLines(
 		NormalizeRealCodeLineBreaksToCrLf(
-			NormalizeRealPageAssemblyVariableAliasesForCompare(text)));
+			NormalizeRealPageOperatorFormsForCompare(
+				NormalizeRealPageAssemblyVariableAliasesForCompare(text))));
 	std::vector<std::string> fingerprint;
 	fingerprint.reserve(lines.size());
 	for (const auto& line : lines) {
