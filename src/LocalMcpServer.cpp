@@ -1614,11 +1614,10 @@ void ServerThreadMain()
 		return;
 	}
 	g_running.store(true);
-	LogMcp(std::format(
-		"listening on http://{}:{}/mcp with {} client workers",
+	Logger::Instance().Write("LocalMCP", std::format(
+		"本地 MCP 服务已启动：http://{}:{}/mcp",
 		kBindHost,
-		boundPort,
-		clientWorkers.size()));
+		boundPort));
 	RefreshCurrentInstanceRegistry();
 	auto lastRegistryRefresh = std::chrono::steady_clock::now();
 

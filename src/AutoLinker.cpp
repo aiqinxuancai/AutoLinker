@@ -366,7 +366,7 @@ bool FneInit()
 	}
 
 	TraceInitStep("进入 FneInit");
-	Logger::Instance().Open(GetAutoLinkerLogFilePath("autolinker.log").string());
+	Logger::Instance().OpenIfNeeded(GetAutoLinkerLogFilePath("autolinker.log").string());
 	OutputStringToELog("开始初始化");
 	const bool headlessCompileMode = HeadlessCompileRunner::HasHeadlessCompileRequest();
 
@@ -411,7 +411,7 @@ bool FneInit()
 		"记录进程信息 pid={} hwnd={}",
 		processID,
 		static_cast<unsigned long long>(reinterpret_cast<ULONG_PTR>(g_hwnd))));
-	OutputStringToELog(std::format("E进程ID{} 主句柄{}", processID, (int)g_hwnd));
+	Logger::Instance().Write("AutoLinker", std::format("E进程ID{} 主句柄{}", processID, (int)g_hwnd));
 
 	TraceInitStep("开始注册 IDE 右键菜单");
 	RegisterIDEContextMenu();
@@ -460,7 +460,13 @@ bool FneInit()
 EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 {
 	std::string s = std::format("AutoLinker_MessageNotify {0} {1} {2}", (int)nMsg, dwParam1, dwParam2);
-	OutputStringToELog(s);
+	if (nMsg == NL_IDE_READY) {
+		Logger::Instance().OpenIfNeeded(GetAutoLinkerLogFilePath("autolinker.log").string());
+		Logger::Instance().Write("AutoLinker", s);
+	}
+	else {
+		OutputStringToELog(s);
+	}
 
 #ifndef __E_STATIC_LIB
 	if (nMsg == NL_GET_CMD_FUNC_NAMES) {
@@ -487,7 +493,7 @@ EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwP
 		}
 		else if (FneInit()) {
 			TraceInitStep("NL_IDE_READY 初始化成功");
-			OutputStringToELog("收到 NL_IDE_READY，界面初始化成功");
+			Logger::Instance().Write("AutoLinker", "收到 NL_IDE_READY，界面初始化成功");
 		}
 		else {
 			TraceInitStep("NL_IDE_READY 初始化失败");
