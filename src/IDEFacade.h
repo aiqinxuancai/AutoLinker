@@ -146,6 +146,12 @@ public:
 	bool OpenFile(const std::string& filePath) const;
 	bool Compile() const;
 	bool CompileAndRun() const;
+	// 规范化编译产物路径，并按目标类型补全扩展名、创建父目录。
+	bool NormalizeCompileOutputPath(
+		CompileOutputKind kind,
+		const std::string& outputPath,
+		std::string& outNormalizedPath,
+		std::string* outDiagnostics = nullptr) const;
 	bool CompileWithOutputPath(
 		CompileOutputKind kind,
 		const std::string& outputPath,

@@ -9,24 +9,27 @@
 #include "TavilyClient.h"
 #include "WebDocumentClient.h"
 #include "WebDocumentExtractor.h"
+#include "WorkspaceFileTools.h"
 
 #include <Windows.h>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <cctype>
-#include <condition_variable>
+#include <cstdint>
 #include <format>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 
 #include "..\\thirdparty\\json.hpp"
 
 namespace {
 
-// 当前进程 PowerShell 全允许标志，用户选择"全允许"后本次进程内跳过后续确认。
-std::atomic<bool> g_psAllowAllForProcess{false};
+// PowerShell 自动允许仅在同一调用域内生效，避免内部对话与不同外部 MCP 会话互相继承授权。
+std::mutex g_psApprovalScopeMutex;
+std::unordered_set<std::string> g_psAllowedScopes;
 
 std::string TrimAsciiCopy(const std::string& text)
 {
@@ -378,6 +381,55 @@ std::string FormatToolLogJsonStringFull(const std::string& jsonText)
 	}
 }
 
+std::string BuildToolPayloadHash(const std::string& text)
+{
+	std::uint64_t hash = 1469598103934665603ull;
+	for (const unsigned char ch : text) {
+		hash ^= ch;
+		hash *= 1099511628211ull;
+	}
+	return std::format("{:016X}", hash);
+}
+
+bool IsVerboseToolPayloadLoggingEnabled()
+{
+	static const bool enabled = []() {
+		char value[16] = {};
+		const DWORD length = GetEnvironmentVariableA(
+			"AUTOLINKER_VERBOSE_TOOL_LOG",
+			value,
+			static_cast<DWORD>(sizeof(value)));
+		if (length == 0 || length >= sizeof(value)) {
+			return false;
+		}
+		const std::string normalized = ToLowerAsciiCopyLocal(TrimAsciiCopy(value));
+		return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+	}();
+	return enabled;
+}
+
+std::string BuildToolPayloadMetadata(const std::string& jsonText)
+{
+	nlohmann::json metadata;
+	metadata["bytes"] = jsonText.size();
+	metadata["hash"] = BuildToolPayloadHash(jsonText);
+	const nlohmann::json value = nlohmann::json::parse(jsonText, nullptr, false);
+	if (value.is_object()) {
+		static constexpr const char* kKeys[] = {
+			"ok", "status", "error", "file_path", "page_name", "mapped_page_name",
+			"code_hash", "new_hash", "verified", "count", "returned", "returned_lines",
+			"match_count", "has_more", "truncated", "exit_code", "timed_out", "cancelled"
+		};
+		for (const char* key : kKeys) {
+			const auto it = value.find(key);
+			if (it != value.end() && (it->is_primitive() || it->is_null())) {
+				metadata[key] = *it;
+			}
+		}
+	}
+	return metadata.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
 void LogInternalToolCallLine(const std::string& message)
 {
 	Logger::Instance().WriteAndIde("Tool", message);
@@ -385,24 +437,28 @@ void LogInternalToolCallLine(const std::string& message)
 
 void LogInternalToolRequest(const std::string& toolName, const std::string& argumentsJson)
 {
-	const std::string ideLine = ">> " + toolName + "(" + FormatToolLogJsonString(argumentsJson) + ")";
-	const std::string fileLine = ">> " + toolName + "(" + FormatToolLogJsonStringFull(argumentsJson) + ")";
+	const bool verbose = IsVerboseToolPayloadLoggingEnabled();
+	const std::string ideLine = ">> " + toolName + "(" + (
+		verbose ? FormatToolLogJsonString(argumentsJson) : BuildToolPayloadMetadata(argumentsJson)) + ")";
+	const std::string fileLine = ">> " + toolName + "(" + (
+		verbose ? FormatToolLogJsonStringFull(argumentsJson) : BuildToolPayloadMetadata(argumentsJson)) + ")";
 	Logger::Instance().WriteSplit("Tool", fileLine, ideLine);
 }
 
 void LogInternalToolResponse(const std::string& toolName, const std::string& resultJsonLocal, double elapsedMs)
 {
 	const std::string resultJsonUtf8 = LocalToUtf8Text(resultJsonLocal);
+	const bool verbose = IsVerboseToolPayloadLoggingEnabled();
 	const std::string ideLine = std::format(
 		"<< {} ({:.1f}ms) {}",
 		toolName.empty() ? "unknown_tool" : toolName,
 		elapsedMs,
-		FormatToolLogJsonString(resultJsonUtf8));
+		verbose ? FormatToolLogJsonString(resultJsonUtf8) : BuildToolPayloadMetadata(resultJsonUtf8));
 	const std::string fileLine = std::format(
 		"<< {} ({:.1f}ms) {}",
 		toolName.empty() ? "unknown_tool" : toolName,
 		elapsedMs,
-		FormatToolLogJsonStringFull(resultJsonUtf8));
+		verbose ? FormatToolLogJsonStringFull(resultJsonUtf8) : BuildToolPayloadMetadata(resultJsonUtf8));
 	Logger::Instance().WriteSplit("Tool", fileLine, ideLine);
 }
 
@@ -420,32 +476,40 @@ bool RequestToolExecutionFromMainThread(
 		return false;
 	}
 
-	ToolExecutionRequest request;
-	request.toolName = toolName;
-	request.argumentsJson = argumentsJson;
+	auto request = std::make_shared<ToolExecutionRequest>();
+	request->toolName = toolName;
+	request->argumentsJson = argumentsJson;
 
 	const auto dispatchStart = std::chrono::steady_clock::now();
 	const DWORD mainThreadId = GetWindowThreadProcessId(mainWindow, nullptr);
 	if (mainThreadId != 0 && mainThreadId == GetCurrentThreadId()) {
-		bool ok = false;
-		const std::string resultJson = ExecuteToolCallOnMainThread(request.toolName, request.argumentsJson, ok);
-		{
-			std::lock_guard<std::mutex> lock(request.mutex);
-			request.resultJson = resultJson;
-			request.ok = ok;
-			request.done = true;
-		}
+		outResultJson = ExecuteToolCallOnMainThread(toolName, argumentsJson, outOk);
+		return true;
 	}
-	else {
-		// 工具调用必须在主线程操作 IDE，但不能使用 PostMessage 排队，否则繁忙 UI 消息队列会让本地编辑空等几十秒。
-		SendMessage(mainWindow, toolExecMessage, 0, reinterpret_cast<LPARAM>(&request));
+
+	const UINT_PTR requestId = RegisterToolExecutionRequestForTooling(request);
+	if (requestId == 0) {
+		return false;
+	}
+	if (PostMessage(mainWindow, toolExecMessage, 0, static_cast<LPARAM>(requestId)) == FALSE) {
+		CancelToolExecutionRequestForTooling(requestId);
+		return false;
 	}
 
 	{
-		std::unique_lock<std::mutex> lock(request.mutex);
-		request.cv.wait(lock, [&request]() {
-			return request.done;
-		});
+		std::unique_lock<std::mutex> lock(request->mutex);
+		if (!request->cv.wait_for(lock, std::chrono::minutes(20), [&request]() {
+			return request->done;
+		})) {
+			request->cancelled = true;
+			lock.unlock();
+			CancelToolExecutionRequestForTooling(requestId);
+			outResultJson = R"({"ok":false,"error":"main thread tool execution timed out"})";
+			LogInternalToolCallLine(std::format(
+				"main_thread_dispatch_timeout tool={}",
+				toolName.empty() ? "unknown_tool" : toolName));
+			return false;
+		}
 	}
 
 	const double dispatchMs = std::chrono::duration<double, std::milli>(
@@ -457,8 +521,8 @@ bool RequestToolExecutionFromMainThread(
 			dispatchMs));
 	}
 
-	outResultJson = request.resultJson;
-	outOk = request.ok;
+	outResultJson = request->resultJson;
+	outOk = request->ok;
 	return true;
 }
 
@@ -467,7 +531,8 @@ std::string ExecuteToolCallImpl(
 	const std::string& argumentsJson,
 	bool& outOk,
 	const std::function<bool()>& cancelCallback,
-	HttpRequestCancellation* cancellation)
+	HttpRequestCancellation* cancellation,
+	const std::string& approvalScope)
 {
 	outOk = false;
 
@@ -561,13 +626,18 @@ std::string ExecuteToolCallImpl(
 			" 秒\r\n\r\n请确认该命令不会造成你不希望的本机副作用。";
 		bool accepted = false;
 		bool secondaryAccepted = false;
-		const bool skipConfirm = g_psAllowAllForProcess.load();
+		const std::string effectiveApprovalScope = approvalScope.empty() ? "internal-chat" : approvalScope;
+		bool skipConfirm = false;
+		{
+			std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
+			skipConfirm = g_psAllowedScopes.contains(effectiveApprovalScope);
+		}
 		if (!skipConfirm) {
 			if (!RequestConfirmationForTooling(
 					LocalFromWide(L"AI PowerShell 执行确认"),
 					confirmationText,
 					LocalFromWide(L"执行"),
-					LocalFromWide(L"当前进程全允许并执行"),
+					LocalFromWide(L"当前会话全允许并执行"),
 					accepted,
 					secondaryAccepted) ||
 				(!accepted && !secondaryAccepted)) {
@@ -578,7 +648,8 @@ std::string ExecuteToolCallImpl(
 				return JsonToLocalText(r);
 			}
 			if (secondaryAccepted) {
-				g_psAllowAllForProcess.store(true);
+				std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
+				g_psAllowedScopes.insert(effectiveApprovalScope);
 			}
 		}
 
@@ -590,6 +661,8 @@ std::string ExecuteToolCallImpl(
 		r["working_directory"] = runResult.effectiveWorkingDirectory;
 		r["stdout"] = runResult.stdOut;
 		r["stderr"] = runResult.stdErr;
+		r["stdout_truncated"] = runResult.stdOutTruncated;
+		r["stderr_truncated"] = runResult.stdErrTruncated;
 		r["exit_code"] = runResult.exitCode;
 		r["timed_out"] = runResult.timedOut;
 		if (runResult.cancelled) {
@@ -670,7 +743,11 @@ std::string ExecuteToolCallImpl(
 			return JsonToLocalText(r);
 		}
 
-		const HttpFetchResult fetchResult = WebDocumentClient::FetchTextUrl(urlUtf8, timeoutSeconds, maxBytes);
+		const HttpFetchResult fetchResult = WebDocumentClient::FetchTextUrl(
+			urlUtf8,
+			timeoutSeconds,
+			maxBytes,
+			cancelCallback);
 		nlohmann::json r;
 		r["ok"] = fetchResult.ok;
 		r["url"] = fetchResult.url;
@@ -711,7 +788,11 @@ std::string ExecuteToolCallImpl(
 			return JsonToLocalText(r);
 		}
 
-		const HttpFetchResult fetchResult = WebDocumentClient::FetchTextUrl(urlUtf8, timeoutSeconds, maxBytes);
+		const HttpFetchResult fetchResult = WebDocumentClient::FetchTextUrl(
+			urlUtf8,
+			timeoutSeconds,
+			maxBytes,
+			cancelCallback);
 		const ExtractedWebDocument document = WebDocumentExtractor::Extract(fetchResult);
 
 		nlohmann::json links = nlohmann::json::array();
@@ -724,9 +805,12 @@ std::string ExecuteToolCallImpl(
 
 		nlohmann::json r;
 		r["ok"] = document.ok;
-		r["url"] = document.url;
+		r["url"] = urlUtf8;
+		r["final_url"] = document.url;
 		r["http_status"] = document.httpStatus;
 		r["content_type"] = document.contentType;
+		r["content_length"] = static_cast<unsigned long long>(document.contentLength);
+		r["source_truncated"] = document.sourceTruncated;
 		r["title"] = document.title;
 		r["plain_text"] = document.plainText;
 		r["excerpt"] = document.excerpt;
@@ -738,13 +822,27 @@ std::string ExecuteToolCallImpl(
 		return JsonToLocalText(r);
 	}
 
-	if (toolName == "read_file" ||
-		toolName == "read_files" ||
-		toolName == "read_code_item" ||
-		toolName == "read_real_file" ||
-		toolName == "search_code" ||
+	if (WorkspaceFileTools::CanHandleTool(toolName)) {
+		std::string prepareResult;
+		bool prepareOk = false;
+		if (!RequestToolExecutionFromMainThread(
+				"__prepare_workspace_file_access",
+				"{}",
+				prepareResult,
+				prepareOk)) {
+			return prepareResult.empty()
+				? R"({"ok":false,"error":"prepare workspace file access transport failed"})"
+				: prepareResult;
+		}
+		if (!prepareOk) {
+			outOk = false;
+			return prepareResult;
+		}
+		return WorkspaceFileTools::ExecuteTool(toolName, argumentsJson, outOk, cancelCallback);
+	}
+
+	if (toolName == "read_real_file" ||
 		toolName == "update_plan" ||
-		toolName == "list_files" ||
 		toolName == "refresh_workspace_mirror" ||
 		toolName == "get_current_page_info" ||
 		toolName == "get_current_eide_info" ||
@@ -763,7 +861,9 @@ std::string ExecuteToolCallImpl(
 		toolName == "compile_with_output_path") {
 		std::string resultJson;
 		if (!RequestToolExecutionFromMainThread(toolName, argumentsJson, resultJson, outOk)) {
-			return R"({"ok":false,"error":"main thread tool execution failed"})";
+			return resultJson.empty()
+				? R"({"ok":false,"error":"main thread tool execution failed"})"
+				: resultJson;
 		}
 		return resultJson;
 	}
@@ -784,16 +884,50 @@ std::string ExecuteToolCall(
 	const std::function<bool()>& cancelCallback,
 	HttpRequestCancellation* cancellation)
 {
+	return ExecuteToolCall(
+		toolName,
+		argumentsJson,
+		outOk,
+		enableLog,
+		cancelCallback,
+		cancellation,
+		"internal-chat");
+}
+
+std::string ExecuteToolCall(
+	const std::string& toolName,
+	const std::string& argumentsJson,
+	bool& outOk,
+	bool enableLog,
+	const std::function<bool()>& cancelCallback,
+	HttpRequestCancellation* cancellation,
+	const std::string& approvalScope)
+{
 	if (!enableLog) {
-		return ExecuteToolCallImpl(toolName, argumentsJson, outOk, cancelCallback, cancellation);
+		return ExecuteToolCallImpl(toolName, argumentsJson, outOk, cancelCallback, cancellation, approvalScope);
 	}
 
 	LogInternalToolRequest(toolName, argumentsJson);
 	const auto startTime = std::chrono::steady_clock::now();
-	const std::string result = ExecuteToolCallImpl(toolName, argumentsJson, outOk, cancelCallback, cancellation);
+	const std::string result = ExecuteToolCallImpl(
+		toolName,
+		argumentsJson,
+		outOk,
+		cancelCallback,
+		cancellation,
+		approvalScope);
 	const double elapsedMs = std::chrono::duration<double, std::milli>(
 		std::chrono::steady_clock::now() - startTime).count();
 	LogInternalToolResponse(toolName, result, elapsedMs);
 	return result;
+}
+
+void ClearToolApprovalScope(const std::string& approvalScope)
+{
+	if (approvalScope.empty()) {
+		return;
+	}
+	std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
+	g_psAllowedScopes.erase(approvalScope);
 }
 

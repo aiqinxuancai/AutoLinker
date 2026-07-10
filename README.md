@@ -86,17 +86,20 @@ AutoLinker 挂接了 IDE 的“开始调试 / 开始编译”入口：触发时�
 
 ### ⭐协议说明
 - 协议：`JSON-RPC 2.0`
-- MCP `initialize` 返回的 `protocolVersion` 为：`2024-11-05`
+- MCP `initialize` 会协商并支持：`2025-11-25`、`2025-03-26`、`2024-11-05`（未知版本回退到 `2025-11-25`）
 - 当前支持的方法：
   - `initialize`
   - `notifications/initialized`
   - `ping`
   - `tools/list`
   - `tools/call`
+  - `DELETE /mcp`（释放当前 `Mcp-Session-Id`）
+
+安全边界：服务只绑定 `127.0.0.1`，拒绝带非空 `Origin` 的浏览器请求；暂不提供浏览器 CORS 或 Bearer Token。原生 MCP 客户端每个会话必须先成功调用一次 `refresh_workspace_mirror`，刷新凭据会绑定当前工程路径和镜像代次，工程切换或其他会话改写工程后需重新刷新。服务使用 4 个固定连接工作线程，最多排队 32 个连接，过载时返回 HTTP 503。
 
 ### ⭐客户端接入配置示例
 
-AutoLinker 提供本地 HTTP MCP 服务，你可以在其他AI Agent中使用，请确保客户端支持 `streamable_http` 或 SSE 协议。
+AutoLinker 提供本地 HTTP MCP 服务，你可以在其他 AI Agent 中使用，请确保客户端支持 MCP Streamable HTTP。
 
 #### 1. Claude Code
 配置文件：`~/.claude.json` (JSON)
@@ -134,17 +137,19 @@ url = "http://127.0.0.1:19207/mcp"
 #### 4. Cursor / Windsurf / IDE
 在 IDE 的 MCP 设置页面（Settings -> Features -> MCP）中添加：
 - **Name**: `AutoLinker`
-- **Type**: `SSE` (或 `http`)
+- **Type**: `http` / `streamable_http`
 - **URL**: `http://127.0.0.1:19207/mcp`
 
 ### ⭐工程源码读写模型
 
-- 会话开始或首次源码工具调用时，AutoLinker 会用 e-packager 将当前 IDE 工程（包含未保存改动）解包到源文件目录下的 `.temp/al_*` 临时镜像目录；源码目录不可写时会回退到系统临时目录。
-- 如果用户可能在 IDE 中手工修改过代码，外部 Agent 建议在每轮对话第一次 `list_files`、`search_code`、`read_file` 前先调用一次 `refresh_workspace_mirror`；`mode` 支持 `auto`（默认，已有镜像优先只刷新主工程代码）、`main_only` / `source_only`（仅源文件）和 `full`（完整全量刷新，重新导出模块和支持库）。
-- 调用 `add_module_to_project` 或 `remove_module_from_project` 成功导入 / 删除易模块后，AutoLinker 会自动执行一次 `refresh_workspace_mirror` 的 `full` 全量刷新，确保后续读取工具看到最新模块状态。
-- AI 侧不再区分“真实源码 / 工程缓存 / IDE 搜索结果 / 支持库公开代码”。定位源码统一使用 `list_files`、`search_code`、`read_file`，路径均为解包镜像内的相对路径。
+- 外部 MCP 会话必须先调用 `refresh_workspace_mirror`；AutoLinker 会用 e-packager 将当前 IDE 工程（包含未保存改动）解包到源文件目录下的 `.temp/al_<pid>_*` 临时镜像目录，源码目录不可写时回退到系统临时目录。
+- `mode` 支持 `auto`（默认）、`main_only`（仅主工程源码）和 `full`（完整全量刷新）。不同 IDE 进程的镜像目录互不清理，只有确认所有者进程退出后才回收。
+- 镜像定位统一使用 `list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`，路径均为解包镜像内的相对路径；搜索支持最多 16 个 pattern 的单次逐文件流式扫描，可命中 1 MiB 之后的内容。
+- 大文件读取返回 `next_source_byte_offset`，后续把它作为 `byte_offset` 传回即可继续；分页时建议同时回传 `mirror_generation`，工程刷新或写入后会明确拒绝旧代次游标。
+- 编辑前使用 `read_real_file` 读取 IDE 真实页的分页编号视图和 `code_hash`；该工具不再重复返回完整整页 `code`。
 - `edit_file`、`multi_edit_file`、`write_file`、`diff_file`、`restore_file_snapshot` 以 `file_path` 为目标。内部会把文件路径映射回易语言程序项，再读取 IDE 真实整页源码，修改后写回 IDE；不会使用 e-packager 回包编译。
-- 写回成功后，当前解包镜像会被标记为过期；下一次 `list_files`、`search_code`、`read_file` 会重新解包，确保读到最新源码。
+- 写工具支持 SHA-256 `expected_base_hash`（恢复工具使用 `expected_current_hash`）以阻止旧基线覆盖新修改；外部 MCP 调用必须提供该哈希。写回成功后会优先原子增量更新对应镜像文件，无法增量更新时才将镜像标记为过期。
+- 写入、恢复成功结果只返回哈希、快照、验证和变更统计，不再重复返回完整整页源码；MCP 完整结果位于 `structuredContent`，`content.text` 仅提供摘要。
 - `src/*.xml` 是窗口界面描述文件，只用于读取和搜索，不作为普通代码编辑目标。固定表文件（如常量、全局变量、DLL 声明、数据类型）可以通过对应文件路径编辑，内部会映射到 IDE 的真实表页。
 - 写入程序集变量时会兼容易语言 IDE 的插入问题，将需要写回的 `.程序集变量` 行按 IDE 可接受格式处理为 `.局部变量`。
 
@@ -152,25 +157,25 @@ url = "http://127.0.0.1:19207/mcp"
 
 | 类别 | 方法 | 说明 |
 | --- | --- | --- |
-| 文件读取 | `refresh_workspace_mirror` | 从 IDE 当前内存工程刷新解包镜像；`mode` 支持 `auto`、`main_only` / `source_only`、`full` |
+| 文件读取 | `refresh_workspace_mirror` | 从 IDE 当前内存工程刷新解包镜像；`mode` 支持 `auto`、`main_only`、`full` |
 | 文件读取 | `list_files` | 按 glob 模式列出当前工程解包镜像内的文件 |
-| 文件读取 | `search_code` | 在解包镜像内做内容搜索，支持文件过滤、上下文、大小写、数量限制等参数 |
+| 文件读取 | `search_code` | 在解包镜像内逐文件搜索；支持批量 patterns、glob、上下文和分页 |
 | 文件读取 | `read_file` | 读取解包镜像内指定文件，按带行号的 `cat -n` 风格返回，可指定 offset/limit |
-| 模块 | `list_imported_modules` | 列出当前工程已导入的 `.ec` 易模块 |
-| 模块 | `add_module_to_project` | 按 `module_path` 或 `module_name` 导入易模块；成功后自动执行 `full` 全量刷新 |
-| 模块 | `remove_module_from_project` | 按 `module_index`、`module_path` 或 `module_name` 删除已导入易模块；成功后自动执行 `full` 全量刷新 |
+| 文件读取 | `read_files` | 批量读取多个文件或多个区间，部分失败时返回 `status=partial` |
+| 文件读取 | `read_code_item` | 按易语言顶层代码项名称读取完整子程序/声明块 |
+| 文件读取 | `read_real_file` | 从 IDE 真实页返回分页编号视图和 `code_hash`，供写入前建立 CAS 基线 |
 | 文件编辑 | `edit_file` | 对指定 `file_path` 做精确文本替换；写回前读取 IDE 真实整页源码 |
 | 文件编辑 | `multi_edit_file` | 对指定 `file_path` 批量执行多个精确文本替换 |
-| 文件编辑 | `write_file` | 用完整源码覆盖指定 `file_path` 对应的真实 IDE 页面，可带 `expected_base_hash` |
-| 文件编辑 | `diff_file` | 预览指定 `file_path` 的编辑差异，不写回 |
-| 文件编辑 | `restore_file_snapshot` | 恢复最近一次写入前保存的页面快照 |
+| 文件编辑 | `write_file` | 用完整源码覆盖真实 IDE 页面，可带 `expected_base_hash` 防止覆盖新修改 |
+| 文件编辑 | `diff_file` | 基于真实 IDE 页预览结构化差异，不写回，可校验 `expected_base_hash` |
+| 文件编辑 | `restore_file_snapshot` | 恢复写入前快照，可用 `expected_current_hash` 防止覆盖新修改 |
 | 当前页 | `get_current_page_info` | 获取当前页名称、类型与解析来源 |
 | 当前页 | `get_current_eide_info` | 获取当前源码路径、IDE 进程路径、本地 MCP 端口等实例信息 |
-| 编译 | `compile_with_output_path` | 指定输出路径发起编译/静态编译 |
-| 本地交互 | `run_powershell_command` | 经过确认后执行 PowerShell 命令 |
+| 编译 | `compile_with_output_path` | `target` 默认 `auto`；以编译前后高精度产物指纹验证成功，不只相信 IDE 返回值 |
+| 本地交互 | `run_powershell_command` | 经确认后执行 PowerShell；授权按内部对话/外部 MCP Session 隔离，超时会终止整个进程树 |
 | 联网 | `search_web_tavily` | 联网搜索网页结果 |
-| 联网 | `fetch_url` | 抓取指定 URL 原始文本响应 |
-| 联网 | `extract_web_document` | 提取网页正文与链接摘要 |
+| 联网 | `fetch_url` | 抓取公网 HTTP/HTTPS 原始文本；阻止回环、私网、链路本地和重定向到私网 |
+| 联网 | `extract_web_document` | 提取网页正文与已解析为绝对地址的链接摘要 |
 
 
 ## 其他功能

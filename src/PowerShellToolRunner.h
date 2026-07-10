@@ -8,6 +8,8 @@ struct PowerShellRunResult {
 	bool ok = false;
 	bool cancelled = false;
 	bool timedOut = false;
+	bool stdOutTruncated = false;
+	bool stdErrTruncated = false;
 	unsigned long exitCode = 0;
 	std::string effectiveWorkingDirectory;
 	std::string stdOut;

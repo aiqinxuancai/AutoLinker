@@ -291,7 +291,7 @@ struct ChatHistoryGarbage {
 
 struct ToolApprovalRequestState {
 	unsigned long long id = 0;
-	ToolExecutionRequest* request = nullptr;
+	std::shared_ptr<ToolExecutionRequest> request;
 	std::string toolName;
 	std::string argumentsJson;
 	nlohmann::json payloadUtf8;
@@ -330,6 +330,9 @@ UINT g_msgAIChatDebugRun = 0;
 std::mutex g_toolDialogRequestMutex;
 std::unordered_map<UINT_PTR, std::shared_ptr<ToolDialogRequest>> g_pendingToolDialogRequests;
 UINT_PTR g_nextToolDialogRequestId = 1;
+std::mutex g_toolExecutionRequestMutex;
+std::unordered_map<UINT_PTR, std::shared_ptr<ToolExecutionRequest>> g_pendingToolExecutionRequests;
+UINT_PTR g_nextToolExecutionRequestId = 1;
 std::condition_variable g_chatRequestDoneCv;
 unsigned long long g_lastCompletedRequestId = 0;
 AIChatResult g_lastCompletedChatResult = {};
@@ -1559,13 +1562,28 @@ nlohmann::json BuildToolApprovalPayloadUtf8(
 	return payload;
 }
 
-void FinishToolExecutionRequest(ToolExecutionRequest* request, bool ok, const std::string& resultJson)
+bool IsToolExecutionRequestCancelled(const std::shared_ptr<ToolExecutionRequest>& request)
+{
+	if (request == nullptr) {
+		return true;
+	}
+	std::lock_guard<std::mutex> guard(request->mutex);
+	return request->cancelled;
+}
+
+void FinishToolExecutionRequest(
+	const std::shared_ptr<ToolExecutionRequest>& request,
+	bool ok,
+	const std::string& resultJson)
 {
 	if (request == nullptr) {
 		return;
 	}
 	{
 		std::lock_guard<std::mutex> guard(request->mutex);
+		if (request->done) {
+			return;
+		}
 		request->ok = ok;
 		request->resultJson = resultJson;
 		request->done = true;
@@ -4907,6 +4925,46 @@ UINT_PTR RegisterToolDialogRequest(const std::shared_ptr<ToolDialogRequest>& req
 	return id;
 }
 
+UINT_PTR RegisterToolExecutionRequest(const std::shared_ptr<ToolExecutionRequest>& request)
+{
+	if (request == nullptr) {
+		return 0;
+	}
+
+	std::lock_guard<std::mutex> guard(g_toolExecutionRequestMutex);
+	const UINT_PTR id = g_nextToolExecutionRequestId++;
+	if (g_nextToolExecutionRequestId == 0) {
+		g_nextToolExecutionRequestId = 1;
+	}
+	g_pendingToolExecutionRequests[id] = request;
+	return id;
+}
+
+std::shared_ptr<ToolExecutionRequest> TakeToolExecutionRequest(UINT_PTR id)
+{
+	if (id == 0) {
+		return nullptr;
+	}
+
+	std::lock_guard<std::mutex> guard(g_toolExecutionRequestMutex);
+	const auto it = g_pendingToolExecutionRequests.find(id);
+	if (it == g_pendingToolExecutionRequests.end()) {
+		return nullptr;
+	}
+	std::shared_ptr<ToolExecutionRequest> request = it->second;
+	g_pendingToolExecutionRequests.erase(it);
+	return request;
+}
+
+void CancelToolExecutionRequest(UINT_PTR id)
+{
+	if (id == 0) {
+		return;
+	}
+	std::lock_guard<std::mutex> guard(g_toolExecutionRequestMutex);
+	g_pendingToolExecutionRequests.erase(id);
+}
+
 std::shared_ptr<ToolDialogRequest> TakeToolDialogRequest(UINT_PTR id)
 {
 	if (id == 0) {
@@ -6637,6 +6695,13 @@ void CompletePendingToolApproval(
 	if (pending.request == nullptr) {
 		return;
 	}
+	if (IsToolExecutionRequestCancelled(pending.request)) {
+		FinishToolExecutionRequest(
+			pending.request,
+			false,
+			R"({"ok":false,"error":"main thread tool request was cancelled"})");
+		return;
+	}
 
 	if (enableAutoAllow) {
 		{
@@ -6677,7 +6742,7 @@ void CompletePendingToolApproval(
 	}
 }
 
-bool BeginToolApprovalRequest(ToolExecutionRequest* request)
+bool BeginToolApprovalRequest(const std::shared_ptr<ToolExecutionRequest>& request)
 {
 	if (request == nullptr) {
 		return false;
@@ -6713,6 +6778,13 @@ bool BeginToolApprovalRequest(ToolExecutionRequest* request)
 			content,
 			LocalFromWide(L"\u5141\u8bb8\u672c\u6b21"),
 			LocalFromWide(L"\u62d2\u7edd"));
+		if (IsToolExecutionRequestCancelled(request)) {
+			FinishToolExecutionRequest(
+				request,
+				false,
+				R"({"ok":false,"error":"main thread tool request was cancelled"})");
+			return true;
+		}
 		if (action == AIPreviewAction::PrimaryConfirm) {
 			bool ok = false;
 			const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, request->argumentsJson, ok);
@@ -6816,8 +6888,16 @@ void AppendAutoWriteDiffMessageForTool(const std::string& toolName, const std::s
 
 bool HandleToolExecRequest(LPARAM lParam)
 {
-	auto* request = reinterpret_cast<ToolExecutionRequest*>(lParam);
+	const UINT_PTR requestId = static_cast<UINT_PTR>(lParam);
+	std::shared_ptr<ToolExecutionRequest> request = TakeToolExecutionRequest(requestId);
 	if (request == nullptr) {
+		return true;
+	}
+	if (IsToolExecutionRequestCancelled(request)) {
+		FinishToolExecutionRequest(
+			request,
+			false,
+			R"({"ok":false,"error":"main thread tool request was cancelled"})");
 		return true;
 	}
 
@@ -6853,6 +6933,16 @@ AIJsonConfig* GetAIChatAIJsonConfigForTooling()
 UINT GetAIChatToolExecMessageForTooling()
 {
 	return g_msgAIChatToolExec;
+}
+
+UINT_PTR RegisterToolExecutionRequestForTooling(const std::shared_ptr<ToolExecutionRequest>& request)
+{
+	return RegisterToolExecutionRequest(request);
+}
+
+void CancelToolExecutionRequestForTooling(UINT_PTR requestId)
+{
+	CancelToolExecutionRequest(requestId);
 }
 
 bool RequestConfirmationForTooling(
@@ -7494,6 +7584,51 @@ void Initialize(HWND mainWindow, ConfigManager* configManager, AIJsonConfig* aiJ
 
 void Shutdown()
 {
+	std::vector<std::shared_ptr<ToolExecutionRequest>> executionRequests;
+	{
+		std::lock_guard<std::mutex> guard(g_toolExecutionRequestMutex);
+		for (auto& [requestId, request] : g_pendingToolExecutionRequests) {
+			(void)requestId;
+			executionRequests.push_back(std::move(request));
+		}
+		g_pendingToolExecutionRequests.clear();
+	}
+	ToolApprovalRequestState pendingApproval = TakePendingToolApproval(0);
+	if (pendingApproval.request != nullptr) {
+		executionRequests.push_back(std::move(pendingApproval.request));
+	}
+	for (const std::shared_ptr<ToolExecutionRequest>& request : executionRequests) {
+		if (request == nullptr) {
+			continue;
+		}
+		{
+			std::lock_guard<std::mutex> guard(request->mutex);
+			request->cancelled = true;
+		}
+		FinishToolExecutionRequest(
+			request,
+			false,
+			R"({"ok":false,"error":"AI chat is shutting down"})");
+	}
+
+	std::vector<std::shared_ptr<ToolDialogRequest>> dialogRequests;
+	{
+		std::lock_guard<std::mutex> guard(g_toolDialogRequestMutex);
+		for (auto& [requestId, request] : g_pendingToolDialogRequests) {
+			(void)requestId;
+			dialogRequests.push_back(std::move(request));
+		}
+		g_pendingToolDialogRequests.clear();
+	}
+	for (const std::shared_ptr<ToolDialogRequest>& request : dialogRequests) {
+		if (request == nullptr) {
+			continue;
+		}
+		std::lock_guard<std::mutex> guard(request->mutex);
+		request->done = true;
+		request->cv.notify_one();
+	}
+
 	if (g_leftWorkAreaHost.hostHwnd != nullptr && g_leftWorkAreaHost.subclassInstalled && IsWindow(g_leftWorkAreaHost.hostHwnd)) {
 		RemoveWindowSubclass(g_leftWorkAreaHost.hostHwnd, LeftWorkAreaHostSubclassProc, kLeftWorkAreaHostSubclassId);
 	}
@@ -7511,6 +7646,9 @@ void Shutdown()
 		g_chatDialog = nullptr;
 	}
 	g_chatTabAdded = false;
+	g_mainWindow = nullptr;
+	g_msgAIChatToolDialog = 0;
+	g_msgAIChatToolExec = 0;
 }
 
 void EnsureTabCreated()
@@ -7588,7 +7726,38 @@ void SetUpdateAvailable(const std::string& latestVersion)
 	}
 }
 
-bool ExecutePublicTool(const std::string& toolName, const std::string& argumentsJson, std::string& outResultJsonUtf8, bool& outOk)
+bool ExecutePublicTool(
+	const std::string& toolName,
+	const std::string& argumentsJson,
+	std::string& outResultJsonUtf8,
+	bool& outOk)
+{
+	return ExecutePublicTool(toolName, argumentsJson, outResultJsonUtf8, outOk, {});
+}
+
+bool ExecutePublicTool(
+	const std::string& toolName,
+	const std::string& argumentsJson,
+	std::string& outResultJsonUtf8,
+	bool& outOk,
+	const std::function<bool()>& cancelCallback)
+{
+	return ExecutePublicTool(
+		toolName,
+		argumentsJson,
+		outResultJsonUtf8,
+		outOk,
+		cancelCallback,
+		"internal-chat");
+}
+
+bool ExecutePublicTool(
+	const std::string& toolName,
+	const std::string& argumentsJson,
+	std::string& outResultJsonUtf8,
+	bool& outOk,
+	const std::function<bool()>& cancelCallback,
+	const std::string& approvalScope)
 {
 	outResultJsonUtf8.clear();
 	outOk = false;
@@ -7602,7 +7771,14 @@ bool ExecutePublicTool(const std::string& toolName, const std::string& arguments
 	}
 
 	bool toolOk = false;
-	const std::string resultJsonLocal = ExecuteToolCall(toolName, argumentsJson, toolOk, false);
+	const std::string resultJsonLocal = ExecuteToolCall(
+		toolName,
+		argumentsJson,
+		toolOk,
+		false,
+		cancelCallback,
+		nullptr,
+		approvalScope);
 	outResultJsonUtf8 = LocalToUtf8Text(resultJsonLocal);
 	outOk = toolOk;
 	return true;

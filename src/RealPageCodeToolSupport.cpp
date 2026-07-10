@@ -1,10 +1,17 @@
 ﻿#include "RealPageCodeToolSupport.h"
 
+#include <Windows.h>
+#include <bcrypt.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <limits>
+#include <mutex>
 #include <string_view>
 #include <vector>
+
+#pragma comment(lib, "bcrypt.lib")
 
 namespace {
 
@@ -22,6 +29,107 @@ constexpr std::string_view kFingerprintTokenOtherwise = ".否则";
 constexpr std::string_view kFingerprintTokenEndIf = ".如果结束";
 // 去空白后「无子程序名」的裸 .子程序 token（真实子程序声明必带名字，去空白后形如 ".子程序xxx"）。
 constexpr std::string_view kFingerprintTokenBareSubroutine = ".子程序";
+
+struct Sha256Provider {
+	BCRYPT_ALG_HANDLE algorithm = nullptr;
+	DWORD objectBytes = 0;
+	DWORD hashBytes = 0;
+	bool ready = false;
+
+	~Sha256Provider()
+	{
+		if (algorithm != nullptr) {
+			BCryptCloseAlgorithmProvider(algorithm, 0);
+		}
+	}
+};
+
+Sha256Provider& GetSha256Provider()
+{
+	static Sha256Provider provider;
+	static std::once_flag once;
+	Sha256Provider* providerPtr = &provider;
+	std::call_once(once, [providerPtr]() {
+		Sha256Provider& provider = *providerPtr;
+		DWORD resultBytes = 0;
+		if (BCryptOpenAlgorithmProvider(&provider.algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0 ||
+			BCryptGetProperty(
+				provider.algorithm,
+				BCRYPT_OBJECT_LENGTH,
+				reinterpret_cast<PUCHAR>(&provider.objectBytes),
+				sizeof(provider.objectBytes),
+				&resultBytes,
+				0) < 0 ||
+			BCryptGetProperty(
+				provider.algorithm,
+				BCRYPT_HASH_LENGTH,
+				reinterpret_cast<PUCHAR>(&provider.hashBytes),
+				sizeof(provider.hashBytes),
+				&resultBytes,
+				0) < 0 ||
+			provider.objectBytes == 0 || provider.hashBytes == 0) {
+			if (provider.algorithm != nullptr) {
+				BCryptCloseAlgorithmProvider(provider.algorithm, 0);
+				provider.algorithm = nullptr;
+			}
+			return;
+		}
+		provider.ready = true;
+	});
+	return provider;
+}
+
+bool TryBuildSha256Hex(const std::string& text, std::string& outHex)
+{
+	outHex.clear();
+	Sha256Provider& provider = GetSha256Provider();
+	if (!provider.ready) {
+		return false;
+	}
+	std::vector<unsigned char> hashObject(provider.objectBytes);
+	std::vector<unsigned char> hash(provider.hashBytes);
+	BCRYPT_HASH_HANDLE handle = nullptr;
+	if (BCryptCreateHash(
+			provider.algorithm,
+			&handle,
+			hashObject.data(),
+			static_cast<ULONG>(hashObject.size()),
+			nullptr,
+			0,
+			0) < 0) {
+		return false;
+	}
+	bool ok = true;
+	size_t offset = 0;
+	while (offset < text.size()) {
+		const ULONG chunk = static_cast<ULONG>((std::min)(
+			text.size() - offset,
+			static_cast<size_t>((std::numeric_limits<ULONG>::max)())));
+		if (BCryptHashData(
+				handle,
+				reinterpret_cast<PUCHAR>(const_cast<char*>(text.data() + offset)),
+				chunk,
+				0) < 0) {
+			ok = false;
+			break;
+		}
+		offset += chunk;
+	}
+	if (ok && BCryptFinishHash(handle, hash.data(), static_cast<ULONG>(hash.size()), 0) < 0) {
+		ok = false;
+	}
+	BCryptDestroyHash(handle);
+	if (!ok) {
+		return false;
+	}
+	static constexpr char kHex[] = "0123456789abcdef";
+	outHex.resize(hash.size() * 2);
+	for (size_t i = 0; i < hash.size(); ++i) {
+		outHex[i * 2] = kHex[(hash[i] >> 4) & 0x0F];
+		outHex[i * 2 + 1] = kHex[hash[i] & 0x0F];
+	}
+	return true;
+}
 
 struct DiffOp {
 	char type = ' ';
@@ -502,6 +610,12 @@ std::vector<std::string> NormalizeStructuralFingerprintForIdeRewrite(
 std::string BuildStableTextHashForRealCode(const std::string& text)
 {
 	const std::string normalized = NormalizeRealCodeLineBreaksToLf(text);
+	std::string sha256;
+	if (TryBuildSha256Hex(normalized, sha256)) {
+		return sha256;
+	}
+
+	// BCrypt 极端失败时保留旧的稳定哈希作为降级路径，保证工具仍可工作。
 	std::uint64_t hash = 1469598103934665603ull;
 	for (unsigned char ch : normalized) {
 		hash ^= static_cast<std::uint64_t>(ch);

@@ -3,10 +3,27 @@
 #include <algorithm>
 #include <cctype>
 #include <format>
+#include <limits>
 
 namespace {
 
 constexpr size_t kMaxSnapshotsPerPage = 20;
+constexpr size_t kMaxPageCodeCacheBytes = 128 * 1024 * 1024;
+
+size_t EstimateSnapshotBytes(const PageCodeSnapshotEntry& snapshot)
+{
+	return snapshot.snapshotId.size() + snapshot.code.size() + snapshot.note.size();
+}
+
+size_t EstimateEntryBytes(const PageCodeCacheEntry& entry)
+{
+	size_t bytes = entry.pageName.size() + entry.kind.size() + entry.pageTypeKey.size() +
+		entry.pageTypeName.size() + entry.code.size() + entry.codeHash.size();
+	for (const PageCodeSnapshotEntry& snapshot : entry.snapshots) {
+		bytes += EstimateSnapshotBytes(snapshot);
+	}
+	return bytes;
+}
 
 std::string TrimAsciiCopyForCache(const std::string& text)
 {
@@ -76,6 +93,7 @@ void PageCodeCacheManager::Put(const PageCodeCacheEntry& entry)
 		saved.snapshots.erase(saved.snapshots.begin(), saved.snapshots.end() - static_cast<std::ptrdiff_t>(kMaxSnapshotsPerPage));
 	}
 	m_entries[key] = std::move(saved);
+	TrimToBudgetLocked();
 }
 
 void PageCodeCacheManager::Remove(const std::string& pageName, const std::string& kind)
@@ -121,6 +139,7 @@ bool PageCodeCacheManager::AddSnapshot(
 		entry.snapshots.erase(entry.snapshots.begin(), entry.snapshots.end() - static_cast<std::ptrdiff_t>(kMaxSnapshotsPerPage));
 	}
 	outSnapshot = snapshot;
+	TrimToBudgetLocked(snapshot.snapshotId);
 	return true;
 }
 
@@ -183,4 +202,83 @@ bool PageCodeCacheManager::ListSnapshots(
 std::string PageCodeCacheManager::BuildKey(const std::string& pageName, const std::string& kind)
 {
 	return ToLowerAsciiCopyForCache(TrimAsciiCopyForCache(kind)) + "\n" + TrimAsciiCopyForCache(pageName);
+}
+
+void PageCodeCacheManager::TrimToBudgetLocked(const std::string& protectedSnapshotId)
+{
+	const auto totalBytes = [this]() {
+		size_t total = 0;
+		for (const auto& [key, entry] : m_entries) {
+			(void)key;
+			total += EstimateEntryBytes(entry);
+		}
+		return total;
+	};
+
+	size_t currentBytes = totalBytes();
+	while (currentBytes > kMaxPageCodeCacheBytes) {
+		auto oldestEntry = m_entries.end();
+		size_t oldestIndex = 0;
+		ULONGLONG oldestTick = (std::numeric_limits<ULONGLONG>::max)();
+		for (auto entryIt = m_entries.begin(); entryIt != m_entries.end(); ++entryIt) {
+			for (size_t i = 0; i < entryIt->second.snapshots.size(); ++i) {
+				const PageCodeSnapshotEntry& snapshot = entryIt->second.snapshots[i];
+				if (snapshot.snapshotId == protectedSnapshotId) {
+					continue;
+				}
+				if (snapshot.createdAtTick < oldestTick) {
+					oldestTick = snapshot.createdAtTick;
+					oldestEntry = entryIt;
+					oldestIndex = i;
+				}
+			}
+		}
+		if (oldestEntry == m_entries.end()) {
+			break;
+		}
+		currentBytes -= EstimateSnapshotBytes(oldestEntry->second.snapshots[oldestIndex]);
+		oldestEntry->second.snapshots.erase(
+			oldestEntry->second.snapshots.begin() + static_cast<std::ptrdiff_t>(oldestIndex));
+	}
+
+	while (currentBytes > kMaxPageCodeCacheBytes) {
+		auto oldestEntry = m_entries.end();
+		ULONGLONG oldestTick = (std::numeric_limits<ULONGLONG>::max)();
+		for (auto entryIt = m_entries.begin(); entryIt != m_entries.end(); ++entryIt) {
+			const bool protectedEntry = std::any_of(
+				entryIt->second.snapshots.begin(),
+				entryIt->second.snapshots.end(),
+				[&protectedSnapshotId](const PageCodeSnapshotEntry& snapshot) {
+					return !protectedSnapshotId.empty() && snapshot.snapshotId == protectedSnapshotId;
+				});
+			if (!protectedEntry && entryIt->second.updatedAtTick < oldestTick) {
+				oldestTick = entryIt->second.updatedAtTick;
+				oldestEntry = entryIt;
+			}
+		}
+		if (oldestEntry == m_entries.end()) {
+			break;
+		}
+		currentBytes -= EstimateEntryBytes(oldestEntry->second);
+		m_entries.erase(oldestEntry);
+	}
+
+	if (currentBytes > kMaxPageCodeCacheBytes && !protectedSnapshotId.empty()) {
+		for (auto& [key, entry] : m_entries) {
+			(void)key;
+			const bool protectedEntry = std::any_of(
+				entry.snapshots.begin(),
+				entry.snapshots.end(),
+				[&protectedSnapshotId](const PageCodeSnapshotEntry& snapshot) {
+					return snapshot.snapshotId == protectedSnapshotId;
+				});
+			if (protectedEntry && !entry.code.empty()) {
+				currentBytes -= entry.code.size();
+				entry.code.clear();
+				entry.code.shrink_to_fit();
+				entry.codeHash.clear();
+				break;
+			}
+		}
+	}
 }

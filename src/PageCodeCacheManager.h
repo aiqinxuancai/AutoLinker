@@ -60,6 +60,8 @@ private:
 	PageCodeCacheManager() = default;
 
 	static std::string BuildKey(const std::string& pageName, const std::string& kind);
+	// 在持锁状态下按全局字节预算淘汰旧快照和冷缓存。
+	void TrimToBudgetLocked(const std::string& protectedSnapshotId = std::string());
 
 	mutable std::mutex m_mutex;
 	std::unordered_map<std::string, PageCodeCacheEntry> m_entries;

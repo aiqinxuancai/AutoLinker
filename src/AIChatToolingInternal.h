@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <string>
 
@@ -16,6 +17,7 @@ struct ToolExecutionRequest {
 	std::string resultJson;
 	bool ok = false;
 	bool done = false;
+	bool cancelled = false;
 	std::mutex mutex;
 	std::condition_variable cv;
 };
@@ -48,6 +50,10 @@ ConfigManager* GetAIChatConfigManagerForTooling();
 AIJsonConfig* GetAIChatAIJsonConfigForTooling();
 // 获取 AI 对话工具执行消息。
 UINT GetAIChatToolExecMessageForTooling();
+// 注册主线程工具请求，返回用于窗口消息交接的请求编号。
+UINT_PTR RegisterToolExecutionRequestForTooling(const std::shared_ptr<ToolExecutionRequest>& request);
+// 取消尚未被主线程接管的工具请求。
+void CancelToolExecutionRequestForTooling(UINT_PTR requestId);
 // 请求确认对话。outSecondaryAccepted 为次确认按钮点击结果。
 bool RequestConfirmationForTooling(
 	const std::string& title,

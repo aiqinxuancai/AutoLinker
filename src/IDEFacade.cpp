@@ -2430,6 +2430,16 @@ bool IDEFacade::CompileAndRun() const
 	return RunCompileAndRun();
 }
 
+bool IDEFacade::NormalizeCompileOutputPath(
+	CompileOutputKind kind,
+	const std::string& outputPath,
+	std::string& outNormalizedPath,
+	std::string* outDiagnostics) const
+{
+	outNormalizedPath = NormalizeCompileOutputPathLocal(outputPath, kind, outDiagnostics);
+	return !outNormalizedPath.empty();
+}
+
 bool IDEFacade::CompileWithOutputPath(
 	CompileOutputKind kind,
 	const std::string& outputPath,

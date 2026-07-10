@@ -1,10 +1,15 @@
 ﻿#include "WebDocumentExtractor.h"
 
+#include <Windows.h>
+#include <wininet.h>
+
 #include <algorithm>
 #include <cctype>
 #include <string>
 
 #include "..\\thirdparty\\json.hpp"
+
+#pragma comment(lib, "wininet.lib")
 
 namespace {
 constexpr size_t kMaxLinks = 20;
@@ -30,6 +35,50 @@ std::string TrimAscii(const std::string& text)
 		--end;
 	}
 	return text.substr(begin, end - begin);
+}
+
+bool IsValidUtf8(const std::string& text)
+{
+	return text.empty() || MultiByteToWideChar(
+		CP_UTF8,
+		MB_ERR_INVALID_CHARS,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0) > 0;
+}
+
+std::string TruncateUtf8Copy(const std::string& text, size_t maxBytes)
+{
+	if (text.size() <= maxBytes) {
+		return text;
+	}
+	size_t prefix = maxBytes;
+	while (prefix > 0 && !IsValidUtf8(text.substr(0, prefix))) {
+		--prefix;
+	}
+	return text.substr(0, prefix);
+}
+
+std::string ResolveHttpLink(const std::string& baseUrl, const std::string& href)
+{
+	DWORD length = 0;
+	InternetCombineUrlA(baseUrl.c_str(), href.c_str(), nullptr, &length, 0);
+	if (length == 0 || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+		return std::string();
+	}
+	std::string buffer(static_cast<size_t>(length), '\0');
+	if (InternetCombineUrlA(baseUrl.c_str(), href.c_str(), buffer.data(), &length, 0) == FALSE) {
+		return std::string();
+	}
+	buffer.resize(static_cast<size_t>(length));
+	if (!buffer.empty() && buffer.back() == '\0') {
+		buffer.pop_back();
+	}
+	const std::string lower = ToLowerAscii(buffer);
+	return lower.starts_with("http://") || lower.starts_with("https://")
+		? buffer
+		: std::string();
 }
 
 bool StartsWithInsensitiveAt(const std::string& text, size_t pos, const std::string& needle)
@@ -303,7 +352,7 @@ std::string HtmlToPlainText(const std::string& html)
 	return TrimAscii(normalized);
 }
 
-std::vector<ExtractedWebDocumentLink> ExtractLinks(const std::string& html)
+std::vector<ExtractedWebDocumentLink> ExtractLinks(const std::string& html, const std::string& baseUrl)
 {
 	std::vector<ExtractedWebDocumentLink> links;
 	std::string lower = ToLowerAscii(html);
@@ -352,7 +401,10 @@ std::vector<ExtractedWebDocumentLink> ExtractLinks(const std::string& html)
 				!hrefLower.starts_with("javascript:") &&
 				!hrefLower.starts_with("mailto:") &&
 				!hrefLower.starts_with("#")) {
-				links.push_back(ExtractedWebDocumentLink{ anchorText, href });
+				const std::string resolvedUrl = ResolveHttpLink(baseUrl, href);
+				if (!resolvedUrl.empty()) {
+					links.push_back(ExtractedWebDocumentLink{ anchorText, resolvedUrl });
+				}
 			}
 		}
 
@@ -366,7 +418,7 @@ std::string MakeExcerpt(const std::string& plainText)
 	if (plainText.size() <= kExcerptChars) {
 		return plainText;
 	}
-	return TrimAscii(plainText.substr(0, kExcerptChars)) + "...";
+	return TrimAscii(TruncateUtf8Copy(plainText, kExcerptChars)) + "...";
 }
 } // namespace
 
@@ -376,6 +428,8 @@ ExtractedWebDocument WebDocumentExtractor::Extract(const HttpFetchResult& fetchR
 	out.url = fetchResult.finalUrl.empty() ? fetchResult.url : fetchResult.finalUrl;
 	out.httpStatus = fetchResult.httpStatus;
 	out.contentType = fetchResult.contentType;
+	out.contentLength = fetchResult.contentLength;
+	out.sourceTruncated = fetchResult.bodyTruncated;
 
 	if (!fetchResult.ok) {
 		out.error = fetchResult.error.empty() ? "fetch failed" : fetchResult.error;
@@ -394,7 +448,7 @@ ExtractedWebDocument WebDocumentExtractor::Extract(const HttpFetchResult& fetchR
 	}
 	else if (fetchResult.isHtml) {
 		out.title = ExtractTitle(fetchResult.bodyText);
-		out.links = ExtractLinks(fetchResult.bodyText);
+		out.links = ExtractLinks(fetchResult.bodyText, out.url);
 		out.plainText = HtmlToPlainText(fetchResult.bodyText);
 	}
 	else {
@@ -403,10 +457,45 @@ ExtractedWebDocument WebDocumentExtractor::Extract(const HttpFetchResult& fetchR
 	}
 
 	if (out.plainText.size() > kMaxPlainTextChars) {
-		out.plainText.resize(kMaxPlainTextChars);
+		out.plainText = TruncateUtf8Copy(out.plainText, kMaxPlainTextChars);
 		out.plainText = TrimAscii(out.plainText) + "...";
 	}
 	out.excerpt = MakeExcerpt(out.plainText);
 	out.ok = true;
 	return out;
+}
+
+std::string WebDocumentExtractor::BuildSelfTestReportJson()
+{
+	HttpFetchResult html;
+	html.ok = true;
+	html.finalUrl = "https://example.com/docs/page.html";
+	html.contentType = "text/html; charset=utf-8";
+	html.isHtml = true;
+	html.bodyText =
+		"<html><head><title>Test</title></head><body>"
+		"<a href=\"../guide?q=1\">Guide</a>"
+		"<a href=\"javascript:alert(1)\">Bad</a>"
+		"</body></html>";
+	const ExtractedWebDocument extractedHtml = Extract(html);
+	const bool relativeLinkOk = extractedHtml.links.size() == 1 &&
+		extractedHtml.links.front().url == "https://example.com/guide?q=1";
+
+	HttpFetchResult text;
+	text.ok = true;
+	text.finalUrl = "https://example.com/plain.txt";
+	text.contentType = "text/plain; charset=utf-8";
+	text.bodyText.assign(29999, 'a');
+	text.bodyText += "\xE4\xB8\xAD";
+	const ExtractedWebDocument extractedText = Extract(text);
+	const bool utf8BoundaryOk = extractedText.ok && IsValidUtf8(extractedText.plainText) &&
+		extractedText.plainText.ends_with("...");
+
+	return nlohmann::json({
+		{"name", "web-document-extractor"},
+		{"ok", relativeLinkOk && utf8BoundaryOk},
+		{"relative_link_ok", relativeLinkOk},
+		{"utf8_boundary_ok", utf8BoundaryOk},
+		{"resolved_link", extractedHtml.links.empty() ? std::string() : extractedHtml.links.front().url}
+	}).dump();
 }

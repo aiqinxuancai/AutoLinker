@@ -259,8 +259,8 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	}
 	if (uMsg == WM_NCDESTROY) {
 		GameAnalyticsClient::Shutdown();
-		LocalMcpServer::Shutdown();
 		AIChatFeature::Shutdown();
+		LocalMcpServer::Shutdown();
 		WorkspaceMirror::ResetAndCleanup();
 		g_mainWindowSubclassInstalled = false;
 		RemoveWindowSubclass(hWnd, MainWindowSubclassProc, uIdSubclass);

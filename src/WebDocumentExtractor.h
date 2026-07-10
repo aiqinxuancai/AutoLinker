@@ -17,6 +17,8 @@ struct ExtractedWebDocument {
 	std::string url;
 	int httpStatus = 0;
 	std::string contentType;
+	size_t contentLength = 0;
+	bool sourceTruncated = false;
 	std::string title;
 	std::string plainText;
 	std::string excerpt;
@@ -28,4 +30,6 @@ struct ExtractedWebDocument {
 class WebDocumentExtractor {
 public:
 	static ExtractedWebDocument Extract(const HttpFetchResult& fetchResult);
+	// 构建相对链接解析与 UTF-8 截断自检报告。
+	static std::string BuildSelfTestReportJson();
 };

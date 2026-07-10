@@ -128,6 +128,9 @@
     <ClCompile Include="src\AIChatToolingX86.cpp">
       <Filter>AI</Filter>
     </ClCompile>
+    <ClCompile Include="src\AIChatToolRegistry.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
     <ClCompile Include="src\AIChatToolPolicy.cpp">
       <Filter>AI</Filter>
     </ClCompile>
@@ -247,6 +250,9 @@
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIChatToolingInternal.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AIChatToolRegistry.h">
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIChatToolPolicy.h">

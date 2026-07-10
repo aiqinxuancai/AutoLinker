@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <functional>
 #include <string>
 
 // HTTP 文本抓取结果。
@@ -25,4 +26,12 @@ public:
 		const std::string& urlUtf8,
 		int timeoutSeconds,
 		size_t maxBytes);
+	// 抓取文本，并允许调用方在关闭或请求取消时提前终止读取。
+	static HttpFetchResult FetchTextUrl(
+		const std::string& urlUtf8,
+		int timeoutSeconds,
+		size_t maxBytes,
+		const std::function<bool()>& cancelCallback);
+	// 构建无需联网的 URL 安全与 UTF-8 截断自检报告。
+	static std::string BuildSelfTestReportJson();
 };

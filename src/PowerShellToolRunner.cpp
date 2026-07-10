@@ -9,6 +9,8 @@
 #include <vector>
 
 namespace {
+constexpr size_t kMaxCapturedStreamBytes = 2 * 1024 * 1024;
+
 std::wstring Utf8ToWide(const std::string& text)
 {
 	if (text.empty()) {
@@ -73,6 +75,22 @@ std::string WideToUtf8(const std::wstring& text)
 	return utf8;
 }
 
+void TrimInvalidUtf8Suffix(std::string& text)
+{
+	for (int removed = 0; removed < 4 && !text.empty(); ++removed) {
+		if (MultiByteToWideChar(
+				CP_UTF8,
+				MB_ERR_INVALID_CHARS,
+				text.data(),
+				static_cast<int>(text.size()),
+				nullptr,
+				0) > 0) {
+			return;
+		}
+		text.pop_back();
+	}
+}
+
 std::string Base64Encode(const unsigned char* data, size_t size)
 {
 	static constexpr char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -104,16 +122,29 @@ std::string BuildEncodedCommand(const std::wstring& userCommand)
 	return Base64Encode(bytes, script.size() * sizeof(wchar_t));
 }
 
-void ReadPipeToString(HANDLE hPipe, std::string* output, std::atomic_bool* doneFlag)
+void ReadPipeToString(
+	HANDLE hPipe,
+	std::string* output,
+	std::atomic_bool* doneFlag,
+	bool* truncated)
 {
-	if (output == nullptr || doneFlag == nullptr) {
+	if (output == nullptr || doneFlag == nullptr || truncated == nullptr) {
 		return;
 	}
 
 	char buffer[4096];
 	DWORD bytesRead = 0;
 	while (ReadFile(hPipe, buffer, static_cast<DWORD>(sizeof(buffer)), &bytesRead, nullptr) != FALSE && bytesRead > 0) {
-		output->append(buffer, bytesRead);
+		const size_t remaining = output->size() < kMaxCapturedStreamBytes
+			? kMaxCapturedStreamBytes - output->size()
+			: 0;
+		const size_t copied = (std::min)(remaining, static_cast<size_t>(bytesRead));
+		if (copied > 0) {
+			output->append(buffer, copied);
+		}
+		if (copied < bytesRead) {
+			*truncated = true;
+		}
 	}
 	*doneFlag = true;
 }
@@ -222,7 +253,7 @@ PowerShellRunResult PowerShellToolRunner::Run(
 		nullptr,
 		nullptr,
 		TRUE,
-		CREATE_NO_WINDOW,
+		CREATE_NO_WINDOW | CREATE_SUSPENDED,
 		nullptr,
 		workingDirectory.c_str(),
 		&si,
@@ -238,10 +269,48 @@ PowerShellRunResult PowerShellToolRunner::Run(
 		return result;
 	}
 
+	HANDLE job = CreateJobObjectW(nullptr, nullptr);
+	if (job == nullptr) {
+		TerminateProcess(pi.hProcess, 126);
+		CloseHandle(pi.hThread);
+		CloseHandle(pi.hProcess);
+		CloseHandle(stdOutRead);
+		CloseHandle(stdErrRead);
+		result.error = "CreateJobObjectW failed";
+		return result;
+	}
+	JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo = {};
+	jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+	if (SetInformationJobObject(
+			job,
+			JobObjectExtendedLimitInformation,
+			&jobInfo,
+			static_cast<DWORD>(sizeof(jobInfo))) == FALSE ||
+		AssignProcessToJobObject(job, pi.hProcess) == FALSE) {
+		TerminateProcess(pi.hProcess, 126);
+		CloseHandle(job);
+		CloseHandle(pi.hThread);
+		CloseHandle(pi.hProcess);
+		CloseHandle(stdOutRead);
+		CloseHandle(stdErrRead);
+		result.error = "assign powershell process to job failed";
+		return result;
+	}
+	if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1)) {
+		TerminateJobObject(job, 126);
+		CloseHandle(job);
+		CloseHandle(pi.hThread);
+		CloseHandle(pi.hProcess);
+		CloseHandle(stdOutRead);
+		CloseHandle(stdErrRead);
+		result.error = "ResumeThread powershell process failed";
+		return result;
+	}
+
 	std::atomic_bool stdoutDone = false;
 	std::atomic_bool stderrDone = false;
-	std::thread stdoutReader(ReadPipeToString, stdOutRead, &result.stdOut, &stdoutDone);
-	std::thread stderrReader(ReadPipeToString, stdErrRead, &result.stdErr, &stderrDone);
+	std::thread stdoutReader(ReadPipeToString, stdOutRead, &result.stdOut, &stdoutDone, &result.stdOutTruncated);
+	std::thread stderrReader(ReadPipeToString, stdErrRead, &result.stdErr, &stderrDone, &result.stdErrTruncated);
 
 	const ULONGLONG timeoutMs = static_cast<ULONGLONG>(boundedTimeoutSeconds) * 1000ULL;
 	const ULONGLONG waitStartMs = GetTickCount64();
@@ -249,7 +318,7 @@ PowerShellRunResult PowerShellToolRunner::Run(
 	for (;;) {
 		if (cancelCallback && cancelCallback()) {
 			result.cancelled = true;
-			TerminateProcess(pi.hProcess, 125);
+			TerminateJobObject(job, 125);
 			WaitForSingleObject(pi.hProcess, 5000);
 			break;
 		}
@@ -257,7 +326,7 @@ PowerShellRunResult PowerShellToolRunner::Run(
 		const ULONGLONG elapsedMs = GetTickCount64() - waitStartMs;
 		if (elapsedMs >= timeoutMs) {
 			result.timedOut = true;
-			TerminateProcess(pi.hProcess, 124);
+			TerminateJobObject(job, 124);
 			WaitForSingleObject(pi.hProcess, 5000);
 			break;
 		}
@@ -269,7 +338,7 @@ PowerShellRunResult PowerShellToolRunner::Run(
 		}
 		if (waitResult != WAIT_TIMEOUT) {
 			result.error = "WaitForSingleObject powershell process failed";
-			TerminateProcess(pi.hProcess, 126);
+			TerminateJobObject(job, 126);
 			WaitForSingleObject(pi.hProcess, 5000);
 			break;
 		}
@@ -282,6 +351,8 @@ PowerShellRunResult PowerShellToolRunner::Run(
 
 	CloseHandle(pi.hThread);
 	CloseHandle(pi.hProcess);
+	// 正常命令也不允许留下继承管道的后台子进程；关闭 Job 会终止仍存活的整个进程树。
+	CloseHandle(job);
 
 	if (stdoutReader.joinable()) {
 		stdoutReader.join();
@@ -289,9 +360,21 @@ PowerShellRunResult PowerShellToolRunner::Run(
 	if (stderrReader.joinable()) {
 		stderrReader.join();
 	}
+	if (result.stdOutTruncated) {
+		TrimInvalidUtf8Suffix(result.stdOut);
+	}
+	if (result.stdErrTruncated) {
+		TrimInvalidUtf8Suffix(result.stdErr);
+	}
 	CloseHandle(stdOutRead);
 	CloseHandle(stdErrRead);
 
-	result.ok = !result.cancelled && !result.timedOut && result.error.empty();
+	result.ok = !result.cancelled &&
+		!result.timedOut &&
+		result.error.empty() &&
+		result.exitCode == 0;
+	if (!result.ok && !result.cancelled && !result.timedOut && result.error.empty()) {
+		result.error = "powershell exited with code " + std::to_string(result.exitCode);
+	}
 	return result;
 }

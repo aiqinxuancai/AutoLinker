@@ -117,11 +117,15 @@ void AddReadRequestRange(
 		return;
 	}
 	if (deduplicateByFile) {
+		const int normalizedBegin = (std::max)(0, offset);
+		const int normalizedEnd = SafeRangeEnd(normalizedBegin, limit);
 		const auto duplicate = std::find_if(
 			requests.begin(),
 			requests.end(),
-			[&normalized](const ReadRequestRange& item) {
-				return item.normalizedPath == normalized;
+			[&normalized, normalizedBegin, normalizedEnd](const ReadRequestRange& item) {
+				return item.normalizedPath == normalized &&
+					item.begin == normalizedBegin &&
+					item.end == normalizedEnd;
 			});
 		if (duplicate != requests.end()) {
 			return;

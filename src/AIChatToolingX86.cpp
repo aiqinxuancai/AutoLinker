@@ -8,12 +8,10 @@
 #include <chrono>
 #include <CommCtrl.h>
 #include <cstring>
-#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
-#include <sys/stat.h>
 #include <unordered_set>
 #include <vector>
 
@@ -36,6 +34,42 @@
 #if defined(_M_IX86)
 
 using ToolPerfClock = std::chrono::steady_clock;
+
+struct CompileArtifactFingerprint {
+	bool exists = false;
+	std::uintmax_t size = 0;
+	std::filesystem::file_time_type writeTime = {};
+};
+
+CompileArtifactFingerprint CaptureCompileArtifactFingerprint(const std::string& filePath)
+{
+	CompileArtifactFingerprint fingerprint;
+	if (filePath.empty()) {
+		return fingerprint;
+	}
+	std::error_code error;
+	const std::filesystem::path path(filePath);
+	fingerprint.exists = std::filesystem::is_regular_file(path, error);
+	if (!fingerprint.exists || error) {
+		return {};
+	}
+	fingerprint.size = std::filesystem::file_size(path, error);
+	if (error) {
+		return {};
+	}
+	fingerprint.writeTime = std::filesystem::last_write_time(path, error);
+	if (error) {
+		return {};
+	}
+	return fingerprint;
+}
+
+bool CompileArtifactChanged(
+	const CompileArtifactFingerprint& before,
+	const CompileArtifactFingerprint& after)
+{
+	return after.exists && (!before.exists || before.size != after.size || before.writeTime != after.writeTime);
+}
 
 static long long ElapsedToolMs(const ToolPerfClock::time_point& start)
 {
@@ -1438,52 +1472,31 @@ bool TryResolveSourceEditBaseForAI(
 	outBase = {};
 	outError.clear();
 
-	const AISourceEditMode mode = GetActiveSourceEditModeForAI();
-	outBase.sourceMode = SourceEditModeStringForAI(mode);
-	if (mode != AISourceEditMode::MirrorSourceBase) {
-		PageCodeCacheEntry cacheEntry;
-		if (!TryResolveRealPageWriteBaseForAI(
-				item,
-				expectedBaseHash,
-				false,
-				outBase.baseCode,
-				cacheEntry,
-				outBase.trace,
-				outBase.currentCode,
-				outBase.cacheRefreshed,
-				outError,
-				&outBase.editorObject)) {
-			return false;
-		}
-		outBase.codeKind = "real_source";
-		return true;
-	}
-
-	std::string mirrorCode;
-	std::string mirrorError;
-	if (!TryReadWorkspaceMirrorTextLocalForAI(filePathUtf8, mirrorCode, mirrorError)) {
-		outBase.trace = "source_edit_mode=mirror_source_base|mirror_read_failed:" + mirrorError;
-		outError = mirrorError.empty() ? "read workspace mirror file failed" : mirrorError;
+	const AISourceEditMode configuredMode = GetActiveSourceEditModeForAI();
+	outBase.sourceMode = "real_page_cas";
+	PageCodeCacheEntry cacheEntry;
+	if (!TryResolveRealPageWriteBaseForAI(
+			item,
+			expectedBaseHash,
+			false,
+			outBase.baseCode,
+			cacheEntry,
+			outBase.trace,
+			outBase.currentCode,
+			outBase.cacheRefreshed,
+			outError,
+			&outBase.editorObject)) {
+		outBase.trace =
+			"configured_source_edit_mode=" + SourceEditModeStringForAI(configuredMode) +
+			"|effective_write_base=real_page|" + outBase.trace;
 		return false;
 	}
-
-	outBase.baseCode = NormalizeRealCodeLineBreaksToCrLf(mirrorCode);
-	outBase.currentCode = outBase.baseCode;
 	outBase.trace =
-		std::string("source_edit_mode=mirror_source_base") +
-		"|write_base=workspace_mirror" +
-		"|real_page_read=skipped";
-	outBase.cacheRefreshed = false;
-	outBase.mirrorMode = true;
-	outBase.codeKind = "mirror_source";
-
-	const std::string normalizedExpectedHash = ToLowerAsciiCopyLocal(TrimAsciiCopy(expectedBaseHash));
-	const std::string mirrorHash = BuildStableTextHashForRealCode(outBase.baseCode);
-	if (!normalizedExpectedHash.empty() && mirrorHash != normalizedExpectedHash) {
-		outError = "expected_base_hash mismatch; mirror write base refreshed from workspace mirror";
-		return false;
-	}
-
+		"configured_source_edit_mode=" + SourceEditModeStringForAI(configuredMode) +
+		"|effective_write_base=real_page|" + outBase.trace;
+	outBase.codeKind = "real_source";
+	outBase.mirrorMode = false;
+	(void)filePathUtf8;
 	return true;
 }
 
@@ -2058,14 +2071,14 @@ bool EnsureDependencyCatalogSnapshotForSearchForAI(std::string& outError)
 {
 	outError.clear();
 	DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(false);
-	DependencyCatalogCache::Instance().WaitForIdle(0);
-
 	const DependencyCatalogCache::Status status = DependencyCatalogCache::Instance().GetStatus();
 	if (status.hasSnapshot) {
 		return true;
 	}
 
-	outError = status.lastErrorLocal.empty() ? "dependency catalog refresh failed" : status.lastErrorLocal;
+	outError = status.running
+		? "dependency catalog refresh started; retry the search after the initial snapshot is ready"
+		: (status.lastErrorLocal.empty() ? "dependency catalog refresh failed" : status.lastErrorLocal);
 	return false;
 }
 
@@ -2499,10 +2512,10 @@ std::string BuildRefreshDependencyCatalogJsonForAI(const std::string& argumentsJ
 	}
 
 	const bool force = args.contains("force") && args["force"].is_boolean() ? args["force"].get<bool>() : false;
-	const bool wait = args.contains("wait") && args["wait"].is_boolean() ? args["wait"].get<bool>() : true;
+	const bool wait = args.contains("wait") && args["wait"].is_boolean() ? args["wait"].get<bool>() : false;
 	const int timeoutMs = args.contains("timeout_ms") && args["timeout_ms"].is_number_integer()
 		? (std::clamp)(args["timeout_ms"].get<int>(), 0, 600000)
-		: 0;
+		: 30000;
 
 	if (!wait) {
 		DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(force);
@@ -2516,7 +2529,8 @@ std::string BuildRefreshDependencyCatalogJsonForAI(const std::string& argumentsJ
 	}
 
 	DependencyCatalogCache::Instance().StartAsyncRefreshIfNeeded(force);
-	const bool idle = DependencyCatalogCache::Instance().WaitForIdle(static_cast<unsigned int>(timeoutMs));
+	const unsigned int boundedTimeoutMs = timeoutMs <= 0 ? 30000u : static_cast<unsigned int>(timeoutMs);
+	const bool idle = DependencyCatalogCache::Instance().WaitForIdle(boundedTimeoutMs);
 	const DependencyCatalogCache::Status status = DependencyCatalogCache::Instance().GetStatus();
 	nlohmann::json r;
 	r["ok"] = idle && status.state == DependencyCatalogCache::RefreshState::Ready;
@@ -3346,6 +3360,7 @@ std::string ExecuteMappedEditFileToolForAI(
 
 	const std::string oldText = GetJsonStringArgumentLocal(args, "old_text");
 	const std::string newText = GetJsonStringArgumentLocal(args, "new_text");
+	const std::string expectedBaseHash = GetJsonStringArgumentLocal(args, "expected_base_hash");
 	if (oldText.empty()) {
 		LogToolStageForAI("edit_file", "invalid_arguments|old_text_empty", totalStart);
 		return R"({"ok":false,"error":"old_text is required"})";
@@ -3354,7 +3369,7 @@ std::string ExecuteMappedEditFileToolForAI(
 	std::string error;
 	SourceEditBaseForAI editBase;
 	LogToolStageForAI("edit_file", "before_read_base", totalStart);
-	if (!TryResolveSourceEditBaseForAI(item, filePathUtf8, std::string(), editBase, error)) {
+	if (!TryResolveSourceEditBaseForAI(item, filePathUtf8, expectedBaseHash, editBase, error)) {
 		LogToolStageForAI(
 			"edit_file",
 			"after_read_base_failed|error=" + LocalToUtf8Text(error) +
@@ -3506,6 +3521,7 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 
 	const bool failOnUnmatched = GetJsonBoolArgument(args, "fail_on_unmatched", true);
 	const bool atomic = GetJsonBoolArgument(args, "atomic", true);
+	const std::string expectedBaseHash = GetJsonStringArgumentLocal(args, "expected_base_hash");
 
 	std::vector<RealPageTextEditRequest> edits;
 	std::string error;
@@ -3520,7 +3536,7 @@ std::string ExecuteMappedMultiEditFileToolForAI(
 	}
 
 	SourceEditBaseForAI editBase;
-	if (!TryResolveSourceEditBaseForAI(item, filePathUtf8, std::string(), editBase, error)) {
+	if (!TryResolveSourceEditBaseForAI(item, filePathUtf8, expectedBaseHash, editBase, error)) {
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error;
@@ -3664,9 +3680,10 @@ std::string ExecuteMappedWriteFileToolForAI(
 {
 	outOk = false;
 
-	const std::string fullCode = GetJsonStringArgumentLocal(args, "full_code");
+	const bool hasFullCode = args.contains("full_code") && args["full_code"].is_string();
+	const std::string fullCode = hasFullCode ? GetJsonStringArgumentLocal(args, "full_code") : std::string();
 	const std::string expectedBaseHash = GetJsonStringArgumentLocal(args, "expected_base_hash");
-	if (fullCode.empty()) {
+	if (!hasFullCode) {
 		return R"({"ok":false,"error":"full_code is required"})";
 	}
 
@@ -3770,17 +3787,19 @@ std::string ExecuteMappedDiffFileToolForAI(
 {
 	outOk = false;
 
-	const std::string newCodeInput = [&]() {
-		const std::string newCode = GetJsonStringArgumentLocal(args, "new_code");
-		return newCode.empty() ? GetJsonStringArgumentLocal(args, "full_code") : newCode;
-	}();
+	const bool hasNewCode = args.contains("new_code") && args["new_code"].is_string();
+	const bool hasFullCode = args.contains("full_code") && args["full_code"].is_string();
+	const std::string newCodeInput = hasNewCode
+		? GetJsonStringArgumentLocal(args, "new_code")
+		: (hasFullCode ? GetJsonStringArgumentLocal(args, "full_code") : std::string());
 	const std::string oldText = GetJsonStringArgumentLocal(args, "old_text");
 	const std::string newText = GetJsonStringArgumentLocal(args, "new_text");
 	const bool failOnUnmatched = GetJsonBoolArgument(args, "fail_on_unmatched", true);
+	const std::string expectedBaseHash = GetJsonStringArgumentLocal(args, "expected_base_hash");
 
 	std::string error;
 	SourceEditBaseForAI editBase;
-	if (!TryResolveSourceEditBaseForAI(item, filePathUtf8, std::string(), editBase, error)) {
+	if (!TryResolveSourceEditBaseForAI(item, filePathUtf8, expectedBaseHash, editBase, error)) {
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error.empty() ? "read real page code failed" : error;
@@ -3798,7 +3817,7 @@ std::string ExecuteMappedDiffFileToolForAI(
 
 	std::string candidateCode;
 	nlohmann::json editResults = nlohmann::json::array();
-	if (!newCodeInput.empty()) {
+	if (hasNewCode || hasFullCode) {
 		candidateCode = NormalizeRealCodeLineBreaksToCrLf(
 			item.typeKey == "const_resource"
 				? MergeConstResourceLongTextPlaceholdersForAI(newCodeInput, baseCode)
@@ -3888,6 +3907,7 @@ std::string ExecuteMappedRestoreFileSnapshotToolForAI(
 
 	const std::string snapshotId = GetJsonStringArgumentLocal(args, "snapshot_id");
 	const bool restoreLatest = GetJsonBoolArgument(args, "restore_latest", snapshotId.empty());
+	const std::string expectedCurrentHash = GetJsonStringArgumentLocal(args, "expected_current_hash");
 	if (!restoreLatest && snapshotId.empty()) {
 		return R"({"ok":false,"error":"snapshot_id is required when restore_latest is false"})";
 	}
@@ -3907,7 +3927,7 @@ std::string ExecuteMappedRestoreFileSnapshotToolForAI(
 	std::string currentCode;
 	bool cacheRefreshed = false;
 	std::uintptr_t baseEditorObject = 0;
-	if (!TryResolveRealPageWriteBaseForAI(item, std::string(), false, baseCode, cacheEntry, trace, currentCode, cacheRefreshed, error, &baseEditorObject)) {
+	if (!TryResolveRealPageWriteBaseForAI(item, expectedCurrentHash, false, baseCode, cacheEntry, trace, currentCode, cacheRefreshed, error, &baseEditorObject)) {
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = error;
@@ -4100,9 +4120,11 @@ std::string ExecuteFileMappedRealPageToolForAI(
 			const int offset = (std::max)(0, GetJsonIntArgumentForAI(args, "offset", 0));
 			const int limit = GetJsonIntArgumentForAI(args, "limit", 0);
 			const std::vector<std::string> lines = SplitLinesForNumberedViewForAI(realCode);
+			const int totalLines = static_cast<int>(lines.size());
+			const int effectiveOffset = (std::clamp)(offset, 0, totalLines);
 			int returnedLines = 0;
-			bool truncated = false;
-			const std::string content = BuildNumberedViewForAI(lines, offset, limit, returnedLines, truncated);
+			bool hasMore = false;
+			const std::string content = BuildNumberedViewForAI(lines, effectiveOffset, limit, returnedLines, hasMore);
 			nlohmann::json r;
 			r["ok"] = true;
 			r["page_name"] = LocalToUtf8Text(programItem.name);
@@ -4112,12 +4134,22 @@ std::string ExecuteFileMappedRealPageToolForAI(
 			r["source_edit_mode"] = SourceEditModeStringForAI(GetActiveSourceEditModeForAI());
 			r["code_kind"] = "real_source";
 			r["code_hash"] = cacheEntry.codeHash;
-			r["total_lines"] = lines.size();
-			r["offset"] = offset;
+			r["total_lines"] = totalLines;
+			r["requested_offset"] = offset;
+			r["offset"] = effectiveOffset;
 			r["returned_lines"] = returnedLines;
-			r["truncated"] = truncated;
+			r["has_more"] = hasMore;
+			r["next_offset"] = hasMore
+				? nlohmann::json(effectiveOffset + returnedLines)
+				: nlohmann::json(nullptr);
+			r["truncated"] = effectiveOffset > 0 || hasMore;
+			r["visible_line_range"] = returnedLines > 0
+				? nlohmann::json({
+					{"start_line", effectiveOffset + 1},
+					{"end_line", effectiveOffset + returnedLines}
+				})
+				: nlohmann::json(nullptr);
 			r["content"] = LocalToUtf8Text(content);
-			r["code"] = LocalToUtf8Text(realCode);
 			r["trace"] = LocalToUtf8Text(accessResult.trace);
 			resultLocal = JsonToLocalTextForAI(r);
 			outOk = true;
@@ -4184,7 +4216,6 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		bool mirrorUpdated = false;
 		std::string mirrorUpdateError;
 		if (!item.fixedTable &&
-			GetActiveSourceEditModeForAI() == AISourceEditMode::MirrorSourceBase &&
 			result.contains("code") &&
 			result["code"].is_string()) {
 			const std::string finalCodeLocal = Utf8ToLocalText(result["code"].get<std::string>());
@@ -4226,11 +4257,16 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		std::string readTrace;
 		std::string readError;
 		if (TryReadMappedRealPageCodeForAI(item, realCode, realCodeHash, readTrace, readError)) {
-			result["real_code"] = LocalToUtf8Text(realCode);
 			result["real_code_hash"] = realCodeHash;
 			result["real_code_trace"] = LocalToUtf8Text(readTrace);
-			result["real_code_note"] = "old_text matching is performed against this real IDE page text";
+			result["real_code_note"] = "old_text matching uses the live IDE page; call read_real_file for a bounded numbered view";
 		}
+	}
+
+	if (publicToolName != "read_real_file") {
+		result.erase("code");
+		result.erase("real_code");
+		result.erase("proposed_code");
 	}
 
 	return JsonToLocalTextForAI(result);
@@ -4275,6 +4311,17 @@ bool TryReadMappedRealPageCodeForAI(
 std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
 {
 	outOk = false;
+	if (toolName == "__prepare_workspace_file_access") {
+		std::string error;
+		if (!WorkspaceMirror::PrepareFileAccess(error)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "prepare workspace file access failed" : error;
+			return JsonToLocalTextForAI(r);
+		}
+		outOk = true;
+		return R"({"ok":true,"prepared":true})";
+	}
 
 	if (toolName == "update_plan") {
 		std::string resultJsonLocal;
@@ -4350,12 +4397,19 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["mirror_root"] = LocalToUtf8Text(mirrorRoot.string());
 			return JsonToLocalTextForAI(r);
 		}
+		const std::string sourceFilePath = RefreshCurrentSourceFilePathForAI();
+		std::string pageName;
+		std::string pageType;
+		IDEFacade::Instance().GetCurrentPageName(pageName, &pageType, nullptr);
+		LocalMcpServer::UpdateInstanceHints(sourceFilePath, pageName, pageType);
 
 		nlohmann::json r;
 		r["ok"] = true;
 		r["requested_mode"] = requestedMode;
 		r["refresh_mode"] = mode;
 		r["mirror_root"] = LocalToUtf8Text(mirrorRoot.string());
+		r["mirror_generation"] = WorkspaceMirror::GetGeneration();
+		r["source_file_path"] = LocalToUtf8Text(sourceFilePath);
 		r["file_count"] = files.size();
 		r["note"] = "workspace mirror refreshed from current IDE memory; call read_file, search_code, or list_files after this";
 		outOk = true;
@@ -4527,9 +4581,10 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			return JsonToLocalTextForAI(r);
 		}
 
-		const std::string target = args.contains("target") && args["target"].is_string()
+		const std::string requestedTarget = args.contains("target") && args["target"].is_string()
 			? ToLowerAsciiCopyLocal(args["target"].get<std::string>())
 			: std::string();
+		std::string target = requestedTarget.empty() ? "auto" : requestedTarget;
 		const std::string outputPath = args.contains("output_path") && args["output_path"].is_string()
 			? Utf8ToLocalText(args["output_path"].get<std::string>())
 			: std::string();
@@ -4537,11 +4592,37 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			? args["static_compile"].get<bool>()
 			: false;
 
-		if (TrimAsciiCopy(target).empty()) {
-			return R"({"ok":false,"error":"target is required"})";
-		}
 		if (TrimAsciiCopy(outputPath).empty()) {
 			return R"({"ok":false,"error":"output_path is required"})";
+		}
+		if (target == "auto") {
+			std::string mainWindowTitle;
+			if (HWND mainWindow = IDEFacade::Instance().GetMainWindow();
+				mainWindow != nullptr && IsWindow(mainWindow)) {
+				char title[512] = {};
+				GetWindowTextA(mainWindow, title, static_cast<int>(sizeof(title)));
+				mainWindowTitle = title;
+			}
+			if (mainWindowTitle.find(" Windows易语言模块 ") != std::string::npos) {
+				target = "ecom";
+			}
+			else if (mainWindowTitle.find(" Windows动态链接库 ") != std::string::npos) {
+				target = "win_dll";
+			}
+			else if (mainWindowTitle.find(" Windows控制台程序 ") != std::string::npos) {
+				target = "win_console_exe";
+			}
+			else if (mainWindowTitle.find(" Windows窗口程序 ") != std::string::npos) {
+				target = "win_exe";
+			}
+			else {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["error"] = "auto target detection failed";
+				r["requested_target"] = requestedTarget;
+				r["main_window_title"] = LocalToUtf8Text(mainWindowTitle);
+				return JsonToLocalTextForAI(r);
+			}
 		}
 
 		IDEFacade::CompileOutputKind kind = IDEFacade::CompileOutputKind::WinExe;
@@ -4564,12 +4645,26 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			return JsonToLocalTextForAI(r);
 		}
 
-		// 编译前：快照输出窗口文本，记录开始时间戳（用于判断产物是否刷新）。
+		std::string normalizedPath;
+		std::string normalizeDiagnostics;
+		if (!IDEFacade::Instance().NormalizeCompileOutputPath(
+				kind,
+				outputPath,
+				normalizedPath,
+				&normalizeDiagnostics)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = normalizeDiagnostics.empty()
+				? "normalize output path failed"
+				: normalizeDiagnostics;
+			return JsonToLocalTextForAI(r);
+		}
+		const CompileArtifactFingerprint artifactBefore = CaptureCompileArtifactFingerprint(normalizedPath);
+
+		// 编译前：快照输出窗口文本和产物高精度指纹。
 		std::string preOutputText;
 		IDEFacade::Instance().GetOutputWindowText(preOutputText);
-		const __time64_t compileStartTimestamp = _time64(nullptr);
 
-		std::string normalizedPath;
 		std::string diagnostics;
 		const bool compileOk = IDEFacade::Instance().CompileWithOutputPath(
 			kind,
@@ -4624,14 +4719,8 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 					break;
 				}
 
-				bool outputFileReady = false;
-				if (!normalizedPath.empty()) {
-					struct __stat64 pendingFileStat = {};
-					if (_stat64(normalizedPath.c_str(), &pendingFileStat) == 0 &&
-						pendingFileStat.st_mtime >= compileStartTimestamp - 1) {
-						outputFileReady = true;
-					}
-				}
+				const CompileArtifactFingerprint pendingArtifact = CaptureCompileArtifactFingerprint(normalizedPath);
+				const bool outputFileReady = CompileArtifactChanged(artifactBefore, pendingArtifact);
 				if (outputFileReady) {
 					if (!outputFileReadySeen) {
 						outputFileReadySeen = true;
@@ -4665,30 +4754,37 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		}
 
 		// 检查产物文件是否在编译启动后被创建/更新，用于确认编译是否成功。
-		bool outputFileExists = false;
-		bool outputFileModifiedAfterCompile = false;
-		if (!normalizedPath.empty()) {
-			struct __stat64 fileStat = {};
-			if (_stat64(normalizedPath.c_str(), &fileStat) == 0) {
-				outputFileExists = true;
-				outputFileModifiedAfterCompile = (fileStat.st_mtime >= compileStartTimestamp - 1);
-			}
-		}
+		const CompileArtifactFingerprint artifactAfter = CaptureCompileArtifactFingerprint(normalizedPath);
+		const bool outputFileExists = artifactAfter.exists;
+		const bool outputFileModifiedAfterCompile = CompileArtifactChanged(artifactBefore, artifactAfter);
 
 		nlohmann::json r;
-		r["ok"] = true;
+		const bool artifactVerified = outputFileExists && outputFileModifiedAfterCompile;
+		r["ok"] = artifactVerified;
+		r["requested_target"] = requestedTarget;
 		r["target"] = target;
 		r["static_compile"] = staticCompile;
 		r["output_path"] = LocalToUtf8Text(normalizedPath);
 		r["output_window_text"] = LocalToUtf8Text(newOutput);
 		r["output_file_exists"] = outputFileExists;
 		r["output_file_modified_after_compile"] = outputFileModifiedAfterCompile;
+		r["output_file_existed_before_compile"] = artifactBefore.exists;
+		r["output_file_size_before_compile"] = artifactBefore.exists
+			? nlohmann::json(artifactBefore.size)
+			: nlohmann::json(nullptr);
+		r["output_file_size_after_compile"] = artifactAfter.exists
+			? nlohmann::json(artifactAfter.size)
+			: nlohmann::json(nullptr);
+		r["artifact_verified"] = artifactVerified;
 		r["trace"] = diagnostics;
 		r["caret_row"] = caretRow;
 		r["caret_line_text"] = LocalToUtf8Text(caretLineText);
 		r["caret_page_name"] = LocalToUtf8Text(caretPageName);
 		r["caret_page_type"] = LocalToUtf8Text(caretPageType);
-		outOk = true;
+		if (!artifactVerified) {
+			r["error"] = "compile artifact was not created or updated";
+		}
+		outOk = artifactVerified;
 		return JsonToLocalTextForAI(r);
 	}
 
@@ -4698,7 +4794,44 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 	return JsonToLocalTextForAI(r);
 }
 
-// 顶层异常防线：工具调用经 SendMessage 在主线程的 WndProc 中执行
+std::string BuildCompileArtifactFingerprintSelfTestJson()
+{
+	std::error_code error;
+	const std::filesystem::path path = std::filesystem::temp_directory_path(error) /
+		std::format("autolinker_compile_fingerprint_{}_{}.tmp", GetCurrentProcessId(), GetTickCount64());
+	if (error) {
+		return nlohmann::json({
+			{"name", "compile-artifact-fingerprint"},
+			{"ok", false},
+			{"error", error.message()}
+		}).dump();
+	}
+	std::filesystem::remove(path, error);
+	const CompileArtifactFingerprint missing = CaptureCompileArtifactFingerprint(path.string());
+	{
+		std::ofstream file(path, std::ios::binary | std::ios::trunc);
+		file << "first";
+	}
+	const CompileArtifactFingerprint created = CaptureCompileArtifactFingerprint(path.string());
+	const bool creationDetected = CompileArtifactChanged(missing, created);
+	const bool unchangedRejected = !CompileArtifactChanged(created, created);
+	{
+		std::ofstream file(path, std::ios::binary | std::ios::app);
+		file << "-updated";
+	}
+	const CompileArtifactFingerprint updated = CaptureCompileArtifactFingerprint(path.string());
+	const bool updateDetected = CompileArtifactChanged(created, updated);
+	std::filesystem::remove(path, error);
+	return nlohmann::json({
+		{"name", "compile-artifact-fingerprint"},
+		{"ok", creationDetected && unchangedRejected && updateDetected},
+		{"creation_detected", creationDetected},
+		{"unchanged_rejected", unchangedRejected},
+		{"update_detected", updateDetected}
+	}).dump();
+}
+
+// 顶层异常防线：工具请求通过 PostMessage 和共享请求注册表交给主线程 WndProc 执行。
 // （HandleToolExecRequest）。若任何工具内部抛出未捕获异常，异常会逃出窗口
 // 过程、穿过 Win32 消息派发边界，触发 MSVC 运行时 abort（“abnormal program
 // termination”），整个 IDE 进程崩溃。这里统一兜底，把异常转成失败结果返回，

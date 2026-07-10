@@ -12,6 +12,7 @@
 #include "..\\thirdparty\\json.hpp"
 
 #include "AIChatMcpClient.h"
+#include "AIChatToolRegistry.h"
 #include "AIChatToolPolicy.h"
 #include "AIJsonConfig.h"
 #include "ConfigManager.h"
@@ -487,11 +488,11 @@ bool IsTraceLikeKey(std::string_view key)
 size_t GetCompactArrayLimit(const std::string& toolName, std::string_view key)
 {
 	const std::string lowered = ToLowerAsciiCopy(key);
-	if (toolName == "read_files" && lowered == "files") {
+	if (toolName == "read_files" && (lowered == "files" || lowered == "omitted_requests")) {
 		return 12;
 	}
 	if (toolName == "search_code") {
-		if (lowered == "queries") {
+		if (lowered == "queries" || lowered == "continuations") {
 			return 16;
 		}
 		if (lowered == "results" || lowered == "context") {
@@ -511,6 +512,121 @@ size_t GetCompactArrayLimit(const std::string& toolName, std::string_view key)
 		return 8;
 	}
 	return 6;
+}
+
+void RebuildCompactResultPagination(
+	nlohmann::json& result,
+	std::string_view arrayKey,
+	size_t visibleLimit)
+{
+	if (!result.is_object()) {
+		return;
+	}
+	const std::string key(arrayKey);
+	auto arrayIt = result.find(key);
+	if (arrayIt == result.end() || !arrayIt->is_array() || arrayIt->size() <= visibleLimit) {
+		return;
+	}
+
+	const size_t sourceReturned = arrayIt->size();
+	arrayIt->erase(
+		arrayIt->begin() + static_cast<nlohmann::json::difference_type>(visibleLimit),
+		arrayIt->end());
+	const int visibleReturned = static_cast<int>(arrayIt->size());
+	const int requestedOffset = result.value("requested_offset", result.value("offset", 0));
+	const int effectiveOffset = (std::max)(0, result.value("offset", requestedOffset));
+	const long long minimumTotal = static_cast<long long>(effectiveOffset) + static_cast<long long>(sourceReturned);
+	const long long reportedTotal = result.value("total_results", minimumTotal);
+	const long long totalResults = (std::max)(minimumTotal, reportedTotal);
+	const long long endOffset = (std::min)(
+		totalResults,
+		static_cast<long long>(effectiveOffset) + visibleReturned);
+	const bool hasMore = endOffset < totalResults;
+
+	result["requested_offset"] = requestedOffset;
+	result["offset"] = effectiveOffset;
+	result["returned"] = visibleReturned;
+	result["total_results"] = totalResults;
+	result["has_more"] = hasMore;
+	result["next_offset"] = hasMore ? nlohmann::json(endOffset) : nlohmann::json(nullptr);
+	result["visible_result_range"] = visibleReturned > 0
+		? nlohmann::json({
+			{"start_offset", effectiveOffset},
+			{"end_offset_exclusive", endOffset}
+		})
+		: nlohmann::json(nullptr);
+
+	nlohmann::json omittedRanges = nlohmann::json::array();
+	if (effectiveOffset > 0) {
+		omittedRanges.push_back({
+			{"start_offset", 0},
+			{"end_offset_exclusive", effectiveOffset}
+		});
+	}
+	if (hasMore) {
+		omittedRanges.push_back({
+			{"start_offset", endOffset},
+			{"end_offset_exclusive", totalResults}
+		});
+	}
+	result["omitted_result_ranges"] = std::move(omittedRanges);
+	result["truncated"] = true;
+	result["context_page_compacted"] = true;
+	result["context_source_page_returned"] = sourceReturned;
+	result["context_omitted_items"] = sourceReturned - arrayIt->size();
+	result["context_note"] =
+		"The model-visible page was compacted. Continue from next_offset, which now follows the last visible item.";
+	if (result.contains("page_limit") && result["page_limit"].is_number_integer()) {
+		result["source_page_limit"] = result["page_limit"];
+		result["page_limit"] = visibleLimit;
+	}
+}
+
+void PreparePaginatedToolResultForCompactContext(
+	const std::string& toolName,
+	nlohmann::json& result)
+{
+	if (!result.is_object()) {
+		return;
+	}
+	if (toolName == "list_files") {
+		RebuildCompactResultPagination(result, "files", GetCompactArrayLimit(toolName, "files"));
+		return;
+	}
+	if (toolName != "search_code") {
+		return;
+	}
+
+	const size_t resultLimit = GetCompactArrayLimit(toolName, "results");
+	if (result.contains("queries") && result["queries"].is_array()) {
+		bool hasMore = false;
+		bool truncated = result.value("truncated", false);
+		nlohmann::json continuations = nlohmann::json::array();
+		for (auto& query : result["queries"]) {
+			RebuildCompactResultPagination(query, "results", resultLimit);
+			const bool queryHasMore = query.is_object() && query.value("has_more", false);
+			hasMore = hasMore || queryHasMore;
+			truncated = truncated || (query.is_object() && query.value("truncated", false));
+			if (queryHasMore) {
+				continuations.push_back({
+					{"pattern", query.value("pattern", std::string())},
+					{"next_offset", query.contains("next_offset") ? query["next_offset"] : nlohmann::json(nullptr)},
+					{"mirror_generation", result.value("mirror_generation", 0ull)}
+				});
+			}
+		}
+		result["has_more"] = hasMore;
+		result["truncated"] = truncated;
+		result["continuations"] = std::move(continuations);
+		if (result.contains("page_limit") && result["page_limit"].is_number_integer() &&
+			result["page_limit"].get<long long>() > static_cast<long long>(resultLimit)) {
+			result["source_page_limit"] = result["page_limit"];
+			result["page_limit"] = resultLimit;
+		}
+		return;
+	}
+
+	RebuildCompactResultPagination(result, "results", resultLimit);
 }
 
 nlohmann::json CompactToolContextJsonValue(
@@ -625,6 +741,7 @@ CompactToolResultPayload BuildCompactToolResultPayload(const std::string& toolNa
 			parsed.erase("real_code");
 			parsed["context_note"] = "Verified write output omitted from model context; use code_hash/new_hash and continue without re-reading.";
 		}
+		PreparePaginatedToolResultForCompactContext(toolName, parsed);
 		nlohmann::json compact = CompactToolContextJsonValue(parsed, toolName, "", 0);
 		if (!compact.is_object()) {
 			payload.jsonValue = {
@@ -1725,6 +1842,45 @@ nlohmann::json BuildResponsesParsedFromStream(const ResponsesStreamParseState& s
 	return parsed;
 }
 
+bool TryParseResponsesResponseBody(
+	const std::string& responseBody,
+	nlohmann::json& outParsed,
+	std::string& outStreamTextUtf8,
+	std::string& outError)
+{
+	outParsed = nlohmann::json();
+	outStreamTextUtf8.clear();
+	outError.clear();
+
+	std::string jsonParseError;
+	try {
+		outParsed = nlohmann::json::parse(responseBody);
+		return true;
+	}
+	catch (const std::exception& ex) {
+		jsonParseError = ex.what();
+	}
+
+	ResponsesStreamParseState streamState;
+	const bool streamParsed =
+		ConsumeResponsesStreamChunk(responseBody, streamState, {}) &&
+		FlushResponsesStreamState(streamState, {});
+	if (!streamParsed || !streamState.parseError.empty()) {
+		outError = streamState.parseError.empty()
+			? "Failed to parse Responses streaming response"
+			: streamState.parseError;
+		return false;
+	}
+	if (!streamState.sawSseEvent) {
+		outError = "Failed to parse Responses API response: " + jsonParseError;
+		return false;
+	}
+
+	outParsed = BuildResponsesParsedFromStream(streamState);
+	outStreamTextUtf8 = std::move(streamState.mergedTextUtf8);
+	return true;
+}
+
 bool TryParseRawChatMessageJson(const std::string& rawMessageJsonUtf8, nlohmann::json& outMessage)
 {
 	if (AIService::Trim(rawMessageJsonUtf8).empty()) {
@@ -1782,6 +1938,7 @@ nlohmann::json BuildPublicToolCatalog()
 			{"properties", {
 				{"glob", {{"type", "string"}, {"description", "Optional glob such as src/**/*.txt or ecom/**/*.txt."}}},
 				{"path", {{"type", "string"}, {"description", "Optional relative path prefix."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 0}, {"description", "Optional generation returned by the previous page; rejects stale pagination after a refresh or write."}}},
 				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based result offset for pagination. Use next_offset from the prior result."}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 5000}}}
 			}},
@@ -1790,17 +1947,18 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "search_code"},
-		{"description", "Batch search text inside the current e-packager workspace mirror. External MCP clients must call refresh_workspace_mirror first; built-in AI chat is refreshed automatically. Use glob to narrow scope, context>0 to avoid follow-up reads, and patterns for all related names in one call. Continue a result page with next_offset; visible and omitted ranges are reported explicitly. Avoid broad repeated searches after the target definition is found."},
+		{"description", "Batch-stream search complete text files inside the current e-packager workspace mirror. External MCP clients must call refresh_workspace_mirror first; built-in AI chat is refreshed automatically. Literal substring search is the default; set regex=true only for simple bounded regular expressions. Use patterns to match up to 16 related names in one file pass."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
-				{"pattern", {{"type", "string"}, {"description", "Single regex pattern by default; set regex=false for literal substring search."}}},
-				{"patterns", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Optional batch of regex patterns or literal substrings using the same regex/case/glob/context options. Use this instead of repeated search_code calls."}}},
+				{"pattern", {{"type", "string"}, {"maxLength", 1024}, {"description", "Single literal substring by default; set regex=true for regular-expression search."}}},
+				{"patterns", {{"type", "array"}, {"maxItems", 16}, {"items", {{"type", "string"}, {"maxLength", 1024}}}, {"description", "Optional batch of patterns using the same regex/case/glob/context options."}}},
 				{"glob", {{"type", "string"}, {"description", "Optional file glob filter such as src/**/*.txt."}}},
 				{"output_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"files_with_matches", "content", "count"})}}},
-				{"regex", {{"type", "boolean"}, {"description", "Defaults to true."}}},
+				{"regex", {{"type", "boolean"}, {"description", "Defaults to false."}}},
 				{"case_insensitive", {{"type", "boolean"}}},
 				{"context", {{"type", "integer"}, {"minimum", 0}, {"maximum", 20}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 0}, {"description", "Optional generation returned by the previous page; rejects stale pagination."}}},
 				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based result offset. Continue with next_offset returned by the previous page."}}},
 				{"head_limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}}}
 			}},
@@ -1809,11 +1967,13 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "read_file"},
-		{"description", "Read one text file from the current e-packager workspace mirror. External MCP clients must call refresh_workspace_mirror first. Built-in AI chat normally uses read_files/read_code_item instead to reduce round trips. Returns cat -n style numbered mirror text plus next_offset and exact visible/omitted line ranges."},
+		{"description", "Read one text file from the current e-packager workspace mirror. External MCP clients must call refresh_workspace_mirror first. Returns numbered text, line pagination, mirror_generation and a 1 MiB source byte window. Continue large files with next_source_byte_offset as byte_offset."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
 				{"file_path", {{"type", "string"}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 0}, {"description", "Optional generation returned by the previous page."}}},
+				{"byte_offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Source byte cursor for files larger than the 1 MiB read window. Continue with next_source_byte_offset and reset line offset to 0."}}},
 				{"offset", {{"type", "integer"}, {"minimum", 0}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 20000}}}
 			}},
@@ -1823,21 +1983,24 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "read_files"},
-		{"description", "Batch read one or more text files from the current e-packager workspace mirror in one tool call. External MCP clients must call refresh_workspace_mirror first. Prefer this over repeated read_file calls. Returns per-file code_hash and cat -n style numbered mirror text."},
+		{"description", "Batch read one or more text files or byte windows from the current e-packager workspace mirror. External MCP clients must call refresh_workspace_mirror first. Prefer this over repeated read_file calls. Partial failures are explicit and large files continue with per-file next_source_byte_offset."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
-				{"file_paths", {{"type", "array"}, {"items", {{"type", "string"}}}, {"description", "Simple list of mirror-relative file paths."}}},
-				{"files", {{"type", "array"}, {"items", {
+				{"file_paths", {{"type", "array"}, {"maxItems", 12}, {"items", {{"type", "string"}}}, {"description", "Simple list of up to 12 mirror-relative file paths."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 0}, {"description", "Optional generation returned by a prior mirror read."}}},
+				{"files", {{"type", "array"}, {"maxItems", 12}, {"items", {
 					{"type", "object"},
 					{"properties", {
 						{"file_path", {{"type", "string"}}},
+						{"byte_offset", {{"type", "integer"}, {"minimum", 0}}},
 						{"offset", {{"type", "integer"}, {"minimum", 0}}},
 						{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}}}
 					}},
 					{"required", nlohmann::json::array({"file_path"})},
 					{"additionalProperties", false}
-				}}, {"description", "Optional per-file offset/limit entries."}}},
+				}}, {"description", "Optional per-file offset/limit entries, up to 12 per call."}}},
+				{"byte_offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Default source byte cursor for all entries."}}},
 				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Default offset for file_paths/files entries."}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}, {"description", "Default per-file line limit."}}}
 			}},
@@ -1846,12 +2009,14 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "read_code_item"},
-		{"description", "Locate and read one complete E-language top-level code item (especially a .子程序) from a mirror text file, from its declaration through the line before the next top-level item. External MCP clients must call refresh_workspace_mirror first. Prefer this when the requested function or item name is known; it avoids repeated offset reads. Optional include_references adds a bounded literal reference search."},
+		{"description", "Stream-locate and read one complete E-language top-level code item (especially a .子程序), including items beyond the first 1 MiB. External MCP clients must call refresh_workspace_mirror first. Use occurrence to disambiguate duplicate names. Optional include_references adds a bounded case-insensitive literal reference search."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
 				{"file_path", {{"type", "string"}}},
 				{"item_name", {{"type", "string"}}},
+				{"occurrence", {{"type", "integer"}, {"minimum", 1}, {"description", "Select the Nth matching declaration when duplicate top-level names exist."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 0}, {"description", "Optional generation returned by a prior mirror read."}}},
 				{"include_references", {{"type", "boolean"}, {"description", "Defaults to false."}}},
 				{"reference_glob", {{"type", "string"}, {"description", "Optional reference search glob such as src/**/*.txt."}}},
 				{"reference_limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 50}}}
@@ -1862,7 +2027,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "read_real_file"},
-		{"description", "Read one current-project source file directly from the live IDE page mapped by mirror-relative file_path. External MCP clients must call refresh_workspace_mirror first. Returns real_source code, code_hash and numbered content. When available, call it immediately before editing the same file and base old_text/full_code/expected_base_hash on its real_source/code_hash."},
+		{"description", "Read a bounded numbered view directly from the live IDE page mapped by mirror-relative file_path. External MCP clients must call refresh_workspace_mirror first. Returns code_hash plus paginated content; continue with next_offset when has_more=true. Call it immediately before editing and base old_text/full_code/expected_base_hash on this live real_source view."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1876,13 +2041,14 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "edit_file"},
-		{"description", "Edit one current-project source file by mirror-relative file_path. External MCP clients must call refresh_workspace_mirror first. Writes go to the live IDE page and successful results include verified=true; do not re-read only for confirmation."},
+		{"description", "Edit one current-project source file by mirror-relative file_path. External MCP clients must call refresh_workspace_mirror first. The edit is always based on the live IDE page; expected_base_hash optionally rejects a stale caller base. Successful results are verified."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
 				{"file_path", {{"type", "string"}}},
 				{"old_text", {{"type", "string"}}},
-				{"new_text", {{"type", "string"}}}
+				{"new_text", {{"type", "string"}}},
+				{"expected_base_hash", {{"type", "string"}, {"description", "code_hash from read_real_file; required for external MCP calls and rejects stale live source."}}}
 			}},
 			{"required", nlohmann::json::array({"file_path", "old_text", "new_text"})},
 			{"additionalProperties", false}
@@ -1890,7 +2056,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "multi_edit_file"},
-		{"description", "Apply multiple text edits to one current-project source file. External MCP clients must call refresh_workspace_mirror first. Writes go to the live IDE page and successful results include verified=true."},
+		{"description", "Apply multiple text edits to one current-project source file. External MCP clients must call refresh_workspace_mirror first. The edits are always based on the live IDE page; expected_base_hash optionally rejects stale live source."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1906,7 +2072,8 @@ nlohmann::json BuildPublicToolCatalog()
 					{"additionalProperties", false}
 				}}}},
 				{"fail_on_unmatched", {{"type", "boolean"}}},
-				{"atomic", {{"type", "boolean"}}}
+				{"atomic", {{"type", "boolean"}}},
+				{"expected_base_hash", {{"type", "string"}, {"description", "code_hash from read_real_file; required for external MCP calls and rejects stale live source."}}}
 			}},
 			{"required", nlohmann::json::array({"file_path", "edits"})},
 			{"additionalProperties", false}
@@ -1920,7 +2087,7 @@ nlohmann::json BuildPublicToolCatalog()
 			{"properties", {
 				{"file_path", {{"type", "string"}}},
 				{"full_code", {{"type", "string"}}},
-				{"expected_base_hash", {{"type", "string"}}}
+				{"expected_base_hash", {{"type", "string"}, {"description", "code_hash from read_real_file; required for external MCP calls."}}}
 			}},
 			{"required", nlohmann::json::array({"file_path", "full_code"})},
 			{"additionalProperties", false}
@@ -1928,7 +2095,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "diff_file"},
-		{"description", "Preview a structured diff for one current-project source file without writing anything. External MCP clients must call refresh_workspace_mirror first. Accepts new_code/full_code or text edit parameters."},
+		{"description", "Preview a structured diff for one current-project source file without writing anything. The diff is based on the live IDE page. External MCP clients must call refresh_workspace_mirror first. Accepts new_code/full_code or text edit parameters."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -1947,8 +2114,8 @@ nlohmann::json BuildPublicToolCatalog()
 					{"required", nlohmann::json::array({"old_text", "new_text"})},
 					{"additionalProperties", false}
 				}}}},
-				{"refresh_cache", {{"type", "boolean"}}},
-				{"fail_on_unmatched", {{"type", "boolean"}}}
+				{"fail_on_unmatched", {{"type", "boolean"}}},
+				{"expected_base_hash", {{"type", "string"}, {"description", "code_hash from read_real_file; required for external MCP calls and rejects stale live source."}}}
 			}},
 			{"required", nlohmann::json::array({"file_path"})},
 			{"additionalProperties", false}
@@ -1956,13 +2123,14 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "restore_file_snapshot"},
-		{"description", "Restore one current-project source file from the latest real-page snapshot or a specified snapshot_id."},
+		{"description", "Restore one current-project source file from the latest real-page snapshot or a specified snapshot_id. The current live page is read first; expected_current_hash optionally prevents overwriting newer changes."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
 				{"file_path", {{"type", "string"}}},
 				{"snapshot_id", {{"type", "string"}}},
-				{"restore_latest", {{"type", "boolean"}}}
+				{"restore_latest", {{"type", "boolean"}}},
+				{"expected_current_hash", {{"type", "string"}, {"description", "Current live code hash; required for external MCP restore calls."}}}
 			}},
 			{"required", nlohmann::json::array({"file_path"})},
 			{"additionalProperties", false}
@@ -1993,8 +2161,8 @@ nlohmann::json BuildPublicToolCatalog()
 			{"type", "object"},
 			{"properties", {
 				{"force", {{"type", "boolean"}, {"description", "Rebuild cache directories. Defaults to false."}}},
-				{"wait", {{"type", "boolean"}, {"description", "Wait until refresh finishes. Defaults to true."}}},
-				{"timeout_ms", {{"type", "integer"}, {"minimum", 0}, {"maximum", 600000}, {"description", "0 means wait indefinitely when wait=true."}}}
+				{"wait", {{"type", "boolean"}, {"description", "Wait until refresh finishes. Defaults to false so the IDE main thread is not blocked."}}},
+				{"timeout_ms", {{"type", "integer"}, {"minimum", 0}, {"maximum", 600000}, {"description", "Defaults to 30000 when wait=true; 0 also uses the bounded default."}}}
 			}},
 			{"additionalProperties", false}
 		}}
@@ -2075,15 +2243,15 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "compile_with_output_path"},
-		{"description", "Compile the current project with a specified output path, suppressing the IDE save-file dialog. Supported targets: win_exe, win_console_exe, win_dll, ecom."},
+		{"description", "Compile the current project with a specified output path, suppressing the IDE save-file dialog. target=auto detects the current project type. A successful result requires the output artifact to exist and be updated."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
-				{"target", {{"type", "string"}, {"description", "One of: win_exe, win_console_exe, win_dll, ecom."}}},
+				{"target", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "win_exe", "win_console_exe", "win_dll", "ecom"})}, {"description", "Defaults to auto."}}},
 				{"output_path", {{"type", "string"}}},
 				{"static_compile", {{"type", "boolean"}}}
 			}},
-			{"required", nlohmann::json::array({"target", "output_path"})},
+			{"required", nlohmann::json::array({"output_path"})},
 			{"additionalProperties", false}
 		}}
 	});
@@ -2220,13 +2388,7 @@ std::string CollectRecentUserToolRoutingText(
 
 bool IsDependencyManagementToolName(const std::string& name)
 {
-	return name == "refresh_dependency_catalog" ||
-		name == "search_available_modules" ||
-		name == "search_available_support_libraries" ||
-		name == "list_imported_modules" ||
-		name == "add_module_to_project" ||
-		name == "remove_module_from_project" ||
-		name == "add_support_library_to_project";
+	return AIChatToolRegistry::IsDependencyManagement(name);
 }
 
 bool HasExplicitModuleSearchIntent(const std::string& text)
@@ -2543,7 +2705,6 @@ std::vector<std::string> SelectInternalToolNames(
 
 	const auto addCoreReadTools = [&names]() {
 		AddUniqueToolName(names, "get_current_eide_info");
-		AddUniqueToolName(names, "get_current_page_info");
 	};
 	const auto addFileReadTools = [&names, sourceEditMode]() {
 		AddUniqueToolName(names, "list_files");
@@ -2567,12 +2728,14 @@ std::vector<std::string> SelectInternalToolNames(
 		AddUniqueToolName(names, "restore_file_snapshot");
 	};
 	const auto addWebTools = [&names]() {
-		AddUniqueToolName(names, "fetch_url");
 		AddUniqueToolName(names, "extract_web_document");
 	};
 
 	if (ContainsAnyText(text, { "fetch_url", "extract_web_document", "http://", "https://", "URL", "url", "网页", "文档", "联网" })) {
 		addWebTools();
+		if (ContainsAnyText(text, { "fetch_url", "原始响应", "原始正文", "raw response" })) {
+			AddUniqueToolName(names, "fetch_url");
+		}
 	}
 	if (ContainsAnyText(text, { "search_web_tavily", "搜索网页", "公网", "最新", "官网" })) {
 		AddUniqueToolName(names, "search_web_tavily");
@@ -2626,9 +2789,10 @@ std::vector<std::string> SelectInternalToolNames(
 			AddUniqueToolName(names, "add_support_library_to_project");
 		}
 	}
-	if (ContainsAnyText(text, {
-		"PowerShell", "powershell", "命令行", "执行命令", "日志", "本地文件", "目录", "路径", ":\\"
-	})) {
+	const bool powershellIntent = ContainsAnyText(text, {
+		"PowerShell", "powershell", "命令行", "执行命令", "运行命令", "shell command"
+	});
+	if (powershellIntent) {
 		AddUniqueToolName(names, "run_powershell_command");
 	}
 
@@ -2637,8 +2801,74 @@ std::vector<std::string> SelectInternalToolNames(
 	}
 	if (!minimal) {
 		AddUniqueToolName(names, "get_current_eide_info");
+	}
+	if (ContainsAnyText(text, {
+		"get_current_page_info", "当前页", "页名", "页面类型", "current page"
+	})) {
 		AddUniqueToolName(names, "get_current_page_info");
 	}
+
+	const bool compileIntent = ContainsAnyText(text, {
+		"compile_with_output_path", "编译", "构建", "build", "MSBuild"
+	});
+	const bool webIntent = ContainsAnyText(text, {
+		"fetch_url", "extract_web_document", "search_web_tavily", "http://", "https://",
+		"URL", "url", "网页", "联网", "搜索网页", "公网", "官网"
+	});
+	const bool searchIntent = ContainsAnyText(text, {
+		"search_code", "搜索", "查找", "查询", "keyword", "regex"
+	});
+	const bool editIntent = ContainsAnyText(text, {
+		"修改", "写入", "替换", "编辑", "新增", "添加", "删除", "重构", "修复", "实现", "优化", "调整",
+		"edit_", "write_", "insert_", "fix", "implement", "refactor", "optimize"
+	});
+	const bool dependencyIntent =
+		HasExplicitDependencyRefreshIntent(latestUserText) ||
+		HasExplicitModuleSearchIntent(latestUserText) ||
+		HasExplicitSupportLibrarySearchIntent(latestUserText) ||
+		HasExplicitImportedModuleListIntent(latestUserText) ||
+		HasExplicitModuleAddIntent(latestUserText) ||
+		HasExplicitModuleRemoveIntent(latestUserText) ||
+		HasExplicitSupportLibraryAddIntent(latestUserText);
+	const auto scoreTool = [&](const std::string& name) {
+		int score = 10;
+		if (ContainsAsciiInsensitive(latestUserText, name)) {
+			score += 1000;
+		}
+		if (dependencyIntent && (
+			name == "refresh_dependency_catalog" ||
+			name == "search_available_modules" ||
+			name == "search_available_support_libraries" ||
+			name == "list_imported_modules" ||
+			name == "add_module_to_project" ||
+			name == "remove_module_from_project" ||
+			name == "add_support_library_to_project")) {
+			score += 800;
+		}
+		if (compileIntent && name == "compile_with_output_path") {
+			score += 750;
+		}
+		if (powershellIntent && name == "run_powershell_command") {
+			score += 750;
+		}
+		if (webIntent && (name == "search_web_tavily" || name == "fetch_url" || name == "extract_web_document")) {
+			score += 650;
+		}
+		if (editIntent && (name == "edit_file" || name == "multi_edit_file" || name == "write_file" ||
+			name == "diff_file" || name == "restore_file_snapshot" || name == "read_real_file")) {
+			score += 500;
+		}
+		if (searchIntent && (name == "search_code" || name == "read_files" || name == "read_code_item")) {
+			score += 400;
+		}
+		if (name == "get_current_eide_info" || name == "get_current_page_info") {
+			score += 50;
+		}
+		return score;
+	};
+	std::stable_sort(names.begin(), names.end(), [&](const std::string& left, const std::string& right) {
+		return scoreTool(left) > scoreTool(right);
+	});
 
 	const size_t maxTools = minimal ? 8u : 14u;
 	if (names.size() > maxTools) {
@@ -3699,26 +3929,28 @@ AIResult ExecuteTaskOpenAIResponses(const std::string& systemPrompt, const std::
 		return result;
 	}
 
-	try {
-		const nlohmann::json parsed = nlohmann::json::parse(responseBody);
-		const std::string errUtf8 = ParseErrorMessageUtf8(parsed);
-		if (!errUtf8.empty()) {
-			result.error = Utf8ToLocal(errUtf8);
-			return result;
-		}
-		const std::string textUtf8 = ExtractResponsesTextUtf8(parsed);
-		if (textUtf8.empty()) {
-			result.error = "Responses API response content is empty";
-			return result;
-		}
-		result.ok = true;
-		result.content = Utf8ToLocal(textUtf8);
+	nlohmann::json parsed;
+	std::string streamTextUtf8;
+	if (!TryParseResponsesResponseBody(responseBody, parsed, streamTextUtf8, result.error)) {
 		return result;
 	}
-	catch (const std::exception& ex) {
-		result.error = std::string("Failed to parse Responses API response: ") + ex.what();
+
+	const std::string errUtf8 = ParseErrorMessageUtf8(parsed);
+	if (!errUtf8.empty()) {
+		result.error = Utf8ToLocal(errUtf8);
 		return result;
 	}
+	std::string textUtf8 = ExtractResponsesTextUtf8(parsed);
+	if (textUtf8.empty()) {
+		textUtf8 = std::move(streamTextUtf8);
+	}
+	if (textUtf8.empty()) {
+		result.error = "Responses API response content is empty";
+		return result;
+	}
+	result.ok = true;
+	result.content = Utf8ToLocal(textUtf8);
+	return result;
 }
 
 AIChatResult ExecuteChatWithToolsClaude(
@@ -5336,24 +5568,8 @@ AIChatResult AIService::ExecuteChatWithTools(
 
 std::string AIService::BuildPublicToolCatalogJson()
 {
-	AISettings settings = {};
-	try {
-		AIJsonConfig jsonConfig;
-		LoadSettings(jsonConfig, nullptr, settings);
-	}
-	catch (...) {
-		settings = {};
-	}
-	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings);
-	nlohmann::json filtered = nlohmann::json::array();
-	for (const auto& item : catalog) {
-		const std::string name = item.is_object() ? item.value("name", std::string()) : std::string();
-		if (IsDependencyManagementToolName(name)) {
-			continue;
-		}
-		filtered.push_back(item);
-	}
-	return filtered.dump();
+	const nlohmann::json nativeCatalog = BuildPublicToolCatalog();
+	return AIChatToolRegistry::FilterExternalPublicCatalog(nativeCatalog).dump();
 }
 
 std::string AIService::BuildAgentOptimizationSelfTestJson()
@@ -5403,6 +5619,110 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 	}
 
 	{
+		nlohmann::json files = nlohmann::json::array();
+		for (int i = 0; i < 15; ++i) {
+			files.push_back(std::format("src/File{:02}.txt", i));
+		}
+		nlohmann::json raw = {
+			{"ok", true},
+			{"files", std::move(files)},
+			{"requested_offset", 10},
+			{"offset", 10},
+			{"returned", 15},
+			{"total_results", 40},
+			{"has_more", true},
+			{"next_offset", 25},
+			{"visible_result_range", {{"start_offset", 10}, {"end_offset_exclusive", 25}}}
+		};
+		const CompactToolResultPayload compact = BuildCompactToolResultPayload(
+			"list_files",
+			Utf8ToLocal(raw.dump()));
+		const auto& visibleFiles = compact.jsonValue["files"];
+		const bool ok = visibleFiles.is_array() &&
+			visibleFiles.size() == 6 &&
+			std::all_of(visibleFiles.begin(), visibleFiles.end(), [](const nlohmann::json& item) {
+				return item.is_string();
+			}) &&
+			compact.jsonValue.value("returned", -1) == 6 &&
+			compact.jsonValue.value("next_offset", -1) == 16 &&
+			compact.jsonValue.value("has_more", false) &&
+			compact.jsonValue["visible_result_range"].value("start_offset", -1) == 10 &&
+			compact.jsonValue["visible_result_range"].value("end_offset_exclusive", -1) == 16 &&
+			compact.jsonValue.value("context_omitted_items", 0u) == 9u;
+		checks.push_back({
+			{"name", "compacted_list_pagination_cursor"},
+			{"ok", ok},
+			{"visible_files", visibleFiles.size()},
+			{"next_offset", compact.jsonValue.value("next_offset", -1)}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		nlohmann::json results = nlohmann::json::array();
+		for (int i = 0; i < 25; ++i) {
+			results.push_back({
+				{"file_path", "src/Test.txt"},
+				{"line_number", i + 1},
+				{"text", std::format("match {}", i)}
+			});
+		}
+		nlohmann::json raw = {
+			{"ok", true},
+			{"pattern", "match"},
+			{"results", std::move(results)},
+			{"requested_offset", 5},
+			{"offset", 5},
+			{"returned", 25},
+			{"total_results", 60},
+			{"has_more", true},
+			{"next_offset", 30},
+			{"page_limit", 200},
+			{"truncated", true}
+		};
+		const CompactToolResultPayload compact = BuildCompactToolResultPayload(
+			"search_code",
+			Utf8ToLocal(raw.dump()));
+		const auto& visibleResults = compact.jsonValue["results"];
+		const bool ok = visibleResults.is_array() &&
+			visibleResults.size() == 20 &&
+			compact.jsonValue.value("returned", -1) == 20 &&
+			compact.jsonValue.value("next_offset", -1) == 25 &&
+			compact.jsonValue.value("page_limit", 0u) == 20u &&
+			compact.jsonValue.value("source_page_limit", 0) == 200;
+		checks.push_back({
+			{"name", "compacted_search_pagination_cursor"},
+			{"ok", ok},
+			{"visible_results", visibleResults.size()},
+			{"next_offset", compact.jsonValue.value("next_offset", -1)}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		const nlohmann::json catalog = BuildPublicToolCatalog();
+		const auto readFilesIt = std::find_if(catalog.begin(), catalog.end(), [](const nlohmann::json& item) {
+			return item.is_object() && item.value("name", std::string()) == "read_files";
+		});
+		bool ok = readFilesIt != catalog.end();
+		if (ok) {
+			const nlohmann::json properties = (*readFilesIt)["inputSchema"].value(
+				"properties",
+				nlohmann::json::object());
+			ok = properties.contains("file_paths") &&
+				properties["file_paths"].value("maxItems", 0) == 12 &&
+				properties.contains("files") &&
+				properties["files"].value("maxItems", 0) == 12;
+		}
+		checks.push_back({
+			{"name", "read_files_context_batch_limit"},
+			{"ok", ok},
+			{"max_files", 12}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
 		ResponsesStreamParseState state;
 		const std::string sse =
 			"event: response.output_text.delta\n"
@@ -5433,6 +5753,46 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 	}
 
 	{
+		const std::string jsonBody =
+			R"({"output":[{"type":"message","content":[{"type":"output_text","text":"json-ok"}]}]})";
+		const std::string sseBody =
+			"event: response.output_text.delta\n"
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"sse-ok\"}\n\n"
+			"event: response.completed\n"
+			"data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n";
+		nlohmann::json jsonParsed;
+		nlohmann::json sseParsed;
+		std::string jsonStreamText;
+		std::string sseStreamText;
+		std::string jsonError;
+		std::string sseError;
+		const bool jsonOk = TryParseResponsesResponseBody(
+			jsonBody,
+			jsonParsed,
+			jsonStreamText,
+			jsonError);
+		const bool sseOk = TryParseResponsesResponseBody(
+			sseBody,
+			sseParsed,
+			sseStreamText,
+			sseError);
+		const bool ok = jsonOk &&
+			ExtractResponsesTextUtf8(jsonParsed) == "json-ok" &&
+			jsonStreamText.empty() &&
+			sseOk &&
+			sseParsed.is_object() &&
+			sseStreamText == "sse-ok";
+		checks.push_back({
+			{"name", "responses_response_body_parser"},
+			{"ok", ok},
+			{"json_error", jsonError},
+			{"sse_error", sseError},
+			{"sse_text", sseStreamText}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
 		std::vector<AIChatMessage> messages = {
 			{"user", "修改 InitWithString 支持更多时间格式", "", ""}
 		};
@@ -5454,6 +5814,28 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"ok", ok},
 			{"tool_count", names.size()},
 			{"tools", names}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		std::vector<AIChatMessage> moduleMessages = {
+			{"user", "请添加模块 Foo.ec，并说明路径 D:\\\\modules\\\\Foo.ec", "", ""}
+		};
+		const std::vector<std::string> moduleTools = SelectInternalToolNames(
+			moduleMessages,
+			false,
+			AISourceEditMode::MirrorSourceBase);
+		const auto contains = [&moduleTools](const char* name) {
+			return std::find(moduleTools.begin(), moduleTools.end(), name) != moduleTools.end();
+		};
+		const bool ok = contains("refresh_dependency_catalog") &&
+			contains("add_module_to_project") &&
+			!contains("run_powershell_command");
+		checks.push_back({
+			{"name", "explicit_dependency_routing_priority"},
+			{"ok", ok},
+			{"tools", moduleTools}
 		});
 		allOk = allOk && ok;
 	}

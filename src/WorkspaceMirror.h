@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -23,8 +24,29 @@ struct ProgramItemRef {
 	bool formXml = false;
 };
 
+// 已在主线程准备完成的只读镜像快照；后续文件 IO 可安全地在工作线程执行。
+struct FileAccessSnapshot {
+	std::filesystem::path mirrorRoot;
+	std::vector<std::string> relativePathsUtf8;
+	std::uint64_t generation = 0;
+};
+
 // 确保当前源码的解包镜像可用；必要时导出内存快照并重新解包。
 bool EnsureMirrorFresh(std::string& outError);
+
+// 在 IDE 主线程准备文件访问环境；只在镜像失效时触发快照和解包。
+bool PrepareFileAccess(std::string& outError);
+
+// 获取已经准备好的只读镜像快照；此函数不会访问 IDE 或自动刷新。
+bool GetPreparedFileAccessSnapshot(FileAccessSnapshot& outSnapshot, std::string& outError);
+
+// 基于已准备快照解析相对路径；不会访问 IDE 或改变镜像状态。
+bool ResolvePreparedFilePath(
+	const FileAccessSnapshot& snapshot,
+	const std::string& filePathUtf8,
+	std::filesystem::path& outFullPath,
+	std::string& outRelativePathUtf8,
+	std::string& outError);
 
 // 强制刷新当前源码镜像。Auto 保持原策略；MainOnly 只刷新源文件；Full 重建完整镜像。
 bool RefreshMirror(std::string& outError, std::string* outMode = nullptr, RefreshMode mode = RefreshMode::Auto);
@@ -44,6 +66,9 @@ void ResetAndCleanup();
 // 获取当前镜像根目录。
 bool GetMirrorRoot(std::filesystem::path& outRoot, std::string& outError);
 
+// 获取当前镜像代次；刷新、失效、增量写入或重置时都会变化。
+std::uint64_t GetGeneration();
+
 // 解析镜像内相对路径到真实文件路径。
 bool ResolveFilePath(
 	const std::string& filePathUtf8,
@@ -59,5 +84,8 @@ bool ResolveFileToProgramItem(
 
 // 返回当前镜像中可见的文件列表。
 bool ListMirrorFiles(std::vector<std::string>& outRelativePathsUtf8, std::string& outError);
+
+// 构建镜像目录所有者解析和相对路径校验自检报告。
+std::string BuildSelfTestReportJson();
 
 } // namespace WorkspaceMirror

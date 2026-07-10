@@ -7,7 +7,10 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
+#include <cstdint>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <format>
 #include <mutex>
@@ -19,12 +22,15 @@
 #include "..\\thirdparty\\json.hpp"
 
 #include "AIChatFeature.h"
+#include "AIChatToolRegistry.h"
+#include "AIChatTooling.h"
 #include "AIService.h"
 #include "Global.h"
 #include "IDEFacade.h"
 #include "LocalMcpInstanceRegistry.h"
 #include "Logger.h"
 #include "PathHelper.h"
+#include "WorkspaceMirror.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -35,6 +41,10 @@ constexpr const char* kServerVersion = "0.0.0";
 constexpr const char* kBindHost = "127.0.0.1";
 constexpr int kBasePort = 19207;
 constexpr int kMaxPortAttempts = 16;
+constexpr std::size_t kClientWorkerCount = 4;
+constexpr std::size_t kMaxQueuedClients = 32;
+constexpr std::size_t kMaxExternalMcpSessions = 256;
+constexpr auto kExternalMcpSessionTtl = std::chrono::minutes(30);
 
 std::atomic_bool g_stopRequested = false;
 std::atomic_bool g_running = false;
@@ -47,9 +57,16 @@ std::string g_sourceFilePathHint;
 std::string g_pageNameHint;
 std::string g_pageTypeHint;
 std::atomic_ullong g_mcpSessionCounter = 1;
+std::mutex g_clientQueueMutex;
+std::condition_variable g_clientQueueCv;
+std::deque<SOCKET> g_clientQueue;
+bool g_clientWorkersStopping = false;
 
 struct ExternalMcpSessionState {
 	bool workspaceRefreshed = false;
+	std::string sourceFilePath;
+	std::uint64_t mirrorGeneration = 0;
+	std::chrono::steady_clock::time_point lastSeen = std::chrono::steady_clock::now();
 };
 
 std::unordered_map<std::string, ExternalMcpSessionState> g_externalMcpSessions;
@@ -340,8 +357,72 @@ std::string TruncateMcpLogText(const std::string& text, size_t maxChars = 180)
 	return text.substr(0, maxChars) + "...";
 }
 
+std::string BuildMcpPayloadHash(const std::string& text)
+{
+	std::uint64_t hash = 1469598103934665603ull;
+	for (const unsigned char ch : text) {
+		hash ^= ch;
+		hash *= 1099511628211ull;
+	}
+	return std::format("{:016X}", hash);
+}
+
+bool IsVerboseMcpPayloadLoggingEnabled()
+{
+	static const bool enabled = []() {
+		char value[16] = {};
+		const DWORD length = GetEnvironmentVariableA(
+			"AUTOLINKER_VERBOSE_TOOL_LOG",
+			value,
+			static_cast<DWORD>(sizeof(value)));
+		if (length == 0 || length >= sizeof(value)) {
+			return false;
+		}
+		const std::string normalized = ToLowerAsciiCopy(TrimAsciiCopy(value));
+		return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+	}();
+	return enabled;
+}
+
+std::string BuildMcpPayloadMetadata(const nlohmann::json& value)
+{
+	const std::string dumped = value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	nlohmann::json metadata;
+	metadata["bytes"] = dumped.size();
+	metadata["hash"] = BuildMcpPayloadHash(dumped);
+	if (value.is_object()) {
+		static constexpr const char* kKeys[] = {
+			"ok", "status", "error", "name", "file_path", "page_name", "code_hash",
+			"new_hash", "verified", "count", "returned", "match_count", "has_more",
+			"truncated", "isError"
+		};
+		for (const char* key : kKeys) {
+			const auto it = value.find(key);
+			if (it != value.end() && (it->is_primitive() || it->is_null())) {
+				metadata[key] = *it;
+			}
+		}
+	}
+	return metadata.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+std::string BuildMcpTextMetadata(const std::string& value)
+{
+	const nlohmann::json parsed = nlohmann::json::parse(value, nullptr, false);
+	if (!parsed.is_discarded()) {
+		return BuildMcpPayloadMetadata(parsed);
+	}
+	return nlohmann::json({
+		{"bytes", value.size()},
+		{"hash", BuildMcpPayloadHash(value)}
+	}).dump();
+}
+
 std::string FormatMcpLogJson(const nlohmann::json& value)
 {
+	if (!IsVerboseMcpPayloadLoggingEnabled()) {
+		return BuildMcpPayloadMetadata(value);
+	}
 	// 与 DumpJsonSafe 同策略：error_handler=replace，避免日志路径因非法 UTF-8 抛异常。
 	return TruncateMcpLogText(
 		SanitizeSingleLineText(value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)),
@@ -350,18 +431,24 @@ std::string FormatMcpLogJson(const nlohmann::json& value)
 
 std::string FormatMcpFileLogJson(const nlohmann::json& value)
 {
+	if (!IsVerboseMcpPayloadLoggingEnabled()) {
+		return BuildMcpPayloadMetadata(value);
+	}
 	// 文件日志保留 JSON 字符串中的转义换行，避免排查时丢失原始内容。
 	return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 }
 
 std::string FormatMcpLogText(const std::string& value)
 {
+	if (!IsVerboseMcpPayloadLoggingEnabled()) {
+		return BuildMcpTextMetadata(value);
+	}
 	return TruncateMcpLogText(SanitizeSingleLineText(value), 180);
 }
 
 std::string FormatMcpFileLogText(const std::string& value)
 {
-	return value;
+	return IsVerboseMcpPayloadLoggingEnabled() ? value : BuildMcpTextMetadata(value);
 }
 
 std::string BuildJsonValueCallSuffix(const nlohmann::json& value)
@@ -568,31 +655,68 @@ std::string GenerateMcpSessionId()
 		g_mcpSessionCounter.fetch_add(1));
 }
 
-bool RequiresExternalWorkspaceRefresh(const std::string& toolName)
-{
-	return toolName == "list_files" ||
-		toolName == "search_code" ||
-		toolName == "read_file" ||
-		toolName == "read_files" ||
-		toolName == "read_code_item" ||
-		toolName == "read_real_file" ||
-		toolName == "edit_file" ||
-		toolName == "multi_edit_file" ||
-		toolName == "write_file" ||
-		toolName == "diff_file";
-}
-
 bool IsExternalWorkspaceRefreshed(const std::string& sessionId)
 {
 	std::lock_guard<std::mutex> lock(g_stateMutex);
 	const auto it = g_externalMcpSessions.find(sessionId);
-	return it != g_externalMcpSessions.end() && it->second.workspaceRefreshed;
+	if (it == g_externalMcpSessions.end()) {
+		return false;
+	}
+	it->second.lastSeen = std::chrono::steady_clock::now();
+	return it->second.workspaceRefreshed &&
+		it->second.sourceFilePath == g_sourceFilePathHint &&
+		it->second.mirrorGeneration == WorkspaceMirror::GetGeneration();
+}
+
+void PruneExternalMcpSessionsLocked(std::chrono::steady_clock::time_point now)
+{
+	for (auto it = g_externalMcpSessions.begin(); it != g_externalMcpSessions.end();) {
+		if (it->first != "legacy" && now - it->second.lastSeen >= kExternalMcpSessionTtl) {
+			ClearToolApprovalScope("external-mcp:" + it->first);
+			it = g_externalMcpSessions.erase(it);
+		}
+		else {
+			++it;
+		}
+	}
+	while (g_externalMcpSessions.size() >= kMaxExternalMcpSessions) {
+		auto oldest = g_externalMcpSessions.end();
+		for (auto it = g_externalMcpSessions.begin(); it != g_externalMcpSessions.end(); ++it) {
+			if (it->first == "legacy") {
+				continue;
+			}
+			if (oldest == g_externalMcpSessions.end() || it->second.lastSeen < oldest->second.lastSeen) {
+				oldest = it;
+			}
+		}
+		if (oldest == g_externalMcpSessions.end()) {
+			break;
+		}
+		ClearToolApprovalScope("external-mcp:" + oldest->first);
+		g_externalMcpSessions.erase(oldest);
+	}
 }
 
 void SetExternalWorkspaceRefreshed(const std::string& sessionId, bool refreshed)
 {
 	std::lock_guard<std::mutex> lock(g_stateMutex);
-	g_externalMcpSessions[sessionId].workspaceRefreshed = refreshed;
+	const auto now = std::chrono::steady_clock::now();
+	PruneExternalMcpSessionsLocked(now);
+	ExternalMcpSessionState& state = g_externalMcpSessions[sessionId];
+	state.workspaceRefreshed = refreshed;
+	state.sourceFilePath = refreshed ? g_sourceFilePathHint : std::string();
+	state.mirrorGeneration = refreshed ? WorkspaceMirror::GetGeneration() : 0;
+	state.lastSeen = now;
+}
+
+void RemoveExternalMcpSession(const std::string& sessionId)
+{
+	if (sessionId.empty() || sessionId == "legacy") {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(g_stateMutex);
+	ClearToolApprovalScope("external-mcp:" + sessionId);
+	g_externalMcpSessions.erase(sessionId);
 }
 
 void ResetExternalWorkspaceRefreshStatesLocked()
@@ -600,6 +724,9 @@ void ResetExternalWorkspaceRefreshStatesLocked()
 	for (auto& [sessionId, state] : g_externalMcpSessions) {
 		(void)sessionId;
 		state.workspaceRefreshed = false;
+		state.sourceFilePath.clear();
+		state.mirrorGeneration = 0;
+		state.lastSeen = std::chrono::steady_clock::now();
 	}
 }
 
@@ -760,10 +887,6 @@ std::string BuildHttpResponse(
 		"Content-Length: {}\r\n"
 		"Connection: close\r\n"
 		"Cache-Control: no-store\r\n"
-		"Access-Control-Allow-Origin: *\r\n"
-		"Access-Control-Allow-Headers: content-type, mcp-session-id\r\n"
-		"Access-Control-Expose-Headers: mcp-session-id\r\n"
-		"Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
 		"{}"
 		"\r\n{}",
 		statusCode,
@@ -825,10 +948,23 @@ nlohmann::json BuildJsonRpcResult(const nlohmann::json& id, const nlohmann::json
 	};
 }
 
-nlohmann::json BuildInitializeResult()
+std::string NegotiateProtocolVersion(const nlohmann::json& params)
+{
+	const std::string requested = params.is_object()
+		? params.value("protocolVersion", std::string())
+		: std::string();
+	if (requested == "2025-11-25" ||
+		requested == "2025-03-26" ||
+		requested == "2024-11-05") {
+		return requested;
+	}
+	return "2025-11-25";
+}
+
+nlohmann::json BuildInitializeResult(const nlohmann::json& params)
 {
 	return {
-		{"protocolVersion", "2024-11-05"},
+		{"protocolVersion", NegotiateProtocolVersion(params)},
 		{"capabilities", {
 			{"tools", {
 				{"listChanged", false}
@@ -844,15 +980,80 @@ nlohmann::json BuildInitializeResult()
 bool TryBuildToolListResult(nlohmann::json& outResult, std::string& outError)
 {
 	try {
-		outResult = {
-			{"tools", nlohmann::json::parse(AIService::BuildPublicToolCatalogJson())}
-		};
+		const nlohmann::json tools = nlohmann::json::parse(AIService::BuildPublicToolCatalogJson());
+		if (!tools.is_array()) {
+			outError = "public tool catalog must be an array";
+			return false;
+		}
+		outResult = {{"tools", tools}};
 		return true;
 	}
 	catch (const std::exception& ex) {
 		outError = std::string("build tools list failed: ") + ex.what();
 		return false;
 	}
+}
+
+bool TryFindExternalToolDefinition(
+	const std::string& toolName,
+	nlohmann::json& outDefinition,
+	std::string& outError)
+{
+	outDefinition = nlohmann::json::object();
+	outError.clear();
+	if (!AIChatToolRegistry::IsExternalPublic(toolName)) {
+		outError = "unknown or unavailable external tool: " + toolName;
+		return false;
+	}
+
+	try {
+		const nlohmann::json catalog = nlohmann::json::parse(AIService::BuildPublicToolCatalogJson());
+		if (!catalog.is_array()) {
+			outError = "public tool catalog must be an array";
+			return false;
+		}
+		for (const auto& item : catalog) {
+			if (item.is_object() && item.value("name", std::string()) == toolName) {
+				outDefinition = item;
+				return true;
+			}
+		}
+		outError = "tool is disabled by the current AutoLinker configuration: " + toolName;
+		return false;
+	}
+	catch (const std::exception& ex) {
+		outError = std::string("build public tool catalog failed: ") + ex.what();
+		return false;
+	}
+}
+
+std::string BuildToolContentSummary(
+	const std::string& toolName,
+	const nlohmann::json& structured,
+	bool structuredOk,
+	const std::string& rawResult)
+{
+	if (!structuredOk) {
+		return TruncateMcpLogText(rawResult, 2048);
+	}
+
+	nlohmann::json summary;
+	summary["tool"] = toolName;
+	summary["note"] = "Full machine-readable result is available in structuredContent.";
+	if (structured.is_object()) {
+		static constexpr const char* kSummaryKeys[] = {
+			"ok", "status", "error", "file_path", "page_name", "mapped_page_name",
+			"code_hash", "new_hash", "verified", "count", "returned", "returned_lines",
+			"match_count", "files_with_matches", "has_more", "next_offset", "truncated"
+		};
+		for (const char* key : kSummaryKeys) {
+			const auto it = structured.find(key);
+			if (it != structured.end() && (it->is_primitive() || it->is_null())) {
+				summary[key] = *it;
+			}
+		}
+	}
+	return DumpJsonSafe(summary);
 }
 
 bool TryBuildToolCallResult(
@@ -875,10 +1076,50 @@ bool TryBuildToolCallResult(
 	if (params.contains("arguments") && !params["arguments"].is_null()) {
 		arguments = params["arguments"];
 	}
+	if (!arguments.is_object()) {
+		outError = "tools/call params.arguments must be object";
+		return false;
+	}
+
+	nlohmann::json toolDefinition;
+	if (!TryFindExternalToolDefinition(toolName, toolDefinition, outError)) {
+		return false;
+	}
+	const nlohmann::json inputSchema = toolDefinition.value(
+		"inputSchema",
+		nlohmann::json::object({
+			{"type", "object"},
+			{"properties", nlohmann::json::object()},
+			{"additionalProperties", false}
+		}));
+	std::string validationError;
+	if (!AIChatToolRegistry::ValidateArguments(arguments, inputSchema, validationError)) {
+		outError = "invalid tool arguments: " + validationError;
+		return false;
+	}
+	const bool requiresBaseHash =
+		toolName == "edit_file" ||
+		toolName == "multi_edit_file" ||
+		toolName == "write_file" ||
+		toolName == "diff_file";
+	if (requiresBaseHash &&
+		(!arguments.contains("expected_base_hash") ||
+			!arguments["expected_base_hash"].is_string() ||
+			TrimAsciiCopy(arguments["expected_base_hash"].get<std::string>()).empty())) {
+		outError = "external source edits and diffs require expected_base_hash from read_real_file";
+		return false;
+	}
+	if (toolName == "restore_file_snapshot" &&
+		(!arguments.contains("expected_current_hash") ||
+			!arguments["expected_current_hash"].is_string() ||
+			TrimAsciiCopy(arguments["expected_current_hash"].get<std::string>()).empty())) {
+		outError = "external snapshot restore requires expected_current_hash from read_real_file";
+		return false;
+	}
 
 	std::string resultJsonUtf8;
 	bool toolOk = false;
-	if (RequiresExternalWorkspaceRefresh(toolName) && !IsExternalWorkspaceRefreshed(sessionId)) {
+	if (AIChatToolRegistry::RequiresWorkspaceRefresh(toolName) && !IsExternalWorkspaceRefreshed(sessionId)) {
 		resultJsonUtf8 = nlohmann::json({
 			{"ok", false},
 			{"error", "workspace_refresh_required"},
@@ -887,12 +1128,22 @@ bool TryBuildToolCallResult(
 		}).dump();
 	}
 	else {
-		if (!AIChatFeature::ExecutePublicTool(toolName, arguments.dump(), resultJsonUtf8, toolOk)) {
+		if (!AIChatFeature::ExecutePublicTool(
+				toolName,
+				arguments.dump(),
+				resultJsonUtf8,
+				toolOk,
+				[]() { return g_stopRequested.load(); },
+				"external-mcp:" + sessionId)) {
 			outError = "tool execution transport failed";
 			return false;
 		}
-		if (toolName == "refresh_workspace_mirror" && toolOk) {
-			SetExternalWorkspaceRefreshed(sessionId, true);
+		if (toolOk) {
+			const AIChatToolRegistry::ToolMetadata* metadata = AIChatToolRegistry::Find(toolName);
+			if (toolName == "refresh_workspace_mirror" ||
+				(metadata != nullptr && metadata->requiresWorkspaceRefresh)) {
+				SetExternalWorkspaceRefreshed(sessionId, true);
+			}
 		}
 	}
 
@@ -911,11 +1162,16 @@ bool TryBuildToolCallResult(
 		isError = !structured["ok"].get<bool>();
 	}
 
+	const std::string contentSummary = BuildToolContentSummary(
+		toolName,
+		structured,
+		structuredOk,
+		resultJsonUtf8);
 	outResult = {
 		{"content", nlohmann::json::array({
 			{
 				{"type", "text"},
-				{"text", resultJsonUtf8}
+				{"text", contentSummary}
 			}
 		})},
 		{"isError", isError}
@@ -1009,12 +1265,23 @@ bool TryHandleJsonRpc(
 		outResponseSessionId = requestSessionId == "legacy" ? GenerateMcpSessionId() : requestSessionId;
 		{
 			std::lock_guard<std::mutex> lock(g_stateMutex);
-			g_externalMcpSessions[outResponseSessionId].workspaceRefreshed = false;
+			const auto now = std::chrono::steady_clock::now();
+			PruneExternalMcpSessionsLocked(now);
+			ClearToolApprovalScope("external-mcp:" + outResponseSessionId);
+			ExternalMcpSessionState& state = g_externalMcpSessions[outResponseSessionId];
+			state.workspaceRefreshed = false;
+			state.sourceFilePath.clear();
+			state.mirrorGeneration = 0;
+			state.lastSeen = now;
 			if (requestSessionId == "legacy") {
-				g_externalMcpSessions["legacy"].workspaceRefreshed = false;
+				ExternalMcpSessionState& legacyState = g_externalMcpSessions["legacy"];
+				legacyState.workspaceRefreshed = false;
+				legacyState.sourceFilePath.clear();
+				legacyState.mirrorGeneration = 0;
+				legacyState.lastSeen = now;
 			}
 		}
-		const nlohmann::json result = BuildInitializeResult();
+		const nlohmann::json result = BuildInitializeResult(params);
 		SetMcpLogResponseJson(outLogContext, result);
 		outBody = DumpJsonSafe(BuildJsonRpcResult(id, result));
 		return true;
@@ -1079,6 +1346,20 @@ void HandleClientImpl(SOCKET clientSock)
 		return;
 	}
 
+	// 本地 MCP 只服务原生桌面客户端。浏览器请求会携带 Origin；若允许通配 CORS，
+	// 任意网页都能读取或修改当前 IDE 工程，因此在尚未配置显式浏览器能力令牌前拒绝此类请求。
+	if (const auto originIt = request.headers.find("origin");
+		originIt != request.headers.end() && !TrimAsciiCopy(originIt->second).empty()) {
+		SendHttpResponse(clientSock, 403, "Forbidden", "application/json; charset=utf-8",
+			R"({"ok":false,"error":"browser_origin_not_allowed"})");
+		return;
+	}
+
+	if (request.path != "/" && request.path != "/mcp") {
+		SendHttpResponse(clientSock, 404, "Not Found", "application/json; charset=utf-8", R"({"ok":false,"error":"not found"})");
+		return;
+	}
+
 	if (request.method == "OPTIONS") {
 		SendHttpResponse(clientSock, 204, "No Content", "text/plain; charset=utf-8", "");
 		return;
@@ -1091,7 +1372,6 @@ void HandleClientImpl(SOCKET clientSock)
 			{"version", kServerVersion},
 			{"instance_id", g_instanceId},
 			{"process_id", GetCurrentProcessId()},
-			{"process_path", GetCurrentProcessPathLocal()},
 			{"port", g_boundPort.load()},
 			{"mcp_endpoint", BuildEndpointForPort(g_boundPort.load())}
 		};
@@ -1099,13 +1379,17 @@ void HandleClientImpl(SOCKET clientSock)
 		return;
 	}
 
-	if (request.method != "POST") {
-		SendHttpResponse(clientSock, 405, "Method Not Allowed", "application/json; charset=utf-8", R"({"ok":false,"error":"method not allowed"})");
+	if (request.method == "DELETE") {
+		const auto sessionIt = request.headers.find("mcp-session-id");
+		if (sessionIt != request.headers.end() && IsValidMcpSessionId(sessionIt->second)) {
+			RemoveExternalMcpSession(sessionIt->second);
+		}
+		SendHttpResponse(clientSock, 204, "No Content", "text/plain; charset=utf-8", "");
 		return;
 	}
 
-	if (request.path != "/" && request.path != "/mcp") {
-		SendHttpResponse(clientSock, 404, "Not Found", "application/json; charset=utf-8", R"({"ok":false,"error":"not found"})");
+	if (request.method != "POST") {
+		SendHttpResponse(clientSock, 405, "Method Not Allowed", "application/json; charset=utf-8", R"({"ok":false,"error":"method not allowed"})");
 		return;
 	}
 
@@ -1190,6 +1474,54 @@ void HandleClient(SOCKET clientSock)
 	}
 }
 
+void ClientWorkerMain()
+{
+	for (;;) {
+		SOCKET clientSock = INVALID_SOCKET;
+		{
+			std::unique_lock<std::mutex> lock(g_clientQueueMutex);
+			g_clientQueueCv.wait(lock, []() {
+				return g_clientWorkersStopping || !g_clientQueue.empty();
+			});
+			if (g_clientQueue.empty()) {
+				if (g_clientWorkersStopping) {
+					return;
+				}
+				continue;
+			}
+			clientSock = g_clientQueue.front();
+			g_clientQueue.pop_front();
+		}
+
+		HandleClient(clientSock);
+		CloseSocketSafe(clientSock);
+	}
+}
+
+bool TryQueueClient(SOCKET clientSock)
+{
+	std::lock_guard<std::mutex> lock(g_clientQueueMutex);
+	if (g_clientWorkersStopping || g_clientQueue.size() >= kMaxQueuedClients) {
+		return false;
+	}
+	g_clientQueue.push_back(clientSock);
+	g_clientQueueCv.notify_one();
+	return true;
+}
+
+void StopClientWorkersAndCloseQueue()
+{
+	{
+		std::lock_guard<std::mutex> lock(g_clientQueueMutex);
+		g_clientWorkersStopping = true;
+		for (SOCKET& clientSock : g_clientQueue) {
+			CloseSocketSafe(clientSock);
+		}
+		g_clientQueue.clear();
+	}
+	g_clientQueueCv.notify_all();
+}
+
 bool TryCreateListeningSocket(int& outPort)
 {
 	outPort = 0;
@@ -1253,8 +1585,40 @@ void ServerThreadMain()
 	}
 
 	g_boundPort.store(boundPort);
+	{
+		std::lock_guard<std::mutex> lock(g_clientQueueMutex);
+		g_clientWorkersStopping = false;
+		g_clientQueue.clear();
+	}
+	std::vector<std::thread> clientWorkers;
+	try {
+		clientWorkers.reserve(kClientWorkerCount);
+		for (std::size_t i = 0; i < kClientWorkerCount; ++i) {
+			clientWorkers.emplace_back(ClientWorkerMain);
+		}
+	}
+	catch (const std::exception& ex) {
+		LogMcp(std::format("start client workers failed: {}", ex.what()));
+		StopClientWorkersAndCloseQueue();
+		for (std::thread& worker : clientWorkers) {
+			if (worker.joinable()) {
+				worker.join();
+			}
+		}
+		{
+			std::lock_guard<std::mutex> lock(g_stateMutex);
+			CloseSocketSafe(g_listenSocket);
+		}
+		g_boundPort.store(0);
+		WSACleanup();
+		return;
+	}
 	g_running.store(true);
-	LogMcp(std::format("listening on http://{}:{}/mcp", kBindHost, boundPort));
+	LogMcp(std::format(
+		"listening on http://{}:{}/mcp with {} client workers",
+		kBindHost,
+		boundPort,
+		clientWorkers.size()));
 	RefreshCurrentInstanceRegistry();
 	auto lastRegistryRefresh = std::chrono::steady_clock::now();
 
@@ -1304,10 +1668,23 @@ void ServerThreadMain()
 			continue;
 		}
 
-		HandleClient(clientSock);
-		CloseSocketSafe(clientSock);
+		if (!TryQueueClient(clientSock)) {
+			SendHttpResponse(
+				clientSock,
+				503,
+				"Service Unavailable",
+				"application/json; charset=utf-8",
+				R"({"ok":false,"error":"server busy"})");
+			CloseSocketSafe(clientSock);
+		}
 	}
 
+	StopClientWorkersAndCloseQueue();
+	for (std::thread& worker : clientWorkers) {
+		if (worker.joinable()) {
+			worker.join();
+		}
+	}
 	{
 		std::lock_guard<std::mutex> lock(g_stateMutex);
 		CloseSocketSafe(g_listenSocket);
@@ -1356,6 +1733,7 @@ void Shutdown()
 		CloseSocketSafe(g_listenSocket);
 		worker = std::move(g_serverThread);
 	}
+	StopClientWorkersAndCloseQueue();
 	if (worker.joinable()) {
 		worker.join();
 	}
@@ -1405,12 +1783,44 @@ std::string BuildWorkspaceRefreshGateSelfTestJson()
 		result.contains("structuredContent") &&
 		result["structuredContent"].is_object() &&
 		result["structuredContent"].value("error", std::string()) == "workspace_refresh_required";
+	nlohmann::json hiddenResult;
+	std::string hiddenError;
+	const bool hiddenHandled = TryBuildToolCallResult(
+		{
+			{"name", "update_plan"},
+			{"arguments", {{"plan", nlohmann::json::array()}}}
+		},
+		sessionId,
+		hiddenResult,
+		hiddenError);
+	const bool hiddenToolBlocked = !hiddenHandled &&
+		hiddenError.find("unknown or unavailable external tool") != std::string::npos;
+	nlohmann::json missingHashResult;
+	std::string missingHashError;
+	const bool missingHashHandled = TryBuildToolCallResult(
+		{
+			{"name", "edit_file"},
+			{"arguments", {
+				{"file_path", "src/Test.txt"},
+				{"old_text", "a"},
+				{"new_text", "b"}
+			}}
+		},
+		sessionId,
+		missingHashResult,
+		missingHashError);
+	const bool missingHashBlocked = !missingHashHandled &&
+		missingHashError.find("expected_base_hash") != std::string::npos;
 	return nlohmann::json({
 		{"name", "external_mcp_workspace_refresh_gate"},
-		{"ok", blocked},
+		{"ok", blocked && hiddenToolBlocked && missingHashBlocked},
 		{"handled", handled},
 		{"error", error},
-		{"result", result}
+		{"result", result},
+		{"hidden_tool_blocked", hiddenToolBlocked},
+		{"hidden_tool_error", hiddenError},
+		{"missing_hash_blocked", missingHashBlocked},
+		{"missing_hash_error", missingHashError}
 	}).dump();
 }
 

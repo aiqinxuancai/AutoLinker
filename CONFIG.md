@@ -471,9 +471,17 @@ AutoLinker 在易语言 IDE 启动后会自动开启一个 **MCP（Model Context
 
 | 项目 | 值 |
 |---|---|
-| 协议 | Streamable HTTP（MCP 2025-03-26 规范） |
+| 协议 | Streamable HTTP；协商支持 MCP `2025-11-25`、`2025-03-26`、`2024-11-05` |
 | 本地地址 | `http://127.0.0.1:19207/mcp` |
 | 传输类型 | `http`（streamable-http） |
+
+> 安全说明：服务只绑定 `127.0.0.1`，拒绝携带非空 `Origin` 的浏览器脚本请求，不开放通配 CORS；当前不提供 Bearer Token，因此请只连接可信的本机原生 MCP 客户端，不要通过端口转发暴露到局域网或公网。
+
+> 会话说明：客户端应保存 `initialize` 响应中的 `Mcp-Session-Id` 并在后续请求中回传。每个会话第一次调用源码读取/编辑工具前必须先成功调用 `refresh_workspace_mirror`；工程切换后需要重新刷新。结束时可发送 `DELETE /mcp` 释放会话。
+
+> 高风险工具：`run_powershell_command`、写入和编译仍会走确认/验证逻辑。PowerShell 的“当前会话全允许”只对本次内部对话或当前外部 MCP Session 生效，不会跨来源继承；超时、取消和关闭 IDE 会终止其整个进程树。
+
+> 源码写入：外部 Agent 必须先用 `read_real_file` 获取当前真实页的 SHA-256 `code_hash`，再把它作为 `edit_file` / `multi_edit_file` / `write_file` / `diff_file` 的 `expected_base_hash`；恢复快照时传 `expected_current_hash`。大文件读取可用 `next_source_byte_offset` → `byte_offset` 继续，并在续页时回传 `mirror_generation`。
 
 ---
 
@@ -638,6 +646,8 @@ claude mcp add --transport http AutoLinker http://127.0.0.1:19207/mcp
 - 检查易语言 IDE 是否已启动且 AutoLinker 已加载
 - 确认端口 `19207` 未被防火墙或其他程序占用
 - 在浏览器访问 `http://127.0.0.1:19207/`（GET请求），如能看到 JSON 健康检查响应则服务正常
+- 如果收到 HTTP 503，表示连接队列已满；稍后重试，避免同时发起大量长耗时工具调用
+- 浏览器网页脚本携带 `Origin` 时会被拒绝，这是预期的安全策略；地址栏直接打开健康检查不等于允许网页调用 MCP
 
 ---
 

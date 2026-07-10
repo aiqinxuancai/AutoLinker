@@ -24,12 +24,66 @@
 #include "GameAnalyticsClient.h"
 #include "LocalMcpServer.h"
 #include "PathHelper.h"
+#include "PowerShellToolRunner.h"
+#include "RealPageCodeToolSupport.h"
 #include "Version.h"
+#include "WebDocumentClient.h"
+#include "WebDocumentExtractor.h"
 #include "WorkspaceFileTools.h"
+#include "WorkspaceMirror.h"
 
 #pragma comment(lib, "Ws2_32.lib")
 
 namespace {
+
+constexpr const char* kUtf8ChineseArgument = "\xE4\xB8\xAD\xE6\x96\x87\xE5\x8F\x82\xE6\x95\xB0";
+constexpr const char* kUtf8TestPassed = "\xE6\xB5\x8B\xE8\xAF\x95\xE9\x80\x9A\xE8\xBF\x87";
+
+std::string LocalToUtf8ForTest(const std::string& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+	const int wideLength = MultiByteToWideChar(
+		CP_ACP,
+		0,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0);
+	if (wideLength <= 0) {
+		return text;
+	}
+	std::wstring wide(static_cast<size_t>(wideLength), L'\0');
+	if (MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), wide.data(), wideLength) <= 0) {
+		return text;
+	}
+	const int utf8Length = WideCharToMultiByte(
+		CP_UTF8,
+		0,
+		wide.data(),
+		wideLength,
+		nullptr,
+		0,
+		nullptr,
+		nullptr);
+	if (utf8Length <= 0) {
+		return text;
+	}
+	std::string utf8(static_cast<size_t>(utf8Length), '\0');
+	if (WideCharToMultiByte(
+			CP_UTF8,
+			0,
+			wide.data(),
+			wideLength,
+			utf8.data(),
+			utf8Length,
+			nullptr,
+			nullptr) <= 0) {
+		return text;
+	}
+	return utf8;
+}
 
 bool RunAIChatToolPolicySelfTest(nlohmann::json& outCheck)
 {
@@ -499,7 +553,7 @@ private:
 				{"content", nlohmann::json::array({
 					{{"type", "text"}, {"text", "mock echo: " + text}}
 				})},
-				{"structuredContent", {{"echo", text}, {"utf8", "测试通过"}}},
+				{"structuredContent", {{"echo", text}, {"utf8", kUtf8TestPassed}}},
 				{"isError", false}
 			};
 		}
@@ -624,6 +678,21 @@ bool RunMcpMockRoundtripSelfTest(nlohmann::json& outCheck)
 		}
 		outCheck["model_tool_name"] = it->modelName;
 
+		bool publicCatalogContainsOutboundMcp = false;
+		const nlohmann::json publicCatalog = nlohmann::json::parse(
+			AIService::BuildPublicToolCatalogJson(),
+			nullptr,
+			false);
+		if (publicCatalog.is_array()) {
+			for (const auto& item : publicCatalog) {
+				if (item.is_object() && AIChatMcpClient::IsMcpModelToolName(item.value("name", std::string()))) {
+					publicCatalogContainsOutboundMcp = true;
+					break;
+				}
+			}
+		}
+		outCheck["public_catalog_contains_outbound_mcp"] = publicCatalogContainsOutboundMcp;
+
 		bool approved = false;
 		const AIChatMcpExecutionResult execution = AIChatMcpClient::ExecuteTool(
 			it->modelName,
@@ -659,20 +728,31 @@ bool RunMcpMockRoundtripSelfTest(nlohmann::json& outCheck)
 				outAutoAllowServer = false;
 				return false;
 			});
+		const std::string executionResultUtf8 = LocalToUtf8ForTest(execution.resultJsonLocal);
+		const std::string secondResultUtf8 = LocalToUtf8ForTest(secondExecution.resultJsonLocal);
+		const nlohmann::json executionJson = nlohmann::json::parse(executionResultUtf8, nullptr, false);
+		const bool exactUtf8 = executionJson.is_object() &&
+			executionJson.contains("structuredContent") &&
+			executionJson["structuredContent"].is_object() &&
+			executionJson["structuredContent"].value("echo", std::string()) == kUtf8ChineseArgument &&
+			executionJson["structuredContent"].value("utf8", std::string()) == kUtf8TestPassed;
 		outCheck["approval_called"] = approved;
 		outCheck["execution_ok"] = execution.ok;
-		outCheck["result"] = execution.resultJsonLocal;
+		outCheck["result"] = executionResultUtf8;
+		outCheck["exact_utf8"] = exactUtf8;
 		outCheck["server_grant_saved"] = serverGrantSaved;
 		outCheck["second_approval_called"] = secondApprovalCalled;
 		outCheck["second_execution_ok"] = secondExecution.ok;
-		outCheck["second_result"] = secondExecution.resultJsonLocal;
+		outCheck["second_result"] = secondResultUtf8;
 		outCheck["ok"] = approved &&
 			execution.ok &&
-			execution.resultJsonLocal.find("mock echo") != std::string::npos &&
+			executionResultUtf8.find("mock echo") != std::string::npos &&
+			exactUtf8 &&
+			!publicCatalogContainsOutboundMcp &&
 			serverGrantSaved &&
 			!secondApprovalCalled &&
 			secondExecution.ok &&
-			secondExecution.resultJsonLocal.find("mock echo") != std::string::npos;
+			secondResultUtf8.find("mock echo") != std::string::npos;
 		if (!outCheck.value("ok", false)) {
 			if (!loadedSavedConfig) {
 				outCheck["error"] = error.empty() ? "reload MCP config failed" : error;
@@ -888,6 +968,77 @@ bool RunMcpConfigInvariantsSelfTest(nlohmann::json& outCheck)
 		outCheck["failures"] = failures;
 	}
 	return failures.empty();
+}
+
+bool RunPowerShellRunnerSelfTest(nlohmann::json& outCheck)
+{
+	outCheck = { {"name", "powershell-runner"}, {"ok", false} };
+	const PowerShellRunResult nonZero = PowerShellToolRunner::Run(
+		"[Console]::Error.Write('expected-error'); exit 7",
+		"",
+		10);
+	const PowerShellRunResult truncated = PowerShellToolRunner::Run(
+		"[Console]::Out.Write('x' * 2200000)",
+		"",
+		20);
+	const PowerShellRunResult timedOut = PowerShellToolRunner::Run(
+		"Start-Sleep -Seconds 5",
+		"",
+		1);
+	const PowerShellRunResult childRun = PowerShellToolRunner::Run(
+		"$p=Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 30' -PassThru; [Console]::Out.Write($p.Id)",
+		"",
+		10);
+
+	bool childGone = false;
+	unsigned long childProcessId = 0;
+	try {
+		childProcessId = std::stoul(childRun.stdOut);
+	}
+	catch (...) {
+		childProcessId = 0;
+	}
+	if (childProcessId != 0) {
+		HANDLE child = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, childProcessId);
+		if (child == nullptr) {
+			childGone = true;
+		}
+		else {
+			childGone = WaitForSingleObject(child, 1000) == WAIT_OBJECT_0;
+			CloseHandle(child);
+		}
+	}
+
+	const bool nonZeroOk = !nonZero.ok && nonZero.exitCode == 7 &&
+		nonZero.error.find("code 7") != std::string::npos;
+	const bool truncationOk = truncated.ok && truncated.stdOutTruncated &&
+		truncated.stdOut.size() <= 2 * 1024 * 1024;
+	const bool timeoutOk = !timedOut.ok && timedOut.timedOut;
+	const bool childCleanupOk = childRun.ok && childGone;
+	outCheck["nonzero_exit"] = {
+		{"ok", nonZeroOk},
+		{"exit_code", nonZero.exitCode},
+		{"error", nonZero.error}
+	};
+	outCheck["output_truncation"] = {
+		{"ok", truncationOk},
+		{"stdout_bytes", truncated.stdOut.size()},
+		{"stdout_truncated", truncated.stdOutTruncated}
+	};
+	outCheck["timeout"] = {
+		{"ok", timeoutOk},
+		{"timed_out", timedOut.timedOut},
+		{"exit_code", timedOut.exitCode}
+	};
+	outCheck["child_cleanup"] = {
+		{"ok", childCleanupOk},
+		{"child_pid", childProcessId},
+		{"child_gone", childGone},
+		{"runner_ok", childRun.ok},
+		{"runner_error", childRun.error}
+	};
+	outCheck["ok"] = nonZeroOk && truncationOk && timeoutOk && childCleanupOk;
+	return outCheck.value("ok", false);
 }
 
 int RunOpenAIIntegrationTestInternal(
@@ -1514,6 +1665,11 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		else {
 			bool hasReadCodeItem = false;
 			bool hasRequiredRefreshDescription = false;
+			bool editCasSchemaOk = false;
+			bool multiEditCasSchemaOk = false;
+			bool diffCasSchemaOk = false;
+			bool restoreCasSchemaOk = false;
+			bool hiddenDependencyTools = true;
 			for (const auto& item : catalog) {
 				if (item.is_object() && AIChatMcpClient::IsMcpModelToolName(item.value("name", std::string()))) {
 					publicCatalogCheck["ok"] = false;
@@ -1527,17 +1683,31 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 				if (name == "read_code_item") {
 					hasReadCodeItem = true;
 				}
+				const nlohmann::json properties = item.value("inputSchema", nlohmann::json::object())
+					.value("properties", nlohmann::json::object());
+				editCasSchemaOk = editCasSchemaOk || (name == "edit_file" && properties.contains("expected_base_hash"));
+				multiEditCasSchemaOk = multiEditCasSchemaOk || (name == "multi_edit_file" && properties.contains("expected_base_hash"));
+				diffCasSchemaOk = diffCasSchemaOk || (name == "diff_file" && properties.contains("expected_base_hash"));
+				restoreCasSchemaOk = restoreCasSchemaOk || (name == "restore_file_snapshot" && properties.contains("expected_current_hash"));
+				if (name == "refresh_dependency_catalog" ||
+					name == "search_available_modules" ||
+					name == "add_module_to_project") {
+					hiddenDependencyTools = false;
+				}
 				if (name == "refresh_workspace_mirror" &&
 					item.value("description", std::string()).find("MUST") != std::string::npos) {
 					hasRequiredRefreshDescription = true;
 				}
 			}
-			if (!hasReadCodeItem || !hasRequiredRefreshDescription) {
+			const bool casSchemasOk = editCasSchemaOk && multiEditCasSchemaOk && diffCasSchemaOk && restoreCasSchemaOk;
+			if (!hasReadCodeItem || !hasRequiredRefreshDescription || !casSchemasOk || !hiddenDependencyTools) {
 				publicCatalogCheck["ok"] = false;
-				publicCatalogCheck["error"] = "public catalog missing read_code_item or explicit MCP refresh requirement";
+				publicCatalogCheck["error"] = "public catalog visibility or CAS schema invariant failed";
 			}
 			publicCatalogCheck["has_read_code_item"] = hasReadCodeItem;
 			publicCatalogCheck["has_required_refresh_description"] = hasRequiredRefreshDescription;
+			publicCatalogCheck["cas_schemas_ok"] = casSchemasOk;
+			publicCatalogCheck["dependency_tools_hidden"] = hiddenDependencyTools;
 		}
 	}
 	catch (const std::exception& ex) {
@@ -1576,6 +1746,43 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	}
 	report["checks"].push_back(std::move(paginationCheck));
 
+	nlohmann::json mirrorSafetyCheck = nlohmann::json::parse(
+		WorkspaceMirror::BuildSelfTestReportJson(),
+		nullptr,
+		false);
+	if (mirrorSafetyCheck.is_discarded() || !mirrorSafetyCheck.is_object()) {
+		mirrorSafetyCheck = {
+			{"name", "workspace-mirror-safety"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
+	report["checks"].push_back(std::move(mirrorSafetyCheck));
+
+	nlohmann::json compileFingerprintCheck = nlohmann::json::parse(
+		BuildCompileArtifactFingerprintSelfTestJson(),
+		nullptr,
+		false);
+	if (compileFingerprintCheck.is_discarded() || !compileFingerprintCheck.is_object()) {
+		compileFingerprintCheck = {
+			{"name", "compile-artifact-fingerprint"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
+	report["checks"].push_back(std::move(compileFingerprintCheck));
+
+	const std::string normalizedHashA = BuildStableTextHashForRealCode("a\r\nb");
+	const std::string normalizedHashB = BuildStableTextHashForRealCode("a\nb");
+	const std::string differentHash = BuildStableTextHashForRealCode("a\nb\nchanged");
+	report["checks"].push_back({
+		{"name", "real-page-sha256-hash"},
+		{"ok", normalizedHashA.size() == 64 && normalizedHashA == normalizedHashB && normalizedHashA != differentHash},
+		{"hash_length", normalizedHashA.size()},
+		{"line_break_normalized", normalizedHashA == normalizedHashB},
+		{"different_text_differs", normalizedHashA != differentHash}
+	});
+
 	nlohmann::json refreshGateCheck = nlohmann::json::parse(
 		LocalMcpServer::BuildWorkspaceRefreshGateSelfTestJson(),
 		nullptr,
@@ -1596,6 +1803,24 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	nlohmann::json mockStdioRoundtripCheck;
 	RunMcpStdioRoundtripSelfTest(mockStdioRoundtripCheck);
 	report["checks"].push_back(mockStdioRoundtripCheck);
+
+	nlohmann::json powerShellRunnerCheck;
+	RunPowerShellRunnerSelfTest(powerShellRunnerCheck);
+	report["checks"].push_back(powerShellRunnerCheck);
+
+	for (const std::string& webSelfTest : {
+			WebDocumentClient::BuildSelfTestReportJson(),
+			WebDocumentExtractor::BuildSelfTestReportJson() }) {
+		nlohmann::json webCheck = nlohmann::json::parse(webSelfTest, nullptr, false);
+		if (webCheck.is_discarded() || !webCheck.is_object()) {
+			webCheck = {
+				{"name", "web-document-self-test"},
+				{"ok", false},
+				{"error", "invalid self-test json"}
+			};
+		}
+		report["checks"].push_back(std::move(webCheck));
+	}
 
 	nlohmann::json configInvariantsCheck;
 	RunMcpConfigInvariantsSelfTest(configInvariantsCheck);
