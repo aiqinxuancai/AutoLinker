@@ -362,7 +362,57 @@ std::string FormatToolLogJsonString(const std::string& jsonText)
 	}
 }
 
-// 构建用于文件日志的完整工具 JSON 字符串，不移除换行，便于排查工具原始输入/输出。
+std::string BuildToolPayloadMetadata(const std::string& jsonText);
+
+bool IsSensitiveToolLogKey(const std::string& key)
+{
+	const std::string normalized = ToLowerAsciiCopyLocal(TrimAsciiCopy(key));
+	static constexpr const char* kSensitiveKeys[] = {
+		"api_key", "apikey", "authorization", "proxy-authorization",
+		"password", "passwd", "access_token", "refresh_token",
+		"client_secret", "secret", "cookie", "set-cookie"
+	};
+	for (const char* sensitiveKey : kSensitiveKeys) {
+		if (normalized == sensitiveKey) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void RedactToolLogSecrets(nlohmann::json& value)
+{
+	if (value.is_array()) {
+		for (auto& item : value) {
+			RedactToolLogSecrets(item);
+		}
+		return;
+	}
+	if (!value.is_object()) {
+		return;
+	}
+
+	// 兼容 {"name":"Authorization","value":"Bearer ..."} 形式的自定义头。
+	const auto nameIt = value.find("name");
+	if (nameIt != value.end() && nameIt->is_string() &&
+		IsSensitiveToolLogKey(nameIt->get<std::string>())) {
+		const auto valueIt = value.find("value");
+		if (valueIt != value.end()) {
+			*valueIt = "<redacted>";
+		}
+	}
+
+	for (auto& [key, child] : value.items()) {
+		if (IsSensitiveToolLogKey(key)) {
+			child = "<redacted>";
+		}
+		else {
+			RedactToolLogSecrets(child);
+		}
+	}
+}
+
+// 构建用于文件日志的完整工具 JSON 字符串，保留诊断参数并移除常见认证信息。
 std::string FormatToolLogJsonStringFull(const std::string& jsonText)
 {
 	const std::string trimmed = TrimAsciiCopy(jsonText);
@@ -370,14 +420,15 @@ std::string FormatToolLogJsonStringFull(const std::string& jsonText)
 		return "null";
 	}
 	try {
-		const nlohmann::json value = nlohmann::json::parse(trimmed);
+		nlohmann::json value = nlohmann::json::parse(trimmed);
 		if (value.is_null() || (value.is_object() && value.empty())) {
 			return "null";
 		}
+		RedactToolLogSecrets(value);
 		return value.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
 	}
 	catch (...) {
-		return jsonText;
+		return BuildToolPayloadMetadata(jsonText);
 	}
 }
 
@@ -440,8 +491,8 @@ void LogInternalToolRequest(const std::string& toolName, const std::string& argu
 	const bool verbose = IsVerboseToolPayloadLoggingEnabled();
 	const std::string ideLine = ">> " + toolName + "(" + (
 		verbose ? FormatToolLogJsonString(argumentsJson) : BuildToolPayloadMetadata(argumentsJson)) + ")";
-	const std::string fileLine = ">> " + toolName + "(" + (
-		verbose ? FormatToolLogJsonStringFull(argumentsJson) : BuildToolPayloadMetadata(argumentsJson)) + ")";
+	// 本地文件始终保留完整请求，便于还原 old_text/new_text 等失败现场；IDE 继续使用摘要避免刷屏。
+	const std::string fileLine = ">> " + toolName + "(" + FormatToolLogJsonStringFull(argumentsJson) + ")";
 	Logger::Instance().WriteSplit("Tool", fileLine, ideLine);
 }
 

@@ -1,6 +1,7 @@
 ﻿#include "AIService.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <filesystem>
 #include <format>
@@ -965,6 +966,13 @@ std::string GetOpenAIReasoningEffort(AIThinkingLevel level)
 		return "medium";
 	case AIThinkingLevel::High:
 		return "high";
+	case AIThinkingLevel::XHigh:
+		return "xhigh";
+	case AIThinkingLevel::Max:
+		return "max";
+	case AIThinkingLevel::Ultra:
+		// 与 Codex CLI 一致：Ultra 在请求层使用 max，额外能力来自客户端多代理调度。
+		return "max";
 	case AIThinkingLevel::Off:
 	default:
 		return "none";
@@ -979,6 +987,9 @@ std::string GetClaudeEffort(AIThinkingLevel level)
 	case AIThinkingLevel::Medium:
 		return "medium";
 	case AIThinkingLevel::High:
+	case AIThinkingLevel::XHigh:
+	case AIThinkingLevel::Max:
+	case AIThinkingLevel::Ultra:
 		return "high";
 	case AIThinkingLevel::Off:
 	default:
@@ -994,6 +1005,9 @@ int GetClaudeThinkingBudget(AIThinkingLevel level)
 	case AIThinkingLevel::Medium:
 		return 4096;
 	case AIThinkingLevel::High:
+	case AIThinkingLevel::XHigh:
+	case AIThinkingLevel::Max:
+	case AIThinkingLevel::Ultra:
 		return 8192;
 	case AIThinkingLevel::Off:
 	default:
@@ -1011,6 +1025,9 @@ int GetGemini25ThinkingBudget(const AISettings& settings)
 	case AIThinkingLevel::Medium:
 		return 4096;
 	case AIThinkingLevel::High:
+	case AIThinkingLevel::XHigh:
+	case AIThinkingLevel::Max:
+	case AIThinkingLevel::Ultra:
 	default:
 		return -1;
 	}
@@ -1027,6 +1044,9 @@ std::string GetGemini3ThinkingLevel(const AISettings& settings)
 		case AIThinkingLevel::Medium:
 			return "medium";
 		case AIThinkingLevel::High:
+		case AIThinkingLevel::XHigh:
+		case AIThinkingLevel::Max:
+		case AIThinkingLevel::Ultra:
 		default:
 			return "high";
 		}
@@ -1034,6 +1054,9 @@ std::string GetGemini3ThinkingLevel(const AISettings& settings)
 
 	switch (settings.thinkingLevel) {
 	case AIThinkingLevel::High:
+	case AIThinkingLevel::XHigh:
+	case AIThinkingLevel::Max:
+	case AIThinkingLevel::Ultra:
 		return "high";
 	case AIThinkingLevel::Off:
 	case AIThinkingLevel::Low:
@@ -1070,7 +1093,7 @@ void ApplyThinkingConfigToOpenAIChatRequest(nlohmann::json& requestBody, const A
 		requestBody["thinking"] = {
 			{"type", "enabled"}
 		};
-		requestBody["reasoning_effort"] = settings.thinkingLevel == AIThinkingLevel::High ? "max" : "high";
+		requestBody["reasoning_effort"] = settings.thinkingLevel >= AIThinkingLevel::High ? "max" : "high";
 		return;
 	}
 
@@ -1129,7 +1152,7 @@ void ApplyThinkingConfigToGeminiRequest(nlohmann::json& requestBody, const AISet
 		thinkingConfig["thinkingLevel"] = GetGemini3ThinkingLevel(settings);
 	}
 	else {
-		thinkingConfig["thinkingBudget"] = settings.thinkingLevel == AIThinkingLevel::High ? -1 : 1024;
+		thinkingConfig["thinkingBudget"] = settings.thinkingLevel >= AIThinkingLevel::High ? -1 : 1024;
 	}
 
 	if (!requestBody.contains("generationConfig") || !requestBody["generationConfig"].is_object()) {
@@ -3769,7 +3792,11 @@ void AppendResponsesOutputItemsToInput(const nlohmann::json& parsed, nlohmann::j
 	}
 }
 
-AIResult ExecuteTaskClaude(const std::string& systemPrompt, const std::string& inputText, const AISettings& settings)
+AIResult ExecuteTaskClaude(
+	const std::string& systemPrompt,
+	const std::string& inputText,
+	const AISettings& settings,
+	int maxRetryCount = kAiRequestRetryCount)
 {
 	AIResult result = {};
 	std::string validationError;
@@ -3800,7 +3827,10 @@ AIResult ExecuteTaskClaude(const std::string& systemPrompt, const std::string& i
 		settings.timeoutMs,
 		false,
 		false,
-		"claude-task");
+		"claude-task",
+		{},
+		nullptr,
+		maxRetryCount);
 	result.httpStatus = statusCode;
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("claude-task", statusCode, responseBody);
@@ -3830,7 +3860,11 @@ AIResult ExecuteTaskClaude(const std::string& systemPrompt, const std::string& i
 	}
 }
 
-AIResult ExecuteTaskGemini(const std::string& systemPrompt, const std::string& inputText, const AISettings& settings)
+AIResult ExecuteTaskGemini(
+	const std::string& systemPrompt,
+	const std::string& inputText,
+	const AISettings& settings,
+	int maxRetryCount = kAiRequestRetryCount)
 {
 	AIResult result = {};
 	std::string validationError;
@@ -3862,7 +3896,10 @@ AIResult ExecuteTaskGemini(const std::string& systemPrompt, const std::string& i
 		settings.timeoutMs,
 		false,
 		false,
-		"gemini-task");
+		"gemini-task",
+		{},
+		nullptr,
+		maxRetryCount);
 	result.httpStatus = statusCode;
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("gemini-task", statusCode, responseBody);
@@ -3892,7 +3929,11 @@ AIResult ExecuteTaskGemini(const std::string& systemPrompt, const std::string& i
 	}
 }
 
-AIResult ExecuteTaskOpenAIResponses(const std::string& systemPrompt, const std::string& inputText, const AISettings& settings)
+AIResult ExecuteTaskOpenAIResponses(
+	const std::string& systemPrompt,
+	const std::string& inputText,
+	const AISettings& settings,
+	int maxRetryCount = kAiRequestRetryCount)
 {
 	AIResult result = {};
 	std::string validationError;
@@ -3921,7 +3962,10 @@ AIResult ExecuteTaskOpenAIResponses(const std::string& systemPrompt, const std::
 		settings.timeoutMs,
 		false,
 		false,
-		"openai-responses-task");
+		"openai-responses-task",
+		{},
+		nullptr,
+		maxRetryCount);
 	result.httpStatus = statusCode;
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("openai-responses-task", statusCode, responseBody);
@@ -4756,7 +4800,7 @@ bool ParseFamilyMinorVersion(const std::string& model, const char* prefix, int& 
 }
 
 // 递增族：在已知小版本里取 version<=modelMinor 的最近条目窗口（carry-forward），
-// 使未登记的更高小版本默认继承上一代（如 gpt-5.6 继承 gpt-5.5 的 1M，而非回落）。
+// 使未登记的更高小版本默认继承上一代（如 opus-4-9 继承 opus-4-8 的窗口，而非回落）。
 struct FamilyMinorWindow { int minor; int window; };
 
 // versions 须按 minor 升序。modelMinor 比所有已知都小则返回 false（交回子串表/默认）。
@@ -4798,6 +4842,10 @@ bool ResolveGpt5Window(const std::string& model, int& outWindow)
 	}
 
 	const bool proVariant = model.find("-pro") != std::string::npos;
+	if (minor >= 6) {
+		outWindow = 1050000;
+		return true;
+	}
 	if (minor >= 5) {
 		outWindow = proVariant ? 1050000 : 1000000;
 		return true;
@@ -4816,7 +4864,7 @@ int AIService::ResolveContextWindowTokens(const AISettings& settings)
 
 	const std::string m = ToLowerAsciiCopy(settings.model);
 
-	// P2a: OpenAI GPT-5 系列 —— 5.4/pro 为 1.05M，5.5 主模型为 1M，mini/nano/codex 仍按 400K。
+	// P2a: OpenAI GPT-5 系列 —— 5.4 与 5.6 为 1.05M，5.5 主模型为 1M，mini/nano/codex 仍按 400K。
 	int gpt5Window = 0;
 	if (ResolveGpt5Window(m, gpt5Window)) {
 		return gpt5Window;
@@ -4923,6 +4971,15 @@ AIThinkingLevel AIService::ParseThinkingLevel(const std::string& text)
 	if (v == "high") {
 		return AIThinkingLevel::High;
 	}
+	if (v == "xhigh" || v == "extra_high" || v == "extra high") {
+		return AIThinkingLevel::XHigh;
+	}
+	if (v == "max") {
+		return AIThinkingLevel::Max;
+	}
+	if (v == "ultra") {
+		return AIThinkingLevel::Ultra;
+	}
 	return AIThinkingLevel::Off;
 }
 
@@ -4935,6 +4992,12 @@ std::string AIService::ThinkingLevelToString(AIThinkingLevel thinkingLevel)
 		return "medium";
 	case AIThinkingLevel::High:
 		return "high";
+	case AIThinkingLevel::XHigh:
+		return "xhigh";
+	case AIThinkingLevel::Max:
+		return "max";
+	case AIThinkingLevel::Ultra:
+		return "ultra";
 	case AIThinkingLevel::Off:
 	default:
 		return "off";
@@ -4950,6 +5013,12 @@ std::string AIService::ThinkingLevelDisplayName(AIThinkingLevel thinkingLevel)
 		return "中";
 	case AIThinkingLevel::High:
 		return "高";
+	case AIThinkingLevel::XHigh:
+		return "超高";
+	case AIThinkingLevel::Max:
+		return "最大";
+	case AIThinkingLevel::Ultra:
+		return "Ultra";
 	case AIThinkingLevel::Off:
 	default:
 		return "关闭";
@@ -5075,13 +5144,13 @@ AIResult AIService::TestConnection(const AISettings& settings)
 	const std::string systemPrompt = "你是一个 API 连通性测试助手。请只返回 OK。";
 	const std::string inputText = "请只返回 OK。";
 	if (settings.protocolType == AIProtocolType::Claude) {
-		return ExecuteTaskClaude(systemPrompt, inputText, settings);
+		return ExecuteTaskClaude(systemPrompt, inputText, settings, 0);
 	}
 	if (settings.protocolType == AIProtocolType::Gemini) {
-		return ExecuteTaskGemini(systemPrompt, inputText, settings);
+		return ExecuteTaskGemini(systemPrompt, inputText, settings, 0);
 	}
 	if (settings.protocolType == AIProtocolType::OpenAIResponses) {
-		return ExecuteTaskOpenAIResponses(systemPrompt, inputText, settings);
+		return ExecuteTaskOpenAIResponses(systemPrompt, inputText, settings, 0);
 	}
 
 	const std::string modelUtf8 = LocalToUtf8(settings.model);
@@ -5120,7 +5189,17 @@ AIResult AIService::TestConnection(const AISettings& settings)
 	}
 
 	const auto [responseBody, statusCode] =
-		PerformPostRequestWithRetry(endpoint, requestBodyText, headers, settings.timeoutMs, false, false, "openai-test");
+		PerformPostRequestWithRetry(
+			endpoint,
+			requestBodyText,
+			headers,
+			settings.timeoutMs,
+			false,
+			false,
+			"openai-test",
+			{},
+			nullptr,
+			0);
 	result.httpStatus = statusCode;
 
 	if (statusCode < 200 || statusCode >= 300) {
@@ -5576,6 +5655,62 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 {
 	nlohmann::json checks = nlohmann::json::array();
 	bool allOk = true;
+
+	{
+		const std::array<std::pair<AIThinkingLevel, const char*>, 7> levels = {{
+			{ AIThinkingLevel::Off, "off" },
+			{ AIThinkingLevel::Low, "low" },
+			{ AIThinkingLevel::Medium, "medium" },
+			{ AIThinkingLevel::High, "high" },
+			{ AIThinkingLevel::XHigh, "xhigh" },
+			{ AIThinkingLevel::Max, "max" },
+			{ AIThinkingLevel::Ultra, "ultra" },
+		}};
+		bool roundTripOk = true;
+		for (const auto& [level, text] : levels) {
+			roundTripOk = roundTripOk &&
+				ThinkingLevelToString(level) == text &&
+				ParseThinkingLevel(text) == level;
+		}
+
+		AISettings xhighSettings = {};
+		xhighSettings.thinkingLevel = AIThinkingLevel::XHigh;
+		nlohmann::json xhighRequest;
+		ApplyThinkingConfigToOpenAIResponsesRequest(xhighRequest, xhighSettings);
+		AISettings ultraSettings = {};
+		ultraSettings.thinkingLevel = AIThinkingLevel::Ultra;
+		nlohmann::json ultraRequest;
+		ApplyThinkingConfigToOpenAIResponsesRequest(ultraRequest, ultraSettings);
+		const bool requestMappingOk =
+			xhighRequest["reasoning"].value("effort", std::string()) == "xhigh" &&
+			ultraRequest["reasoning"].value("effort", std::string()) == "max";
+		const bool ok = roundTripOk && requestMappingOk;
+		checks.push_back({
+			{"name", "gpt_5_6_reasoning_effort_presets"},
+			{"ok", ok},
+			{"xhigh_request_effort", xhighRequest["reasoning"].value("effort", std::string())},
+			{"ultra_request_effort", ultraRequest["reasoning"].value("effort", std::string())}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		const std::array<const char*, 4> models = {
+			"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"
+		};
+		bool ok = true;
+		for (const char* model : models) {
+			AISettings settings = {};
+			settings.model = model;
+			ok = ok && ResolveContextWindowTokens(settings) == 1050000;
+		}
+		checks.push_back({
+			{"name", "gpt_5_6_context_window_presets"},
+			{"ok", ok},
+			{"context_window", 1050000}
+		});
+		allOk = allOk && ok;
+	}
 
 	{
 		const std::string sourceContent(5000, 'x');

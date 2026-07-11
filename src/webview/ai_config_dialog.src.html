@@ -87,6 +87,9 @@
 						<option value="low">低</option>
 						<option value="medium">中</option>
 						<option value="high">高</option>
+						<option value="xhigh">超高</option>
+						<option value="max">最大</option>
+						<option value="ultra">Ultra</option>
 					</select>
 				</div>
 
@@ -400,6 +403,9 @@ function resolveGpt5Window(model) {
 		return 400000;
 	}
 	var proVariant = model.indexOf("-pro") !== -1;
+	if (minor >= 6) {
+		return 1050000;
+	}
 	if (minor >= 5) {
 		return proVariant ? 1050000 : 1000000;
 	}
@@ -744,7 +750,7 @@ var PRESET_SITES = [
 	{ id: "minimax", label: "MiniMax", protocolType: "openai", baseUrl: "https://api.minimax.chat/v1", website: "https://platform.minimax.chat", models: ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5"] },
 	{ id: "aihubmix", label: "aihubmix", protocolType: "openai", baseUrl: "https://aihubmix.com/v1", website: "https://aihubmix.com/?aff=eeX5", models: ["gpt-5.5", "claude-opus-4-8", "claude-sonnet-4-6", "deepseek-v4-pro", "deepseek-v4-flash", "gemini-3.1-pro-preview"] },
 	{ id: "siliconflow", label: "\u7845\u57FA\u6D41\u52A8", protocolType: "openai", baseUrl: "https://api.siliconflow.cn/v1", website: "https://cloud.siliconflow.cn/i/Oezhkra7", models: ["deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro", "Pro/zai-org/GLM-5", "zai-org/GLM-5.1", "Qwen/Qwen3.5-397B-A17B"] },
-	{ id: "openai", label: "OpenAI", protocolType: "openai_responses", baseUrl: "https://api.openai.com/v1", website: "https://platform.openai.com", models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"] },
+	{ id: "openai", label: "OpenAI", protocolType: "openai_responses", baseUrl: "https://api.openai.com/v1", website: "https://platform.openai.com", models: ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"] },
 	{ id: "claude", label: "Claude", protocolType: "claude", baseUrl: "https://api.anthropic.com", website: "https://console.anthropic.com", models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"] },
 	{ id: "gemini", label: "Gemini", protocolType: "gemini", baseUrl: "https://generativelanguage.googleapis.com", website: "https://aistudio.google.com", models: ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-pro"] }
 ];

@@ -30,7 +30,10 @@ enum class AIThinkingLevel {
 	Off = 0,
 	Low = 1,
 	Medium = 2,
-	High = 3
+	High = 3,
+	XHigh = 4,
+	Max = 5,
+	Ultra = 6
 };
 
 // AI 源码编辑基准模式。

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <CommCtrl.h>
 #include <filesystem>
 #include <format>
@@ -559,6 +560,7 @@ struct AIConfigConnectionTestRequest {
 struct AIConfigConnectionTestResult {
 	bool forWebView = false;
 	AIResult result;
+	long long elapsedMs = 0;
 };
 
 struct AIConfigModelListRequest {
@@ -819,10 +821,16 @@ void PopulateThinkingLevelCombo(HWND hCombo, AIThinkingLevel selected)
 	const int idxLow = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("低")));
 	const int idxMedium = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("中")));
 	const int idxHigh = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("高")));
+	const int idxXHigh = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("超高")));
+	const int idxMax = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("最大")));
+	const int idxUltra = static_cast<int>(SendMessageA(hCombo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Ultra")));
 	SendMessageA(hCombo, CB_SETITEMDATA, idxOff, static_cast<LPARAM>(AIThinkingLevel::Off));
 	SendMessageA(hCombo, CB_SETITEMDATA, idxLow, static_cast<LPARAM>(AIThinkingLevel::Low));
 	SendMessageA(hCombo, CB_SETITEMDATA, idxMedium, static_cast<LPARAM>(AIThinkingLevel::Medium));
 	SendMessageA(hCombo, CB_SETITEMDATA, idxHigh, static_cast<LPARAM>(AIThinkingLevel::High));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxXHigh, static_cast<LPARAM>(AIThinkingLevel::XHigh));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxMax, static_cast<LPARAM>(AIThinkingLevel::Max));
+	SendMessageA(hCombo, CB_SETITEMDATA, idxUltra, static_cast<LPARAM>(AIThinkingLevel::Ultra));
 
 	int selectedIndex = idxOff;
 	switch (selected) {
@@ -834,6 +842,15 @@ void PopulateThinkingLevelCombo(HWND hCombo, AIThinkingLevel selected)
 		break;
 	case AIThinkingLevel::High:
 		selectedIndex = idxHigh;
+		break;
+	case AIThinkingLevel::XHigh:
+		selectedIndex = idxXHigh;
+		break;
+	case AIThinkingLevel::Max:
+		selectedIndex = idxMax;
+		break;
+	case AIThinkingLevel::Ultra:
+		selectedIndex = idxUltra;
 		break;
 	case AIThinkingLevel::Off:
 	default:
@@ -862,6 +879,12 @@ AIThinkingLevel GetSelectedThinkingLevel(HWND hCombo)
 		return AIThinkingLevel::Medium;
 	case AIThinkingLevel::High:
 		return AIThinkingLevel::High;
+	case AIThinkingLevel::XHigh:
+		return AIThinkingLevel::XHigh;
+	case AIThinkingLevel::Max:
+		return AIThinkingLevel::Max;
+	case AIThinkingLevel::Ultra:
+		return AIThinkingLevel::Ultra;
 	case AIThinkingLevel::Off:
 	default:
 		return AIThinkingLevel::Off;
@@ -956,7 +979,10 @@ constexpr const char* kDoubaoPresetModels[] = { "doubao-seed-2.0-pro", "doubao-s
 constexpr const char* kMiniMaxPresetModels[] = { "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5" };
 constexpr const char* kAihubmixPresetModels[] = { "gpt-5.5", "claude-opus-4-8", "claude-sonnet-4-6", "deepseek-v4-pro", "deepseek-v4-flash", "gemini-3.1-pro-preview" };
 constexpr const char* kSiliconFlowPresetModels[] = { "deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro", "Pro/zai-org/GLM-5", "zai-org/GLM-5.1", "Qwen/Qwen3.5-397B-A17B" };
-constexpr const char* kOpenAIPresetModels[] = { "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex" };
+constexpr const char* kOpenAIPresetModels[] = {
+	"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+	"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"
+};
 constexpr const char* kClaudePresetModels[] = { "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5" };
 constexpr const char* kGeminiPresetModels[] = { "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-pro" };
 
@@ -1087,10 +1113,11 @@ bool ValidateAISettingsForConnection(HWND hWnd, const AISettings& settings)
 	return true;
 }
 
-std::string BuildAIConnectionTestMessage(const AIResult& result)
+std::string BuildAIConnectionTestMessage(const AIResult& result, long long elapsedMs)
 {
 	if (result.ok) {
 		std::string message = "连通性测试成功。";
+		message += "\n用时：" + std::to_string(elapsedMs) + " 毫秒";
 		if (result.httpStatus > 0) {
 			message += "\nHTTP: " + std::to_string(result.httpStatus);
 		}
@@ -1103,6 +1130,7 @@ std::string BuildAIConnectionTestMessage(const AIResult& result)
 	}
 
 	std::string message = "连通性测试失败。";
+	message += "\n用时：" + std::to_string(elapsedMs) + " 毫秒";
 	if (result.httpStatus > 0) {
 		message += "\nHTTP: " + std::to_string(result.httpStatus);
 	}
@@ -1139,6 +1167,7 @@ DWORD WINAPI AIConfigConnectionTestWorkerProc(LPVOID param)
 	}
 
 	result->forWebView = request->forWebView;
+	const auto startedAt = std::chrono::steady_clock::now();
 	try {
 		result->result = AIService::TestConnection(request->settings);
 	}
@@ -1150,6 +1179,8 @@ DWORD WINAPI AIConfigConnectionTestWorkerProc(LPVOID param)
 		result->result.ok = false;
 		result->result.error = "connection test unknown exception";
 	}
+	result->elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - startedAt).count();
 
 	const HWND hWnd = request->dialogHwnd;
 	delete request;
@@ -1905,7 +1936,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		}
 
 		SetAIConfigNativeTestBusy(ctx, false);
-		const std::string message = BuildAIConnectionTestMessage(result->result);
+		const std::string message = BuildAIConnectionTestMessage(result->result, result->elapsedMs);
 		MessageBoxA(hWnd, message.c_str(), "AI Config", (result->result.ok ? MB_ICONINFORMATION : MB_ICONERROR) | MB_OK);
 		delete result;
 		return 0;
@@ -2025,7 +2056,10 @@ void SetAIConfigWebViewTestBusy(AIConfigWebViewDialogContext* ctx, bool busy)
 		: L"window.autolinkerSetTestBusy(false);");
 }
 
-void ShowAIConfigWebViewTestResult(AIConfigWebViewDialogContext* ctx, const AIResult& result)
+void ShowAIConfigWebViewTestResult(
+	AIConfigWebViewDialogContext* ctx,
+	const AIResult& result,
+	long long elapsedMs)
 {
 	if (ctx == nullptr) {
 		return;
@@ -2033,7 +2067,7 @@ void ShowAIConfigWebViewTestResult(AIConfigWebViewDialogContext* ctx, const AIRe
 
 	nlohmann::json payload;
 	payload["ok"] = result.ok;
-	payload["message"] = LocalToUtf8Text(BuildAIConnectionTestMessage(result));
+	payload["message"] = LocalToUtf8Text(BuildAIConnectionTestMessage(result, elapsedMs));
 
 	const std::wstring payloadJsonWide = Utf8ToWide(payload.dump());
 	if (payloadJsonWide.empty()) {
@@ -2366,7 +2400,7 @@ LRESULT CALLBACK AIConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, 
 		}
 
 		SetAIConfigWebViewTestBusy(ctx, false);
-		ShowAIConfigWebViewTestResult(ctx, result->result);
+		ShowAIConfigWebViewTestResult(ctx, result->result, result->elapsedMs);
 		delete result;
 		return 0;
 	}

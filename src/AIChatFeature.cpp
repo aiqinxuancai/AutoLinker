@@ -1478,8 +1478,12 @@ std::string BuildDiffPreviewTextUtf8(const nlohmann::json& diff)
 nlohmann::json BuildToolApprovalPayloadUtf8(
 	unsigned long long approvalId,
 	const std::string& toolName,
-	const std::string& argumentsJson)
+	const std::string& argumentsJson,
+	std::string* outEffectiveArgumentsJson = nullptr)
 {
+	if (outEffectiveArgumentsJson != nullptr) {
+		*outEffectiveArgumentsJson = argumentsJson;
+	}
 	nlohmann::json payload = nlohmann::json::object();
 	payload["id"] = approvalId;
 	payload["tool"] = toolName;
@@ -1507,13 +1511,42 @@ nlohmann::json BuildToolApprovalPayloadUtf8(
 		_stricmp(toolName.c_str(), "multi_edit_file") == 0 ||
 		_stricmp(toolName.c_str(), "write_file") == 0) {
 		bool diffOk = false;
-		const std::string diffLocal = ExecuteToolCallOnMainThread("diff_file", args.dump(), diffOk);
+		std::string diffLocal = ExecuteToolCallOnMainThread("diff_file", args.dump(), diffOk);
 		nlohmann::json diffJson;
 		try {
 			diffJson = nlohmann::json::parse(LocalToUtf8Text(diffLocal));
 		}
 		catch (...) {
 			diffJson = nlohmann::json::object();
+		}
+
+		// 预览已经读取到实时页面时，直接以该版本重新计算差异。实际写入仍携带新的
+		// expected_base_hash，因此用户审批期间若页面再次变化，CAS 保护仍会阻止覆盖。
+		const std::string diffError = diffJson.is_object()
+			? diffJson.value("error", std::string())
+			: std::string();
+		const std::string currentCodeHash = diffJson.is_object()
+			? diffJson.value("code_hash", std::string())
+			: std::string();
+		if (!diffOk &&
+			diffError.find("expected_base_hash mismatch") != std::string::npos &&
+			!currentCodeHash.empty()) {
+			args["expected_base_hash"] = currentCodeHash;
+			if (outEffectiveArgumentsJson != nullptr) {
+				*outEffectiveArgumentsJson = args.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+			}
+			Logger::Instance().Write(
+				"Tool",
+				"[write_preview] stale expected_base_hash refreshed from live page; tool=" + toolName +
+					" code_hash=" + currentCodeHash);
+			diffOk = false;
+			diffLocal = ExecuteToolCallOnMainThread("diff_file", args.dump(), diffOk);
+			try {
+				diffJson = nlohmann::json::parse(LocalToUtf8Text(diffLocal));
+			}
+			catch (...) {
+				diffJson = nlohmann::json::object();
+			}
 		}
 
 		payload["preview_kind"] = "diff";
@@ -6748,7 +6781,12 @@ bool BeginToolApprovalRequest(const std::shared_ptr<ToolExecutionRequest>& reque
 		return false;
 	}
 
-	nlohmann::json payload = BuildToolApprovalPayloadUtf8(0, request->toolName, request->argumentsJson);
+	std::string effectiveArgumentsJson;
+	nlohmann::json payload = BuildToolApprovalPayloadUtf8(
+		0,
+		request->toolName,
+		request->argumentsJson,
+		&effectiveArgumentsJson);
 	auto* ctx = (g_chatDialog != nullptr && IsWindow(g_chatDialog))
 		? reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(g_chatDialog, GWLP_USERDATA))
 		: nullptr;
@@ -6787,7 +6825,7 @@ bool BeginToolApprovalRequest(const std::shared_ptr<ToolExecutionRequest>& reque
 		}
 		if (action == AIPreviewAction::PrimaryConfirm) {
 			bool ok = false;
-			const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, request->argumentsJson, ok);
+			const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, effectiveArgumentsJson, ok);
 			FinishToolExecutionRequest(request, ok, resultJson);
 		}
 		else {
@@ -6811,7 +6849,7 @@ bool BeginToolApprovalRequest(const std::shared_ptr<ToolExecutionRequest>& reque
 		g_pendingToolApproval.id = approvalId;
 		g_pendingToolApproval.request = request;
 		g_pendingToolApproval.toolName = request->toolName;
-		g_pendingToolApproval.argumentsJson = request->argumentsJson;
+		g_pendingToolApproval.argumentsJson = effectiveArgumentsJson;
 		g_pendingToolApproval.payloadUtf8 = payload;
 	}
 
@@ -6835,17 +6873,18 @@ bool IsAutoWriteDiffTool(const std::string& toolName)
 		_stricmp(toolName.c_str(), "write_file") == 0;
 }
 
-void AppendAutoWriteDiffMessageForTool(const std::string& toolName, const std::string& argumentsJsonUtf8)
+std::string AppendAutoWriteDiffMessageForTool(const std::string& toolName, const std::string& argumentsJsonUtf8)
 {
 	if (!IsAutoWriteDiffTool(toolName)) {
-		return;
+		return argumentsJsonUtf8;
 	}
 	nlohmann::json payload;
+	std::string effectiveArgumentsJson = argumentsJsonUtf8;
 	try {
-		payload = BuildToolApprovalPayloadUtf8(0, toolName, argumentsJsonUtf8);
+		payload = BuildToolApprovalPayloadUtf8(0, toolName, argumentsJsonUtf8, &effectiveArgumentsJson);
 	}
 	catch (...) {
-		return;
+		return argumentsJsonUtf8;
 	}
 	auto readStr = [&payload](const char* key) -> std::string {
 		auto it = payload.find(key);
@@ -6856,7 +6895,7 @@ void AppendAutoWriteDiffMessageForTool(const std::string& toolName, const std::s
 	};
 	const std::string previewLocal = Utf8ToLocalText(readStr("preview_text"));
 	if (TrimAsciiCopy(previewLocal).empty()) {
-		return;
+		return effectiveArgumentsJson;
 	}
 	const std::string summaryLocal = Utf8ToLocalText(readStr("summary"));
 	std::string fileLocal = Utf8ToLocalText(readStr("file_path"));
@@ -6884,6 +6923,7 @@ void AppendAutoWriteDiffMessageForTool(const std::string& toolName, const std::s
 			std::string()
 		});
 	}
+	return effectiveArgumentsJson;
 }
 
 bool HandleToolExecRequest(LPARAM lParam)
@@ -6905,11 +6945,13 @@ bool HandleToolExecRequest(LPARAM lParam)
 		return BeginToolApprovalRequest(request);
 	}
 
-	AppendAutoWriteDiffMessageForTool(request->toolName, request->argumentsJson);
+	const std::string effectiveArgumentsJson = AppendAutoWriteDiffMessageForTool(
+		request->toolName,
+		request->argumentsJson);
 	PostRefreshDialog();
 
 	bool ok = false;
-	const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, request->argumentsJson, ok);
+	const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, effectiveArgumentsJson, ok);
 	FinishToolExecutionRequest(request, ok, resultJson);
 	return true;
 }
