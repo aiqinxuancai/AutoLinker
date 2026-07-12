@@ -3,10 +3,12 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
 #include <fstream>
 #include <format>
+#include <mutex>
 #include <system_error>
 #include <unordered_map>
 
@@ -15,6 +17,9 @@
 #include "PathHelper.h"
 
 namespace {
+
+std::recursive_mutex g_configStoreMutex;
+std::atomic_ullong g_configTempFileCounter = 1;
 
 std::string TrimAscii(std::string text)
 {
@@ -139,13 +144,37 @@ bool WriteTextFile(const std::filesystem::path& path, const std::string& text, s
 			return false;
 		}
 	}
-	std::ofstream output(path, std::ios::binary | std::ios::trunc);
+	std::filesystem::path tempPath = path;
+	tempPath += std::format(
+		".tmp.{}.{}",
+		GetCurrentProcessId(),
+		g_configTempFileCounter.fetch_add(1));
+	std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
 	if (!output.is_open()) {
-		outError = "open config for write failed";
+		outError = "open temporary config for write failed";
 		return false;
 	}
 	output.write(text.data(), static_cast<std::streamsize>(text.size()));
-	return output.good();
+	output.flush();
+	const bool writeOk = output.good();
+	output.close();
+	if (!writeOk || output.fail()) {
+		std::filesystem::remove(tempPath, ec);
+		outError = "write temporary config failed";
+		return false;
+	}
+
+	if (MoveFileExW(
+			tempPath.c_str(),
+			path.c_str(),
+			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
+		const DWORD errorCode = GetLastError();
+		std::filesystem::remove(tempPath, ec);
+		outError = "replace config failed: " +
+			std::error_code(static_cast<int>(errorCode), std::system_category()).message();
+		return false;
+	}
+	return true;
 }
 
 std::string JsonStringValue(const nlohmann::json& value, const char* key)
@@ -204,6 +233,126 @@ void ReadEnvConfig(const nlohmann::json& value, std::vector<AIChatMcpEnvConfig>&
 	}
 }
 
+const std::vector<nlohmann::json>& GetLegacyDefaultServerJsons()
+{
+	// 配置 JSON 始终使用 UTF-8，避免窄字符串被系统代码页转换。
+	constexpr const char* kLegacyStdioExampleNameUtf8 =
+		"\xE6\x9C\xAC\xE5\x9C\xB0 stdio MCP \xE7\xA4\xBA\xE4\xBE\x8B";
+	static const std::vector<nlohmann::json> defaults = {
+		{
+			{"id", "ida-pro"},
+			{"name", "IDA Pro"},
+			{"url", "http://127.0.0.1:8765/mcp"},
+			{"enabled", false},
+			{"timeout_ms", 120000},
+			{"headers", nlohmann::json::array()}
+		},
+		{
+			{"id", "design-mcp"},
+			{"name", "Design MCP"},
+			{"url", "http://127.0.0.1:8770/mcp"},
+			{"enabled", false},
+			{"timeout_ms", 120000},
+			{"headers", nlohmann::json::array()}
+		},
+		{
+			{"id", "ida-pro"},
+			{"name", "IDA Pro"},
+			{"transport", "streamable_http"},
+			{"url", "http://127.0.0.1:8765/mcp"},
+			{"command", ""},
+			{"arguments", nlohmann::json::array()},
+			{"working_directory", ""},
+			{"enabled", false},
+			{"timeout_ms", 120000},
+			{"headers", nlohmann::json::array()},
+			{"env", nlohmann::json::array()}
+		},
+		{
+			{"id", "design-mcp"},
+			{"name", "Design MCP"},
+			{"transport", "streamable_http"},
+			{"url", "http://127.0.0.1:8770/mcp"},
+			{"command", ""},
+			{"arguments", nlohmann::json::array()},
+			{"working_directory", ""},
+			{"enabled", false},
+			{"timeout_ms", 120000},
+			{"headers", nlohmann::json::array()},
+			{"env", nlohmann::json::array()}
+		},
+		{
+			{"id", "stdio-example"},
+			{"name", kLegacyStdioExampleNameUtf8},
+			{"transport", "stdio"},
+			{"url", ""},
+			{"command", "npx"},
+			{"arguments", nlohmann::json::array({"-y", "@modelcontextprotocol/server-filesystem", "D:\\git"})},
+			{"working_directory", ""},
+			{"enabled", false},
+			{"timeout_ms", 120000},
+			{"headers", nlohmann::json::array()},
+			{"env", nlohmann::json::array()}
+		}
+	};
+	return defaults;
+}
+
+bool HasApprovalGrantForServer(const nlohmann::json& root, const std::string& serverId)
+{
+	if (!root.contains("approval_grants") || !root["approval_grants"].is_array()) {
+		return false;
+	}
+	return std::any_of(
+		root["approval_grants"].begin(),
+		root["approval_grants"].end(),
+		[&serverId](const nlohmann::json& grant) {
+			return grant.is_object() && JsonStringValue(grant, "server_id") == serverId;
+		});
+}
+
+bool UpgradeLegacyConfigJson(nlohmann::json& root)
+{
+	int version = 1;
+	if (root.contains("version") && root["version"].is_number_integer()) {
+		version = root["version"].get<int>();
+	}
+	if (version >= kAIChatMcpConfigVersion) {
+		return false;
+	}
+
+	if (root.contains("servers") && root["servers"].is_array()) {
+		auto& servers = root["servers"];
+		for (auto it = servers.begin(); it != servers.end();) {
+			const bool isLegacyDefault = std::any_of(
+				GetLegacyDefaultServerJsons().begin(),
+				GetLegacyDefaultServerJsons().end(),
+				[&it](const nlohmann::json& legacyDefault) { return *it == legacyDefault; });
+			const std::string serverId = JsonStringValue(*it, "id");
+			if (isLegacyDefault && !HasApprovalGrantForServer(root, serverId)) {
+				it = servers.erase(it);
+			}
+			else {
+				++it;
+			}
+		}
+	}
+
+	root["version"] = kAIChatMcpConfigVersion;
+	return true;
+}
+
+std::string UpgradeLegacyConfigText(const std::string& text, bool& outChanged)
+{
+	outChanged = false;
+	nlohmann::json root = nlohmann::json::parse(text, nullptr, false);
+	if (root.is_discarded() || !root.is_object() || !UpgradeLegacyConfigJson(root)) {
+		return text;
+	}
+	outChanged = true;
+	return root.dump(4, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
 } // namespace
 
 namespace AIChatMcpConfigStore {
@@ -216,45 +365,6 @@ std::filesystem::path GetConfigPath()
 std::string BuildDefaultConfigJson()
 {
 	AIChatMcpConfig config;
-	config.servers.push_back({
-		"ida-pro",
-		"IDA Pro",
-		"streamable_http",
-		"http://127.0.0.1:8765/mcp",
-		"",
-		{},
-		"",
-		false,
-		120000,
-		{},
-		{}
-	});
-	config.servers.push_back({
-		"design-mcp",
-		"Design MCP",
-		"streamable_http",
-		"http://127.0.0.1:8770/mcp",
-		"",
-		{},
-		"",
-		false,
-		120000,
-		{},
-		{}
-	});
-	config.servers.push_back({
-		"stdio-example",
-		"本地 stdio MCP 示例",
-		"stdio",
-		"",
-		"npx",
-		{"-y", "@modelcontextprotocol/server-filesystem", "D:\\git"},
-		"",
-		false,
-		120000,
-		{},
-		{}
-	});
 	return SerializeConfigJson(config, true);
 }
 
@@ -455,7 +565,7 @@ bool ParseConfigJson(const std::string& jsonText, AIChatMcpConfig& outConfig, st
 std::string SerializeConfigJson(const AIChatMcpConfig& config, bool pretty)
 {
 	nlohmann::json root = nlohmann::json::object();
-	root["version"] = config.version <= 0 ? 1 : config.version;
+	root["version"] = config.version <= 0 ? kAIChatMcpConfigVersion : config.version;
 	root["servers"] = nlohmann::json::array();
 	for (const auto& server : config.servers) {
 		// Read-only servers come from the mcpServers block, which is written back
@@ -516,7 +626,7 @@ std::string SerializeConfigJson(const AIChatMcpConfig& config, bool pretty)
 std::string SerializeConfigForUi(const AIChatMcpConfig& config)
 {
 	nlohmann::json root = nlohmann::json::object();
-	root["version"] = config.version <= 0 ? 1 : config.version;
+	root["version"] = config.version <= 0 ? kAIChatMcpConfigVersion : config.version;
 	root["servers"] = nlohmann::json::array();
 	for (const auto& server : config.servers) {
 		nlohmann::json item = {
@@ -559,32 +669,68 @@ std::string SerializeConfigForUi(const AIChatMcpConfig& config)
 
 bool Load(AIChatMcpConfig& outConfig, std::string* outError)
 {
+	std::lock_guard<std::recursive_mutex> guard(g_configStoreMutex);
 	outConfig = {};
 	const std::filesystem::path path = GetConfigPath();
 	if (!std::filesystem::exists(path)) {
-		outConfig.version = 1;
+		outConfig.version = kAIChatMcpConfigVersion;
 		return true;
 	}
 
-	std::string error;
-	const std::string text = ReadTextFile(path, error);
-	if (!error.empty()) {
-		if (outError != nullptr) {
-			*outError = error;
+	constexpr int kMaxUpgradeAttempts = 3;
+	for (int attempt = 0; attempt < kMaxUpgradeAttempts; ++attempt) {
+		std::string error;
+		const std::string text = ReadTextFile(path, error);
+		if (!error.empty()) {
+			if (outError != nullptr) {
+				*outError = error;
+			}
+			return false;
 		}
-		return false;
-	}
-	if (!ParseConfigJson(text, outConfig, error)) {
-		if (outError != nullptr) {
-			*outError = error;
+
+		bool upgraded = false;
+		const std::string effectiveText = UpgradeLegacyConfigText(text, upgraded);
+		AIChatMcpConfig parsed;
+		if (!ParseConfigJson(effectiveText, parsed, error)) {
+			if (outError != nullptr) {
+				*outError = error;
+			}
+			return false;
 		}
-		return false;
+		if (!upgraded) {
+			outConfig = std::move(parsed);
+			return true;
+		}
+
+		const std::string currentText = ReadTextFile(path, error);
+		if (!error.empty()) {
+			if (outError != nullptr) {
+				*outError = error;
+			}
+			return false;
+		}
+		if (currentText != text) {
+			continue;
+		}
+		if (!WriteTextFile(path, effectiveText, error)) {
+			if (outError != nullptr) {
+				*outError = error.empty() ? "upgrade MCP config failed" : error;
+			}
+			return false;
+		}
+		outConfig = std::move(parsed);
+		return true;
 	}
-	return true;
+
+	if (outError != nullptr) {
+		*outError = "MCP config changed repeatedly during upgrade";
+	}
+	return false;
 }
 
 bool Save(const AIChatMcpConfig& config, std::string* outError)
 {
+	std::lock_guard<std::recursive_mutex> guard(g_configStoreMutex);
 	std::string error;
 	const bool ok = WriteTextFile(GetConfigPath(), SerializeConfigJson(config, true), error);
 	if (!ok && outError != nullptr) {
@@ -595,9 +741,12 @@ bool Save(const AIChatMcpConfig& config, std::string* outError)
 
 bool SaveJsonText(const std::string& jsonText, std::string* outError, bool preserveMissingMcpServers)
 {
+	std::lock_guard<std::recursive_mutex> guard(g_configStoreMutex);
 	AIChatMcpConfig parsed;
 	std::string error;
-	if (!ParseConfigJson(jsonText, parsed, error)) {
+	bool upgraded = false;
+	const std::string effectiveText = UpgradeLegacyConfigText(jsonText, upgraded);
+	if (!ParseConfigJson(effectiveText, parsed, error)) {
 		if (outError != nullptr) {
 			*outError = error;
 		}

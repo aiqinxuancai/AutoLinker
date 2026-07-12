@@ -22,7 +22,6 @@ namespace {
 constexpr int kEditId = 1101;
 constexpr int kSaveId = 1102;
 constexpr int kCancelId = 1103;
-constexpr int kTemplateId = 1104;
 constexpr UINT_PTR kMcpWebViewInitTimerId = 0xAD01;
 constexpr UINT kMcpWebViewInitTimeoutMs = 12000;
 constexpr const wchar_t* kMcpDialogTitle = L"AutoLinker MCP 设置";
@@ -31,7 +30,6 @@ struct McpConfigDialogContext {
 	HWND hEdit = nullptr;
 	HWND hSave = nullptr;
 	HWND hCancel = nullptr;
-	HWND hTemplate = nullptr;
 	HWND owner = nullptr;
 	bool done = false;
 	bool saved = false;
@@ -158,6 +156,9 @@ void CenterWindowOnOwnerOrScreenLocal(HWND hDialog, HWND owner)
 
 std::string ReadCurrentConfigText()
 {
+	AIChatMcpConfig loadedConfig;
+	AIChatMcpConfigStore::Load(loadedConfig, nullptr);
+
 	const std::filesystem::path path = AIChatMcpConfigStore::GetConfigPath();
 	if (!std::filesystem::exists(path)) {
 		return AIChatMcpConfigStore::BuildDefaultConfigJson();
@@ -287,7 +288,7 @@ std::string BuildMcpWebViewConfigJson()
 		OutputStringToELog(std::format("[AI Chat MCP][WebView2] config parse failed, using default: {}", error));
 		if (!AIChatMcpConfigStore::ParseConfigJson(AIChatMcpConfigStore::BuildDefaultConfigJson(), config, error)) {
 			config = {};
-			config.version = 1;
+			config.version = kAIChatMcpConfigVersion;
 		}
 	}
 	return AIChatMcpConfigStore::SerializeConfigForUi(config);
@@ -627,7 +628,6 @@ void LayoutMcpConfigDialog(HWND hWnd, McpConfigDialogContext* ctx)
 	const int gap = 8;
 	const int footerY = height - margin - buttonHeight;
 	MoveWindow(ctx->hEdit, margin, margin, (std::max)(120, width - margin * 2), (std::max)(80, footerY - margin - gap), TRUE);
-	MoveWindow(ctx->hTemplate, margin, footerY, 120, buttonHeight, TRUE);
 	MoveWindow(ctx->hCancel, width - margin - buttonWidth, footerY, buttonWidth, buttonHeight, TRUE);
 	MoveWindow(ctx->hSave, width - margin - buttonWidth * 2 - gap, footerY, buttonWidth, buttonHeight, TRUE);
 }
@@ -677,11 +677,9 @@ LRESULT CALLBACK McpConfigDialogProc(HWND hWnd, UINT message, WPARAM wParam, LPA
 			reinterpret_cast<HMENU>(kEditId),
 			nullptr,
 			nullptr);
-		ctx->hTemplate = CreateWindowW(L"BUTTON", L"重置示例", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 80, 24, hWnd, reinterpret_cast<HMENU>(kTemplateId), nullptr, nullptr);
 		ctx->hSave = CreateWindowW(L"BUTTON", L"保存", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON, 0, 0, 80, 24, hWnd, reinterpret_cast<HMENU>(kSaveId), nullptr, nullptr);
 		ctx->hCancel = CreateWindowW(L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP, 0, 0, 80, 24, hWnd, reinterpret_cast<HMENU>(kCancelId), nullptr, nullptr);
 		SetDefaultFont(ctx->hEdit);
-		SetDefaultFont(ctx->hTemplate);
 		SetDefaultFont(ctx->hSave);
 		SetDefaultFont(ctx->hCancel);
 		LayoutMcpConfigDialog(hWnd, ctx);
@@ -695,12 +693,6 @@ LRESULT CALLBACK McpConfigDialogProc(HWND hWnd, UINT message, WPARAM wParam, LPA
 		{
 		case kSaveId:
 			TrySaveConfig(hWnd, ctx);
-			return 0;
-		case kTemplateId:
-			if (ctx != nullptr && ctx->hEdit != nullptr &&
-				MessageBoxW(hWnd, L"用默认示例覆盖当前编辑内容？", L"重置示例", MB_ICONQUESTION | MB_YESNO) == IDYES) {
-				SetWindowTextW(ctx->hEdit, Utf8ToWide(AIChatMcpConfigStore::BuildDefaultConfigJson()).c_str());
-			}
 			return 0;
 		case kCancelId:
 			if (ctx != nullptr) {

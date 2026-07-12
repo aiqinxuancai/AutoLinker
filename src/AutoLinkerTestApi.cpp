@@ -882,7 +882,7 @@ bool RunMcpConfigInvariantsSelfTest(nlohmann::json& outCheck)
 
 		// Seed disk with the full config, then emulate a WebView save (servers only)
 		// with preserve=true: mcpServers must survive.
-		const std::string uiSave = R"({"version":1,"servers":[{"id":"http-a","name":"A","transport":"streamable_http","url":"http://127.0.0.1:9/mcp","enabled":false}],"approval_grants":[]})";
+		const std::string uiSave = R"({"version":1,"servers":[{"id":"http-a","name":"A","transport":"streamable_http","url":"http://127.0.0.1:9/mcp","enabled":false},{"id":"design-mcp","name":"Design MCP","url":"http://127.0.0.1:8770/mcp","enabled":false,"timeout_ms":120000,"headers":[]}],"approval_grants":[]})";
 		if (!AIChatMcpConfigStore::SaveJsonText(source, &error) ||
 			!AIChatMcpConfigStore::SaveJsonText(uiSave, &error, /*preserveMissingMcpServers=*/true)) {
 			failures.push_back("seed or WebView-style save failed: " + error);
@@ -894,11 +894,16 @@ bool RunMcpConfigInvariantsSelfTest(nlohmann::json& outCheck)
 				[](const AIChatMcpServerConfig& s) { return s.id == "extern" && s.readOnly; });
 			const bool noDup = std::count_if(afterWeb.servers.begin(), afterWeb.servers.end(),
 				[](const AIChatMcpServerConfig& s) { return s.id == "extern"; }) == 1;
+			const bool legacyDefaultRemoved = std::none_of(afterWeb.servers.begin(), afterWeb.servers.end(),
+				[](const AIChatMcpServerConfig& s) { return s.id == "design-mcp"; });
 			if (!preserved) {
 				failures.push_back("mcpServers lost after WebView-style (preserve) save");
 			}
 			if (!noDup) {
 				failures.push_back("read-only server duplicated after preserve save");
+			}
+			if (!legacyDefaultRemoved) {
+				failures.push_back("legacy default survived WebView-style save");
 			}
 		}
 
@@ -913,8 +918,13 @@ bool RunMcpConfigInvariantsSelfTest(nlohmann::json& outCheck)
 			AIChatMcpConfigStore::Load(afterNative, nullptr);
 			const bool stillThere = std::any_of(afterNative.servers.begin(), afterNative.servers.end(),
 				[](const AIChatMcpServerConfig& s) { return s.id == "extern"; });
+			const bool legacyDefaultStillThere = std::any_of(afterNative.servers.begin(), afterNative.servers.end(),
+				[](const AIChatMcpServerConfig& s) { return s.id == "design-mcp"; });
 			if (stillThere) {
 				failures.push_back("native-editor deletion of mcpServers was silently reverted");
+			}
+			if (legacyDefaultStillThere) {
+				failures.push_back("legacy default survived native-style save");
 			}
 		}
 	}
@@ -959,6 +969,151 @@ bool RunMcpConfigInvariantsSelfTest(nlohmann::json& outCheck)
 			if (!http) {
 				failures.push_back("explicit streamable_http overridden to stdio by command");
 			}
+		}
+	}
+
+	// 5. Version-1 defaults are removed only when their raw JSON still exactly
+	//    matches a published template. User-owned variants and unrelated data stay.
+	{
+		const std::string source = R"({
+			"version": 1,
+			"future_root_field": {"keep": true},
+			"servers": [
+				{"id":"ida-pro","name":"IDA Pro","url":"http://127.0.0.1:8765/mcp","enabled":false,"timeout_ms":120000,"headers":[]},
+				{"id":"design-mcp","name":"Design MCP","url":"http://127.0.0.1:8770/mcp","enabled":false,"timeout_ms":120000,"headers":[]},
+				{"id":"ida-pro","name":"IDA Pro","transport":"streamable_http","url":"http://127.0.0.1:8765/mcp","command":"","arguments":[],"working_directory":"","enabled":false,"timeout_ms":120000,"headers":[],"env":[]},
+				{"id":"design-mcp","name":"Design MCP","transport":"streamable_http","url":"http://127.0.0.1:8770/mcp","command":"","arguments":[],"working_directory":"","enabled":false,"timeout_ms":120000,"headers":[],"env":[]},
+				{"id":"stdio-example","name":"\u672c\u5730 stdio MCP \u793a\u4f8b","transport":"stdio","url":"","command":"npx","arguments":["-y","@modelcontextprotocol/server-filesystem","D:\\git"],"working_directory":"","enabled":false,"timeout_ms":120000,"headers":[],"env":[]},
+				{"id":"ida-pro","name":"User IDA","url":"http://127.0.0.1:9876/mcp","enabled":true,"timeout_ms":120000,"headers":[]},
+				{"id":"design-mcp","name":"Design MCP","url":"http://127.0.0.1:8770/mcp","enabled":false,"timeout_ms":120000,"headers":[],"owner":"user"},
+				{"id":"custom","name":"Custom","url":"http://127.0.0.1:9999/mcp","enabled":false,"timeout_ms":120000,"headers":[]}
+			],
+			"mcpServers": {"external": {"command":"custom-server","enabled":false}},
+			"approval_grants": []
+		})";
+		const auto path = AIChatMcpConfigStore::GetConfigPath();
+		AIChatMcpConfig seedConfig;
+		std::string seedError;
+		if (!AIChatMcpConfigStore::ParseConfigJson(source, seedConfig, seedError)) {
+			failures.push_back("parse legacy-default migration seed failed: " + seedError);
+		}
+		else if (!WriteFileBinary(path, source)) {
+			failures.push_back("seed legacy-default migration config failed");
+		}
+		else if (ReadFileBinary(path) != source) {
+			failures.push_back("legacy-default migration seed changed during write");
+		}
+		else {
+			AIChatMcpConfig migrated;
+			std::string error;
+			if (!AIChatMcpConfigStore::Load(migrated, &error)) {
+				failures.push_back("load legacy-default migration config failed: " + error);
+			}
+			else {
+				const bool keptUserIda = std::any_of(migrated.servers.begin(), migrated.servers.end(),
+					[](const AIChatMcpServerConfig& server) {
+						return server.name == "User IDA" && server.enabled && server.url == "http://127.0.0.1:9876/mcp";
+					});
+				const bool keptExtendedDesign = std::any_of(migrated.servers.begin(), migrated.servers.end(),
+					[](const AIChatMcpServerConfig& server) {
+						return server.name == "Design MCP" && server.url == "http://127.0.0.1:8770/mcp";
+					});
+				const bool keptCustom = std::any_of(migrated.servers.begin(), migrated.servers.end(),
+					[](const AIChatMcpServerConfig& server) { return server.name == "Custom"; });
+				const bool keptExternal = std::any_of(migrated.servers.begin(), migrated.servers.end(),
+					[](const AIChatMcpServerConfig& server) { return server.name == "external" && server.readOnly; });
+				if (migrated.version != kAIChatMcpConfigVersion || migrated.servers.size() != 4 ||
+					!keptUserIda || !keptExtendedDesign || !keptCustom || !keptExternal) {
+					failures.push_back("legacy defaults were not removed conservatively");
+				}
+			}
+
+			const nlohmann::json persisted = nlohmann::json::parse(ReadFileBinary(path), nullptr, false);
+			const bool keptOwnerField = !persisted.is_discarded() &&
+				persisted.contains("servers") && persisted["servers"].is_array() &&
+				std::any_of(persisted["servers"].begin(), persisted["servers"].end(),
+					[](const nlohmann::json& server) {
+						return server.is_object() && server.value("owner", std::string()) == "user";
+					});
+			const nlohmann::json expectedMcpServers = {
+				{"external", {{"command", "custom-server"}, {"enabled", false}}}
+			};
+			if (persisted.is_discarded() ||
+				persisted.value("version", 0) != kAIChatMcpConfigVersion ||
+				!persisted.contains("future_root_field") ||
+				!persisted["future_root_field"].value("keep", false) ||
+				!persisted.contains("servers") || !persisted["servers"].is_array() ||
+				persisted["servers"].size() != 3 || !keptOwnerField ||
+				!persisted.contains("mcpServers") || persisted["mcpServers"] != expectedMcpServers) {
+				failures.push_back("legacy-default migration did not preserve raw user data");
+			}
+		}
+	}
+
+	// 6. A grant is evidence that a matching server was used, so keep it. Version
+	//    2 also prevents a future user-created lookalike from being removed.
+	{
+		const std::string grantedSource = R"({
+			"version": 1,
+			"servers": [
+				{"id":"stdio-example","name":"\u672c\u5730 stdio MCP \u793a\u4f8b","transport":"stdio","url":"","command":"npx","arguments":["-y","@modelcontextprotocol/server-filesystem","D:\\git"],"working_directory":"","enabled":false,"timeout_ms":120000,"headers":[],"env":[]}
+			],
+			"approval_grants": [
+				{"server_id":"stdio-example","tool_name":"used-tool","schema_hash":"used-schema","created_at_unix_ms":1,"updated_at_unix_ms":1}
+			]
+		})";
+		const auto path = AIChatMcpConfigStore::GetConfigPath();
+		AIChatMcpConfig grantedSeed;
+		std::string grantedSeedError;
+		if (!AIChatMcpConfigStore::ParseConfigJson(grantedSource, grantedSeed, grantedSeedError)) {
+			failures.push_back("parse granted legacy server seed failed: " + grantedSeedError);
+		}
+		else if (!WriteFileBinary(path, grantedSource)) {
+			failures.push_back("seed granted legacy server config failed");
+		}
+		else {
+			AIChatMcpConfig granted;
+			std::string error;
+			if (!AIChatMcpConfigStore::Load(granted, &error) ||
+				granted.version != kAIChatMcpConfigVersion ||
+				granted.servers.size() != 1 || granted.servers.front().id != "stdio-example") {
+				failures.push_back("granted legacy server was removed: " + error);
+			}
+		}
+
+		const std::string currentVersionSource = R"({
+			"version": 2,
+			"servers": [
+				{"id":"design-mcp","name":"Design MCP","url":"http://127.0.0.1:8770/mcp","enabled":false,"timeout_ms":120000,"headers":[]}
+			],
+			"approval_grants": []
+		})";
+		if (!WriteFileBinary(path, currentVersionSource)) {
+			failures.push_back("seed current-version lookalike config failed");
+		}
+		else {
+			AIChatMcpConfig currentVersion;
+			std::string error;
+			if (!AIChatMcpConfigStore::Load(currentVersion, &error) ||
+				currentVersion.version != kAIChatMcpConfigVersion ||
+				currentVersion.servers.size() != 1 || currentVersion.servers.front().id != "design-mcp" ||
+				ReadFileBinary(path) != currentVersionSource) {
+				failures.push_back("current-version user server was removed");
+			}
+		}
+	}
+
+	// 7. A missing file yields an empty current-version config without creating it.
+	{
+		const auto path = AIChatMcpConfigStore::GetConfigPath();
+		std::error_code ec;
+		std::filesystem::remove(path, ec);
+		AIChatMcpConfig empty;
+		std::string error;
+		if (ec || !AIChatMcpConfigStore::Load(empty, &error) ||
+			empty.version != kAIChatMcpConfigVersion || !empty.servers.empty() ||
+			std::filesystem::exists(path)) {
+			failures.push_back("missing MCP config did not stay empty and absent");
 		}
 	}
 

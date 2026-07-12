@@ -2067,7 +2067,10 @@ std::string BuildSelfTestReportJson()
 		AIChatMcpConfig parsedConfig;
 		std::string error;
 		const bool configOk = AIChatMcpConfigStore::ParseConfigJson(AIChatMcpConfigStore::BuildDefaultConfigJson(), parsedConfig, error);
-		addCheck("default_config_parse", configOk && parsedConfig.servers.size() >= 2, error);
+		addCheck(
+			"default_config_parse",
+			configOk && parsedConfig.version == kAIChatMcpConfigVersion && parsedConfig.servers.empty(),
+			error);
 
 		nlohmann::json schema = {
 			{"type", "object"},

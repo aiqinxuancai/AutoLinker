@@ -46,9 +46,12 @@ struct AIChatMcpApprovalGrant {
 	long long updatedAtUnixMs = 0;
 };
 
+// 当前 MCP 配置格式版本。
+inline constexpr int kAIChatMcpConfigVersion = 2;
+
 // AI 对话 MCP 客户端配置。
 struct AIChatMcpConfig {
-	int version = 1;
+	int version = kAIChatMcpConfigVersion;
 	std::vector<AIChatMcpServerConfig> servers;
 	std::vector<AIChatMcpApprovalGrant> approvalGrants;
 	// mcpServers 段原样保留（兼容其他客户端），序列化时原样写回，
@@ -60,7 +63,7 @@ namespace AIChatMcpConfigStore {
 
 // 获取 MCP 配置文件路径。
 std::filesystem::path GetConfigPath();
-// 构建带示例服务器的默认配置 JSON。
+// 构建不带服务器的默认配置 JSON。
 std::string BuildDefaultConfigJson();
 // 解析 MCP 配置 JSON。
 bool ParseConfigJson(const std::string& jsonText, AIChatMcpConfig& outConfig, std::string& outError);
