@@ -36,6 +36,8 @@ namespace {
 using json = nlohmann::json;
 
 constexpr const char* kLatestReleaseApi = "https://api.github.com/repos/aiqinxuancai/e-packager/releases/latest";
+constexpr const char* kGitHubBaseUrl = "https://github.com/";
+constexpr const char* kGitHubAcceleratorBaseUrl = "https://github-fast.apptest.dev/";
 constexpr const char* kGitHubHeaders =
 	"User-Agent: AutoLinker\r\n"
 	"Accept: application/vnd.github+json\r\n";
@@ -632,18 +634,55 @@ bool WriteBinaryFile(const std::filesystem::path& path, const std::string& bytes
 	return true;
 }
 
+std::string BuildAcceleratedGitHubUrl(const std::string& url)
+{
+	const std::string githubBaseUrl = kGitHubBaseUrl;
+	if (url.rfind(githubBaseUrl, 0) != 0) {
+		return url;
+	}
+	return std::string(kGitHubAcceleratorBaseUrl) + url.substr(githubBaseUrl.size());
+}
+
+bool IsZipResponse(const std::string& bytes)
+{
+	if (bytes.size() < 4 || bytes[0] != 'P' || bytes[1] != 'K') {
+		return false;
+	}
+	return (bytes[2] == '\x03' && bytes[3] == '\x04') ||
+		(bytes[2] == '\x05' && bytes[3] == '\x06') ||
+		(bytes[2] == '\x07' && bytes[3] == '\x08');
+}
+
+std::string DescribeDownloadFailure(const std::pair<std::string, int>& response)
+{
+	if (response.second == 200) {
+		return std::format("响应内容不是有效的 ZIP 文件（{} 字节）", response.first.size());
+	}
+
+	std::string error = response.second == 0
+		? std::string("未收到 HTTP 响应")
+		: std::format("HTTP {}", response.second);
+	if (!response.first.empty()) {
+		error += ": " + response.first.substr(0, (std::min<size_t>)(response.first.size(), 300));
+	}
+	return error;
+}
+
 bool DownloadZip(const LatestReleaseInfo& info, const std::filesystem::path& zipPath, std::string& outError)
 {
-	OutputStringToELog(std::format("[e-packager] 开始下载：{}", info.downloadUrl));
-	auto response = PerformGetRequest(info.downloadUrl, kGitHubHeaders, 300000, false, false);
-	if (response.second != 200) {
-		outError = response.second == 0
-			? std::string("下载失败，未收到 HTTP 响应")
-			: std::format("下载失败，HTTP {}", response.second);
-		if (!response.first.empty()) {
-			outError += ": " + response.first.substr(0, (std::min<size_t>)(response.first.size(), 300));
+	const std::string acceleratedUrl = BuildAcceleratedGitHubUrl(info.downloadUrl);
+	OutputStringToELog(std::format("[e-packager] 通过 GitHub 加速地址下载：{}", acceleratedUrl));
+	auto response = PerformGetRequest(acceleratedUrl, kGitHubHeaders, 300000, false, false);
+	if (response.second != 200 || !IsZipResponse(response.first)) {
+		const std::string acceleratedError = DescribeDownloadFailure(response);
+		OutputStringToELog("[e-packager] GitHub 加速地址下载失败，将尝试原始 GitHub 地址：" + acceleratedError);
+		OutputStringToELog(std::format("[e-packager] 通过原始 GitHub 地址下载：{}", info.downloadUrl));
+		response = PerformGetRequest(info.downloadUrl, kGitHubHeaders, 300000, false, false);
+		if (response.second != 200 || !IsZipResponse(response.first)) {
+			outError = "GitHub 加速地址下载失败（" + acceleratedError + "）；原始 GitHub 地址下载失败（" +
+				DescribeDownloadFailure(response) + "）";
+			return false;
 		}
-		return false;
 	}
 
 	if (!WriteBinaryFile(zipPath, response.first, outError)) {
