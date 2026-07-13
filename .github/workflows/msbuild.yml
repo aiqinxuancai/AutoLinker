@@ -89,6 +89,8 @@ jobs:
         Get-Content "./src/AutoLinker.h" -Encoding utf8BOM | Out-String | Write-Output
 
     - name: Build
+      env:
+        CL: /MP4
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: |
         msbuild ${{env.SOLUTION_FILE_PATH}}/AutoLinker.vcxproj -t:rebuild -verbosity:normal -property:Configuration=${{env.BUILD_CONFIGURATION}} -property:Platform=${{env.BUILD_PLATFORM}}
