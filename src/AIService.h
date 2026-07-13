@@ -134,11 +134,6 @@ public:
 	static std::string BuildPublicToolCatalogJson();
 	// 构建 Agent 工具优化与 Responses 流式解析的内部自测报告。
 	static std::string BuildAgentOptimizationSelfTestJson();
-	// 判断模块/支持库管理工具是否允许由当前最新用户请求触发。
-	static bool IsDependencyManagementTool(const std::string& toolName);
-	static bool IsDependencyManagementToolAllowedForContext(
-		const std::string& toolName,
-		const std::vector<AIChatMessage>& contextMessages);
 	static std::string NormalizeModelOutputToCode(const std::string& modelText);
 	static std::string Trim(const std::string& text);
 

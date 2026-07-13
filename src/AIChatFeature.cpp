@@ -1347,17 +1347,6 @@ std::string BuildPlanModeToolBlockedResult(const std::string& toolName)
 	return Utf8ToLocalText(r.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 }
 
-std::string BuildDependencyManagementToolBlockedResult(const std::string& toolName)
-{
-	nlohmann::json r;
-	r["ok"] = false;
-	r["error"] =
-		"dependency management tool requires an explicit request in the latest user message: " +
-		(toolName.empty() ? std::string("unknown_tool") : toolName);
-	r["requires_explicit_user_request"] = true;
-	return Utf8ToLocalText(r.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
-}
-
 bool ShouldBlockToolForCurrentPlanMode(const std::string& toolName)
 {
 	if (!IsPlanModeWriteBlockedTool(toolName) &&
@@ -5201,7 +5190,6 @@ void RunAIChatWorker(void* pParams)
 					[
 						cancellation = request->cancellation,
 						requestId = request->requestId,
-						contextMessages = request->contextMessages,
 						workspaceMirrorState
 					](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
 						FlushStreamingAssistantPreviewToHistory(requestId);
@@ -5212,17 +5200,6 @@ void RunAIChatWorker(void* pParams)
 								LocalFromWide(L"\u8ba1\u5212\u672a\u6279\u51c6\uff0c\u5df2\u62e6\u622a\u5de5\u5177\uff1a") +
 								(toolName.empty() ? std::string("<unknown>") : toolName));
 							const std::string blockedResult = BuildPlanModeToolBlockedResult(toolName);
-							UpsertToolTranscriptMessage(requestId, "ran", toolName, argumentsJson, blockedResult, false);
-							return blockedResult;
-						}
-						if (AIService::IsDependencyManagementTool(toolName) &&
-							!AIService::IsDependencyManagementToolAllowedForContext(toolName, contextMessages)) {
-							outOk = false;
-							AppendAgentActivity(
-								requestId,
-								LocalFromWide(L"\u672a\u660e\u786e\u8bf7\u6c42\uff0c\u5df2\u62e6\u622a\u4f9d\u8d56\u7ba1\u7406\u5de5\u5177\uff1a") +
-								(toolName.empty() ? std::string("<unknown>") : toolName));
-							const std::string blockedResult = BuildDependencyManagementToolBlockedResult(toolName);
 							UpsertToolTranscriptMessage(requestId, "ran", toolName, argumentsJson, blockedResult, false);
 							return blockedResult;
 						}

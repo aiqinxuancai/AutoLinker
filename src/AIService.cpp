@@ -2463,174 +2463,13 @@ nlohmann::json BuildConfiguredToolCatalog(const AISettings& settings)
 		FilterToolCatalogForSourceEditMode(BuildPublicToolCatalog(), settings.sourceEditMode));
 }
 
-bool ContainsAnyText(const std::string& text, std::initializer_list<std::string_view> needles);
+nlohmann::json BuildInternalToolCatalog(const AISettings& settings);
 
-std::string CollectLatestUserToolRoutingText(const std::vector<AIChatMessage>& contextMessages)
+nlohmann::json FilterInternalChatToolCatalog(const nlohmann::json& catalog)
 {
-	for (auto it = contextMessages.rbegin(); it != contextMessages.rend(); ++it) {
-		if (ToLowerAsciiCopy(AIService::Trim(it->role)) != "user") {
-			continue;
-		}
-		std::string text = it->content;
-		if (!it->rawMessageJsonUtf8.empty()) {
-			text.push_back('\n');
-			text += it->rawMessageJsonUtf8;
-		}
-		return text;
-	}
-	return std::string();
-}
-
-std::string CollectRecentUserToolRoutingText(
-	const std::vector<AIChatMessage>& contextMessages,
-	size_t maxMessages)
-{
-	std::vector<std::string> recent;
-	for (auto it = contextMessages.rbegin(); it != contextMessages.rend() && recent.size() < maxMessages; ++it) {
-		if (ToLowerAsciiCopy(AIService::Trim(it->role)) != "user") {
-			continue;
-		}
-		std::string text = it->content;
-		if (!it->rawMessageJsonUtf8.empty()) {
-			text.push_back('\n');
-			text += it->rawMessageJsonUtf8;
-		}
-		recent.push_back(std::move(text));
-	}
-	std::string merged;
-	for (auto it = recent.rbegin(); it != recent.rend(); ++it) {
-		if (!merged.empty()) {
-			merged.push_back('\n');
-		}
-		merged += *it;
-	}
-	return merged;
-}
-
-bool IsDependencyManagementToolName(const std::string& name)
-{
-	return AIChatToolRegistry::IsDependencyManagement(name);
-}
-
-bool HasExplicitModuleSearchIntent(const std::string& text)
-{
-	return ContainsAnyText(text, { "search_available_modules" }) ||
-		(ContainsAnyText(text, { "搜索", "查找", "查询", "列出", "有哪些", "可用", "available", "search", "list" }) &&
-		 ContainsAnyText(text, { "模块", "ECOM", ".ec", "module" }));
-}
-
-bool HasExplicitSupportLibrarySearchIntent(const std::string& text)
-{
-	return ContainsAnyText(text, { "search_available_support_libraries" }) ||
-		(ContainsAnyText(text, { "搜索", "查找", "查询", "列出", "有哪些", "可用", "available", "search", "list" }) &&
-		 ContainsAnyText(text, { "支持库", "support library", ".fne", ".fnr" }));
-}
-
-bool HasExplicitDependencyRefreshIntent(const std::string& text)
-{
-	return ContainsAnyText(text, { "refresh_dependency_catalog" }) ||
-		(ContainsAnyText(text, { "刷新", "重建", "更新", "refresh", "rebuild" }) &&
-		 ContainsAnyText(text, { "依赖目录", "依赖缓存", "模块缓存", "支持库缓存", "dependency catalog", "catalog cache" }));
-}
-
-bool HasExplicitImportedModuleListIntent(const std::string& text)
-{
-	return ContainsAnyText(text, {
-		"list_imported_modules",
-		"列出已导入模块",
-		"查看已导入模块",
-		"当前导入的模块",
-		"已导入的模块",
-		"imported modules"
-	});
-}
-
-bool HasExplicitModuleAddIntent(const std::string& text)
-{
-	return ContainsAnyText(text, { "add_module_to_project" }) ||
-		(ContainsAnyText(text, { "添加", "新增", "引入", "导入", "加入", "add", "import" }) &&
-		 ContainsAnyText(text, { "模块", "ECOM", ".ec", "module" }));
-}
-
-bool HasExplicitModuleRemoveIntent(const std::string& text)
-{
-	return ContainsAnyText(text, { "remove_module_from_project" }) ||
-		(ContainsAnyText(text, { "删除", "移除", "去掉", "取消导入", "卸载", "remove", "delete" }) &&
-		 ContainsAnyText(text, { "模块", "ECOM", ".ec", "module" }));
-}
-
-bool HasExplicitSupportLibraryAddIntent(const std::string& text)
-{
-	return ContainsAnyText(text, { "add_support_library_to_project" }) ||
-		(ContainsAnyText(text, { "添加", "新增", "引入", "导入", "加入", "add", "import" }) &&
-		 ContainsAnyText(text, { "支持库", "support library", ".fne", ".fnr" }));
-}
-
-bool HasDependencyManagementDenyIntent(const std::string& text)
-{
-	return ContainsAnyText(text, {
-			"不要调用",
-			"不能调用",
-			"禁止调用",
-			"不要使用",
-			"禁止使用",
-			"无需调用",
-			"不需要调用"
-		}) &&
-		ContainsAnyText(text, {
-			"依赖管理",
-			"模块",
-			"ECOM",
-			"支持库",
-			"refresh_dependency_catalog",
-			"search_available_modules",
-			"search_available_support_libraries",
-			"list_imported_modules",
-			"add_module_to_project",
-			"remove_module_from_project",
-			"add_support_library_to_project"
-		});
-}
-
-bool IsDependencyManagementToolExplicitlyRequested(const std::string& name, const std::string& latestUserText)
-{
-	if (HasDependencyManagementDenyIntent(latestUserText)) {
-		return false;
-	}
-	if (name == "refresh_dependency_catalog") {
-		return HasExplicitDependencyRefreshIntent(latestUserText);
-	}
-	if (name == "search_available_modules") {
-		return HasExplicitModuleSearchIntent(latestUserText);
-	}
-	if (name == "search_available_support_libraries") {
-		return HasExplicitSupportLibrarySearchIntent(latestUserText);
-	}
-	if (name == "list_imported_modules") {
-		return HasExplicitImportedModuleListIntent(latestUserText);
-	}
-	if (name == "add_module_to_project") {
-		return HasExplicitModuleAddIntent(latestUserText);
-	}
-	if (name == "remove_module_from_project") {
-		return HasExplicitModuleRemoveIntent(latestUserText);
-	}
-	if (name == "add_support_library_to_project") {
-		return HasExplicitSupportLibraryAddIntent(latestUserText);
-	}
-	return true;
-}
-
-nlohmann::json FilterDependencyManagementToolsForExplicitRequest(
-	const nlohmann::json& catalog,
-	const std::vector<AIChatMessage>& contextMessages)
-{
-	const std::string latestUserText = CollectLatestUserToolRoutingText(contextMessages);
 	nlohmann::json filtered = nlohmann::json::array();
 	for (const auto& item : catalog) {
-		const std::string name = item.is_object() ? item.value("name", std::string()) : std::string();
-		if (IsDependencyManagementToolName(name) &&
-			!IsDependencyManagementToolExplicitlyRequested(name, latestUserText)) {
+		if (!item.is_object() || item.value("name", std::string()) == "refresh_workspace_mirror") {
 			continue;
 		}
 		filtered.push_back(item);
@@ -2638,21 +2477,9 @@ nlohmann::json FilterDependencyManagementToolsForExplicitRequest(
 	return filtered;
 }
 
-nlohmann::json BuildConfiguredToolCatalog(
-	const AISettings& settings,
-	const std::vector<AIChatMessage>& contextMessages)
-{
-	return FilterDependencyManagementToolsForExplicitRequest(BuildConfiguredToolCatalog(settings), contextMessages);
-}
-
-nlohmann::json BuildInternalToolCatalog(
-	const AISettings& settings,
-	const std::vector<AIChatMessage>& contextMessages,
-	bool minimal);
-
 nlohmann::json BuildChatToolDefinitions(const AISettings& settings)
 {
-	const nlohmann::json catalog = FilterDependencyManagementToolsForExplicitRequest(BuildConfiguredToolCatalog(settings), {});
+	const nlohmann::json catalog = BuildInternalToolCatalog(settings);
 	nlohmann::json tools = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		tools.push_back({
@@ -2669,41 +2496,9 @@ nlohmann::json BuildChatToolDefinitions(const AISettings& settings)
 
 nlohmann::json BuildChatToolDefinitions(
 	const AISettings& settings,
-	const std::vector<AIChatMessage>& contextMessages)
+	const std::vector<AIChatMessage>&)
 {
-	const nlohmann::json catalog = BuildInternalToolCatalog(settings, contextMessages, false);
-	nlohmann::json tools = nlohmann::json::array();
-	for (const auto& item : catalog) {
-		tools.push_back({
-			{"type", "function"},
-			{"function", {
-				{"name", item.value("name", "")},
-				{"description", item.value("description", "")},
-				{"parameters", item.contains("inputSchema") ? item["inputSchema"] : nlohmann::json::object()}
-			}}
-		});
-	}
-	return tools;
-}
-
-nlohmann::json FindToolCatalogItemByName(const nlohmann::json& catalog, const std::string& name)
-{
-	for (const auto& item : catalog) {
-		if (item.is_object() && item.value("name", std::string()) == name) {
-			return item;
-		}
-	}
-	return nlohmann::json::object();
-}
-
-void AddUniqueToolName(std::vector<std::string>& names, const char* name)
-{
-	if (name == nullptr || *name == '\0') {
-		return;
-	}
-	if (std::find(names.begin(), names.end(), name) == names.end()) {
-		names.emplace_back(name);
-	}
+	return BuildChatToolDefinitions(settings);
 }
 
 std::string TruncateGeminiDescription(const std::string& text)
@@ -2792,373 +2587,17 @@ nlohmann::json SanitizeGeminiSchema(const nlohmann::json& schema)
 	return out;
 }
 
-bool ContainsAnyText(const std::string& text, std::initializer_list<std::string_view> needles)
+nlohmann::json BuildInternalToolCatalog(const AISettings& settings)
 {
-	for (std::string_view needle : needles) {
-		if (needle.empty()) {
-			continue;
-		}
-		if (text.find(needle) != std::string::npos || ContainsAsciiInsensitive(text, needle)) {
-			return true;
-		}
-	}
-	return false;
+	return FilterInternalChatToolCatalog(BuildConfiguredToolCatalog(settings));
 }
 
-std::vector<std::string> SelectInternalToolNames(
-	const std::vector<AIChatMessage>& contextMessages,
-	bool minimal,
-	AISourceEditMode sourceEditMode)
+nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>&, bool, const AISettings& settings)
 {
-	const std::string latestUserText = CollectLatestUserToolRoutingText(contextMessages);
-	const bool continuation = ContainsAnyText(latestUserText, {
-		"继续", "接着", "按上面", "照此", "执行吧", "确认", "可以", "continue", "proceed"
-	});
-	const std::string text = continuation
-		? CollectRecentUserToolRoutingText(contextMessages, 2)
-		: latestUserText;
-	std::vector<std::string> names;
-	if (ContainsAnyText(latestUserText, {
-		"计划", "方案", "全部", "多个文件", "多步骤", "分阶段", "架构", "迁移", "重构",
-		"plan", "multi-file", "multi step", "architecture", "migration" })) {
-		AddUniqueToolName(names, "update_plan");
-	}
-
-	const auto addCoreReadTools = [&names]() {
-		AddUniqueToolName(names, "get_current_eide_info");
-	};
-	const auto addFileReadTools = [&names, sourceEditMode]() {
-		AddUniqueToolName(names, "list_files");
-		AddUniqueToolName(names, "search_code");
-		AddUniqueToolName(names, "read_files");
-		AddUniqueToolName(names, "read_code_item");
-		if (IsRealPageReadToolVisible(sourceEditMode)) {
-			AddUniqueToolName(names, "read_real_file");
-		}
-	};
-	const auto addSearchTools = [&names]() {
-		AddUniqueToolName(names, "search_code");
-		AddUniqueToolName(names, "read_files");
-		AddUniqueToolName(names, "read_code_item");
-	};
-	const auto addEditTools = [&names]() {
-		AddUniqueToolName(names, "edit_file");
-		AddUniqueToolName(names, "multi_edit_file");
-		AddUniqueToolName(names, "write_file");
-		AddUniqueToolName(names, "diff_file");
-		AddUniqueToolName(names, "restore_file_snapshot");
-	};
-	const auto addWebTools = [&names]() {
-		AddUniqueToolName(names, "extract_web_document");
-	};
-
-	if (ContainsAnyText(text, { "fetch_url", "extract_web_document", "http://", "https://", "URL", "url", "网页", "文档", "联网" })) {
-		addWebTools();
-		if (ContainsAnyText(text, { "fetch_url", "原始响应", "原始正文", "raw response" })) {
-			AddUniqueToolName(names, "fetch_url");
-		}
-	}
-	if (ContainsAnyText(text, { "search_web_tavily", "搜索网页", "公网", "最新", "官网" })) {
-		AddUniqueToolName(names, "search_web_tavily");
-		addWebTools();
-	}
-	if (ContainsAnyText(text, { "compile_with_output_path", "编译", "构建", "build", "MSBuild" })) {
-		AddUniqueToolName(names, "get_current_eide_info");
-		AddUniqueToolName(names, "compile_with_output_path");
-	}
-	if (ContainsAnyText(text, { "search_code", "搜索", "查找", "查询", "keyword", "regex" })) {
-		addSearchTools();
-	}
-	if (ContainsAnyText(text, {
-		"查看", "检查", "分析", "源码", "代码", "函数", "子程序", ".txt", ".e", ".ec",
-		"inspect", "review", "source", "function" })) {
-		addCoreReadTools();
-		addFileReadTools();
-	}
-	if (ContainsAnyText(text, {
-		"修改", "写入", "替换", "编辑", "新增", "添加", "删除", "重构", "修复", "实现", "支持", "优化", "调整",
-		"edit_", "write_", "insert_", "fix", "implement", "refactor", "optimize" })) {
-		addCoreReadTools();
-		addFileReadTools();
-		addEditTools();
-	}
-	if (ContainsAnyText(text, { "模块", "ECOM", ".ec", "module", "支持库", "support library", ".fne", ".fnr" })) {
-		addFileReadTools();
-		if (HasExplicitDependencyRefreshIntent(latestUserText)) {
-			AddUniqueToolName(names, "refresh_dependency_catalog");
-		}
-		if (HasExplicitModuleSearchIntent(latestUserText)) {
-			AddUniqueToolName(names, "refresh_dependency_catalog");
-			AddUniqueToolName(names, "search_available_modules");
-		}
-		if (HasExplicitSupportLibrarySearchIntent(latestUserText)) {
-			AddUniqueToolName(names, "refresh_dependency_catalog");
-			AddUniqueToolName(names, "search_available_support_libraries");
-		}
-		if (HasExplicitImportedModuleListIntent(latestUserText)) {
-			AddUniqueToolName(names, "list_imported_modules");
-		}
-		if (HasExplicitModuleAddIntent(latestUserText)) {
-			AddUniqueToolName(names, "refresh_dependency_catalog");
-			AddUniqueToolName(names, "add_module_to_project");
-		}
-		if (HasExplicitModuleRemoveIntent(latestUserText)) {
-			AddUniqueToolName(names, "remove_module_from_project");
-		}
-		if (HasExplicitSupportLibraryAddIntent(latestUserText)) {
-			AddUniqueToolName(names, "refresh_dependency_catalog");
-			AddUniqueToolName(names, "add_support_library_to_project");
-		}
-	}
-	const bool powershellIntent = ContainsAnyText(text, {
-		"PowerShell", "powershell", "命令行", "执行命令", "运行命令", "shell command"
-	});
-	if (powershellIntent) {
-		AddUniqueToolName(names, "run_powershell_command");
-	}
-
-	if (names.empty()) {
-		addCoreReadTools();
-	}
-	if (!minimal) {
-		AddUniqueToolName(names, "get_current_eide_info");
-	}
-	if (ContainsAnyText(text, {
-		"get_current_page_info", "当前页", "页名", "页面类型", "current page"
-	})) {
-		AddUniqueToolName(names, "get_current_page_info");
-	}
-
-	const bool compileIntent = ContainsAnyText(text, {
-		"compile_with_output_path", "编译", "构建", "build", "MSBuild"
-	});
-	const bool webIntent = ContainsAnyText(text, {
-		"fetch_url", "extract_web_document", "search_web_tavily", "http://", "https://",
-		"URL", "url", "网页", "联网", "搜索网页", "公网", "官网"
-	});
-	const bool searchIntent = ContainsAnyText(text, {
-		"search_code", "搜索", "查找", "查询", "keyword", "regex"
-	});
-	const bool editIntent = ContainsAnyText(text, {
-		"修改", "写入", "替换", "编辑", "新增", "添加", "删除", "重构", "修复", "实现", "优化", "调整",
-		"edit_", "write_", "insert_", "fix", "implement", "refactor", "optimize"
-	});
-	const bool dependencyIntent =
-		HasExplicitDependencyRefreshIntent(latestUserText) ||
-		HasExplicitModuleSearchIntent(latestUserText) ||
-		HasExplicitSupportLibrarySearchIntent(latestUserText) ||
-		HasExplicitImportedModuleListIntent(latestUserText) ||
-		HasExplicitModuleAddIntent(latestUserText) ||
-		HasExplicitModuleRemoveIntent(latestUserText) ||
-		HasExplicitSupportLibraryAddIntent(latestUserText);
-	const auto scoreTool = [&](const std::string& name) {
-		int score = 10;
-		if (ContainsAsciiInsensitive(latestUserText, name)) {
-			score += 1000;
-		}
-		if (dependencyIntent && (
-			name == "refresh_dependency_catalog" ||
-			name == "search_available_modules" ||
-			name == "search_available_support_libraries" ||
-			name == "list_imported_modules" ||
-			name == "add_module_to_project" ||
-			name == "remove_module_from_project" ||
-			name == "add_support_library_to_project")) {
-			score += 800;
-		}
-		if (compileIntent && name == "compile_with_output_path") {
-			score += 750;
-		}
-		if (powershellIntent && name == "run_powershell_command") {
-			score += 750;
-		}
-		if (webIntent && (name == "search_web_tavily" || name == "fetch_url" || name == "extract_web_document")) {
-			score += 650;
-		}
-		if (editIntent && (name == "edit_file" || name == "multi_edit_file" || name == "write_file" ||
-			name == "diff_file" || name == "restore_file_snapshot" || name == "read_real_file")) {
-			score += 500;
-		}
-		if (searchIntent && (name == "search_code" || name == "read_files" || name == "read_code_item")) {
-			score += 400;
-		}
-		if (name == "get_current_eide_info" || name == "get_current_page_info") {
-			score += 50;
-		}
-		return score;
-	};
-	std::stable_sort(names.begin(), names.end(), [&](const std::string& left, const std::string& right) {
-		return scoreTool(left) > scoreTool(right);
-	});
-
-	const size_t maxTools = minimal ? 8u : 14u;
-	if (names.size() > maxTools) {
-		names.resize(maxTools);
-	}
-	return names;
-}
-
-struct ScoredExternalMcpTool {
-	int score = 0;
-	bool explicitMatch = false;
-	size_t catalogIndex = 0;
-	std::string name;
-};
-
-std::vector<std::string> SplitAsciiRoutingTokens(const std::string& text)
-{
-	std::vector<std::string> tokens;
-	std::string current;
-	const auto flush = [&tokens, &current]() {
-		if (current.size() >= 4 && std::find(tokens.begin(), tokens.end(), current) == tokens.end()) {
-			tokens.push_back(current);
-		}
-		current.clear();
-	};
-	for (unsigned char ch : text) {
-		if (std::isalnum(ch) != 0) {
-			current.push_back(static_cast<char>(std::tolower(ch)));
-		}
-		else {
-			flush();
-		}
-	}
-	flush();
-	return tokens;
-}
-
-std::vector<std::string> SelectExternalMcpToolNames(
-	const nlohmann::json& catalog,
-	const std::vector<AIChatMessage>& contextMessages,
-	bool minimal)
-{
-	const std::string latestUserText = CollectLatestUserToolRoutingText(contextMessages);
-	const bool continuation = ContainsAnyText(latestUserText, {
-		"继续", "接着", "按上面", "照此", "执行吧", "确认", "可以", "continue", "proceed"
-	});
-	const std::string routingText = continuation
-		? CollectRecentUserToolRoutingText(contextMessages, 2)
-		: latestUserText;
-	const bool generalMcpIntent = ContainsAnyText(routingText, {
-		"MCP", "mcp", "IDA", "ida", "逆向", "反编译", "调试器", "debugger", "设计", "生成设计"
-	});
-
-	std::vector<ScoredExternalMcpTool> scored;
-	size_t catalogIndex = 0;
-	for (const auto& item : catalog) {
-		if (!item.is_object() ||
-			!item.contains("x_autolinker_mcp") ||
-			!item["x_autolinker_mcp"].is_object()) {
-			++catalogIndex;
-			continue;
-		}
-		const std::string name = item.value("name", std::string());
-		const auto& meta = item["x_autolinker_mcp"];
-		const std::string serverName = meta.value("server_name", std::string());
-		const std::string toolName = meta.value("tool_name", std::string());
-		ScoredExternalMcpTool row;
-		row.score = 1;
-		row.catalogIndex = catalogIndex;
-		row.name = name;
-		if (!name.empty() && ContainsAsciiInsensitive(routingText, name)) {
-			row.score += 120;
-			row.explicitMatch = true;
-		}
-		if (!toolName.empty() && ContainsAsciiInsensitive(routingText, toolName)) {
-			row.score += 100;
-			row.explicitMatch = true;
-		}
-		if (!serverName.empty() && ContainsAsciiInsensitive(routingText, serverName)) {
-			row.score += 40;
-		}
-		for (const std::string& token : SplitAsciiRoutingTokens(toolName)) {
-			if (ContainsAsciiInsensitive(routingText, token)) {
-				row.score += 12;
-			}
-		}
-		if (generalMcpIntent) {
-			row.score += 5;
-		}
-		scored.push_back(std::move(row));
-		++catalogIndex;
-	}
-
-	std::stable_sort(scored.begin(), scored.end(), [](const auto& left, const auto& right) {
-		if (left.explicitMatch != right.explicitMatch) {
-			return left.explicitMatch > right.explicitMatch;
-		}
-		if (left.score != right.score) {
-			return left.score > right.score;
-		}
-		return left.catalogIndex < right.catalogIndex;
-	});
-
-	const size_t baseLimit = minimal ? 2u : 4u;
-	std::vector<std::string> names;
-	for (const ScoredExternalMcpTool& item : scored) {
-		if (!item.explicitMatch && names.size() >= baseLimit) {
-			break;
-		}
-		names.push_back(item.name);
-	}
-	return names;
-}
-
-nlohmann::json BuildInternalToolCatalog(
-	const AISettings& settings,
-	const std::vector<AIChatMessage>& contextMessages,
-	bool minimal)
-{
-	const nlohmann::json catalog = BuildConfiguredToolCatalog(settings, contextMessages);
-	const std::vector<std::string> selectedNames = SelectInternalToolNames(
-		contextMessages,
-		minimal,
-		settings.sourceEditMode);
-	const std::unordered_set<std::string> selected(selectedNames.begin(), selectedNames.end());
-	const std::vector<std::string> selectedMcpNames = SelectExternalMcpToolNames(
-		catalog,
-		contextMessages,
-		minimal);
-	const std::unordered_set<std::string> selectedMcp(selectedMcpNames.begin(), selectedMcpNames.end());
-
-	nlohmann::json filtered = nlohmann::json::array();
-	for (const auto& item : catalog) {
-		if (!item.is_object()) {
-			continue;
-		}
-		const std::string name = item.value("name", std::string());
-		const bool externalMcp = item.contains("x_autolinker_mcp") && item["x_autolinker_mcp"].is_object();
-		if ((externalMcp && selectedMcp.find(name) != selectedMcp.end()) ||
-			(!externalMcp && selected.find(name) != selected.end())) {
-			filtered.push_back(item);
-		}
-	}
-	return filtered;
-}
-
-nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>& contextMessages, bool minimal, const AISettings& settings)
-{
-	const nlohmann::json catalog = BuildInternalToolCatalog(settings, contextMessages, minimal);
-	const std::vector<std::string> selectedNames = SelectInternalToolNames(contextMessages, minimal, settings.sourceEditMode);
+	const nlohmann::json catalog = BuildInternalToolCatalog(settings);
 	nlohmann::json declarations = nlohmann::json::array();
-	for (const std::string& name : selectedNames) {
-		const nlohmann::json item = FindToolCatalogItemByName(catalog, name);
-		if (!item.is_object() || item.empty()) {
-			continue;
-		}
-		declarations.push_back({
-			{"name", item.value("name", "")},
-			{"description", TruncateGeminiDescription(item.value("description", ""))},
-			{"parameters", item.contains("inputSchema") ? SanitizeGeminiSchema(item["inputSchema"]) : nlohmann::json::object()}
-		});
-	}
-
 	for (const auto& item : catalog) {
 		if (!item.is_object()) {
-			continue;
-		}
-		const std::string name = item.value("name", std::string());
-		if (!AIChatMcpClient::IsMcpModelToolName(name)) {
 			continue;
 		}
 		declarations.push_back({
@@ -3174,9 +2613,9 @@ nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>& contextMessage
 
 nlohmann::json BuildResponsesToolDefinitions(
 	const AISettings& settings,
-	const std::vector<AIChatMessage>& contextMessages)
+	const std::vector<AIChatMessage>&)
 {
-	const nlohmann::json catalog = BuildInternalToolCatalog(settings, contextMessages, false);
+	const nlohmann::json catalog = BuildInternalToolCatalog(settings);
 	nlohmann::json tools = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		tools.push_back({
@@ -6069,49 +5508,49 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 	}
 
 	{
-		std::vector<AIChatMessage> messages = {
-			{"user", "修改 InitWithString 支持更多时间格式", "", ""}
+		const nlohmann::json nativeCatalog = BuildPublicToolCatalog();
+		const nlohmann::json realPageCatalog = FilterInternalChatToolCatalog(
+			FilterToolCatalogForSourceEditMode(nativeCatalog, AISourceEditMode::RealPageFirst));
+		const nlohmann::json mirrorCatalog = FilterInternalChatToolCatalog(
+			FilterToolCatalogForSourceEditMode(nativeCatalog, AISourceEditMode::MirrorSourceBase));
+		const auto contains = [](const nlohmann::json& catalog, const char* name) {
+			return std::find_if(catalog.begin(), catalog.end(), [name](const nlohmann::json& item) {
+				return item.is_object() && item.value("name", std::string()) == name;
+			}) != catalog.end();
 		};
-		const std::vector<std::string> names = SelectInternalToolNames(
-			messages,
-			false,
-			AISourceEditMode::MirrorSourceBase);
-		const auto contains = [&names](const char* name) {
-			return std::find(names.begin(), names.end(), name) != names.end();
-		};
-		const bool ok = contains("search_code") &&
-			contains("read_files") &&
-			contains("read_code_item") &&
-			contains("write_file") &&
-			!contains("refresh_workspace_mirror") &&
-			!contains("read_file");
+		const std::array<const char*, 12> alwaysVisible = {{
+			"update_plan",
+			"read_file",
+			"edit_file",
+			"write_file",
+			"refresh_dependency_catalog",
+			"add_module_to_project",
+			"compile_with_output_path",
+			"run_powershell_command",
+			"search_web_tavily",
+			"fetch_url",
+			"extract_web_document",
+			"get_current_eide_info"
+		}};
+		bool ok = true;
+		for (const char* name : alwaysVisible) {
+			ok = ok && contains(realPageCatalog, name) && contains(mirrorCatalog, name);
+		}
+		ok = ok &&
+			realPageCatalog.size() + 1 == nativeCatalog.size() &&
+			mirrorCatalog.size() + 2 == nativeCatalog.size() &&
+			contains(realPageCatalog, "read_real_file") &&
+			!contains(mirrorCatalog, "read_real_file") &&
+			!contains(realPageCatalog, "refresh_workspace_mirror") &&
+			!contains(mirrorCatalog, "refresh_workspace_mirror");
 		checks.push_back({
-			{"name", "internal_tool_routing"},
+			{"name", "all_configured_tools_always_visible"},
 			{"ok", ok},
-			{"tool_count", names.size()},
-			{"tools", names}
-		});
-		allOk = allOk && ok;
-	}
-
-	{
-		std::vector<AIChatMessage> moduleMessages = {
-			{"user", "请添加模块 Foo.ec，并说明路径 D:\\\\modules\\\\Foo.ec", "", ""}
-		};
-		const std::vector<std::string> moduleTools = SelectInternalToolNames(
-			moduleMessages,
-			false,
-			AISourceEditMode::MirrorSourceBase);
-		const auto contains = [&moduleTools](const char* name) {
-			return std::find(moduleTools.begin(), moduleTools.end(), name) != moduleTools.end();
-		};
-		const bool ok = contains("refresh_dependency_catalog") &&
-			contains("add_module_to_project") &&
-			!contains("run_powershell_command");
-		checks.push_back({
-			{"name", "explicit_dependency_routing_priority"},
-			{"ok", ok},
-			{"tools", moduleTools}
+			{"native_tool_count", nativeCatalog.size()},
+			{"real_page_tool_count", realPageCatalog.size()},
+			{"mirror_tool_count", mirrorCatalog.size()},
+			{"real_page_read_visible", contains(realPageCatalog, "read_real_file")},
+			{"mirror_real_page_read_hidden", !contains(mirrorCatalog, "read_real_file")}
 		});
 		allOk = allOk && ok;
 	}
@@ -6132,22 +5571,13 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 				}}
 			});
 		}
-		const std::vector<AIChatMessage> messages = {
-			{"user", "请使用 decompile_function 反编译目标函数", "", ""}
-		};
-		const std::vector<std::string> selected = SelectExternalMcpToolNames(
-			catalog,
-			messages,
-			false);
-		const bool targetKept = std::find(
-			selected.begin(),
-			selected.end(),
-			"mcp_ida_tool_5") != selected.end();
-		const bool ok = targetKept && selected.size() == 4;
+		const nlohmann::json visible = FilterInternalChatToolCatalog(catalog);
+		const bool ok = visible.size() == catalog.size();
 		checks.push_back({
-			{"name", "external_mcp_tool_routing"},
+			{"name", "all_external_mcp_tools_always_visible"},
 			{"ok", ok},
-			{"selected", selected}
+			{"configured", catalog.size()},
+			{"visible", visible.size()}
 		});
 		allOk = allOk && ok;
 	}
@@ -6157,22 +5587,6 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 		{"ok", allOk},
 		{"checks", std::move(checks)}
 	}).dump();
-}
-
-bool AIService::IsDependencyManagementTool(const std::string& toolName)
-{
-	return IsDependencyManagementToolName(toolName);
-}
-
-bool AIService::IsDependencyManagementToolAllowedForContext(
-	const std::string& toolName,
-	const std::vector<AIChatMessage>& contextMessages)
-{
-	if (!IsDependencyManagementToolName(toolName)) {
-		return true;
-	}
-	const std::string latestUserText = CollectLatestUserToolRoutingText(contextMessages);
-	return IsDependencyManagementToolExplicitlyRequested(toolName, latestUserText);
 }
 
 std::string AIService::NormalizeModelOutputToCode(const std::string& modelText)
