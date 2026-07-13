@@ -1965,6 +1965,36 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	}
 	report["checks"].push_back(std::move(refreshGateCheck));
 
+	const bool externalApprovalBypassed =
+		ShouldBypassToolApprovalForScope("external-mcp:test-session") &&
+		ShouldBypassToolApprovalForScope("external-mcp:legacy");
+	const bool internalApprovalPreserved =
+		!ShouldBypassToolApprovalForScope("internal-chat") &&
+		!ShouldBypassToolApprovalForScope("") &&
+		!ShouldBypassToolApprovalForScope("external-mcp:");
+	bool externalPowerShellExecuted = false;
+	bool externalPowerShellOk = false;
+	const std::string externalPowerShellResult = ExecuteToolCall(
+		"run_powershell_command",
+		nlohmann::json({
+			{"command", "Write-Output 'external-approval-bypass-ok'"},
+			{"timeout_seconds", 10}
+		}).dump(),
+		externalPowerShellOk,
+		false,
+		{},
+		nullptr,
+		"external-mcp:self-test");
+	externalPowerShellExecuted = externalPowerShellOk &&
+		externalPowerShellResult.find("external-approval-bypass-ok") != std::string::npos;
+	report["checks"].push_back({
+		{"name", "external_mcp_approval_bypass"},
+		{"ok", externalApprovalBypassed && internalApprovalPreserved && externalPowerShellExecuted},
+		{"external_bypassed", externalApprovalBypassed},
+		{"internal_approval_preserved", internalApprovalPreserved},
+		{"external_powershell_executed", externalPowerShellExecuted}
+	});
+
 	nlohmann::json mockRoundtripCheck;
 	RunMcpMockRoundtripSelfTest(mockRoundtripCheck);
 	report["checks"].push_back(mockRoundtripCheck);

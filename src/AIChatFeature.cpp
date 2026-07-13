@@ -6974,7 +6974,9 @@ bool HandleToolExecRequest(LPARAM lParam)
 		return true;
 	}
 
-	if (IsToolRequiringWriteApproval(request->toolName) && !IsAutoAllowWritesEnabled()) {
+	if (!request->bypassInteractiveApproval &&
+		IsToolRequiringWriteApproval(request->toolName) &&
+		!IsAutoAllowWritesEnabled()) {
 		return BeginToolApprovalRequest(request);
 	}
 

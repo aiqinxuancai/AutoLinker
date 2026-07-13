@@ -21,6 +21,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 
 #include "..\\thirdparty\\json.hpp"
@@ -517,7 +518,8 @@ bool RequestToolExecutionFromMainThread(
 	const std::string& toolName,
 	const std::string& argumentsJson,
 	std::string& outResultJson,
-	bool& outOk)
+	bool& outOk,
+	bool bypassInteractiveApproval = false)
 {
 	outResultJson.clear();
 	outOk = false;
@@ -530,6 +532,7 @@ bool RequestToolExecutionFromMainThread(
 	auto request = std::make_shared<ToolExecutionRequest>();
 	request->toolName = toolName;
 	request->argumentsJson = argumentsJson;
+	request->bypassInteractiveApproval = bypassInteractiveApproval;
 
 	const auto dispatchStart = std::chrono::steady_clock::now();
 	const DWORD mainThreadId = GetWindowThreadProcessId(mainWindow, nullptr);
@@ -678,8 +681,8 @@ std::string ExecuteToolCallImpl(
 		bool accepted = false;
 		bool secondaryAccepted = false;
 		const std::string effectiveApprovalScope = approvalScope.empty() ? "internal-chat" : approvalScope;
-		bool skipConfirm = false;
-		{
+		bool skipConfirm = ShouldBypassToolApprovalForScope(effectiveApprovalScope);
+		if (!skipConfirm) {
 			std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
 			skipConfirm = g_psAllowedScopes.contains(effectiveApprovalScope);
 		}
@@ -911,7 +914,12 @@ std::string ExecuteToolCallImpl(
 		toolName == "add_support_library_to_project" ||
 		toolName == "compile_with_output_path") {
 		std::string resultJson;
-		if (!RequestToolExecutionFromMainThread(toolName, argumentsJson, resultJson, outOk)) {
+		if (!RequestToolExecutionFromMainThread(
+				toolName,
+				argumentsJson,
+				resultJson,
+				outOk,
+				ShouldBypassToolApprovalForScope(approvalScope))) {
 			return resultJson.empty()
 				? R"({"ok":false,"error":"main thread tool execution failed"})"
 				: resultJson;
@@ -980,5 +988,12 @@ void ClearToolApprovalScope(const std::string& approvalScope)
 	}
 	std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
 	g_psAllowedScopes.erase(approvalScope);
+}
+
+bool ShouldBypassToolApprovalForScope(const std::string& approvalScope)
+{
+	constexpr std::string_view kExternalMcpPrefix = "external-mcp:";
+	return approvalScope.size() > kExternalMcpPrefix.size() &&
+		approvalScope.compare(0, kExternalMcpPrefix.size(), kExternalMcpPrefix) == 0;
 }
 

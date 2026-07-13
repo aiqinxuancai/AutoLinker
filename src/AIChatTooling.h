@@ -32,3 +32,6 @@ std::string ExecuteToolCall(
 
 // 清除指定调用域中缓存的高风险工具授权。
 void ClearToolApprovalScope(const std::string& approvalScope);
+
+// 判断调用域是否来自无需交互审批的 19207 外部 MCP 会话。
+bool ShouldBypassToolApprovalForScope(const std::string& approvalScope);

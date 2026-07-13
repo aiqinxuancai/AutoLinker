@@ -479,7 +479,7 @@ AutoLinker 在易语言 IDE 启动后会自动开启一个 **MCP（Model Context
 
 > 会话说明：客户端应保存 `initialize` 响应中的 `Mcp-Session-Id` 并在后续请求中回传。每个会话第一次调用源码读取/编辑工具前必须先成功调用 `refresh_workspace_mirror`；工程切换后需要重新刷新。结束时可发送 `DELETE /mcp` 释放会话。
 
-> 高风险工具：`run_powershell_command`、写入和编译仍会走确认/验证逻辑。PowerShell 的“当前会话全允许”只对本次内部对话或当前外部 MCP Session 生效，不会跨来源继承；超时、取消和关闭 IDE 会终止其整个进程树。
+> 高风险工具：内置 AI 对话中的 `run_powershell_command` 和写入操作仍会走交互确认；通过本地 19207 MCP 端口发起的外部调用不弹审批窗口。外部调用仍受工具白名单、参数 Schema、工作区刷新、源码哈希 CAS、超时和取消机制约束，PowerShell 超时、取消或关闭 IDE 时会终止整个进程树。
 
 > 源码写入：外部 Agent 必须先用 `read_real_file` 获取当前真实页的 SHA-256 `code_hash`，再把它作为 `edit_file` / `multi_edit_file` / `write_file` / `diff_file` 的 `expected_base_hash`；恢复快照时传 `expected_current_hash`。大文件读取可用 `next_source_byte_offset` → `byte_offset` 继续，并在续页时回传 `mirror_generation`。
 
