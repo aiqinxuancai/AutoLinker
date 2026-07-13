@@ -22,7 +22,7 @@
 		<section class="min-w-0 p-5">
 			<div class="space-y-4">
 				<section class="rounded-lg border border-slate-200 bg-white p-4">
-					<h2 class="mb-3 text-[12px] font-semibold uppercase tracking-wide text-slate-500">API 配置组</h2>
+					<h2 class="mb-3 text-[12px] font-semibold uppercase tracking-wide text-slate-500">模型服务配置组</h2>
 					<div class="space-y-4">
 				<div>
 					<label for="profileSelect" class="ui-label">配置组</label>
@@ -39,7 +39,7 @@
 				</div>
 
 				<div>
-					<label for="protocol" class="ui-label">Protocol</label>
+					<label for="protocol" class="ui-label">接口协议</label>
 					<select id="protocol" class="ui-select">
 						<option value="openai">OpenAI Chat</option>
 						<option value="openai_responses">OpenAI Responses</option>
@@ -49,21 +49,21 @@
 				</div>
 
 				<div>
-					<label for="baseUrl" class="ui-label">Base URL</label>
+					<label for="baseUrl" class="ui-label">接口地址</label>
 					<input id="baseUrl" class="ui-input" placeholder="https://right.codes/codex" autocomplete="off">
-					<p id="endpointPreview" class="mt-1.5 text-[12px] leading-5 text-slate-500">最终请求 URL：<span class="ui-code">-</span></p>
+					<p id="endpointPreview" class="mt-1.5 text-[12px] leading-5 text-slate-500">最终请求地址：<span class="ui-code">-</span></p>
 				</div>
 
 				<div>
-					<label for="apiKey" class="ui-label">API Key</label>
+					<label for="apiKey" class="ui-label">API 密钥</label>
 					<div class="flex gap-2">
-						<input id="apiKey" class="ui-input min-w-0 flex-1" type="password" placeholder="API Key" autocomplete="off">
+						<input id="apiKey" class="ui-input min-w-0 flex-1" type="password" placeholder="API 密钥" autocomplete="off">
 						<button id="toggleApiKey" class="ui-btn w-16 px-0" type="button">显示</button>
 					</div>
 				</div>
 
 				<div>
-					<label for="model" class="ui-label">Model</label>
+					<label for="model" class="ui-label">模型</label>
 					<div class="flex gap-2">
 						<div id="modelCmb" class="relative min-w-0 flex-1">
 							<input id="model" class="ui-input pr-9" placeholder="例如 gpt-5.3-codex" autocomplete="off">
@@ -81,7 +81,7 @@
 				</div>
 
 				<div>
-					<label for="thinkingLevel" class="ui-label">Thinking Level</label>
+					<label for="thinkingLevel" class="ui-label">思考等级</label>
 					<select id="thinkingLevel" class="ui-select">
 						<option value="off">关闭</option>
 						<option value="low">低</option>
@@ -89,41 +89,46 @@
 						<option value="high">高</option>
 						<option value="xhigh">超高</option>
 						<option value="max">最大</option>
-						<option value="ultra">Ultra</option>
+						<option value="ultra">极限</option>
 					</select>
 				</div>
 
 				<div>
-					<label for="extraPrompt" class="ui-label">System Prompt</label>
+					<label for="extraPrompt" class="ui-label">系统提示词</label>
 					<textarea id="extraPrompt" class="ui-textarea min-h-[3.5rem]" placeholder="附加系统提示词。"></textarea>
 				</div>
 
 				<div>
-					<label for="customHeaders" class="ui-label">Custom Headers</label>
+					<label for="customHeaders" class="ui-label">自定义请求头</label>
 					<textarea id="customHeaders" class="ui-textarea min-h-[3.5rem]" placeholder="Authorization: Bearer xxx&#10;X-Provider: custom"></textarea>
-					<p class="mt-1.5 text-[12px] text-slate-500">每行一个 Header: Value，可覆盖内置请求头</p>
+					<p class="mt-1.5 text-[12px] text-slate-500">每行一个“请求头名称: 值”，可覆盖内置请求头</p>
 				</div>
 					</div>
 				</section>
 
 				<section class="rounded-lg border border-slate-200 bg-slate-50 p-4">
-					<h2 class="mb-3 text-[12px] font-semibold uppercase tracking-wide text-slate-500">全局源码设置</h2>
-					<label for="sourceEditMode" class="ui-label">源码编辑模式</label>
-					<select id="sourceEditMode" class="ui-select">
-						<option value="real_page_first">真实页优先</option>
-						<option value="mirror_source_base">解包镜像基准（测试）</option>
-					</select>
-					<p class="mt-1.5 text-[12px] leading-5 text-slate-500">此设置独立于 API 配置组。真实页优先会在编辑前读取 IDE 页面；解包镜像基准（测试）会按 read_file 的镜像源码匹配并写回页面。</p>
-				</section>
-
-				<section class="rounded-lg border border-slate-200 bg-slate-50 p-4">
-					<h2 class="mb-3 text-[12px] font-semibold uppercase tracking-wide text-slate-500">Tavily 联网搜索</h2>
-					<label for="tavilyApiKey" class="ui-label">Tavily API Key</label>
-					<div class="flex gap-2">
-						<input id="tavilyApiKey" class="ui-input min-w-0 flex-1" type="password" placeholder="用于 search_web_tavily" autocomplete="off">
-						<button id="toggleTavilyKey" class="ui-btn w-16 px-0" type="button">显示</button>
+					<h2 class="mb-3 text-[12px] font-semibold uppercase tracking-wide text-slate-500">其他设置</h2>
+					<div>
+						<label for="sourceEditMode" class="ui-label">源码编辑模式</label>
+						<select id="sourceEditMode" class="ui-select">
+							<option value="real_page_first">真实页优先</option>
+							<option value="mirror_source_base">解包镜像基准（测试）</option>
+						</select>
+						<p class="mt-1.5 text-[12px] leading-5 text-slate-500">此设置独立于模型服务配置组。真实页优先会在编辑前读取 IDE 页面；解包镜像基准（测试）会按 read_file 的镜像源码匹配并写回页面。</p>
 					</div>
-					<p class="mt-3 text-[12px] leading-5 text-slate-500">此 Key 独立于 API 配置组，仅供 <span class="ui-code">search_web_tavily</span> 工具使用，不影响主模型配置。</p>
+
+					<div class="mt-3 border-t border-slate-200">
+						<div class="mt-3">
+							<div class="flex items-center justify-between gap-3">
+								<label for="tavilyApiKey" class="ui-label">Tavily API 密钥</label>
+								<a id="tavilyWebsiteLink" class="mb-1 shrink-0 text-[12px] font-medium text-blue-700 hover:text-slate-600" href="https://tavily.com">Tavily 官网 ↗</a>
+							</div>
+							<div class="flex gap-2">
+								<input id="tavilyApiKey" class="ui-input min-w-0 flex-1" type="password" placeholder="用于 search_web_tavily" autocomplete="off">
+								<button id="toggleTavilyKey" class="ui-btn w-16 px-0" type="button">显示</button>
+							</div>
+						</div>
+					</div>
 				</section>
 			</div>
 		</section>
@@ -598,7 +603,7 @@ function validateCustomHeaders(headerText) {
 		}
 		var colon = line.indexOf(":");
 		if (colon <= 0) {
-			alert("Custom Headers 第 " + (i + 1) + " 行格式无效，需要 Header: Value。");
+			alert("自定义请求头第 " + (i + 1) + " 行格式无效，需要“请求头名称: 值”。");
 			return false;
 		}
 	}
@@ -621,7 +626,7 @@ function validate(data) {
 		return false;
 	}
 	if (!current.baseUrl.trim() || !current.apiKey.trim() || !current.model.trim()) {
-		alert("baseUrl / apiKey / model \u4E0D\u80FD\u4E3A\u7A7A\u3002");
+		alert("接口地址、API 密钥和模型不能为空。");
 		return false;
 	}
 	if (!validateCustomHeaders(current.customHeaders || "")) {
@@ -680,6 +685,11 @@ $("toggleApiKey").addEventListener("click", function() {
 
 $("toggleTavilyKey").addEventListener("click", function() {
 	toggleSecret("tavilyApiKey", "toggleTavilyKey");
+});
+
+$("tavilyWebsiteLink").addEventListener("click", function(event) {
+	event.preventDefault();
+	post({ action: "open_url", url: this.href });
 });
 
 $("protocol").addEventListener("change", updateEndpointPreview);
@@ -892,11 +902,11 @@ function requestModelList() {
 	}
 	var payload = currentFormProfilePayload();
 	if (!trimText(payload.baseUrl)) {
-		alert("\u8BF7\u8F93\u5165 Base URL \u540E\u518D\u83B7\u53D6\u6A21\u578B\u5217\u8868\u3002");
+		alert("请输入接口地址后再获取模型列表。");
 		return;
 	}
 	if (!trimText(payload.apiKey)) {
-		alert("\u8BF7\u8F93\u5165 API Key \u540E\u518D\u83B7\u53D6\u6A21\u578B\u5217\u8868\u3002");
+		alert("请输入 API 密钥后再获取模型列表。");
 		return;
 	}
 	if (!validateCustomHeaders(payload.customHeaders || "")) {
@@ -912,7 +922,7 @@ window.autolinkerShowModelListResult = function(payload) {
 		return;
 	}
 	if (!payload.ok) {
-		alert("\u83B7\u53D6\u6A21\u578B\u5217\u8868\u5931\u8D25\uFF1A" + (payload.error || "unknown"));
+		alert("\u83B7\u53D6\u6A21\u578B\u5217\u8868\u5931\u8D25\uFF1A" + (payload.error || "未知错误"));
 		return;
 	}
 	var models = dedupeModels(payload.models || []);
