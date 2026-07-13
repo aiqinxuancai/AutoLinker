@@ -91,7 +91,7 @@ constexpr int kAiRequestRetryCount = 5;
 constexpr int kAiChatRequestRetryCount = 2;
 constexpr int kAiChatRequestTimeoutMs = 60000;
 constexpr int kAiRequestCancelledHttpStatus = 499;
-constexpr int kMaxToolRounds = 32;
+constexpr int kMaxToolRounds = 64;
 
 int GetChatRequestTimeoutMs(const AISettings& settings)
 {
