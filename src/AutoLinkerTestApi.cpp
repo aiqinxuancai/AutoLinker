@@ -16,6 +16,7 @@
 #include "..\\thirdparty\\json.hpp"
 
 #include "AIChatTooling.h"
+#include "AIChatFeature.h"
 #include "AIChatMcpClient.h"
 #include "AIChatMcpConfig.h"
 #include "AIChatToolPolicy.h"
@@ -1887,6 +1888,19 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		};
 	}
 	report["checks"].push_back(std::move(optimizationCheck));
+
+	nlohmann::json planModeCheck = nlohmann::json::parse(
+		AIChatFeature::BuildPlanModeSelfTestJson(),
+		nullptr,
+		false);
+	if (planModeCheck.is_discarded() || !planModeCheck.is_object()) {
+		planModeCheck = {
+			{"name", "plan-mode-approval-compat"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
+	report["checks"].push_back(std::move(planModeCheck));
 
 	nlohmann::json paginationCheck = nlohmann::json::parse(
 		WorkspaceFileTools::BuildPaginationSelfTestJson(),

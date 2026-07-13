@@ -39,6 +39,8 @@ bool ExecutePublicTool(
 	const std::string& approvalScope);
 // 更新 AI 对话中的任务计划卡片。
 bool UpdatePlanFromTool(const std::string& argumentsJsonUtf8, std::string& outResultJsonLocal, bool& outOk);
+// 构建计划模式审批兼容性自检结果。
+std::string BuildPlanModeSelfTestJson();
 // 重新读取并应用当前 AI 对话配色。
 void ReloadTheme();
 

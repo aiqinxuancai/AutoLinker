@@ -1918,6 +1918,104 @@ bool TryParseRawChatMessageJson(const std::string& rawMessageJsonUtf8, nlohmann:
 	}
 }
 
+struct OpenAIChatToolSequenceRepairStats {
+	size_t removedMessages = 0;
+	size_t removedIncompleteGroups = 0;
+};
+
+std::vector<std::string> ReadAssistantToolCallIds(const nlohmann::json& message)
+{
+	std::vector<std::string> ids;
+	if (!message.is_object() ||
+		!message.contains("tool_calls") ||
+		!message["tool_calls"].is_array() ||
+		message["tool_calls"].empty()) {
+		return ids;
+	}
+
+	std::unordered_set<std::string> seen;
+	for (const auto& toolCall : message["tool_calls"]) {
+		if (!toolCall.is_object() || !toolCall.contains("id") || !toolCall["id"].is_string()) {
+			continue;
+		}
+		const std::string id = AIService::Trim(toolCall["id"].get<std::string>());
+		if (!id.empty() && seen.insert(id).second) {
+			ids.push_back(id);
+		}
+	}
+	return ids;
+}
+
+OpenAIChatToolSequenceRepairStats RepairOpenAIChatToolMessageSequence(nlohmann::json& messages)
+{
+	OpenAIChatToolSequenceRepairStats stats;
+	if (!messages.is_array() || messages.empty()) {
+		return stats;
+	}
+
+	nlohmann::json repaired = nlohmann::json::array();
+	for (size_t i = 0; i < messages.size();) {
+		const nlohmann::json& message = messages[i];
+		const std::string role = message.is_object()
+			? ToLowerAsciiCopy(AIService::Trim(message.value("role", std::string())))
+			: std::string();
+		if (role == "tool") {
+			++stats.removedMessages;
+			++i;
+			continue;
+		}
+
+		const bool hasToolCalls = role == "assistant" &&
+			message.contains("tool_calls") &&
+			message["tool_calls"].is_array() &&
+			!message["tool_calls"].empty();
+		if (!hasToolCalls) {
+			repaired.push_back(message);
+			++i;
+			continue;
+		}
+
+		const std::vector<std::string> expectedIds = ReadAssistantToolCallIds(message);
+		const std::unordered_set<std::string> expected(expectedIds.begin(), expectedIds.end());
+		std::unordered_set<std::string> answered;
+		nlohmann::json matchingToolMessages = nlohmann::json::array();
+		size_t next = i + 1;
+		while (next < messages.size()) {
+			const nlohmann::json& candidate = messages[next];
+			const std::string candidateRole = candidate.is_object()
+				? ToLowerAsciiCopy(AIService::Trim(candidate.value("role", std::string())))
+				: std::string();
+			if (candidateRole != "tool") {
+				break;
+			}
+
+			const std::string callId = candidate.value("tool_call_id", std::string());
+			if (expected.contains(callId) && answered.insert(callId).second) {
+				matchingToolMessages.push_back(candidate);
+			}
+			++next;
+		}
+
+		const bool complete = !expectedIds.empty() && answered.size() == expectedIds.size();
+		const size_t originalGroupSize = next - i;
+		if (complete) {
+			repaired.push_back(message);
+			for (const auto& toolMessage : matchingToolMessages) {
+				repaired.push_back(toolMessage);
+			}
+			stats.removedMessages += originalGroupSize - 1 - matchingToolMessages.size();
+		}
+		else {
+			stats.removedMessages += originalGroupSize;
+			++stats.removedIncompleteGroups;
+		}
+		i = next;
+	}
+
+	messages = std::move(repaired);
+	return stats;
+}
+
 nlohmann::json BuildPublicToolCatalog()
 {
 	nlohmann::json tools = nlohmann::json::array();
@@ -5427,6 +5525,15 @@ AIChatResult AIService::ExecuteChatWithTools(
 		}
 		requestMessages.push_back(std::move(requestMessage));
 	}
+	const OpenAIChatToolSequenceRepairStats repairStats = RepairOpenAIChatToolMessageSequence(requestMessages);
+	if (repairStats.removedMessages > 0) {
+		Logger::Instance().Write(
+			"AIService",
+			std::format(
+				"repaired OpenAI chat tool sequence removed_messages={} incomplete_groups={}",
+				repairStats.removedMessages,
+				repairStats.removedIncompleteGroups));
+	}
 
 	const nlohmann::json tools = BuildChatToolDefinitions(settings, contextMessages);
 	const int maxToolRounds = kMaxToolRounds;
@@ -5655,6 +5762,40 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 {
 	nlohmann::json checks = nlohmann::json::array();
 	bool allOk = true;
+
+	{
+		nlohmann::json messages = nlohmann::json::array({
+			{{"role", "system"}, {"content", "system"}},
+			{{"role", "tool"}, {"tool_call_id", "orphan"}, {"content", "bad"}},
+			{{"role", "assistant"}, {"content", ""}, {"tool_calls", nlohmann::json::array({
+				{{"id", "call_ok"}, {"type", "function"}, {"function", {{"name", "read_file"}, {"arguments", "{}"}}}}
+			})}},
+			{{"role", "tool"}, {"tool_call_id", "call_ok"}, {"content", "ok"}},
+			{{"role", "assistant"}, {"content", ""}, {"tool_calls", nlohmann::json::array({
+				{{"id", "call_missing_a"}, {"type", "function"}, {"function", {{"name", "read_file"}, {"arguments", "{}"}}}},
+				{{"id", "call_missing_b"}, {"type", "function"}, {"function", {{"name", "read_file"}, {"arguments", "{}"}}}}
+			})}},
+			{{"role", "tool"}, {"tool_call_id", "call_missing_a"}, {"content", "partial"}},
+			{{"role", "user"}, {"content", "continue"}}
+		});
+		const OpenAIChatToolSequenceRepairStats stats = RepairOpenAIChatToolMessageSequence(messages);
+		const bool ok = messages.size() == 4 &&
+			messages[0].value("role", std::string()) == "system" &&
+			messages[1].value("role", std::string()) == "assistant" &&
+			messages[2].value("role", std::string()) == "tool" &&
+			messages[3].value("role", std::string()) == "user" &&
+			messages[2].value("tool_call_id", std::string()) == "call_ok" &&
+			stats.removedMessages == 3 &&
+			stats.removedIncompleteGroups == 1;
+		checks.push_back({
+			{"name", "openai_chat_tool_sequence_repair"},
+			{"ok", ok},
+			{"remaining_messages", messages.size()},
+			{"removed_messages", stats.removedMessages},
+			{"removed_incomplete_groups", stats.removedIncompleteGroups}
+		});
+		allOk = allOk && ok;
+	}
 
 	{
 		const std::array<std::pair<AIThinkingLevel, const char*>, 7> levels = {{

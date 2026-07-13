@@ -1653,6 +1653,34 @@ bool ExtractProposedPlanContent(const std::string& text, std::string& outPlan)
 	return !outPlan.empty();
 }
 
+bool ResolveCompletedPlanSubmission(
+	const std::string& assistantContent,
+	const std::string& pendingPlan,
+	std::string& outPlan,
+	std::string& outHistoryContent)
+{
+	outPlan.clear();
+	outHistoryContent = assistantContent;
+	if (ExtractProposedPlanContent(assistantContent, outPlan)) {
+		return true;
+	}
+
+	outPlan = TrimAsciiCopy(pendingPlan);
+	if (!outPlan.empty()) {
+		return true;
+	}
+
+	outPlan = TrimAsciiCopy(assistantContent);
+	if (outPlan.empty()) {
+		return false;
+	}
+	outHistoryContent = kUpdatePlanMessageMarker;
+	outHistoryContent += "<proposed_plan>\r\n";
+	outHistoryContent += outPlan;
+	outHistoryContent += "\r\n</proposed_plan>";
+	return true;
+}
+
 std::string NormalizeUpdatePlanStatus(std::string status)
 {
 	status = LowerAsciiCopy(TrimAsciiCopy(status));
@@ -4142,7 +4170,29 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 	}
 
 	const size_t keep = (std::min)(contextMsgs.size(), static_cast<size_t>(24));
-	const size_t begin = contextMsgs.size() > keep ? (contextMsgs.size() - keep) : 0;
+	size_t begin = contextMsgs.size() > keep ? (contextMsgs.size() - keep) : 0;
+	if (begin > 0 && contextMsgs[begin].role == SessionRole::Tool) {
+		size_t groupBegin = begin;
+		while (groupBegin > 0 && contextMsgs[groupBegin - 1].role == SessionRole::Tool) {
+			--groupBegin;
+		}
+		if (groupBegin > 0) {
+			const SessionMessage& possibleAssistant = contextMsgs[groupBegin - 1];
+			if (possibleAssistant.role == SessionRole::Assistant) {
+				try {
+					const nlohmann::json rawAssistant = nlohmann::json::parse(possibleAssistant.rawMessageJsonUtf8);
+					if (rawAssistant.is_object() &&
+						rawAssistant.contains("tool_calls") &&
+						rawAssistant["tool_calls"].is_array() &&
+						!rawAssistant["tool_calls"].empty()) {
+						begin = groupBegin - 1;
+					}
+				}
+				catch (...) {
+				}
+			}
+		}
+	}
 	for (size_t i = begin; i < contextMsgs.size(); ++i) {
 		const auto& msg = contextMsgs[i];
 		std::string role = "system";
@@ -6092,11 +6142,17 @@ void HandleChatTaskDone(LPARAM lParam)
 		}
 		else if (result->chatResult.ok) {
 			const std::string assistantContent = NormalizeCodeForEIDE(result->chatResult.content);
+			std::string assistantHistoryContent = assistantContent;
 			std::string proposedPlan;
-			if (g_session.planModeState == PlanModeState::Planning &&
-				ExtractProposedPlanContent(assistantContent, proposedPlan)) {
-				g_session.planModeState = PlanModeState::AwaitingApproval;
-				g_session.pendingPlan = proposedPlan;
+			if (g_session.planModeState == PlanModeState::Planning) {
+				if (ResolveCompletedPlanSubmission(
+						assistantContent,
+						g_session.pendingPlan,
+						proposedPlan,
+						assistantHistoryContent)) {
+					g_session.planModeState = PlanModeState::AwaitingApproval;
+					g_session.pendingPlan = proposedPlan;
+				}
 			}
 			else if (g_session.planModeState == PlanModeState::Approved) {
 				g_session.planModeState = PlanModeState::Normal;
@@ -6104,7 +6160,7 @@ void HandleChatTaskDone(LPARAM lParam)
 			}
 			g_session.messages.push_back(SessionMessage{
 				SessionRole::Assistant,
-				assistantContent,
+				assistantHistoryContent,
 				true,
 				true,
 				result->chatResult.reasoningContent,
@@ -7982,6 +8038,50 @@ bool UpdatePlanFromTool(const std::string& argumentsJsonUtf8, std::string& outRe
 	outOk = true;
 	outResultJsonLocal = BuildUpdatePlanToolResultLocal(r);
 	return true;
+}
+
+std::string BuildPlanModeSelfTestJson()
+{
+	std::string explicitPlan;
+	std::string explicitHistory;
+	const std::string explicitContent = "<proposed_plan>explicit plan</proposed_plan>";
+	const bool explicitOk = ResolveCompletedPlanSubmission(
+		explicitContent,
+		"stale plan",
+		explicitPlan,
+		explicitHistory) &&
+		explicitPlan == "explicit plan" &&
+		explicitHistory == explicitContent;
+
+	std::string toolPlan;
+	std::string toolHistory;
+	const bool toolPlanOk = ResolveCompletedPlanSubmission(
+		"plan prepared",
+		"plan from update_plan",
+		toolPlan,
+		toolHistory) &&
+		toolPlan == "plan from update_plan" &&
+		toolHistory == "plan prepared";
+
+	std::string plainPlan;
+	std::string plainHistory;
+	std::string extractedPlainPlan;
+	const bool plainPlanOk = ResolveCompletedPlanSubmission(
+		"1. inspect\n2. implement",
+		"",
+		plainPlan,
+		plainHistory) &&
+		plainPlan == "1. inspect\n2. implement" &&
+		ExtractProposedPlanContent(plainHistory, extractedPlainPlan) &&
+		extractedPlainPlan == plainPlan;
+
+	return nlohmann::json({
+		{"name", "plan-mode-approval-compat"},
+		{"ok", explicitOk && toolPlanOk && plainPlanOk},
+		{"explicit_plan", explicitOk},
+		{"update_plan_fallback", toolPlanOk},
+		{"plain_text_fallback", plainPlanOk}
+	}).dump();
 }
 
 void ReloadTheme()
