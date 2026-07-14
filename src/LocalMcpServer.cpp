@@ -48,6 +48,7 @@ constexpr auto kExternalMcpSessionTtl = std::chrono::minutes(30);
 
 std::atomic_bool g_stopRequested = false;
 std::atomic_bool g_running = false;
+std::atomic_bool g_registryRefreshFailed = false;
 std::atomic_int g_boundPort = 0;
 std::mutex g_stateMutex;
 std::thread g_serverThread;
@@ -103,6 +104,13 @@ std::string ToLowerAsciiCopy(const std::string& text)
 void LogMcp(const std::string& message)
 {
 	Logger::Instance().WriteAndIde("LocalMCP", message);
+}
+
+void LogRegistryRefreshFailureOnce(const std::string& detail)
+{
+	if (!detail.empty() && !g_registryRefreshFailed.exchange(true)) {
+		LogMcp(std::format("refresh registry failed: {}", detail));
+	}
 }
 
 bool IsStrictUtf8Text(const std::string& text)
@@ -759,15 +767,18 @@ void RefreshCurrentInstanceRegistry()
 			return;
 		}
 		std::string error;
-		if (!LocalMcpInstanceRegistry::UpsertCurrentInstance(record, &error) && !error.empty()) {
-			LogMcp(std::format("refresh registry failed: {}", error));
+		if (!LocalMcpInstanceRegistry::UpsertCurrentInstance(record, &error)) {
+			LogRegistryRefreshFailureOnce(error);
+		}
+		else if (g_registryRefreshFailed.exchange(false)) {
+			LogMcp("instance registry refresh recovered");
 		}
 	}
 	catch (const std::exception& ex) {
-		LogMcp(std::format("refresh registry exception: {}", ex.what()));
+		LogRegistryRefreshFailureOnce(std::format("exception: {}", ex.what()));
 	}
 	catch (...) {
-		LogMcp("refresh registry exception: unknown");
+		LogRegistryRefreshFailureOnce("exception: unknown");
 	}
 }
 
@@ -1707,6 +1718,7 @@ void Initialize()
 	}
 	g_stopRequested.store(false);
 	g_running.store(false);
+	g_registryRefreshFailed.store(false);
 	g_boundPort.store(0);
 	g_instanceId = GenerateInstanceId();
 	g_sourceFilePathHint.clear();

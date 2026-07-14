@@ -23,6 +23,7 @@
 #include "AIService.h"
 #include "AutoLinkerVersion.h"
 #include "GameAnalyticsClient.h"
+#include "LocalMcpInstanceRegistry.h"
 #include "LocalMcpServer.h"
 #include "PathHelper.h"
 #include "PowerShellToolRunner.h"
@@ -1964,6 +1965,19 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		};
 	}
 	report["checks"].push_back(std::move(refreshGateCheck));
+
+	nlohmann::json instanceRegistryCheck = nlohmann::json::parse(
+		LocalMcpInstanceRegistry::BuildSelfTestReportJson(),
+		nullptr,
+		false);
+	if (instanceRegistryCheck.is_discarded() || !instanceRegistryCheck.is_object()) {
+		instanceRegistryCheck = {
+			{"name", "local-mcp-instance-registry-isolation"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
+	report["checks"].push_back(std::move(instanceRegistryCheck));
 
 	const bool externalApprovalBypassed =
 		ShouldBypassToolApprovalForScope("external-mcp:test-session") &&

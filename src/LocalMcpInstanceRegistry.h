@@ -20,8 +20,11 @@ struct InstanceRecord {
 	std::uint64_t lastSeenUnixMs = 0; // 最后心跳时间
 };
 
-// 获取本机实例注册文件路径
+// 获取旧版聚合注册文件路径，用于兼容历史实例
 std::string GetRegistryFilePath();
+
+// 获取当前分实例注册目录路径
+std::string GetRegistryDirectoryPath();
 
 // 写入或刷新当前实例登记信息
 bool UpsertCurrentInstance(const InstanceRecord& record, std::string* outError = nullptr);
@@ -31,5 +34,8 @@ bool RemoveCurrentInstance(const std::string& instanceId, std::string* outError 
 
 // 读取当前有效的实例列表
 bool LoadInstances(std::vector<InstanceRecord>& outRecords, std::string* outError = nullptr);
+
+// 执行分实例注册、并发更新和旧格式兼容自检
+std::string BuildSelfTestReportJson();
 
 } // namespace LocalMcpInstanceRegistry

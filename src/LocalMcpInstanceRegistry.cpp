@@ -3,61 +3,37 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <system_error>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "..\\thirdparty\\json.hpp"
 
 namespace {
 
-constexpr const char* kRegistryMutexName = "Local\\AutoLinker.LocalMcpInstanceRegistry";
-constexpr const char* kRegistryFileName = "local_mcp_instances.json";
+constexpr const char* kLegacyRegistryFileName = "local_mcp_instances.json";
+constexpr const char* kRegistryDirectoryName = "local_mcp_instances";
 constexpr std::uint64_t kInstanceTtlMs = 15000;
-constexpr std::uint64_t kFallbackDeadProcessTtlMs = 60000;
+constexpr std::uint64_t kDeadInstanceCleanupTtlMs = 60000;
+constexpr std::uint64_t kHardArtifactCleanupTtlMs = 24ULL * 60ULL * 60ULL * 1000ULL;
+constexpr auto kLocalOperationLockTimeout = std::chrono::milliseconds(250);
 
-class NamedMutexGuard {
-public:
-	explicit NamedMutexGuard(const char* mutexName)
-	{
-		if (mutexName == nullptr || mutexName[0] == '\0') {
-			return;
-		}
-		m_handle = CreateMutexA(nullptr, FALSE, mutexName);
-		if (m_handle == nullptr) {
-			return;
-		}
-		const DWORD waitResult = WaitForSingleObject(m_handle, 5000);
-		if (waitResult == WAIT_OBJECT_0 || waitResult == WAIT_ABANDONED) {
-			m_locked = true;
-		}
+std::timed_mutex g_currentInstanceMutex;
+std::atomic_ullong g_tempFileCounter = 1;
+
+void SetError(std::string* outError, const std::string& message)
+{
+	if (outError != nullptr) {
+		*outError = message;
 	}
-
-	~NamedMutexGuard()
-	{
-		if (m_locked && m_handle != nullptr) {
-			ReleaseMutex(m_handle);
-		}
-		if (m_handle != nullptr) {
-			CloseHandle(m_handle);
-		}
-	}
-
-	NamedMutexGuard(const NamedMutexGuard&) = delete;
-	NamedMutexGuard& operator=(const NamedMutexGuard&) = delete;
-
-	bool IsLocked() const
-	{
-		return m_locked;
-	}
-
-private:
-	HANDLE m_handle = nullptr;
-	bool m_locked = false;
-};
+}
 
 std::uint64_t GetUnixTimeMilliseconds()
 {
@@ -66,7 +42,7 @@ std::uint64_t GetUnixTimeMilliseconds()
 			std::chrono::system_clock::now().time_since_epoch()).count());
 }
 
-std::filesystem::path GetRegistryPathObject()
+std::filesystem::path GetRegistryBaseDirectoryObject()
 {
 	std::error_code ec;
 	std::filesystem::path dir = std::filesystem::temp_directory_path(ec);
@@ -78,7 +54,41 @@ std::filesystem::path GetRegistryPathObject()
 	}
 	dir /= "AutoLinker";
 	std::filesystem::create_directories(dir, ec);
-	return dir / kRegistryFileName;
+	return dir;
+}
+
+std::filesystem::path GetLegacyRegistryPathObject(const std::filesystem::path& baseDirectory)
+{
+	return baseDirectory / kLegacyRegistryFileName;
+}
+
+std::filesystem::path GetRegistryDirectoryPathObject(const std::filesystem::path& baseDirectory)
+{
+	return baseDirectory / kRegistryDirectoryName;
+}
+
+bool IsSafeInstanceId(const std::string& instanceId)
+{
+	if (instanceId.empty() || instanceId.size() > 96 || instanceId == "." || instanceId == "..") {
+		return false;
+	}
+	for (const unsigned char ch : instanceId) {
+		const bool alphaNumeric =
+			(ch >= 'a' && ch <= 'z') ||
+			(ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9');
+		if (!alphaNumeric && ch != '-' && ch != '_' && ch != '.') {
+			return false;
+		}
+	}
+	return true;
+}
+
+std::filesystem::path GetInstanceFilePath(
+	const std::filesystem::path& baseDirectory,
+	const std::string& instanceId)
+{
+	return GetRegistryDirectoryPathObject(baseDirectory) / (instanceId + ".json");
 }
 
 bool IsProcessLikelyAlive(unsigned long processId)
@@ -225,7 +235,29 @@ LocalMcpInstanceRegistry::InstanceRecord ParseRecordJson(const nlohmann::json& v
 	return record;
 }
 
-bool TryLoadRegistryJson(
+bool IsRecordValid(const LocalMcpInstanceRegistry::InstanceRecord& record)
+{
+	return IsSafeInstanceId(record.instanceId) &&
+		record.port > 0 &&
+		!record.endpoint.empty() &&
+		record.lastSeenUnixMs > 0;
+}
+
+std::uint64_t GetRecordAgeMs(
+	const LocalMcpInstanceRegistry::InstanceRecord& record,
+	std::uint64_t nowMs)
+{
+	return nowMs >= record.lastSeenUnixMs ? nowMs - record.lastSeenUnixMs : 0;
+}
+
+bool IsRecordFresh(
+	const LocalMcpInstanceRegistry::InstanceRecord& record,
+	std::uint64_t nowMs)
+{
+	return IsRecordValid(record) && GetRecordAgeMs(record, nowMs) <= kInstanceTtlMs;
+}
+
+bool TryLoadJsonFile(
 	const std::filesystem::path& path,
 	nlohmann::json& outRoot,
 	std::string* outError)
@@ -237,9 +269,8 @@ bool TryLoadRegistryJson(
 
 	std::ifstream in(path, std::ios::binary);
 	if (!in.is_open()) {
-		outRoot["version"] = 1;
-		outRoot["instances"] = nlohmann::json::array();
-		return true;
+		SetError(outError, "open registry file failed");
+		return false;
 	}
 
 	std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -253,26 +284,31 @@ bool TryLoadRegistryJson(
 	try {
 		outRoot = text.empty() ? nlohmann::json::object() : nlohmann::json::parse(text);
 		if (!outRoot.is_object()) {
-			outRoot = nlohmann::json::object();
+			SetError(outError, "registry json root is not an object");
+			return false;
 		}
 	}
 	catch (const std::exception& ex) {
-		if (outError != nullptr) {
-			*outError = std::string("parse registry json failed: ") + ex.what();
-		}
-		outRoot = nlohmann::json::object();
-	}
-
-	if (!outRoot.contains("version")) {
-		outRoot["version"] = 1;
-	}
-	if (!outRoot.contains("instances") || !outRoot["instances"].is_array()) {
-		outRoot["instances"] = nlohmann::json::array();
+		SetError(outError, std::string("parse registry json failed: ") + ex.what());
+		return false;
 	}
 	return true;
 }
 
-bool SaveRegistryJson(
+std::filesystem::path BuildUniqueTempPath(const std::filesystem::path& finalPath)
+{
+	std::wstring tempPath = finalPath.wstring();
+	tempPath += L".";
+	tempPath += std::to_wstring(GetCurrentProcessId());
+	tempPath += L".";
+	tempPath += std::to_wstring(GetCurrentThreadId());
+	tempPath += L".";
+	tempPath += std::to_wstring(g_tempFileCounter.fetch_add(1));
+	tempPath += L".tmp";
+	return std::filesystem::path(std::move(tempPath));
+}
+
+bool SaveJsonFileAtomically(
 	const std::filesystem::path& path,
 	const nlohmann::json& root,
 	std::string* outError)
@@ -283,13 +319,15 @@ bool SaveRegistryJson(
 
 	std::error_code ec;
 	std::filesystem::create_directories(path.parent_path(), ec);
+	if (ec) {
+		SetError(outError, "create registry directory failed, error=" + std::to_string(ec.value()));
+		return false;
+	}
 
-	const std::filesystem::path tempPath = path.string() + ".tmp";
+	const std::filesystem::path tempPath = BuildUniqueTempPath(path);
 	std::ofstream out(tempPath, std::ios::binary | std::ios::trunc);
 	if (!out.is_open()) {
-		if (outError != nullptr) {
-			*outError = "open registry temp file failed";
-		}
+		SetError(outError, "open registry temp file failed");
 		return false;
 	}
 
@@ -299,78 +337,243 @@ bool SaveRegistryJson(
 	out.write(text.data(), static_cast<std::streamsize>(text.size()));
 	out.close();
 	if (!out) {
-		if (outError != nullptr) {
-			*outError = "write registry temp file failed";
-		}
-		return false;
-	}
-
-	if (MoveFileExW(
-			tempPath.wstring().c_str(),
-			path.wstring().c_str(),
-			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
-		if (outError != nullptr) {
-			*outError = "replace registry file failed";
-		}
+		SetError(outError, "write registry temp file failed");
 		std::filesystem::remove(tempPath, ec);
 		return false;
 	}
 
+	if (MoveFileExW(
+		tempPath.wstring().c_str(),
+		path.wstring().c_str(),
+		MOVEFILE_REPLACE_EXISTING) == FALSE) {
+		const DWORD error = GetLastError();
+		SetError(outError, "replace registry file failed, win32_error=" + std::to_string(error));
+		std::filesystem::remove(tempPath, ec);
+		return false;
+	}
 	return true;
 }
 
-std::vector<LocalMcpInstanceRegistry::InstanceRecord> ParseAndCleanupRecords(
-	const nlohmann::json& root,
-	bool& outChanged)
+nlohmann::json BuildInstanceFileJson(const LocalMcpInstanceRegistry::InstanceRecord& record)
 {
-	outChanged = false;
-	std::vector<LocalMcpInstanceRegistry::InstanceRecord> records;
-	const std::uint64_t nowMs = GetUnixTimeMilliseconds();
+	return {
+		{"version", 2},
+		{"instance", BuildRecordJson(record)}
+	};
+}
 
-	if (!root.contains("instances") || !root["instances"].is_array()) {
-		outChanged = true;
-		return records;
+LocalMcpInstanceRegistry::InstanceRecord ParseInstanceFileJson(const nlohmann::json& root)
+{
+	if (root.contains("instance")) {
+		return ParseRecordJson(root["instance"]);
+	}
+	return ParseRecordJson(root);
+}
+
+bool UpsertInstanceAtBaseDirectory(
+	const std::filesystem::path& baseDirectory,
+	const LocalMcpInstanceRegistry::InstanceRecord& record,
+	std::string* outError)
+{
+	if (!IsSafeInstanceId(record.instanceId)) {
+		SetError(outError, "instance_id is invalid");
+		return false;
+	}
+	if (record.port <= 0) {
+		SetError(outError, "port is invalid");
+		return false;
+	}
+	if (record.endpoint.empty()) {
+		SetError(outError, "endpoint is empty");
+		return false;
+	}
+	if (record.lastSeenUnixMs == 0) {
+		SetError(outError, "last_seen_unix_ms is invalid");
+		return false;
 	}
 
+	return SaveJsonFileAtomically(
+		GetInstanceFilePath(baseDirectory, record.instanceId),
+		BuildInstanceFileJson(record),
+		outError);
+}
+
+bool RemoveInstanceAtBaseDirectory(
+	const std::filesystem::path& baseDirectory,
+	const std::string& instanceId,
+	std::string* outError)
+{
+	if (!IsSafeInstanceId(instanceId)) {
+		SetError(outError, "instance_id is invalid");
+		return false;
+	}
+
+	std::error_code ec;
+	std::filesystem::remove(GetInstanceFilePath(baseDirectory, instanceId), ec);
+	if (ec) {
+		SetError(outError, "remove instance registry file failed, error=" + std::to_string(ec.value()));
+		return false;
+	}
+	return true;
+}
+
+void MergeRecord(
+	std::unordered_map<std::string, LocalMcpInstanceRegistry::InstanceRecord>& records,
+	LocalMcpInstanceRegistry::InstanceRecord record,
+	std::uint64_t nowMs)
+{
+	if (!IsRecordFresh(record, nowMs)) {
+		return;
+	}
+	auto current = records.find(record.instanceId);
+	if (current == records.end() || current->second.lastSeenUnixMs < record.lastSeenUnixMs) {
+		records[record.instanceId] = std::move(record);
+	}
+}
+
+bool IsArtifactOlderThan(const std::filesystem::path& path, std::chrono::milliseconds age)
+{
+	std::error_code ec;
+	const auto writeTime = std::filesystem::last_write_time(path, ec);
+	if (ec) {
+		return false;
+	}
+	return std::filesystem::file_time_type::clock::now() - writeTime > age;
+}
+
+void RemovePathsBestEffort(const std::vector<std::filesystem::path>& paths)
+{
+	std::error_code ec;
+	for (const auto& path : paths) {
+		std::filesystem::remove(path, ec);
+		ec.clear();
+	}
+}
+
+void LoadLegacyRecords(
+	const std::filesystem::path& baseDirectory,
+	std::unordered_map<std::string, LocalMcpInstanceRegistry::InstanceRecord>& records,
+	std::uint64_t nowMs)
+{
+	const std::filesystem::path path = GetLegacyRegistryPathObject(baseDirectory);
+	std::error_code ec;
+	if (!std::filesystem::exists(path, ec) || ec) {
+		return;
+	}
+
+	nlohmann::json root;
+	if (!TryLoadJsonFile(path, root, nullptr) ||
+		!root.contains("instances") ||
+		!root["instances"].is_array()) {
+		return;
+	}
 	for (const auto& item : root["instances"]) {
-		LocalMcpInstanceRegistry::InstanceRecord record = ParseRecordJson(item);
-		if (record.instanceId.empty() || record.port <= 0 || record.endpoint.empty()) {
-			outChanged = true;
-			continue;
-		}
+		MergeRecord(records, ParseRecordJson(item), nowMs);
+	}
+}
 
-		const std::uint64_t ageMs = nowMs >= record.lastSeenUnixMs
-			? (nowMs - record.lastSeenUnixMs)
-			: 0;
-		const bool alive = IsProcessLikelyAlive(record.processId);
-		if ((!alive && ageMs > kFallbackDeadProcessTtlMs) || ageMs > kInstanceTtlMs) {
-			outChanged = true;
-			continue;
-		}
-
-		records.push_back(std::move(record));
+bool LoadInstancesAtBaseDirectory(
+	const std::filesystem::path& baseDirectory,
+	std::vector<LocalMcpInstanceRegistry::InstanceRecord>& outRecords,
+	std::string* outError)
+{
+	outRecords.clear();
+	if (outError != nullptr) {
+		outError->clear();
 	}
 
-	std::sort(records.begin(), records.end(), [](const auto& left, const auto& right) {
+	const std::uint64_t nowMs = GetUnixTimeMilliseconds();
+	std::unordered_map<std::string, LocalMcpInstanceRegistry::InstanceRecord> records;
+	LoadLegacyRecords(baseDirectory, records, nowMs);
+
+	const std::filesystem::path directory = GetRegistryDirectoryPathObject(baseDirectory);
+	std::error_code ec;
+	const bool directoryExists = std::filesystem::exists(directory, ec);
+	if (ec) {
+		SetError(outError, "query registry directory failed, error=" + std::to_string(ec.value()));
+		return false;
+	}
+
+	std::vector<std::filesystem::path> cleanupPaths;
+	if (directoryExists) {
+		std::filesystem::directory_iterator iterator(directory, ec);
+		if (ec) {
+			SetError(outError, "enumerate registry directory failed, error=" + std::to_string(ec.value()));
+			return false;
+		}
+		for (const auto& entry : iterator) {
+			if (!entry.is_regular_file(ec)) {
+				ec.clear();
+				continue;
+			}
+			const std::filesystem::path path = entry.path();
+			if (path.extension() == ".tmp") {
+				if (IsArtifactOlderThan(path, std::chrono::milliseconds(kDeadInstanceCleanupTtlMs))) {
+					cleanupPaths.push_back(path);
+				}
+				continue;
+			}
+			if (path.extension() != ".json") {
+				continue;
+			}
+
+			nlohmann::json root;
+			if (!TryLoadJsonFile(path, root, nullptr)) {
+				if (IsArtifactOlderThan(path, std::chrono::milliseconds(kDeadInstanceCleanupTtlMs))) {
+					cleanupPaths.push_back(path);
+				}
+				continue;
+			}
+
+			LocalMcpInstanceRegistry::InstanceRecord record = ParseInstanceFileJson(root);
+			if (!IsRecordValid(record)) {
+				if (IsArtifactOlderThan(path, std::chrono::milliseconds(kDeadInstanceCleanupTtlMs))) {
+					cleanupPaths.push_back(path);
+				}
+				continue;
+			}
+
+			const std::uint64_t ageMs = GetRecordAgeMs(record, nowMs);
+			if (ageMs > kHardArtifactCleanupTtlMs ||
+				(ageMs > kDeadInstanceCleanupTtlMs && !IsProcessLikelyAlive(record.processId))) {
+				cleanupPaths.push_back(path);
+			}
+			MergeRecord(records, std::move(record), nowMs);
+		}
+	}
+	RemovePathsBestEffort(cleanupPaths);
+
+	outRecords.reserve(records.size());
+	for (auto& [instanceId, record] : records) {
+		(void)instanceId;
+		outRecords.push_back(std::move(record));
+	}
+	std::sort(outRecords.begin(), outRecords.end(), [](const auto& left, const auto& right) {
 		if (left.port != right.port) {
 			return left.port < right.port;
 		}
 		return left.instanceId < right.instanceId;
 	});
-	return records;
+	return true;
 }
 
-nlohmann::json BuildRootJsonFromRecords(const std::vector<LocalMcpInstanceRegistry::InstanceRecord>& records)
+LocalMcpInstanceRegistry::InstanceRecord BuildSelfTestRecord(
+	const std::string& instanceId,
+	int port,
+	std::uint64_t lastSeenUnixMs)
 {
-	nlohmann::json instances = nlohmann::json::array();
-	for (const auto& record : records) {
-		instances.push_back(BuildRecordJson(record));
-	}
-
-	return {
-		{"version", 1},
-		{"instances", std::move(instances)}
-	};
+	LocalMcpInstanceRegistry::InstanceRecord record;
+	record.instanceId = instanceId;
+	record.processId = GetCurrentProcessId();
+	record.processPath = "AutoLinkerTest.exe";
+	record.processName = "AutoLinkerTest.exe";
+	record.port = port;
+	record.endpoint = "http://127.0.0.1:" + std::to_string(port) + "/mcp";
+	record.sourceFilePathHint = "test.e";
+	record.pageNameHint = "test";
+	record.pageTypeHint = "assembly";
+	record.lastSeenUnixMs = lastSeenUnixMs;
+	return record;
 }
 
 } // namespace
@@ -379,7 +582,12 @@ namespace LocalMcpInstanceRegistry {
 
 std::string GetRegistryFilePath()
 {
-	return GetRegistryPathObject().string();
+	return GetLegacyRegistryPathObject(GetRegistryBaseDirectoryObject()).string();
+}
+
+std::string GetRegistryDirectoryPath()
+{
+	return GetRegistryDirectoryPathObject(GetRegistryBaseDirectoryObject()).string();
 }
 
 bool UpsertCurrentInstance(const InstanceRecord& record, std::string* outError)
@@ -387,60 +595,12 @@ bool UpsertCurrentInstance(const InstanceRecord& record, std::string* outError)
 	if (outError != nullptr) {
 		outError->clear();
 	}
-	if (record.instanceId.empty()) {
-		if (outError != nullptr) {
-			*outError = "instance_id is empty";
-		}
+	std::unique_lock<std::timed_mutex> lock(g_currentInstanceMutex, std::defer_lock);
+	if (!lock.try_lock_for(kLocalOperationLockTimeout)) {
+		SetError(outError, "local instance registry update is still in progress");
 		return false;
 	}
-	if (record.port <= 0) {
-		if (outError != nullptr) {
-			*outError = "port is invalid";
-		}
-		return false;
-	}
-	if (record.endpoint.empty()) {
-		if (outError != nullptr) {
-			*outError = "endpoint is empty";
-		}
-		return false;
-	}
-
-	NamedMutexGuard guard(kRegistryMutexName);
-	if (!guard.IsLocked()) {
-		if (outError != nullptr) {
-			*outError = "lock registry mutex failed";
-		}
-		return false;
-	}
-
-	const std::filesystem::path path = GetRegistryPathObject();
-	nlohmann::json root;
-	TryLoadRegistryJson(path, root, nullptr);
-
-	bool changed = false;
-	std::vector<InstanceRecord> records = ParseAndCleanupRecords(root, changed);
-
-	bool updated = false;
-	for (auto& current : records) {
-		if (current.instanceId == record.instanceId) {
-			current = record;
-			updated = true;
-			break;
-		}
-	}
-	if (!updated) {
-		records.push_back(record);
-	}
-
-	std::sort(records.begin(), records.end(), [](const auto& left, const auto& right) {
-		if (left.port != right.port) {
-			return left.port < right.port;
-		}
-		return left.instanceId < right.instanceId;
-	});
-
-	return SaveRegistryJson(path, BuildRootJsonFromRecords(records), outError);
+	return UpsertInstanceAtBaseDirectory(GetRegistryBaseDirectoryObject(), record, outError);
 }
 
 bool RemoveCurrentInstance(const std::string& instanceId, std::string* outError)
@@ -451,62 +611,133 @@ bool RemoveCurrentInstance(const std::string& instanceId, std::string* outError)
 	if (instanceId.empty()) {
 		return true;
 	}
-
-	NamedMutexGuard guard(kRegistryMutexName);
-	if (!guard.IsLocked()) {
-		if (outError != nullptr) {
-			*outError = "lock registry mutex failed";
-		}
+	std::unique_lock<std::timed_mutex> lock(g_currentInstanceMutex, std::defer_lock);
+	if (!lock.try_lock_for(kLocalOperationLockTimeout)) {
+		SetError(outError, "local instance registry update is still in progress");
 		return false;
 	}
-
-	const std::filesystem::path path = GetRegistryPathObject();
-	nlohmann::json root;
-	TryLoadRegistryJson(path, root, nullptr);
-
-	bool changed = false;
-	std::vector<InstanceRecord> records = ParseAndCleanupRecords(root, changed);
-	const size_t oldSize = records.size();
-	records.erase(
-		std::remove_if(records.begin(), records.end(), [&instanceId](const auto& record) {
-			return record.instanceId == instanceId;
-		}),
-		records.end());
-
-	if (records.size() == oldSize && !changed) {
-		return true;
-	}
-
-	return SaveRegistryJson(path, BuildRootJsonFromRecords(records), outError);
+	return RemoveInstanceAtBaseDirectory(GetRegistryBaseDirectoryObject(), instanceId, outError);
 }
 
 bool LoadInstances(std::vector<InstanceRecord>& outRecords, std::string* outError)
 {
-	outRecords.clear();
-	if (outError != nullptr) {
-		outError->clear();
-	}
+	return LoadInstancesAtBaseDirectory(GetRegistryBaseDirectoryObject(), outRecords, outError);
+}
 
-	NamedMutexGuard guard(kRegistryMutexName);
-	if (!guard.IsLocked()) {
-		if (outError != nullptr) {
-			*outError = "lock registry mutex failed";
+std::string BuildSelfTestReportJson()
+{
+	nlohmann::json report = {
+		{"name", "local-mcp-instance-registry-isolation"},
+		{"ok", false}
+	};
+
+	std::error_code ec;
+	const std::filesystem::path baseDirectory =
+		std::filesystem::temp_directory_path(ec) /
+		("AutoLinkerRegistrySelfTest-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+	if (ec) {
+		report["error"] = "resolve temp directory failed";
+		return report.dump();
+	}
+	std::filesystem::remove_all(baseDirectory, ec);
+
+	try {
+		constexpr int kConcurrentInstanceCount = 8;
+		constexpr int kUpdatesPerInstance = 12;
+		const std::uint64_t nowMs = GetUnixTimeMilliseconds();
+		std::atomic_int writeFailures = 0;
+		std::vector<std::thread> writers;
+		writers.reserve(kConcurrentInstanceCount);
+		for (int index = 0; index < kConcurrentInstanceCount; ++index) {
+			writers.emplace_back([&, index]() {
+				for (int update = 0; update < kUpdatesPerInstance; ++update) {
+					InstanceRecord record = BuildSelfTestRecord(
+						"self-instance-" + std::to_string(index),
+						20000 + index,
+						nowMs + static_cast<std::uint64_t>(update));
+					std::string error;
+					if (!UpsertInstanceAtBaseDirectory(baseDirectory, record, &error)) {
+						writeFailures.fetch_add(1);
+					}
+				}
+			});
 		}
-		return false;
+		for (auto& writer : writers) {
+			writer.join();
+		}
+
+		InstanceRecord legacyRecord = BuildSelfTestRecord("legacy-instance", 21000, nowMs);
+		const nlohmann::json legacyRoot = {
+			{"version", 1},
+			{"instances", nlohmann::json::array({BuildRecordJson(legacyRecord)})}
+		};
+		std::string legacyWriteError;
+		const bool legacyWriteOk = SaveJsonFileAtomically(
+			GetLegacyRegistryPathObject(baseDirectory),
+			legacyRoot,
+			&legacyWriteError);
+
+		InstanceRecord staleRecord = BuildSelfTestRecord(
+			"stale-instance",
+			22000,
+			nowMs - kDeadInstanceCleanupTtlMs - 1000);
+		staleRecord.processId = 0;
+		std::string staleWriteError;
+		const bool staleWriteOk = UpsertInstanceAtBaseDirectory(baseDirectory, staleRecord, &staleWriteError);
+
+		std::vector<InstanceRecord> records;
+		std::string loadError;
+		const bool loadOk = LoadInstancesAtBaseDirectory(baseDirectory, records, &loadError);
+		const bool concurrentRecordsOk = records.size() == kConcurrentInstanceCount + 1;
+		const bool staleIgnored = std::none_of(records.begin(), records.end(), [](const auto& record) {
+			return record.instanceId == "stale-instance";
+		});
+
+		std::string removeError;
+		const bool removeOk = RemoveInstanceAtBaseDirectory(baseDirectory, "self-instance-0", &removeError);
+		std::vector<InstanceRecord> recordsAfterRemove;
+		std::string reloadError;
+		const bool reloadOk = LoadInstancesAtBaseDirectory(baseDirectory, recordsAfterRemove, &reloadError);
+		const bool removedRecordAbsent = std::none_of(
+			recordsAfterRemove.begin(),
+			recordsAfterRemove.end(),
+			[](const auto& record) { return record.instanceId == "self-instance-0"; });
+		const bool removeCountOk = recordsAfterRemove.size() == kConcurrentInstanceCount;
+
+		const bool ok =
+			writeFailures.load() == 0 &&
+			legacyWriteOk &&
+			staleWriteOk &&
+			loadOk &&
+			concurrentRecordsOk &&
+			staleIgnored &&
+			removeOk &&
+			reloadOk &&
+			removedRecordAbsent &&
+			removeCountOk;
+		report["ok"] = ok;
+		report["write_failures"] = writeFailures.load();
+		report["concurrent_record_count"] = records.size();
+		report["legacy_compatibility"] = legacyWriteOk;
+		report["stale_record_ignored"] = staleIgnored;
+		report["remove_isolated"] = removeOk && removedRecordAbsent && removeCountOk;
+		if (!ok) {
+			report["legacy_write_error"] = legacyWriteError;
+			report["stale_write_error"] = staleWriteError;
+			report["load_error"] = loadError;
+			report["remove_error"] = removeError;
+			report["reload_error"] = reloadError;
+		}
+	}
+	catch (const std::exception& ex) {
+		report["error"] = ex.what();
+	}
+	catch (...) {
+		report["error"] = "unknown exception";
 	}
 
-	const std::filesystem::path path = GetRegistryPathObject();
-	nlohmann::json root;
-	if (!TryLoadRegistryJson(path, root, outError)) {
-		return false;
-	}
-
-	bool changed = false;
-	outRecords = ParseAndCleanupRecords(root, changed);
-	if (changed) {
-		SaveRegistryJson(path, BuildRootJsonFromRecords(outRecords), nullptr);
-	}
-	return true;
+	std::filesystem::remove_all(baseDirectory, ec);
+	return report.dump();
 }
 
 } // namespace LocalMcpInstanceRegistry
