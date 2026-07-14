@@ -142,7 +142,7 @@ url = "http://127.0.0.1:19207/mcp"
 
 ### ⭐工程源码读写模型
 
-- 内置 AI 对话会在每轮请求开始前以 `full` 模式自动准备工程镜像；外部 MCP 会话首次读取或编辑源码前必须先成功调用 `refresh_workspace_mirror`。AutoLinker 会用 e-packager 将当前 IDE 工程（包含未保存改动）解包到源文件目录下的 `.temp/al_<pid>_*` 临时镜像目录，源码目录不可写时回退到系统临时目录。
+- 内置 AI 对话会在每轮请求开始前以 `full` 模式自动准备工程镜像；外部 MCP 会话首次读取或编辑源码前必须先成功调用 `refresh_workspace_mirror`。AutoLinker 会用 e-packager 将当前 IDE 工程（包含未保存改动）解包到系统临时目录 `%TEMP%/AutoLinker/workspace-mirror/al_<pid>_*`，不会在源码目录下创建 `.temp`。
 - `mode` 支持 `auto`（默认）、`main_only`（仅主工程源码）和 `full`（完整全量刷新）。不同 IDE 进程的镜像目录互不清理，只有确认所有者进程退出后才回收。
 - 镜像定位统一使用 `list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`，路径均为解包镜像内的相对路径；搜索支持最多 16 个 pattern 的单次逐文件流式扫描，可命中 1 MiB 之后的内容。
 - 大文件读取返回 `next_source_byte_offset`，后续把它作为 `byte_offset` 传回即可继续；分页时建议同时回传 `mirror_generation`，工程刷新或写入后会明确拒绝旧代次游标。

@@ -6,7 +6,6 @@
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
-#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -365,105 +364,46 @@ void CleanupSiblingMirrors(const std::filesystem::path& baseDir)
 	}
 }
 
-// 判断路径是否位于云同步盘（OneDrive / Dropbox / Google Drive / 坚果云 等）下。
-// 在同步盘里解包成百上千个文件会被同步客户端实时扫描/加锁/上传，
-// 导致 e-packager unpack 从 ~1s 暴涨到几十秒，因此需将镜像改放到本地临时目录。
-// 注意：本工程以 MultiByte 字符集且未启用 /utf-8 编译，源文件中的中文宽字面量
-// 会被按 GBK 解释而错乱，因此这里只用纯 ASCII 标记，并自行做 ASCII 小写转换。
-bool IsUnderCloudSyncPath(const std::filesystem::path& path)
+bool TryGetSystemMirrorBase(std::filesystem::path& outBase, std::string& outError)
 {
-	std::wstring text = path.wstring();
-	for (wchar_t& c : text) {
-		if (c >= L'A' && c <= L'Z') {
-			c = static_cast<wchar_t>(c - L'A' + L'a');
+	outBase.clear();
+	outError.clear();
+	std::error_code ec;
+	const std::filesystem::path systemTemp = std::filesystem::temp_directory_path(ec);
+	if (ec || systemTemp.empty()) {
+		outError = "获取系统临时目录失败";
+		if (ec) {
+			outError += "：" + ec.message();
 		}
-		else if (c == L'/') {
-			c = L'\\';
-		}
+		return false;
 	}
-
-	// 路径分段里出现这些目录名即视为同步盘（用分隔符界定，避免误伤子串）。
-	static const wchar_t* const kMarkers[] = {
-		L"onedrive",
-		L"dropbox",
-		L"google drive",
-		L"googledrive",
-		L"nutstore",   // 坚果云英文目录名
-	};
-	for (const wchar_t* marker : kMarkers) {
-		const std::wstring needle = std::wstring(L"\\") + marker;
-		size_t pos = text.find(needle);
-		while (pos != std::wstring::npos) {
-			const size_t after = pos + needle.size();
-			// 命中 "\onedrive\"、以 "\onedrive" 结尾、或紧跟空格/连字符（如 "OneDrive - 公司"）。
-			if (after >= text.size() || text[after] == L'\\' || text[after] == L' ' || text[after] == L'-') {
-				return true;
-			}
-			pos = text.find(needle, pos + 1);
-		}
-	}
-
-	// 兜底：OneDrive 环境变量指向的根目录前缀。
-	for (const wchar_t* var : { L"OneDrive", L"OneDriveConsumer", L"OneDriveCommercial" }) {
-		wchar_t buf[MAX_PATH] = {};
-		const DWORD n = ::GetEnvironmentVariableW(var, buf, MAX_PATH);
-		if (n == 0 || n >= MAX_PATH) {
-			continue;
-		}
-		std::wstring root(buf, n);
-		for (wchar_t& c : root) {
-			if (c >= L'A' && c <= L'Z') {
-				c = static_cast<wchar_t>(c - L'A' + L'a');
-			}
-			else if (c == L'/') {
-				c = L'\\';
-			}
-		}
-		if (!root.empty() && text.rfind(root, 0) == 0) {
-			return true;
-		}
-	}
-	return false;
+	outBase = systemTemp / L"AutoLinker" / L"workspace-mirror";
+	return true;
 }
 
-std::filesystem::path BuildUniqueMirrorRoot(const std::filesystem::path& sourcePath)
+bool BuildUniqueMirrorRoot(std::filesystem::path& outRoot, std::string& outError)
 {
+	outRoot.clear();
+	std::filesystem::path baseDir;
+	if (!TryGetSystemMirrorBase(baseDir, outError)) {
+		return false;
+	}
+
+	std::error_code ec;
+	std::filesystem::create_directories(baseDir, ec);
+	if (ec) {
+		outError = "创建系统临时镜像目录失败：" + ec.message();
+		return false;
+	}
+	CleanupSiblingMirrors(baseDir);
+
 	const DWORD pid = GetCurrentProcessId();
 	const ULONGLONG tick = GetTickCount64();
 	std::random_device rd;
 	const unsigned int salt = rd();
 	const std::wstring uniqueName = std::format(L"al_{}_{}_{:08x}", pid, tick, salt);
-
-	std::error_code ec;
-	const std::filesystem::path localBase =
-		std::filesystem::temp_directory_path(ec) / L"AutoLinker" / L"workspace-mirror";
-
-	// 工程在云同步盘下时，优先用本地系统临时目录，避免同步客户端拖慢解包。
-	const bool preferLocalTemp = IsUnderCloudSyncPath(sourcePath.parent_path());
-	if (preferLocalTemp) {
-		std::error_code localEc;
-		std::filesystem::create_directories(localBase, localEc);
-		if (!localEc) {
-			CleanupSiblingMirrors(localBase);
-			OutputStringToELog(
-				"[WorkspaceMirror] source under cloud-sync path, using local temp mirror: " +
-				LocalFromPath(localBase));
-			return localBase / uniqueName;
-		}
-		OutputStringToELog(
-			"[WorkspaceMirror] cloud-sync detected but local temp unavailable, falling back to project .temp");
-	}
-
-	std::filesystem::path preferredBase = sourcePath.parent_path() / L".temp";
-	std::filesystem::create_directories(preferredBase, ec);
-	if (!ec) {
-		CleanupSiblingMirrors(preferredBase);
-		return preferredBase / uniqueName;
-	}
-
-	std::filesystem::create_directories(localBase, ec);
-	CleanupSiblingMirrors(localBase);
-	return localBase / uniqueName;
+	outRoot = baseDir / uniqueName;
+	return true;
 }
 
 bool BuildSnapshot(const std::filesystem::path& sourcePath, std::filesystem::path& outSnapshotPath, std::string& outTrace, std::string& outError)
@@ -606,8 +546,10 @@ bool RebuildMirrorLocked(const std::filesystem::path& sourcePath, std::string& o
 {
 	RemoveMirrorRootIfSafe(g_state.mirrorRoot);
 	g_state = {};
+	if (!BuildUniqueMirrorRoot(g_state.mirrorRoot, outError)) {
+		return false;
+	}
 	g_state.sourcePath = sourcePath;
-	g_state.mirrorRoot = BuildUniqueMirrorRoot(sourcePath);
 
 	std::filesystem::path snapshotPath;
 	std::string snapshotTrace;
@@ -1090,14 +1032,27 @@ std::string BuildSelfTestReportJson()
 		relativePath,
 		normalizedPath,
 		error);
+	std::filesystem::path systemMirrorBase;
+	std::string systemMirrorError;
+	const bool systemMirrorBaseResolved = TryGetSystemMirrorBase(systemMirrorBase, systemMirrorError);
+	std::error_code tempEc;
+	const std::filesystem::path systemTemp = std::filesystem::temp_directory_path(tempEc);
+	const bool systemTempOnly =
+		systemMirrorBaseResolved &&
+		!tempEc &&
+		IsPathInside(systemTemp, systemMirrorBase) &&
+		systemMirrorBase.filename() == L"workspace-mirror" &&
+		systemMirrorBase.parent_path().filename() == L"AutoLinker";
 
 	return json({
 		{"name", "workspace-mirror-safety"},
-		{"ok", ownerParsed && invalidOwnerRejected && dottedNameAccepted && traversalRejected},
+		{"ok", ownerParsed && invalidOwnerRejected && dottedNameAccepted && traversalRejected && systemTempOnly},
 		{"owner_pid_parsed", ownerParsed},
 		{"invalid_owner_rejected", invalidOwnerRejected},
 		{"dotted_name_accepted", dottedNameAccepted},
-		{"traversal_rejected", traversalRejected}
+		{"traversal_rejected", traversalRejected},
+		{"system_temp_only", systemTempOnly},
+		{"mirror_base", Utf8FromPath(systemMirrorBase)}
 	}).dump();
 }
 
