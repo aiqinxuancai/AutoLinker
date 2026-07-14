@@ -1,5 +1,7 @@
-# AutoLinker AI 配置指南
+﻿# AutoLinker AI 配置指南
 
+> **重要：强烈推荐使用易语言 5.95 版本，以获得 AutoLinker 的最佳兼容性和完整功能体验。其他版本仅建议用于兼容性测试。**
+>
 > 面向易语言开发者的 AI 功能配置说明，零基础也能看懂。
 
 ---
@@ -8,7 +10,9 @@
 
 - [基础概念：搞清楚这几个词](#基础概念搞清楚这几个词)
 - [配置界面各项说明](#配置界面各项说明)
+- [GPT-5.6 模型家族](#gpt-56-模型家族)
 - [各平台配置方法](#各平台配置方法)
+- [源码编辑模式](#源码编辑模式)
 - [Tavily 联网搜索（可选）](#tavily-联网搜索可选)
 - [外部 Agent MCP 配置](#外部-agent-mcp-配置)
 - [常见问题](#常见问题)
@@ -19,7 +23,7 @@
 
 在配置 AI 之前，先了解几个关键概念，后面看配置项就一目了然了。
 
-### 🔑 什么是 API Key？
+### 🔑 什么是 API 密钥（API Key）？
 
 API Key 就是一串密钥，相当于你访问 AI 服务的"账号密码"。  
 你在某个 AI 平台注册并充值后，平台会给你一个 Key，拿这个 Key 就能调用 AI。
@@ -51,9 +55,9 @@ API Key 就是一串密钥，相当于你访问 AI 服务的"账号密码"。
 你按 token 付费，成本极低（相比官方 API 可低 10 倍以上）
 ```
 
-这也是为什么同样是 GPT-5.5 / Claude Opus 4.7，通过某些中转站调用的价格会比官方 API 便宜很多，本质上是在消耗会员订阅的额度。
+这也是为什么同样是 GPT-5.6 / Claude Opus 4.8，通过某些中转站调用的价格会比官方 API 便宜很多，本质上是在消耗会员订阅的额度。
 
-> 📌 **协议注意：** 逆向 Codex 等工具的中转站，其 GPT 接口通常走的是 **OpenAI Responses** 协议（即 `/responses` 端点），而非普通的 Chat 协议（`/chat/completions`）。配置时 Protocol 应选 `OpenAI Responses`，而不是默认的 `OpenAI Chat`，否则可能调用失败或功能不完整。Right 等主流逆向中转站已在平台预设中正确配置，直接选预设即可。
+> 📌 **协议注意：** 逆向 Codex 等工具的中转站通常使用 **OpenAI Responses** 协议（即 `/responses` 端点），但不同平台的兼容方式并不相同。优先使用“使用预设站点新建”，让界面自动选择协议；当前 OpenAI 官方预设使用 `OpenAI Responses`，Right 预设使用 `OpenAI Chat`。手动配置时必须以服务商文档为准。
 
 **使用中转站的好处：**
 - 国内网络直接可用，无需 VPN
@@ -64,75 +68,100 @@ API Key 就是一串密钥，相当于你访问 AI 服务的"账号密码"。
 
 ---
 
-### 🤖 什么是 Base URL？
+### 🤖 什么是接口地址（Base URL）？
 
-Base URL 是你调用 AI 时的"服务地址"。
+接口地址就是调用 AI 时的服务地址，也常被称为 Base URL。
 
 - 官方 OpenAI 的地址是 `https://api.openai.com/v1`
 - 中转站会有自己的地址，如 `https://right.codes/codex`
-- 不同平台的地址不同，但**选了平台预设后会自动填入**，无需手动查找
+- 不同平台的地址不同，但通过“**使用预设站点新建**”创建配置组后会自动填入，无需手动查找
 
 ---
 
-### 💬 什么是模型（Model）？
+### 💬 什么是模型？
 
 模型就是具体的 AI，不同模型能力和价格不同。例如：
 
 | 模型名 | 特点 |
 |---|---|
-| `gpt-5.5` | 长上下文能力强，适合编程 |
+| `gpt-5.6` | OpenAI 最新系列的默认别名，自动指向旗舰版 `gpt-5.6-sol` |
+| `gpt-5.6-terra` | 兼顾能力与成本 |
+| `gpt-5.6-luna` | 适合高并发、高用量场景 |
 | `deepseek-chat` | 国内模型，价格实惠 |
 | `claude-sonnet-4-6` | 擅长理解和写作 |
 
-> 💡 不知道选哪个？可以先用平台预设自动填入的推荐模型。
+> 💡 不知道选哪个？可以点击“使用预设站点新建”，从站点当前提供的模型中选择。
 
 ---
 
-### 🧠 什么是 Thinking Level（思考等级）？
+### 🧠 什么是思考等级？
 
-部分高级模型支持"深度思考"功能，会在给出答案前先进行推理分析。
+部分高级模型支持深度思考，会在给出答案前先进行推理分析。AutoLinker 当前提供七档设置：
 
-| 等级 | 说明 |
-|---|---|
-| 关闭（Off） | 不思考，速度最快，适合简单任务 |
-| 低（Low） | 轻度思考 |
-| 中（Medium） | 适中思考 |
-| 高（High） | 深度思考，最准确但最慢、最贵 |
+| 界面选项 | 配置值 | 说明 |
+|---|---|---|
+| 关闭 | `off` | 关闭或尽量不使用额外推理，速度最快 |
+| 低 | `low` | 轻度思考，适合简单任务 |
+| 中 | `medium` | 能力、速度与费用较均衡，推荐作为 GPT-5.6 的起点 |
+| 高 | `high` | 增加推理量，适合较复杂任务 |
+| 超高 | `xhigh` | 更深入地分析和验证，耗时与费用更高 |
+| 最大 | `max` | 面向最困难、质量优先的任务 |
+| 极限 | `ultra` | AutoLinker 的最高预设；对 GPT-5.6 发出的推理等级仍为 `max` |
 
-> 💡 如果你用的模型不支持思考功能，选"关闭"即可，选其他无效也不报错。
+> 💡 GPT-5.6 官方支持 `none`、`low`、`medium`、`high`、`xhigh` 和 `max`。不同协议或模型支持的等级不同，AutoLinker 会按模型能力转换参数；部分模型会把“超高”“最大”“极限”统一降为其支持的最高档。若接口报参数不支持，请降低等级或选择“关闭”。
 
 ---
 
 ## 配置界面各项说明
 
-打开 AutoLinker AI 设置后，你会看到以下配置项：
+打开“AutoLinker AI 设置”后，会看到“模型服务配置组”和“其他设置”两个区域：
 
 | 字段 | 说明 | 是否必填 |
 |---|---|---|
-| **配置组** | 可以保存多套配置，方便在不同平台之间快速切换 | — |
-| **平台预设** | 选择一个平台，自动填入协议和地址 | 可选 |
-| **Protocol** | 接口协议，一般跟随平台预设自动设置 | ✅ |
-| **Base URL** | 服务地址，选平台预设后自动填入 | ✅ |
-| **API Key** | 从平台获取的密钥 | ✅ |
-| **Model** | 使用的模型名称 | ✅ |
-| **Thinking Level** | 思考等级，不确定选"关闭" | 可选 |
-| **System Prompt** | 附加的系统提示词，一般无需填写 | 可选 |
-| **Custom Headers** | 自定义请求头，高级用法，一般无需填写 | 可选 |
-| **Tavily API Key** | 联网搜索的独立密钥，见下方说明 | 可选 |
+| **配置组** | 保存并切换多套模型服务配置，可新建、使用预设站点新建、重命名或删除 | — |
+| **接口协议** | 可选 `OpenAI Chat`、`OpenAI Responses`、`Gemini` 或 `Claude` | ✅ |
+| **接口地址** | 模型服务地址；界面下方会预览最终请求地址 | ✅ |
+| **API 密钥** | 从模型平台获取的密钥 | ✅ |
+| **模型** | 使用的模型名称；可直接填写、从候选列表选择，或点击 `↻` 从接口获取模型列表 | ✅ |
+| **上下文长度** | 达到该长度的 95% 时自动压缩历史；留空时按模型名自动判断 | 可选 |
+| **思考等级** | 控制模型的推理强度，详见上方七档说明 | 可选 |
+| **系统提示词** | 附加到 AutoLinker 内置提示词后的自定义要求 | 可选 |
+| **自定义请求头** | 每行填写一个“请求头名称: 值”，可覆盖内置请求头 | 可选 |
+| **源码编辑模式** | 全局设置，可选“真实页优先”或“解包镜像基准（测试）” | 可选 |
+| **Tavily API 密钥** | 全局联网搜索密钥，独立于模型服务配置组 | 可选 |
 
 ### 配置组（多套配置）
 
-配置组功能让你可以保存多套 API 配置，方便切换。例如：
+配置组功能让你可以保存多套模型服务配置，方便切换。例如：
 - 一套用国内的 DeepSeek，日常省钱用
 - 一套用海外的 GPT，处理复杂任务用
 
-点击"**新建**"即可添加新配置组，"**删除**"可删除当前组（至少保留一个）。
+点击“**新建**”可创建空白配置组；点击“**使用预设站点新建**”并选择具体的“站点（模型）”，会自动创建配置组并填好接口协议、接口地址和模型，只需再填写 API 密钥。还可以对当前配置组执行“**重命名**”或“**删除**”（至少保留一个配置组）。
+
+> 💡 “使用预设站点新建”取代了旧版界面的“平台预设”字段。切换配置组不会改变“源码编辑模式”和“Tavily API 密钥”，因为这两项是全局设置。
+
+---
+
+## GPT-5.6 模型家族
+
+GPT-5.6 是 OpenAI 当前最新模型家族。AutoLinker 的 OpenAI 预设已提供以下四个模型名，并会把它们的上下文长度自动识别为 **1,050,000 tokens**：
+
+| 模型 | 适用场景 |
+|---|---|
+| `gpt-5.6` | 默认别名，当前自动指向 `gpt-5.6-sol` |
+| `gpt-5.6-sol` | 旗舰能力，适合复杂编程、分析和高质量生产任务 |
+| `gpt-5.6-terra` | 在能力与成本之间取得平衡 |
+| `gpt-5.6-luna` | 更高效率，适合高并发和大用量任务 |
+
+建议使用 **OpenAI Responses** 协议，并从“中”思考等级开始。复杂任务可逐步提高到“高”“超高”或“最大”；“极限”对 GPT-5.6 发出的官方推理等级也是 `max`，不是一个独立的 OpenAI 推理档位。
+
+> 📖 官方资料：[Using GPT-5.6](https://developers.openai.com/api/docs/guides/latest-model)
 
 ---
 
 ## 各平台配置方法
 
-> 💡 **推荐流程：** 选择平台预设 → 自动填入地址和协议 → 填写 API Key → 选择模型 → 点击"测试连通性" → 保存
+> 💡 **推荐流程：** 点击“使用预设站点新建” → 选择“站点（模型）” → 填写 API 密钥 → 选择思考等级 → 点击“测试连通性” → 保存
 
 ---
 
@@ -145,17 +174,16 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 **配置步骤：**
 
-1. 在"**平台预设**"下拉框中选择 `Right`
-2. Base URL 和 Protocol 会自动填入：
-   - Base URL: `https://right.codes/codex`
-   - Protocol: `OpenAI Chat`
-3. 前往 Right 官网注册并充值，在控制台复制你的 **API Key**，填入"**API Key**"
-4. 在"**Model**"下拉中选择想用的模型：
-   - `gpt-5.5` — 最新模型
-   - `gpt-5.4` — （推荐）
-   - `gpt-5.2` — 通用模型
-5. 点击"**测试连通性**"确认配置正确
-6. 点击"**保存并继续**"
+1. 点击“**使用预设站点新建**”，选择一个 Right 预设：
+   - `Right(gpt-5.3-codex)` — 代码任务
+   - `Right(gpt-5.2)` — 通用任务
+2. 界面会自动填入：
+   - 接口地址：`https://right.codes/codex`
+   - 接口协议：`OpenAI Chat`
+3. 前往 Right 官网注册并充值，在控制台复制 API 密钥，填入“**API 密钥**”
+4. 按需设置“**思考等级**”，“**上下文长度**”一般留空即可
+5. 点击“**测试连通性**”确认配置正确
+6. 点击“**保存并继续**”
 
 </details>
 
@@ -170,19 +198,19 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 **配置步骤：**
 
-1. 在"**平台预设**"中选择 `DeepSeek`
+1. 点击“**使用预设站点新建**”，选择一个 Deepseek 模型
 2. 自动填入：
-   - Base URL: `https://api.deepseek.com`
-   - Protocol: `OpenAI Chat`
-3. 前往 DeepSeek 平台注册，在 API 管理页面创建密钥，填入"**API Key**"
-4. 选择模型：
-   - `deepseek-chat` — 通用对话（价格实惠）
-   - `deepseek-reasoner` — 深度推理（更准确，适合复杂代码分析）
+   - 接口地址：`https://api.deepseek.com`
+   - 接口协议：`OpenAI Chat`
+3. 前往 DeepSeek 平台注册，在 API 管理页面创建密钥，填入“**API 密钥**”
+4. 当前预设模型：
    - `deepseek-v4-flash` — 快速版
    - `deepseek-v4-pro` — 增强版
+   - `deepseek-chat` — 通用对话
+   - `deepseek-reasoner` — 深度推理
 5. 测试并保存
 
-> 💡 DeepSeek 支持"思考"功能，使用 `deepseek-reasoner` 时可以把 Thinking Level 调为"中"或"高"。
+> 💡 使用推理模型时可将“思考等级”设为“中”或“高”；若服务端不接受对应参数，请改为“关闭”。
 
 </details>
 
@@ -197,15 +225,16 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 **配置步骤：**
 
-1. 平台预设选 `智谱`
+1. 点击“**使用预设站点新建**”，选择一个智谱模型
 2. 自动填入：
-   - Base URL: `https://open.bigmodel.cn/api/paas/v4`
-3. 在智谱官网注册，前往"API 密钥"页面创建密钥，填入"**API Key**"
-4. 选择模型：
-   - `glm-5.1` — 最新旗舰
-   - `glm-5` — 标准版
-   - `glm-5-turbo` — 快速版
-   - `glm-4.7` — 上一代旗舰
+   - 接口地址：`https://open.bigmodel.cn/api/paas/v4`
+   - 接口协议：`OpenAI Chat`
+3. 在智谱官网注册，前往“API 密钥”页面创建密钥，填入“**API 密钥**”
+4. 当前预设模型：
+   - `glm-5.2`
+   - `glm-5-turbo`
+   - `glm-4.7`
+   - `glm-4.5-air`
 5. 测试并保存
 
 </details>
@@ -221,14 +250,17 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 **配置步骤：**
 
-1. 平台预设选 `千问`
+1. 点击“**使用预设站点新建**”，选择一个千问模型
 2. 自动填入：
-   - Base URL: `https://dashscope.aliyuncs.com/compatible-mode/v1`
-3. 在阿里云 DashScope 控制台创建 API Key，填入"**API Key**"
-4. 选择模型：
-   - `qwen3-max` — 最强版本
-   - `qwen3.6-plus` — 增强版
-   - `qwen3-coder-plus` — 代码专向（适合编程场景）
+   - 接口地址：`https://dashscope.aliyuncs.com/compatible-mode/v1`
+   - 接口协议：`OpenAI Chat`
+3. 在阿里云 DashScope 控制台创建 API 密钥，填入“**API 密钥**”
+4. 当前预设模型：
+   - `qwen3.7-plus`
+   - `qwen3.7-max`
+   - `qwen3.6-flash`
+   - `qwen3-coder-next`
+   - `qwen3-coder-plus`
 5. 测试并保存
 
 </details>
@@ -244,14 +276,16 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 **配置步骤：**
 
-1. 平台预设选 `Kimi`
+1. 点击“**使用预设站点新建**”，选择一个 Kimi 模型
 2. 自动填入：
-   - Base URL: `https://api.moonshot.cn/v1`
-3. 在 Moonshot 平台创建 API Key，填入"**API Key**"
-4. 选择模型：
-   - `kimi-k2.5` — 最新旗舰
-   - `kimi-k2-thinking` — 深度思考版
-   - `moonshot-v1-128k` — 超长上下文
+   - 接口地址：`https://api.moonshot.cn/v1`
+   - 接口协议：`OpenAI Chat`
+3. 在 Moonshot 平台创建 API 密钥，填入“**API 密钥**”
+4. 当前预设模型：
+   - `kimi-k2.7-code`
+   - `kimi-k2.7-code-highspeed`
+   - `kimi-k2.6`
+   - `kimi-k2.5`
 5. 测试并保存
 
 </details>
@@ -267,17 +301,19 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 **配置步骤：**
 
-1. 平台预设选 `豆包`
+1. 点击“**使用预设站点新建**”，选择一个豆包模型
 2. 自动填入：
-   - Base URL: `https://ark.cn-beijing.volces.com/api/v3`
-3. 在火山引擎控制台创建 API Key，填入"**API Key**"
+   - 接口地址：`https://ark.cn-beijing.volces.com/api/v3`
+   - 接口协议：`OpenAI Chat`
+3. 在火山引擎控制台创建 API 密钥，填入“**API 密钥**”
 
-   > ⚠️ 注意：豆包平台需要先创建"推理接入点"，Model 填写接入点 ID，而不是普通模型名。请参考豆包平台文档。
+   > ⚠️ 注意：部分豆包账户或接口需要先创建“推理接入点”，并在“模型”中填写接入点 ID。请以火山引擎控制台的实际接入方式为准。
 
-4. 选择模型（推荐参考）：
-   - `doubao-seed-1.8` — 最新版
-   - `doubao-seed-1.6` — 标准版
-   - `doubao-seed-1.6-thinking` — 思考版
+4. 当前预设模型：
+   - `doubao-seed-2.0-pro`
+   - `doubao-seed-2.0-code`
+   - `doubao-seed-2.0-lite`
+   - `doubao-seed-1.8`
 5. 测试并保存
 
 </details>
@@ -293,13 +329,16 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 **配置步骤：**
 
-1. 平台预设选 `MiniMax`
+1. 点击“**使用预设站点新建**”，选择一个 MiniMax 模型
 2. 自动填入：
-   - Base URL: `https://api.minimax.chat/v1`
-3. 在 MiniMax 平台注册并获取 API Key，填入"**API Key**"
-4. 选择模型：
-   - `MiniMax-M2.7` — 旗舰版
-   - `MiniMax-M2.7-highspeed` — 高速版
+   - 接口地址：`https://api.minimax.chat/v1`
+   - 接口协议：`OpenAI Chat`
+3. 在 MiniMax 平台注册并获取 API 密钥，填入“**API 密钥**”
+4. 当前预设模型：
+   - `MiniMax-M3`
+   - `MiniMax-M2.7`
+   - `MiniMax-M2.7-highspeed`
+   - `MiniMax-M2.5`
 5. 测试并保存
 
 </details>
@@ -315,17 +354,18 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 **配置步骤：**
 
-1. 平台预设选 `aihubmix`
+1. 点击“**使用预设站点新建**”，选择一个 aihubmix 模型
 2. 自动填入：
-   - Base URL: `https://aihubmix.com/v1`
-   - Protocol: `OpenAI Chat`
-3. 在 aihubmix 控制台充值并创建 API Key，填入"**API Key**"
-4. 选择模型（该中转站聚合了大量模型）：
-   - `gpt-5.4` — 最新 GPT
-   - `claude-opus-4-7` — Claude 旗舰
-   - `claude-sonnet-4-6` — Claude 高性价比
-   - `gemini-3.1-pro-preview` — Gemini 旗舰
-   - `grok-4` — xAI 模型
+   - 接口地址：`https://aihubmix.com/v1`
+   - 接口协议：`OpenAI Chat`
+3. 在 aihubmix 控制台充值并创建 API 密钥，填入“**API 密钥**”
+4. 当前预设模型：
+   - `gpt-5.5`
+   - `claude-opus-4-8`
+   - `claude-sonnet-4-6`
+   - `deepseek-v4-pro`
+   - `deepseek-v4-flash`
+   - `gemini-3.1-pro-preview`
 5. 测试并保存
 
 </details>
@@ -341,16 +381,19 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 **配置步骤：**
 
-1. 平台预设选 `硅基流动`
+1. 点击“**使用预设站点新建**”，选择一个硅基流动模型
 2. 自动填入：
-   - Base URL: `https://api.siliconflow.cn/v1`
-3. 在硅基流动控制台创建 API Key，填入"**API Key**"
-4. 选择模型：
-   - `deepseek-ai/DeepSeek-V3.2` — DeepSeek 最新版
-   - `deepseek-ai/DeepSeek-R1` — DeepSeek 推理版
-   - `Qwen/Qwen3-Coder-480B-A35B-Instruct` — 千问大型代码模型
+   - 接口地址：`https://api.siliconflow.cn/v1`
+   - 接口协议：`OpenAI Chat`
+3. 在硅基流动控制台创建 API 密钥，填入“**API 密钥**”
+4. 当前预设模型：
+   - `deepseek-ai/DeepSeek-V4-Flash`
+   - `deepseek-ai/DeepSeek-V4-Pro`
+   - `Pro/zai-org/GLM-5`
+   - `zai-org/GLM-5.1`
+   - `Qwen/Qwen3.5-397B-A17B`
 
-   > 💡 注意：硅基流动的模型名带有路径格式（如 `deepseek-ai/DeepSeek-V3.2`），填写时要完整。
+   > 💡 注意：硅基流动的模型名带有路径格式（如 `deepseek-ai/DeepSeek-V4-Pro`），填写时要完整。
 
 5. 测试并保存
 
@@ -367,16 +410,20 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 **配置步骤：**
 
-1. 平台预设选 `OpenAI`
+1. 点击“**使用预设站点新建**”，选择一个 OpenAI 模型
 2. 自动填入：
-   - Base URL: `https://api.openai.com/v1`
-   - **Protocol: `OpenAI Responses`**（注意，OpenAI 官方使用新接口）
-3. 在 OpenAI Platform 充值后创建 API Key，填入"**API Key**"
-4. 选择模型：
-   - `gpt-5.5` — 最新旗舰
-   - `gpt-5.4` — 上一代旗舰
-   - `gpt-5.4-mini` — 经济版
-   - `gpt-5.3-codex` — 代码专向
+   - 接口地址：`https://api.openai.com/v1`
+   - **接口协议：`OpenAI Responses`**
+3. 在 OpenAI Platform 充值后创建 API 密钥，填入“**API 密钥**”
+4. 当前预设模型：
+   - `gpt-5.6` — 默认指向 `gpt-5.6-sol`
+   - `gpt-5.6-sol` — 旗舰能力
+   - `gpt-5.6-terra` — 能力与成本平衡
+   - `gpt-5.6-luna` — 高效率、高用量
+   - `gpt-5.5`
+   - `gpt-5.4`
+   - `gpt-5.4-mini`
+   - `gpt-5.3-codex`
 5. 测试并保存
 
 > ⚠️ 直接用官方 OpenAI 在国内需要能访问海外网络，如果访问困难建议使用上方的中转站。
@@ -394,15 +441,15 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 **配置步骤：**
 
-1. 平台预设选 `Claude`
+1. 点击“**使用预设站点新建**”，选择一个 Claude 模型
 2. 自动填入：
-   - Base URL: `https://api.anthropic.com`
-   - **Protocol: `Claude`**（Claude 有独立协议）
-3. 在 Anthropic 控制台获取 API Key，填入"**API Key**"
-4. 选择模型：
-   - `claude-opus-4-7` — 旗舰版（最强）
-   - `claude-sonnet-4-6` — 平衡版（推荐）
-   - `claude-3-5-haiku-latest` — 快速轻量版
+   - 接口地址：`https://api.anthropic.com`
+   - **接口协议：`Claude`**
+3. 在 Anthropic 控制台获取 API 密钥，填入“**API 密钥**”
+4. 当前预设模型：
+   - `claude-opus-4-8`
+   - `claude-sonnet-4-6`
+   - `claude-haiku-4-5`
 5. 测试并保存
 
 > 💡 如果你在国内访问有问题，可以通过 aihubmix 或其他中转站使用 Claude 模型。
@@ -420,20 +467,33 @@ Base URL 是你调用 AI 时的"服务地址"。
 
 **配置步骤：**
 
-1. 平台预设选 `Gemini`
+1. 点击“**使用预设站点新建**”，选择一个 Gemini 模型
 2. 自动填入：
-   - Base URL: `https://generativelanguage.googleapis.com`
-   - **Protocol: `Gemini`**（Google 有独立协议）
-3. 在 Google AI Studio 获取 API Key，填入"**API Key**"
-4. 选择模型：
-   - `gemini-3.1-pro-preview` — 旗舰版（最强推理，适合复杂任务）
-   - `gemini-3-flash-preview` — Pro 级智能 + Flash 速度（推荐）
-   - `gemini-3.1-flash-lite` — 轻量经济版（高吞吐量场景）
-   - `gemini-2.5-pro` — 上一代旗舰
-   - `gemini-2.5-flash` — 上一代轻量版
+   - 接口地址：`https://generativelanguage.googleapis.com`
+   - **接口协议：`Gemini`**
+3. 在 Google AI Studio 获取 API 密钥，填入“**API 密钥**”
+4. 当前预设模型：
+   - `gemini-3.1-pro-preview`
+   - `gemini-3.1-pro-preview-customtools`
+   - `gemini-3.5-flash`
+   - `gemini-3.1-flash-lite`
+   - `gemini-2.5-pro`
 5. 测试并保存
 
 </details>
+
+---
+
+## 源码编辑模式
+
+“源码编辑模式”位于“其他设置”区域，是所有模型服务配置组共用的全局设置：
+
+| 模式 | 说明 |
+|---|---|
+| **真实页优先** | 编辑前读取易语言 IDE 中的真实页面，推荐日常使用 |
+| **解包镜像基准（测试）** | 按 `read_file` 读取的镜像源码进行匹配并写回页面，仅建议测试或排查特定问题时使用 |
+
+> 💡 不确定时保留默认的“真实页优先”。
 
 ---
 
@@ -446,11 +506,11 @@ Tavily 是一个 AI 搜索 API，配置后 AutoLinker 的 `search_web_tavily` �
 **配置步骤：**
 
 1. 前往 Tavily 官网注册
-2. 在控制台复制你的 **API Key**
-3. 在配置界面右侧"Tavily 联网搜索"区域，填入"**Tavily API Key**"
+2. 在控制台复制你的 API 密钥
+3. 在配置界面的“其他设置”区域，填入“**Tavily API 密钥**”
 4. 保存即可
 
-> 💡 Tavily Key 是独立的，和主模型的 API Key 没有关系，两者互不影响。  
+> 💡 Tavily API 密钥是全局设置，不随模型服务配置组切换；它和主模型的 API 密钥没有关系，两者互不影响。
 > 不需要联网搜索功能的话，这里留空也没关系。
 
 ---
@@ -653,10 +713,10 @@ claude mcp add --transport http AutoLinker http://127.0.0.1:19207/mcp
 
 ## 常见问题
 
-**Q：点"测试连通性"提示失败，怎么排查？**
+**Q：点“测试连通性”提示失败，怎么排查？**
 
-1. 检查 API Key 是否填写正确（有没有多余的空格）
-2. 检查 Base URL 是否正确（用了平台预设一般不会错）
+1. 检查“API 密钥”是否填写正确（有没有多余的空格）
+2. 检查“接口地址”和“接口协议”是否正确（使用预设站点新建时会自动填写）
 3. 检查账户余额是否充足
 4. 如果是海外服务（OpenAI、Claude），检查是否能正常访问海外网络
 
@@ -664,7 +724,7 @@ claude mcp add --transport http AutoLinker http://127.0.0.1:19207/mcp
 
 **Q：模型名填错了会怎样？**
 
-会在调用时报错，提示模型不存在。直接修改 Model 字段为正确的模型名即可。
+会在调用时报错，提示模型不存在。直接修改“模型”字段，或点击右侧的 `↻` 获取服务端模型列表。
 
 ---
 
