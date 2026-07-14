@@ -115,15 +115,6 @@ std::uintptr_t ReadNormalizedImm32(std::uintptr_t instructionAddress, size_t imm
     return NormalizeRuntimeAddress(runtimeValue, moduleBase);
 }
 
-std::uintptr_t ReadNormalizedAbs32(std::uintptr_t absoluteAddress, std::uintptr_t moduleBase) {
-    if (absoluteAddress == 0 || moduleBase == 0 || absoluteAddress < kImageBase) {
-        return 0;
-    }
-    const auto runtimeAddress = absoluteAddress - kImageBase + moduleBase;
-    const auto runtimeValue = static_cast<std::uintptr_t>(*reinterpret_cast<const std::uint32_t*>(runtimeAddress));
-    return NormalizeRuntimeAddress(runtimeValue, moduleBase);
-}
-
 bool HasUnsafeDirectGlobalSearchLayoutSupport(
     std::uintptr_t moduleBase,
     std::string* outTrace = nullptr) {
@@ -549,10 +540,6 @@ const NativeSearchAddresses& GetNativeSearchAddresses(std::uintptr_t moduleBase)
         PopulateNativeSearchAddresses(g_nativeSearchAddresses, moduleBase);
     }
     return g_nativeSearchAddresses;
-}
-
-bool HasNativeSearchAddresses(std::uintptr_t moduleBase) {
-    return GetNativeSearchAddresses(moduleBase).ok;
 }
 
 bool DebugIsDirectGlobalSearchSupportedImpl(

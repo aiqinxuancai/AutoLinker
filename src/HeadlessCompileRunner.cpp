@@ -215,12 +215,6 @@ void WriteHeadlessConsoleLine(const std::string& textUtf8, bool stderrOutput = f
 	WriteHeadlessConsoleText(textUtf8 + "\r\n", stderrOutput);
 }
 
-bool HasCapturedIdeMessageBox()
-{
-	std::lock_guard<std::mutex> lock(g_capturedMessageBoxMutex);
-	return !g_capturedMessageBoxes.empty();
-}
-
 bool HasCapturedBlockingIdeMessageBox()
 {
 	std::lock_guard<std::mutex> lock(g_capturedMessageBoxMutex);

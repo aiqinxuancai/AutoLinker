@@ -291,33 +291,6 @@ DWORD PtrToDWORD(const void* ptr)
 	return static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(ptr));
 }
 
-bool IsSubRelatedType(int type)
-{
-	switch (type)
-	{
-	case VT_SUB_NAME:
-	case VT_SUB_RET_TYPE:
-	case VT_SUB_EPK_NAME:
-	case VT_SUB_EXPLAIN:
-	case VT_SUB_EXPORT:
-	case VT_SUB_ARG_NAME:
-	case VT_SUB_ARG_TYPE:
-	case VT_SUB_ARG_POINTER_TYPE:
-	case VT_SUB_ARG_NULL_TYPE:
-	case VT_SUB_ARG_ARY_TYPE:
-	case VT_SUB_ARG_EXPLAIN:
-	case VT_SUB_VAR_NAME:
-	case VT_SUB_VAR_TYPE:
-	case VT_SUB_VAR_STATIC_TYPE:
-	case VT_SUB_VAR_ARY_TYPE:
-	case VT_SUB_VAR_EXPLAIN:
-	case VT_SUB_PRG_ITEM:
-		return true;
-	default:
-		return false;
-	}
-}
-
 void TrimTrailingLineBreaks(std::string& text)
 {
 	while (!text.empty() && (text.back() == '\r' || text.back() == '\n')) {
@@ -627,44 +600,6 @@ bool ReadClipboardText(std::string& outText)
 	return ok;
 }
 
-bool TrimClipboardLastLine()
-{
-	if (!OpenClipboard(nullptr)) {
-		return false;
-	}
-
-	bool ok = false;
-	if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
-		HANDLE hData = GetClipboardData(CF_UNICODETEXT);
-		if (hData != nullptr) {
-			const wchar_t* textPtr = static_cast<const wchar_t*>(GlobalLock(hData));
-			if (textPtr != nullptr) {
-				std::wstring text(textPtr);
-				GlobalUnlock(hData);
-				RemoveLastLine(text);
-				EmptyClipboard();
-				ok = SetClipboardUnicodeText(text);
-			}
-		}
-	}
-	else if (IsClipboardFormatAvailable(CF_TEXT)) {
-		HANDLE hData = GetClipboardData(CF_TEXT);
-		if (hData != nullptr) {
-			const char* textPtr = static_cast<const char*>(GlobalLock(hData));
-			if (textPtr != nullptr) {
-				std::string text(textPtr);
-				GlobalUnlock(hData);
-				RemoveLastLine(text);
-				EmptyClipboard();
-				ok = SetClipboardAnsiText(text);
-			}
-		}
-	}
-
-	CloseClipboard();
-	return ok;
-}
-
 #ifdef UNICODE
 std::wstring ToWide(const std::string& text)
 {
@@ -767,80 +702,6 @@ bool IsSubHeaderTextLine(const std::string& rawText)
 		return static_cast<char>(std::tolower(ch));
 	});
 	return lower.rfind(".subroutine", 0) == 0 || lower.rfind(".sub", 0) == 0;
-}
-
-bool IsDataTypeHeaderTextLine(const std::string& rawText)
-{
-	const std::string line = TrimAsciiSpaceCopy(rawText);
-	if (line.empty() || line[0] != '.') {
-		return false;
-	}
-
-	std::string lower = line;
-	std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
-		return static_cast<char>(std::tolower(ch));
-	});
-	if (lower.rfind(".datatype", 0) == 0) {
-		return true;
-	}
-
-	const std::wstring wide = MultiByteSmartToWide(line);
-	if (wide.empty()) {
-		return false;
-	}
-	return wide.rfind(L".数据类型", 0) == 0;
-}
-
-bool IsDllCommandHeaderTextLine(const std::string& rawText)
-{
-	const std::string line = TrimAsciiSpaceCopy(rawText);
-	if (line.empty() || line[0] != '.') {
-		return false;
-	}
-
-	std::string lower = line;
-	std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char ch) {
-		return static_cast<char>(std::tolower(ch));
-	});
-	if (lower.rfind(".dll", 0) == 0 || lower.rfind(".dllcommand", 0) == 0) {
-		return true;
-	}
-
-	const std::wstring wide = MultiByteSmartToWide(line);
-	if (wide.empty()) {
-		return false;
-	}
-	return wide.rfind(L".DLL命令", 0) == 0 || wide.rfind(L".dll命令", 0) == 0;
-}
-
-bool LocateLastBlockRowRangeByHeader(
-	const std::vector<std::string>& lines,
-	const std::function<bool(const std::string&)>& isHeader,
-	int& outStartRow,
-	int& outEndRow)
-{
-	outStartRow = -1;
-	outEndRow = -1;
-	if (lines.empty()) {
-		return false;
-	}
-
-	int effectiveLast = static_cast<int>(lines.size()) - 1;
-	while (effectiveLast >= 0 && TrimAsciiSpaceCopy(lines[static_cast<size_t>(effectiveLast)]).empty()) {
-		--effectiveLast;
-	}
-	if (effectiveLast < 0) {
-		return false;
-	}
-
-	for (int row = effectiveLast; row >= 0; --row) {
-		if (isHeader(lines[static_cast<size_t>(row)])) {
-			outStartRow = row;
-			outEndRow = effectiveLast;
-			return true;
-		}
-	}
-	return false;
 }
 
 void AppendLineWithCrLf(std::string& target, const std::string& line)

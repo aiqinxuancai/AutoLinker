@@ -285,11 +285,6 @@ std::string ConvertUtf8ToGbkText(const std::string& text)
 	return gbk;
 }
 
-void LogMcpCallLine(const std::string& message)
-{
-	Logger::Instance().WriteAndIde("MCP", message);
-}
-
 void LogMcpCallSplit(const std::string& fileMessage, const std::string& ideMessage)
 {
 	Logger::Instance().WriteSplit("MCP", fileMessage, ideMessage);

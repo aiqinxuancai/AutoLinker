@@ -227,19 +227,6 @@ std::regex GlobToRegex(const std::string& glob, bool caseInsensitive)
 	return std::regex(pattern, flags);
 }
 
-bool GlobMatches(const std::string& relativePath, const std::string& glob)
-{
-	if (glob.empty() || glob == "**" || glob == "**/*") {
-		return true;
-	}
-	try {
-		return std::regex_match(NormalizeSlash(relativePath), GlobToRegex(NormalizeSlash(glob), true));
-	}
-	catch (...) {
-		return false;
-	}
-}
-
 bool TryCompileGlob(const std::string& glob, std::optional<std::regex>& outRegex, std::string& outError)
 {
 	outRegex.reset();
