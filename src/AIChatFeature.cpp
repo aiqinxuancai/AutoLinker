@@ -2174,6 +2174,46 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 	PostRefreshDialog();
 }
 
+bool PrepareWorkspaceMirrorForChat(unsigned long long requestId, std::string& outError)
+{
+	outError.clear();
+	std::string mode;
+	if (WorkspaceMirror::RefreshMirror(
+			outError,
+			&mode,
+			WorkspaceMirror::RefreshMode::Full)) {
+		const std::uint64_t currentGeneration = WorkspaceMirror::GetGeneration();
+		{
+			std::lock_guard<std::mutex> guard(g_session.mutex);
+			g_session.workspaceMirrorRefreshed = true;
+			g_session.workspaceMirrorGeneration = currentGeneration;
+		}
+		OutputStringToELog("[WorkspaceMirror] chat workspace mirror refreshed: " + mode);
+		AppendAgentActivity(
+			requestId,
+			LocalFromWide(L"\u5de5\u7a0b\u955c\u50cf\u51c6\u5907\u5b8c\u6210\uff08full\uff09"));
+		return true;
+	}
+
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		g_session.workspaceMirrorRefreshed = false;
+		g_session.workspaceMirrorGeneration = 0;
+	}
+	if (!TrimAsciiCopy(outError).empty()) {
+		OutputStringToELog("[WorkspaceMirror] prepare chat workspace mirror failed: " + outError);
+		std::string displayError = TrimAsciiCopy(outError);
+		if (displayError.size() > 300) {
+			displayError.resize(300);
+			displayError += "...";
+		}
+		AppendAgentActivity(
+			requestId,
+			LocalFromWide(L"\u5de5\u7a0b\u955c\u50cf\u51c6\u5907\u5931\u8d25\uff0cAI \u53ef\u8c03\u7528\u5237\u65b0\u5de5\u5177\u91cd\u8bd5\uff1a") + displayError);
+	}
+	return false;
+}
+
 bool EnsureWorkspaceMirrorForInternalSourceTool(
 	const std::string& toolName,
 	std::string& outBlockedResultLocal)
@@ -5134,6 +5174,8 @@ void RunAIChatWorker(void* pParams)
 			result->chatResult.error = LocalFromWide(L"\u5df2\u53d6\u6d88\uff0c\u672a\u53d1\u9001 AI \u8bf7\u6c42\u3002");
 		}
 		else {
+			std::string workspaceMirrorError;
+			PrepareWorkspaceMirrorForChat(request->requestId, workspaceMirrorError);
 			if (isCancelled()) {
 				result->chatResult.ok = false;
 				result->chatResult.error = LocalFromWide(L"\u5df2\u53d6\u6d88\uff0c\u672a\u53d1\u9001 AI \u8bf7\u6c42\u3002");
@@ -5252,7 +5294,7 @@ bool StartChatRequest(const std::string& userInput)
 		request->cancellation = std::make_shared<AIChatRequestCancellation>();
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
-		g_session.agentActivityLines.push_back(LocalFromWide(L"AI \u6b63\u5728\u5904\u7406\u8bf7\u6c42..."));
+		g_session.agentActivityLines.push_back(LocalFromWide(L"\u6b63\u5728\u4ee5 full \u6a21\u5f0f\u51c6\u5907\u5de5\u7a0b\u955c\u50cf..."));
 		g_session.requestInFlight = true;
 		g_session.activeRequestId = request->requestId;
 		g_session.activeRequestStartedAtUnixMs = requestStartedAtMs;
