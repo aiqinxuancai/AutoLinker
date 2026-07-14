@@ -1,5 +1,4 @@
-﻿#include "direct_global_search.hpp"
-#include "direct_global_search_debug.hpp"
+﻿#include "EideEditorObjectResolver.h"
 
 #include <Windows.h>
 #include <detours.h>
@@ -12,6 +11,8 @@
 #include <mutex>
 
 #include "MemFind.h"
+
+static_assert(sizeof(void*) == 4, "EideEditorObjectResolver requires a 32-bit build.");
 
 void OutputStringToELog(const std::string& szbuf);
 
@@ -28,7 +29,7 @@ using FnSetFocusApi = HWND(WINAPI*)(HWND);
 
 constexpr std::uintptr_t kImageBase = 0x400000;
 
-struct NativeSearchAddresses {
+struct EditorResolverAddresses {
     bool initialized = false;
     bool ok = false;
     std::uintptr_t moduleBase = 0;
@@ -94,8 +95,8 @@ private:
     bool installed_;
 };
 
-std::mutex g_nativeSearchAddressMutex;
-NativeSearchAddresses g_nativeSearchAddresses;
+std::mutex g_editorResolverAddressMutex;
+EditorResolverAddresses g_editorResolverAddresses;
 std::mutex g_openCodeTargetAddressMutex;
 OpenCodeTargetAddresses g_openCodeTargetAddresses;
 
@@ -115,7 +116,7 @@ std::uintptr_t ReadNormalizedImm32(std::uintptr_t instructionAddress, size_t imm
     return NormalizeRuntimeAddress(runtimeValue, moduleBase);
 }
 
-bool HasUnsafeDirectGlobalSearchLayoutSupport(
+bool HasSupportedEditorObjectResolverLayout(
     std::uintptr_t moduleBase,
     std::string* outTrace = nullptr) {
     if (outTrace != nullptr) {
@@ -124,7 +125,7 @@ bool HasUnsafeDirectGlobalSearchLayoutSupport(
 
     if (moduleBase == 0) {
         if (outTrace != nullptr) {
-            *outTrace = "direct_global_search_fixed_layout_unsupported|module_base_invalid";
+            *outTrace = "editor_object_resolver_fixed_layout_unsupported|module_base_invalid";
         }
         return false;
     }
@@ -205,7 +206,7 @@ bool HasUnsafeDirectGlobalSearchLayoutSupport(
 
         if (outTrace != nullptr) {
             *outTrace =
-                std::string("direct_global_search_fixed_layout_supported") +
+                std::string("editor_object_resolver_fixed_layout_supported") +
                 "|known_profile=" +
                 profile.name +
                 "|active_offset=" +
@@ -216,7 +217,7 @@ bool HasUnsafeDirectGlobalSearchLayoutSupport(
 
     if (outTrace != nullptr) {
         *outTrace =
-            std::string("direct_global_search_fixed_layout_unsupported") +
+            std::string("editor_object_resolver_fixed_layout_unsupported") +
             "|known_profile=no_match" +
             mismatchTrace;
     }
@@ -232,7 +233,7 @@ std::uintptr_t ResolveUniqueCodeAddress(
     if (matches.size() != 1) {
         if (emitFailureLog) {
             OutputStringToELog(std::format(
-                "[DirectGlobalSearch] resolve {} failed, matchCount={}",
+                "[EideEditorObjectResolver] resolve {} failed, matchCount={}",
                 label,
                 matches.size()));
         }
@@ -254,7 +255,7 @@ std::uintptr_t ResolveUniqueCodeAddressFromPatterns(
         }
         if (emitFailureLog) {
             OutputStringToELog(std::format(
-                "[DirectGlobalSearch] resolve {} pattern#{} failed, matchCount={}",
+                "[EideEditorObjectResolver] resolve {} pattern#{} failed, matchCount={}",
                 label,
                 patternIndex,
                 matches.size()));
@@ -274,7 +275,7 @@ std::uintptr_t ResolveUniqueImmAddress(
     if (matches.size() != 1) {
         if (emitFailureLog) {
             OutputStringToELog(std::format(
-                "[DirectGlobalSearch] resolve {} failed, matchCount={}",
+                "[EideEditorObjectResolver] resolve {} failed, matchCount={}",
                 label,
                 matches.size()));
         }
@@ -349,7 +350,7 @@ std::uintptr_t ResolveSetMainEditorActiveEditorObjectAddress(
             moduleBase,
             functionRva,
             outActiveEditorOffset)) {
-        OutputStringToELog("[DirectGlobalSearch] resolve main_editor_host_active_editor_offset failed");
+        OutputStringToELog("[EideEditorObjectResolver] resolve main_editor_host_active_editor_offset failed");
     }
     return functionRva;
 }
@@ -456,7 +457,7 @@ const OpenCodeTargetAddresses& GetOpenCodeTargetAddresses(std::uintptr_t moduleB
     return g_openCodeTargetAddresses;
 }
 
-bool PopulateNativeSearchAddresses(NativeSearchAddresses& addrs, std::uintptr_t moduleBase) {
+bool PopulateEditorResolverAddresses(EditorResolverAddresses& addrs, std::uintptr_t moduleBase) {
     addrs = {};
     addrs.moduleBase = moduleBase;
 
@@ -524,25 +525,25 @@ bool PopulateNativeSearchAddresses(NativeSearchAddresses& addrs, std::uintptr_t 
     addrs.initialized = true;
     return addrs.ok;
 }
-const NativeSearchAddresses& GetNativeSearchAddresses(std::uintptr_t moduleBase) {
-    std::lock_guard<std::mutex> lock(g_nativeSearchAddressMutex);
-    if (!g_nativeSearchAddresses.initialized || g_nativeSearchAddresses.moduleBase != moduleBase) {
-        g_nativeSearchAddresses = {};
-        g_nativeSearchAddresses.moduleBase = moduleBase;
+const EditorResolverAddresses& GetEditorResolverAddresses(std::uintptr_t moduleBase) {
+    std::lock_guard<std::mutex> lock(g_editorResolverAddressMutex);
+    if (!g_editorResolverAddresses.initialized || g_editorResolverAddresses.moduleBase != moduleBase) {
+        g_editorResolverAddresses = {};
+        g_editorResolverAddresses.moduleBase = moduleBase;
 
         std::string supportTrace;
-        if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase, &supportTrace)) {
-            g_nativeSearchAddresses.initialized = true;
-            g_nativeSearchAddresses.ok = false;
-            return g_nativeSearchAddresses;
+        if (!HasSupportedEditorObjectResolverLayout(moduleBase, &supportTrace)) {
+            g_editorResolverAddresses.initialized = true;
+            g_editorResolverAddresses.ok = false;
+            return g_editorResolverAddresses;
         }
 
-        PopulateNativeSearchAddresses(g_nativeSearchAddresses, moduleBase);
+        PopulateEditorResolverAddresses(g_editorResolverAddresses, moduleBase);
     }
-    return g_nativeSearchAddresses;
+    return g_editorResolverAddresses;
 }
 
-bool DebugIsDirectGlobalSearchSupportedImpl(
+bool IsEditorObjectResolverSupportedImpl(
     std::uintptr_t moduleBase,
     std::string* outTrace) {
     if (outTrace != nullptr) {
@@ -550,10 +551,10 @@ bool DebugIsDirectGlobalSearchSupportedImpl(
     }
 
     std::string supportTrace;
-    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase, &supportTrace)) {
+    if (!HasSupportedEditorObjectResolverLayout(moduleBase, &supportTrace)) {
         if (outTrace != nullptr) {
             *outTrace = supportTrace.empty()
-                ? "direct_global_search_fixed_layout_unsupported_without_probe"
+                ? "editor_object_resolver_fixed_layout_unsupported_without_probe"
                 : supportTrace;
         }
         return false;
@@ -568,7 +569,7 @@ bool DebugIsDirectGlobalSearchSupportedImpl(
     }
 
     if (outTrace != nullptr) {
-        *outTrace = "direct_global_search_editor_resolve_supported|" + openAddrs.trace;
+        *outTrace = "editor_object_resolver_editor_resolve_supported|" + openAddrs.trace;
     }
     return true;
 }
@@ -1128,7 +1129,7 @@ bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
     }
 
     std::string supportTrace;
-    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase, &supportTrace)) {
+    if (!HasSupportedEditorObjectResolverLayout(moduleBase, &supportTrace)) {
         if (outTrace != nullptr) {
             *outTrace = supportTrace;
         }
@@ -1143,7 +1144,7 @@ bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
         return false;
     }
 
-    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    const auto& addrs = GetEditorResolverAddresses(moduleBase);
     const auto resolveLightweightByHiddenOpen = [&](const char* reason) -> bool {
         const auto& openAddrs = GetOpenCodeTargetAddresses(moduleBase);
         if (!openAddrs.ok) {
@@ -1529,7 +1530,7 @@ bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
     return false;
 }
 
-bool DebugSetMainEditorActiveEditorObjectImpl(
+bool SetMainEditorActiveEditorObjectImpl(
     std::uintptr_t moduleBase,
     std::uintptr_t editorObject,
     int notifyMode,
@@ -1543,14 +1544,14 @@ bool DebugSetMainEditorActiveEditorObjectImpl(
     }
 
     std::string supportTrace;
-    if (!HasUnsafeDirectGlobalSearchLayoutSupport(moduleBase, &supportTrace)) {
+    if (!HasSupportedEditorObjectResolverLayout(moduleBase, &supportTrace)) {
         if (outTrace != nullptr) {
             *outTrace = supportTrace;
         }
         return false;
     }
 
-    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    const auto& addrs = GetEditorResolverAddresses(moduleBase);
     if (!addrs.ok) {
         if (outTrace != nullptr) {
             *outTrace = "resolve_native_addresses_failed";
@@ -1612,7 +1613,7 @@ bool DebugSetMainEditorActiveEditorObjectImpl(
     return true;
 }
 
-bool DebugGetMainEditorActiveEditorObjectImpl(
+bool GetMainEditorActiveEditorObjectImpl(
     std::uintptr_t moduleBase,
     std::uintptr_t* outEditorObject,
     std::string* outTrace) {
@@ -1623,7 +1624,7 @@ bool DebugGetMainEditorActiveEditorObjectImpl(
         outTrace->clear();
     }
 
-    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    const auto& addrs = GetEditorResolverAddresses(moduleBase);
     if (!addrs.ok) {
         if (outTrace != nullptr) {
             *outTrace = "resolve_native_addresses_failed";
@@ -1717,7 +1718,7 @@ bool ScopedHiddenOpenCodeTargetApiHooks::IsInstalled() const {
 }
 
 int ResolveTypeDataRaw(int type, std::uintptr_t moduleBase) {
-    const auto& addrs = GetNativeSearchAddresses(moduleBase);
+    const auto& addrs = GetEditorResolverAddresses(moduleBase);
     switch (type) {
     case 2:
         return static_cast<int>(reinterpret_cast<std::uintptr_t>(PtrAbsolute<void>(moduleBase, addrs.type2Data)));
@@ -1736,13 +1737,13 @@ int ResolveTypeDataRaw(int type, std::uintptr_t moduleBase) {
 
 }  // namespace
 
-bool e571::DebugSetMainEditorActiveEditorObject(
+bool e571::SetMainEditorActiveEditorObject(
     std::uintptr_t moduleBase,
     std::uintptr_t editorObject,
     int notifyMode,
     std::uintptr_t* outPreviousEditorObject,
     std::string* outTrace) {
-    return DebugSetMainEditorActiveEditorObjectImpl(
+    return SetMainEditorActiveEditorObjectImpl(
         moduleBase,
         editorObject,
         notifyMode,
@@ -1750,22 +1751,22 @@ bool e571::DebugSetMainEditorActiveEditorObject(
         outTrace);
 }
 
-bool e571::DebugGetMainEditorActiveEditorObject(
+bool e571::GetMainEditorActiveEditorObject(
     std::uintptr_t moduleBase,
     std::uintptr_t* outEditorObject,
     std::string* outTrace) {
-    return DebugGetMainEditorActiveEditorObjectImpl(moduleBase, outEditorObject, outTrace);
+    return GetMainEditorActiveEditorObjectImpl(moduleBase, outEditorObject, outTrace);
 }
 
 }  // namespace e571
 
-bool e571::DebugIsDirectGlobalSearchSupported(
+bool e571::IsEditorObjectResolverSupported(
     std::uintptr_t moduleBase,
     std::string* outTrace) {
-    return DebugIsDirectGlobalSearchSupportedImpl(moduleBase, outTrace);
+    return IsEditorObjectResolverSupportedImpl(moduleBase, outTrace);
 }
 
-bool e571::DebugResolveEditorObjectByProgramTreeItemData(
+bool e571::ResolveEditorObjectByProgramTreeItemData(
     unsigned int itemData,
     std::uintptr_t moduleBase,
     std::uintptr_t* outEditorObject,
@@ -1808,7 +1809,7 @@ bool e571::DebugResolveEditorObjectByProgramTreeItemData(
     return ok && editorObject != nullptr;
 }
 
-bool e571::DebugResolveEditorObjectByProgramTreeItemDataNoActivate(
+bool e571::ResolveEditorObjectByProgramTreeItemDataNoActivate(
     unsigned int itemData,
     std::uintptr_t moduleBase,
     std::uintptr_t* outEditorObject,

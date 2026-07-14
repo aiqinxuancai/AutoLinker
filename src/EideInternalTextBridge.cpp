@@ -21,7 +21,7 @@
 #include "PathHelper.h"
 #include "RealPageCodeToolSupport.h"
 #include "WindowHelper.h"
-#include "direct_global_search_debug.hpp"
+#include "EideEditorObjectResolver.h"
 
 namespace e571 {
 namespace {
@@ -687,7 +687,7 @@ bool IsE595DirectTextPackageWriteSupported(std::string* outTrace = nullptr)
 	return supported;
 }
 
-bool IsDirectGlobalSearchEditorResolveSupported(std::string* outTrace = nullptr)
+bool IsProgramTreeEditorResolverSupported(std::string* outTrace = nullptr)
 {
 	if (outTrace != nullptr) {
 		outTrace->clear();
@@ -696,18 +696,18 @@ bool IsDirectGlobalSearchEditorResolveSupported(std::string* outTrace = nullptr)
 	const std::uintptr_t moduleBase = reinterpret_cast<std::uintptr_t>(::GetModuleHandleA(nullptr));
 	if (moduleBase == 0) {
 		if (outTrace != nullptr) {
-			*outTrace = "direct_global_search_editor_resolve_unsupported|module_base_invalid";
+			*outTrace = "editor_object_resolver_unsupported|module_base_invalid";
 		}
 		return false;
 	}
 
 	std::string supportTrace;
-	const bool supported = DebugIsDirectGlobalSearchSupported(moduleBase, &supportTrace);
+	const bool supported = IsEditorObjectResolverSupported(moduleBase, &supportTrace);
 	if (outTrace != nullptr) {
 		*outTrace =
 			std::string(supported
-				? "direct_global_search_editor_resolve_supported"
-				: "direct_global_search_editor_resolve_unsupported") +
+				? "editor_object_resolver_supported"
+				: "editor_object_resolver_unsupported") +
 			(supportTrace.empty() ? std::string() : ("|" + supportTrace));
 	}
 	return supported;
@@ -7336,21 +7336,21 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 	}
 
 	std::uintptr_t editorObject = 0;
-	std::string debugTrace;
-	std::string debugAttemptTrace;
-	int debugResolvedType = 0;
-	int debugResolvedIndex = -1;
-	int debugBucketData = 0;
-	const DWORD debugStartTick = GetTickCount();
-	const bool noActivateResolved = DebugResolveEditorObjectByProgramTreeItemDataNoActivate(
+	std::string resolverTrace;
+	std::string resolverAttemptTrace;
+	int resolverResolvedType = 0;
+	int resolverResolvedIndex = -1;
+	int resolverBucketData = 0;
+	const DWORD noActivateStartTick = GetTickCount();
+	const bool noActivateResolved = ResolveEditorObjectByProgramTreeItemDataNoActivate(
 			itemData,
 			moduleBase,
 			&editorObject,
-			&debugResolvedType,
-			&debugResolvedIndex,
-			&debugBucketData,
-			&debugTrace);
-	const DWORD debugElapsed = GetTickCount() - debugStartTick;
+			&resolverResolvedType,
+			&resolverResolvedIndex,
+			&resolverBucketData,
+			&resolverTrace);
+	const DWORD noActivateElapsed = GetTickCount() - noActivateStartTick;
 	if (noActivateResolved && editorObject != 0) {
 		EditorDispatchTargetInfo targetInfo{};
 		if (TryResolveInnerEditorObject(editorObject, &targetInfo) &&
@@ -7361,13 +7361,13 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 			if (outTrace != nullptr) {
 				*outTrace =
 					"internal_no_activate_ok"
-					"|resolve_ms=" + std::to_string(debugElapsed) +
+					"|resolve_ms=" + std::to_string(noActivateElapsed) +
 					"|page_type=" + std::to_string(targetInfo.pageType) +
-					"|resolved_type=" + std::to_string(debugResolvedType) +
-					"|resolved_index=" + std::to_string(debugResolvedIndex) +
-					"|bucket_data=" + std::to_string(debugBucketData) +
+					"|resolved_type=" + std::to_string(resolverResolvedType) +
+					"|resolved_index=" + std::to_string(resolverResolvedIndex) +
+					"|bucket_data=" + std::to_string(resolverBucketData) +
 					"|" +
-					debugTrace;
+					resolverTrace;
 			}
 			restoreOriginalState();
 			if (outTrace != nullptr && !restoreTrace.empty()) {
@@ -7375,41 +7375,41 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 			}
 			return true;
 		}
-		debugAttemptTrace =
+		resolverAttemptTrace =
 			"internal_no_activate_type_mismatch"
-			"|resolve_ms=" + std::to_string(debugElapsed) +
+			"|resolve_ms=" + std::to_string(noActivateElapsed) +
 			"|item_data=" + std::to_string(itemData) +
 			"|page_type=" + std::to_string(targetInfo.pageType) +
-			"|resolved_type=" + std::to_string(debugResolvedType) +
-			"|resolved_index=" + std::to_string(debugResolvedIndex) +
-			"|bucket_data=" + std::to_string(debugBucketData) +
+			"|resolved_type=" + std::to_string(resolverResolvedType) +
+			"|resolved_index=" + std::to_string(resolverResolvedIndex) +
+			"|bucket_data=" + std::to_string(resolverBucketData) +
 			"|" +
-			debugTrace;
+			resolverTrace;
 	}
 	else {
-		debugAttemptTrace =
+		resolverAttemptTrace =
 			"internal_no_activate_failed"
-			"|resolve_ms=" + std::to_string(debugElapsed) +
+			"|resolve_ms=" + std::to_string(noActivateElapsed) +
 			"|" +
-			(debugTrace.empty() ? std::string("resolve_editor_failed") : debugTrace);
+			(resolverTrace.empty() ? std::string("resolve_editor_failed") : resolverTrace);
 	}
 
 	editorObject = 0;
-	debugTrace.clear();
-	debugResolvedType = 0;
-	debugResolvedIndex = -1;
-	debugBucketData = 0;
-	const DWORD openDebugStartTick = GetTickCount();
-	const bool debugResolved = DebugResolveEditorObjectByProgramTreeItemData(
+	resolverTrace.clear();
+	resolverResolvedType = 0;
+	resolverResolvedIndex = -1;
+	resolverBucketData = 0;
+	const DWORD activateStartTick = GetTickCount();
+	const bool resolverResolved = ResolveEditorObjectByProgramTreeItemData(
 			itemData,
 			moduleBase,
 			&editorObject,
-			&debugResolvedType,
-			&debugResolvedIndex,
-			&debugBucketData,
-			&debugTrace);
-	const DWORD openDebugElapsed = GetTickCount() - openDebugStartTick;
-	if (debugResolved && editorObject != 0) {
+			&resolverResolvedType,
+			&resolverResolvedIndex,
+			&resolverBucketData,
+			&resolverTrace);
+	const DWORD activateElapsed = GetTickCount() - activateStartTick;
+	if (resolverResolved && editorObject != 0) {
 		EditorDispatchTargetInfo targetInfo{};
 		if (TryResolveInnerEditorObject(editorObject, &targetInfo) &&
 			IsEditorPageTypeCompatibleWithProgramTreeItem(itemData, targetInfo.pageType)) {
@@ -7418,40 +7418,40 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 			}
 			if (outTrace != nullptr) {
 				*outTrace =
-					debugAttemptTrace +
+					resolverAttemptTrace +
 					"|fallback_internal_open|"
 					"internal_open_shortcut_ok"
-					"|resolve_ms=" + std::to_string(openDebugElapsed) +
+					"|resolve_ms=" + std::to_string(activateElapsed) +
 					"|page_type=" + std::to_string(targetInfo.pageType) +
-					"|resolved_type=" + std::to_string(debugResolvedType) +
-					"|resolved_index=" + std::to_string(debugResolvedIndex) +
-					"|bucket_data=" + std::to_string(debugBucketData) +
+					"|resolved_type=" + std::to_string(resolverResolvedType) +
+					"|resolved_index=" + std::to_string(resolverResolvedIndex) +
+					"|bucket_data=" + std::to_string(resolverBucketData) +
 					"|" +
-					debugTrace;
+					resolverTrace;
 			}
 			return true;
 		}
-		debugAttemptTrace =
-			debugAttemptTrace +
+		resolverAttemptTrace =
+			resolverAttemptTrace +
 			"|fallback_internal_open|"
 			"internal_open_shortcut_type_mismatch"
-			"|resolve_ms=" + std::to_string(openDebugElapsed) +
+			"|resolve_ms=" + std::to_string(activateElapsed) +
 			"|item_data=" + std::to_string(itemData) +
 			"|page_type=" + std::to_string(targetInfo.pageType) +
-			"|resolved_type=" + std::to_string(debugResolvedType) +
-			"|resolved_index=" + std::to_string(debugResolvedIndex) +
-			"|bucket_data=" + std::to_string(debugBucketData) +
+			"|resolved_type=" + std::to_string(resolverResolvedType) +
+			"|resolved_index=" + std::to_string(resolverResolvedIndex) +
+			"|bucket_data=" + std::to_string(resolverBucketData) +
 			"|" +
-			debugTrace;
+			resolverTrace;
 	}
 	else {
-		debugAttemptTrace =
-			debugAttemptTrace +
+		resolverAttemptTrace =
+			resolverAttemptTrace +
 			"|fallback_internal_open|"
 			"internal_open_shortcut_failed"
-			"|resolve_ms=" + std::to_string(openDebugElapsed) +
+			"|resolve_ms=" + std::to_string(activateElapsed) +
 			"|" +
-			(debugTrace.empty() ? std::string("resolve_editor_failed") : debugTrace);
+			(resolverTrace.empty() ? std::string("resolve_editor_failed") : resolverTrace);
 	}
 
 	std::string uiTrace;
@@ -7462,18 +7462,18 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 		}
 		if (outTrace != nullptr) {
 			*outTrace =
-				(!debugAttemptTrace.empty() ? (debugAttemptTrace + "|fallback_ui|") : std::string()) +
+				(!resolverAttemptTrace.empty() ? (resolverAttemptTrace + "|fallback_ui|") : std::string()) +
 				uiTrace;
 		}
 		return true;
 	}
 
 	if (outTrace != nullptr) {
-		if (!debugAttemptTrace.empty() && !uiTrace.empty()) {
-			*outTrace = debugAttemptTrace + "|fallback_ui_failed|" + uiTrace;
+		if (!resolverAttemptTrace.empty() && !uiTrace.empty()) {
+			*outTrace = resolverAttemptTrace + "|fallback_ui_failed|" + uiTrace;
 		}
 		else {
-			*outTrace = !uiTrace.empty() ? uiTrace : debugAttemptTrace;
+			*outTrace = !uiTrace.empty() ? uiTrace : resolverAttemptTrace;
 		}
 	}
 	return false;
@@ -7502,7 +7502,7 @@ bool TryActivateProgramTreeItemPageByEditorObjectFallback(
 	int resolvedIndex = -1;
 	int bucketData = 0;
 	std::string resolveTrace;
-	if (!DebugResolveEditorObjectByProgramTreeItemData(
+	if (!ResolveEditorObjectByProgramTreeItemData(
 			itemData,
 			moduleBase,
 			&editorObject,
@@ -7948,14 +7948,14 @@ bool GetRealPageCodeByProgramTreeItemData(
 		hiddenNeedRestore = false;
 	};
 	std::string hiddenSupportTrace;
-	if (IsDirectGlobalSearchEditorResolveSupported(&hiddenSupportTrace)) {
+	if (IsProgramTreeEditorResolverSupported(&hiddenSupportTrace)) {
 		hiddenAttemptState = "attempt";
 		if (!hiddenOriginalCaptured) {
 			hiddenOriginalCaptured =
-				DebugGetMainEditorActiveEditorObject(moduleBase, &hiddenOriginalEditorObject, &hiddenOriginalTrace) &&
+				GetMainEditorActiveEditorObject(moduleBase, &hiddenOriginalEditorObject, &hiddenOriginalTrace) &&
 				hiddenOriginalEditorObject != 0;
 		}
-		if (DebugResolveEditorObjectByProgramTreeItemDataNoActivate(
+		if (ResolveEditorObjectByProgramTreeItemDataNoActivate(
 				itemData,
 				moduleBase,
 				&hiddenEditorObject,
@@ -8016,7 +8016,7 @@ bool GetRealPageCodeByProgramTreeItemData(
 				hiddenOriginalCaptured &&
 				hiddenOriginalEditorObject != 0 &&
 				hiddenOriginalEditorObject != hiddenEditorObject;
-			if (DebugSetMainEditorActiveEditorObject(
+			if (SetMainEditorActiveEditorObject(
 					moduleBase,
 					hiddenEditorObject,
 					1,
