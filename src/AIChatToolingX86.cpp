@@ -814,21 +814,6 @@ bool TryGetProgramItemByNameForAI(
 	return true;
 }
 
-size_t CountExactOccurrencesForAI(const std::string& text, const std::string& needle)
-{
-	if (needle.empty()) {
-		return 0;
-	}
-
-	size_t count = 0;
-	size_t pos = 0;
-	while ((pos = text.find(needle, pos)) != std::string::npos) {
-		++count;
-		pos += needle.size();
-	}
-	return count;
-}
-
 bool ReplaceExactlyOnceForAI(
 	const std::string& source,
 	const std::string& oldText,
@@ -837,18 +822,24 @@ bool ReplaceExactlyOnceForAI(
 	size_t& outMatchCount)
 {
 	outResult.clear();
-	const std::string normalizedOldText = NormalizeRealCodeLineBreaksToCrLf(oldText);
-	const std::string normalizedNewText = NormalizeRealCodeLineBreaksToCrLf(newText);
-	outMatchCount = CountExactOccurrencesForAI(source, normalizedOldText);
-	if (outMatchCount != 1) {
+	outMatchCount = 0;
+	std::string candidateCode;
+	std::vector<RealPageTextEditApplyResult> results;
+	std::string error;
+	if (!ApplyRealPageTextEdits(
+			source,
+			{RealPageTextEditRequest{oldText, newText, false}},
+			true,
+			candidateCode,
+			results,
+			error)) {
+		if (!results.empty()) {
+			outMatchCount = results.front().matchCount;
+		}
 		return false;
 	}
-
-	const size_t pos = source.find(normalizedOldText);
-	outResult.reserve(source.size() - normalizedOldText.size() + normalizedNewText.size());
-	outResult.append(source.substr(0, pos));
-	outResult.append(normalizedNewText);
-	outResult.append(source.substr(pos + normalizedOldText.size()));
+	outMatchCount = results.empty() ? 0 : results.front().matchCount;
+	outResult = std::move(candidateCode);
 	return true;
 }
 
@@ -3410,7 +3401,7 @@ std::string ExecuteMappedEditFileToolForAI(
 		nlohmann::json r;
 		r["ok"] = false;
 		r["error"] = matchCount == 0 ? "old_text not found in active edit base" : "old_text matched multiple times in active edit base";
-		r["hint"] = "old_text must be copied exactly from the active edit base; preserve line breaks, indentation and full-width punctuation. Use write_file when replacing a large block.";
+		r["hint"] = "old_text must match the active edit base; straight and IDE-style double quotes are equivalent, while line breaks, indentation and other punctuation remain exact. Use write_file when replacing a large block.";
 		r["active_edit_base"] = baseLabel;
 		r["match_count"] = matchCount;
 		r["page_name"] = LocalToUtf8Text(item.name);

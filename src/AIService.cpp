@@ -2021,7 +2021,7 @@ nlohmann::json BuildPublicToolCatalog()
 	nlohmann::json tools = nlohmann::json::array();
 	tools.push_back({
 		{"name", "refresh_workspace_mirror"},
-		{"description", "Refresh the current e-packager workspace mirror from live IDE memory. External MCP clients MUST call this successfully before their first source read/edit tool in each MCP session. AutoLinker's built-in AI chat refreshes automatically and does not expose this tool. mode=auto keeps the default strategy, main_only refreshes only main source files when possible, and full rebuilds the complete mirror."},
+		{"description", "Refresh the current e-packager workspace mirror from live IDE memory. Each built-in AI chat or external MCP session MUST call this successfully before its first source read/edit tool. mode=auto keeps the default strategy, main_only refreshes only main source files when possible, and full rebuilds the complete mirror."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -2053,7 +2053,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "list_files"},
-		{"description", "List files in the current e-packager workspace mirror. Paths are relative to the mirror root. External MCP clients must call refresh_workspace_mirror first; built-in AI chat is refreshed automatically. By default focuses on src, ecom, elib and header text areas. Continue paginated results with next_offset."},
+		{"description", "List files in the current e-packager workspace mirror. Paths are relative to the mirror root. Requires a successful refresh_workspace_mirror call for the current chat or MCP session. By default focuses on src, ecom, elib and header text areas. Continue paginated results with next_offset."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -2068,7 +2068,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "search_code"},
-		{"description", "Batch-stream search complete text files inside the current e-packager workspace mirror. External MCP clients must call refresh_workspace_mirror first; built-in AI chat is refreshed automatically. Literal substring search is the default; set regex=true only for simple bounded regular expressions. Use patterns to match up to 16 related names in one file pass."},
+		{"description", "Batch-stream search complete text files inside the current e-packager workspace mirror. Requires a successful refresh_workspace_mirror call for the current chat or MCP session. Literal substring search is the default; set regex=true only for simple bounded regular expressions. Use patterns to match up to 16 related names in one file pass."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -2088,7 +2088,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "read_file"},
-		{"description", "Read one text file from the current e-packager workspace mirror. External MCP clients must call refresh_workspace_mirror first. Returns numbered text, line pagination, mirror_generation and a 1 MiB source byte window. Continue large files with next_source_byte_offset as byte_offset."},
+		{"description", "Read one text file from the current e-packager workspace mirror. Requires a successful refresh_workspace_mirror call for the current chat or MCP session. Returns numbered text, line pagination, mirror_generation and a 1 MiB source byte window. Continue large files with next_source_byte_offset as byte_offset."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -2104,7 +2104,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "read_files"},
-		{"description", "Batch read one or more text files or byte windows from the current e-packager workspace mirror. External MCP clients must call refresh_workspace_mirror first. Prefer this over repeated read_file calls. Partial failures are explicit and large files continue with per-file next_source_byte_offset."},
+		{"description", "Batch read one or more text files or byte windows from the current e-packager workspace mirror. Requires a successful refresh_workspace_mirror call for the current chat or MCP session. Prefer this over repeated read_file calls. Partial failures are explicit and large files continue with per-file next_source_byte_offset."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -2130,7 +2130,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "read_code_item"},
-		{"description", "Stream-locate and read one complete E-language top-level code item (especially a .子程序), including items beyond the first 1 MiB. External MCP clients must call refresh_workspace_mirror first. Use occurrence to disambiguate duplicate names. Optional include_references adds a bounded case-insensitive literal reference search."},
+		{"description", "Stream-locate and read one complete E-language top-level code item (especially a .子程序), including items beyond the first 1 MiB. Requires a successful refresh_workspace_mirror call for the current chat or MCP session. Use occurrence to disambiguate duplicate names. Optional include_references adds a bounded case-insensitive literal reference search."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -2148,7 +2148,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "read_real_file"},
-		{"description", "Read a bounded numbered view directly from the live IDE page mapped by mirror-relative file_path. External MCP clients must call refresh_workspace_mirror first. Returns code_hash plus paginated content; continue with next_offset when has_more=true. Call it immediately before editing and base old_text/full_code/expected_base_hash on this live real_source view."},
+		{"description", "Read a bounded numbered view directly from the live IDE page mapped by mirror-relative file_path. Requires a successful refresh_workspace_mirror call for the current chat or MCP session. Returns code_hash plus paginated content; continue with next_offset when has_more=true. Call it immediately before editing and base old_text/full_code/expected_base_hash on this live real_source view."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -2162,12 +2162,12 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "edit_file"},
-		{"description", "Edit one current-project source file by mirror-relative file_path. External MCP clients must call refresh_workspace_mirror first. The edit is always based on the live IDE page; expected_base_hash optionally rejects a stale caller base. Successful results are verified."},
+		{"description", "Edit one current-project source file by mirror-relative file_path. Requires a successful refresh_workspace_mirror call for the current chat or MCP session. The edit is always based on the live IDE page; expected_base_hash optionally rejects a stale caller base. Successful results are verified."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
 				{"file_path", {{"type", "string"}}},
-				{"old_text", {{"type", "string"}}},
+				{"old_text", {{"type", "string"}, {"description", "Exact match text. ASCII and IDE-style left/right double quotes are treated as equivalent."}}},
 				{"new_text", {{"type", "string"}}},
 				{"expected_base_hash", {{"type", "string"}, {"description", "code_hash from read_real_file; required for external MCP calls and rejects stale live source."}}}
 			}},
@@ -2177,7 +2177,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "multi_edit_file"},
-		{"description", "Apply multiple text edits to one current-project source file. External MCP clients must call refresh_workspace_mirror first. The edits are always based on the live IDE page; expected_base_hash optionally rejects stale live source."},
+		{"description", "Apply multiple text edits to one current-project source file. Requires a successful refresh_workspace_mirror call for the current chat or MCP session. The edits are always based on the live IDE page; expected_base_hash optionally rejects stale live source."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -2185,7 +2185,7 @@ nlohmann::json BuildPublicToolCatalog()
 				{"edits", {{"type", "array"}, {"items", {
 					{"type", "object"},
 					{"properties", {
-						{"old_text", {{"type", "string"}}},
+						{"old_text", {{"type", "string"}, {"description", "Exact match text. ASCII and IDE-style left/right double quotes are treated as equivalent."}}},
 						{"new_text", {{"type", "string"}}},
 						{"replace_all", {{"type", "boolean"}}}
 					}},
@@ -2202,7 +2202,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "write_file"},
-		{"description", "Overwrite one current-project source file with full_code. External MCP clients must call refresh_workspace_mirror first. expected_base_hash detects stale source. Successful results include verified=true and do not require confirmation reads."},
+		{"description", "Overwrite one current-project source file with full_code. Requires a successful refresh_workspace_mirror call for the current chat or MCP session. expected_base_hash detects stale source. Successful results include verified=true and do not require confirmation reads."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -2216,19 +2216,19 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "diff_file"},
-		{"description", "Preview a structured diff for one current-project source file without writing anything. The diff is based on the live IDE page. External MCP clients must call refresh_workspace_mirror first. Accepts new_code/full_code or text edit parameters."},
+		{"description", "Preview a structured diff for one current-project source file without writing anything. The diff is based on the live IDE page. Requires a successful refresh_workspace_mirror call for the current chat or MCP session. Accepts new_code/full_code or text edit parameters."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
 				{"file_path", {{"type", "string"}}},
 				{"new_code", {{"type", "string"}}},
 				{"full_code", {{"type", "string"}}},
-				{"old_text", {{"type", "string"}}},
+				{"old_text", {{"type", "string"}, {"description", "Exact match text. ASCII and IDE-style left/right double quotes are treated as equivalent."}}},
 				{"new_text", {{"type", "string"}}},
 				{"edits", {{"type", "array"}, {"items", {
 					{"type", "object"},
 					{"properties", {
-						{"old_text", {{"type", "string"}}},
+						{"old_text", {{"type", "string"}, {"description", "Exact match text. ASCII and IDE-style left/right double quotes are treated as equivalent."}}},
 						{"new_text", {{"type", "string"}}},
 						{"replace_all", {{"type", "boolean"}}}
 					}},
@@ -2244,7 +2244,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "restore_file_snapshot"},
-		{"description", "Restore one current-project source file from the latest real-page snapshot or a specified snapshot_id. The current live page is read first; expected_current_hash optionally prevents overwriting newer changes."},
+		{"description", "Restore one current-project source file from the latest real-page snapshot or a specified snapshot_id. Requires a successful refresh_workspace_mirror call for the current chat or MCP session. The current live page is read first; expected_current_hash optionally prevents overwriting newer changes."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -2465,18 +2465,6 @@ nlohmann::json BuildConfiguredToolCatalog(const AISettings& settings)
 
 nlohmann::json BuildInternalToolCatalog(const AISettings& settings);
 
-nlohmann::json FilterInternalChatToolCatalog(const nlohmann::json& catalog)
-{
-	nlohmann::json filtered = nlohmann::json::array();
-	for (const auto& item : catalog) {
-		if (!item.is_object() || item.value("name", std::string()) == "refresh_workspace_mirror") {
-			continue;
-		}
-		filtered.push_back(item);
-	}
-	return filtered;
-}
-
 nlohmann::json BuildChatToolDefinitions(const AISettings& settings)
 {
 	const nlohmann::json catalog = BuildInternalToolCatalog(settings);
@@ -2589,7 +2577,7 @@ nlohmann::json SanitizeGeminiSchema(const nlohmann::json& schema)
 
 nlohmann::json BuildInternalToolCatalog(const AISettings& settings)
 {
-	return FilterInternalChatToolCatalog(BuildConfiguredToolCatalog(settings));
+	return BuildConfiguredToolCatalog(settings);
 }
 
 nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>&, bool, const AISettings& settings)
@@ -2657,7 +2645,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"当前项目类型：" + projectType + "\n\n"
 			"统一源码工具规则：\n"
 			"1) list_files / search_code / read_files / read_code_item 基于 e-packager 解包出的当前工程镜像，路径一律是镜像内相对路径，并返回 mirror_source。\n"
-			"2) 内置 AI 对话在本轮开始前已经自动刷新工程镜像；不要调用 refresh_workspace_mirror，该显式工具只保留给外部 MCP 客户端。\n"
+			"2) 当前聊天会话首次调用任一源码读取/编辑工具前，必须先成功调用 refresh_workspace_mirror；如果工具返回 workspace_refresh_required，先刷新再重试原调用。刷新成功后可跨多轮复用，镜像代次变化时需要再次刷新。\n"
 			"3) 普通单文件修改的探索预算最多 6 次只读调用；达到 4 次时立即收敛。独立查询应在同一响应中一次发出，多个文件必须使用 read_files，不要串行重复 read_file。\n"
 			+ sourceReadRule +
 			"5) 修改当前工程源码时只能用 edit_file / multi_edit_file / write_file / diff_file / restore_file_snapshot，并以 file_path 作为目标。\n"
@@ -2689,6 +2677,8 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"- 以 . 开头的是易语言系统指令/关键字，例如 .版本、.程序集、.程序集变量、.子程序、.参数、.局部变量、.全局变量、.常量、.DLL声明、.数据类型、.成员、.如果、.如果真、.否则、.返回；编辑时不要删掉前导的 .，也不要改成 C/C++/JS 风格。\n"
 			"- 单引号 ' 开头表示整行注释，不要把注释内容当成代码，也不要改成 // 或 /* */。\n"
 			"- 真 / 假 是布尔值。\n"
+			"- 易语言使用全角的引号来表示字符串，例如 “Hello, World!”。\n"
+			"- 易语言使用全角的运算符号，例如＋、－、×、÷。\n"
 			"- 数组下标通常从 1 开始，第一个元素是 数组 [1]，不要按多数语言习惯推导成从 0 开始。\n"
 			"- .计次循环首 (次数, i) 中 i 通常从 1 递增到 次数；遍历数组常写 .变量循环首 (1, 取数组成员数 (数组), 1, i)，但其它合法起止范围也可能存在。\n"
 			"- 赋值常写作 `变量 ＝ 值`，不要误写成半角 `=`。\n"
@@ -2729,7 +2719,7 @@ std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal
 		"你是 AutoLinker 内置的易语言项目助手。\n"
 		"回答要直接、准确，优先使用已提供的工具获取工程上下文。\n"
 		"不要臆测当前页面、模块、支持库或源码内容。\n"
-		"工程镜像已在本轮开始前自动刷新；已知代码项优先 read_code_item，多个文件使用 read_files，不要重复读取相同范围。\n"
+		"当前聊天会话首次读取或编辑源码前先成功调用 refresh_workspace_mirror；收到 workspace_refresh_required 时刷新后重试。已知代码项优先 read_code_item，多个文件使用 read_files，不要重复读取相同范围。\n"
 		"仅复杂、多文件或明确要求计划时使用 update_plan；写入 verified=true 后不要为了确认而复读源码。\n"
 		"如果需要读取网页或文档，优先调用 extract_web_document；需要原始响应时调用 fetch_url。\n"
 		"除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用依赖管理工具。\n"
@@ -5509,16 +5499,17 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 
 	{
 		const nlohmann::json nativeCatalog = BuildPublicToolCatalog();
-		const nlohmann::json realPageCatalog = FilterInternalChatToolCatalog(
-			FilterToolCatalogForSourceEditMode(nativeCatalog, AISourceEditMode::RealPageFirst));
-		const nlohmann::json mirrorCatalog = FilterInternalChatToolCatalog(
-			FilterToolCatalogForSourceEditMode(nativeCatalog, AISourceEditMode::MirrorSourceBase));
+		const nlohmann::json realPageCatalog =
+			FilterToolCatalogForSourceEditMode(nativeCatalog, AISourceEditMode::RealPageFirst);
+		const nlohmann::json mirrorCatalog =
+			FilterToolCatalogForSourceEditMode(nativeCatalog, AISourceEditMode::MirrorSourceBase);
 		const auto contains = [](const nlohmann::json& catalog, const char* name) {
 			return std::find_if(catalog.begin(), catalog.end(), [name](const nlohmann::json& item) {
 				return item.is_object() && item.value("name", std::string()) == name;
 			}) != catalog.end();
 		};
-		const std::array<const char*, 12> alwaysVisible = {{
+		const std::array<const char*, 13> alwaysVisible = {{
+			"refresh_workspace_mirror",
 			"update_plan",
 			"read_file",
 			"edit_file",
@@ -5537,18 +5528,20 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			ok = ok && contains(realPageCatalog, name) && contains(mirrorCatalog, name);
 		}
 		ok = ok &&
-			realPageCatalog.size() + 1 == nativeCatalog.size() &&
-			mirrorCatalog.size() + 2 == nativeCatalog.size() &&
+			realPageCatalog.size() == nativeCatalog.size() &&
+			mirrorCatalog.size() + 1 == nativeCatalog.size() &&
 			contains(realPageCatalog, "read_real_file") &&
 			!contains(mirrorCatalog, "read_real_file") &&
-			!contains(realPageCatalog, "refresh_workspace_mirror") &&
-			!contains(mirrorCatalog, "refresh_workspace_mirror");
+			contains(realPageCatalog, "refresh_workspace_mirror") &&
+			contains(mirrorCatalog, "refresh_workspace_mirror");
 		checks.push_back({
 			{"name", "all_configured_tools_always_visible"},
 			{"ok", ok},
 			{"native_tool_count", nativeCatalog.size()},
 			{"real_page_tool_count", realPageCatalog.size()},
 			{"mirror_tool_count", mirrorCatalog.size()},
+			{"real_page_refresh_visible", contains(realPageCatalog, "refresh_workspace_mirror")},
+			{"mirror_refresh_visible", contains(mirrorCatalog, "refresh_workspace_mirror")},
 			{"real_page_read_visible", contains(realPageCatalog, "read_real_file")},
 			{"mirror_real_page_read_hidden", !contains(mirrorCatalog, "read_real_file")}
 		});
@@ -5571,7 +5564,8 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 				}}
 			});
 		}
-		const nlohmann::json visible = FilterInternalChatToolCatalog(catalog);
+		const nlohmann::json visible =
+			FilterToolCatalogForSourceEditMode(catalog, AISourceEditMode::MirrorSourceBase);
 		const bool ok = visible.size() == catalog.size();
 		checks.push_back({
 			{"name", "all_external_mcp_tools_always_visible"},

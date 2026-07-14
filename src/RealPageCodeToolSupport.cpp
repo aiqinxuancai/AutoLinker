@@ -29,6 +29,8 @@ constexpr std::string_view kFingerprintTokenOtherwise = ".否则";
 constexpr std::string_view kFingerprintTokenEndIf = ".如果结束";
 // 去空白后「无子程序名」的裸 .子程序 token（真实子程序声明必带名字，去空白后形如 ".子程序xxx"）。
 constexpr std::string_view kFingerprintTokenBareSubroutine = ".子程序";
+constexpr std::string_view kIdeLeftDoubleQuote = "“";
+constexpr std::string_view kIdeRightDoubleQuote = "”";
 
 struct Sha256Provider {
 	BCRYPT_ALG_HANDLE algorithm = nullptr;
@@ -227,33 +229,93 @@ bool IsVersionFingerprintToken(const std::string& token)
 	return StartsWithLocal(token, kFingerprintTokenVersionPrefix);
 }
 
-size_t CountOccurrencesLocal(const std::string& text, const std::string& needle)
-{
-	if (needle.empty()) {
-		return 0;
-	}
+struct DoubleQuoteNormalizedText {
+	std::string text;
+	std::vector<size_t> sourceBoundaries;
+};
 
-	size_t count = 0;
-	size_t pos = 0;
-	while ((pos = text.find(needle, pos)) != std::string::npos) {
-		++count;
-		pos += needle.size();
-	}
-	return count;
+struct EquivalentTextMatchSpan {
+	size_t offset = 0;
+	size_t length = 0;
+};
+
+// 将三种双引号折叠为同一字符，并保留规范化文本到原文本的字节边界映射。
+bool StartsWithAtLocal(const std::string& text, size_t offset, std::string_view value)
+{
+	return offset <= text.size() &&
+		value.size() <= text.size() - offset &&
+		text.compare(offset, value.size(), value.data(), value.size()) == 0;
 }
 
-std::string ReplaceAllLocal(std::string text, const std::string& oldText, const std::string& newText)
+size_t GetEquivalentDoubleQuoteBytes(const std::string& text, size_t offset)
 {
-	if (oldText.empty()) {
-		return text;
+	if (offset < text.size() && text[offset] == '"') {
+		return 1;
+	}
+	if (StartsWithAtLocal(text, offset, kIdeLeftDoubleQuote)) {
+		return kIdeLeftDoubleQuote.size();
+	}
+	if (StartsWithAtLocal(text, offset, kIdeRightDoubleQuote)) {
+		return kIdeRightDoubleQuote.size();
+	}
+	return 0;
+}
+
+size_t GetLocalCharacterBytes(const std::string& text, size_t offset)
+{
+	if (offset + 1 < text.size() &&
+		IsDBCSLeadByteEx(CP_ACP, static_cast<BYTE>(text[offset])) != FALSE) {
+		return 2;
+	}
+	return 1;
+}
+
+DoubleQuoteNormalizedText BuildDoubleQuoteNormalizedText(const std::string& source)
+{
+	DoubleQuoteNormalizedText result;
+	result.text.reserve(source.size());
+	result.sourceBoundaries.reserve(source.size() + 1);
+	result.sourceBoundaries.push_back(0);
+
+	size_t offset = 0;
+	while (offset < source.size()) {
+		const size_t quoteBytes = GetEquivalentDoubleQuoteBytes(source, offset);
+		if (quoteBytes != 0) {
+			result.text.push_back('"');
+			offset += quoteBytes;
+			result.sourceBoundaries.push_back(offset);
+		}
+		else {
+			const size_t characterBytes = GetLocalCharacterBytes(source, offset);
+			result.text.append(source, offset, characterBytes);
+			for (size_t byteIndex = 1; byteIndex <= characterBytes; ++byteIndex) {
+				result.sourceBoundaries.push_back(offset + byteIndex);
+			}
+			offset += characterBytes;
+		}
+	}
+	return result;
+}
+
+std::vector<EquivalentTextMatchSpan> FindEquivalentTextMatches(
+	const std::string& source,
+	const std::string& needle)
+{
+	const DoubleQuoteNormalizedText normalizedSource = BuildDoubleQuoteNormalizedText(source);
+	const DoubleQuoteNormalizedText normalizedNeedle = BuildDoubleQuoteNormalizedText(needle);
+	std::vector<EquivalentTextMatchSpan> matches;
+	if (normalizedNeedle.text.empty()) {
+		return matches;
 	}
 
-	size_t pos = 0;
-	while ((pos = text.find(oldText, pos)) != std::string::npos) {
-		text.replace(pos, oldText.size(), newText);
-		pos += newText.size();
+	size_t searchOffset = 0;
+	while ((searchOffset = normalizedSource.text.find(normalizedNeedle.text, searchOffset)) != std::string::npos) {
+		const size_t sourceBegin = normalizedSource.sourceBoundaries[searchOffset];
+		const size_t sourceEnd = normalizedSource.sourceBoundaries[searchOffset + normalizedNeedle.text.size()];
+		matches.push_back({sourceBegin, sourceEnd - sourceBegin});
+		searchOffset += normalizedNeedle.text.size();
 	}
-	return text;
+	return matches;
 }
 
 bool IsDirectiveLine(const std::string& trimmed, std::string_view directive)
@@ -657,7 +719,9 @@ bool ApplyRealPageTextEdits(
 			continue;
 		}
 
-		result.matchCount = CountOccurrencesLocal(outCode, normalizedOldText);
+		const std::vector<EquivalentTextMatchSpan> matches =
+			FindEquivalentTextMatches(outCode, normalizedOldText);
+		result.matchCount = matches.size();
 		if (result.matchCount == 0) {
 			result.error = "old_text not found";
 			outResults.push_back(result);
@@ -679,11 +743,12 @@ bool ApplyRealPageTextEdits(
 		}
 
 		if (edit.replaceAll) {
-			outCode = ReplaceAllLocal(outCode, normalizedOldText, normalizedNewText);
+			for (auto it = matches.rbegin(); it != matches.rend(); ++it) {
+				outCode.replace(it->offset, it->length, normalizedNewText);
+			}
 		}
 		else {
-			const size_t pos = outCode.find(normalizedOldText);
-			outCode.replace(pos, normalizedOldText.size(), normalizedNewText);
+			outCode.replace(matches.front().offset, matches.front().length, normalizedNewText);
 		}
 		result.applied = true;
 		outResults.push_back(result);

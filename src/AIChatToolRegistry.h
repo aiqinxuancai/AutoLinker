@@ -26,7 +26,7 @@ bool IsExternalPublic(std::string_view toolName);
 // 判断工具是否为按用户明确意图开放的依赖管理工具。
 bool IsDependencyManagement(std::string_view toolName);
 
-// 判断外部 MCP 会话在调用该工具前是否必须刷新工作区镜像。
+// 判断聊天或 MCP 会话在调用该工具前是否必须刷新工作区镜像。
 bool RequiresWorkspaceRefresh(std::string_view toolName);
 
 // 按注册表过滤工具目录，仅保留真正允许对外公开的原生工具。

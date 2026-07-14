@@ -1953,6 +1953,57 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		{"different_text_differs", normalizedHashA != differentHash}
 	});
 
+	std::string quoteEditCode;
+	std::vector<RealPageTextEditApplyResult> quoteEditResults;
+	std::string quoteEditError;
+	const bool quoteEditApplied = ApplyRealPageTextEdits(
+		"before\r\nreg.创建 (“abc”, time)\r\nafter",
+		{RealPageTextEditRequest{"reg.创建 (\"abc\", time)", "matched", false}},
+		true,
+		quoteEditCode,
+		quoteEditResults,
+		quoteEditError);
+	std::string reverseQuoteEditCode;
+	std::vector<RealPageTextEditApplyResult> reverseQuoteEditResults;
+	std::string reverseQuoteEditError;
+	const bool reverseQuoteEditApplied = ApplyRealPageTextEdits(
+		"reg.创建 (\"abc\", time)",
+		{RealPageTextEditRequest{"reg.创建 (“abc”, time)", "reverse-matched", false}},
+		true,
+		reverseQuoteEditCode,
+		reverseQuoteEditResults,
+		reverseQuoteEditError);
+	std::string replaceAllQuoteCode;
+	std::vector<RealPageTextEditApplyResult> replaceAllQuoteResults;
+	std::string replaceAllQuoteError;
+	const bool replaceAllQuoteApplied = ApplyRealPageTextEdits(
+		"输出 (“a”)\r\n输出 (\"a\")",
+		{RealPageTextEditRequest{"输出 (\"a\")", "命中", true}},
+		true,
+		replaceAllQuoteCode,
+		replaceAllQuoteResults,
+		replaceAllQuoteError);
+	const bool quoteEquivalentMatchOk =
+		quoteEditApplied &&
+		quoteEditCode == "before\r\nmatched\r\nafter" &&
+		quoteEditResults.size() == 1 &&
+		quoteEditResults.front().matchCount == 1 &&
+		reverseQuoteEditApplied &&
+		reverseQuoteEditCode == "reverse-matched" &&
+		reverseQuoteEditResults.size() == 1 &&
+		reverseQuoteEditResults.front().matchCount == 1 &&
+		replaceAllQuoteApplied &&
+		replaceAllQuoteCode == "命中\r\n命中" &&
+		replaceAllQuoteResults.size() == 1 &&
+		replaceAllQuoteResults.front().matchCount == 2;
+	report["checks"].push_back({
+		{"name", "real-page-double-quote-equivalent-match"},
+		{"ok", quoteEquivalentMatchOk},
+		{"ascii_to_ide_quote", quoteEditApplied},
+		{"ide_to_ascii_quote", reverseQuoteEditApplied},
+		{"replace_all_match_count", replaceAllQuoteResults.empty() ? 0 : replaceAllQuoteResults.front().matchCount}
+	});
+
 	nlohmann::json refreshGateCheck = nlohmann::json::parse(
 		LocalMcpServer::BuildWorkspaceRefreshGateSelfTestJson(),
 		nullptr,

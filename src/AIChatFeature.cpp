@@ -7,6 +7,7 @@
 #include <chrono>
 #include <CommCtrl.h>
 #include <condition_variable>
+#include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
@@ -34,6 +35,7 @@
 #include "AIChatMcpConfigDialog.h"
 #include "AIChatSessionStore.h"
 #include "AIChatThemeManager.h"
+#include "AIChatToolRegistry.h"
 #include "AIService.h"
 #include "ConfigManager.h"
 #include "AIChatTooling.h"
@@ -197,6 +199,8 @@ struct AIChatSessionState {
 	int lastInputTokens = 0;          // 上一轮响应的真实输入 token（无则 0）
 	bool hasLastUsage = false;        // 是否已有真实 usage
 	int effectiveContextWindow = 0;   // 请求开始时按当前 settings 解析的上下文窗口
+	bool workspaceMirrorRefreshed = false;
+	std::uint64_t workspaceMirrorGeneration = 0;
 };
 
 struct ChatDialogContext {
@@ -2097,6 +2101,8 @@ bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
 	g_session.lastInputTokens = 0;
 	g_session.hasLastUsage = false;
 	g_session.effectiveContextWindow = 0;
+	g_session.workspaceMirrorRefreshed = false;
+	g_session.workspaceMirrorGeneration = 0;
 
 	for (const auto& row : stored.messages) {
 		g_session.messages.push_back(SessionMessage{
@@ -2124,6 +2130,8 @@ void ResetChatSessionBindingLocked(AIChatSessionState& state)
 	state.planModeState = PlanModeState::Normal;
 	state.pendingPlan.clear();
 	state.autoAllowWrites = LoadPersistedAutoAllowWrites();
+	state.workspaceMirrorRefreshed = false;
+	state.workspaceMirrorGeneration = 0;
 }
 
 void RebindChatSessionToCurrentSourceIfNeeded()
@@ -2166,100 +2174,54 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 	PostRefreshDialog();
 }
 
-struct InternalWorkspaceMirrorRetryState {
-	std::mutex mutex;
-	bool ready = false;
-	bool retryAttempted = false;
-	std::string lastError;
-};
-
-bool IsInternalWorkspaceSourceTool(const std::string& toolName)
-{
-	return toolName == "list_files" ||
-		toolName == "search_code" ||
-		toolName == "read_file" ||
-		toolName == "read_files" ||
-		toolName == "read_code_item" ||
-		toolName == "read_real_file" ||
-		toolName == "edit_file" ||
-		toolName == "multi_edit_file" ||
-		toolName == "write_file" ||
-		toolName == "diff_file";
-}
-
-bool PrepareWorkspaceMirrorForChat(unsigned long long requestId, std::string& outError)
-{
-	outError.clear();
-	std::string mode;
-	if (WorkspaceMirror::RefreshMirror(outError, &mode)) {
-		OutputStringToELog("[WorkspaceMirror] chat workspace mirror refreshed: " + mode);
-		AppendAgentActivity(requestId, LocalFromWide(L"\u5de5\u7a0b\u955c\u50cf\u51c6\u5907\u5b8c\u6210"));
-		return true;
-	}
-	if (!TrimAsciiCopy(outError).empty()) {
-		OutputStringToELog("[WorkspaceMirror] prepare chat workspace mirror failed: " + outError);
-		std::string displayError = TrimAsciiCopy(outError);
-		if (displayError.size() > 300) {
-			displayError.resize(300);
-			displayError += "...";
-		}
-		AppendAgentActivity(
-			requestId,
-			LocalFromWide(L"\u5de5\u7a0b\u955c\u50cf\u51c6\u5907\u5931\u8d25\uff0c\u540e\u7eed\u5de5\u5177\u4f1a\u6309\u9700\u91cd\u8bd5\uff1a") + displayError);
-	}
-	return false;
-}
-
 bool EnsureWorkspaceMirrorForInternalSourceTool(
 	const std::string& toolName,
-	unsigned long long requestId,
-	const std::shared_ptr<InternalWorkspaceMirrorRetryState>& state,
 	std::string& outBlockedResultLocal)
 {
 	outBlockedResultLocal.clear();
-	if (!IsInternalWorkspaceSourceTool(toolName) || state == nullptr) {
+	if (!AIChatToolRegistry::RequiresWorkspaceRefresh(toolName)) {
 		return true;
 	}
 
-	std::lock_guard<std::mutex> guard(state->mutex);
-	if (state->ready) {
-		return true;
-	}
-	if (!state->retryAttempted) {
-		state->retryAttempted = true;
-		std::string retryError;
-		if (WorkspaceMirror::EnsureMirrorFresh(retryError)) {
-			state->ready = true;
-			state->lastError.clear();
-			OutputStringToELog("[WorkspaceMirror] internal chat source tool retry succeeded before: " + toolName);
-			AppendAgentActivity(
-				requestId,
-				LocalFromWide(L"\u5de5\u7a0b\u955c\u50cf\u6309\u9700\u91cd\u8bd5\u6210\u529f"));
+	const std::uint64_t currentGeneration = WorkspaceMirror::GetGeneration();
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (g_session.workspaceMirrorRefreshed &&
+			g_session.workspaceMirrorGeneration == currentGeneration) {
 			return true;
 		}
-		state->lastError = retryError.empty()
-			? "ensure workspace mirror fresh failed"
-			: retryError;
-		OutputStringToELog(
-			"[WorkspaceMirror] internal chat source tool retry failed before " +
-			toolName + ": " + state->lastError);
-		AppendAgentActivity(
-			requestId,
-			LocalFromWide(L"\u5de5\u7a0b\u955c\u50cf\u6309\u9700\u91cd\u8bd5\u5931\u8d25"));
+		g_session.workspaceMirrorRefreshed = false;
+		g_session.workspaceMirrorGeneration = 0;
 	}
 
 	nlohmann::json blocked = {
 		{"ok", false},
-		{"error", "workspace_mirror_refresh_failed"},
+		{"error", "workspace_refresh_required"},
 		{"tool", toolName},
-		{"retry_attempted", state->retryAttempted},
-		{"message", LocalToUtf8Text(state->lastError.empty()
-			? "workspace mirror is unavailable"
-			: state->lastError)},
-		{"hint", "The built-in chat retried the workspace mirror once before the first source tool. Do not repeat the same source call until the workspace becomes available."}
+		{"required_tool", "refresh_workspace_mirror"},
+		{"hint", "Call refresh_workspace_mirror successfully before source read/edit tools in this internal chat session. Refresh again if the workspace generation changes."}
 	};
 	outBlockedResultLocal = Utf8ToLocalText(DumpJsonUtf8(blocked));
 	return false;
+}
+
+void UpdateInternalWorkspaceMirrorStateAfterToolCall(const std::string& toolName, bool toolOk)
+{
+	const bool isRefreshTool = toolName == "refresh_workspace_mirror";
+	if (!isRefreshTool && !AIChatToolRegistry::RequiresWorkspaceRefresh(toolName)) {
+		return;
+	}
+
+	const std::uint64_t currentGeneration = WorkspaceMirror::GetGeneration();
+	std::lock_guard<std::mutex> guard(g_session.mutex);
+	if (toolOk) {
+		g_session.workspaceMirrorRefreshed = true;
+		g_session.workspaceMirrorGeneration = currentGeneration;
+	}
+	else if (isRefreshTool) {
+		g_session.workspaceMirrorRefreshed = false;
+		g_session.workspaceMirrorGeneration = 0;
+	}
 }
 
 void ScrollEditToBottom(HWND hEdit)
@@ -5172,13 +5134,6 @@ void RunAIChatWorker(void* pParams)
 			result->chatResult.error = LocalFromWide(L"\u5df2\u53d6\u6d88\uff0c\u672a\u53d1\u9001 AI \u8bf7\u6c42\u3002");
 		}
 		else {
-			std::string workspaceMirrorError;
-			const bool workspaceMirrorReady = PrepareWorkspaceMirrorForChat(
-				request->requestId,
-				workspaceMirrorError);
-			auto workspaceMirrorState = std::make_shared<InternalWorkspaceMirrorRetryState>();
-			workspaceMirrorState->ready = workspaceMirrorReady;
-			workspaceMirrorState->lastError = workspaceMirrorError;
 			if (isCancelled()) {
 				result->chatResult.ok = false;
 				result->chatResult.error = LocalFromWide(L"\u5df2\u53d6\u6d88\uff0c\u672a\u53d1\u9001 AI \u8bf7\u6c42\u3002");
@@ -5189,8 +5144,7 @@ void RunAIChatWorker(void* pParams)
 					request->settings,
 					[
 						cancellation = request->cancellation,
-						requestId = request->requestId,
-						workspaceMirrorState
+						requestId = request->requestId
 					](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
 						FlushStreamingAssistantPreviewToHistory(requestId);
 						if (ShouldBlockToolForCurrentPlanMode(toolName)) {
@@ -5206,8 +5160,6 @@ void RunAIChatWorker(void* pParams)
 						std::string workspaceMirrorBlockedResult;
 						if (!EnsureWorkspaceMirrorForInternalSourceTool(
 							toolName,
-							requestId,
-							workspaceMirrorState,
 							workspaceMirrorBlockedResult)) {
 							outOk = false;
 							UpsertToolTranscriptMessage(
@@ -5232,6 +5184,7 @@ void RunAIChatWorker(void* pParams)
 								return cancellation != nullptr && cancellation->IsCancelled();
 							},
 							cancellation != nullptr ? &cancellation->httpRequest : nullptr);
+						UpdateInternalWorkspaceMirrorStateAfterToolCall(toolName, outOk);
 						UpsertToolTranscriptMessage(requestId, "ran", toolName, argumentsJson, toolResult, outOk);
 						if (!IsUpdatePlanToolName(toolName)) {
 							AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, true, outOk));
@@ -5299,7 +5252,7 @@ bool StartChatRequest(const std::string& userInput)
 		request->cancellation = std::make_shared<AIChatRequestCancellation>();
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
-		g_session.agentActivityLines.push_back(LocalFromWide(L"\u6b63\u5728\u51c6\u5907\u5de5\u7a0b\u955c\u50cf..."));
+		g_session.agentActivityLines.push_back(LocalFromWide(L"AI \u6b63\u5728\u5904\u7406\u8bf7\u6c42..."));
 		g_session.requestInFlight = true;
 		g_session.activeRequestId = request->requestId;
 		g_session.activeRequestStartedAtUnixMs = requestStartedAtMs;
