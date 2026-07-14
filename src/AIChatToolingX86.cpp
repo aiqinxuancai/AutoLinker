@@ -235,25 +235,6 @@ std::string ToLowerAsciiCopyLocal(std::string text)
 	return text;
 }
 
-std::string LocalFromWide(const wchar_t* text)
-{
-	if (text == nullptr || *text == L'\0') {
-		return std::string();
-	}
-	const int size = WideCharToMultiByte(CP_ACP, 0, text, -1, nullptr, 0, nullptr, nullptr);
-	if (size <= 0) {
-		return std::string();
-	}
-	std::string out(static_cast<size_t>(size), '\0');
-	if (WideCharToMultiByte(CP_ACP, 0, text, -1, out.data(), size, nullptr, nullptr) <= 0) {
-		return std::string();
-	}
-	if (!out.empty() && out.back() == '\0') {
-		out.pop_back();
-	}
-	return out;
-}
-
 bool IsValidUtf8Text(const std::string& text)
 {
 	if (text.empty()) {
@@ -401,12 +382,6 @@ std::string RefreshCurrentSourceFilePathForAI()
 {
 	g_nowOpenSourceFilePath = GetSourceFilePath();
 	return g_nowOpenSourceFilePath;
-}
-
-std::uintptr_t GetCurrentProcessImageBaseForAI()
-{
-	HMODULE module = GetModuleHandleW(nullptr);
-	return reinterpret_cast<std::uintptr_t>(module);
 }
 
 std::vector<HWND> CollectTreeViewWindowsForAI(HWND root)
@@ -1222,47 +1197,6 @@ bool TryWriteFixedTableRealPageCodeByPasteForAI(
 	return false;
 }
 
-bool OpenRegularProgramItemPageForRealPageCopyForAI(
-	const ProgramTreeItemInfo& item,
-	std::string& outTrace,
-	std::string& outError)
-{
-	outTrace.clear();
-	outError.clear();
-
-	const auto totalStart = ToolPerfClock::now();
-	std::string openTrace;
-	const auto openStart = ToolPerfClock::now();
-	if (!e571::OpenProgramTreeItemPageByData(item.itemData, &openTrace)) {
-		outTrace =
-			(openTrace.empty() ? std::string("open_program_item_page_failed") : openTrace) +
-			"|open_ms=" + std::to_string(ElapsedToolMs(openStart)) +
-			"|total_ms=" + std::to_string(ElapsedToolMs(totalStart));
-		outError = "open program item page failed";
-		return false;
-	}
-
-	std::string currentName;
-	std::string currentType;
-	std::string currentTrace;
-	const auto nameStart = ToolPerfClock::now();
-	const bool currentOk = IDEFacade::Instance().GetCurrentPageName(
-		currentName,
-		&currentType,
-		&currentTrace);
-	outTrace =
-		"open_program_item_page_by_data|" +
-		openTrace +
-		"|open_ms=" + std::to_string(ElapsedToolMs(openStart)) +
-		"|current_page_ok=" + std::to_string(currentOk ? 1 : 0) +
-		"|current_page_name=" + currentName +
-		"|current_page_type=" + currentType +
-		"|current_page_trace=" + currentTrace +
-		"|current_page_ms=" + std::to_string(ElapsedToolMs(nameStart)) +
-		"|total_ms=" + std::to_string(ElapsedToolMs(totalStart));
-	return true;
-}
-
 bool TryReadRealPageCodeForAI(
 	const ProgramTreeItemInfo& item,
 	std::string& outCode,
@@ -1755,56 +1689,6 @@ std::string GetFileStemForAI(const std::string& path)
 bool EqualsInsensitiveForAI(const std::string& left, const std::string& right)
 {
 	return ToLowerAsciiCopyLocal(left) == ToLowerAsciiCopyLocal(right);
-}
-
-bool ResolveImportedModulePathForAI(
-	const std::string& moduleName,
-	const std::string& modulePath,
-	std::string& outResolvedPath,
-	std::string& outError)
-{
-	outResolvedPath.clear();
-	outError.clear();
-
-	const std::string trimmedPath = TrimAsciiCopy(modulePath);
-	if (!trimmedPath.empty()) {
-		outResolvedPath = trimmedPath;
-		return true;
-	}
-
-	const std::string trimmedName = TrimAsciiCopy(moduleName);
-	if (trimmedName.empty()) {
-		outError = "module_name or module_path is required";
-		return false;
-	}
-
-	std::vector<std::string> paths;
-	if (!TryListImportedModulePathsForAI(paths, &outError)) {
-		return false;
-	}
-
-	std::vector<std::string> matched;
-	for (const auto& path : paths) {
-		const std::string fileName = GetFileNameOnlyForAI(path);
-		const std::string stem = GetFileStemForAI(path);
-		if (EqualsInsensitiveForAI(fileName, trimmedName) ||
-			EqualsInsensitiveForAI(stem, trimmedName) ||
-			EqualsInsensitiveForAI(path, trimmedName)) {
-			matched.push_back(path);
-		}
-	}
-
-	if (matched.empty()) {
-		outError = "module not found";
-		return false;
-	}
-	if (matched.size() > 1) {
-		outError = "module name is ambiguous";
-		return false;
-	}
-
-	outResolvedPath = matched.front();
-	return true;
 }
 
 std::string NormalizePathForAI(const std::string& pathText)
@@ -4853,5 +4737,4 @@ std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::
 }
 
 #endif
-
 

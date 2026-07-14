@@ -411,36 +411,6 @@ std::wstring Utf8ToWide(const std::string& text)
 	return wide;
 }
 
-std::wstring WideFromLocal(const std::string& text)
-{
-	if (text.empty()) {
-		return std::wstring();
-	}
-
-	const int wideLen = MultiByteToWideChar(
-		CP_ACP,
-		0,
-		text.data(),
-		static_cast<int>(text.size()),
-		nullptr,
-		0);
-	if (wideLen <= 0) {
-		return std::wstring();
-	}
-
-	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
-	if (MultiByteToWideChar(
-		CP_ACP,
-		0,
-		text.data(),
-		static_cast<int>(text.size()),
-		wide.data(),
-		wideLen) <= 0) {
-		return std::wstring();
-	}
-	return wide;
-}
-
 std::string WideToUtf8(const std::wstring& text)
 {
 	if (text.empty()) {
@@ -473,11 +443,6 @@ std::string WideToUtf8(const std::wstring& text)
 		return std::string();
 	}
 	return utf8;
-}
-
-std::string JsonStringLiteral(const std::string& utf8Text)
-{
-	return nlohmann::json(utf8Text).dump();
 }
 
 bool IsWebView2RuntimeAvailableWithTag(const char* logTag)
@@ -4355,7 +4320,6 @@ void ShowAIChatThemeConfigDialog(HWND owner)
 	EnsureWindowTitle(hDialog, "AutoLinker AI 对话配色设置");
 	RunModalWindow(owner, hDialog);
 }
-
 
 
 

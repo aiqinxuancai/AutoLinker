@@ -389,15 +389,6 @@ void CompletePendingToolApproval(
 	bool approved,
 	bool enableAutoAllow);
 
-std::string GetWindowTextCopyLocalA(HWND hWnd)
-{
-	char buffer[512] = {};
-	if (hWnd != nullptr && IsWindow(hWnd)) {
-		GetWindowTextA(hWnd, buffer, static_cast<int>(sizeof(buffer)));
-	}
-	return buffer;
-}
-
 std::string GetWindowClassCopyLocalA(HWND hWnd)
 {
 	char buffer[128] = {};
@@ -640,30 +631,6 @@ HICON GetAppIconSmall()
 {
 	static HICON s_smallIcon = LoadAppIconHandle(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
 	return s_smallIcon;
-}
-
-void ApplyWindowIcon(HWND hWnd)
-{
-	if (hWnd == nullptr) {
-		return;
-	}
-	SendMessageA(hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(GetAppIconLarge()));
-	SendMessageA(hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(GetAppIconSmall()));
-}
-
-void EnsureWindowTitle(HWND hWnd, const std::string& fallbackTitle)
-{
-	if (hWnd == nullptr) {
-		return;
-	}
-	if (GetWindowTextLengthA(hWnd) > 0) {
-		return;
-	}
-	if (fallbackTitle.empty()) {
-		SetWindowTextA(hWnd, "AutoLinker");
-		return;
-	}
-	SetWindowTextA(hWnd, fallbackTitle.c_str());
 }
 
 class ComCtl6ActivationScope {
@@ -3084,24 +3051,6 @@ void HideChatConfirmInPage(ChatDialogContext* ctx)
 	HideRestoreChatConfirmInPage(ctx, true);
 }
 
-void ShowClearChatConfirmInPage(HWND hWnd, ChatDialogContext* ctx)
-{
-	if (ctx == nullptr) {
-		return;
-	}
-	HideRestoreChatConfirmInPage(ctx, true);
-	if (ctx->webViewDesired && ctx->webViewContentReady) {
-		ExecuteWebViewScript(ctx, L"window.autolinkerShowClearConfirm();");
-		return;
-	}
-
-	ctx->clearConfirmVisible = true;
-	LayoutAIChatDialog(hWnd, ctx);
-	if (ctx->hClearConfirmApply != nullptr) {
-		SetFocus(ctx->hClearConfirmApply);
-	}
-}
-
 void ShowRestoreChatConfirmInPage(HWND hWnd, ChatDialogContext* ctx)
 {
 	if (ctx == nullptr) {
@@ -3510,37 +3459,6 @@ void UpdateInputRowsAndLayout(HWND hWnd, ChatDialogContext* ctx, bool forceLayou
 
 	ctx->inputRowsVisible = targetRows;
 	LayoutAIChatDialog(hWnd, ctx);
-}
-
-bool RunModalWindow(HWND owner, HWND hDialog)
-{
-	if (hDialog == nullptr) {
-		return false;
-	}
-	if (owner != nullptr && IsWindow(owner)) {
-		EnableWindow(owner, FALSE);
-	}
-
-	ShowWindow(hDialog, SW_SHOW);
-	UpdateWindow(hDialog);
-
-	MSG msg = {};
-	while (IsWindow(hDialog)) {
-		const BOOL ok = GetMessageA(&msg, nullptr, 0, 0);
-		if (ok <= 0) {
-			break;
-		}
-		if (!IsDialogMessageA(hDialog, &msg)) {
-			TranslateMessage(&msg);
-			DispatchMessageA(&msg);
-		}
-	}
-
-	if (owner != nullptr && IsWindow(owner)) {
-		EnableWindow(owner, TRUE);
-		SetForegroundWindow(owner);
-	}
-	return true;
 }
 
 std::string RoleLabel(SessionRole role)
@@ -5126,14 +5044,6 @@ bool RequestConfirmationFromMainThread(
 	return true;
 }
 
-std::string ToLowerAsciiCopyLocal(std::string text)
-{
-	for (char& ch : text) {
-		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-	}
-	return text;
-}
-
 void PostChatResult(AIChatAsyncResult* result)
 {
 	if (result == nullptr) {
@@ -5932,18 +5842,6 @@ void RequestClearChatHistoryAsync()
 	ClearChatHistory();
 	g_clearHistoryInProgress = false;
 	PostRefreshDialog();
-}
-
-std::string BuildToolEventHistoryLine(const AIChatToolEvent& evt)
-{
-	std::string line =
-		LocalFromWide(L"\u8c03\u7528 ") + evt.name +
-		LocalFromWide(L"\uff0c\u8fd4\u56de\uff1a") + evt.resultJson;
-	if (line.size() > 1200) {
-		line.resize(1200);
-		line += "...";
-	}
-	return line;
 }
 
 std::string BuildToolEventSummaryLine(const std::vector<AIChatToolEvent>& events)

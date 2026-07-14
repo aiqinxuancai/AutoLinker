@@ -250,16 +250,6 @@ std::string BuildHttpStatusErrorForUi(int statusCode, const std::string& respons
 	return std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
 }
 
-AIChatResult BuildCancelledChatResult(const std::string& partialContentLocal = std::string())
-{
-	AIChatResult result = {};
-	result.cancelled = true;
-	result.content = partialContentLocal;
-	result.error = "chat request cancelled by user";
-	result.httpStatus = kAiRequestCancelledHttpStatus;
-	return result;
-}
-
 AIChatResult MarkChatResultCancelled(AIChatResult result, const std::string& partialContentLocal = std::string())
 {
 	result.ok = false;
@@ -5763,4 +5753,3 @@ EnumWindows (到整数 (&枚举窗口过程), 0)
 
 	return prompt;
 }
-
