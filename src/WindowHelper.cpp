@@ -3,9 +3,10 @@
 #include <lib2.h>
 #include "PathHelper.h"
 #include <fnshare.h>
+#include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <format>
-#include <regex>
 
 namespace {
 
@@ -20,20 +21,6 @@ std::string TrimAsciiCopyLocal(const std::string& text)
 		--end;
 	}
 	return text.substr(begin, end - begin);
-}
-
-std::string StripTrailingBracketAnnotations(const std::string& text)
-{
-	static const std::regex kTrailingBracketPattern(R"(\s*\[[^\[\]\r\n]*\]\s*$)");
-	std::string stripped = text;
-	for (;;) {
-		const std::string next = std::regex_replace(stripped, kTrailingBracketPattern, std::string());
-		if (next == stripped) {
-			break;
-		}
-		stripped = next;
-	}
-	return TrimAsciiCopyLocal(stripped);
 }
 
 bool HasEideSourceFileExtension(const std::string& text)
@@ -62,31 +49,88 @@ bool LooksLikeAbsolutePathSegment(const std::string& text)
 	return text.rfind("\\\\", 0) == 0 || text.rfind("//", 0) == 0;
 }
 
-std::string ExtractSourcePathFromWindowTitle(const std::string& title)
+bool MatchSourceExtensionAt(const std::string& title, size_t position, size_t& extensionEnd)
+{
+	if (position + 2 > title.size() || title[position] != '.' ||
+		std::tolower(static_cast<unsigned char>(title[position + 1])) != 'e') {
+		return false;
+	}
+
+	extensionEnd = position + 2;
+	if (extensionEnd < title.size() &&
+		std::tolower(static_cast<unsigned char>(title[extensionEnd])) == 'c') {
+		++extensionEnd;
+	}
+	return true;
+}
+
+std::string ExtractSourcePathCandidate(const std::string& title, size_t pathStart)
+{
+	std::string delimiterTerminatedCandidate;
+	for (size_t position = title.find('.', pathStart);
+		position != std::string::npos;
+		position = title.find('.', position + 1)) {
+		size_t extensionEnd = 0;
+		if (!MatchSourceExtensionAt(title, position, extensionEnd)) {
+			continue;
+		}
+
+		const bool reachesTitleEnd = extensionEnd == title.size();
+		const bool followedByAnnotation =
+			title.compare(extensionEnd, 2, " [") == 0;
+		const bool followedByTitleDelimiter =
+			title.compare(extensionEnd, 3, " - ") == 0;
+		if (!reachesTitleEnd && !followedByAnnotation && !followedByTitleDelimiter) {
+			continue;
+		}
+
+		const std::string candidate = TrimAsciiCopyLocal(
+			title.substr(pathStart, extensionEnd - pathStart));
+		if (!LooksLikeAbsolutePathSegment(candidate) ||
+			!HasEideSourceFileExtension(candidate)) {
+			continue;
+		}
+
+		// 注解或标题结束是强边界；遇到 " - " 时继续向后匹配，兼容文件名自身包含该文本。
+		if (reachesTitleEnd || followedByAnnotation) {
+			return candidate;
+		}
+		delimiterTerminatedCandidate = candidate;
+	}
+	return delimiterTerminatedCandidate;
+}
+
+std::string ExtractSourcePathFromWindowTitleLocal(const std::string& title)
 {
 	static constexpr const char* kDelimiter = " - ";
-	size_t begin = 0;
-	while (begin <= title.size()) {
-		size_t end = title.find(kDelimiter, begin);
-		if (end == std::string::npos) {
-			end = title.size();
+	size_t segmentStart = 0;
+	while (segmentStart <= title.size()) {
+		while (segmentStart < title.size() &&
+			std::isspace(static_cast<unsigned char>(title[segmentStart])) != 0) {
+			++segmentStart;
 		}
 
-		const std::string segment = StripTrailingBracketAnnotations(title.substr(begin, end - begin));
-		if (!segment.empty() &&
-			LooksLikeAbsolutePathSegment(segment) &&
-			HasEideSourceFileExtension(segment)) {
-			return segment;
+		if (LooksLikeAbsolutePathSegment(title.substr(segmentStart))) {
+			const std::string path = ExtractSourcePathCandidate(title, segmentStart);
+			if (!path.empty()) {
+				return path;
+			}
 		}
 
-		if (end == title.size()) {
+		const size_t delimiterPosition = title.find(kDelimiter, segmentStart);
+		if (delimiterPosition == std::string::npos) {
 			break;
 		}
-		begin = end + std::strlen(kDelimiter);
+		segmentStart = delimiterPosition + std::strlen(kDelimiter);
 	}
 	return std::string();
 }
 
+}
+
+std::string ExtractSourcePathFromWindowTitle(const std::string& title)
+{
+	return ExtractSourcePathFromWindowTitleLocal(title);
 }
 
 BOOL CALLBACK EnumChildProcOutputWindow(HWND hwnd, LPARAM lParam) {
@@ -117,9 +161,21 @@ HWND FindOutputWindow(HWND hParent) {
 /// <param name="hParent"></param>
 std::string GetSourceFilePath() {
 	HWND hWnd = (HWND)NotifySys(NES_GET_MAIN_HWND, 0, 0);
-	char buffer[256] = { 0 };
-	GetWindowText(hWnd, buffer, sizeof(buffer));
-	return ExtractSourcePathFromWindowTitle(std::string(buffer));
+	if (hWnd == nullptr) {
+		return std::string();
+	}
+
+	const int titleLength = GetWindowTextLengthA(hWnd);
+	if (titleLength <= 0) {
+		return std::string();
+	}
+	std::string title(static_cast<size_t>(titleLength) + 1, '\0');
+	const int copiedLength = GetWindowTextA(hWnd, title.data(), titleLength + 1);
+	if (copiedLength <= 0) {
+		return std::string();
+	}
+	title.resize(static_cast<size_t>(copiedLength));
+	return ExtractSourcePathFromWindowTitle(title);
 }
 
 

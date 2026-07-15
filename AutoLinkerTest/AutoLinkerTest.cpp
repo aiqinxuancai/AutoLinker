@@ -1111,6 +1111,40 @@ int RunSmokeTest()
 		return EXIT_FAILURE;
 	}
 
+	struct SourceTitleCase {
+		const char* name;
+		const char* title;
+		const char* expectedPath;
+	};
+	const SourceTitleCase sourceTitleCases[] = {
+		{
+			"current-title",
+			"AiQinDateTime - C:\\Users\\aiqin\\OneDrive\\Code\\模块\\timestamp - 副本 (2).e [无编译条件] - Windows易语言模块 - [类模块: DateTime]",
+			"C:\\Users\\aiqin\\OneDrive\\Code\\模块\\timestamp - 副本 (2).e"
+		},
+		{
+			"legacy-title",
+			"AiQinDateTime - C:\\Users\\aiqin\\OneDrive\\Code\\模块\\timestamp - 副本.e - Windows易语言模块 - [类模块: DateTime]",
+			"C:\\Users\\aiqin\\OneDrive\\Code\\模块\\timestamp - 副本.e"
+		},
+		{
+			"spaces-and-ec",
+			"Demo - C:\\work dir\\my source.ec [none] - Windows module",
+			"C:\\work dir\\my source.ec"
+		}
+	};
+	for (const SourceTitleCase& testCase : sourceTitleCases) {
+		result = AutoLinkerTest_ExtractSourcePathFromWindowTitle(
+			testCase.title,
+			buffer,
+			static_cast<int>(sizeof(buffer)));
+		if (result < 0 || std::string(buffer) != testCase.expectedPath) {
+			std::cerr << "source-path-title failed: " << testCase.name << " actual=" << buffer << std::endl;
+			return EXIT_FAILURE;
+		}
+	}
+	std::cout << "source-path-title: " << buffer << std::endl;
+
 	result = AutoLinkerTest_ExtractBetweenDashes("before - middle - after", buffer, static_cast<int>(sizeof(buffer)));
 	return PrintStringResult("extract-between-dashes", result, buffer);
 }

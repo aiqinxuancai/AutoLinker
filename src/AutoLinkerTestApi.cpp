@@ -31,6 +31,7 @@
 #include "Version.h"
 #include "WebDocumentClient.h"
 #include "WebDocumentExtractor.h"
+#include "WindowHelper.h"
 #include "WorkspaceFileTools.h"
 #include "WorkspaceMirror.h"
 
@@ -1783,6 +1784,18 @@ extern "C" int AutoLinkerTest_ExtractBetweenDashes(const char* text, char* buffe
 	}
 
 	return CopyStringToBuffer(ExtractBetweenDashes(text), buffer, bufferSize);
+}
+
+extern "C" int AutoLinkerTest_ExtractSourcePathFromWindowTitle(
+	const char* title,
+	char* buffer,
+	int bufferSize)
+{
+	if (title == nullptr) {
+		return AUTOLINKER_TEST_STRING_INVALID_ARGUMENT;
+	}
+
+	return CopyStringToBuffer(ExtractSourcePathFromWindowTitle(title), buffer, bufferSize);
 }
 
 extern "C" int AutoLinkerTest_GetVersionText(char* buffer, int bufferSize)

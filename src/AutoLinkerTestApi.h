@@ -26,6 +26,12 @@ AUTOLINKER_TEST_API int AutoLinkerTest_GetLinkerKrnlnFileName(const char* comman
 // 提取两个 " - " 之间的文本，成功时返回写入长度，不含结尾空字符。
 AUTOLINKER_TEST_API int AutoLinkerTest_ExtractBetweenDashes(const char* text, char* buffer, int bufferSize);
 
+// 从易语言主窗口标题中提取当前源文件路径。
+AUTOLINKER_TEST_API int AutoLinkerTest_ExtractSourcePathFromWindowTitle(
+	const char* title,
+	char* buffer,
+	int bufferSize);
+
 // 返回当前 AutoLinker 版本文本，成功时返回写入长度，不含结尾空字符。
 AUTOLINKER_TEST_API int AutoLinkerTest_GetVersionText(char* buffer, int bufferSize);
 

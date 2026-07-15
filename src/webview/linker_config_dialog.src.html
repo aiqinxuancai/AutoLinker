@@ -54,6 +54,7 @@ var _initialSnapshot = "";
 var _selectedIndex = -1;
 var _dirty = false;
 var _defaultContent = "";
+var _canSelectCurrentLinker = false;
 
 function $(id) { return document.getElementById(id); }
 
@@ -64,9 +65,15 @@ function post(payload) {
 }
 
 function snapshot() {
-	return JSON.stringify(_linkers.map(function (l) {
-		return { name: l.name, content: l.content, isDefault: !!l.isDefault };
-	}));
+	var current = (_selectedIndex >= 0 && _selectedIndex < _linkers.length)
+		? _linkers[_selectedIndex]
+		: null;
+	return JSON.stringify({
+		linkers: _linkers.map(function (l) {
+			return { name: l.name, content: l.content, isDefault: !!l.isDefault };
+		}),
+		currentLinkerName: _canSelectCurrentLinker && current ? current.name : ""
+	});
 }
 
 function setStatus(text) {
@@ -198,6 +205,9 @@ function onSave() {
 	post({
 		action: "save",
 		data: {
+			currentLinkerName: (_selectedIndex >= 0 && _selectedIndex < _linkers.length)
+				? _linkers[_selectedIndex].name
+				: "",
 			linkers: _linkers.filter(function (l) {
 				return !l.isDefault;
 			}).map(function (l) {
@@ -210,11 +220,16 @@ function onSave() {
 // C++ -> JS: inject linker list
 window.autolinkerApplyLinkers = function (payload) {
 	_defaultContent = (payload && payload.defaultContent) ? payload.defaultContent : "";
+	_canSelectCurrentLinker = !!(payload && payload.canSelectCurrentLinker);
 	_linkers = (payload && payload.linkers ? payload.linkers : []).map(function (l) {
 		return { name: l.name || "", content: l.content || "", isDefault: !!l.isDefault };
 	});
+	var currentLinkerName = (payload && payload.currentLinkerName) ? payload.currentLinkerName : "";
+	_selectedIndex = _linkers.findIndex(function (l) { return l.name === currentLinkerName; });
+	if (_selectedIndex < 0) {
+		_selectedIndex = _linkers.length > 0 ? 0 : -1;
+	}
 	_initialSnapshot = snapshot();
-	_selectedIndex = _linkers.length > 0 ? 0 : -1;
 	renderSelect();
 	showSelected();
 	recomputeDirty();
@@ -237,6 +252,7 @@ window.autolinkerLinkerSaveResult = function (result) {
 document.addEventListener("DOMContentLoaded", function () {
 	$("linkerSelect").addEventListener("change", function (e) {
 		selectIndex(parseInt(e.target.value, 10));
+		recomputeDirty();
 	});
 	$("addBtn").addEventListener("click", onAdd);
 	$("renameBtn").addEventListener("click", onRename);

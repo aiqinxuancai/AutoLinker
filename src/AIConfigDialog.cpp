@@ -21,6 +21,7 @@
 #include "AIService.h"
 #include "AIChatFeature.h"
 #include "AIChatThemeManager.h"
+#include "AutoLinkerInternal.h"
 #include "Global.h"
 #include "LinkerManager.h"
 #include "PathHelper.h"
@@ -3392,6 +3393,7 @@ struct LinkerConfigWebViewDialogContext {
 	bool fallbackRequested = false;
 	HWND hHost = nullptr;
 	HWND hLoading = nullptr;
+	std::string sourceFilePath;
 	std::vector<LinkerEntry> linkers;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
@@ -3591,12 +3593,19 @@ bool SaveLinkerEntriesToDisk(const std::vector<LinkerEntry>& entries, std::strin
 	return true;
 }
 
-std::string BuildLinkerWebViewPayloadJson(const std::vector<LinkerEntry>& linkers)
+std::string BuildLinkerWebViewPayloadJson(const LinkerConfigWebViewDialogContext& ctx)
 {
 	nlohmann::json payload;
 	payload["defaultContent"] = ReadDefaultLinkerContentUtf8();
+	payload["canSelectCurrentLinker"] = !ctx.sourceFilePath.empty();
+	const std::string configuredLinker = ctx.sourceFilePath.empty()
+		? std::string()
+		: g_configManager.getValue(ctx.sourceFilePath);
+	payload["currentLinkerName"] = configuredLinker.empty()
+		? GetDefaultLinkerNameUtf8()
+		: LocalToUtf8Text(configuredLinker);
 	payload["linkers"] = nlohmann::json::array();
-	for (const auto& entry : linkers) {
+	for (const auto& entry : ctx.linkers) {
 		nlohmann::json item;
 		item["name"] = entry.name;
 		item["content"] = entry.content;
@@ -3628,7 +3637,7 @@ void ApplyLinkerWebViewData(LinkerConfigWebViewDialogContext* ctx)
 	if (ctx == nullptr) {
 		return;
 	}
-	const std::wstring payloadWide = Utf8ToWide(BuildLinkerWebViewPayloadJson(ctx->linkers));
+	const std::wstring payloadWide = Utf8ToWide(BuildLinkerWebViewPayloadJson(*ctx));
 	std::wstring script = L"window.autolinkerApplyLinkers(JSON.parse('";
 	script += EscapeJsSingleQuotedWide(payloadWide);
 	script += L"'));";
@@ -3674,6 +3683,7 @@ void HandleLinkerWebViewSave(HWND hWnd, LinkerConfigWebViewDialogContext* ctx, c
 	}
 	std::vector<LinkerEntry> next;
 	std::set<std::string> seenLower;
+	const std::string selectedLinkerName = SanitizeLinkerName(data.value("currentLinkerName", std::string()));
 	if (data.contains("linkers") && data["linkers"].is_array()) {
 		for (const auto& item : data["linkers"]) {
 			if (!item.is_object()) {
@@ -3700,13 +3710,36 @@ void HandleLinkerWebViewSave(HWND hWnd, LinkerConfigWebViewDialogContext* ctx, c
 		}
 	}
 
+	const std::string defaultLinkerName = GetDefaultLinkerNameUtf8();
+	const auto selectedIt = std::find_if(next.begin(), next.end(), [&](const LinkerEntry& entry) {
+		return _stricmp(entry.name.c_str(), selectedLinkerName.c_str()) == 0;
+	});
+	const bool defaultSelected = selectedLinkerName.empty() || selectedLinkerName == defaultLinkerName;
+	if (!defaultSelected && selectedIt == next.end()) {
+		NotifyLinkerSaveResult(ctx, false, "当前链接器不存在：" + selectedLinkerName);
+		return;
+	}
+
 	std::string errorMessage;
 	if (!SaveLinkerEntriesToDisk(next, errorMessage)) {
 		NotifyLinkerSaveResult(ctx, false, errorMessage.empty() ? "保存失败。" : errorMessage);
 		return;
 	}
+
 	ctx->linkers = std::move(next);
 	g_linkerManager.reload();
+	if (!ctx->sourceFilePath.empty()) {
+		g_configManager.setValue(
+			ctx->sourceFilePath,
+			defaultSelected ? std::string() : Utf8ToLocalText(selectedLinkerName));
+		OutputCurrentSourceLinker();
+		RebuildTopLinkerSubMenu();
+		NotifyLinkerSaveResult(ctx, true, std::format(
+			"已保存 {} 个链接器配置，当前源码使用链接器：{}。",
+			ctx->linkers.size(),
+			defaultSelected ? defaultLinkerName : selectedLinkerName));
+		return;
+	}
 	NotifyLinkerSaveResult(ctx, true, std::format("已保存 {} 个链接器配置。", ctx->linkers.size()));
 }
 
@@ -3956,6 +3989,8 @@ void ShowLinkerConfigDialog(HWND owner)
 	RegisterClassExA(&wc);
 
 	LinkerConfigWebViewDialogContext ctx = {};
+	UpdateCurrentOpenSourceFile();
+	ctx.sourceFilePath = g_nowOpenSourceFilePath;
 	ctx.linkers = LoadLinkerEntriesFromDisk();
 
 	HWND hDialog = CreateWindowExA(

@@ -108,7 +108,12 @@ struct AddInMenuEntry {
 
 void OpenProjectDirectoryAddIn()
 {
-	std::string cmd = std::format("/select,{}", g_nowOpenSourceFilePath);
+	UpdateCurrentOpenSourceFile();
+	if (g_nowOpenSourceFilePath.empty()) {
+		OutputStringToELog("当前没有打开源文件，无法打开项目目录");
+		return;
+	}
+	std::string cmd = std::format("/select,\"{}\"", g_nowOpenSourceFilePath);
 	ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
 }
 
