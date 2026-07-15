@@ -113,52 +113,13 @@
 - **地址：** `https://api.moonshot.cn/v1`
 - **预设模型：** kimi-k2.7-code / kimi-k2.6
 
-### 🫘 豆包（字节跳动）
-- **简介：** 国内访问稳定
-- **官网：** https://console.volcengine.com/ark
-- **地址：** `https://ark.cn-beijing.volces.com/api/v3`
-- **预设模型：** doubao-seed-2.0-pro / code / lite
-
 ### 🔵 MiniMax
 - **简介：** 国内直连
 - **官网：** https://platform.minimax.chat
 - **地址：** `https://api.minimax.chat/v1`
 - **预设模型：** MiniMax-M3 / M2.7 / M2.5
 
-### 🌐 aihubmix（中转站）
-- **简介：** 支持 GPT/Claude/Gemini 等顶级模型
-- **官网：** https://aihubmix.com
-- **地址：** `https://aihubmix.com/v1`
-- **预设模型：** gpt-5.6 / claude-opus-4-8 / deepseek-v4-pro / gemini-3.1-pro-preview
-
-### 🔥 硅基流动（国产开源）
-- **简介：** 以国产开源模型为主
-- **官网：** https://cloud.siliconflow.cn
-- **地址：** `https://api.siliconflow.cn/v1`
-- **预设模型：** deepseek-ai/DeepSeek-V4-Flash 、Qwen/Qwen3.5-397B-A17B
-
-> 💡 模型名带路径格式（如 `deepseek-ai/DeepSeek-V4-Pro`），请完整填写。
-
-### 🌍 OpenAI 官方（需海外网络）
-- **简介：** 官方 API，保证质量但需海外网络
-- **官网：** https://platform.openai.com
-- **地址：** `https://api.openai.com/v1`
-- **协议：** `OpenAI Responses`
-- **预设模型：** gpt-5.6 / sol / terra / luna
-
-### 🤍 Claude 官方（Anthropic）
-- **简介：** 理解写作优秀，代码能力强
-- **官网：** https://console.anthropic.com
-- **地址：** `https://api.anthropic.com`
-- **协议：** `Claude`
-- **预设模型：** claude-opus-4-8 / sonnet-4-6 / haiku-4-5
-
-### ✨ Gemini 官方（Google）
-- **简介：** 多模态能力强
-- **官网：** https://aistudio.google.com
-- **地址：** `https://generativelanguage.googleapis.com`
-- **协议：** `Gemini`
-- **预设模型：** gemini-3.1-pro-preview / 3.1-flash-lite / 2.5-pro
+> 💡 更多平台（豆包、OpenAI、Claude、Gemini 等）均可通过"使用预设站点新建"选择，或手动填写接口地址与协议。
 
 ---
 
