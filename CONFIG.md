@@ -219,3 +219,6 @@ url = "http://127.0.0.1:19207/mcp"
 
 **Q：配置文件保存在哪里？**
 保存在易语言安装目录下的 `AutoLinker/AIConfig.json` 文件中。
+
+**Q：e-packager 下载不下来怎办？**
+若程序自动下载 e-packager（镜像解包器）失败（网络问题等），可前往 [e-packager Releases](https://github.com/aiqinxuancai/e-packager/releases) 手动下载，解压缩到 **易语言安装目录\tools** 目录中即可。
