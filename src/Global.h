@@ -45,7 +45,7 @@ void CancelSilentCompileOutputPathRequest();
 bool WasSilentCompileOutputPathRequestConsumed();
 bool IsSilentCompileOutputPathRequestActive();
 
-// 获取 WebView2 用户数据目录。
+// 获取按当前 IDE 进程隔离的 WebView2 用户数据目录。
 std::wstring GetWebView2UserDataFolderPath();
 
 #endif // GLOBAL_H

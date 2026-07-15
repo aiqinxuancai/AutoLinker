@@ -59,9 +59,76 @@ void AppendAIRoundtripLogLineUnlocked(std::ofstream& out, const std::string& lin
 	out << line << "\r\n";
 }
 
-} // namespace
+bool TryParseProcessIdDirectoryName(const std::wstring& directoryName, DWORD& processId)
+{
+	if (directoryName.empty()) {
+		return false;
+	}
 
-std::wstring GetWebView2UserDataFolderPath()
+	ULONGLONG parsedValue = 0;
+	for (const wchar_t ch : directoryName) {
+		if (ch < L'0' || ch > L'9') {
+			return false;
+		}
+		parsedValue = parsedValue * 10 + static_cast<ULONGLONG>(ch - L'0');
+		if (parsedValue > MAXDWORD) {
+			return false;
+		}
+	}
+
+	processId = static_cast<DWORD>(parsedValue);
+	return true;
+}
+
+bool IsProcessLikelyAlive(DWORD processId)
+{
+	if (processId == 0) {
+		return false;
+	}
+
+	HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, processId);
+	if (process == nullptr) {
+		// 只有明确的无效进程号才视为进程已退出；权限不足等情况保守保留目录。
+		return GetLastError() != ERROR_INVALID_PARAMETER;
+	}
+
+	const DWORD waitResult = WaitForSingleObject(process, 0);
+	CloseHandle(process);
+	if (waitResult == WAIT_OBJECT_0) {
+		return false;
+	}
+	return true;
+}
+
+void RemoveExitedWebView2ProcessDirectories(
+	const std::filesystem::path& rootPath,
+	DWORD currentProcessId)
+{
+	std::error_code iterateError;
+	std::filesystem::directory_iterator iterator(rootPath, iterateError);
+	const std::filesystem::directory_iterator end;
+	while (!iterateError && iterator != end) {
+		const std::filesystem::directory_entry entry = *iterator;
+		iterator.increment(iterateError);
+
+		std::error_code typeError;
+		if (!entry.is_directory(typeError) || typeError) {
+			continue;
+		}
+
+		DWORD processId = 0;
+		if (!TryParseProcessIdDirectoryName(entry.path().filename().wstring(), processId) ||
+			processId == currentProcessId ||
+			IsProcessLikelyAlive(processId)) {
+			continue;
+		}
+
+		std::error_code removeError;
+		std::filesystem::remove_all(entry.path(), removeError);
+	}
+}
+
+std::wstring InitializeWebView2UserDataFolderPath()
 {
 	wchar_t tempPathBuffer[MAX_PATH] = {};
 	const DWORD tempPathLength = GetTempPathW(
@@ -81,10 +148,25 @@ std::wstring GetWebView2UserDataFolderPath()
 		}
 	}
 
-	const std::filesystem::path webViewPath = tempPath / "AutoLinker" / "WebView2";
-	std::error_code createError;
-	std::filesystem::create_directories(webViewPath, createError);
-	return webViewPath.wstring();
+	const std::filesystem::path rootPath = tempPath / "AutoLinker" / "WebView2";
+	std::error_code createRootError;
+	std::filesystem::create_directories(rootPath, createRootError);
+
+	const DWORD currentProcessId = GetCurrentProcessId();
+	RemoveExitedWebView2ProcessDirectories(rootPath, currentProcessId);
+
+	const std::filesystem::path processPath = rootPath / std::to_wstring(currentProcessId);
+	std::error_code createProcessError;
+	std::filesystem::create_directories(processPath, createProcessError);
+	return processPath.wstring();
+}
+
+} // namespace
+
+std::wstring GetWebView2UserDataFolderPath()
+{
+	static const std::wstring processPath = InitializeWebView2UserDataFolderPath();
+	return processPath;
 }
 
 std::string EscapeOneLineForLog(std::string text)
