@@ -82,6 +82,13 @@ bool ResolveCurrentActiveEditorObject(
 	std::uintptr_t moduleBase,
 	ActiveEditorObjectInfo* outInfo);
 
+// 按活动编辑器对象修改程序集/类名称，并刷新 IDE 程序树。
+bool RenameProgramUnitByEditorObject(
+	std::uintptr_t editorObject,
+	std::uintptr_t moduleBase,
+	const std::string& newName,
+	std::string* outTrace = nullptr);
+
 // 执行内部 thiscall 命令并抓取写入自定义剪贴板格式的二进制。
 bool CaptureCustomClipboardPayloadByThiscall(
 	const InternalThiscallCommandSpec& spec,

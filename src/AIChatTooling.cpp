@@ -895,6 +895,67 @@ std::string ExecuteToolCallImpl(
 		return WorkspaceFileTools::ExecuteTool(toolName, argumentsJson, outOk, cancelCallback);
 	}
 
+	if (toolName == "add_new_file") {
+		std::string createResult;
+		bool createOk = false;
+		if (!RequestToolExecutionFromMainThread(
+				toolName,
+				argumentsJson,
+				createResult,
+				createOk,
+				ShouldBypassToolApprovalForScope(approvalScope))) {
+			return createResult.empty()
+				? R"({"ok":false,"error":"add_new_file create stage transport failed"})"
+				: createResult;
+		}
+		if (!createOk) {
+			outOk = false;
+			return createResult;
+		}
+
+		nlohmann::json createJson;
+		nlohmann::json finishArgs;
+		try {
+			createJson = nlohmann::json::parse(LocalToUtf8Text(createResult));
+			finishArgs = argumentsJson.empty()
+				? nlohmann::json::object()
+				: nlohmann::json::parse(argumentsJson);
+		}
+		catch (const std::exception& ex) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = std::string("add_new_file stage result parse failed: ") + ex.what();
+			outOk = false;
+			return JsonToLocalText(r);
+		}
+		if (!createJson.value("pending_finish", false)) {
+			outOk = createJson.value("ok", false);
+			return createResult;
+		}
+		const std::string defaultName = createJson.value("default_name", std::string());
+		if (defaultName.empty()) {
+			return R"({"ok":false,"error":"add_new_file create stage returned no default_name"})";
+		}
+
+		// The E IDE creates the editor controls only after the create handler returns to its message loop.
+		Sleep(75);
+		finishArgs["__finish_default_name"] = defaultName;
+		std::string finishResult;
+		bool finishOk = false;
+		if (!RequestToolExecutionFromMainThread(
+				toolName,
+				finishArgs.dump(),
+				finishResult,
+				finishOk,
+				ShouldBypassToolApprovalForScope(approvalScope))) {
+			return finishResult.empty()
+				? R"({"ok":false,"error":"add_new_file finish stage transport failed"})"
+				: finishResult;
+		}
+		outOk = finishOk;
+		return finishResult;
+	}
+
 	if (toolName == "read_real_file" ||
 		toolName == "update_plan" ||
 		toolName == "refresh_workspace_mirror" ||

@@ -1961,6 +1961,87 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	}
 	report["checks"].push_back(std::move(compileFingerprintCheck));
 
+	const std::string bareProgramUnitHeader =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".版本 2\r\n\r\n.程序集 DateTimeEx\r\n");
+	const std::string publicProgramUnitHeader =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".版本 2\r\n\r\n.程序集 DateTimeEx, , 公开\r\n");
+	const std::string defaultBaseProgramUnitHeader =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".版本 2\r\n\r\n.程序集 DateTimeEx, <对象>\r\n");
+	const std::string customBaseProgramUnitHeader =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".版本 2\r\n\r\n.程序集 DateTimeEx, BaseDateTime\r\n");
+	report["checks"].push_back({
+		{"name", "real-page-program-unit-header-normalization"},
+		{"ok", publicProgramUnitHeader == bareProgramUnitHeader &&
+			defaultBaseProgramUnitHeader == bareProgramUnitHeader &&
+			customBaseProgramUnitHeader != bareProgramUnitHeader},
+		{"public_metadata_omitted", publicProgramUnitHeader == bareProgramUnitHeader},
+		{"default_base_omitted", defaultBaseProgramUnitHeader == bareProgramUnitHeader},
+		{"custom_base_preserved", customBaseProgramUnitHeader != bareProgramUnitHeader}
+	});
+	const std::vector<std::string> switchWithoutDefault =
+		NormalizeStructuralFingerprintForIdeRewrite({
+			".版本2", ".判断开始(月)", ".判断(1)", ".判断结束"});
+	const std::vector<std::string> switchWithIdeEmptyDefault =
+		NormalizeStructuralFingerprintForIdeRewrite({
+			".版本2", ".判断开始(月)", ".判断(1)", ".默认", ".判断结束"});
+	report["checks"].push_back({
+		{"name", "real-page-empty-switch-default-normalization"},
+		{"ok", switchWithoutDefault == switchWithIdeEmptyDefault},
+		{"empty_default_omitted", switchWithoutDefault == switchWithIdeEmptyDefault}
+	});
+	const std::string ideDefaultClassCode =
+		".版本 2\r\n\r\n.程序集 类1\r\n\r\n"
+		".子程序 _初始化, , , IDE init\r\n\r\n"
+		".子程序 _销毁, , , IDE destroy\r\n";
+	bool lifecycleMerged = false;
+	bool lifecycleComplete = false;
+	const std::string businessOnlyClassCode = PrepareNewClassPageLifecycleFunctions(
+		".版本 2\r\n\r\n.程序集 Demo\r\n\r\n"
+		".子程序 Run, 整数型, 公开\r\n\r\n返回 (1)\r\n",
+		ideDefaultClassCode,
+		&lifecycleMerged,
+		&lifecycleComplete);
+	const size_t mergedInit = businessOnlyClassCode.find(".子程序 _初始化");
+	const size_t mergedDestroy = businessOnlyClassCode.find(".子程序 _销毁");
+	const size_t mergedBusiness = businessOnlyClassCode.find(".子程序 Run");
+	bool lifecycleReordered = false;
+	bool reorderedComplete = false;
+	const std::string reorderedClassCode = PrepareNewClassPageLifecycleFunctions(
+		".版本 2\r\n\r\n.程序集 Demo\r\n\r\n"
+		".子程序 _销毁, , , custom destroy\r\n\r\n"
+		".子程序 Run, 整数型, 公开\r\n\r\n返回 (2)\r\n\r\n"
+		".子程序 _初始化, , , custom init\r\n",
+		ideDefaultClassCode,
+		&lifecycleReordered,
+		&reorderedComplete);
+	const size_t reorderedInit = reorderedClassCode.find(".子程序 _初始化");
+	const size_t reorderedDestroy = reorderedClassCode.find(".子程序 _销毁");
+	const size_t reorderedBusiness = reorderedClassCode.find(".子程序 Run");
+	const bool classLifecycleOk =
+		lifecycleMerged && lifecycleComplete &&
+		mergedInit != std::string::npos &&
+		mergedDestroy != std::string::npos &&
+		mergedBusiness != std::string::npos &&
+		mergedInit < mergedDestroy && mergedDestroy < mergedBusiness &&
+		businessOnlyClassCode.find("IDE init") != std::string::npos &&
+		businessOnlyClassCode.find("IDE destroy") != std::string::npos &&
+		lifecycleReordered && reorderedComplete &&
+		reorderedInit < reorderedDestroy && reorderedDestroy < reorderedBusiness &&
+		reorderedClassCode.find("custom init") != std::string::npos &&
+		reorderedClassCode.find("custom destroy") != std::string::npos;
+	report["checks"].push_back({
+		{"name", "new-class-lifecycle-function-preparation"},
+		{"ok", classLifecycleOk},
+		{"defaults_merged", lifecycleMerged && lifecycleComplete},
+		{"first_two_ordered", mergedInit < mergedDestroy && reorderedInit < reorderedDestroy},
+		{"custom_implementations_preserved", reorderedClassCode.find("custom init") != std::string::npos &&
+			reorderedClassCode.find("custom destroy") != std::string::npos}
+	});
+
 	const std::string normalizedHashA = BuildStableTextHashForRealCode("a\r\nb");
 	const std::string normalizedHashB = BuildStableTextHashForRealCode("a\nb");
 	const std::string differentHash = BuildStableTextHashForRealCode("a\nb\nchanged");

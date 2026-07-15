@@ -1278,6 +1278,7 @@ bool IsPlanModeWriteBlockedTool(const std::string& toolName)
 		_stricmp(toolName.c_str(), "multi_edit_file") == 0 ||
 		_stricmp(toolName.c_str(), "write_file") == 0 ||
 		_stricmp(toolName.c_str(), "restore_file_snapshot") == 0 ||
+		_stricmp(toolName.c_str(), "add_new_file") == 0 ||
 		_stricmp(toolName.c_str(), "add_module_to_project") == 0 ||
 		_stricmp(toolName.c_str(), "remove_module_from_project") == 0 ||
 		_stricmp(toolName.c_str(), "add_support_library_to_project") == 0 ||
@@ -1291,6 +1292,7 @@ bool IsToolRequiringWriteApproval(const std::string& toolName)
 		_stricmp(toolName.c_str(), "multi_edit_file") == 0 ||
 		_stricmp(toolName.c_str(), "write_file") == 0 ||
 		_stricmp(toolName.c_str(), "restore_file_snapshot") == 0 ||
+		_stricmp(toolName.c_str(), "add_new_file") == 0 ||
 		_stricmp(toolName.c_str(), "add_module_to_project") == 0 ||
 		_stricmp(toolName.c_str(), "remove_module_from_project") == 0 ||
 		_stricmp(toolName.c_str(), "add_support_library_to_project") == 0;
@@ -1394,6 +1396,9 @@ std::string ToolApprovalTitleLocal(const std::string& toolName)
 	}
 	if (_stricmp(toolName.c_str(), "restore_file_snapshot") == 0) {
 		return LocalFromWide(L"\u6279\u51c6\u6062\u590d\u4ee3\u7801\u5feb\u7167");
+	}
+	if (_stricmp(toolName.c_str(), "add_new_file") == 0) {
+		return LocalFromWide(L"\u6279\u51c6\u65b0\u5efa\u7a0b\u5e8f\u96c6\u6216\u7c7b");
 	}
 	return LocalFromWide(L"\u6279\u51c6\u5199\u5165\u64cd\u4f5c");
 }

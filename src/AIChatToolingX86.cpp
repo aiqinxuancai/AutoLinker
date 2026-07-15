@@ -1,6 +1,5 @@
 ﻿#include "AIChatTooling.h"
 #include "AIChatToolingInternal.h"
-
 #include <Windows.h>
 
 #include <algorithm>
@@ -21,6 +20,7 @@
 #include "ConfigManager.h"
 #include "DependencyCatalogCache.h"
 #include "IDEFacade.h"
+#include "EideEditorObjectResolver.h"
 #include "EideInternalTextBridge.h"
 #include "Global.h"
 #include "LocalMcpServer.h"
@@ -114,6 +114,9 @@ constexpr const char* kProgramTreeConstantTablePageNameForAI = "常量表...";
 constexpr const char* kProgramTreeUserDataTypePageNameForAI = "自定义数据类型";
 constexpr const char* kProgramTreeDllCommandPageNameForAI = "Dll命令";
 constexpr const char* kProgramTreeGlobalVariablePageNameForAI = "全局变量";
+
+// 类模块改名后不再能从默认“类N”名称推断类型，缓存 IDE 稳定的程序树图标索引。
+int g_knownClassModuleTreeImageForAI = -1;
 
 std::vector<std::string> SplitLinesCopyForAI(const std::string& text);
 std::string NormalizeLineBreaksForAI(std::string text);
@@ -731,12 +734,28 @@ bool TryListProgramTreeItemsForAI(std::vector<ProgramTreeItemInfo>& outItems, st
 	const HTREEITEM firstChild = GetTreeNextItemForAI(treeHwnd, rootItem, TVGN_CHILD);
 	CollectProgramTreeItemsRecursiveForAI(treeHwnd, firstChild, 0, 8, outItems);
 
-	int classImage = -1;
+	int classImage = g_knownClassModuleTreeImageForAI;
 	for (const auto& item : outItems) {
 		if (IsLikelyClassModulePageNameForAI(item.name) && item.image >= 0) {
 			classImage = item.image;
 			break;
 		}
+	}
+	if (classImage < 0) {
+		std::string currentPageName;
+		std::string currentPageType;
+		if (IDEFacade::Instance().GetCurrentPageName(currentPageName, &currentPageType, nullptr) &&
+			currentPageType.find("类") != std::string::npos) {
+			for (const auto& item : outItems) {
+				if (item.name == currentPageName && item.image >= 0) {
+					classImage = item.image;
+					break;
+				}
+			}
+		}
+	}
+	if (classImage >= 0) {
+		g_knownClassModuleTreeImageForAI = classImage;
 	}
 	for (auto& item : outItems) {
 		item.typeKey = GetProgramTreeTypeKey(item.itemData, item.name, item.image, classImage);
@@ -3094,6 +3113,627 @@ void AppendFullMirrorRefreshResult(nlohmann::json& r)
 	r["refresh_error"] = refreshError.empty() ? "refresh workspace mirror failed" : refreshError;
 }
 
+void PumpPendingIdeMessagesForAI()
+{
+	MSG msg = {};
+	while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+		if (msg.message == WM_QUIT) {
+			PostQuitMessage(static_cast<int>(msg.wParam));
+			break;
+		}
+		TranslateMessage(&msg);
+		DispatchMessageW(&msg);
+	}
+}
+
+std::string RewriteProgramUnitHeaderNameForAI(const std::string& source, const std::string& name)
+{
+	std::string normalized = NormalizeRealCodeLineBreaksToCrLf(source);
+	const std::string marker = Utf8ToLocalText(".程序集");
+	size_t lineStart = 0;
+	while (lineStart <= normalized.size()) {
+		const size_t lineEnd = normalized.find("\r\n", lineStart);
+		const size_t logicalEnd = lineEnd == std::string::npos ? normalized.size() : lineEnd;
+		size_t markerStart = lineStart;
+		while (markerStart < logicalEnd &&
+			(normalized[markerStart] == ' ' || normalized[markerStart] == '\t')) {
+			++markerStart;
+		}
+		if (normalized.compare(markerStart, marker.size(), marker) == 0) {
+			size_t nameStart = markerStart + marker.size();
+			while (nameStart < logicalEnd &&
+				(normalized[nameStart] == ' ' || normalized[nameStart] == '\t')) {
+				++nameStart;
+			}
+			size_t nameEnd = nameStart;
+			while (nameEnd < logicalEnd && normalized[nameEnd] != ',' && normalized[nameEnd] != '\t') {
+				++nameEnd;
+			}
+			while (nameEnd > nameStart && normalized[nameEnd - 1] == ' ') {
+				--nameEnd;
+			}
+			normalized.replace(nameStart, nameEnd - nameStart, name);
+			return normalized;
+		}
+		if (lineEnd == std::string::npos) {
+			break;
+		}
+		lineStart = lineEnd + 2;
+	}
+
+	const std::string header = marker + " " + name;
+	if (normalized.empty()) {
+		return header;
+	}
+
+	const std::string versionMarker = Utf8ToLocalText(".版本");
+	const std::string supportLibraryMarker = Utf8ToLocalText(".支持库");
+	size_t insertion = 0;
+	bool sawPreamble = false;
+	lineStart = 0;
+	while (lineStart <= normalized.size()) {
+		const size_t lineEnd = normalized.find("\r\n", lineStart);
+		const size_t logicalEnd = lineEnd == std::string::npos ? normalized.size() : lineEnd;
+		const std::string trimmed = TrimAsciiCopy(normalized.substr(lineStart, logicalEnd - lineStart));
+		const bool isPreamble =
+			trimmed.rfind(versionMarker, 0) == 0 ||
+			trimmed.rfind(supportLibraryMarker, 0) == 0;
+		if (isPreamble) {
+			sawPreamble = true;
+		}
+		else if (!trimmed.empty() || !sawPreamble) {
+			break;
+		}
+		insertion = lineEnd == std::string::npos ? normalized.size() : lineEnd + 2;
+		if (lineEnd == std::string::npos) {
+			break;
+		}
+		lineStart = lineEnd + 2;
+	}
+
+	return normalized.substr(0, insertion) + header + "\r\n\r\n" + normalized.substr(insertion);
+}
+
+std::string GetProgramUnitHeaderLineForAI(const std::string& source)
+{
+	const std::string normalized = NormalizeRealCodeLineBreaksToCrLf(source);
+	const std::string marker = Utf8ToLocalText(".程序集");
+	size_t lineStart = 0;
+	while (lineStart <= normalized.size()) {
+		const size_t lineEnd = normalized.find("\r\n", lineStart);
+		const size_t logicalEnd = lineEnd == std::string::npos ? normalized.size() : lineEnd;
+		size_t markerStart = lineStart;
+		while (markerStart < logicalEnd &&
+			(normalized[markerStart] == ' ' || normalized[markerStart] == '\t')) {
+			++markerStart;
+		}
+		if (normalized.compare(markerStart, marker.size(), marker) == 0) {
+			return normalized.substr(markerStart, logicalEnd - markerStart);
+		}
+		if (lineEnd == std::string::npos) {
+			break;
+		}
+		lineStart = lineEnd + 2;
+	}
+	return std::string();
+}
+
+bool TryResolveNewMirrorFilePathForAI(
+	const std::string& pageName,
+	std::string& outFilePath,
+	std::string& outError)
+{
+	outFilePath.clear();
+	outError.clear();
+	std::vector<std::string> files;
+	if (!WorkspaceMirror::ListMirrorFiles(files, outError)) {
+		return false;
+	}
+	for (const auto& file : files) {
+		WorkspaceMirror::ProgramItemRef item;
+		std::string resolveError;
+		if (WorkspaceMirror::ResolveFileToProgramItem(file, item, resolveError) &&
+			item.pageNameLocal == pageName) {
+			outFilePath = item.relativePathUtf8;
+			return true;
+		}
+	}
+	outError = "new source file not found in refreshed workspace mirror";
+	return false;
+}
+
+bool UpdateActiveProgramUnitUiNameForAI(
+	const std::string& oldName,
+	const std::string& newName,
+	std::string& outTrace)
+{
+	outTrace.clear();
+	bool treeUpdated = false;
+	if (HWND treeHwnd = FindProgramDataTreeViewForAI(); treeHwnd != nullptr) {
+		const HTREEITEM rootItem = GetTreeNextItemForAI(treeHwnd, nullptr, TVGN_ROOT);
+		HTREEITEM item = FindTreeItemByExactTextRecursiveForAI(treeHwnd, rootItem, oldName, 4, 0);
+		if (item == nullptr) {
+			item = FindTreeItemByExactTextRecursiveForAI(treeHwnd, rootItem, newName, 4, 0);
+		}
+		if (item != nullptr) {
+			TVITEMA treeItem{};
+			treeItem.mask = TVIF_HANDLE | TVIF_TEXT;
+			treeItem.hItem = item;
+			treeItem.pszText = const_cast<char*>(newName.c_str());
+			treeUpdated = SendMessageA(
+				treeHwnd,
+				TVM_SETITEMA,
+				0,
+				reinterpret_cast<LPARAM>(&treeItem)) != FALSE;
+		}
+	}
+
+	bool mdiUpdated = false;
+	const HWND mainWindow = GetAIChatMainWindowForTooling();
+	if (mainWindow != nullptr && IsWindow(mainWindow)) {
+		std::vector<HWND> mdiClients;
+		EnumChildWindows(
+			mainWindow,
+			[](HWND hWnd, LPARAM lParam) -> BOOL {
+				char className[64]{};
+				if (GetClassNameA(hWnd, className, static_cast<int>(sizeof(className))) > 0 &&
+					_stricmp(className, "MDIClient") == 0) {
+					reinterpret_cast<std::vector<HWND>*>(lParam)->push_back(hWnd);
+				}
+				return TRUE;
+			},
+			reinterpret_cast<LPARAM>(&mdiClients));
+		for (HWND mdiClient : mdiClients) {
+			const HWND activeChild = reinterpret_cast<HWND>(
+				SendMessageA(mdiClient, WM_MDIGETACTIVE, 0, 0));
+			if (activeChild == nullptr || !IsWindow(activeChild)) {
+				continue;
+			}
+			char title[512]{};
+			GetWindowTextA(activeChild, title, static_cast<int>(sizeof(title)));
+			std::string newTitle = title;
+			const size_t separator = newTitle.find(':');
+			if (separator != std::string::npos) {
+				newTitle = newTitle.substr(0, separator + 1) + " " + newName;
+			}
+			else {
+				newTitle = newName;
+			}
+			mdiUpdated = SetWindowTextA(activeChild, newTitle.c_str()) != FALSE;
+			if (mdiUpdated) {
+				break;
+			}
+		}
+	}
+
+	outTrace =
+		"tree_ui_name=" + std::to_string(treeUpdated ? 1 : 0) +
+		"|mdi_ui_name=" + std::to_string(mdiUpdated ? 1 : 0);
+	return treeUpdated && mdiUpdated;
+}
+
+std::string BuildAddNewFileJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	outOk = false;
+	nlohmann::json args;
+	try {
+		args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = std::string("invalid arguments json: ") + ex.what();
+		return JsonToLocalTextForAI(r);
+	}
+
+	const std::string fileType = args.contains("file_type") && args["file_type"].is_string()
+		? ToLowerAsciiCopyLocal(TrimAsciiCopy(args["file_type"].get<std::string>()))
+		: std::string();
+	const std::string requestedName = args.contains("name") && args["name"].is_string()
+		? TrimAsciiCopy(Utf8ToLocalText(args["name"].get<std::string>()))
+		: std::string();
+	const bool hasFullCode = args.contains("full_code") && args["full_code"].is_string();
+	const std::string requestedCode = hasFullCode
+		? Utf8ToLocalText(args["full_code"].get<std::string>())
+		: std::string();
+	const std::string finishDefaultName = args.contains("__finish_default_name") &&
+		args["__finish_default_name"].is_string()
+		? Utf8ToLocalText(args["__finish_default_name"].get<std::string>())
+		: std::string();
+	const bool finishing = !finishDefaultName.empty();
+	const bool createClass = fileType == "class";
+	const std::string expectedTypeKey = createClass ? "class_module" : "assembly";
+
+	if (fileType != "assembly" && fileType != "class") {
+		return R"({"ok":false,"error":"file_type must be assembly or class"})";
+	}
+	if (requestedName.empty()) {
+		return R"({"ok":false,"error":"name is required"})";
+	}
+	if (requestedName.find_first_of("\r\n\t,") != std::string::npos) {
+		return R"({"ok":false,"error":"name must not contain a comma, tab, or line break"})";
+	}
+
+	std::vector<ProgramTreeItemInfo> beforeItems;
+	std::string listError;
+	if (!TryListProgramTreeItemsForAI(beforeItems, &listError)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = listError.empty() ? "list program tree failed" : listError;
+		return JsonToLocalTextForAI(r);
+	}
+	for (const auto& item : beforeItems) {
+		if (!finishing && item.name == requestedName) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = "a program item with the requested name already exists";
+			r["name"] = LocalToUtf8Text(requestedName);
+			r["existing_type"] = item.typeKey;
+			return JsonToLocalTextForAI(r);
+		}
+	}
+
+	IDEFacade& ide = IDEFacade::Instance();
+	const bool createReportedOk = finishing
+		? true
+		: (createClass ? ide.RunInsertNewClassMod() : ide.RunInsertNewMod());
+	std::string defaultName;
+	std::string defaultPageType;
+	std::string defaultNameTrace;
+	if (!ide.GetCurrentPageName(defaultName, &defaultPageType, &defaultNameTrace) || defaultName.empty()) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["error"] = "get new active page name failed";
+		r["create_reported_ok"] = createReportedOk;
+		r["file_type"] = fileType;
+		r["page_name_trace"] = defaultNameTrace;
+		return JsonToLocalTextForAI(r);
+	}
+	if (!finishing) {
+		nlohmann::json r;
+		r["ok"] = true;
+		r["pending_finish"] = true;
+		r["created"] = true;
+		r["create_reported_ok"] = createReportedOk;
+		r["file_type"] = fileType;
+		r["default_name"] = LocalToUtf8Text(defaultName);
+		r["page_name_trace"] = defaultNameTrace;
+		outOk = true;
+		return JsonToLocalTextForAI(r);
+	}
+	if (defaultName != finishDefaultName) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["created"] = true;
+		r["error"] = "new active page changed before finish stage";
+		r["expected_default_name"] = LocalToUtf8Text(finishDefaultName);
+		r["current_page_name"] = LocalToUtf8Text(defaultName);
+		return JsonToLocalTextForAI(r);
+	}
+
+	const std::uintptr_t moduleBase = reinterpret_cast<std::uintptr_t>(::GetModuleHandleW(nullptr));
+	std::uintptr_t activeEditorObject = 0;
+	std::string activeEditorTrace;
+	bool activeEditorResolved = moduleBase != 0 &&
+		e571::GetMainEditorActiveEditorObject(moduleBase, &activeEditorObject, &activeEditorTrace) &&
+		activeEditorObject != 0;
+	if (!activeEditorResolved && moduleBase != 0) {
+		e571::ActiveEditorObjectInfo activeInfo{};
+		if (e571::ResolveCurrentActiveEditorObject(moduleBase, &activeInfo) &&
+			activeInfo.ok &&
+			activeInfo.rawEditorObject != 0) {
+			activeEditorObject = activeInfo.rawEditorObject;
+			activeEditorResolved = true;
+		}
+		activeEditorTrace += "|mdi_fallback|" + activeInfo.trace;
+	}
+	if (!activeEditorResolved) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["created"] = true;
+		r["error"] = "resolve new active editor object failed";
+		r["default_name"] = LocalToUtf8Text(defaultName);
+		r["editor_trace"] = LocalToUtf8Text(activeEditorTrace);
+		AppendFullMirrorRefreshResult(r);
+		return JsonToLocalTextForAI(r);
+	}
+
+	std::string baseCode;
+	e571::NativeRealPageAccessResult baseReadResult{};
+	if (!e571::GetRealPageCodeByEditorObject(
+			activeEditorObject,
+			moduleBase,
+			&baseCode,
+			&baseReadResult)) {
+		nlohmann::json r;
+		r["ok"] = false;
+		r["created"] = true;
+		r["error"] = "read new active editor object failed";
+		r["default_name"] = LocalToUtf8Text(defaultName);
+		r["trace"] = LocalToUtf8Text(activeEditorTrace + "|" + baseReadResult.trace);
+		AppendFullMirrorRefreshResult(r);
+		return JsonToLocalTextForAI(r);
+	}
+	baseCode = NormalizeRealCodeLineBreaksToCrLf(baseCode);
+	ProgramTreeItemInfo createdItem;
+	createdItem.name = defaultName;
+	createdItem.typeKey = expectedTypeKey;
+	createdItem.typeName = GetProgramTreeTypeName(expectedTypeKey);
+
+	std::string nativeRenameTrace;
+	const bool nativeRenameOk = defaultName == requestedName ||
+		e571::RenameProgramUnitByEditorObject(
+			activeEditorObject,
+			moduleBase,
+			requestedName,
+			&nativeRenameTrace);
+	if (nativeRenameOk) {
+		createdItem.name = requestedName;
+		ide.RunForceProcess();
+	}
+	std::string uiRenameTrace;
+	const bool uiRenameOk = nativeRenameOk && UpdateActiveProgramUnitUiNameForAI(
+		defaultName,
+		requestedName,
+		uiRenameTrace);
+
+	// 内部改名发生在整页写入之前。重新读取默认页，既保留 IDE 创建的类生命周期函数，
+	// 也避免写入失败时用旧的“类N/程序集N”标题做回滚校验。
+	std::string writeBaseCode = baseCode;
+	std::string postRenameBaseTrace;
+	if (nativeRenameOk && defaultName != requestedName) {
+		e571::NativeRealPageAccessResult renamedBaseReadResult{};
+		std::string renamedBaseCode;
+		if (e571::GetRealPageCodeByEditorObject(
+				activeEditorObject,
+				moduleBase,
+				&renamedBaseCode,
+				&renamedBaseReadResult)) {
+			writeBaseCode = NormalizeRealCodeLineBreaksToCrLf(renamedBaseCode);
+			postRenameBaseTrace = "post_rename_base_read_ok|" + renamedBaseReadResult.trace;
+		}
+		else {
+			postRenameBaseTrace = "post_rename_base_read_failed|" + renamedBaseReadResult.trace;
+		}
+	}
+	std::string desiredCode = RewriteProgramUnitHeaderNameForAI(
+		hasFullCode ? requestedCode : writeBaseCode,
+		requestedName);
+	bool classLifecycleChanged = false;
+	bool classLifecycleComplete = !createClass;
+	if (createClass) {
+		desiredCode = PrepareNewClassPageLifecycleFunctions(
+			desiredCode,
+			writeBaseCode,
+			&classLifecycleChanged,
+			&classLifecycleComplete);
+	}
+
+	PageCodeSnapshotEntry snapshot;
+	std::string finalCode;
+	std::string writeTrace = postRenameBaseTrace;
+	if (createClass) {
+		writeTrace +=
+			(writeTrace.empty() ? std::string() : "|") +
+			std::string("class_lifecycle_complete=") + (classLifecycleComplete ? "1" : "0") +
+			"|class_lifecycle_merged=" + (classLifecycleChanged ? "1" : "0");
+	}
+	std::string writeError;
+	bool rollbackAttempted = false;
+	bool rollbackSucceeded = false;
+	bool directWriteOk = false;
+	std::string directWriteTrace;
+	std::string defaultVerificationMode;
+	if (!hasFullCode && nativeRenameOk &&
+		VerifyRealPageCodeMatchesForAI(desiredCode, writeBaseCode, &defaultVerificationMode)) {
+		directWriteOk = true;
+		finalCode = writeBaseCode;
+		directWriteTrace = "write_skipped_ide_default_retained|verify=" + defaultVerificationMode;
+	}
+	else {
+		directWriteOk = TryWriteRealPageCodeForAI(
+			createdItem,
+			writeBaseCode,
+			desiredCode,
+			"add_new_file",
+			snapshot,
+			finalCode,
+			directWriteTrace,
+			rollbackAttempted,
+			rollbackSucceeded,
+			writeError,
+			activeEditorObject);
+	}
+	if (!directWriteTrace.empty()) {
+		writeTrace += (writeTrace.empty() ? std::string() : "|") + directWriteTrace;
+	}
+	ide.RunForceProcess();
+
+	ProgramTreeItemInfo finalItem;
+	finalItem.name = nativeRenameOk ? requestedName : defaultName;
+	finalItem.typeKey = expectedTypeKey;
+	finalItem.typeName = GetProgramTreeTypeName(expectedTypeKey);
+	std::string currentPageName;
+	bool renamed = nativeRenameOk;
+	if (!renamed) {
+		for (int attempt = 0; attempt < 12; ++attempt) {
+			PumpPendingIdeMessagesForAI();
+			if (ide.GetCurrentPageName(currentPageName, nullptr, nullptr) &&
+				currentPageName == requestedName) {
+				renamed = true;
+				finalItem.name = requestedName;
+				break;
+			}
+			Sleep(25);
+		}
+	}
+
+	bool usedHeaderFallback = false;
+	if (!renamed) {
+		usedHeaderFallback = true;
+		const std::string headerLine = GetProgramUnitHeaderLineForAI(desiredCode);
+		ide.RunMoveCaret(0, 0);
+		const bool headerSetOk = !headerLine.empty() && ide.RunSetAndCompilePrgItemText(headerLine, false);
+		ide.RunForceProcess();
+		writeTrace += "|header_fallback=" + std::to_string(headerSetOk ? 1 : 0);
+		for (int attempt = 0; attempt < 12; ++attempt) {
+			PumpPendingIdeMessagesForAI();
+			if (ide.GetCurrentPageName(currentPageName, nullptr, nullptr) &&
+				currentPageName == requestedName) {
+				renamed = true;
+				finalItem.name = requestedName;
+				break;
+			}
+			Sleep(25);
+		}
+	}
+
+	bool fallbackWriteOk = false;
+	if (renamed && !directWriteOk && !nativeRenameOk) {
+		std::string renamedBaseCode;
+		e571::NativeRealPageAccessResult renamedReadResult{};
+		if (e571::GetRealPageCodeByEditorObject(
+				activeEditorObject,
+				moduleBase,
+				&renamedBaseCode,
+				&renamedReadResult)) {
+			renamedBaseCode = NormalizeRealCodeLineBreaksToCrLf(renamedBaseCode);
+			PageCodeSnapshotEntry fallbackSnapshot;
+			std::string fallbackFinalCode;
+			std::string fallbackTrace;
+			std::string fallbackError;
+			bool fallbackRollbackAttempted = false;
+			bool fallbackRollbackSucceeded = false;
+			fallbackWriteOk = TryWriteRealPageCodeForAI(
+				finalItem,
+				renamedBaseCode,
+				desiredCode,
+				"add_new_file_after_header_rename",
+				fallbackSnapshot,
+				fallbackFinalCode,
+				fallbackTrace,
+				fallbackRollbackAttempted,
+				fallbackRollbackSucceeded,
+				fallbackError,
+				activeEditorObject);
+			writeTrace += "|fallback_write=" + std::to_string(fallbackWriteOk ? 1 : 0) + "|" + fallbackTrace;
+			if (fallbackWriteOk) {
+				finalCode = fallbackFinalCode;
+			}
+			if (!fallbackError.empty()) {
+				writeError += (writeError.empty() ? std::string() : "|") + fallbackError;
+			}
+			rollbackAttempted = rollbackAttempted || fallbackRollbackAttempted;
+			rollbackSucceeded = rollbackSucceeded || fallbackRollbackSucceeded;
+		}
+	}
+
+	std::string verifiedCode;
+	e571::NativeRealPageAccessResult verifyResult{};
+	std::string verificationMode;
+	const bool finalReadOk = renamed && e571::GetRealPageCodeByEditorObject(
+		activeEditorObject,
+		moduleBase,
+		&verifiedCode,
+		&verifyResult);
+	if (finalReadOk) {
+		verifiedCode = NormalizeRealCodeLineBreaksToCrLf(verifiedCode);
+	}
+	const bool codeVerified = finalReadOk && VerifyRealPageCodeMatchesForAI(desiredCode, verifiedCode, &verificationMode);
+	const bool writeAccepted = directWriteOk || fallbackWriteOk || codeVerified;
+
+	nlohmann::json r;
+	r["created"] = true;
+	r["create_reported_ok"] = createReportedOk;
+	r["file_type"] = fileType;
+	r["type_key"] = expectedTypeKey;
+	r["default_name"] = LocalToUtf8Text(defaultName);
+	r["name"] = LocalToUtf8Text(renamed ? finalItem.name : defaultName);
+	r["requested_name"] = LocalToUtf8Text(requestedName);
+	r["renamed"] = renamed;
+	r["code_written"] = writeAccepted;
+	r["code_verified"] = codeVerified;
+	r["verification_mode"] = verificationMode;
+	r["class_lifecycle_complete"] = classLifecycleComplete;
+	r["class_lifecycle_merged"] = classLifecycleChanged;
+	r["used_header_fallback"] = usedHeaderFallback;
+	r["ui_name_updated"] = uiRenameOk;
+	r["rollback_attempted"] = rollbackAttempted;
+	r["rollback_succeeded"] = rollbackSucceeded;
+	r["trace"] = LocalToUtf8Text(
+		activeEditorTrace + "|" + baseReadResult.trace + "|" + nativeRenameTrace + "|" + uiRenameTrace + "|" +
+		writeTrace + "|" + verifyResult.trace);
+	if (!snapshot.snapshotId.empty()) {
+		r["snapshot_id"] = snapshot.snapshotId;
+	}
+	if (finalReadOk) {
+		r["code_hash"] = BuildStableTextHashForRealCode(verifiedCode);
+	}
+	if (!writeError.empty()) {
+		r["write_error"] = LocalToUtf8Text(writeError);
+	}
+	AppendFullMirrorRefreshResult(r);
+	bool treeItemResolved = false;
+	int treeResolveAttempts = 0;
+	if (renamed && r.value("workspace_mirror_refreshed", false)) {
+		for (int attempt = 0; attempt < 20; ++attempt) {
+			treeResolveAttempts = attempt + 1;
+			PumpPendingIdeMessagesForAI();
+			ProgramTreeItemInfo candidate;
+			if (TryFindProgramTreeItemByExactNameForAI(
+					requestedName,
+					expectedTypeKey,
+					candidate,
+					nullptr) &&
+				(candidate.itemData >> 28) == 1u) {
+				finalItem = std::move(candidate);
+				treeItemResolved = true;
+				break;
+			}
+			Sleep(25);
+		}
+	}
+	r["program_tree_item_resolved"] = treeItemResolved;
+	r["program_tree_resolve_attempts"] = treeResolveAttempts;
+	if (treeItemResolved) {
+		r["item_data"] = finalItem.itemData;
+	}
+
+	std::string mirrorFilePath;
+	std::string mirrorPathError;
+	const bool mirrorPathResolved = r.value("workspace_mirror_refreshed", false) &&
+		renamed &&
+		TryResolveNewMirrorFilePathForAI(requestedName, mirrorFilePath, mirrorPathError);
+	r["mirror_file_resolved"] = mirrorPathResolved;
+	if (mirrorPathResolved) {
+		r["file_path"] = mirrorFilePath;
+	}
+	else if (!mirrorPathError.empty()) {
+		r["mirror_file_error"] = LocalToUtf8Text(mirrorPathError);
+	}
+
+	const bool ok = renamed && codeVerified && classLifecycleComplete && treeItemResolved &&
+		r.value("workspace_mirror_refreshed", false) && mirrorPathResolved;
+	r["ok"] = ok;
+	r["verified"] = ok;
+	if (!ok) {
+		r["error"] = !renamed
+			? "new program item name verification failed"
+			: (!classLifecycleComplete
+				? "new class lifecycle function preparation failed"
+				: (!codeVerified
+				? "new program item source verification failed"
+				: "workspace mirror refresh or new file mapping failed"));
+	}
+	outOk = ok;
+	if (renamed && finalReadOk) {
+		PageCodeCacheManager::Instance().Remove(defaultName, expectedTypeKey);
+		PageCodeCacheEntry cacheEntry;
+		PutPageCodeCacheEntryForAI(finalItem, verifiedCode, nullptr, &cacheEntry);
+	}
+	return JsonToLocalTextForAI(r);
+}
+
 std::string BuildRemoveModuleFromProjectJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
 {
 	nlohmann::json args;
@@ -4312,6 +4952,9 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 	}
 	if (toolName == "restore_file_snapshot") {
 		return ExecuteFileMappedRealPageToolForAI(toolName, argumentsJson, true, outOk);
+	}
+	if (toolName == "add_new_file") {
+		return BuildAddNewFileJsonOnMainThread(argumentsJson, outOk);
 	}
 
 	if (toolName == "get_current_page_info") {

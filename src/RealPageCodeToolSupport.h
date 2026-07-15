@@ -31,6 +31,12 @@ std::string BuildStableTextHashForRealCode(const std::string& text);
 std::string NormalizeRealCodeLineBreaksToCrLf(const std::string& text);
 std::string NormalizeRealCodeLineBreaksToLf(const std::string& text);
 std::string PrepareAssemblyVariablesForRealPageWrite(const std::string& text);
+// 合并 IDE 新建类时生成的生命周期函数，并保证 _初始化、_销毁依次为前两个函数。
+std::string PrepareNewClassPageLifecycleFunctions(
+	const std::string& requestedCode,
+	const std::string& ideDefaultCode,
+	bool* outChanged = nullptr,
+	bool* outComplete = nullptr);
 std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string& text);
 // 比较真实页源码时消除 IDE 对运算符符号的自动换形差异。
 std::string NormalizeRealPageOperatorFormsForCompare(const std::string& text);

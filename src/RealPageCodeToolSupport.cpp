@@ -27,6 +27,8 @@ constexpr std::string_view kDefaultBaseClassToken = "<对象>";
 constexpr std::string_view kFingerprintTokenVersionPrefix = ".版本";
 constexpr std::string_view kFingerprintTokenOtherwise = ".否则";
 constexpr std::string_view kFingerprintTokenEndIf = ".如果结束";
+constexpr std::string_view kFingerprintTokenDefault = ".默认";
+constexpr std::string_view kFingerprintTokenEndSwitch = ".判断结束";
 // 去空白后「无子程序名」的裸 .子程序 token（真实子程序声明必带名字，去空白后形如 ".子程序xxx"）。
 constexpr std::string_view kFingerprintTokenBareSubroutine = ".子程序";
 constexpr std::string_view kIdeLeftDoubleQuote = "“";
@@ -476,6 +478,128 @@ std::string JoinRealCodeLines(const std::vector<std::string>& lines)
 	return text;
 }
 
+std::string PrepareNewClassPageLifecycleFunctions(
+	const std::string& requestedCode,
+	const std::string& ideDefaultCode,
+	bool* outChanged,
+	bool* outComplete)
+{
+	if (outChanged != nullptr) {
+		*outChanged = false;
+	}
+	if (outComplete != nullptr) {
+		*outComplete = false;
+	}
+
+	struct FunctionBlock {
+		std::string name;
+		std::vector<std::string> lines;
+	};
+	const auto parseFunctionName = [](const std::string& line, std::string& outName) {
+		outName.clear();
+		size_t directivePos = 0;
+		if (!TryMatchDirectiveAtLineStart(line, kDirectiveSubroutine, &directivePos)) {
+			return false;
+		}
+		size_t nameStart = directivePos + kDirectiveSubroutine.size();
+		while (nameStart < line.size() &&
+			(line[nameStart] == ' ' || line[nameStart] == '\t')) {
+			++nameStart;
+		}
+		size_t nameEnd = nameStart;
+		while (nameEnd < line.size() && line[nameEnd] != ',' && line[nameEnd] != '\t') {
+			++nameEnd;
+		}
+		outName = TrimAsciiCopyLocal(line.substr(nameStart, nameEnd - nameStart));
+		return !outName.empty();
+	};
+	const auto splitFunctions = [&parseFunctionName](
+			const std::string& code,
+			std::vector<std::string>& outPrefix,
+			std::vector<FunctionBlock>& outBlocks) {
+		outPrefix.clear();
+		outBlocks.clear();
+		const std::vector<std::string> lines = SplitRealCodeLines(code);
+		std::vector<size_t> starts;
+		std::vector<std::string> names;
+		for (size_t i = 0; i < lines.size(); ++i) {
+			std::string name;
+			if (parseFunctionName(lines[i], name)) {
+				starts.push_back(i);
+				names.push_back(std::move(name));
+			}
+		}
+		const size_t prefixEnd = starts.empty() ? lines.size() : starts.front();
+		outPrefix.assign(lines.begin(), lines.begin() + prefixEnd);
+		for (size_t i = 0; i < starts.size(); ++i) {
+			const size_t end = i + 1 < starts.size() ? starts[i + 1] : lines.size();
+			FunctionBlock block;
+			block.name = names[i];
+			block.lines.assign(lines.begin() + starts[i], lines.begin() + end);
+			outBlocks.push_back(std::move(block));
+		}
+	};
+
+	const std::string normalizedRequested = NormalizeRealCodeLineBreaksToCrLf(requestedCode);
+	const std::string normalizedDefault = NormalizeRealCodeLineBreaksToCrLf(ideDefaultCode);
+	std::vector<std::string> requestedPrefix;
+	std::vector<FunctionBlock> requestedBlocks;
+	std::vector<std::string> defaultPrefix;
+	std::vector<FunctionBlock> defaultBlocks;
+	splitFunctions(normalizedRequested, requestedPrefix, requestedBlocks);
+	splitFunctions(normalizedDefault, defaultPrefix, defaultBlocks);
+
+	FunctionBlock initializer;
+	FunctionBlock destructor;
+	std::vector<FunctionBlock> otherBlocks;
+	for (const auto& block : requestedBlocks) {
+		if (block.name == "_初始化") {
+			if (initializer.lines.empty()) {
+				initializer = block;
+			}
+			continue;
+		}
+		if (block.name == "_销毁") {
+			if (destructor.lines.empty()) {
+				destructor = block;
+			}
+			continue;
+		}
+		otherBlocks.push_back(block);
+	}
+	for (const auto& block : defaultBlocks) {
+		if (initializer.lines.empty() && block.name == "_初始化") {
+			initializer = block;
+		}
+		else if (destructor.lines.empty() && block.name == "_销毁") {
+			destructor = block;
+		}
+	}
+
+	const bool complete = !initializer.lines.empty() && !destructor.lines.empty();
+	if (outComplete != nullptr) {
+		*outComplete = complete;
+	}
+	if (!complete) {
+		return normalizedRequested;
+	}
+
+	std::vector<std::string> rebuiltLines = requestedPrefix;
+	const auto appendBlock = [&rebuiltLines](const FunctionBlock& block) {
+		rebuiltLines.insert(rebuiltLines.end(), block.lines.begin(), block.lines.end());
+	};
+	appendBlock(initializer);
+	appendBlock(destructor);
+	for (const auto& block : otherBlocks) {
+		appendBlock(block);
+	}
+	const std::string rebuilt = JoinRealCodeLines(rebuiltLines);
+	if (outChanged != nullptr) {
+		*outChanged = rebuilt != normalizedRequested;
+	}
+	return rebuilt;
+}
+
 std::string PrepareAssemblyVariablesForRealPageWrite(const std::string& text)
 {
 	std::vector<std::string> lines = SplitRealCodeLines(text);
@@ -497,9 +621,10 @@ std::string PrepareAssemblyVariablesForRealPageWrite(const std::string& text)
 	return changed ? JoinRealCodeLines(lines) : text;
 }
 
-// 把类声明里等价的默认基类标注归一化掉：".程序集 X, <对象>" → ".程序集 X"。
-// IDE 存盘时会省略显式写出的默认基类 <对象>，读回后两种写法语义完全相同，
-// 因此比较前需消除该差异，避免把成功写入误判为 verify_mismatch 而触发回滚重写。
+// 把 IDE 读回时会省略的程序集头部字段归一化掉：
+// ".程序集 X, <对象>" / ".程序集 X, , 公开" → ".程序集 X"。
+// 这些字段经文本包写入后不会出现在真实页格式化结果中，比较前需消除该差异，
+// 避免把成功写入误判为 verify_mismatch 而触发回滚重写。
 // 仅处理 .程序集（类声明）行，不会匹配 .程序集变量（分隔符校验已排除）。
 // 返回是否修改了 line。
 bool TryNormalizeAssemblyClassDefaultBase(std::string& line)
@@ -526,11 +651,26 @@ bool TryNormalizeAssemblyClassDefaultBase(std::string& line)
 		fieldStart = comma + 1;
 	}
 
-	// fields[0]=类名；fields[1]=基类（若存在）。只在基类恰为默认 <对象> 时移除。
+	// fields[0]=程序集/类名；fields[1]=基类（若存在）。空基类或默认 <对象> 后面
+	// 只有空字段/公开标记时，IDE 会把整段可选字段从真实页文本中省略。
 	bool changed = false;
-	if (fields.size() >= 2 && fields[1] == kDefaultBaseClassToken) {
-		fields.erase(fields.begin() + 1);
-		changed = true;
+	if (fields.size() >= 2 &&
+		(fields[1].empty() || fields[1] == kDefaultBaseClassToken)) {
+		bool onlyOmittedMetadata = true;
+		for (size_t i = 2; i < fields.size(); ++i) {
+			if (!fields[i].empty() && fields[i] != "公开") {
+				onlyOmittedMetadata = false;
+				break;
+			}
+		}
+		if (onlyOmittedMetadata) {
+			fields.resize(1);
+			changed = true;
+		}
+		else if (fields[1] == kDefaultBaseClassToken) {
+			fields.erase(fields.begin() + 1);
+			changed = true;
+		}
 	}
 	// 移除基类后可能遗留的尾部空字段。
 	while (fields.size() > 1 && fields.back().empty()) {
@@ -639,12 +779,13 @@ std::string NormalizeRealPageOperatorFormsForCompare(const std::string& text)
 
 // 消除 IDE 存盘对结构指纹的等价性改写，使写入与读回的指纹可比。
 // 传入的每个元素是「已去空白」的单行 token（见 NormalizePageCodeLineForStructuralCompare）。
-// 处理四类 IDE 自动改写（均为语义等价、非内容丢失）：
+// 处理五类 IDE 自动改写（均为语义等价、非内容丢失）：
 //  1) 有些读回路径会带 .版本 页头，有些不会：结构比较时忽略该页头 token。
 //  2) e5.95 会把部分控制语句前导点省略：把 如果真(...) 等归一为 .如果真(...)。
 //  3) 给无 else 的 .如果 块补空 .否则：去掉紧邻 .如果结束 之前的 .否则 token。
 //     该规则对写入与读回对称——真实的空 .否则 会在两侧同样被去掉，不会凭空造出或消除差异。
-//  4) 页尾追加裸 .子程序（无名字）+ 把程序集级注释搬到页尾孤儿化：去掉去空白后恰为 ".子程序" 的 token。
+//  4) 给无 default 的 .判断开始块补空 .默认：去掉紧邻 .判断结束 之前的 .默认 token。
+//  5) 页尾追加裸 .子程序（无名字）+ 把程序集级注释搬到页尾孤儿化：去掉去空白后恰为 ".子程序" 的 token。
 //     真实子程序声明必带名字，去空白后形如 ".子程序名字"，绝不会精确等于 ".子程序"。
 std::vector<std::string> NormalizeStructuralFingerprintForIdeRewrite(
 	const std::vector<std::string>& fingerprint)
@@ -659,6 +800,11 @@ std::vector<std::string> NormalizeStructuralFingerprintForIdeRewrite(
 		if (token == kFingerprintTokenOtherwise &&
 			i + 1 < fingerprint.size() &&
 			NormalizeIdeOptionalLeadingDotToken(fingerprint[i + 1]) == kFingerprintTokenEndIf) {
+			continue;
+		}
+		if (token == kFingerprintTokenDefault &&
+			i + 1 < fingerprint.size() &&
+			NormalizeIdeOptionalLeadingDotToken(fingerprint[i + 1]) == kFingerprintTokenEndSwitch) {
 			continue;
 		}
 		if (token == kFingerprintTokenBareSubroutine) {

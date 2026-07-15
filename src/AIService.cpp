@@ -728,7 +728,8 @@ CompactToolResultPayload BuildCompactToolResultPayload(const std::string& toolNa
 			(toolName == "edit_file" ||
 			 toolName == "multi_edit_file" ||
 			 toolName == "write_file" ||
-			 toolName == "restore_file_snapshot")) {
+			 toolName == "restore_file_snapshot" ||
+			 toolName == "add_new_file")) {
 			parsed.erase("code");
 			parsed.erase("real_code");
 			parsed["context_note"] = "Verified write output omitted from model context; use code_hash/new_hash and continue without re-reading.";
@@ -2171,6 +2172,20 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "add_new_file"},
+		{"description", "Create a new assembly or class in the current E-language project, optionally write its complete source, verify the final IDE object name, and rebuild the full workspace mirror. full_code may include a .程序集 header; its name is normalized to the requested name."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"file_type", {{"type", "string"}, {"enum", nlohmann::json::array({"assembly", "class"})}, {"description", "Create a normal assembly or a class module."}}},
+				{"name", {{"type", "string"}, {"minLength", 1}, {"maxLength", 255}, {"description", "Final assembly or class name."}}},
+				{"full_code", {{"type", "string"}, {"description", "Optional complete E-language page source. If omitted, the IDE-generated default body is retained and only the header name changes."}}}
+			}},
+			{"required", nlohmann::json::array({"file_type", "name"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "get_current_page_info"},
 		{"description", "Get current IDE page name, page type and the trace/source used to resolve that page name."},
 		{"inputSchema", {
@@ -2561,7 +2576,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"2) 每轮内部 AI 请求开始前已用 mode=full 自动刷新工程镜像，通常无需重复调用 refresh_workspace_mirror；如果工具返回 workspace_refresh_required，或确需重新获取 IDE 最新内存状态，再调用该工具后重试。\n"
 			"3) 普通单文件修改的探索预算最多 6 次只读调用；达到 4 次时立即收敛。独立查询应在同一响应中一次发出，多个文件必须使用 read_files，不要串行重复 read_file。\n"
 			+ sourceReadRule +
-			"5) 修改当前工程源码时只能用 edit_file / multi_edit_file / write_file / diff_file / restore_file_snapshot，并以 file_path 作为目标。\n"
+			"5) 修改已有源码时只能用 edit_file / multi_edit_file / write_file / diff_file / restore_file_snapshot，并以 file_path 作为目标；新建程序集或类使用 add_new_file。\n"
 			+ std::string(mirrorSourceBase
 				? "6) edit_file / multi_edit_file / write_file / diff_file 的匹配和 expected_base_hash 校验基于 read_files/read_code_item 的镜像文本；大块修改优先一次生成 full_code 后调用 write_file，避免反复 exact old_text 失败。\n"
 				  "7) 写入前不会读取真实页源码；写入仍会按 file_path 映射到 IDE 程序项并整页写回。\n"

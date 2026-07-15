@@ -105,6 +105,7 @@ url = "http://127.0.0.1:19207/mcp"
 | 编辑 | `write_file` | 完整源码覆盖真实页，支持 `expected_base_hash` |
 | 编辑 | `diff_file` | 预览结构化差异，不写回 |
 | 编辑 | `restore_file_snapshot` | 恢复写入前快照 |
+| 编辑 | `add_new_file` | 新建程序集或类，可直接写入完整源码并刷新镜像 |
 | 当前页 | `get_current_page_info` | 当前页名称、类型与解析来源 |
 | 当前页 | `get_current_eide_info` | 源码路径、IDE 进程路径、MCP 端口等 |
 | 编译 | `compile_with_output_path` | `target` 默认 `auto`，以产物指纹验证成功 |

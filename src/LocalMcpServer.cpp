@@ -1147,6 +1147,7 @@ bool TryBuildToolCallResult(
 		if (toolOk) {
 			const AIChatToolRegistry::ToolMetadata* metadata = AIChatToolRegistry::Find(toolName);
 			if (toolName == "refresh_workspace_mirror" ||
+				toolName == "add_new_file" ||
 				(metadata != nullptr && metadata->requiresWorkspaceRefresh)) {
 				SetExternalWorkspaceRefreshed(sessionId, true);
 			}

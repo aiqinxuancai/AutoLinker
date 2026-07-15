@@ -100,6 +100,8 @@ using FnThiscallBool = BOOL(__thiscall*)(void*);
 using FnThiscallHandle = HANDLE(__thiscall*)(void*);
 using FnThiscallGenericArrayAssign = void(__thiscall*)(void*, const void*, size_t);
 using FnThiscallCollectionGetValueByIndex = int(__thiscall*)(void*, int, void**);
+using FnCStringAssignCopy = void(__thiscall*)(void*, int, const char*);
+using FnRefreshProgramTree = void(__thiscall*)(void*);
 using FnCdeclCStringArrayAddUnique = int(__cdecl*)(CStringArray*, unsigned char*, int);
 using FnThiscallMergeParsedRange = void(__thiscall*)(void*, void*, int, int);
 using FnThiscallPtrArrayRemoveAt = void*(__thiscall*)(void*, int, int);
@@ -107,6 +109,24 @@ using FnCdeclFillMemory = void(__cdecl*)(void*, int);
 using FnE595TextBufferAssign = int(__thiscall*)(void*, const void*, int);
 using FnE595TextBufferAppendChar = int(__thiscall*)(void*, char);
 using FnE595TextPackageParseText = int(__thiscall*)(void*, void*);
+
+bool InvokeRenameProgramUnitSafely(
+	FnCStringAssignCopy assignCopy,
+	FnRefreshProgramTree refreshProgramTree,
+	void* nameField,
+	void* mainObject,
+	const char* newName,
+	int nameBytes)
+{
+	__try {
+		assignCopy(nameField, nameBytes, newName);
+		refreshProgramTree(mainObject);
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
 
 struct NativeEditorCommandAddresses {
 	bool initialized = false;
@@ -8629,6 +8649,111 @@ bool ResolveCurrentActiveEditorObject(
 		*outInfo = std::move(info);
 	}
 	return true;
+}
+
+bool RenameProgramUnitByEditorObject(
+	std::uintptr_t editorObject,
+	std::uintptr_t moduleBase,
+	const std::string& newName,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+	if (editorObject == 0 || moduleBase == 0 || newName.empty()) {
+		if (outTrace != nullptr) {
+			*outTrace = "invalid_argument";
+		}
+		return false;
+	}
+	const auto* dosHeader = reinterpret_cast<const IMAGE_DOS_HEADER*>(moduleBase);
+	if (!IsReadableAddressRange(moduleBase, sizeof(IMAGE_DOS_HEADER)) ||
+		dosHeader->e_magic != IMAGE_DOS_SIGNATURE ||
+		dosHeader->e_lfanew <= 0 ||
+		!IsReadableAddressRange(
+			moduleBase + static_cast<std::uintptr_t>(dosHeader->e_lfanew),
+			sizeof(IMAGE_NT_HEADERS32))) {
+		if (outTrace != nullptr) {
+			*outTrace = "module_header_invalid";
+		}
+		return false;
+	}
+	const auto* ntHeaders = reinterpret_cast<const IMAGE_NT_HEADERS32*>(
+		moduleBase + static_cast<std::uintptr_t>(dosHeader->e_lfanew));
+	constexpr DWORD kVerifiedE595TimeDateStamp = 0x64F03484;
+	constexpr DWORD kVerifiedE595SizeOfImage = 0x00349000;
+	if (ntHeaders->Signature != IMAGE_NT_SIGNATURE ||
+		ntHeaders->FileHeader.TimeDateStamp != kVerifiedE595TimeDateStamp ||
+		ntHeaders->OptionalHeader.SizeOfImage != kVerifiedE595SizeOfImage) {
+		if (outTrace != nullptr) {
+			*outTrace = "unsupported_ide_build_for_program_unit_rename";
+		}
+		return false;
+	}
+
+	EditorDispatchTargetInfo targetInfo{};
+	if (!TryResolveInnerEditorObject(editorObject, &targetInfo) ||
+		targetInfo.pageType != 1 ||
+		targetInfo.innerObject == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = "resolve_program_unit_inner_failed";
+		}
+		return false;
+	}
+
+	constexpr std::uintptr_t kCStringAssignCopyAddress = 0x5BC52D;
+	constexpr std::uintptr_t kRefreshProgramTreeAddress = 0x469AD0;
+	constexpr std::uintptr_t kProgramUnitOwnerOffset = 0x50;
+	constexpr std::uintptr_t kMainObjectProjectOffset = 0xC0;
+	if (!IsReadableAddressRange(
+			targetInfo.innerObject + kProgramUnitOwnerOffset,
+			sizeof(std::uintptr_t))) {
+		if (outTrace != nullptr) {
+			*outTrace = "program_unit_owner_unreadable";
+		}
+		return false;
+	}
+
+	const std::uintptr_t projectOwner = *reinterpret_cast<const std::uintptr_t*>(
+		targetInfo.innerObject + kProgramUnitOwnerOffset);
+	if (projectOwner <= kMainObjectProjectOffset) {
+		if (outTrace != nullptr) {
+			*outTrace = "program_unit_owner_invalid";
+		}
+		return false;
+	}
+	const std::uintptr_t mainObject = projectOwner - kMainObjectProjectOffset;
+
+	const auto assignCopy = ResolveInternalAddress<FnCStringAssignCopy>(
+		moduleBase,
+		kCStringAssignCopyAddress);
+	const auto refreshProgramTree = ResolveInternalAddress<FnRefreshProgramTree>(
+		moduleBase,
+		kRefreshProgramTreeAddress);
+	if (assignCopy == nullptr || refreshProgramTree == nullptr) {
+		if (outTrace != nullptr) {
+			*outTrace = "rename_function_address_invalid";
+		}
+		return false;
+	}
+
+	const bool ok = InvokeRenameProgramUnitSafely(
+		assignCopy,
+		refreshProgramTree,
+		reinterpret_cast<void*>(targetInfo.innerObject),
+		reinterpret_cast<void*>(mainObject),
+		newName.c_str(),
+		static_cast<int>(newName.size()));
+
+	if (outTrace != nullptr) {
+		*outTrace =
+			std::string(ok ? "rename_program_unit_ok" : "rename_program_unit_exception") +
+			"|editor=" + std::to_string(editorObject) +
+			"|inner=" + std::to_string(targetInfo.innerObject) +
+			"|main=" + std::to_string(mainObject) +
+			"|bytes=" + std::to_string(newName.size());
+	}
+	return ok;
 }
 
 bool CaptureCustomClipboardPayloadByThiscall(
