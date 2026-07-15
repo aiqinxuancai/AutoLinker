@@ -1166,6 +1166,58 @@ bool RunUnicodeTextCodecSmokeTest()
 		(GetACP() == CP_UTF8 || escaped.find("&#x1F7E1;") != std::string::npos);
 }
 
+bool RunBuiltInThemeSmokeTest()
+{
+	std::vector<char> buffer(64 * 1024, '\0');
+	const int result = AutoLinkerTest_GetAIChatThemeConfigPayload(
+		buffer.data(),
+		static_cast<int>(buffer.size()));
+	if (result < 0) {
+		return false;
+	}
+
+	try {
+		const nlohmann::json payload = nlohmann::json::parse(buffer.data());
+		if (!payload.contains("themes") || !payload["themes"].is_array() ||
+			!payload.contains("colorKeys") || !payload["colorKeys"].is_array()) {
+			return false;
+		}
+
+		const nlohmann::json* defaultTheme = nullptr;
+		const nlohmann::json* darkTheme = nullptr;
+		for (const auto& theme : payload["themes"]) {
+			if (!theme.is_object()) {
+				continue;
+			}
+			const std::string id = theme.value("id", std::string());
+			if (id == "default") {
+				defaultTheme = &theme;
+			}
+			else if (id == "builtin_dark") {
+				darkTheme = &theme;
+			}
+		}
+		if (defaultTheme == nullptr || darkTheme == nullptr ||
+			!defaultTheme->value("isBuiltIn", false) ||
+			!defaultTheme->value("isDefault", false) ||
+			!darkTheme->value("isBuiltIn", false) ||
+			darkTheme->value("isDefault", true) ||
+			!darkTheme->contains("colors") || !(*darkTheme)["colors"].is_object()) {
+			return false;
+		}
+		for (const auto& colorKey : payload["colorKeys"]) {
+			if (!colorKey.is_string() || !(*darkTheme)["colors"].contains(colorKey.get<std::string>())) {
+				return false;
+			}
+		}
+		return (*darkTheme)["colors"].value("pageBg", std::string()) !=
+			(*defaultTheme)["colors"].value("pageBg", std::string());
+	}
+	catch (...) {
+		return false;
+	}
+}
+
 int RunSmokeTest()
 {
 	char buffer[512] = {};
@@ -1180,6 +1232,11 @@ int RunSmokeTest()
 		return EXIT_FAILURE;
 	}
 	std::cout << "unicode-text-codec: ok" << std::endl;
+	if (!RunBuiltInThemeSmokeTest()) {
+		std::cerr << "built-in-theme failed" << std::endl;
+		return EXIT_FAILURE;
+	}
+	std::cout << "built-in-theme: ok" << std::endl;
 
 	if (!AutoLinkerTest_CompareVersion("1.2.3", "1.2.0", &compareResult)) {
 		std::cerr << "version-compare failed" << std::endl;

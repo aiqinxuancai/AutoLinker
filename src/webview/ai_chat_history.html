@@ -1239,6 +1239,7 @@ body,
 .topbar-brand { color: var(--al-brand); }
 .update-tag {
 	background: linear-gradient(110deg, var(--al-brand), var(--al-primary));
+	color: var(--al-panel-bg);
 }
 .empty-state-title {
 	background: linear-gradient(110deg, var(--al-brand) 0%, var(--al-primary) 42%, var(--al-accent) 78%, var(--al-brand) 100%);
@@ -1328,7 +1329,7 @@ body,
 .btn.primary {
 	background: var(--al-primary);
 	border-color: var(--al-primary);
-	color: #fff;
+	color: var(--al-panel-bg);
 }
 .btn.primary:hover {
 	background: var(--al-primary-hover);
@@ -1337,7 +1338,7 @@ body,
 .btn.danger {
 	background: var(--al-danger);
 	border-color: var(--al-danger);
-	color: #fff;
+	color: var(--al-panel-bg);
 }
 .btn.danger:hover {
 	background: var(--al-danger);
@@ -1641,6 +1642,15 @@ window.autolinkerApplyTheme = function(theme) {
 		if (Object.prototype.hasOwnProperty.call(map, key) && colors[key]) {
 			root.style.setProperty(map[key], colors[key]);
 		}
+	}
+	var pageBg = String(colors.pageBg || "");
+	var match = /^#([0-9a-f]{6})$/i.exec(pageBg);
+	if (match) {
+		var value = parseInt(match[1], 16);
+		var red = (value >> 16) & 255;
+		var green = (value >> 8) & 255;
+		var blue = value & 255;
+		root.style.colorScheme = ((red * 299 + green * 587 + blue * 114) / 1000) < 128 ? "dark" : "light";
 	}
 };
 

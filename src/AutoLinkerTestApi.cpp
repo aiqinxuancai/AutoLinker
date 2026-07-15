@@ -19,6 +19,7 @@
 #include "AIChatFeature.h"
 #include "AIChatMcpClient.h"
 #include "AIChatMcpConfig.h"
+#include "AIChatThemeManager.h"
 #include "AIChatToolPolicy.h"
 #include "AIService.h"
 #include "AutoLinkerVersion.h"
@@ -1801,6 +1802,11 @@ extern "C" int AutoLinkerTest_ExtractSourcePathFromWindowTitle(
 extern "C" int AutoLinkerTest_GetVersionText(char* buffer, int bufferSize)
 {
 	return CopyStringToBuffer(AUTOLINKER_VERSION, buffer, bufferSize);
+}
+
+extern "C" int AutoLinkerTest_GetAIChatThemeConfigPayload(char* buffer, int bufferSize)
+{
+	return CopyStringToBuffer(AIChatThemeManager::BuildConfigPayloadJson(), buffer, bufferSize);
 }
 
 extern "C" int AutoLinkerTest_RunGameAnalyticsSelfTest(char* buffer, int bufferSize)

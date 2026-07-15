@@ -1,4 +1,4 @@
-#include <iostream>
+ï»¿#include <iostream>
 #include <string>
 #include <vector>
 #include <fstream>
@@ -19,29 +19,29 @@ std::string ReplaceSubstring(std::string source, const std::string& toFind, cons
 
 
 std::vector<std::string> ReadFileAndSplitLines(const std::string& filePath) {
-    // ¼ì²éÎÄ¼şÊÇ·ñ´æÔÚ
+    // æ£€æŸ¥æ–‡ä»¶æ˜¯å¦å­˜åœ¨
     if (!std::filesystem::exists(filePath)) {
-        return {}; // Èç¹ûÎÄ¼ş²»´æÔÚ£¬·µ»Ø¿ÕµÄvector
+        return {}; // å¦‚æœæ–‡ä»¶ä¸å­˜åœ¨ï¼Œè¿”å›ç©ºçš„vector
     }
 
     std::ifstream file(filePath);
     if (!file.is_open()) {
-        return {}; // Èç¹ûÎÄ¼şÎŞ·¨´ò¿ª£¬·µ»Ø¿ÕµÄvector
+        return {}; // å¦‚æœæ–‡ä»¶æ— æ³•æ‰“å¼€ï¼Œè¿”å›ç©ºçš„vector
     }
 
     std::stringstream buffer;
-    buffer << file.rdbuf(); // ¶ÁÈ¡ÎÄ¼şµ½×Ö·û´®Á÷
+    buffer << file.rdbuf(); // è¯»å–æ–‡ä»¶åˆ°å­—ç¬¦ä¸²æµ
 
     std::string content = buffer.str();
 
-    // Ìæ»»ËùÓĞ \r\n Îª \n
+    // æ›¿æ¢æ‰€æœ‰ \r\n ä¸º \n
     size_t pos = 0;
     while ((pos = content.find("\r\n", pos)) != std::string::npos) {
         content.replace(pos, 2, "\n");
         pos += 1;
     }
 
-    // °´ĞĞ·Ö¸î
+    // æŒ‰è¡Œåˆ†å‰²
     std::vector<std::string> lines;
     std::istringstream stream(content);
     std::string line;
@@ -53,7 +53,7 @@ std::vector<std::string> ReadFileAndSplitLines(const std::string& filePath) {
 }
 
 /// <summary>
-/// ¸ù¾İ·ûºÅ·Ö¸îÎªÁ½°ë£¬Èç¹ûÃ»ÕÒµ½'='£¬ÔòÎªÒ»¸öÔ­ÎÄ±¾
+/// æ ¹æ®ç¬¦å·åˆ†å‰²ä¸ºä¸¤åŠï¼Œå¦‚æœæ²¡æ‰¾åˆ°'='ï¼Œåˆ™ä¸ºä¸€ä¸ªåŸæ–‡æœ¬
 /// </summary>
 /// <param name="input"></param>
 /// <param name="delimiter"></param>
@@ -63,16 +63,16 @@ std::vector<std::string> SplitStringTwo(const std::string& input, char delimiter
     size_t pos = input.find(delimiter);
 
     if (pos != std::string::npos) {
-        // Èç¹ûÕÒµ½ÁË·Ö¸ô·û
+        // å¦‚æœæ‰¾åˆ°äº†åˆ†éš”ç¬¦
         std::string first = input.substr(0, pos);
         std::string second = input.substr(pos + 1);
 
-        // Ìí¼ÓÁ½²¿·Ö£¬¼´Ê¹µÚ¶ş²¿·ÖÎª¿ÕÒ²Ìí¼Ó
+        // æ·»åŠ ä¸¤éƒ¨åˆ†ï¼Œå³ä½¿ç¬¬äºŒéƒ¨åˆ†ä¸ºç©ºä¹Ÿæ·»åŠ 
         result.push_back(first);
         result.push_back(second);
     }
     else {
-        // Èç¹ûÃ»ÓĞÕÒµ½·Ö¸ô·û£¬·µ»ØÔ­×Ö·û´®
+        // å¦‚æœæ²¡æœ‰æ‰¾åˆ°åˆ†éš”ç¬¦ï¼Œè¿”å›åŸå­—ç¬¦ä¸²
         result.push_back(input);
     }
 

@@ -35,6 +35,9 @@ AUTOLINKER_TEST_API int AutoLinkerTest_ExtractSourcePathFromWindowTitle(
 // 返回当前 AutoLinker 版本文本，成功时返回写入长度，不含结尾空字符。
 AUTOLINKER_TEST_API int AutoLinkerTest_GetVersionText(char* buffer, int bufferSize);
 
+// 返回 AI 对话配色设置载荷，用于验证内置配色与颜色字段。
+AUTOLINKER_TEST_API int AutoLinkerTest_GetAIChatThemeConfigPayload(char* buffer, int bufferSize);
+
 // 执行 GameAnalytics 客户端无网络自检，并输出 JSON 结果。
 AUTOLINKER_TEST_API int AutoLinkerTest_RunGameAnalyticsSelfTest(char* buffer, int bufferSize);
 

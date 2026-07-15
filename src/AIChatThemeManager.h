@@ -13,10 +13,14 @@ struct ThemeEntry {
 	std::string name;
 	nlohmann::json colors;
 	bool isDefault = false;
+	bool isBuiltIn = false;
 };
 
 // 返回内置默认配色变量表。
 nlohmann::json GetDefaultColors();
+
+// 返回内置深色配色变量表。
+nlohmann::json GetBuiltInDarkColors();
 
 // 返回当前选中的配色，读取失败时自动回退默认配色。
 ThemeEntry LoadCurrentTheme();

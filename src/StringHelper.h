@@ -1,5 +1,8 @@
-#pragma once
+﻿#pragma once
 #include <string>
+#include <vector>
+
+// 字符串与文本文件处理辅助函数。
 
 std::string ReplaceSubstring(std::string source, const std::string& toFind, const std::string& toReplace);
 
@@ -7,7 +10,7 @@ std::vector<std::string> ReadFileAndSplitLines(const std::string& filePath);
 
 
 /// <summary>
-/// ���ݷ��ŷָ�Ϊ���룬���û���ţ���Ϊһ��ԭ�ı�
+/// 根据符号分割为两半，如果没符号，则为一个原文本
 /// </summary>
 /// <param name="input"></param>
 /// <param name="delimiter"></param>

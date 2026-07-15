@@ -15,6 +15,8 @@ namespace {
 
 constexpr const char* kDefaultThemeId = "default";
 constexpr const char* kDefaultThemeName = "默认配色";
+constexpr const char* kBuiltInDarkThemeId = "builtin_dark";
+constexpr const char* kBuiltInDarkThemeName = "内置深色";
 constexpr const char* kCurrentThemeFileName = "current_theme.json";
 constexpr const char* kThemesDirectoryName = "AIChatThemes";
 
@@ -52,6 +54,12 @@ std::string ToLowerAscii(std::string text)
 	return text;
 }
 
+bool IsBuiltInThemeId(const std::string& id)
+{
+	const std::string lowerId = ToLowerAscii(id);
+	return lowerId == kDefaultThemeId || lowerId == kBuiltInDarkThemeId;
+}
+
 std::string SanitizeThemeId(const std::string& id, const std::string& fallbackName)
 {
 	std::string candidate = TrimAscii(id);
@@ -83,15 +91,21 @@ std::string SanitizeThemeId(const std::string& id, const std::string& fallbackNa
 	if (out.empty()) {
 		out = "theme";
 	}
-	if (ToLowerAscii(out) == kDefaultThemeId) {
-		out = "theme_default";
-	}
 	return out;
+}
+
+std::string SanitizeUserThemeId(const std::string& id, const std::string& fallbackName)
+{
+	std::string sanitized = SanitizeThemeId(id, fallbackName);
+	if (IsBuiltInThemeId(sanitized)) {
+		sanitized = "theme_" + sanitized;
+	}
+	return sanitized;
 }
 
 std::filesystem::path ThemeFilePathForId(const std::string& id)
 {
-	return GetThemeRoot() / (SanitizeThemeId(id, "theme") + ".json");
+	return GetThemeRoot() / (SanitizeUserThemeId(id, "theme") + ".json");
 }
 
 std::string ReadFileUtf8(const std::filesystem::path& path)
@@ -191,6 +205,17 @@ ThemeEntry BuildDefaultTheme()
 	entry.name = kDefaultThemeName;
 	entry.colors = GetDefaultColors();
 	entry.isDefault = true;
+	entry.isBuiltIn = true;
+	return entry;
+}
+
+ThemeEntry BuildBuiltInDarkTheme()
+{
+	ThemeEntry entry;
+	entry.id = kBuiltInDarkThemeId;
+	entry.name = kBuiltInDarkThemeName;
+	entry.colors = GetBuiltInDarkColors();
+	entry.isBuiltIn = true;
 	return entry;
 }
 
@@ -275,13 +300,14 @@ bool TryParseThemeFile(const std::filesystem::path& path, ThemeEntry& outEntry)
 		if (!root.is_object()) {
 			return false;
 		}
-		outEntry.id = SanitizeThemeId(root.value("id", path.stem().string()), path.stem().string());
+		outEntry.id = SanitizeUserThemeId(root.value("id", path.stem().string()), path.stem().string());
 		outEntry.name = TrimAscii(root.value("name", outEntry.id));
 		if (outEntry.name.empty()) {
 			outEntry.name = outEntry.id;
 		}
 		outEntry.colors = MergeWithDefaults(root.value("colors", nlohmann::json::object()));
 		outEntry.isDefault = false;
+		outEntry.isBuiltIn = false;
 		return true;
 	}
 	catch (...) {
@@ -354,6 +380,7 @@ nlohmann::json ThemeEntryToJson(const ThemeEntry& entry)
 	item["id"] = entry.id;
 	item["name"] = entry.name;
 	item["isDefault"] = entry.isDefault;
+	item["isBuiltIn"] = entry.isBuiltIn;
 	item["colors"] = entry.colors;
 	return item;
 }
@@ -439,11 +466,60 @@ nlohmann::json GetDefaultColors()
 	};
 }
 
+nlohmann::json GetBuiltInDarkColors()
+{
+	return {
+		{"pageBg", "#17191e"},
+		{"text", "#e7e9ee"},
+		{"mutedText", "#a9afb9"},
+		{"subtleText", "#737b88"},
+		{"brand", "#c792ea"},
+		{"primary", "#5ea1ff"},
+		{"primaryHover", "#82b5ff"},
+		{"accent", "#4fd1c5"},
+		{"success", "#54c97a"},
+		{"warning", "#e5b454"},
+		{"danger", "#ff6b72"},
+		{"border", "#383d47"},
+		{"softBorder", "#454b57"},
+		{"panelBg", "#22252b"},
+		{"toolbarBg", "#1d2026"},
+		{"composerBg", "#1d2026"},
+		{"inputBg", "#15171b"},
+		{"inputBorder", "#4a515e"},
+		{"buttonBg", "#2b2f37"},
+		{"buttonHoverBg", "#373c46"},
+		{"userMsgBg", "#23272e"},
+		{"assistantMsgBg", "#1e2127"},
+		{"systemMsgBg", "#202329"},
+		{"toolMsgBg", "#1b2525"},
+		{"planMsgBg", "#202637"},
+		{"roleText", "#f0f2f6"},
+		{"bodyText", "#d7dae0"},
+		{"linkText", "#79b8ff"},
+		{"inlineCodeBg", "#303540"},
+		{"codeBlockBg", "#121419"},
+		{"codeText", "#e3e7ee"},
+		{"planBg", "#252b3a"},
+		{"planBorder", "#52678f"},
+		{"planText", "#dbe5ff"},
+		{"chipBg", "#2c3a51"},
+		{"approvalBg", "#24272e"},
+		{"diffBg", "#15191d"},
+		{"diffAdd", "#65d58a"},
+		{"diffDel", "#ff7c83"},
+		{"placeholder", "#747c89"}
+	};
+}
+
 ThemeEntry LoadCurrentTheme()
 {
 	const std::string currentId = ToLowerAscii(LoadCurrentThemeId());
 	if (currentId == kDefaultThemeId) {
 		return BuildDefaultTheme();
+	}
+	if (currentId == kBuiltInDarkThemeId) {
+		return BuildBuiltInDarkTheme();
 	}
 	for (const auto& entry : LoadUserThemes()) {
 		if (ToLowerAscii(entry.id) == currentId) {
@@ -463,6 +539,7 @@ std::string BuildConfigPayloadJson()
 	}
 	payload["themes"] = nlohmann::json::array();
 	payload["themes"].push_back(ThemeEntryToJson(BuildDefaultTheme()));
+	payload["themes"].push_back(ThemeEntryToJson(BuildBuiltInDarkTheme()));
 	for (const auto& entry : LoadUserThemes()) {
 		payload["themes"].push_back(ThemeEntryToJson(entry));
 	}
@@ -487,11 +564,16 @@ bool SaveConfigPayload(const nlohmann::json& data, std::string& outMessage)
 		if (!item.is_object()) {
 			continue;
 		}
-		if (item.value("isDefault", false)) {
+		const std::string submittedId = SanitizeThemeId(
+			item.value("id", std::string()),
+			item.value("name", std::string()));
+		if (item.value("isDefault", false) ||
+			item.value("isBuiltIn", false) ||
+			IsBuiltInThemeId(submittedId)) {
 			continue;
 		}
 		ThemeEntry entry;
-		entry.id = SanitizeThemeId(item.value("id", std::string()), item.value("name", std::string()));
+		entry.id = SanitizeUserThemeId(submittedId, item.value("name", std::string()));
 		entry.name = TrimAscii(item.value("name", entry.id));
 		if (entry.name.empty()) {
 			outMessage = "配色名称不能为空。";
@@ -504,6 +586,7 @@ bool SaveConfigPayload(const nlohmann::json& data, std::string& outMessage)
 		}
 		entry.colors = MergeWithDefaults(item.value("colors", nlohmann::json::object()));
 		entry.isDefault = false;
+		entry.isBuiltIn = false;
 		nextThemes.push_back(std::move(entry));
 	}
 
@@ -514,6 +597,7 @@ bool SaveConfigPayload(const nlohmann::json& data, std::string& outMessage)
 		keepFiles.insert(path.filename().wstring());
 		nlohmann::json root = ThemeEntryToJson(entry);
 		root.erase("isDefault");
+		root.erase("isBuiltIn");
 		if (!WriteFileUtf8Bom(path, root.dump(2, ' ', false, nlohmann::json::error_handler_t::replace))) {
 			outMessage = "无法写入配色文件：" + entry.name;
 			return false;
@@ -537,7 +621,7 @@ bool SaveConfigPayload(const nlohmann::json& data, std::string& outMessage)
 	}
 
 	std::string selectedId = currentThemeId;
-	if (ToLowerAscii(selectedId) != kDefaultThemeId &&
+	if (!IsBuiltInThemeId(selectedId) &&
 		seenIds.find(ToLowerAscii(selectedId)) == seenIds.end()) {
 		selectedId = kDefaultThemeId;
 	}
