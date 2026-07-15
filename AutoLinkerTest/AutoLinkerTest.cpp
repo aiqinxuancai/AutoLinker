@@ -17,6 +17,8 @@
 #include "..\\thirdparty\\json.hpp"
 
 #include "..\\src\\AutoLinkerTestApi.h"
+#include "..\\src\\AIChatMarkdownTableRenderer.h"
+#include "..\\src\\UnicodeTextCodec.h"
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -1082,10 +1084,102 @@ int PrintStringResult(const char* label, int result, const char* text)
 	return EXIT_FAILURE;
 }
 
+std::string RenderMarkdownTableTestInline(const std::string& text)
+{
+	return "{" + text + "}";
+}
+
+bool RunMarkdownTableSmokeTest()
+{
+	const std::vector<std::string> lines = {
+		"| Name | Status | Note |",
+		"| :--- | :---: | ---: |",
+		R"(| **Alpha** | ready | x\|y |)",
+		"| Beta | `a|b` | 42 |",
+		"after table",
+	};
+	std::string html;
+	size_t lastRenderedLineIndex = 0;
+	const bool rendered = AIChatMarkdownTableRenderer::TryRenderTable(
+		lines,
+		0,
+		RenderMarkdownTableTestInline,
+		html,
+		lastRenderedLineIndex);
+	return rendered &&
+		lastRenderedLineIndex == 3 &&
+		html.find("<th scope=\"col\" class=\"markdown-align-left\">{Name}</th>") != std::string::npos &&
+		html.find("<th scope=\"col\" class=\"markdown-align-center\">{Status}</th>") != std::string::npos &&
+		html.find("<th scope=\"col\" class=\"markdown-align-right\">{Note}</th>") != std::string::npos &&
+		html.find("{x|y}") != std::string::npos &&
+		html.find("{`a|b`}") != std::string::npos &&
+		html.find("after table") == std::string::npos;
+}
+
+bool RunUnicodeTextCodecSmokeTest()
+{
+	const std::array<std::string, 3> priorityIconsUtf8 = {
+		"\xF0\x9F\x9F\xA1", // yellow circle
+		"\xF0\x9F\x94\xB4", // red circle
+		"\xF0\x9F\x9F\xA2", // green circle
+	};
+	std::array<std::string, 3> priorityIconsLocal;
+	for (size_t i = 0; i < priorityIconsUtf8.size(); ++i) {
+		priorityIconsLocal[i] = UnicodeTextCodec::Utf8ToLocalPreservingUnicode(priorityIconsUtf8[i]);
+		if (priorityIconsLocal[i].find("??") != std::string::npos ||
+			UnicodeTextCodec::LocalToUtf8RestoringUnicode(priorityIconsLocal[i]) != priorityIconsUtf8[i]) {
+			return false;
+		}
+	}
+	if (UnicodeTextCodec::Utf8ToLocalPreservingUnicode("??") != "??") {
+		return false;
+	}
+
+	const std::vector<std::string> tableLines = {
+		"| Priority |",
+		"| --- |",
+		"| " + priorityIconsLocal[0] + " Medium |",
+		"| " + priorityIconsLocal[1] + " High |",
+		"| " + priorityIconsLocal[2] + " Low |",
+		"after table",
+	};
+	std::string tableHtml;
+	size_t lastRenderedLineIndex = 0;
+	if (!AIChatMarkdownTableRenderer::TryRenderTable(
+			tableLines,
+			0,
+			UnicodeTextCodec::EscapeHtmlTextPreservingUnicode,
+			tableHtml,
+			lastRenderedLineIndex) ||
+		lastRenderedLineIndex != 4 ||
+		tableHtml.find(priorityIconsLocal[0] + " Medium") == std::string::npos ||
+		tableHtml.find(priorityIconsLocal[1] + " High") == std::string::npos ||
+		tableHtml.find(priorityIconsLocal[2] + " Low") == std::string::npos ||
+		tableHtml.find("after table") != std::string::npos) {
+		return false;
+	}
+
+	const std::string escaped = UnicodeTextCodec::EscapeHtmlTextPreservingUnicode(
+		"<" + priorityIconsLocal[0] + "&");
+	return escaped.starts_with("&lt;") &&
+		escaped.ends_with("&amp;") &&
+		(GetACP() == CP_UTF8 || escaped.find("&#x1F7E1;") != std::string::npos);
+}
+
 int RunSmokeTest()
 {
 	char buffer[512] = {};
 	int compareResult = 0;
+	if (!RunMarkdownTableSmokeTest()) {
+		std::cerr << "markdown-table failed" << std::endl;
+		return EXIT_FAILURE;
+	}
+	std::cout << "markdown-table: ok" << std::endl;
+	if (!RunUnicodeTextCodecSmokeTest()) {
+		std::cerr << "unicode-text-codec failed" << std::endl;
+		return EXIT_FAILURE;
+	}
+	std::cout << "unicode-text-codec: ok" << std::endl;
 
 	if (!AutoLinkerTest_CompareVersion("1.2.3", "1.2.0", &compareResult)) {
 		std::cerr << "version-compare failed" << std::endl;

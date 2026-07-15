@@ -33,6 +33,7 @@
 #include "AIJsonConfig.h"
 #include "AIChatMcpClient.h"
 #include "AIChatMcpConfigDialog.h"
+#include "AIChatMarkdownTableRenderer.h"
 #include "AIChatSessionStore.h"
 #include "AIChatThemeManager.h"
 #include "AIChatToolRegistry.h"
@@ -46,6 +47,7 @@
 #include "Logger.h"
 #include "PathHelper.h"
 #include "ResourceTextLoader.h"
+#include "UnicodeTextCodec.h"
 #include "WorkspaceMirror.h"
 #include "WinINetUtil.h"
 #include "resource.h"
@@ -858,19 +860,7 @@ std::string NormalizeNewlinesLf(const std::string& text)
 
 std::string EscapeHtml(const std::string& text)
 {
-	std::string out;
-	out.reserve(text.size() + 32);
-	for (char ch : text) {
-		switch (ch)
-		{
-		case '&': out += "&amp;"; break;
-		case '<': out += "&lt;"; break;
-		case '>': out += "&gt;"; break;
-		case '"': out += "&quot;"; break;
-		default: out.push_back(ch); break;
-		}
-	}
-	return out;
+	return UnicodeTextCodec::EscapeHtmlTextPreservingUnicode(text);
 }
 
 std::string EscapeHtmlAttribute(const std::string& text)
@@ -3735,6 +3725,12 @@ std::string RenderInlineMarkdownToHtml(const std::string& text)
 	std::string out;
 	out.reserve(text.size() + 32);
 	for (size_t i = 0; i < text.size();) {
+		const size_t referenceLength = UnicodeTextCodec::NumericCharacterReferenceLength(text, i);
+		if (referenceLength > 0) {
+			out.append(text, i, referenceLength);
+			i += referenceLength;
+			continue;
+		}
 		if (text.compare(i, 2, "**") == 0) {
 			const size_t end = text.find("**", i + 2);
 			if (end != std::string::npos) {
@@ -3850,7 +3846,8 @@ std::string RenderMarkdownToHtml(const std::string& markdown)
 		}
 	};
 
-	for (const std::string& line : lines) {
+	for (size_t lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
+		const std::string& line = lines[lineIndex];
 		const std::string trimmed = TrimAsciiCopy(line);
 		if (line.rfind("```", 0) == 0) {
 			closeParagraph();
@@ -3873,6 +3870,21 @@ std::string RenderMarkdownToHtml(const std::string& markdown)
 		if (trimmed.empty()) {
 			closeParagraph();
 			closeList();
+			continue;
+		}
+
+		size_t lastTableLineIndex = lineIndex;
+		std::string tableHtml;
+		if (AIChatMarkdownTableRenderer::TryRenderTable(
+			lines,
+			lineIndex,
+			RenderInlineMarkdownToHtml,
+			tableHtml,
+			lastTableLineIndex)) {
+			closeParagraph();
+			closeList();
+			html += tableHtml;
+			lineIndex = lastTableLineIndex;
 			continue;
 		}
 

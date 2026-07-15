@@ -505,6 +505,7 @@
     <ClCompile Include="src\MouseBack.cpp" />
     <ClCompile Include="src\AIConfigDialog.cpp" />
     <ClCompile Include="src\AIChatFeature.cpp" />
+    <ClCompile Include="src\AIChatMarkdownTableRenderer.cpp" />
     <ClCompile Include="src\AIChatMcpClient.cpp" />
     <ClCompile Include="src\AIChatMcpConfig.cpp" />
     <ClCompile Include="src\AIChatMcpConfigDialog.cpp" />
@@ -537,6 +538,7 @@
     <ClCompile Include="src\PowerShellToolRunner.cpp" />
     <ClCompile Include="src\StringHelper.cpp" />
     <ClCompile Include="src\TavilyClient.cpp" />
+    <ClCompile Include="src\UnicodeTextCodec.cpp" />
     <ClCompile Include="src\Version.cpp" />
     <ClCompile Include="src\WebDocumentClient.cpp" />
     <ClCompile Include="src\WebDocumentExtractor.cpp" />
@@ -562,6 +564,7 @@
     <ClInclude Include="src\AutoLinkerVersion.h" />
     <ClInclude Include="src\AIConfigDialog.h" />
     <ClInclude Include="src\AIChatFeature.h" />
+    <ClInclude Include="src\AIChatMarkdownTableRenderer.h" />
     <ClInclude Include="src\AIChatMcpClient.h" />
     <ClInclude Include="src\AIChatMcpConfig.h" />
     <ClInclude Include="src\AIChatMcpConfigDialog.h" />
@@ -606,6 +609,7 @@
     <ClInclude Include="src\resource.h" />
     <ClInclude Include="src\StringHelper.h" />
     <ClInclude Include="src\TavilyClient.h" />
+    <ClInclude Include="src\UnicodeTextCodec.h" />
     <ClInclude Include="src\TimeManager.h" />
     <ClInclude Include="src\Version.h" />
     <ClInclude Include="src\WebDocumentClient.h" />

@@ -715,6 +715,61 @@ body {
 	border-radius: 0;
 }
 
+.body .markdown-table-wrap {
+	max-width: 100%;
+	overflow-x: auto;
+	margin: 0 0 8px 0;
+	border: 1px solid var(--al-soft-border, #ccd3dd);
+	border-radius: 6px;
+	background: var(--al-panel-bg, #ffffff);
+}
+
+.body table {
+	width: max-content;
+	min-width: 100%;
+	border-collapse: collapse;
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.body th,
+.body td {
+	min-width: 72px;
+	max-width: 420px;
+	padding: 7px 9px;
+	border-right: 1px solid var(--al-soft-border, #ccd3dd);
+	border-bottom: 1px solid var(--al-soft-border, #ccd3dd);
+	text-align: left;
+	vertical-align: top;
+	white-space: normal;
+	word-break: normal;
+	overflow-wrap: anywhere;
+}
+
+.body th {
+	background: var(--al-button-hover-bg, #eef1f6);
+	font-weight: 700;
+}
+
+.body th:last-child,
+.body td:last-child {
+	border-right: 0;
+}
+
+.body tbody tr:last-child td {
+	border-bottom: 0;
+}
+
+.body th.markdown-align-center,
+.body td.markdown-align-center {
+	text-align: center;
+}
+
+.body th.markdown-align-right,
+.body td.markdown-align-right {
+	text-align: right;
+}
+
 .plan-card {
 	border: 1px solid #b9cffb;
 	background: #f7faff;

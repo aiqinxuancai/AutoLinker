@@ -10,5 +10,13 @@
     <ClCompile Include="AutoLinkerTest.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\AIChatMarkdownTableRenderer.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\UnicodeTextCodec.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
+    <ClInclude Include="..\src\AIChatMarkdownTableRenderer.h" />
+    <ClInclude Include="..\src\UnicodeTextCodec.h" />
   </ItemGroup>
 </Project>

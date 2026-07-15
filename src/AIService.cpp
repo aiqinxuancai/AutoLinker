@@ -20,6 +20,7 @@
 #include "Global.h"
 #include "IDEFacade.h"
 #include "Logger.h"
+#include "UnicodeTextCodec.h"
 #include "WinINetUtil.h"
 #include <chrono>
 
@@ -1162,81 +1163,9 @@ std::string BuildToolRoundsExceededError(int maxToolRounds, const std::vector<AI
 	return message;
 }
 
-bool IsValidUtf8(const std::string& text)
-{
-	if (text.empty()) {
-		return true;
-	}
-	return MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0) > 0;
-}
-
-std::string ConvertCodePage(const std::string& text, UINT fromCodePage, UINT toCodePage, DWORD fromFlags = 0)
-{
-	if (text.empty()) {
-		return std::string();
-	}
-
-	const int wideLen = MultiByteToWideChar(
-		fromCodePage,
-		fromFlags,
-		text.data(),
-		static_cast<int>(text.size()),
-		nullptr,
-		0);
-	if (wideLen <= 0) {
-		return text;
-	}
-
-	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
-	if (MultiByteToWideChar(
-		fromCodePage,
-		fromFlags,
-		text.data(),
-		static_cast<int>(text.size()),
-		&wide[0],
-		wideLen) <= 0) {
-		return text;
-	}
-
-	const int outLen = WideCharToMultiByte(
-		toCodePage,
-		0,
-		wide.data(),
-		wideLen,
-		nullptr,
-		0,
-		nullptr,
-		nullptr);
-	if (outLen <= 0) {
-		return text;
-	}
-
-	std::string out(static_cast<size_t>(outLen), '\0');
-	if (WideCharToMultiByte(
-		toCodePage,
-		0,
-		wide.data(),
-		wideLen,
-		&out[0],
-		outLen,
-		nullptr,
-		nullptr) <= 0) {
-		return text;
-	}
-	return out;
-}
-
 std::string LocalToUtf8(const std::string& text)
 {
-	// AutoLinker/IDE strings are typically local ANSI (GBK on zh-CN Windows).
-	// Convert before feeding nlohmann::json, which requires UTF-8.
-	if (text.empty()) {
-		return std::string();
-	}
-	if (IsValidUtf8(text)) {
-		return text;
-	}
-	return ConvertCodePage(text, CP_ACP, CP_UTF8, 0);
+	return UnicodeTextCodec::LocalToUtf8RestoringUnicode(text);
 }
 
 void NormalizeJsonStringsToUtf8InPlace(nlohmann::json& value)
@@ -1260,13 +1189,7 @@ void NormalizeJsonStringsToUtf8InPlace(nlohmann::json& value)
 
 std::string Utf8ToLocal(const std::string& text)
 {
-	if (text.empty()) {
-		return std::string();
-	}
-	if (!IsValidUtf8(text)) {
-		return text;
-	}
-	return ConvertCodePage(text, CP_UTF8, CP_ACP, MB_ERR_INVALID_CHARS);
+	return UnicodeTextCodec::Utf8ToLocalPreservingUnicode(text);
 }
 
 using ChatToolCallback = std::function<std::string(
