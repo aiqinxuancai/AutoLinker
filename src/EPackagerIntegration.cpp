@@ -21,6 +21,7 @@
 #include "..\\thirdparty\\json.hpp"
 
 #include "AutoLinkerInternal.h"
+#include "DownloadProgressReporter.h"
 #include "EideProjectBinarySerializer.h"
 #include "Global.h"
 #include "PathHelper.h"
@@ -71,6 +72,7 @@ struct LatestReleaseInfo {
 	std::string tag;
 	std::string assetName;
 	std::string downloadUrl;
+	std::uint64_t assetSize = 0;
 };
 
 struct UnpackRequest {
@@ -162,6 +164,12 @@ std::string LocalFromWide(const std::wstring& text)
 std::string Utf8FromWide(const std::wstring& text)
 {
 	return StringFromWideCodePage(text, CP_UTF8);
+}
+
+std::string LocalFromUtf8(const std::string& text)
+{
+	const std::wstring wide = WideFromUtf8(text);
+	return wide.empty() ? text : LocalFromWide(wide);
 }
 
 std::string ToLowerAscii(std::string text)
@@ -588,6 +596,7 @@ bool FetchLatestRelease(LatestReleaseInfo& outInfo, std::string& outError)
 		}
 		info.assetName = name;
 		info.downloadUrl = asset.value("browser_download_url", std::string());
+		info.assetSize = asset.value("size", 0ULL);
 		break;
 	}
 
@@ -670,14 +679,29 @@ std::string DescribeDownloadFailure(const std::pair<std::string, int>& response)
 
 bool DownloadZip(const LatestReleaseInfo& info, const std::filesystem::path& zipPath, std::string& outError)
 {
+	const auto download = [&info](const std::string& url) {
+		DownloadProgressReporter progress("[e-packager]", info.assetSize);
+		return PerformGetRequest(
+			url,
+			kGitHubHeaders,
+			300000,
+			false,
+			false,
+			[&progress](std::uint64_t downloadedBytes, std::uint64_t totalBytes) {
+				if (const auto message = progress.Update(downloadedBytes, totalBytes)) {
+					OutputStringToELog(LocalFromUtf8(*message));
+				}
+			});
+	};
+
 	const std::string acceleratedUrl = BuildAcceleratedGitHubUrl(info.downloadUrl);
 	OutputStringToELog(std::format("[e-packager] 通过 GitHub 加速地址下载：{}", acceleratedUrl));
-	auto response = PerformGetRequest(acceleratedUrl, kGitHubHeaders, 300000, false, false);
+	auto response = download(acceleratedUrl);
 	if (response.second != 200 || !IsZipResponse(response.first)) {
 		const std::string acceleratedError = DescribeDownloadFailure(response);
 		OutputStringToELog("[e-packager] GitHub 加速地址下载失败，将尝试原始 GitHub 地址：" + acceleratedError);
 		OutputStringToELog(std::format("[e-packager] 通过原始 GitHub 地址下载：{}", info.downloadUrl));
-		response = PerformGetRequest(info.downloadUrl, kGitHubHeaders, 300000, false, false);
+		response = download(info.downloadUrl);
 		if (response.second != 200 || !IsZipResponse(response.first)) {
 			outError = "GitHub 加速地址下载失败（" + acceleratedError + "）；原始 GitHub 地址下载失败（" +
 				DescribeDownloadFailure(response) + "）";

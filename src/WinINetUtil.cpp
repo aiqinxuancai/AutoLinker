@@ -1,6 +1,7 @@
 ﻿#include "WinINetUtil.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cstring>
 #include <format>
@@ -32,6 +33,19 @@ std::string TrimAscii(std::string text)
 		text.erase(0, begin);
 	}
 	return text;
+}
+
+std::uint64_t QueryResponseContentLength(HINTERNET request)
+{
+	char buffer[64] = {};
+	DWORD length = static_cast<DWORD>(sizeof(buffer) - 1);
+	if (HttpQueryInfoA(request, HTTP_QUERY_CONTENT_LENGTH, buffer, &length, nullptr) == FALSE || length == 0) {
+		return 0;
+	}
+
+	std::uint64_t contentLength = 0;
+	const auto result = std::from_chars(buffer, buffer + length, contentLength);
+	return result.ec == std::errc() && result.ptr != buffer ? contentLength : 0;
 }
 
 std::vector<HttpResponseHeaderEntry> ParseRawResponseHeaders(const std::string& rawHeaders)
@@ -556,7 +570,29 @@ std::pair<std::string, int> PerformPostRequestStreaming(
     return std::make_pair(details.body, details.statusCode);
 }
 
-std::pair<std::string, int> PerformGetRequest(const std::string& url, const std::string& customHeaders, int timeout, bool AutoCookies, bool NeverRedirect) {
+std::pair<std::string, int> PerformGetRequest(
+	const std::string& url,
+	const std::string& customHeaders,
+	int timeout,
+	bool AutoCookies,
+	bool NeverRedirect)
+{
+	return PerformGetRequest(
+		url,
+		customHeaders,
+		timeout,
+		AutoCookies,
+		NeverRedirect,
+		HttpDownloadProgressCallback{});
+}
+
+std::pair<std::string, int> PerformGetRequest(
+	const std::string& url,
+	const std::string& customHeaders,
+	int timeout,
+	bool AutoCookies,
+	bool NeverRedirect,
+	const HttpDownloadProgressCallback& onProgress) {
     HINTERNET hInternet, hConnect, hRequest;
     std::string response;
     DWORD statusCode = 0;
@@ -644,10 +680,20 @@ std::pair<std::string, int> PerformGetRequest(const std::string& url, const std:
         statusCode = 0;
     }
 
+	const std::uint64_t totalBytes = QueryResponseContentLength(hRequest);
+	std::uint64_t downloadedBytes = 0;
+	if (onProgress) {
+		onProgress(downloadedBytes, totalBytes);
+	}
+
     char buffer[1024];
     DWORD bytesRead;
     while (InternetReadFile(hRequest, buffer, 1024, &bytesRead) && bytesRead > 0) {
         response.append(buffer, bytesRead);
+		downloadedBytes += bytesRead;
+		if (onProgress) {
+			onProgress(downloadedBytes, totalBytes);
+		}
     }
 
     InternetCloseHandle(hRequest);

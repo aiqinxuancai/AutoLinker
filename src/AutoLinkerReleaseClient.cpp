@@ -10,6 +10,7 @@
 
 #include "..\\thirdparty\\json.hpp"
 
+#include "DownloadProgressReporter.h"
 #include "Global.h"
 #include "WinINetUtil.h"
 
@@ -258,9 +259,24 @@ bool AutoLinkerReleaseClient::DownloadArchive(
 	std::string& outBytes,
 	std::string& outError)
 {
+	const auto download = [&asset](const std::string& url) {
+		DownloadProgressReporter progress("[AutoLinker更新]", asset.size);
+		return PerformGetRequest(
+			url,
+			kGitHubHeaders,
+			kDownloadTimeoutMs,
+			false,
+			false,
+			[&progress](std::uint64_t downloadedBytes, std::uint64_t totalBytes) {
+				if (const auto message = progress.Update(downloadedBytes, totalBytes)) {
+					OutputUpdateLog(*message);
+				}
+			});
+	};
+
 	const std::string acceleratedUrl = BuildAcceleratedGitHubUrl(asset.downloadUrl);
 	OutputUpdateLog("[AutoLinker更新] 通过 GitHub 加速地址下载：" + acceleratedUrl);
-	auto response = PerformGetRequest(acceleratedUrl, kGitHubHeaders, kDownloadTimeoutMs, false, false);
+	auto response = download(acceleratedUrl);
 	std::string validationError;
 	if (response.second == 200 && ValidateDownloadedArchive(response.first, asset, validationError)) {
 		outBytes = std::move(response.first);
@@ -271,7 +287,7 @@ bool AutoLinkerReleaseClient::DownloadArchive(
 		? validationError
 		: DescribeHttpFailure(response);
 	OutputUpdateLog("[AutoLinker更新] 加速地址下载失败，将尝试原始 GitHub 地址：" + acceleratedError);
-	response = PerformGetRequest(asset.downloadUrl, kGitHubHeaders, kDownloadTimeoutMs, false, false);
+	response = download(asset.downloadUrl);
 	validationError.clear();
 	if (response.second == 200 && ValidateDownloadedArchive(response.first, asset, validationError)) {
 		outBytes = std::move(response.first);

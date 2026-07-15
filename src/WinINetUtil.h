@@ -4,6 +4,7 @@
 #include <wininet.h>
 
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -50,6 +51,10 @@ struct HttpResponseDetails {
 	std::string GetHeaderValue(const std::string& name) const;
 };
 
+// HTTP 下载进度回调，参数依次为已下载字节数和响应总字节数；总大小未知时为 0。
+using HttpDownloadProgressCallback =
+	std::function<void(std::uint64_t downloadedBytes, std::uint64_t totalBytes)>;
+
 // Execute HTTP POST.
 std::pair<std::string, int> PerformPostRequest(
 	const std::string& url,
@@ -88,3 +93,12 @@ std::pair<std::string, int> PerformGetRequest(
 	int timeout = 200000,
 	bool AutoCookies = true,
 	bool NeverRedirect = true);
+
+// 执行 HTTP GET，并报告下载进度。
+std::pair<std::string, int> PerformGetRequest(
+	const std::string& url,
+	const std::string& customHeaders,
+	int timeout,
+	bool AutoCookies,
+	bool NeverRedirect,
+	const HttpDownloadProgressCallback& onProgress);

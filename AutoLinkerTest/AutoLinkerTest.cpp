@@ -18,6 +18,7 @@
 
 #include "..\\src\\AutoLinkerTestApi.h"
 #include "..\\src\\AIChatMarkdownTableRenderer.h"
+#include "..\\src\\DownloadProgressReporter.h"
 #include "..\\src\\UnicodeTextCodec.h"
 
 #pragma comment(lib, "winhttp.lib")
@@ -1166,6 +1167,30 @@ bool RunUnicodeTextCodecSmokeTest()
 		(GetACP() == CP_UTF8 || escaped.find("&#x1F7E1;") != std::string::npos);
 }
 
+bool RunDownloadProgressReporterSmokeTest()
+{
+	DownloadProgressReporter progress("[test]", 1000);
+	const auto initial = progress.Update(0, 1000);
+	const auto belowThreshold = progress.Update(99, 1000);
+	const auto tenPercent = progress.Update(100, 1000);
+	const auto skippedThreshold = progress.Update(250, 1000);
+	const auto unchangedThreshold = progress.Update(251, 1000);
+	const auto completed = progress.Update(1000, 1000);
+	const auto repeatedCompletion = progress.Update(1000, 1000);
+
+	DownloadProgressReporter unknownTotal("[test]");
+	const auto unknown = unknownTotal.Update(0, 0);
+	return initial && initial->find("0%") != std::string::npos &&
+		initial->find("0 B / 1000 B") != std::string::npos &&
+		!belowThreshold &&
+		tenPercent && tenPercent->find("10%") != std::string::npos &&
+		skippedThreshold && skippedThreshold->find("25%") != std::string::npos &&
+		!unchangedThreshold &&
+		completed && completed->find("100%") != std::string::npos &&
+		!repeatedCompletion &&
+		unknown && unknown->find("0 B") != std::string::npos;
+}
+
 bool RunBuiltInThemeSmokeTest()
 {
 	std::vector<char> buffer(64 * 1024, '\0');
@@ -1232,6 +1257,11 @@ int RunSmokeTest()
 		return EXIT_FAILURE;
 	}
 	std::cout << "unicode-text-codec: ok" << std::endl;
+	if (!RunDownloadProgressReporterSmokeTest()) {
+		std::cerr << "download-progress-reporter failed" << std::endl;
+		return EXIT_FAILURE;
+	}
+	std::cout << "download-progress-reporter: ok" << std::endl;
 	if (!RunBuiltInThemeSmokeTest()) {
 		std::cerr << "built-in-theme failed" << std::endl;
 		return EXIT_FAILURE;

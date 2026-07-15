@@ -470,6 +470,9 @@
     <ClCompile Include="src\AutoLinkerUpdateManager.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
+    <ClCompile Include="src\DownloadProgressReporter.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="src\AutoLinkerAI.cpp" />
     <ClCompile Include="src\AutoLinkerHooks.cpp" />
     <ClCompile Include="src\AutoLinkerMenu.cpp" />
@@ -580,6 +583,7 @@
     <ClInclude Include="src\WorkspaceFileTools.h" />
     <ClInclude Include="src\ConfigManager.h" />
     <ClInclude Include="src\DependencyCatalogCache.h" />
+    <ClInclude Include="src\DownloadProgressReporter.h" />
     <ClInclude Include="src\EPackagerIntegration.h" />
     <ClInclude Include="src\EcSwitchConfigDialog.h" />
     <ClInclude Include="src\EideInternalTextBridge.h" />

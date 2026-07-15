@@ -41,6 +41,9 @@
     <ClCompile Include="src\AutoLinkerUpdateManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\DownloadProgressReporter.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\AutoLinkerAI.cpp">
       <Filter>AI</Filter>
     </ClCompile>
@@ -301,6 +304,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\DependencyCatalogCache.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\DownloadProgressReporter.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\EPackagerIntegration.h">

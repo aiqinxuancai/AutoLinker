@@ -303,10 +303,14 @@
   <ItemGroup>
     <ClCompile Include="AutoLinkerTest.cpp" />
     <ClCompile Include="..\src\AIChatMarkdownTableRenderer.cpp" />
+    <ClCompile Include="..\src\DownloadProgressReporter.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="..\src\UnicodeTextCodec.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\AIChatMarkdownTableRenderer.h" />
+    <ClInclude Include="..\src\DownloadProgressReporter.h" />
     <ClInclude Include="..\src\UnicodeTextCodec.h" />
   </ItemGroup>
   <ItemGroup>
