@@ -1,15 +1,18 @@
 ﻿#include "AIChatRunController.h"
 
 #include <algorithm>
-#include <format>
 #include <sstream>
 #include <utility>
+
+#include "..\\thirdparty\\json.hpp"
 
 namespace {
 
 constexpr int kAutoCompactPercent = 90;
 constexpr int kRecoveryHintFailureCount = 3;
 constexpr int kStalledFailureCount = 8;
+constexpr int kRepeatedWriteRecoveryCount = 3;
+constexpr int kRepeatedWriteStalledCount = 5;
 constexpr size_t kMaxFallbackEventCount = 32;
 
 size_t MessageBytes(const AIChatMessage& message)
@@ -26,6 +29,68 @@ std::string TruncateText(const std::string& text, size_t limit)
 		return text;
 	}
 	return text.substr(0, limit) + "...";
+}
+
+std::string ToLowerAsciiCopy(std::string text)
+{
+	for (char& ch : text) {
+		if (ch >= 'A' && ch <= 'Z') {
+			ch = static_cast<char>(ch - 'A' + 'a');
+		}
+	}
+	return text;
+}
+
+bool IsSourceWriteTool(const std::string& toolName)
+{
+	const std::string normalized = ToLowerAsciiCopy(toolName);
+	return normalized == "edit_file" ||
+		normalized == "multi_edit_file" ||
+		normalized == "write_file" ||
+		normalized == "add_new_file" ||
+		normalized == "restore_file_snapshot";
+}
+
+std::string GetJsonStringField(const std::string& jsonText, const char* key)
+{
+	if (jsonText.empty() || key == nullptr) {
+		return std::string();
+	}
+	try {
+		const nlohmann::json value = nlohmann::json::parse(jsonText);
+		if (value.is_object() && value.contains(key) && value[key].is_string()) {
+			return value[key].get<std::string>();
+		}
+	}
+	catch (...) {
+	}
+	return std::string();
+}
+
+std::string BuildWriteTargetKey(
+	const std::string& argumentsJson,
+	std::string& outDisplayTarget)
+{
+	outDisplayTarget = GetJsonStringField(argumentsJson, "file_path");
+	if (outDisplayTarget.empty()) {
+		outDisplayTarget = GetJsonStringField(argumentsJson, "name");
+	}
+	if (outDisplayTarget.empty()) {
+		outDisplayTarget = "<unknown>";
+	}
+	return ToLowerAsciiCopy(outDisplayTarget);
+}
+
+std::string BuildFailureSignature(const std::string& resultJson)
+{
+	std::string signature = GetJsonStringField(resultJson, "error");
+	if (signature.empty()) {
+		signature = GetJsonStringField(resultJson, "reason");
+	}
+	if (signature.empty()) {
+		signature = TruncateText(resultJson, 400);
+	}
+	return ToLowerAsciiCopy(signature);
 }
 
 } // namespace
@@ -119,8 +184,12 @@ void AIChatRunController::CompleteToolCall(
 	bool ok,
 	AIChatMessage contextMessage)
 {
+	std::string toolName;
+	std::string argumentsJson;
 	if (index < m_toolCalls.size()) {
 		auto& call = m_toolCalls[index];
+		toolName = call.name;
+		argumentsJson = call.argumentsJson;
 		call.resultJson = resultJsonLocal;
 		call.completed = true;
 		call.ok = ok;
@@ -128,32 +197,74 @@ void AIChatRunController::CompleteToolCall(
 	AppendContextMessage(std::move(contextMessage));
 	if (ok) {
 		m_consecutiveFailures = 0;
-		m_recoveryHintPending = false;
+		if (IsSourceWriteTool(toolName)) {
+			std::string displayTarget;
+			m_writeFailures.erase(BuildWriteTargetKey(argumentsJson, displayTarget));
+			if (m_repeatedWriteFailureTarget == displayTarget) {
+				m_repeatedWriteFailureStalled = false;
+				m_repeatedWriteFailureTarget.clear();
+			}
+		}
 	}
 	else {
 		++m_consecutiveFailures;
 		if (m_consecutiveFailures == kRecoveryHintFailureCount) {
-			m_recoveryHintPending = true;
+			m_recoveryHint = "连续工具调用失败。请停止重复当前方案，检查错误结果并改用不同的验证或实现路径。";
+		}
+		if (IsSourceWriteTool(toolName)) {
+			std::string displayTarget;
+			const std::string targetKey = BuildWriteTargetKey(argumentsJson, displayTarget);
+			const std::string errorSignature = BuildFailureSignature(resultJsonLocal);
+			auto& state = m_writeFailures[targetKey];
+			if (state.errorSignature == errorSignature) {
+				++state.count;
+			}
+			else {
+				state.errorSignature = errorSignature;
+				state.count = 1;
+			}
+			if (state.count == kRepeatedWriteRecoveryCount) {
+				m_recoveryHint =
+					std::string("对源码目标 ") + displayTarget +
+					" 的写入已重复 " + std::to_string(state.count) +
+					" 次出现相同错误：" + TruncateText(errorSignature, 300) +
+					"。成功读取或预览不代表该写入问题已解决；请先修正根因并采用不同的写入内容或方案。";
+			}
+			if (state.count >= kRepeatedWriteStalledCount) {
+				m_repeatedWriteFailureStalled = true;
+				m_repeatedWriteFailureTarget = displayTarget;
+			}
 		}
 	}
 	PublishCheckpoint();
 }
 
-bool AIChatRunController::ShouldInjectRecoveryHint()
+std::string AIChatRunController::TakeRecoveryHint()
 {
-	return std::exchange(m_recoveryHintPending, false);
+	return std::exchange(m_recoveryHint, std::string());
 }
 
 bool AIChatRunController::IsStalled() const
 {
-	return m_consecutiveFailures >= kStalledFailureCount;
+	return m_consecutiveFailures >= kStalledFailureCount || m_repeatedWriteFailureStalled;
+}
+
+std::string AIChatRunController::StallReason() const
+{
+	if (m_repeatedWriteFailureStalled) {
+		return "source write stalled after " + std::to_string(kRepeatedWriteStalledCount) +
+			" repeated failures for " +
+			(m_repeatedWriteFailureTarget.empty() ? "<unknown>" : m_repeatedWriteFailureTarget);
+	}
+	return "tool execution stalled after " + std::to_string(kStalledFailureCount) +
+		" consecutive failures";
 }
 
 void AIChatRunController::ResetForNewContextWindow()
 {
 	m_toolCalls.clear();
 	m_consecutiveFailures = 0;
-	m_recoveryHintPending = false;
+	m_recoveryHint.clear();
 }
 
 void AIChatRunController::RecordCompaction(const std::string& summaryLocal)

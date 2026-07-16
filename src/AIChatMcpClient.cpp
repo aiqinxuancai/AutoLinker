@@ -1354,6 +1354,13 @@ JsonRpcResult ParseJsonRpcResponseBody(const HttpResponseDetails& response, int 
 		result.error = std::format("http_status={} body={}", response.statusCode, TruncateUtf8(response.body, 800));
 		return result;
 	}
+	if (notification && (response.statusCode == 202 || response.statusCode == 204)) {
+		// JSON-RPC notifications do not have response objects. Some MCP servers
+		// return a plain-text acknowledgement, which must not be parsed as JSON.
+		result.ok = true;
+		result.payload = nlohmann::json::object();
+		return result;
+	}
 	if (TrimAscii(response.body).empty()) {
 		// Notifications/responses are answered with 202 Accepted and no body.
 		result.ok = true;
@@ -2174,6 +2181,22 @@ std::string BuildSelfTestReportJson()
 		};
 		const nlohmann::json envelope = BuildMcpResultEnvelope(mapping, R"({"text":"hello"})", result, true, 200);
 		addCheck("result_envelope", envelope.value("source", "") == "mcp" && envelope.value("ok", false), envelope.dump());
+
+		HttpResponseDetails acceptedNotification;
+		acceptedNotification.statusCode = 202;
+		acceptedNotification.body = "Accepted";
+		const JsonRpcResult notificationResult = ParseJsonRpcResponseBody(
+			acceptedNotification,
+			0,
+			true);
+		const JsonRpcResult requestResult = ParseJsonRpcResponseBody(
+			acceptedNotification,
+			1,
+			false);
+		addCheck(
+			"notification_202_plain_text",
+			notificationResult.ok && !requestResult.ok,
+			notificationResult.error.empty() ? requestResult.error : notificationResult.error);
 	}
 	catch (const std::exception& ex) {
 		addCheck("exception", false, ex.what());

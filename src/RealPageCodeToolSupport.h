@@ -34,6 +34,8 @@ std::string PrepareAssemblyVariablesForRealPageWrite(const std::string& text);
 // 校验 .子程序 的固定字段和子程序内部声明顺序：参数、局部变量、执行语句。
 // 注释从第四个字段开始，注释正文中的逗号不再参与结构解析。
 bool ValidateRealPageSubroutineHeaders(const std::string& text, std::string& outError);
+// 校验真实页源码中的条件、判断和循环控制块是否正确配对。
+bool ValidateRealPageControlFlow(const std::string& text, std::string& outError);
 // 合并 IDE 新建类时生成的生命周期函数，并保证 _初始化、_销毁依次为前两个函数。
 std::string PrepareNewClassPageLifecycleFunctions(
 	const std::string& requestedCode,

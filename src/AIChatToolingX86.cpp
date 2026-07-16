@@ -1520,6 +1520,12 @@ bool TryWriteRealPageCodeForAI(
 		outError = headerError;
 		return false;
 	}
+	std::string controlFlowError;
+	if (!ValidateRealPageControlFlow(normalizedNewCode, controlFlowError)) {
+		outTrace = "preflight_control_flow";
+		outError = controlFlowError;
+		return false;
+	}
 	const std::string preparedExpectedCode = NormalizeRealCodeLineBreaksToCrLf(
 		PrepareAssemblyVariablesForRealPageWrite(normalizedNewCode));
 
@@ -3409,6 +3415,14 @@ std::string BuildAddNewFileJsonOnMainThread(const std::string& argumentsJson, bo
 			r["ok"] = false;
 			r["error"] = headerError;
 			r["preflight"] = "subroutine_declaration_layout";
+			return JsonToLocalTextForAI(r);
+		}
+		std::string controlFlowError;
+		if (!ValidateRealPageControlFlow(requestedCode, controlFlowError)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = controlFlowError;
+			r["preflight"] = "control_flow";
 			return JsonToLocalTextForAI(r);
 		}
 	}

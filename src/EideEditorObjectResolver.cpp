@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <detours.h>
 
+#include <atomic>
 #include <cstdint>
 #include <format>
 #include <initializer_list>
@@ -1146,12 +1147,15 @@ bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
 
     const auto& addrs = GetEditorResolverAddresses(moduleBase);
     const auto resolveLightweightByHiddenOpen = [&](const char* reason) -> bool {
+		const std::string reasonTrace = reason == nullptr
+			? std::string()
+			: ("|" + std::string(reason));
         const auto& openAddrs = GetOpenCodeTargetAddresses(moduleBase);
         if (!openAddrs.ok) {
             if (outTrace != nullptr) {
                 *outTrace =
-                    std::string(reason == nullptr ? "native_addresses_unavailable" : reason) +
-                    "|lightweight_open_code_target_unavailable|" +
+					std::string("lightweight_open_code_target_unavailable") +
+					reasonTrace + "|" +
                     openAddrs.trace;
             }
             return false;
@@ -1207,8 +1211,8 @@ bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
         if (mainEditorHost == nullptr) {
             if (outTrace != nullptr) {
                 *outTrace =
-                    std::string(reason == nullptr ? "native_addresses_unavailable" : reason) +
-                    "|lightweight_main_editor_host_null|" +
+					std::string("lightweight_main_editor_host_null") +
+					reasonTrace + "|" +
                     openAddrs.trace;
             }
             return false;
@@ -1228,8 +1232,8 @@ bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
             editorObject == nullptr) {
             if (outTrace != nullptr) {
                 *outTrace =
-                    std::string(reason == nullptr ? "native_addresses_unavailable" : reason) +
-                    "|lightweight_hidden_open_failed|" +
+					std::string("lightweight_hidden_open_failed") +
+					reasonTrace + "|" +
                     (hiddenOpenTrace.empty() ? std::string("hidden_open_failed") : hiddenOpenTrace) +
                     "|" +
                     openAddrs.trace;
@@ -1252,8 +1256,7 @@ bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
         if (outTrace != nullptr) {
             *outTrace =
                 std::string("open_editor_no_activate_lightweight_hidden_open") +
-                "|" +
-                (reason == nullptr ? "native_addresses_unavailable" : reason) +
+				reasonTrace +
                 "|open_type=" + std::to_string(openType) +
                 "|arg2=" + std::to_string(openArg2) +
                 "|arg3=" + std::to_string(openArg3) +
@@ -1267,10 +1270,14 @@ bool TryResolveEditorObjectForProgramTreeItemDataNoActivate(
     };
 
     if (!addrs.ok) {
-        return resolveLightweightByHiddenOpen("resolve_native_addresses_failed");
+		static std::atomic_bool reportedFallback{false};
+		const char* reason = reportedFallback.exchange(true, std::memory_order_relaxed)
+			? nullptr
+			: "native_addresses_unavailable_using_hidden_open";
+		return resolveLightweightByHiddenOpen(reason);
     }
     if (addrs.createCodePage == 0) {
-        return resolveLightweightByHiddenOpen("create_code_page_resolve_failed");
+		return resolveLightweightByHiddenOpen("create_code_page_unavailable_using_hidden_open");
     }
 
     void* const mainEditorHost = PtrAbsolute<void>(moduleBase, addrs.mainEditorHost);
@@ -1554,7 +1561,7 @@ bool SetMainEditorActiveEditorObjectImpl(
     const auto& addrs = GetEditorResolverAddresses(moduleBase);
     if (!addrs.ok) {
         if (outTrace != nullptr) {
-            *outTrace = "resolve_native_addresses_failed";
+			*outTrace = "native_addresses_unavailable";
         }
         return false;
     }
@@ -1627,7 +1634,7 @@ bool GetMainEditorActiveEditorObjectImpl(
     const auto& addrs = GetEditorResolverAddresses(moduleBase);
     if (!addrs.ok) {
         if (outTrace != nullptr) {
-            *outTrace = "resolve_native_addresses_failed";
+			*outTrace = "native_addresses_unavailable";
         }
         return false;
     }

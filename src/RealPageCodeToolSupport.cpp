@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <format>
 #include <limits>
 #include <mutex>
 #include <string_view>
@@ -723,6 +724,164 @@ bool ValidateRealPageSubroutineHeaders(const std::string& text, std::string& out
 		}
 		// 任何非空、非注释且非声明行都视为执行语句/流程指令。
 		sawExecutableStatement = true;
+	}
+	return true;
+}
+
+bool ValidateRealPageControlFlow(const std::string& text, std::string& outError)
+{
+	enum class BlockKind {
+		If,
+		IfTrue,
+		Switch,
+		CountLoop,
+		WhileLoop,
+		VariableLoop
+	};
+	struct BlockState {
+		BlockKind kind;
+		size_t lineIndex;
+		bool sawBranch = false;
+	};
+
+	const auto blockName = [](BlockKind kind) -> const char* {
+		switch (kind) {
+		case BlockKind::If:
+			return ".如果";
+		case BlockKind::IfTrue:
+			return ".如果真";
+		case BlockKind::Switch:
+			return ".判断开始";
+		case BlockKind::CountLoop:
+			return ".计次循环首";
+		case BlockKind::WhileLoop:
+			return ".循环判断首/.判断循环首";
+		default:
+			return ".变量循环首";
+		}
+	};
+	const auto matchesDirective = [](const std::string& sourceLine, std::string_view keyword) {
+		std::string line = TrimAsciiCopyLocal(sourceLine);
+		if (line.empty() || line.front() == '\'') {
+			return false;
+		}
+		if (line.front() == '.') {
+			line.erase(line.begin());
+		}
+		if (!StartsWithLocal(line, keyword)) {
+			return false;
+		}
+		if (line.size() == keyword.size()) {
+			return true;
+		}
+		const unsigned char next = static_cast<unsigned char>(line[keyword.size()]);
+		return next == '(' || std::isspace(next) != 0;
+	};
+
+	outError.clear();
+	std::vector<BlockState> stack;
+	const std::vector<std::string> lines = SplitRealCodeLines(text);
+	const auto failUnexpected = [&outError, &stack, &blockName](
+		size_t lineIndex,
+		const char* directive) {
+		outError = std::format(
+			"invalid control flow at line {}: {} does not match the active {} block",
+			lineIndex + 1,
+			directive,
+			stack.empty() ? "top-level" : blockName(stack.back().kind));
+		return false;
+	};
+	const auto closeBlock = [&stack, &failUnexpected](
+		size_t lineIndex,
+		BlockKind expected,
+		const char* directive) {
+		if (stack.empty() || stack.back().kind != expected) {
+			return failUnexpected(lineIndex, directive);
+		}
+		stack.pop_back();
+		return true;
+	};
+
+	for (size_t lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
+		const std::string& line = lines[lineIndex];
+		if (matchesDirective(line, "如果真结束")) {
+			if (!closeBlock(lineIndex, BlockKind::IfTrue, ".如果真结束")) {
+				return false;
+			}
+		}
+		else if (matchesDirective(line, "如果结束")) {
+			if (!closeBlock(lineIndex, BlockKind::If, ".如果结束")) {
+				return false;
+			}
+		}
+		else if (matchesDirective(line, "否则")) {
+			if (!stack.empty() && stack.back().kind == BlockKind::IfTrue) {
+				outError = std::format(
+					"invalid control flow at line {}: .否则 cannot be used with .如果真; use .如果/.如果结束 when an else branch is required",
+					lineIndex + 1);
+				return false;
+			}
+			if (stack.empty() || stack.back().kind != BlockKind::If || stack.back().sawBranch) {
+				return failUnexpected(lineIndex, ".否则");
+			}
+			stack.back().sawBranch = true;
+		}
+		else if (matchesDirective(line, "如果真")) {
+			stack.push_back({BlockKind::IfTrue, lineIndex});
+		}
+		else if (matchesDirective(line, "如果")) {
+			stack.push_back({BlockKind::If, lineIndex});
+		}
+		else if (matchesDirective(line, "判断结束")) {
+			if (!closeBlock(lineIndex, BlockKind::Switch, ".判断结束")) {
+				return false;
+			}
+		}
+		else if (matchesDirective(line, "判断开始")) {
+			stack.push_back({BlockKind::Switch, lineIndex});
+		}
+		else if (matchesDirective(line, "默认")) {
+			if (stack.empty() || stack.back().kind != BlockKind::Switch || stack.back().sawBranch) {
+				return failUnexpected(lineIndex, ".默认");
+			}
+			stack.back().sawBranch = true;
+		}
+		else if (matchesDirective(line, "判断") &&
+			(stack.empty() || stack.back().kind != BlockKind::Switch)) {
+			return failUnexpected(lineIndex, ".判断");
+		}
+		else if (matchesDirective(line, "计次循环尾")) {
+			if (!closeBlock(lineIndex, BlockKind::CountLoop, ".计次循环尾")) {
+				return false;
+			}
+		}
+		else if (matchesDirective(line, "计次循环首")) {
+			stack.push_back({BlockKind::CountLoop, lineIndex});
+		}
+		else if (matchesDirective(line, "循环判断尾") || matchesDirective(line, "判断循环尾")) {
+			if (!closeBlock(lineIndex, BlockKind::WhileLoop, ".循环判断尾/.判断循环尾")) {
+				return false;
+			}
+		}
+		else if (matchesDirective(line, "循环判断首") || matchesDirective(line, "判断循环首")) {
+			stack.push_back({BlockKind::WhileLoop, lineIndex});
+		}
+		else if (matchesDirective(line, "变量循环尾")) {
+			if (!closeBlock(lineIndex, BlockKind::VariableLoop, ".变量循环尾")) {
+				return false;
+			}
+		}
+		else if (matchesDirective(line, "变量循环首")) {
+			stack.push_back({BlockKind::VariableLoop, lineIndex});
+		}
+	}
+
+	if (!stack.empty()) {
+		outError = std::format(
+			"invalid control flow: {} block opened at line {} is not closed",
+			blockName(stack.back().kind),
+			stack.back().lineIndex + 1);
+		return false;
 	}
 	return true;
 }

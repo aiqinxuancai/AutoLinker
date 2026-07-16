@@ -254,10 +254,43 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 			false,
 			AIChatMessage{"tool", "failed", "", ""});
 		if (i == 2) {
-			recoveryHintAtThree = failureController.ShouldInjectRecoveryHint();
+			recoveryHintAtThree = !failureController.TakeRecoveryHint().empty();
 		}
 	}
 	const bool stalledAtEight = failureController.IsStalled();
+
+	AIChatRunController repeatedWriteController(settings, initialContext, {});
+	bool repeatedWriteHintAtThree = false;
+	for (int i = 0; i < 5; ++i) {
+		repeatedWriteController.BeginToolBatch({AIChatCheckpointToolCall{
+			std::format("write_{}", i),
+			i % 2 == 0 ? "edit_file" : "write_file",
+			R"({"file_path":"src/Test.txt"})"
+		}});
+		repeatedWriteController.CompleteToolCall(
+			0,
+			R"({"ok":false,"error":"whole page write verify failed"})",
+			false,
+			AIChatMessage{"tool", "write failed", "", ""});
+		if (i == 2) {
+			repeatedWriteHintAtThree =
+				repeatedWriteController.TakeRecoveryHint().find("src/Test.txt") != std::string::npos;
+		}
+		if (i < 4) {
+			repeatedWriteController.BeginToolBatch({AIChatCheckpointToolCall{
+				std::format("read_{}", i),
+				"read_real_file",
+				R"({"file_path":"src/Test.txt"})"
+			}});
+			repeatedWriteController.CompleteToolCall(
+				0,
+				R"({"ok":true})",
+				true,
+				AIChatMessage{"tool", "read ok", "", ""});
+		}
+	}
+	const bool repeatedWriteStalledAtFive = repeatedWriteController.IsStalled() &&
+		repeatedWriteController.StallReason().find("src/Test.txt") != std::string::npos;
 
 	AIChatRunCheckpoint completedCheckpoint;
 	completedCheckpoint.protocolType = AIProtocolType::OpenAI;
@@ -392,6 +425,8 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		localCompactionFallback &&
 		recoveryHintAtThree &&
 		stalledAtEight &&
+		repeatedWriteHintAtThree &&
+		repeatedWriteStalledAtFive &&
 		sameProviderResume &&
 		interruptedResumeRebuilt &&
 		crossProviderResume &&
@@ -407,6 +442,8 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	outCheck["local_compaction_fallback"] = localCompactionFallback;
 	outCheck["recovery_hint_at_3"] = recoveryHintAtThree;
 	outCheck["stalled_at_8"] = stalledAtEight;
+	outCheck["repeated_write_hint_at_3"] = repeatedWriteHintAtThree;
+	outCheck["repeated_write_stalled_at_5"] = repeatedWriteStalledAtFive;
 	outCheck["same_provider_resume"] = sameProviderResume;
 	outCheck["interrupted_resume_rebuilt"] = interruptedResumeRebuilt;
 	outCheck["cross_provider_resume"] = crossProviderResume;
@@ -2317,6 +2354,44 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		"result ＝ 1\r\n"
 		".局部变量 result, 整数型\r\n",
 		localAfterStatementError);
+	std::string validControlFlowError;
+	std::string invalidIfTrueElseError;
+	std::string unclosedControlFlowError;
+	const bool validControlFlow = ValidateRealPageControlFlow(
+		".子程序 Demo\r\n"
+		".如果 (真)\r\n"
+		"返回 (1)\r\n"
+		".否则\r\n"
+		"返回 (0)\r\n"
+		".如果结束\r\n"
+		".如果真 (真)\r\n"
+		"返回\r\n"
+		".如果真结束\r\n"
+		".计次循环首 (2, )\r\n"
+		".计次循环尾 ()\r\n",
+		validControlFlowError);
+	const bool invalidIfTrueElseRejected = !ValidateRealPageControlFlow(
+		".子程序 Demo\r\n"
+		".如果真 (真)\r\n"
+		"返回 (1)\r\n"
+		".否则\r\n"
+		"返回 (0)\r\n"
+		".如果真结束\r\n",
+		invalidIfTrueElseError);
+	const bool unclosedControlFlowRejected = !ValidateRealPageControlFlow(
+		".子程序 Demo\r\n"
+		".如果 (真)\r\n"
+		"返回 (1)\r\n",
+		unclosedControlFlowError);
+	report["checks"].push_back({
+		{"name", "real-page-control-flow-preflight"},
+		{"ok", validControlFlow && invalidIfTrueElseRejected && unclosedControlFlowRejected},
+		{"valid_control_flow", validControlFlow},
+		{"invalid_if_true_else_rejected", invalidIfTrueElseRejected},
+		{"invalid_if_true_else_error", LocalToUtf8ForTest(invalidIfTrueElseError)},
+		{"unclosed_control_flow_rejected", unclosedControlFlowRejected},
+		{"unclosed_control_flow_error", LocalToUtf8ForTest(unclosedControlFlowError)}
+	});
 	report["checks"].push_back({
 		{"name", "real-page-subroutine-description-normalization"},
 		{"ok", subroutineBareHeader == subroutineDescribedHeader &&
