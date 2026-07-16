@@ -220,6 +220,90 @@ std::string BuildSessionTitleLocal(const AIChatStoredSession& session)
 		: ("[" + session.sourceFileNameLocal + "] 会话");
 }
 
+nlohmann::json SerializeRunCheckpoint(const AIChatRunCheckpoint& checkpoint)
+{
+	nlohmann::json value = {
+		{"schema_version", checkpoint.schemaVersion},
+		{"protocol_type", static_cast<int>(checkpoint.protocolType)},
+		{"model", LocalToUtf8TextForSessionStore(checkpoint.model)},
+		{"state", checkpoint.state},
+		{"summary", LocalToUtf8TextForSessionStore(checkpoint.summary)},
+		{"sampling_rounds", checkpoint.samplingRounds},
+		{"compaction_count", checkpoint.compactionCount},
+		{"prompt_tokens", checkpoint.promptTokens},
+		{"total_tokens", checkpoint.totalTokens},
+		{"has_usage", checkpoint.hasUsage},
+		{"context_messages", nlohmann::json::array()},
+		{"tool_calls", nlohmann::json::array()}
+	};
+	for (const AIChatMessage& message : checkpoint.contextMessages) {
+		value["context_messages"].push_back({
+			{"role", message.role},
+			{"content", LocalToUtf8TextForSessionStore(message.content)},
+			{"reasoning_content", message.reasoningContent},
+			{"raw_message_json_utf8", message.rawMessageJsonUtf8}
+		});
+	}
+	for (const AIChatCheckpointToolCall& call : checkpoint.toolCalls) {
+		value["tool_calls"].push_back({
+			{"call_id", call.callId},
+			{"name", call.name},
+			{"arguments", LocalToUtf8TextForSessionStore(call.argumentsJson)},
+			{"result", LocalToUtf8TextForSessionStore(call.resultJson)},
+			{"completed", call.completed},
+			{"ok", call.ok}
+		});
+	}
+	return value;
+}
+
+bool DeserializeRunCheckpoint(const nlohmann::json& value, AIChatRunCheckpoint& checkpoint)
+{
+	if (!value.is_object()) {
+		return false;
+	}
+	checkpoint = {};
+	checkpoint.schemaVersion = static_cast<int>(GetJsonInt64(value, "schema_version", 1));
+	checkpoint.protocolType = static_cast<AIProtocolType>(GetJsonInt64(value, "protocol_type", 0));
+	checkpoint.model = GetJsonStringAsLocalText(value, "model");
+	checkpoint.state = GetJsonStringUtf8(value, "state");
+	checkpoint.summary = GetJsonStringAsLocalText(value, "summary");
+	checkpoint.samplingRounds = static_cast<int>(GetJsonInt64(value, "sampling_rounds", 0));
+	checkpoint.compactionCount = static_cast<int>(GetJsonInt64(value, "compaction_count", 0));
+	checkpoint.promptTokens = static_cast<int>(GetJsonInt64(value, "prompt_tokens", 0));
+	checkpoint.totalTokens = static_cast<int>(GetJsonInt64(value, "total_tokens", 0));
+	checkpoint.hasUsage = GetJsonBool(value, "has_usage", false);
+	if (value.contains("context_messages") && value["context_messages"].is_array()) {
+		for (const auto& row : value["context_messages"]) {
+			if (!row.is_object()) {
+				continue;
+			}
+			checkpoint.contextMessages.push_back(AIChatMessage{
+				GetJsonStringUtf8(row, "role"),
+				GetJsonStringAsLocalText(row, "content"),
+				GetJsonStringUtf8(row, "reasoning_content"),
+				GetJsonStringUtf8(row, "raw_message_json_utf8")
+			});
+		}
+	}
+	if (value.contains("tool_calls") && value["tool_calls"].is_array()) {
+		for (const auto& row : value["tool_calls"]) {
+			if (!row.is_object()) {
+				continue;
+			}
+			checkpoint.toolCalls.push_back(AIChatCheckpointToolCall{
+				GetJsonStringUtf8(row, "call_id"),
+				GetJsonStringUtf8(row, "name"),
+				GetJsonStringAsLocalText(row, "arguments"),
+				GetJsonStringAsLocalText(row, "result"),
+				GetJsonBool(row, "completed", false),
+				GetJsonBool(row, "ok", false)
+			});
+		}
+	}
+	return !checkpoint.contextMessages.empty();
+}
+
 bool SerializeSession(const AIChatStoredSession& session, nlohmann::json& outJson, std::string& outError)
 {
 	try {
@@ -237,6 +321,9 @@ bool SerializeSession(const AIChatStoredSession& session, nlohmann::json& outJso
 		outJson["plan_mode_state"] = session.planModeState;
 		outJson["pending_plan"] = LocalToUtf8TextForSessionStore(session.pendingPlanLocal);
 		outJson["auto_allow_writes"] = session.autoAllowWrites;
+		if (session.hasRunCheckpoint) {
+			outJson["run_checkpoint"] = SerializeRunCheckpoint(session.runCheckpoint);
+		}
 		outJson["messages"] = nlohmann::json::array();
 
 		for (const auto& message : session.messages) {
@@ -281,6 +368,20 @@ bool DeserializeSession(const nlohmann::json& jsonValue, AIChatStoredSession& ou
 	outSession.planModeState = GetJsonStringUtf8(jsonValue, "plan_mode_state");
 	outSession.pendingPlanLocal = GetJsonStringAsLocalText(jsonValue, "pending_plan");
 	outSession.autoAllowWrites = GetJsonBool(jsonValue, "auto_allow_writes", false);
+	if (jsonValue.contains("run_checkpoint")) {
+		outSession.hasRunCheckpoint = DeserializeRunCheckpoint(
+			jsonValue["run_checkpoint"],
+			outSession.runCheckpoint);
+		if (outSession.hasRunCheckpoint) {
+			if (outSession.runCheckpoint.state == "completed") {
+				outSession.hasRunCheckpoint = false;
+				outSession.runCheckpoint = {};
+			}
+			else {
+				outSession.runCheckpoint.state = "paused";
+			}
+		}
+	}
 
 	if (outSession.createdAtDisplayLocal.empty()) {
 		outSession.createdAtDisplayLocal = BuildTimestampDisplayLocal(outSession.createdAtUnixMs);
@@ -379,14 +480,6 @@ bool SaveAIChatStoredSession(const AIChatStoredSession& session, std::string* ou
 		return false;
 	}
 
-	std::ofstream out(session.sessionFilePath, std::ios::binary | std::ios::trunc);
-	if (!out.is_open()) {
-		if (outError != nullptr) {
-			*outError = "failed to open session file";
-		}
-		return false;
-	}
-
 	std::string text;
 	try {
 		text = jsonValue.dump(2, ' ', false, nlohmann::json::error_handler_t::replace);
@@ -398,12 +491,38 @@ bool SaveAIChatStoredSession(const AIChatStoredSession& session, std::string* ou
 		return false;
 	}
 
+	std::filesystem::path temporaryPath = session.sessionFilePath;
+	temporaryPath += std::format(
+		L".tmp.{}.{}",
+		static_cast<unsigned long>(GetCurrentProcessId()),
+		static_cast<unsigned long>(GetCurrentThreadId()));
+	std::ofstream out(temporaryPath, std::ios::binary | std::ios::trunc);
+	if (!out.is_open()) {
+		if (outError != nullptr) {
+			*outError = "failed to open session file";
+		}
+		return false;
+	}
 	out.write("\xEF\xBB\xBF", 3);
 	out.write(text.data(), static_cast<std::streamsize>(text.size()));
 	out.flush();
 	if (!out.good()) {
+		out.close();
+		DeleteFileW(temporaryPath.c_str());
 		if (outError != nullptr) {
 			*outError = "failed to write session file";
+		}
+		return false;
+	}
+	out.close();
+	if (MoveFileExW(
+			temporaryPath.c_str(),
+			session.sessionFilePath.c_str(),
+			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
+		const DWORD errorCode = GetLastError();
+		DeleteFileW(temporaryPath.c_str());
+		if (outError != nullptr) {
+			*outError = std::format("failed to replace session file: win32={}", errorCode);
 		}
 		return false;
 	}

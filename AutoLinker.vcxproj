@@ -512,6 +512,9 @@
     <ClCompile Include="src\AIChatMcpClient.cpp" />
     <ClCompile Include="src\AIChatMcpConfig.cpp" />
     <ClCompile Include="src\AIChatMcpConfigDialog.cpp" />
+	<ClCompile Include="src\AIChatRunController.cpp">
+	  <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+	</ClCompile>
     <ClCompile Include="src\AIChatSessionStore.cpp" />
     <ClCompile Include="src\AIChatThemeManager.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -559,6 +562,7 @@
     <ClInclude Include="elib\PublicIDEFunctions.h" />
     <ClInclude Include="elib\untshare.h" />
     <ClInclude Include="src\AutoLinker.h" />
+	<ClInclude Include="src\AIChatRunController.h" />
     <ClInclude Include="src\AutoLinkerReleaseClient.h" />
     <ClInclude Include="src\AutoLinkerUpdateInstaller.h" />
     <ClInclude Include="src\AutoLinkerUpdateManager.h" />

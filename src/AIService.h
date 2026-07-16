@@ -82,12 +82,56 @@ struct AIChatToolEvent {
 	bool ok = false;
 };
 
+// AI 长任务终止原因。
+enum class AIChatRunTerminationReason {
+	None = 0,
+	Completed,
+	Cancelled,
+	ProviderError,
+	Stalled,
+	CompactionFailed
+};
+
+// AI 长任务中尚未完成或刚完成的工具调用。
+struct AIChatCheckpointToolCall {
+	std::string callId;
+	std::string name;
+	std::string argumentsJson;
+	std::string resultJson;
+	bool completed = false;
+	bool ok = false;
+};
+
+// AI 长任务的可恢复检查点。
+struct AIChatRunCheckpoint {
+	int schemaVersion = 1;
+	AIProtocolType protocolType = AIProtocolType::OpenAI;
+	std::string model;
+	std::string state = "running"; // running | paused | completed
+	std::string summary;
+	int samplingRounds = 0;
+	int compactionCount = 0;
+	int promptTokens = 0;
+	int totalTokens = 0;
+	bool hasUsage = false;
+	std::vector<AIChatMessage> contextMessages;
+	std::vector<AIChatCheckpointToolCall> toolCalls;
+};
+
+// AI 长任务运行选项。
+struct AIChatRunOptions {
+	const AIChatRunCheckpoint* resumeCheckpoint = nullptr;
+	std::function<void(const AIChatRunCheckpoint& checkpoint)> checkpointCallback;
+};
+
 // AI 对话结果。
 struct AIChatResult {
 	bool ok = false;
 	bool cancelled = false;
-	// 工具调用超过上限，用于上层避免保存未完成的工具链上下文。
+	// 兼容旧调试接口；长期任务不再按固定工具轮数终止。
 	bool toolRoundsExceeded = false;
+	bool paused = false;
+	AIChatRunTerminationReason terminationReason = AIChatRunTerminationReason::None;
 	std::string content;
 	std::string reasoningContent;
 	std::string error;
@@ -98,6 +142,11 @@ struct AIChatResult {
 	bool hasUsage = false;
 	int promptTokens = 0; // 输入 token —— 衡量「上下文有多满」的关键数
 	int totalTokens = 0;  // prompt+completion，仅日志诊断用
+	int samplingRounds = 0;
+	int compactionCount = 0;
+	bool hasCheckpoint = false;
+	AIChatRunCheckpoint checkpoint;
+	std::vector<AIChatMessage> continuationMessages;
 };
 
 class AIService {
@@ -130,7 +179,8 @@ public:
 		const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
 		const std::function<void(const std::string& deltaText)>& streamCallback = {},
 		const std::function<bool()>& cancelCallback = {},
-		HttpRequestCancellation* cancelContext = nullptr);
+		HttpRequestCancellation* cancelContext = nullptr,
+		const AIChatRunOptions& runOptions = {});
 	static std::string BuildPublicToolCatalogJson();
 	// 构建 Agent 工具优化与 Responses 流式解析的内部自测报告。
 	static std::string BuildAgentOptimizationSelfTestJson();

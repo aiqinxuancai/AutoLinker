@@ -7,8 +7,7 @@
 // 内置 AI 对话的工具调用预算、重复读取与写后收敛策略。
 namespace AIChatToolPolicy {
 
-inline constexpr int kSoftExplorationCallLimit = 4;
-inline constexpr int kHardExplorationCallLimit = 6;
+inline constexpr int kExplorationReminderInterval = 8;
 inline constexpr std::size_t kReadFileContextBytes = 24 * 1024;
 inline constexpr std::size_t kReadFilesPerFileContextBytes = 8 * 1024;
 inline constexpr std::size_t kReadRealFileCodeContextBytes = 48 * 1024;
@@ -37,6 +36,7 @@ public:
 
 	int ExplorationCalls() const;
 	bool PreferLowThinkingForNextRound() const;
+	void StartNewContextWindow();
 
 private:
 	struct Impl;

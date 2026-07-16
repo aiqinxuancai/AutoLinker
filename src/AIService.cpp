@@ -13,6 +13,7 @@
 #include "..\\thirdparty\\json.hpp"
 
 #include "AIChatMcpClient.h"
+#include "AIChatRunController.h"
 #include "AIChatToolRegistry.h"
 #include "AIChatToolPolicy.h"
 #include "AIJsonConfig.h"
@@ -92,7 +93,6 @@ constexpr int kAiRequestRetryCount = 5;
 constexpr int kAiChatRequestRetryCount = 2;
 constexpr int kAiChatRequestTimeoutMs = 60000;
 constexpr int kAiRequestCancelledHttpStatus = 499;
-constexpr int kMaxToolRounds = 64;
 
 int GetChatRequestTimeoutMs(const AISettings& settings)
 {
@@ -255,6 +255,7 @@ AIChatResult MarkChatResultCancelled(AIChatResult result, const std::string& par
 {
 	result.ok = false;
 	result.cancelled = true;
+	result.terminationReason = AIChatRunTerminationReason::Cancelled;
 	result.content = partialContentLocal;
 	result.error = "chat request cancelled by user";
 	result.httpStatus = kAiRequestCancelledHttpStatus;
@@ -1153,17 +1154,6 @@ void ApplyThinkingConfigToGeminiRequest(nlohmann::json& requestBody, const AISet
 	requestBody["generationConfig"]["thinkingConfig"] = std::move(thinkingConfig);
 }
 
-std::string BuildToolRoundsExceededError(int maxToolRounds, const std::vector<AIChatToolEvent>& toolEvents)
-{
-	std::string message = std::format("tool call rounds exceeded limit ({})", maxToolRounds);
-	if (!toolEvents.empty()) {
-		message += " after ";
-		message += std::to_string(toolEvents.size());
-		message += " tool calls";
-	}
-	return message;
-}
-
 std::string LocalToUtf8(const std::string& text)
 {
 	return UnicodeTextCodec::LocalToUtf8RestoringUnicode(text);
@@ -1219,7 +1209,7 @@ std::string AppendToolPolicyNotice(
 		result["_tool_policy"] = {
 			{"message", notice},
 			{"exploration_calls_used", policy.ExplorationCalls()},
-			{"exploration_call_limit", AIChatToolPolicy::kHardExplorationCallLimit}
+			{"exploration_reminder_interval", AIChatToolPolicy::kExplorationReminderInterval}
 		};
 		return Utf8ToLocal(result.dump());
 	}
@@ -2564,8 +2554,8 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 	const std::string projectType = DetectProjectTypeText();
 	const bool mirrorSourceBase = settings.sourceEditMode == AISourceEditMode::MirrorSourceBase;
 	const std::string sourceReadRule = mirrorSourceBase
-		? "4) 已知子程序/代码项名称时优先用 read_code_item；未知位置时只做一次批量 search_code，再用一次 read_files 批量读取必要文件。写入工具以 read_files/read_code_item 的镜像文本和哈希为基准。\n"
-		: "4) 已知子程序/代码项名称时优先用 read_code_item；未知位置时只做一次批量 search_code，再用一次 read_files 批量读取必要镜像；编辑当前工程源码前，再用 read_real_file 读取同一 file_path 的 IDE 真实页文本。\n";
+		? "4) 已知子程序/代码项名称时优先用 read_code_item；未知位置时优先批量 search_code，再用 read_files 批量读取必要文件。若结果仍缺少影响正确性的范围，可继续读取明确缺失的部分。写入工具以 read_files/read_code_item 的镜像文本和哈希为基准。\n"
+		: "4) 已知子程序/代码项名称时优先用 read_code_item；未知位置时优先批量 search_code，再用 read_files 批量读取必要镜像。若结果仍缺少影响正确性的范围，可继续读取明确缺失的部分；编辑当前工程源码前，再用 read_real_file 读取同一 file_path 的 IDE 真实页文本。\n";
 	{
 		std::string prompt =
 			"你是AutoLinker，一个内置于易语言IDE的插件形式的助手。\n"
@@ -2575,7 +2565,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"统一源码工具规则：\n"
 			"1) list_files / search_code / read_files / read_code_item 基于 e-packager 解包出的当前工程镜像，路径一律是镜像内相对路径，并返回 mirror_source。\n"
 			"2) 每轮内部 AI 请求开始前已用 mode=full 自动刷新工程镜像，通常无需重复调用 refresh_workspace_mirror；如果工具返回 workspace_refresh_required，或确需重新获取 IDE 最新内存状态，再调用该工具后重试。\n"
-			"3) 普通单文件修改的探索预算最多 6 次只读调用；达到 4 次时立即收敛。独立查询应在同一响应中一次发出，多个文件必须使用 read_files，不要串行重复 read_file。\n"
+			"3) 源码探索不设置固定调用次数上限，以任务完成或用户取消为终止条件。已有上下文足够时立即实施；若仍缺少影响正确性的事实，可继续调用必要的只读工具。独立查询应在同一响应中一次发出，多个文件必须使用 read_files，不要串行重复 read_file。\n"
 			+ sourceReadRule +
 			"5) 修改已有源码时只能用 edit_file / multi_edit_file / write_file / diff_file / restore_file_snapshot，并以 file_path 作为目标；新建程序集或类使用 add_new_file。\n"
 			+ std::string(mirrorSourceBase
@@ -3464,15 +3454,176 @@ AIResult ExecuteTaskOpenAIResponses(
 	return result;
 }
 
+AIResult ExecuteTaskOpenAIWithPrompt(
+	const std::string& systemPrompt,
+	const std::string& inputText,
+	const AISettings& settings)
+{
+	AIResult result = {};
+	std::string endpoint = AIService::Trim(settings.baseUrl);
+	while (!endpoint.empty() && endpoint.back() == '/') {
+		endpoint.pop_back();
+	}
+	endpoint = ReplaceSuffixIfPresent(endpoint, "/responses", "/chat/completions");
+	if (!EndsWithInsensitive(endpoint, "/chat/completions")) {
+		endpoint += EndsWithOpenAIVersionSegment(endpoint)
+			? "/chat/completions"
+			: "/v1/chat/completions";
+	}
+	nlohmann::json requestBody;
+	requestBody["model"] = LocalToUtf8(settings.model);
+	ApplyOpenAITemperatureIfSupported(requestBody, settings);
+	requestBody["stream"] = false;
+	requestBody["messages"] = nlohmann::json::array({
+		{{"role", "system"}, {"content", LocalToUtf8(systemPrompt)}},
+		{{"role", "user"}, {"content", LocalToUtf8(inputText)}}
+	});
+	ApplyThinkingConfigToOpenAIChatRequest(requestBody, settings);
+	NormalizeJsonStringsToUtf8InPlace(requestBody);
+
+	const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
+		endpoint,
+		requestBody.dump(),
+		BuildOpenAIHeaders(settings),
+		settings.timeoutMs,
+		false,
+		false,
+		"openai-compaction",
+		{},
+		nullptr,
+		kAiChatRequestRetryCount);
+	result.httpStatus = statusCode;
+	if (statusCode < 200 || statusCode >= 300) {
+		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+		return result;
+	}
+
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(responseBody);
+		if (parsed.contains("choices") && parsed["choices"].is_array() && !parsed["choices"].empty()) {
+			const auto& message = parsed["choices"][0]["message"];
+			const std::string contentUtf8 = MergeMessageContentUtf8(message);
+			if (!contentUtf8.empty()) {
+				result.ok = true;
+				result.content = Utf8ToLocal(contentUtf8);
+				return result;
+			}
+		}
+		result.error = "OpenAI compaction response content is empty";
+	}
+	catch (const std::exception& ex) {
+		result.error = std::string("Failed to parse OpenAI compaction response: ") + ex.what();
+	}
+	return result;
+}
+
+std::string BuildLongTaskCompactionInput(const AIChatRunController& controller)
+{
+	std::string input;
+	input.reserve(32768);
+	for (const AIChatMessage& message : controller.ContextMessages()) {
+		input += "[" + message.role + "]\n";
+		if (!message.content.empty()) {
+			input += message.content;
+		}
+		else if (!message.rawMessageJsonUtf8.empty()) {
+			input += Utf8ToLocal(message.rawMessageJsonUtf8);
+		}
+		input += "\n\n";
+	}
+	return input;
+}
+
+std::string GenerateLongTaskSummary(
+	AIChatRunController& controller,
+	const AISettings& settings,
+	const std::vector<AIChatToolEvent>& events)
+{
+	AISettings compactSettings = settings;
+	compactSettings.thinkingLevel = AIThinkingLevel::Low;
+	const std::string systemPrompt =
+		"你负责压缩一个仍在执行的长期编程任务。仅输出可供另一个 Agent 继续工作的结构化中文检查点，"
+		"必须包含：目标、持久约束、已完成工作、修改文件、关键发现、测试状态、未完成步骤、最后失败。"
+		"不要宣称任务已经完成，不要调用工具。";
+	const std::string input = BuildLongTaskCompactionInput(controller);
+	AIResult compactResult;
+	if (settings.protocolType == AIProtocolType::Claude) {
+		compactResult = ExecuteTaskClaude(systemPrompt, input, compactSettings, 1);
+	}
+	else if (settings.protocolType == AIProtocolType::Gemini) {
+		compactResult = ExecuteTaskGemini(systemPrompt, input, compactSettings);
+	}
+	else if (settings.protocolType == AIProtocolType::OpenAIResponses) {
+		compactResult = ExecuteTaskOpenAIResponses(systemPrompt, input, compactSettings, 1);
+	}
+	else {
+		compactResult = ExecuteTaskOpenAIWithPrompt(systemPrompt, input, compactSettings);
+	}
+	if (compactResult.ok && !AIService::Trim(compactResult.content).empty()) {
+		return compactResult.content;
+	}
+	return controller.BuildLocalFallbackSummary(events);
+}
+
+void SyncLongTaskResult(AIChatResult& result, const AIChatRunController& controller)
+{
+	result.samplingRounds = controller.SamplingRounds();
+	result.compactionCount = controller.CompactionCount();
+	result.hasUsage = controller.HasUsage();
+	result.promptTokens = controller.PromptTokens();
+	result.totalTokens = controller.TotalTokens();
+	result.hasCheckpoint = true;
+	result.checkpoint = controller.BuildCheckpoint(result.ok ? "completed" : "running");
+	result.continuationMessages = controller.ContextMessages();
+}
+
+AIChatMessage BuildRawCheckpointMessage(
+	const std::string& role,
+	const std::string& contentLocal,
+	const nlohmann::json& rawMessage)
+{
+	AIChatMessage message;
+	message.role = role;
+	message.content = contentLocal;
+	try {
+		message.rawMessageJsonUtf8 = rawMessage.dump();
+	}
+	catch (...) {
+	}
+	return message;
+}
+
+void CompactLongTaskIfNeeded(
+	AIChatRunController& controller,
+	AIChatToolPolicy::Session& toolPolicy,
+	const AISettings& settings,
+	AIChatResult& result,
+	const std::function<void(const std::string& summaryLocal)>& resetProtocolContext)
+{
+	if (!controller.ShouldCompact()) {
+		return;
+	}
+	const std::string summary = GenerateLongTaskSummary(controller, settings, result.toolEvents);
+	controller.RecordCompaction(summary);
+	toolPolicy.StartNewContextWindow();
+	result.contextPrefixRawMessagesUtf8.clear();
+	resetProtocolContext(summary);
+	SyncLongTaskResult(result, controller);
+}
+
 AIChatResult ExecuteChatWithToolsClaude(
 	const std::vector<AIChatMessage>& contextMessages,
 	const AISettings& settings,
 	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
 	const std::function<void(const std::string& deltaText)>& streamCallback,
 	const std::function<bool()>& cancelCallback,
-	HttpRequestCancellation* cancelContext)
+	HttpRequestCancellation* cancelContext,
+	const AIChatRunOptions& runOptions)
 {
 	AIChatResult result = {};
+	result.terminationReason = AIChatRunTerminationReason::ProviderError;
+	AIChatRunController runController(settings, contextMessages, runOptions);
+	runController.PublishCheckpoint();
 	std::string validationError;
 	if (!ValidateRequestSettings(settings, validationError)) {
 		result.error = validationError;
@@ -3483,7 +3634,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 
 	std::string systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings));
 	nlohmann::json messages = nlohmann::json::array();
-	for (const AIChatMessage& msg : contextMessages) {
+	for (const AIChatMessage& msg : runController.ContextMessages()) {
 		const std::string role = ToLowerAsciiCopy(AIService::Trim(msg.role));
 		if (role == "system") {
 			systemUtf8 += "\n\n";
@@ -3522,9 +3673,9 @@ AIChatResult ExecuteChatWithToolsClaude(
 		});
 	}
 
-	const int maxToolRounds = kMaxToolRounds;
 	AIChatToolPolicy::Session toolPolicy;
-	for (int round = 0; round < maxToolRounds; ++round) {
+	for (int round = 0;; ++round) {
+		runController.BeginSampling();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return MarkChatResultCancelled(std::move(result));
 		}
@@ -3592,6 +3743,12 @@ AIChatResult ExecuteChatWithToolsClaude(
 
 		const std::vector<ClaudeToolCall> toolCalls = ExtractClaudeToolCalls(parsed);
 		const std::string textUtf8 = ExtractClaudeTextUtf8(parsed);
+		if (parsed.contains("usage") && parsed["usage"].is_object()) {
+			const auto& usage = parsed["usage"];
+			const int promptTokens = usage.value("input_tokens", 0);
+			const int outputTokens = usage.value("output_tokens", 0);
+			runController.RecordUsage(promptTokens, promptTokens + outputTokens, true);
+		}
 		if (toolCalls.empty()) {
 			if (textUtf8.empty()) {
 				result.error = "Claude response content is empty";
@@ -3599,16 +3756,9 @@ AIChatResult ExecuteChatWithToolsClaude(
 			}
 			result.ok = true;
 			result.content = Utf8ToLocal(textUtf8);
-			if (parsed.contains("usage") && parsed["usage"].is_object()) {
-				const auto& u = parsed["usage"];
-				if (u.contains("input_tokens") && u["input_tokens"].is_number_integer()) {
-					result.promptTokens = u["input_tokens"].get<int>();
-				}
-				const int out = (u.contains("output_tokens") && u["output_tokens"].is_number_integer())
-					? u["output_tokens"].get<int>() : 0;
-				result.totalTokens = result.promptTokens + out;
-				result.hasUsage = true;
-			}
+			result.terminationReason = AIChatRunTerminationReason::Completed;
+			SyncLongTaskResult(result, runController);
+			runController.PublishCheckpoint("completed");
 			if (streamCallback) {
 				streamCallback(result.content);
 			}
@@ -3618,6 +3768,22 @@ AIChatResult ExecuteChatWithToolsClaude(
 			streamCallback(Utf8ToLocal(textUtf8));
 		}
 
+		std::vector<std::string> resolvedCallIds;
+		resolvedCallIds.reserve(toolCalls.size());
+		std::vector<AIChatCheckpointToolCall> checkpointCalls;
+		checkpointCalls.reserve(toolCalls.size());
+		for (size_t i = 0; i < toolCalls.size(); ++i) {
+			const ClaudeToolCall& call = toolCalls[i];
+			const std::string callId = call.id.empty()
+				? std::format("toolu_auto_{}_{}", round + 1, i + 1)
+				: call.id;
+			resolvedCallIds.push_back(callId);
+			checkpointCalls.push_back(AIChatCheckpointToolCall{
+				callId,
+				call.name,
+				Utf8ToLocal(call.argumentsUtf8)
+			});
+		}
 		if (parsed.contains("content") && parsed["content"].is_array()) {
 			nlohmann::json assistantMessage = {
 				{"role", "assistant"},
@@ -3628,14 +3794,17 @@ AIChatResult ExecuteChatWithToolsClaude(
 			}
 			catch (...) {
 			}
+			runController.AppendContextMessage(BuildRawCheckpointMessage(
+				"assistant",
+				Utf8ToLocal(textUtf8),
+				assistantMessage));
 			messages.push_back(std::move(assistantMessage));
 		}
+		runController.BeginToolBatch(std::move(checkpointCalls));
 
 		for (size_t i = 0; i < toolCalls.size(); ++i) {
 			const ClaudeToolCall& call = toolCalls[i];
-			const std::string callId = call.id.empty()
-				? std::format("toolu_auto_{}_{}", round + 1, i + 1)
-				: call.id;
+			const std::string& callId = resolvedCallIds[i];
 
 			const ChatToolExecutionResult toolExecution = ExecuteChatToolWithPolicy(
 				toolPolicy,
@@ -3672,16 +3841,44 @@ AIChatResult ExecuteChatWithToolsClaude(
 			}
 			catch (...) {
 			}
+			runController.CompleteToolCall(
+				i,
+				toolResultLocal,
+				toolOk,
+				BuildRawCheckpointMessage("tool", toolResultLocal, rawToolMessage));
 			messages.push_back({
 				{"role", "user"},
 				{"content", std::move(toolResultContent)}
 			});
 		}
+		if (runController.IsStalled()) {
+			result.paused = true;
+			result.terminationReason = AIChatRunTerminationReason::Stalled;
+			result.error = "tool execution stalled after 8 consecutive failures";
+			SyncLongTaskResult(result, runController);
+			result.checkpoint.state = "paused";
+			runController.PublishCheckpoint("paused");
+			return result;
+		}
+		if (runController.ShouldInjectRecoveryHint()) {
+			const std::string hint = "连续工具调用失败。请停止重复当前方案，检查错误结果并改用不同的验证或实现路径。";
+			messages.push_back({{"role", "user"}, {"content", LocalToUtf8(hint)}});
+			runController.AppendContextMessage(AIChatMessage{"user", hint, "", ""});
+		}
+		CompactLongTaskIfNeeded(
+			runController,
+			toolPolicy,
+			settings,
+			result,
+			[&systemUtf8, &messages, &settings](const std::string& summaryLocal) {
+				systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings)) +
+					"\n\n" + LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal);
+				messages = nlohmann::json::array({
+					{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
+				});
+			});
+		SyncLongTaskResult(result, runController);
 	}
-
-	result.toolRoundsExceeded = true;
-	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
-	return result;
 }
 
 AIChatResult ExecuteChatWithToolsGemini(
@@ -3690,9 +3887,13 @@ AIChatResult ExecuteChatWithToolsGemini(
 	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
 	const std::function<void(const std::string& deltaText)>& streamCallback,
 	const std::function<bool()>& cancelCallback,
-	HttpRequestCancellation* cancelContext)
+	HttpRequestCancellation* cancelContext,
+	const AIChatRunOptions& runOptions)
 {
 	AIChatResult result = {};
+	result.terminationReason = AIChatRunTerminationReason::ProviderError;
+	AIChatRunController runController(settings, contextMessages, runOptions);
+	runController.PublishCheckpoint();
 	std::string validationError;
 	if (!ValidateRequestSettings(settings, validationError)) {
 		result.error = validationError;
@@ -3700,16 +3901,22 @@ AIChatResult ExecuteChatWithToolsGemini(
 	}
 	std::string endpoint = BuildGeminiEndpoint(settings.baseUrl, LocalToUtf8(settings.model), false);
 	endpoint = AppendQueryParam(endpoint, "key", settings.apiKey);
-	nlohmann::json tools = BuildGeminiTools(contextMessages, false, settings);
+	nlohmann::json tools = BuildGeminiTools(runController.ContextMessages(), false, settings);
 
 	bool degradedRequestMode = false;
 	std::string systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, degradedRequestMode));
 	nlohmann::json contents = nlohmann::json::array();
-	for (const AIChatMessage& msg : contextMessages) {
+	for (const AIChatMessage& msg : runController.ContextMessages()) {
 		const std::string role = ToLowerAsciiCopy(AIService::Trim(msg.role));
 		if (role == "system") {
 			systemUtf8 += "\n\n";
 			systemUtf8 += LocalToUtf8(msg.content);
+			continue;
+		}
+		nlohmann::json rawContent;
+		if (TryParseRawChatMessageJson(msg.rawMessageJsonUtf8, rawContent) &&
+			rawContent.contains("role") && rawContent.contains("parts")) {
+			contents.push_back(std::move(rawContent));
 			continue;
 		}
 		if (role != "user" && role != "assistant") {
@@ -3723,9 +3930,9 @@ AIChatResult ExecuteChatWithToolsGemini(
 		});
 	}
 
-	const int maxToolRounds = kMaxToolRounds;
 	AIChatToolPolicy::Session toolPolicy;
-	for (int round = 0; round < maxToolRounds; ++round) {
+	for (int round = 0;; ++round) {
+		runController.BeginSampling();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return MarkChatResultCancelled(std::move(result));
 		}
@@ -3774,7 +3981,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 			if (!degradedRequestMode && IsGeminiResourceExhaustedResponse(statusCode, responseBody)) {
 				degradedRequestMode = true;
 				systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, degradedRequestMode));
-				tools = BuildGeminiTools(contextMessages, true, settings);
+				tools = BuildGeminiTools(runController.ContextMessages(), true, settings);
 				--round;
 				continue;
 			}
@@ -3812,6 +4019,13 @@ AIChatResult ExecuteChatWithToolsGemini(
 
 		const std::vector<GeminiToolCall> toolCalls = ExtractGeminiToolCalls(parsed);
 		const std::string textUtf8 = ExtractGeminiTextUtf8(parsed);
+		if (parsed.contains("usageMetadata") && parsed["usageMetadata"].is_object()) {
+			const auto& usage = parsed["usageMetadata"];
+			runController.RecordUsage(
+				usage.value("promptTokenCount", 0),
+				usage.value("totalTokenCount", 0),
+				true);
+		}
 		if (toolCalls.empty()) {
 			if (textUtf8.empty()) {
 				result.error = "Gemini response content is empty";
@@ -3819,16 +4033,9 @@ AIChatResult ExecuteChatWithToolsGemini(
 			}
 			result.ok = true;
 			result.content = Utf8ToLocal(textUtf8);
-			if (parsed.contains("usageMetadata") && parsed["usageMetadata"].is_object()) {
-				const auto& u = parsed["usageMetadata"];
-				if (u.contains("promptTokenCount") && u["promptTokenCount"].is_number_integer()) {
-					result.promptTokens = u["promptTokenCount"].get<int>();
-				}
-				if (u.contains("totalTokenCount") && u["totalTokenCount"].is_number_integer()) {
-					result.totalTokens = u["totalTokenCount"].get<int>();
-				}
-				result.hasUsage = true;
-			}
+			result.terminationReason = AIChatRunTerminationReason::Completed;
+			SyncLongTaskResult(result, runController);
+			runController.PublishCheckpoint("completed");
 			if (streamCallback) {
 				streamCallback(result.content);
 			}
@@ -3839,8 +4046,23 @@ AIChatResult ExecuteChatWithToolsGemini(
 		}
 
 		contents.push_back(candidateContent);
-
+		runController.AppendContextMessage(BuildRawCheckpointMessage(
+			"assistant",
+			Utf8ToLocal(textUtf8),
+			candidateContent));
+		std::vector<AIChatCheckpointToolCall> checkpointCalls;
+		checkpointCalls.reserve(toolCalls.size());
 		for (const GeminiToolCall& call : toolCalls) {
+			checkpointCalls.push_back(AIChatCheckpointToolCall{
+				"",
+				call.name,
+				Utf8ToLocal(call.argumentsUtf8)
+			});
+		}
+		runController.BeginToolBatch(std::move(checkpointCalls));
+
+		for (size_t i = 0; i < toolCalls.size(); ++i) {
+			const GeminiToolCall& call = toolCalls[i];
 			const ChatToolExecutionResult toolExecution = ExecuteChatToolWithPolicy(
 				toolPolicy,
 				toolCallback,
@@ -3860,7 +4082,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 				return MarkChatResultCancelled(std::move(result));
 			}
 
-			contents.push_back({
+			nlohmann::json toolResponseContent = {
 				{"role", "user"},
 				{"parts", nlohmann::json::array({
 					{
@@ -3870,13 +4092,47 @@ AIChatResult ExecuteChatWithToolsGemini(
 						}}
 					}
 				})}
-			});
+			};
+			contents.push_back(toolResponseContent);
+			runController.CompleteToolCall(
+				i,
+				toolResultLocal,
+				toolOk,
+				BuildRawCheckpointMessage("tool", toolResultLocal, toolResponseContent));
 		}
+		if (runController.IsStalled()) {
+			result.paused = true;
+			result.terminationReason = AIChatRunTerminationReason::Stalled;
+			result.error = "tool execution stalled after 8 consecutive failures";
+			SyncLongTaskResult(result, runController);
+			result.checkpoint.state = "paused";
+			runController.PublishCheckpoint("paused");
+			return result;
+		}
+		if (runController.ShouldInjectRecoveryHint()) {
+			const std::string hint = "连续工具调用失败。请停止重复当前方案，检查错误结果并改用不同的验证或实现路径。";
+			contents.push_back({
+				{"role", "user"},
+				{"parts", nlohmann::json::array({{{"text", LocalToUtf8(hint)}}})}
+			});
+			runController.AppendContextMessage(AIChatMessage{"user", hint, "", ""});
+		}
+		CompactLongTaskIfNeeded(
+			runController,
+			toolPolicy,
+			settings,
+			result,
+			[&systemUtf8, &contents, &settings](const std::string& summaryLocal) {
+				systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, false)) +
+					"\n\n" + LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal);
+				contents = nlohmann::json::array({
+					{{"role", "user"}, {"parts", nlohmann::json::array({
+						{{"text", LocalToUtf8("请从检查点继续执行原任务。")}}
+					})}}
+				});
+			});
+		SyncLongTaskResult(result, runController);
 	}
-
-	result.toolRoundsExceeded = true;
-	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
-	return result;
 }
 
 AIChatResult ExecuteChatWithToolsOpenAIResponses(
@@ -3885,19 +4141,23 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
 	const std::function<void(const std::string& deltaText)>& streamCallback,
 	const std::function<bool()>& cancelCallback,
-	HttpRequestCancellation* cancelContext)
+	HttpRequestCancellation* cancelContext,
+	const AIChatRunOptions& runOptions)
 {
 	AIChatResult result = {};
+	result.terminationReason = AIChatRunTerminationReason::ProviderError;
+	AIChatRunController runController(settings, contextMessages, runOptions);
+	runController.PublishCheckpoint();
 	std::string validationError;
 	if (!ValidateRequestSettings(settings, validationError)) {
 		result.error = validationError;
 		return result;
 	}
 	const std::string endpoint = BuildOpenAIResponsesEndpoint(settings.baseUrl);
-	const nlohmann::json tools = BuildResponsesToolDefinitions(settings, contextMessages);
+	const nlohmann::json tools = BuildResponsesToolDefinitions(settings, runController.ContextMessages());
 
 	nlohmann::json input = nlohmann::json::array();
-	for (const AIChatMessage& msg : contextMessages) {
+	for (const AIChatMessage& msg : runController.ContextMessages()) {
 		const std::string role = ToLowerAsciiCopy(AIService::Trim(msg.role));
 		nlohmann::json rawInputItem;
 		if (TryParseRawChatMessageJson(msg.rawMessageJsonUtf8, rawInputItem)) {
@@ -3916,10 +4176,10 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		input.push_back(BuildResponsesTextMessage(role, LocalToUtf8(msg.content)));
 	}
 
-	const std::string instructionsUtf8 = BuildResponsesInstructions(contextMessages, settings);
-	const int maxToolRounds = kMaxToolRounds;
+	std::string instructionsUtf8 = BuildResponsesInstructions(runController.ContextMessages(), settings);
 	AIChatToolPolicy::Session toolPolicy;
-	for (int round = 0; round < maxToolRounds; ++round) {
+	for (int round = 0;; ++round) {
+		runController.BeginSampling();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return MarkChatResultCancelled(std::move(result));
 		}
@@ -4012,6 +4272,20 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		if (textUtf8.empty()) {
 			textUtf8 = streamState.mergedTextUtf8;
 		}
+		const nlohmann::json* usage = nullptr;
+		if (parsed.contains("response") && parsed["response"].is_object() &&
+			parsed["response"].contains("usage") && parsed["response"]["usage"].is_object()) {
+			usage = &parsed["response"]["usage"];
+		}
+		else if (parsed.contains("usage") && parsed["usage"].is_object()) {
+			usage = &parsed["usage"];
+		}
+		if (usage != nullptr) {
+			runController.RecordUsage(
+				usage->value("input_tokens", 0),
+				usage->value("total_tokens", 0),
+				true);
+		}
 		if (toolCalls.empty()) {
 			if (textUtf8.empty()) {
 				result.error = "Responses API response content is empty";
@@ -4019,26 +4293,9 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			}
 			result.ok = true;
 			result.content = Utf8ToLocal(textUtf8);
-			{
-				const nlohmann::json* up = nullptr;
-				if (parsed.contains("response") && parsed["response"].is_object() &&
-					parsed["response"].contains("usage") && parsed["response"]["usage"].is_object()) {
-					up = &parsed["response"]["usage"];
-				}
-				else if (parsed.contains("usage") && parsed["usage"].is_object()) {
-					up = &parsed["usage"];
-				}
-				if (up != nullptr) {
-					const auto& u = *up;
-					if (u.contains("input_tokens") && u["input_tokens"].is_number_integer()) {
-						result.promptTokens = u["input_tokens"].get<int>();
-					}
-					if (u.contains("total_tokens") && u["total_tokens"].is_number_integer()) {
-						result.totalTokens = u["total_tokens"].get<int>();
-					}
-					result.hasUsage = true;
-				}
-			}
+			result.terminationReason = AIChatRunTerminationReason::Completed;
+			SyncLongTaskResult(result, runController);
+			runController.PublishCheckpoint("completed");
 			if (!streamState.sawSseEvent && streamCallback) {
 				streamCallback(result.content);
 			}
@@ -4060,14 +4317,33 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 				}
 				catch (...) {
 				}
+				runController.AppendContextMessage(BuildRawCheckpointMessage(
+					"assistant",
+					Utf8ToLocal(textUtf8),
+					contextItem));
 			}
 		}
-
+		std::vector<std::string> resolvedCallIds;
+		std::vector<AIChatCheckpointToolCall> checkpointCalls;
+		resolvedCallIds.reserve(toolCalls.size());
+		checkpointCalls.reserve(toolCalls.size());
 		for (size_t i = 0; i < toolCalls.size(); ++i) {
 			const ResponsesToolCall& call = toolCalls[i];
 			const std::string callId = call.callId.empty()
 				? std::format("call_auto_round{}_{}", round + 1, i + 1)
 				: call.callId;
+			resolvedCallIds.push_back(callId);
+			checkpointCalls.push_back(AIChatCheckpointToolCall{
+				callId,
+				call.name,
+				Utf8ToLocal(call.argumentsUtf8)
+			});
+		}
+		runController.BeginToolBatch(std::move(checkpointCalls));
+
+		for (size_t i = 0; i < toolCalls.size(); ++i) {
+			const ResponsesToolCall& call = toolCalls[i];
+			const std::string& callId = resolvedCallIds[i];
 
 			const ChatToolExecutionResult toolExecution = ExecuteChatToolWithPolicy(
 				toolPolicy,
@@ -4099,12 +4375,39 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			}
 			catch (...) {
 			}
+			runController.CompleteToolCall(
+				i,
+				toolResultLocal,
+				toolOk,
+				BuildRawCheckpointMessage("tool", toolResultLocal, toolOutputItem));
 		}
+		if (runController.IsStalled()) {
+			result.paused = true;
+			result.terminationReason = AIChatRunTerminationReason::Stalled;
+			result.error = "tool execution stalled after 8 consecutive failures";
+			SyncLongTaskResult(result, runController);
+			result.checkpoint.state = "paused";
+			runController.PublishCheckpoint("paused");
+			return result;
+		}
+		if (runController.ShouldInjectRecoveryHint()) {
+			const std::string hint = "连续工具调用失败。请停止重复当前方案，检查错误结果并改用不同的验证或实现路径。";
+			input.push_back(BuildResponsesTextMessage("user", LocalToUtf8(hint)));
+			runController.AppendContextMessage(AIChatMessage{"user", hint, "", ""});
+		}
+		CompactLongTaskIfNeeded(
+			runController,
+			toolPolicy,
+			settings,
+			result,
+			[&instructionsUtf8, &input, &settings, &runController](const std::string&) {
+				instructionsUtf8 = BuildResponsesInstructions(runController.ContextMessages(), settings);
+				input = nlohmann::json::array({
+					BuildResponsesTextMessage("user", LocalToUtf8("请从检查点继续执行原任务。"))
+				});
+			});
+		SyncLongTaskResult(result, runController);
 	}
-
-	result.toolRoundsExceeded = true;
-	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
-	return result;
 }
 } // namespace
 
@@ -4832,9 +5135,11 @@ AIChatResult AIService::ExecuteChatWithTools(
 	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
 	const std::function<void(const std::string& deltaText)>& streamCallback,
 	const std::function<bool()>& cancelCallback,
-	HttpRequestCancellation* cancelContext)
+	HttpRequestCancellation* cancelContext,
+	const AIChatRunOptions& runOptions)
 {
 	AIChatResult result = {};
+	result.terminationReason = AIChatRunTerminationReason::ProviderError;
 	std::string validationError;
 	if (!ValidateRequestSettings(settings, validationError)) {
 		result.error = validationError;
@@ -4845,14 +5150,16 @@ AIChatResult AIService::ExecuteChatWithTools(
 	}
 
 	if (settings.protocolType == AIProtocolType::Claude) {
-		return ExecuteChatWithToolsClaude(contextMessages, settings, toolCallback, streamCallback, cancelCallback, cancelContext);
+		return ExecuteChatWithToolsClaude(contextMessages, settings, toolCallback, streamCallback, cancelCallback, cancelContext, runOptions);
 	}
 	if (settings.protocolType == AIProtocolType::Gemini) {
-		return ExecuteChatWithToolsGemini(contextMessages, settings, toolCallback, streamCallback, cancelCallback, cancelContext);
+		return ExecuteChatWithToolsGemini(contextMessages, settings, toolCallback, streamCallback, cancelCallback, cancelContext, runOptions);
 	}
 	if (settings.protocolType == AIProtocolType::OpenAIResponses) {
-		return ExecuteChatWithToolsOpenAIResponses(contextMessages, settings, toolCallback, streamCallback, cancelCallback, cancelContext);
+		return ExecuteChatWithToolsOpenAIResponses(contextMessages, settings, toolCallback, streamCallback, cancelCallback, cancelContext, runOptions);
 	}
+	AIChatRunController runController(settings, contextMessages, runOptions);
+	runController.PublishCheckpoint();
 
 	const std::string endpoint = BuildEndpoint(settings.baseUrl);
 	const std::string headers = BuildOpenAIHeaders(settings);
@@ -4863,7 +5170,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 		{"role", "system"},
 		{"content", LocalToUtf8(BuildChatSystemPrompt(settings))}
 	});
-	for (const AIChatMessage& msg : contextMessages) {
+	for (const AIChatMessage& msg : runController.ContextMessages()) {
 		const std::string role = ToLowerAsciiCopy(Trim(msg.role));
 		if (role != "system" && role != "user" && role != "assistant" && role != "tool") {
 			continue;
@@ -4904,11 +5211,11 @@ AIChatResult AIService::ExecuteChatWithTools(
 				repairStats.removedIncompleteGroups));
 	}
 
-	const nlohmann::json tools = BuildChatToolDefinitions(settings, contextMessages);
-	const int maxToolRounds = kMaxToolRounds;
+	const nlohmann::json tools = BuildChatToolDefinitions(settings, runController.ContextMessages());
 	AIChatToolPolicy::Session toolPolicy;
 
-	for (int round = 0; round < maxToolRounds; ++round) {
+	for (int round = 0;; ++round) {
+		runController.BeginSampling();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return MarkChatResultCancelled(std::move(result));
 		}
@@ -4984,6 +5291,10 @@ AIChatResult AIService::ExecuteChatWithTools(
 			result.error = streamState.parseError.empty() ? "Failed to parse AI streaming response" : streamState.parseError;
 			return result;
 		}
+		runController.RecordUsage(
+			streamState.promptTokens,
+			streamState.totalTokens,
+			streamState.hasUsage);
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(streamState.mergedUtf8));
 		}
@@ -5032,8 +5343,30 @@ AIChatResult AIService::ExecuteChatWithTools(
 			}
 			catch (...) {
 			}
+			runController.AppendContextMessage(BuildRawCheckpointMessage(
+				"assistant",
+				Utf8ToLocal(toolIntroUtf8),
+				message));
 			requestMessages.push_back(message);
+			std::vector<AIChatCheckpointToolCall> checkpointCalls;
+			checkpointCalls.reserve(message["tool_calls"].size());
+			for (const auto& toolCall : message["tool_calls"]) {
+				std::string callId = toolCall.value("id", std::string());
+				std::string toolName;
+				std::string argsUtf8;
+				if (toolCall.contains("function") && toolCall["function"].is_object()) {
+					toolName = toolCall["function"].value("name", std::string());
+					argsUtf8 = toolCall["function"].value("arguments", std::string());
+				}
+				checkpointCalls.push_back(AIChatCheckpointToolCall{
+					callId,
+					toolName,
+					Utf8ToLocal(argsUtf8)
+				});
+			}
+			runController.BeginToolBatch(std::move(checkpointCalls));
 
+			size_t toolCallIndex = 0;
 			for (const auto& toolCall : message["tool_calls"]) {
 				std::string callId;
 				std::string toolName;
@@ -5085,8 +5418,41 @@ AIChatResult AIService::ExecuteChatWithTools(
 				}
 				catch (...) {
 				}
+				runController.CompleteToolCall(
+					toolCallIndex,
+					toolResultLocal,
+					toolOk,
+					BuildRawCheckpointMessage("tool", toolResultLocal, toolMessage));
 				requestMessages.push_back(std::move(toolMessage));
+				++toolCallIndex;
 			}
+			if (runController.IsStalled()) {
+				result.paused = true;
+				result.terminationReason = AIChatRunTerminationReason::Stalled;
+				result.error = "tool execution stalled after 8 consecutive failures";
+				SyncLongTaskResult(result, runController);
+				result.checkpoint.state = "paused";
+				runController.PublishCheckpoint("paused");
+				return result;
+			}
+			if (runController.ShouldInjectRecoveryHint()) {
+				const std::string hint = "连续工具调用失败。请停止重复当前方案，检查错误结果并改用不同的验证或实现路径。";
+				requestMessages.push_back({{"role", "user"}, {"content", LocalToUtf8(hint)}});
+				runController.AppendContextMessage(AIChatMessage{"user", hint, "", ""});
+			}
+			CompactLongTaskIfNeeded(
+				runController,
+				toolPolicy,
+				settings,
+				result,
+				[&requestMessages, &settings](const std::string& summaryLocal) {
+					requestMessages = nlohmann::json::array({
+						{{"role", "system"}, {"content", LocalToUtf8(BuildChatSystemPrompt(settings))}},
+						{{"role", "system"}, {"content", LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal)}},
+						{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
+					});
+				});
+			SyncLongTaskResult(result, runController);
 			continue;
 		}
 
@@ -5105,20 +5471,14 @@ AIChatResult AIService::ExecuteChatWithTools(
 
 		result.ok = true;
 		result.content = Utf8ToLocal(mergedUtf8);
+		result.terminationReason = AIChatRunTerminationReason::Completed;
 		if (message.contains("reasoning_content") && message["reasoning_content"].is_string()) {
 			result.reasoningContent = message["reasoning_content"].get<std::string>();
 		}
-		if (streamState.hasUsage) {
-			result.hasUsage = true;
-			result.promptTokens = streamState.promptTokens;
-			result.totalTokens = streamState.totalTokens;
-		}
+		SyncLongTaskResult(result, runController);
+		runController.PublishCheckpoint("completed");
 		return result;
 	}
-
-	result.toolRoundsExceeded = true;
-	result.error = BuildToolRoundsExceededError(maxToolRounds, result.toolEvents);
-	return result;
 }
 
 std::string AIService::BuildPublicToolCatalogJson()

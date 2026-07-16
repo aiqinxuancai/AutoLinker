@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "AIService.h"
+
 // AI 对话会话存储结构。
 struct AIChatStoredMessage {
 	std::string role;
@@ -16,7 +18,7 @@ struct AIChatStoredMessage {
 
 // AI 对话会话存储数据。
 struct AIChatStoredSession {
-	int schemaVersion = 1;
+	int schemaVersion = 4;
 	std::string sessionId;
 	std::string sourceFileNameLocal;
 	std::string sourceFilePathHintLocal;
@@ -29,6 +31,8 @@ struct AIChatStoredSession {
 	std::string planModeState;      // 计划模式状态：normal / planning / awaiting_approval / approved。
 	std::string pendingPlanLocal;   // 待批准的计划正文。
 	bool autoAllowWrites = false;   // 自动允许写入模式。
+	bool hasRunCheckpoint = false;  // 是否存在待确认恢复的长期任务。
+	AIChatRunCheckpoint runCheckpoint;
 	std::vector<AIChatStoredMessage> messages;
 	std::filesystem::path sessionFilePath;
 };

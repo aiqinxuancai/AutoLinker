@@ -20,6 +20,8 @@
 #include "AIChatMcpClient.h"
 #include "AIChatMcpConfig.h"
 #include "AIChatThemeManager.h"
+#include "AIChatRunController.h"
+#include "AIChatSessionStore.h"
 #include "AIChatToolPolicy.h"
 #include "AIService.h"
 #include "AutoLinkerVersion.h"
@@ -134,13 +136,13 @@ bool RunAIChatToolPolicySelfTest(nlohmann::json& outCheck)
 
 	AIChatToolPolicy::Session budgetPolicy;
 	bool budgetCallsAllowed = true;
-	for (int i = 0; i < AIChatToolPolicy::kHardExplorationCallLimit; ++i) {
+	for (int i = 0; i < AIChatToolPolicy::kExplorationReminderInterval + 4; ++i) {
 		const std::string args = std::format(R"({{"pattern":"item{}","regex":false}})", i);
 		const auto decision = budgetPolicy.BeforeToolCall("search_code", args);
 		budgetCallsAllowed = budgetCallsAllowed && decision.allowed;
 		budgetPolicy.AfterToolCall("search_code", args, R"({"ok":true,"results":[]})", true);
 	}
-	const auto overBudget = budgetPolicy.BeforeToolCall(
+	const auto afterReminder = budgetPolicy.BeforeToolCall(
 		"search_code",
 		R"({"pattern":"over-budget","regex":false})");
 	AIChatToolPolicy::Session failedCallPolicy;
@@ -176,7 +178,7 @@ bool RunAIChatToolPolicySelfTest(nlohmann::json& outCheck)
 		firstBatchRead.allowed &&
 		overlapSuggestionOk &&
 		budgetCallsAllowed &&
-		!overBudget.allowed &&
+		afterReminder.allowed &&
 		failedCallBudgetRestored &&
 		writeDecision.allowed &&
 		!writeNotice.empty() &&
@@ -186,9 +188,234 @@ bool RunAIChatToolPolicySelfTest(nlohmann::json& outCheck)
 	outCheck["duplicate_reason"] = duplicateRead.reason;
 	outCheck["batch_overlap_reason"] = overlappingBatchRead.reason;
 	outCheck["batch_overlap_result"] = overlapResult;
-	outCheck["budget_reason"] = overBudget.reason;
+	outCheck["exploration_continues_after_reminder"] = afterReminder.allowed;
 	outCheck["failed_call_budget_restored"] = failedCallBudgetRestored;
 	outCheck["post_write_reason"] = postWriteRead.reason;
+	return ok;
+}
+
+bool WriteSelfTestJsonFile(const std::filesystem::path& path, const nlohmann::json& value)
+{
+	std::ofstream out(path, std::ios::binary | std::ios::trunc);
+	if (!out.is_open()) {
+		return false;
+	}
+	const std::string text = value.dump(2);
+	out.write(text.data(), static_cast<std::streamsize>(text.size()));
+	return out.good();
+}
+
+bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
+{
+	outCheck = {
+		{"name", "ai_chat_long_task"},
+		{"ok", false}
+	};
+
+	AISettings settings = {};
+	settings.protocolType = AIProtocolType::OpenAI;
+	settings.model = "long-task-self-test";
+	settings.contextWindowTokens = 100000;
+	const std::vector<AIChatMessage> initialContext = {
+		{"user", "完成长期任务", "", ""}
+	};
+	AIChatRunController roundController(settings, initialContext, {});
+	for (int i = 0; i < 96; ++i) {
+		roundController.BeginSampling();
+	}
+	const bool roundsBeyondLegacyLimit = roundController.SamplingRounds() == 96;
+	roundController.RecordCompaction("第一次压缩");
+	roundController.RecordCompaction("第二次压缩");
+	const bool multipleCompactions = roundController.CompactionCount() == 2 &&
+		roundController.ContextMessages().size() == 2;
+
+	const std::vector<AIChatToolEvent> fallbackEvents = {
+		{"read_file", R"({"file_path":"src/Test.cpp"})", R"({"ok":false,"error":"test"})", false}
+	};
+	const std::string fallbackSummary = roundController.BuildLocalFallbackSummary(fallbackEvents);
+	const bool localCompactionFallback = fallbackSummary.find("read_file") != std::string::npos &&
+		fallbackSummary.find("src/Test.cpp") != std::string::npos;
+
+	AIChatRunController failureController(settings, initialContext, {});
+	std::vector<AIChatCheckpointToolCall> failedCalls;
+	for (int i = 0; i < 8; ++i) {
+		failedCalls.push_back(AIChatCheckpointToolCall{
+			std::format("call_{}", i),
+			"read_file",
+			"{}"
+		});
+	}
+	failureController.BeginToolBatch(std::move(failedCalls));
+	bool recoveryHintAtThree = false;
+	for (size_t i = 0; i < 8; ++i) {
+		failureController.CompleteToolCall(
+			i,
+			R"({"ok":false})",
+			false,
+			AIChatMessage{"tool", "failed", "", ""});
+		if (i == 2) {
+			recoveryHintAtThree = failureController.ShouldInjectRecoveryHint();
+		}
+	}
+	const bool stalledAtEight = failureController.IsStalled();
+
+	AIChatRunCheckpoint completedCheckpoint;
+	completedCheckpoint.protocolType = AIProtocolType::OpenAI;
+	completedCheckpoint.model = settings.model;
+	completedCheckpoint.state = "paused";
+	completedCheckpoint.contextMessages = {
+		{"user", "完成长期任务", "", ""},
+		{"assistant", "", "", R"({"role":"assistant","tool_calls":[{"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]})"},
+		{"tool", "done", "", R"({"role":"tool","tool_call_id":"call_1","content":"done"})"}
+	};
+	completedCheckpoint.toolCalls = {
+		{"call_1", "read_file", "{}", R"({"ok":true})", true, true}
+	};
+	AIChatRunOptions exactOptions;
+	exactOptions.resumeCheckpoint = &completedCheckpoint;
+	AIChatRunController exactResumeController(settings, initialContext, exactOptions);
+	const bool sameProviderResume =
+		exactResumeController.ContextMessages().size() == completedCheckpoint.contextMessages.size() &&
+		exactResumeController.ContextMessages()[1].rawMessageJsonUtf8 ==
+			completedCheckpoint.contextMessages[1].rawMessageJsonUtf8;
+
+	AIChatRunCheckpoint interruptedCheckpoint = completedCheckpoint;
+	interruptedCheckpoint.contextMessages.pop_back();
+	interruptedCheckpoint.toolCalls[0].completed = false;
+	interruptedCheckpoint.toolCalls[0].ok = false;
+	interruptedCheckpoint.toolCalls[0].resultJson.clear();
+	AIChatRunOptions interruptedOptions;
+	interruptedOptions.resumeCheckpoint = &interruptedCheckpoint;
+	AIChatRunController interruptedResumeController(settings, initialContext, interruptedOptions);
+	const bool interruptedResumeRebuilt =
+		interruptedResumeController.ContextMessages().size() == 2 &&
+		interruptedResumeController.ContextMessages()[0].rawMessageJsonUtf8.empty() &&
+		interruptedResumeController.ContextMessages()[0].content.find("read_file") != std::string::npos;
+
+	AISettings crossProviderSettings = settings;
+	crossProviderSettings.protocolType = AIProtocolType::Claude;
+	AIChatRunController crossProviderController(crossProviderSettings, initialContext, exactOptions);
+	const bool crossProviderResume =
+		crossProviderController.ContextMessages().size() == 2 &&
+		crossProviderController.ContextMessages()[0].rawMessageJsonUtf8.empty() &&
+		crossProviderController.ContextMessages()[0].content.find("read_file") != std::string::npos;
+
+	AIChatRunCheckpoint nearLimitCheckpoint = completedCheckpoint;
+	nearLimitCheckpoint.hasUsage = true;
+	nearLimitCheckpoint.promptTokens = 950;
+	nearLimitCheckpoint.totalTokens = 1000;
+	AISettings smallContextSettings = settings;
+	smallContextSettings.contextWindowTokens = 1000;
+	AIChatRunOptions nearLimitOptions;
+	nearLimitOptions.resumeCheckpoint = &nearLimitCheckpoint;
+	AIChatRunController nearLimitController(smallContextSettings, initialContext, nearLimitOptions);
+	const bool nearLimitResumeCompacted = nearLimitController.CompactionCount() == 1 &&
+		nearLimitController.ContextMessages().size() == 2;
+
+	const std::filesystem::path tempRoot = std::filesystem::temp_directory_path() /
+		std::format("AutoLinkerLongTaskSelfTest-{}-{}",
+			static_cast<unsigned long>(GetCurrentProcessId()),
+			static_cast<unsigned long long>(GetTickCount64()));
+	std::error_code fileEc;
+	std::filesystem::create_directories(tempRoot, fileEc);
+	bool legacyV1 = false;
+	bool legacyV3 = false;
+	bool schemaV4RoundTrip = false;
+	bool atomicReplace = false;
+	bool completedCheckpointIgnored = false;
+	if (!fileEc) {
+		const auto loadLegacy = [&tempRoot](int schemaVersion, bool& outLoaded) {
+			const std::filesystem::path path = tempRoot /
+				std::format("legacy-v{}.json", schemaVersion);
+			const nlohmann::json value = {
+				{"schema_version", schemaVersion},
+				{"session_id", std::format("legacy-v{}", schemaVersion)},
+				{"plan_mode_state", schemaVersion >= 3 ? "normal" : ""},
+				{"messages", nlohmann::json::array({
+					{{"role", "user"}, {"content", "legacy"}}
+				})}
+			};
+			AIChatStoredSession loaded;
+			outLoaded = WriteSelfTestJsonFile(path, value) &&
+				LoadAIChatStoredSession(path, loaded, nullptr) &&
+				loaded.schemaVersion == schemaVersion &&
+				loaded.messages.size() == 1 &&
+				!loaded.hasRunCheckpoint;
+		};
+		loadLegacy(1, legacyV1);
+		loadLegacy(3, legacyV3);
+
+		AIChatStoredSession stored;
+		stored.schemaVersion = 4;
+		stored.sessionId = "schema-v4";
+		stored.sessionFilePath = tempRoot / "schema-v4.json";
+		stored.rollingSummaryLocal = "before";
+		stored.messages.push_back(AIChatStoredMessage{"user", "long task"});
+		stored.hasRunCheckpoint = true;
+		stored.runCheckpoint = interruptedCheckpoint;
+		stored.runCheckpoint.state = "running";
+		const bool firstSave = SaveAIChatStoredSession(stored, nullptr);
+		stored.rollingSummaryLocal = "after";
+		const bool secondSave = SaveAIChatStoredSession(stored, nullptr);
+		AIChatStoredSession loaded;
+		schemaV4RoundTrip = firstSave && secondSave &&
+			LoadAIChatStoredSession(stored.sessionFilePath, loaded, nullptr) &&
+			loaded.schemaVersion == 4 &&
+			loaded.rollingSummaryLocal == "after" &&
+			loaded.hasRunCheckpoint &&
+			loaded.runCheckpoint.state == "paused" &&
+			loaded.runCheckpoint.toolCalls.size() == 1;
+
+		atomicReplace = firstSave && secondSave;
+		for (std::filesystem::directory_iterator it(tempRoot, fileEc), end;
+			it != end && !fileEc;
+			it.increment(fileEc)) {
+			if (it->path().filename().wstring().find(L".tmp.") != std::wstring::npos) {
+				atomicReplace = false;
+				break;
+			}
+		}
+
+		stored.sessionId = "completed-checkpoint";
+		stored.sessionFilePath = tempRoot / "completed-checkpoint.json";
+		stored.runCheckpoint = completedCheckpoint;
+		stored.runCheckpoint.state = "completed";
+		AIChatStoredSession completedLoaded;
+		completedCheckpointIgnored = SaveAIChatStoredSession(stored, nullptr) &&
+			LoadAIChatStoredSession(stored.sessionFilePath, completedLoaded, nullptr) &&
+			!completedLoaded.hasRunCheckpoint;
+	}
+	std::filesystem::remove_all(tempRoot, fileEc);
+
+	const bool ok = roundsBeyondLegacyLimit &&
+		multipleCompactions &&
+		localCompactionFallback &&
+		recoveryHintAtThree &&
+		stalledAtEight &&
+		sameProviderResume &&
+		interruptedResumeRebuilt &&
+		crossProviderResume &&
+		nearLimitResumeCompacted &&
+		legacyV1 &&
+		legacyV3 &&
+		schemaV4RoundTrip &&
+		atomicReplace &&
+		completedCheckpointIgnored;
+	outCheck["ok"] = ok;
+	outCheck["rounds_beyond_64"] = roundsBeyondLegacyLimit;
+	outCheck["multiple_compactions"] = multipleCompactions;
+	outCheck["local_compaction_fallback"] = localCompactionFallback;
+	outCheck["recovery_hint_at_3"] = recoveryHintAtThree;
+	outCheck["stalled_at_8"] = stalledAtEight;
+	outCheck["same_provider_resume"] = sameProviderResume;
+	outCheck["interrupted_resume_rebuilt"] = interruptedResumeRebuilt;
+	outCheck["cross_provider_resume"] = crossProviderResume;
+	outCheck["near_limit_resume_compacted"] = nearLimitResumeCompacted;
+	outCheck["legacy_v1"] = legacyV1;
+	outCheck["legacy_v3"] = legacyV3;
+	outCheck["schema_v4_round_trip"] = schemaV4RoundTrip;
+	outCheck["atomic_replace"] = atomicReplace;
+	outCheck["completed_checkpoint_ignored"] = completedCheckpointIgnored;
 	return ok;
 }
 
@@ -1911,6 +2138,10 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	nlohmann::json toolPolicyCheck;
 	RunAIChatToolPolicySelfTest(toolPolicyCheck);
 	report["checks"].push_back(std::move(toolPolicyCheck));
+
+	nlohmann::json longTaskCheck;
+	RunAIChatLongTaskSelfTest(longTaskCheck);
+	report["checks"].push_back(std::move(longTaskCheck));
 
 	nlohmann::json optimizationCheck = nlohmann::json::parse(
 		AIService::BuildAgentOptimizationSelfTestJson(),

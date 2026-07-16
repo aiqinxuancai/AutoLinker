@@ -47,7 +47,6 @@ MSBuild.exe ..\\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platfo
 如果需要测试当前支持库，请先将AutoLinker.fne覆盖至"C:\Users\aiqin\OneDrive\e5.6\lib"（需关闭e主程序才能解除AutoLinker.fne的占用），然后执行并调用：
 
 当前主要开发基于："C:\Users\aiqin\OneDrive\e5.6\e5.95.exe"
-如果必要的话，测试此版本兼容："C:\Users\aiqin\OneDrive\e5.6\e571.exe"
 
 打开当前代码目录下的"test_a.e"文件。
 
@@ -56,3 +55,9 @@ AutoLinker.fne会在加载进IDE后开启MCP服务端口19207，测试时如传�
 #### 非依赖易语言IDE的功能测试
 
 fne本质是一个dll文件，不分功能需要载入到IDE中测试，但有一些比如模块本地解析方法等，你可以使用AutoLinkerTest项目来完成测试。
+
+#### 启动后IDE功能测试
+
+在要求模拟真实使用场景排错的情况下，启动e5.95.exe打开指定文件，模拟调用AI对话功能。
+
+然后分析配合日志文件（C:\Users\aiqin\OneDrive\e5.6\AutoLinker\Log），找到属于程序本身可优化的出错，并进行合理的优化

@@ -386,7 +386,6 @@ std::string BuildBlockedResult(int used, const std::string& reason, const std::s
 	result["reason"] = reason;
 	result["hint"] = hint;
 	result["exploration_calls_used"] = used;
-	result["exploration_call_limit"] = kHardExplorationCallLimit;
 	return result.dump();
 }
 
@@ -427,7 +426,6 @@ std::string BuildReadOverlapBlockedResult(
 		result["suggested_arguments"] = {{"files", missingRows}};
 	}
 	result["exploration_calls_used"] = used;
-	result["exploration_call_limit"] = kHardExplorationCallLimit;
 	return result.dump();
 }
 
@@ -504,15 +502,6 @@ Decision Session::BeforeToolCall(const std::string& toolName, const std::string&
 	}
 
 	if (IsSourceExplorationTool(toolName)) {
-		if (state->explorationCalls >= kHardExplorationCallLimit) {
-			decision.allowed = false;
-			decision.reason = "exploration_budget_exhausted";
-			decision.resultJsonUtf8 = BuildBlockedResult(
-				state->explorationCalls,
-				decision.reason,
-				"Use the source context already collected and make the requested change. Only ask the user if a concrete missing fact prevents progress.");
-			return decision;
-		}
 		++state->explorationCalls;
 	}
 
@@ -606,8 +595,10 @@ std::string Session::AfterToolCall(
 		state->preferLowThinking = true;
 	}
 
-	if (IsSourceExplorationTool(toolName) && state->explorationCalls >= kSoftExplorationCallLimit) {
-		return "Exploration budget is nearly exhausted. Prefer read_files/read_code_item batching and proceed with the existing context instead of continuing broad searches.";
+	if (IsSourceExplorationTool(toolName) &&
+		state->explorationCalls > 0 &&
+		state->explorationCalls % kExplorationReminderInterval == 0) {
+		return "Source exploration has continued for several calls. Prefer read_files/read_code_item batching and proceed with the existing context when it is sufficient.";
 	}
 	return std::string();
 }
@@ -622,6 +613,20 @@ bool Session::PreferLowThinkingForNextRound() const
 {
 	const auto* state = m_impl.get();
 	return state != nullptr && state->preferLowThinking;
+}
+
+void Session::StartNewContextWindow()
+{
+	Impl* state = m_impl.get();
+	if (state == nullptr) {
+		return;
+	}
+	state->explorationCalls = 0;
+	state->postWriteReadBlocked = false;
+	state->preferLowThinking = false;
+	state->seenSignatures.clear();
+	state->readCoverage.clear();
+	state->knownTotalLines.clear();
 }
 
 } // namespace AIChatToolPolicy

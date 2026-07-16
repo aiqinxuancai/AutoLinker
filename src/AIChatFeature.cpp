@@ -201,6 +201,8 @@ struct AIChatSessionState {
 	int lastInputTokens = 0;          // 上一轮响应的真实输入 token（无则 0）
 	bool hasLastUsage = false;        // 是否已有真实 usage
 	int effectiveContextWindow = 0;   // 请求开始时按当前 settings 解析的上下文窗口
+	bool hasPendingRunCheckpoint = false;
+	AIChatRunCheckpoint pendingRunCheckpoint;
 	bool workspaceMirrorRefreshed = false;
 	std::uint64_t workspaceMirrorGeneration = 0;
 };
@@ -248,6 +250,8 @@ struct AIChatAsyncRequest {
 	AISettings settings = {};
 	std::vector<AIChatMessage> contextMessages;
 	std::shared_ptr<AIChatRequestCancellation> cancellation;
+	bool hasResumeCheckpoint = false;
+	AIChatRunCheckpoint resumeCheckpoint;
 };
 
 struct AIChatAsyncResult {
@@ -380,7 +384,9 @@ bool QueryChatSettingsState(AISettings& outSettings, std::string* outMissingFiel
 void PostRefreshDialog();
 void AppendAgentActivity(unsigned long long requestId, const std::string& line);
 std::wstring WideFromUtf8Text(const std::string& text);
-bool StartChatRequest(const std::string& userInput);
+bool StartChatRequest(
+	const std::string& userInput,
+	const AIChatRunCheckpoint* resumeCheckpoint = nullptr);
 void HandleDebugRunAIChatRequest(LPARAM lParam);
 void HideWebViewToolApproval(ChatDialogContext* ctx);
 unsigned long long GetPendingToolApprovalId();
@@ -1899,7 +1905,7 @@ AIChatStoredSession BuildStoredSessionFromLockedState(const AIChatSessionState& 
 {
 	AIChatStoredSession stored = {};
 	const long long nowMs = GetCurrentUnixTimeMsForChat();
-	stored.schemaVersion = 3;
+	stored.schemaVersion = 4;
 	stored.sessionId = state.activeSessionId;
 	stored.sourceFileNameLocal = state.sourceFileNameLocal;
 	stored.sourceFilePathHintLocal = state.sourceFilePathLocal;
@@ -1912,6 +1918,10 @@ AIChatStoredSession BuildStoredSessionFromLockedState(const AIChatSessionState& 
 	stored.planModeState = PlanModeStateToString(state.planModeState);
 	stored.pendingPlanLocal = state.pendingPlan;
 	stored.autoAllowWrites = state.autoAllowWrites;
+	stored.hasRunCheckpoint = state.hasPendingRunCheckpoint;
+	if (stored.hasRunCheckpoint) {
+		stored.runCheckpoint = state.pendingRunCheckpoint;
+	}
 	stored.sessionFilePath = state.activeSessionFilePath;
 	for (const auto& message : state.messages) {
 		AIChatStoredMessage row = {};
@@ -2045,6 +2055,8 @@ bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
 	g_session.planModeState = ParsePlanModeState(stored.planModeState);
 	g_session.pendingPlan = stored.pendingPlanLocal;
 	g_session.autoAllowWrites = stored.autoAllowWrites;
+	g_session.hasPendingRunCheckpoint = stored.hasRunCheckpoint;
+	g_session.pendingRunCheckpoint = stored.runCheckpoint;
 	g_session.activeSessionId = stored.sessionId;
 	g_session.activeSessionFilePath = stored.sessionFilePath;
 	g_session.sourceFilePathLocal = stored.sourceFilePathHintLocal.empty()
@@ -2091,6 +2103,8 @@ void ResetChatSessionBindingLocked(AIChatSessionState& state)
 	state.activeRequestStartedAtUnixMs = 0;
 	state.planModeState = PlanModeState::Normal;
 	state.pendingPlan.clear();
+	state.hasPendingRunCheckpoint = false;
+	state.pendingRunCheckpoint = {};
 	state.autoAllowWrites = LoadPersistedAutoAllowWrites();
 	state.workspaceMirrorRefreshed = false;
 	state.workspaceMirrorGeneration = 0;
@@ -2123,6 +2137,8 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 		g_session.agentActivityLines.clear();
 		g_session.planModeState = PlanModeState::Normal;
 		g_session.pendingPlan.clear();
+		g_session.hasPendingRunCheckpoint = false;
+		g_session.pendingRunCheckpoint = {};
 		ResetChatSessionBindingLocked(g_session);
 	}
 	WorkspaceMirror::ResetAndCleanup();
@@ -4834,6 +4850,25 @@ void UpsertToolTranscriptMessage(
 	}
 }
 
+void UpdateActiveRunCheckpoint(
+	unsigned long long requestId,
+	const AIChatRunCheckpoint& checkpoint)
+{
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight || g_session.activeRequestId != requestId) {
+			return;
+		}
+		g_session.hasPendingRunCheckpoint = true;
+		g_session.pendingRunCheckpoint = checkpoint;
+		if (checkpoint.hasUsage && checkpoint.promptTokens > 0) {
+			g_session.lastInputTokens = checkpoint.promptTokens;
+			g_session.hasLastUsage = true;
+		}
+	}
+	SaveChatSessionSnapshotNow();
+}
+
 bool FlushStreamingAssistantPreviewToHistory(unsigned long long requestId)
 {
 	bool flushed = false;
@@ -5108,6 +5143,14 @@ void RunAIChatWorker(void* pParams)
 				result->chatResult.error = LocalFromWide(L"\u5df2\u53d6\u6d88\uff0c\u672a\u53d1\u9001 AI \u8bf7\u6c42\u3002");
 			}
 			else {
+				AIChatRunOptions runOptions;
+				if (request->hasResumeCheckpoint) {
+					runOptions.resumeCheckpoint = &request->resumeCheckpoint;
+				}
+				runOptions.checkpointCallback = [requestId = request->requestId](
+					const AIChatRunCheckpoint& checkpoint) {
+					UpdateActiveRunCheckpoint(requestId, checkpoint);
+				};
 				result->chatResult = AIService::ExecuteChatWithTools(
 					request->contextMessages,
 					request->settings,
@@ -5166,7 +5209,8 @@ void RunAIChatWorker(void* pParams)
 					[cancellation = request->cancellation]() {
 						return cancellation != nullptr && cancellation->IsCancelled();
 					},
-					request->cancellation != nullptr ? &request->cancellation->httpRequest : nullptr);
+					request->cancellation != nullptr ? &request->cancellation->httpRequest : nullptr,
+					runOptions);
 			}
 		}
 	}
@@ -5182,10 +5226,13 @@ void RunAIChatWorker(void* pParams)
 	PostChatResult(result.release());
 }
 
-bool StartChatRequest(const std::string& userInput)
+bool StartChatRequest(
+	const std::string& userInput,
+	const AIChatRunCheckpoint* resumeCheckpoint)
 {
 	const std::string trimmed = TrimAsciiCopy(userInput);
-	if (trimmed.empty()) {
+	const bool resuming = resumeCheckpoint != nullptr;
+	if (trimmed.empty() && !resuming) {
 		return false;
 	}
 	RebindChatSessionToCurrentSourceIfNeeded();
@@ -5211,7 +5258,9 @@ bool StartChatRequest(const std::string& userInput)
 		g_session.sourceFilePathLocal = GetCurrentChatSourceFilePathLocal();
 		g_session.sourceFileNameLocal = GetCurrentChatSourceFileNameLocal();
 		EnsureChatSessionBindingLocked(g_session);
-		g_session.messages.push_back(SessionMessage{ SessionRole::User, trimmed, true, true, "", "" });
+		if (!resuming) {
+			g_session.messages.push_back(SessionMessage{ SessionRole::User, trimmed, true, true, "", "" });
+		}
 		g_session.effectiveContextWindow = AIService::ResolveContextWindowTokens(settings);
 		CompactHistoryLocked(g_session);
 
@@ -5219,6 +5268,13 @@ bool StartChatRequest(const std::string& userInput)
 		request->settings = settings;
 		request->contextMessages = BuildContextMessagesLocked(g_session);
 		request->cancellation = std::make_shared<AIChatRequestCancellation>();
+		if (resuming) {
+			request->hasResumeCheckpoint = true;
+			request->resumeCheckpoint = *resumeCheckpoint;
+			g_session.hasPendingRunCheckpoint = true;
+			g_session.pendingRunCheckpoint = *resumeCheckpoint;
+			g_session.pendingRunCheckpoint.state = "running";
+		}
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
 		g_session.agentActivityLines.push_back(LocalFromWide(L"\u6b63\u5728\u4ee5 full \u6a21\u5f0f\u51c6\u5907\u5de5\u7a0b\u955c\u50cf..."));
@@ -5761,6 +5817,27 @@ bool RestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry
 	}
 
 	RefreshChatDialog(g_chatDialog != nullptr ? g_chatDialog : hWnd);
+	if (stored.hasRunCheckpoint) {
+		const int choice = MessageBoxA(
+			hWnd,
+			"检测到该会话存在未完成的长期任务检查点。\n\n"
+			"选择“是”从最近检查点继续执行；选择“否”放弃未完成任务但保留已有历史和文件修改；选择“取消”保持暂停。",
+			"恢复长期任务",
+			MB_ICONQUESTION | MB_YESNOCANCEL);
+		if (choice == IDYES) {
+			if (!StartChatRequest(std::string(), &stored.runCheckpoint)) {
+				MessageBoxA(hWnd, "无法从检查点启动 AI 请求。", "AI Chat", MB_ICONERROR | MB_OK);
+			}
+		}
+		else if (choice == IDNO) {
+			{
+				std::lock_guard<std::mutex> guard(g_session.mutex);
+				g_session.hasPendingRunCheckpoint = false;
+				g_session.pendingRunCheckpoint = {};
+			}
+			SaveChatSessionSnapshotNow();
+		}
+	}
 	auto* dialogCtx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(
 		g_chatDialog != nullptr ? g_chatDialog : hWnd,
 		GWLP_USERDATA));
@@ -5846,6 +5923,8 @@ void ClearChatHistory()
 		g_session.lastInputTokens = 0;
 		g_session.hasLastUsage = false;
 		g_session.effectiveContextWindow = 0;
+		g_session.hasPendingRunCheckpoint = false;
+		g_session.pendingRunCheckpoint = {};
 		ResetChatSessionBindingLocked(g_session);
 	}
 	WorkspaceMirror::ResetAndCleanup();
@@ -5937,6 +6016,24 @@ void HandleChatTaskDone(LPARAM lParam)
 		g_session.cancellation.reset();
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
+		if (!result->chatResult.ok && g_session.hasPendingRunCheckpoint) {
+			result->chatResult.hasCheckpoint = true;
+			result->chatResult.checkpoint = g_session.pendingRunCheckpoint;
+			result->chatResult.checkpoint.state = "paused";
+			result->chatResult.paused = true;
+			result->chatResult.samplingRounds = result->chatResult.checkpoint.samplingRounds;
+			result->chatResult.compactionCount = result->chatResult.checkpoint.compactionCount;
+			result->chatResult.hasUsage = result->chatResult.checkpoint.hasUsage;
+			result->chatResult.promptTokens = result->chatResult.checkpoint.promptTokens;
+			result->chatResult.totalTokens = result->chatResult.checkpoint.totalTokens;
+		}
+		if (result->chatResult.terminationReason == AIChatRunTerminationReason::None) {
+			result->chatResult.terminationReason = result->chatResult.cancelled
+				? AIChatRunTerminationReason::Cancelled
+				: (result->chatResult.ok
+					? AIChatRunTerminationReason::Completed
+					: AIChatRunTerminationReason::ProviderError);
+		}
 		g_lastCompletedRequestId = result->requestId;
 		g_lastCompletedChatResult = result->chatResult;
 
@@ -5946,8 +6043,32 @@ void HandleChatTaskDone(LPARAM lParam)
 		}
 
 		AppendToolEventHistoryMessagesLocked(g_session, result->chatResult);
-
 		if (result->chatResult.ok) {
+			g_session.hasPendingRunCheckpoint = false;
+			g_session.pendingRunCheckpoint = {};
+		}
+		else if (result->chatResult.hasCheckpoint) {
+			g_session.hasPendingRunCheckpoint = true;
+			g_session.pendingRunCheckpoint = result->chatResult.checkpoint;
+			g_session.pendingRunCheckpoint.state = "paused";
+		}
+
+		if (result->chatResult.ok && !result->chatResult.continuationMessages.empty()) {
+			for (SessionMessage& message : g_session.messages) {
+				message.includeInContext = false;
+			}
+			for (const AIChatMessage& message : result->chatResult.continuationMessages) {
+				g_session.messages.push_back(SessionMessage{
+					ParseStoredMessageRole(message.role),
+					message.content,
+					true,
+					false,
+					message.reasoningContent,
+					message.rawMessageJsonUtf8
+				});
+			}
+		}
+		else if (result->chatResult.ok) {
 			for (const auto& rawMessageJsonUtf8 : result->chatResult.contextPrefixRawMessagesUtf8) {
 				nlohmann::json parsedMessage;
 				try {
@@ -6026,6 +6147,16 @@ void HandleChatTaskDone(LPARAM lParam)
 				"",
 				""
 			});
+			if (result->chatResult.hasCheckpoint) {
+				g_session.messages.push_back(SessionMessage{
+					SessionRole::System,
+					LocalFromWide(L"已保存长期任务检查点，可恢复会话后继续执行。"),
+					false,
+					true,
+					"",
+					""
+				});
+			}
 		}
 		else if (result->chatResult.ok) {
 			const std::string assistantContent = NormalizeCodeForEIDE(result->chatResult.content);
@@ -6059,15 +6190,11 @@ void HandleChatTaskDone(LPARAM lParam)
 				g_session.planModeState = PlanModeState::Normal;
 				g_session.pendingPlan.clear();
 			}
-			std::string err;
-			if (result->chatResult.toolRoundsExceeded) {
-				err = LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25: ") + result->chatResult.error +
-					LocalFromWide(L"\u3002\u5df2\u4fdd\u7559\u5f53\u524d\u4f1a\u8bdd\u548c\u672c\u8f6e\u7528\u6237\u8f93\u5165\uff0c\u4e0b\u6b21\u53d1\u9001\u4f1a\u7ee7\u7eed\u5e26\u5165\u3002\u53ef\u5728 AI Key \u8bbe\u7f6e\u4e2d\u8c03\u9ad8\u6700\u5927\u5de5\u5177\u8f6e\u6570\uff0c\u6216\u8865\u5145\u66f4\u660e\u786e\u7684\u505c\u6b62\u6761\u4ef6\u3002");
-			}
-			else {
-				err = result->chatResult.error.empty()
-					? LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25")
-					: (LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25: ") + result->chatResult.error);
+			std::string err = result->chatResult.error.empty()
+				? LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25")
+				: (LocalFromWide(L"AI\u5bf9\u8bdd\u5931\u8d25: ") + result->chatResult.error);
+			if (result->chatResult.hasCheckpoint) {
+				err += LocalFromWide(L"。已保存长期任务检查点，恢复此会话后可确认继续执行。");
 			}
 			g_session.messages.push_back(SessionMessage{ SessionRole::System, err, false, true, "", "" });
 			OutputStringToELog("[" + LocalFromWide(L"AI\u5bf9\u8bdd") + "]" + err);
@@ -7418,6 +7545,24 @@ nlohmann::json BuildDebugSessionMessagesJson(size_t keepCount)
 	return rows;
 }
 
+const char* RunTerminationReasonName(AIChatRunTerminationReason reason)
+{
+	switch (reason) {
+	case AIChatRunTerminationReason::Completed:
+		return "completed";
+	case AIChatRunTerminationReason::Cancelled:
+		return "cancelled";
+	case AIChatRunTerminationReason::ProviderError:
+		return "provider_error";
+	case AIChatRunTerminationReason::Stalled:
+		return "stalled";
+	case AIChatRunTerminationReason::CompactionFailed:
+		return "compaction_failed";
+	default:
+		return "none";
+	}
+}
+
 std::string ExecuteDebugRunAIChatTool(const std::string& argumentsJson, bool& outOk)
 {
 	outOk = false;
@@ -7534,6 +7679,14 @@ std::string ExecuteDebugRunAIChatTool(const std::string& argumentsJson, bool& ou
 	result["chat_ok"] = chatResult.ok;
 	result["chat_error"] = LocalToUtf8Text(chatResult.error);
 	result["chat_cancelled"] = chatResult.cancelled;
+	result["paused"] = chatResult.paused;
+	result["termination_reason"] = RunTerminationReasonName(chatResult.terminationReason);
+	result["sampling_rounds"] = chatResult.samplingRounds;
+	result["compaction_count"] = chatResult.compactionCount;
+	result["has_checkpoint"] = chatResult.hasCheckpoint;
+	result["checkpoint_state"] = chatResult.hasCheckpoint
+		? chatResult.checkpoint.state
+		: std::string();
 	result["tool_rounds_exceeded"] = chatResult.toolRoundsExceeded;
 	result["http_status"] = chatResult.httpStatus;
 	result["elapsed_ms"] = sessionElapsedMs;
