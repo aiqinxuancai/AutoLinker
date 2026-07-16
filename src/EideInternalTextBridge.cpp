@@ -7093,11 +7093,15 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 		replaceTrace);
 
 	if (!replaceOk) {
+		std::string failureTrace =
+			rangePrepareTrace +
+			"|" +
+			writeStrategyTrace +
+			"|replace_failed|" +
+			replaceTrace;
+		appendRollbackTrace("replace_failed", failureTrace);
 		if (outResult != nullptr) {
-			outResult->trace =
-				rangePrepareTrace +
-				"|replace_failed|" +
-				replaceTrace;
+			outResult->trace = std::move(failureTrace);
 		}
 		return false;
 	}

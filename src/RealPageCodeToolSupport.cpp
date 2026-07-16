@@ -226,6 +226,22 @@ std::string NormalizeIdeOptionalLeadingDotToken(const std::string& token)
 	return "." + token;
 }
 
+std::string NormalizeIdeTrailingEmptyDirectiveFields(std::string token)
+{
+	// 易语言会省略声明行尾部的空字段，例如：
+	//   .子程序 Foo,        -> .子程序 Foo
+	//   .参数 value, 整数型, -> .参数 value, 整数型
+	// 结构指纹已经去除了空白；仅对指令 token 去掉尾随 ASCII 逗号，
+	// 不会影响说明文字或字符串内部的逗号（它们不会位于 token 末尾）。
+	if (token.empty() || token.front() != '.') {
+		return token;
+	}
+	while (!token.empty() && token.back() == ',') {
+		token.pop_back();
+	}
+	return token;
+}
+
 bool IsVersionFingerprintToken(const std::string& token)
 {
 	return StartsWithLocal(token, kFingerprintTokenVersionPrefix);
@@ -354,6 +370,40 @@ bool TryMatchDirectiveAtLineStart(
 			return false;
 		}
 	}
+	if (outDirectivePos != nullptr) {
+		*outDirectivePos = directivePos;
+	}
+	return true;
+}
+
+bool TrySplitSubroutineHeaderFields(
+	const std::string& line,
+	std::vector<std::string>& outFields,
+	size_t* outDirectivePos = nullptr)
+{
+	outFields.clear();
+	size_t directivePos = 0;
+	if (!TryMatchDirectiveAtLineStart(line, kDirectiveSubroutine, &directivePos)) {
+		return false;
+	}
+
+	const std::string rest = line.substr(directivePos + kDirectiveSubroutine.size());
+	size_t fieldStart = 0;
+	// 只解析前三个结构逗号；第三个逗号后的全部内容都是第四字段说明，
+	// 说明中的逗号属于正文，不能再产生新的结构字段。
+	for (size_t structuralComma = 0; structuralComma < 3; ++structuralComma) {
+		const size_t comma = rest.find(',', fieldStart);
+		if (comma == std::string::npos) {
+			outFields.push_back(TrimAsciiCopyLocal(rest.substr(fieldStart)));
+			if (outDirectivePos != nullptr) {
+				*outDirectivePos = directivePos;
+			}
+			return true;
+		}
+		outFields.push_back(TrimAsciiCopyLocal(rest.substr(fieldStart, comma - fieldStart)));
+		fieldStart = comma + 1;
+	}
+	outFields.push_back(TrimAsciiCopyLocal(rest.substr(fieldStart)));
 	if (outDirectivePos != nullptr) {
 		*outDirectivePos = directivePos;
 	}
@@ -621,13 +671,34 @@ std::string PrepareAssemblyVariablesForRealPageWrite(const std::string& text)
 	return changed ? JoinRealCodeLines(lines) : text;
 }
 
+bool ValidateRealPageSubroutineHeaders(const std::string& text, std::string& outError)
+{
+	outError.clear();
+	const std::vector<std::string> lines = SplitRealCodeLines(text);
+	for (size_t lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
+		std::vector<std::string> fields;
+		if (!TrySplitSubroutineHeaderFields(lines[lineIndex], fields, nullptr)) {
+			continue;
+		}
+		// 固定槽位：fields[0] 名称，fields[1] 返回值，fields[2] 公开属性，
+		// fields[3] 及其后为说明。第三项只能为空或“公开”；不能把说明挤到这里。
+		if (fields.size() >= 3 && !fields[2].empty() && fields[2] != "公开") {
+			outError = "invalid subroutine header at line " + std::to_string(lineIndex + 1) +
+				": field 3 (public attribute) must be empty or public; description must start after the third comma in field 4";
+			return false;
+		}
+	}
+	return true;
+}
+
 // 把 IDE 读回时会省略的程序集头部字段归一化掉：
-// ".程序集 X, <对象>" / ".程序集 X, , 公开" → ".程序集 X"。
-// 这些字段经文本包写入后不会出现在真实页格式化结果中，比较前需消除该差异，
-// 避免把成功写入误判为 verify_mismatch 而触发回滚重写。
-// 仅处理 .程序集（类声明）行，不会匹配 .程序集变量（分隔符校验已排除）。
+// 保留类名和真实的非默认基类，忽略公开标记、说明等不会出现在真实页格式化结果中的字段。
+// 例如 ".程序集 X, , 公开, 说明" → ".程序集 X"，
+//      ".程序集 X, Base, 公开, 说明" → ".程序集 X, Base"。
+// 这样可以避免成功写入被头部元数据差异误判为 verify_mismatch，进而触发回滚重写。
+// 仅处理 .程序集（类声明）行，不会匹配 .程序集变量（指令边界由 TryMatchDirectiveAtLineStart 校验）。
 // 返回是否修改了 line。
-bool TryNormalizeAssemblyClassDefaultBase(std::string& line)
+bool TryNormalizeProgramUnitHeaderForCompare(std::string& line)
 {
 	size_t directivePos = 0;
 	if (!TryMatchDirectiveAtLineStart(line, kDirectiveAssembly, &directivePos)) {
@@ -651,28 +722,19 @@ bool TryNormalizeAssemblyClassDefaultBase(std::string& line)
 		fieldStart = comma + 1;
 	}
 
-	// fields[0]=程序集/类名；fields[1]=基类（若存在）。空基类或默认 <对象> 后面
-	// 只有空字段/公开标记时，IDE 会把整段可选字段从真实页文本中省略。
+	// fields[0]=程序集/类名；fields[1]=基类（若存在）。IDE 的真实页格式化
+	// 只可靠保留名称和非默认基类，后续字段（公开、说明等）统一视为不可观测元数据。
 	bool changed = false;
 	if (fields.size() >= 2 &&
 		(fields[1].empty() || fields[1] == kDefaultBaseClassToken)) {
-		bool onlyOmittedMetadata = true;
-		for (size_t i = 2; i < fields.size(); ++i) {
-			if (!fields[i].empty() && fields[i] != "公开") {
-				onlyOmittedMetadata = false;
-				break;
-			}
-		}
-		if (onlyOmittedMetadata) {
-			fields.resize(1);
-			changed = true;
-		}
-		else if (fields[1] == kDefaultBaseClassToken) {
-			fields.erase(fields.begin() + 1);
-			changed = true;
-		}
+		fields.resize(1);
+		changed = true;
 	}
-	// 移除基类后可能遗留的尾部空字段。
+	else if (fields.size() > 2) {
+		fields.resize(2);
+		changed = true;
+	}
+	// 移除基类后可能遗留的尾部空字段（主要覆盖没有进入上面分支的异常/简写输入）。
 	while (fields.size() > 1 && fields.back().empty()) {
 		fields.pop_back();
 		changed = true;
@@ -692,6 +754,44 @@ bool TryNormalizeAssemblyClassDefaultBase(std::string& line)
 	return true;
 }
 
+bool TryNormalizeSubroutineHeaderForCompare(std::string& line)
+{
+	std::vector<std::string> fields;
+	size_t directivePos = 0;
+	if (!TrySplitSubroutineHeaderFields(line, fields, &directivePos)) {
+		return false;
+	}
+
+	const std::string indent = line.substr(0, directivePos);
+	if (fields[0].empty()) {
+		return false;
+	}
+	if (fields.size() >= 3 && !fields[2].empty() && fields[2] != "公开") {
+		// 字段错位的源码不是 IDE 省略注释后的等价形式，不能静默归一化。
+		return false;
+	}
+
+	// 真实页格式化可靠保留：子程序名、返回类型、公开标记。
+	// 说明文字及其后续字段不会出现在 direct formatter 结果中。
+	size_t keepCount = 1;
+	if (fields.size() >= 2 && !fields[1].empty()) {
+		keepCount = 2;
+	}
+	if (fields.size() >= 3 && fields[2] == "公开") {
+		keepCount = 3;
+	}
+	if (fields.size() <= keepCount) {
+		return false;
+	}
+
+	std::string rebuilt = indent + std::string(kDirectiveSubroutine) + " " + fields[0];
+	for (size_t i = 1; i < keepCount; ++i) {
+		rebuilt += ", " + fields[i];
+	}
+	line = std::move(rebuilt);
+	return true;
+}
+
 std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string& text)
 {
 	std::vector<std::string> lines = SplitRealCodeLines(text);
@@ -699,6 +799,9 @@ std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string
 	bool reachedSubroutineBlock = false;
 	for (auto& line : lines) {
 		const std::string trimmed = TrimAsciiCopyLocal(line);
+		if (TryNormalizeSubroutineHeaderForCompare(line)) {
+			changed = true;
+		}
 		if (!reachedSubroutineBlock) {
 			size_t directivePos = 0;
 			if (TryMatchDirectiveAtLineStart(line, kDirectiveLocalVariable, &directivePos)) {
@@ -709,7 +812,7 @@ std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string
 					kDirectiveAssemblyVariable.size());
 				changed = true;
 			}
-			else if (TryNormalizeAssemblyClassDefaultBase(line)) {
+			else if (TryNormalizeProgramUnitHeaderForCompare(line)) {
 				changed = true;
 			}
 		}
@@ -787,24 +890,28 @@ std::string NormalizeRealPageOperatorFormsForCompare(const std::string& text)
 //  4) 给无 default 的 .判断开始块补空 .默认：去掉紧邻 .判断结束 之前的 .默认 token。
 //  5) 页尾追加裸 .子程序（无名字）+ 把程序集级注释搬到页尾孤儿化：去掉去空白后恰为 ".子程序" 的 token。
 //     真实子程序声明必带名字，去空白后形如 ".子程序名字"，绝不会精确等于 ".子程序"。
+//  6) 声明尾部的空字段会被省略：去掉指令 token 末尾的 ASCII 逗号。
 std::vector<std::string> NormalizeStructuralFingerprintForIdeRewrite(
 	const std::vector<std::string>& fingerprint)
 {
 	std::vector<std::string> normalized;
 	normalized.reserve(fingerprint.size());
 	for (size_t i = 0; i < fingerprint.size(); ++i) {
-		std::string token = NormalizeIdeOptionalLeadingDotToken(fingerprint[i]);
+		std::string token = NormalizeIdeTrailingEmptyDirectiveFields(
+			NormalizeIdeOptionalLeadingDotToken(fingerprint[i]));
 		if (IsVersionFingerprintToken(token)) {
 			continue;
 		}
 		if (token == kFingerprintTokenOtherwise &&
 			i + 1 < fingerprint.size() &&
-			NormalizeIdeOptionalLeadingDotToken(fingerprint[i + 1]) == kFingerprintTokenEndIf) {
+			NormalizeIdeTrailingEmptyDirectiveFields(
+				NormalizeIdeOptionalLeadingDotToken(fingerprint[i + 1])) == kFingerprintTokenEndIf) {
 			continue;
 		}
 		if (token == kFingerprintTokenDefault &&
 			i + 1 < fingerprint.size() &&
-			NormalizeIdeOptionalLeadingDotToken(fingerprint[i + 1]) == kFingerprintTokenEndSwitch) {
+			NormalizeIdeTrailingEmptyDirectiveFields(
+				NormalizeIdeOptionalLeadingDotToken(fingerprint[i + 1])) == kFingerprintTokenEndSwitch) {
 			continue;
 		}
 		if (token == kFingerprintTokenBareSubroutine) {

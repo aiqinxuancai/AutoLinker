@@ -578,21 +578,69 @@ std::string BuildError(const std::string& error)
 	return ToolResultToLocalJson(r);
 }
 
+bool HasPositivePaginationCursor(const json& args)
+{
+	const auto hasPositiveInteger = [](const json& value, const char* key) {
+		const auto it = value.find(key);
+		if (it == value.end()) {
+			return false;
+		}
+		if (it->is_number_unsigned()) {
+			return it->get<std::uint64_t>() > 0;
+		}
+		return it->is_number_integer() && it->get<long long>() > 0;
+	};
+	if (hasPositiveInteger(args, "offset") || hasPositiveInteger(args, "byte_offset")) {
+		return true;
+	}
+	const auto filesIt = args.find("files");
+	if (filesIt == args.end() || !filesIt->is_array()) {
+		return false;
+	}
+	return std::any_of(filesIt->begin(), filesIt->end(), [&](const json& item) {
+		return item.is_object() &&
+			(hasPositiveInteger(item, "offset") || hasPositiveInteger(item, "byte_offset"));
+	});
+}
+
 bool ValidateMirrorGeneration(
 	const json& args,
 	const WorkspaceMirror::FileAccessSnapshot& snapshot,
 	std::string& outError)
 {
 	outError.clear();
+	const bool isContinuation = HasPositivePaginationCursor(args);
 	if (!args.contains("mirror_generation")) {
+		if (isContinuation) {
+			outError = "mirror_generation is required when continuing pagination";
+			return false;
+		}
 		return true;
 	}
 	if (!args["mirror_generation"].is_number_unsigned() && !args["mirror_generation"].is_number_integer()) {
-		outError = "mirror_generation must be a non-negative integer";
+		outError = "mirror_generation must be a positive integer";
 		return false;
 	}
-	const long long requested = args["mirror_generation"].get<long long>();
-	if (requested < 0 || static_cast<std::uint64_t>(requested) != snapshot.generation) {
+	std::uint64_t requested = 0;
+	if (args["mirror_generation"].is_number_unsigned()) {
+		requested = args["mirror_generation"].get<std::uint64_t>();
+	}
+	else {
+		const long long signedRequested = args["mirror_generation"].get<long long>();
+		if (signedRequested < 0) {
+			outError = "mirror_generation must be a positive integer";
+			return false;
+		}
+		requested = static_cast<std::uint64_t>(signedRequested);
+	}
+	if (requested == 0) {
+		if (!isContinuation) {
+			return true;
+		}
+		outError = "mirror_generation must be a positive integer when continuing pagination";
+		return false;
+	}
+	if (requested != snapshot.generation) {
 		outError = "stale mirror_generation; refresh or restart pagination with current generation " +
 			std::to_string(snapshot.generation);
 		return false;
@@ -1944,6 +1992,11 @@ std::string BuildPaginationSelfTestJson()
 	bool byteCursorOk = false;
 	bool fullSearchOk = false;
 	bool streamingCodeItemOk = false;
+	bool initialZeroGenerationAccepted = false;
+	bool missingContinuationGenerationRejected = false;
+	bool zeroContinuationGenerationRejected = false;
+	bool currentContinuationGenerationAccepted = false;
+	bool nestedContinuationGenerationRequired = false;
 	bool staleGenerationRejected = false;
 	std::error_code tempError;
 	const std::filesystem::path tempRoot = std::filesystem::temp_directory_path(tempError) /
@@ -2003,6 +2056,26 @@ std::string BuildPaginationSelfTestJson()
 				codeItem.value("content", std::string()).find("TAIL_MARKER_UNIQUE") != std::string::npos;
 
 			std::string generationError;
+			initialZeroGenerationAccepted = ValidateMirrorGeneration(
+				json({{"mirror_generation", 0}, {"offset", 0}}),
+				snapshot,
+				generationError);
+			missingContinuationGenerationRejected = !ValidateMirrorGeneration(
+				json({{"offset", 10}}),
+				snapshot,
+				generationError);
+			zeroContinuationGenerationRejected = !ValidateMirrorGeneration(
+				json({{"mirror_generation", 0}, {"offset", 10}}),
+				snapshot,
+				generationError);
+			currentContinuationGenerationAccepted = ValidateMirrorGeneration(
+				json({{"mirror_generation", 42}, {"offset", 10}}),
+				snapshot,
+				generationError);
+			nestedContinuationGenerationRequired = !ValidateMirrorGeneration(
+				json({{"files", json::array({json({{"file_path", "src/Large.txt"}, {"byte_offset", 1024}})})}}),
+				snapshot,
+				generationError);
 			staleGenerationRejected = !ValidateMirrorGeneration(
 				json({{"mirror_generation", 41}}),
 				snapshot,
@@ -2014,13 +2087,21 @@ std::string BuildPaginationSelfTestJson()
 	return json({
 		{"name", "workspace-file-pagination"},
 		{"ok", resultPageOk && linePageOk && sourcePageOk && byteCursorOk &&
-			fullSearchOk && streamingCodeItemOk && staleGenerationRejected},
+			fullSearchOk && streamingCodeItemOk && initialZeroGenerationAccepted &&
+			missingContinuationGenerationRejected && zeroContinuationGenerationRejected &&
+			currentContinuationGenerationAccepted && nestedContinuationGenerationRequired &&
+			staleGenerationRejected},
 		{"result_page", std::move(resultPage)},
 		{"line_page", std::move(linePage)},
 		{"source_page", std::move(sourcePage)},
 		{"byte_cursor_ok", byteCursorOk},
 		{"full_search_ok", fullSearchOk},
 		{"streaming_code_item_ok", streamingCodeItemOk},
+		{"initial_zero_generation_accepted", initialZeroGenerationAccepted},
+		{"missing_continuation_generation_rejected", missingContinuationGenerationRejected},
+		{"zero_continuation_generation_rejected", zeroContinuationGenerationRejected},
+		{"current_continuation_generation_accepted", currentContinuationGenerationAccepted},
+		{"nested_continuation_generation_required", nestedContinuationGenerationRequired},
 		{"stale_generation_rejected", staleGenerationRejected}
 	}).dump();
 }

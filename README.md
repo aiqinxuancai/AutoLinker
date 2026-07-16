@@ -86,7 +86,7 @@ url = "http://127.0.0.1:19207/mcp"
 
 ### 工程源码读写模型
 - 内置 AI 每轮请求前以 `full` 模式自动准备镜像；外部 MCP 会话首次读写前须调用 `refresh_workspace_mirror`。镜像由 e-packager 解包到 `%TEMP%/AutoLinker/workspace-mirror/`（含未保存改动），不污染源码目录。`mode` 支持 `auto` / `main_only` / `full`。
-- 读取统一走镜像相对路径（`list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`）；大文件返回 `next_source_byte_offset` 用于续读，分页建议回传 `mirror_generation`，旧代次游标会被拒绝。
+- 读取统一走镜像相对路径（`list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`）；大文件返回 `next_source_byte_offset` 用于续读。首屏省略 `mirror_generation`，续页必须原样回传上一页的非零代次，旧代次游标会被拒绝。
 - 编辑前用 `read_real_file` 取分页视图和 `code_hash` 作为 CAS 基线。写工具（`edit_file`、`multi_edit_file`、`write_file` 等）以 `file_path` 为目标，映射回 IDE 程序项后直接写回 IDE，不回包编译。
 - 写入须带 SHA-256 `expected_base_hash`（恢复用 `expected_current_hash`）防止旧基线覆盖新改动；结果仅返回哈希、快照、验证与变更统计，完整结果在 `structuredContent`。
 - `src/*.xml` 为窗口界面文件，仅供读取搜索；固定表（常量、全局变量、DLL 声明、数据类型）可经对应路径编辑。程序集变量写回会按 IDE 可接受格式处理。

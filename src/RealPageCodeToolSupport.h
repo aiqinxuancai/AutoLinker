@@ -31,6 +31,9 @@ std::string BuildStableTextHashForRealCode(const std::string& text);
 std::string NormalizeRealCodeLineBreaksToCrLf(const std::string& text);
 std::string NormalizeRealCodeLineBreaksToLf(const std::string& text);
 std::string PrepareAssemblyVariablesForRealPageWrite(const std::string& text);
+// 校验 .子程序 声明的固定字段槽位：名称、返回值、公开属性、注释。
+// 注释从第四个字段开始，注释正文中的逗号不再参与结构解析。
+bool ValidateRealPageSubroutineHeaders(const std::string& text, std::string& outError);
 // 合并 IDE 新建类时生成的生命周期函数，并保证 _初始化、_销毁依次为前两个函数。
 std::string PrepareNewClassPageLifecycleFunctions(
 	const std::string& requestedCode,

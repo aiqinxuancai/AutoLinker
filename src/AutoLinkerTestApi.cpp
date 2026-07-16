@@ -143,6 +143,20 @@ bool RunAIChatToolPolicySelfTest(nlohmann::json& outCheck)
 	const auto overBudget = budgetPolicy.BeforeToolCall(
 		"search_code",
 		R"({"pattern":"over-budget","regex":false})");
+	AIChatToolPolicy::Session failedCallPolicy;
+	const std::string failedArgs = R"({"pattern":"invalid-generation","mirror_generation":0})";
+	const auto failedCall = failedCallPolicy.BeforeToolCall("search_code", failedArgs);
+	failedCallPolicy.AfterToolCall(
+		"search_code",
+		failedArgs,
+		R"({"ok":false,"error":"stale mirror_generation; refresh or restart pagination with current generation 4"})",
+		false);
+	const int explorationCallsAfterFailure = failedCallPolicy.ExplorationCalls();
+	const auto failedCallRetry = failedCallPolicy.BeforeToolCall("search_code", failedArgs);
+	const bool failedCallBudgetRestored = failedCall.allowed &&
+		explorationCallsAfterFailure == 0 &&
+		failedCallPolicy.ExplorationCalls() == 1 &&
+		failedCallRetry.allowed;
 
 	AIChatToolPolicy::Session writePolicy;
 	const std::string writeArgs = R"({"file_path":"src/Test.txt","full_code":"x"})";
@@ -163,6 +177,7 @@ bool RunAIChatToolPolicySelfTest(nlohmann::json& outCheck)
 		overlapSuggestionOk &&
 		budgetCallsAllowed &&
 		!overBudget.allowed &&
+		failedCallBudgetRestored &&
 		writeDecision.allowed &&
 		!writeNotice.empty() &&
 		prefersLowThinking &&
@@ -172,6 +187,7 @@ bool RunAIChatToolPolicySelfTest(nlohmann::json& outCheck)
 	outCheck["batch_overlap_reason"] = overlappingBatchRead.reason;
 	outCheck["batch_overlap_result"] = overlapResult;
 	outCheck["budget_reason"] = overBudget.reason;
+	outCheck["failed_call_budget_restored"] = failedCallBudgetRestored;
 	outCheck["post_write_reason"] = postWriteRead.reason;
 	return ok;
 }
@@ -1966,21 +1982,26 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 			".版本 2\r\n\r\n.程序集 DateTimeEx\r\n");
 	const std::string publicProgramUnitHeader =
 		NormalizeRealPageAssemblyVariableAliasesForCompare(
-			".版本 2\r\n\r\n.程序集 DateTimeEx, , 公开\r\n");
+			".版本 2\r\n\r\n.程序集 DateTimeEx, , 公开, 现代日期时间类\r\n");
 	const std::string defaultBaseProgramUnitHeader =
 		NormalizeRealPageAssemblyVariableAliasesForCompare(
 			".版本 2\r\n\r\n.程序集 DateTimeEx, <对象>\r\n");
 	const std::string customBaseProgramUnitHeader =
 		NormalizeRealPageAssemblyVariableAliasesForCompare(
 			".版本 2\r\n\r\n.程序集 DateTimeEx, BaseDateTime\r\n");
+	const std::string customBaseWithMetadataProgramUnitHeader =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".版本 2\r\n\r\n.程序集 DateTimeEx, BaseDateTime, 公开, 说明文字\r\n");
 	report["checks"].push_back({
 		{"name", "real-page-program-unit-header-normalization"},
 		{"ok", publicProgramUnitHeader == bareProgramUnitHeader &&
 			defaultBaseProgramUnitHeader == bareProgramUnitHeader &&
-			customBaseProgramUnitHeader != bareProgramUnitHeader},
+			customBaseProgramUnitHeader != bareProgramUnitHeader &&
+			customBaseWithMetadataProgramUnitHeader == customBaseProgramUnitHeader},
 		{"public_metadata_omitted", publicProgramUnitHeader == bareProgramUnitHeader},
 		{"default_base_omitted", defaultBaseProgramUnitHeader == bareProgramUnitHeader},
-		{"custom_base_preserved", customBaseProgramUnitHeader != bareProgramUnitHeader}
+		{"custom_base_preserved", customBaseProgramUnitHeader != bareProgramUnitHeader},
+		{"custom_base_metadata_omitted", customBaseWithMetadataProgramUnitHeader == customBaseProgramUnitHeader}
 	});
 	const std::vector<std::string> switchWithoutDefault =
 		NormalizeStructuralFingerprintForIdeRewrite({
@@ -1992,6 +2013,75 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		{"name", "real-page-empty-switch-default-normalization"},
 		{"ok", switchWithoutDefault == switchWithIdeEmptyDefault},
 		{"empty_default_omitted", switchWithoutDefault == switchWithIdeEmptyDefault}
+	});
+	const std::vector<std::string> declarationWithoutTrailingEmptyFields =
+		NormalizeStructuralFingerprintForIdeRewrite({
+			".子程序UnixSecondsToSysTime",
+			".参数seconds,长整数型",
+			".参数stOut,SYSTEMTIME,参考"});
+	const std::vector<std::string> declarationWithTrailingEmptyFields =
+		NormalizeStructuralFingerprintForIdeRewrite({
+			".子程序UnixSecondsToSysTime,",
+			".参数seconds,长整数型,",
+			".参数stOut,SYSTEMTIME,参考,,"});
+	report["checks"].push_back({
+		{"name", "real-page-trailing-empty-declaration-fields"},
+		{"ok", declarationWithoutTrailingEmptyFields == declarationWithTrailingEmptyFields},
+		{"trailing_empty_fields_omitted", declarationWithoutTrailingEmptyFields == declarationWithTrailingEmptyFields}
+	});
+	const std::string subroutineBareHeader =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".版本 2\r\n\r\n.程序集 DateTimeEx\r\n\r\n"
+			".子程序 UnixMsToSysTime\r\n");
+	const std::string subroutineDescribedHeader =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".版本 2\r\n\r\n.程序集 DateTimeEx\r\n\r\n"
+			".子程序 UnixMsToSysTime, , , 将Unix毫秒时间戳写入SYSTEMTIME, extra\r\n");
+	const std::string publicSubroutineBareHeader =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".版本 2\r\n\r\n.程序集 DateTimeEx\r\n\r\n"
+			".子程序 InitWithString, 逻辑型, 公开\r\n");
+	const std::string publicSubroutineDescribedHeader =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".版本 2\r\n\r\n.程序集 DateTimeEx\r\n\r\n"
+			".子程序 InitWithString, 逻辑型, 公开, 从ISO格式字符串解析时间（YYYY-MM-DD HH:MM:SS, 或 YYYY-MM-DDTHH:MM:SS）\r\n");
+	const std::string shiftedDescriptionHeader =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".版本 2\r\n\r\n.程序集 DateTimeEx\r\n\r\n"
+			".子程序 UnixMsToSysTime, , 将Unix毫秒时间戳写入SYSTEMTIME\r\n");
+	std::string validPrivateHeaderError;
+	std::string validPublicHeaderError;
+	std::string bareIdeTailHeaderError;
+	std::string shiftedDescriptionError;
+	const bool validPrivateHeader = ValidateRealPageSubroutineHeaders(
+		".子程序 UnixMsToSysTime, , , 将Unix毫秒时间戳写入SYSTEMTIME, extra\r\n",
+		validPrivateHeaderError);
+	const bool validPublicHeader = ValidateRealPageSubroutineHeaders(
+		".子程序 InitWithString, 逻辑型, 公开, 从ISO格式字符串解析时间（YYYY-MM-DD HH:MM:SS, 或 YYYY-MM-DDTHH:MM:SS）\r\n",
+		validPublicHeaderError);
+	const bool bareIdeTailHeaderAccepted = ValidateRealPageSubroutineHeaders(
+		".子程序\r\n",
+		bareIdeTailHeaderError);
+	const bool shiftedDescriptionRejected = !ValidateRealPageSubroutineHeaders(
+		".子程序 UnixMsToSysTime, , 将Unix毫秒时间戳写入SYSTEMTIME\r\n",
+		shiftedDescriptionError);
+	report["checks"].push_back({
+		{"name", "real-page-subroutine-description-normalization"},
+		{"ok", subroutineBareHeader == subroutineDescribedHeader &&
+			publicSubroutineBareHeader == publicSubroutineDescribedHeader &&
+			shiftedDescriptionHeader != subroutineBareHeader &&
+			validPrivateHeader &&
+			validPublicHeader &&
+			bareIdeTailHeaderAccepted &&
+			shiftedDescriptionRejected},
+		{"private_description_with_comma_omitted", subroutineBareHeader == subroutineDescribedHeader},
+		{"public_description_with_comma_omitted", publicSubroutineBareHeader == publicSubroutineDescribedHeader},
+		{"shifted_description_not_normalized", shiftedDescriptionHeader != subroutineBareHeader},
+		{"valid_private_header", validPrivateHeader},
+		{"valid_public_header", validPublicHeader},
+		{"bare_ide_tail_header_accepted", bareIdeTailHeaderAccepted},
+		{"shifted_description_rejected", shiftedDescriptionRejected},
+		{"shifted_description_error", shiftedDescriptionError}
 	});
 	const std::string ideDefaultClassCode =
 		".版本 2\r\n\r\n.程序集 类1\r\n\r\n"

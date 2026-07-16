@@ -1973,7 +1973,7 @@ nlohmann::json BuildPublicToolCatalog()
 			{"properties", {
 				{"glob", {{"type", "string"}, {"description", "Optional glob such as src/**/*.txt or ecom/**/*.txt."}}},
 				{"path", {{"type", "string"}, {"description", "Optional relative path prefix."}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 0}, {"description", "Optional generation returned by the previous page; rejects stale pagination after a refresh or write."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Omit on the first page. When continuing with next_offset, pass the exact positive generation returned by the previous page."}}},
 				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based result offset for pagination. Use next_offset from the prior result."}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 5000}}}
 			}},
@@ -1993,7 +1993,7 @@ nlohmann::json BuildPublicToolCatalog()
 				{"regex", {{"type", "boolean"}, {"description", "Defaults to false."}}},
 				{"case_insensitive", {{"type", "boolean"}}},
 				{"context", {{"type", "integer"}, {"minimum", 0}, {"maximum", 20}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 0}, {"description", "Optional generation returned by the previous page; rejects stale pagination."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Omit on the first page. When continuing with next_offset, pass the exact positive generation returned by the previous page."}}},
 				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based result offset. Continue with next_offset returned by the previous page."}}},
 				{"head_limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}}}
 			}},
@@ -2007,7 +2007,7 @@ nlohmann::json BuildPublicToolCatalog()
 			{"type", "object"},
 			{"properties", {
 				{"file_path", {{"type", "string"}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 0}, {"description", "Optional generation returned by the previous page."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Omit on the first page. When continuing with offset or next_source_byte_offset, pass the exact positive generation returned by the previous page."}}},
 				{"byte_offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Source byte cursor for files larger than the 1 MiB read window. Continue with next_source_byte_offset and reset line offset to 0."}}},
 				{"offset", {{"type", "integer"}, {"minimum", 0}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 20000}}}
@@ -2023,7 +2023,7 @@ nlohmann::json BuildPublicToolCatalog()
 			{"type", "object"},
 			{"properties", {
 				{"file_paths", {{"type", "array"}, {"maxItems", 12}, {"items", {{"type", "string"}}}, {"description", "Simple list of up to 12 mirror-relative file paths."}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 0}, {"description", "Optional generation returned by a prior mirror read."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Omit for initial reads. When any file entry continues with offset or byte_offset, pass the exact positive generation returned by the previous read."}}},
 				{"files", {{"type", "array"}, {"maxItems", 12}, {"items", {
 					{"type", "object"},
 					{"properties", {
@@ -2051,7 +2051,7 @@ nlohmann::json BuildPublicToolCatalog()
 				{"file_path", {{"type", "string"}}},
 				{"item_name", {{"type", "string"}}},
 				{"occurrence", {{"type", "integer"}, {"minimum", 1}, {"description", "Select the Nth matching declaration when duplicate top-level names exist."}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 0}, {"description", "Optional generation returned by a prior mirror read."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Optional positive generation returned by a prior mirror read; omit when no prior generation is available."}}},
 				{"include_references", {{"type", "boolean"}, {"description", "Defaults to false."}}},
 				{"reference_glob", {{"type", "string"}, {"description", "Optional reference search glob such as src/**/*.txt."}}},
 				{"reference_limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 50}}}
@@ -2603,6 +2603,9 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"- 以 # 开头的标识通常表示常量；图片/音频等二进制资源也按常量资源引用，例如 #启动画面。\n"
 			"- 以 & 开头通常表示对子程序取址，用于回调或传递函数地址，例如 到整数 (&枚举窗口过程)。\n"
 			"- 以 . 开头的是易语言系统指令/关键字，例如 .版本、.程序集、.程序集变量、.子程序、.参数、.局部变量、.全局变量、.常量、.DLL声明、.数据类型、.成员、.如果、.如果真、.否则、.返回；编辑时不要删掉前导的 .，也不要改成 C/C++/JS 风格。\n"
+			"- `.子程序` 的固定字段顺序是 `.子程序 名称, 返回值, 公开属性, 说明文字`：第 2 字段是返回值，第 3 字段只能为空或 `公开`，第 4 字段才是说明。只可省略行尾未使用字段；填写说明时必须保留前三个结构逗号，例如私有无返回值应写 `.子程序 Foo, , , 说明`，禁止写成 `.子程序 Foo, , 说明`。\n"
+			"- `.程序集` 的固定字段顺序是 `.程序集 名称, 基类, 公开属性, 说明文字`：第 2 字段是基类，第 3 字段只能为空或 `公开`，第 4 字段才是说明。填写说明时同样必须保留中间空字段和前三个结构逗号，例如 `.程序集 Foo, , , 说明`。\n"
+			"- `.子程序` 和 `.程序集` 都只把前三个逗号视为字段结构；第三个逗号后的剩余内容全部属于说明文字，说明文字本身允许包含逗号。\n"
 			"- 单引号 ' 开头表示整行注释，不要把注释内容当成代码，也不要改成 // 或 /* */。\n"
 			"- 真 / 假 是布尔值。\n"
 			"- 易语言使用全角的引号来表示字符串，例如 “Hello, World!”。\n"
@@ -2652,7 +2655,9 @@ std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal
 		"如果需要读取网页或文档，优先调用 extract_web_document；需要原始响应时调用 fetch_url。\n"
 		"除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用依赖管理工具。\n"
 		"如果工具不可用或调用失败，说明限制并基于已有信息继续。\n"
-		"只输出对用户有用的结果，不输出内部推理过程。\n";
+		"只输出对用户有用的结果，不输出内部推理过程。\n"
+		"`.子程序` 固定为 `.子程序 名称, 返回值, 公开属性, 说明文字`；`.程序集` 固定为 `.程序集 名称, 基类, 公开属性, 说明文字`。只可省略行尾未使用字段，填写第 4 字段说明时必须保留前三个结构逗号和中间空字段，第 3 字段只能为空或 `公开`。\n"
+		"两种声明的第三个逗号后全部属于说明文字，说明中允许包含逗号。\n";
 
 	if (!minimal) {
 		prompt +=
@@ -5555,7 +5560,9 @@ std::string AIService::BuildSystemPrompt(AITaskKind kind, const AISettings& sett
 		"1) 代码注释使用单引号（'）。\n"
 		"2) 必须遵循易语言语法与排版（如 .版本 2、.子程序 等）。\n"
 		"3) 除非用户明确要求，否则只输出最终代码或文本，不要附加解释。\n"
-		"4) 不要输出 Markdown 标题或其他包装。\n\n"
+		"4) 不要输出 Markdown 标题或其他包装。\n"
+		"5) `.子程序` 固定为 `.子程序 名称, 返回值, 公开属性, 说明文字`，`.程序集` 固定为 `.程序集 名称, 基类, 公开属性, 说明文字`；第 3 字段只能为空或 `公开`。填写第 4 字段说明时必须保留前三个结构逗号和中间空字段。\n"
+		"6) 两种声明都只用前三个逗号分隔结构，第三个逗号后的剩余内容全部是说明文字，说明中允许包含逗号。\n\n"
 		"易语言格式示例：\n"
 		".版本 2\n"
 		".子程序 demo, 整数型\n"

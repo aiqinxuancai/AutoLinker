@@ -1058,6 +1058,28 @@ bool TryReadFixedTableRealPageCodeForAI(
 	outTrace.clear();
 	outError.clear();
 
+	// 固定表也有对应的程序树 item_data。优先走内部编辑器对象读取，
+	// 该路径会先尝试 no-activate，不应把当前 IDE 页面切到 DLL/数据类型表。
+	const std::uintptr_t moduleBase = reinterpret_cast<std::uintptr_t>(::GetModuleHandleW(nullptr));
+	std::string internalTrace;
+	if (moduleBase != 0) {
+		e571::NativeRealPageAccessResult internalResult{};
+		if (e571::GetRealPageCodeByProgramTreeItemData(
+				item.itemData,
+				moduleBase,
+				&outCode,
+				&internalResult)) {
+			outCode = NormalizeRealCodeLineBreaksToCrLf(outCode);
+			outTrace = "internal_fixed_table_read_ok" +
+				(internalResult.trace.empty() ? std::string() : ("|" + internalResult.trace));
+			outError.clear();
+			return true;
+		}
+		internalTrace = internalResult.trace.empty()
+			? "internal_fixed_table_read_failed"
+			: "internal_fixed_table_read_failed|" + internalResult.trace;
+	}
+
 	auto copyCurrentPage = [&](const std::string& openTrace) -> bool {
 		std::string copyTrace;
 		if (!TryGetCurrentPageCodeLocalForAI(outCode, copyTrace, 6, 40)) {
@@ -1082,7 +1104,9 @@ bool TryReadFixedTableRealPageCodeForAI(
 		Sleep(30);
 	}
 
-	outTrace = lastTrace + "|fixed_table_copy_failed_no_tree_fallback";
+	outTrace = internalTrace +
+		(internalTrace.empty() || lastTrace.empty() ? std::string() : "|") +
+		lastTrace + "|fixed_table_copy_failed_no_tree_fallback";
 	outError = lastError.empty() ? "copy fixed table page code failed" : lastError;
 	return false;
 }
@@ -1468,6 +1492,18 @@ bool TryWriteRealPageCodeForAI(
 	const std::string& rollbackBaseCode =
 		(snapshotBaseCode != nullptr && !snapshotBaseCode->empty()) ? *snapshotBaseCode : baseCode;
 
+	const std::string normalizedBaseCode = NormalizeRealCodeLineBreaksToCrLf(baseCode);
+	const std::string normalizedRollbackBaseCode = NormalizeRealCodeLineBreaksToCrLf(rollbackBaseCode);
+	const std::string normalizedNewCode = NormalizeRealCodeLineBreaksToCrLf(newCode);
+	std::string headerError;
+	if (!ValidateRealPageSubroutineHeaders(normalizedNewCode, headerError)) {
+		outTrace = "preflight_subroutine_header_slots";
+		outError = headerError;
+		return false;
+	}
+	const std::string preparedExpectedCode = NormalizeRealCodeLineBreaksToCrLf(
+		PrepareAssemblyVariablesForRealPageWrite(normalizedNewCode));
+
 	PageCodeCacheEntry existingEntry;
 	const bool hasCache = PageCodeCacheManager::Instance().Get(item.name, item.typeKey, existingEntry);
 	PutPageCodeCacheEntryForAI(item, rollbackBaseCode, hasCache ? &existingEntry : nullptr, &existingEntry);
@@ -1475,12 +1511,6 @@ bool TryWriteRealPageCodeForAI(
 		outError = "add page snapshot failed";
 		return false;
 	}
-
-	const std::string normalizedBaseCode = NormalizeRealCodeLineBreaksToCrLf(baseCode);
-	const std::string normalizedRollbackBaseCode = NormalizeRealCodeLineBreaksToCrLf(rollbackBaseCode);
-	const std::string normalizedNewCode = NormalizeRealCodeLineBreaksToCrLf(newCode);
-	const std::string preparedExpectedCode = NormalizeRealCodeLineBreaksToCrLf(
-		PrepareAssemblyVariablesForRealPageWrite(normalizedNewCode));
 
 	std::string openTrace;
 	std::string openError;
@@ -3352,6 +3382,16 @@ std::string BuildAddNewFileJsonOnMainThread(const std::string& argumentsJson, bo
 	}
 	if (requestedName.find_first_of("\r\n\t,") != std::string::npos) {
 		return R"({"ok":false,"error":"name must not contain a comma, tab, or line break"})";
+	}
+	if (hasFullCode) {
+		std::string headerError;
+		if (!ValidateRealPageSubroutineHeaders(requestedCode, headerError)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = headerError;
+			r["preflight"] = "subroutine_header_slots";
+			return JsonToLocalTextForAI(r);
+		}
 	}
 
 	std::vector<ProgramTreeItemInfo> beforeItems;

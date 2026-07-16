@@ -57,6 +57,17 @@ std::string CanonicalArguments(const std::string& argumentsJsonUtf8)
 	}
 }
 
+bool IsMirrorGenerationPreflightFailure(const std::string& resultJsonUtf8)
+{
+	const json result = json::parse(resultJsonUtf8, nullptr, false);
+	if (!result.is_object()) {
+		return false;
+	}
+	const std::string error = result.value("error", std::string());
+	return error.rfind("stale mirror_generation", 0) == 0 ||
+		error.rfind("mirror_generation ", 0) == 0;
+}
+
 bool IsSourceExplorationTool(const std::string& toolName)
 {
 	return toolName == "list_files" ||
@@ -519,6 +530,11 @@ std::string Session::AfterToolCall(
 	const std::string signature = BuildSignature(toolName, argumentsJsonUtf8);
 	if (!ok) {
 		state->seenSignatures.erase(signature);
+		if (IsSourceExplorationTool(toolName) &&
+			state->explorationCalls > 0 &&
+			IsMirrorGenerationPreflightFailure(resultJsonUtf8)) {
+			--state->explorationCalls;
+		}
 		state->preferLowThinking = false;
 		if (state->postWriteReadBlocked && !IsSourceReadTool(toolName)) {
 			state->postWriteReadBlocked = false;
