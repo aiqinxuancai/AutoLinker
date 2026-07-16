@@ -16,6 +16,7 @@
 namespace {
 
 constexpr std::string_view kDirectiveSubroutine = ".子程序";
+constexpr std::string_view kDirectiveParameter = ".参数";
 constexpr std::string_view kDirectiveLocalVariable = ".局部变量";
 constexpr std::string_view kDirectiveAssemblyVariable = ".程序集变量";
 // 类声明指令（注意必须区别于 .程序集变量：后者是变量声明）。
@@ -675,18 +676,53 @@ bool ValidateRealPageSubroutineHeaders(const std::string& text, std::string& out
 {
 	outError.clear();
 	const std::vector<std::string> lines = SplitRealCodeLines(text);
+	bool insideSubroutine = false;
+	bool sawLocalVariable = false;
+	bool sawExecutableStatement = false;
 	for (size_t lineIndex = 0; lineIndex < lines.size(); ++lineIndex) {
 		std::vector<std::string> fields;
-		if (!TrySplitSubroutineHeaderFields(lines[lineIndex], fields, nullptr)) {
+		if (TrySplitSubroutineHeaderFields(lines[lineIndex], fields, nullptr)) {
+			insideSubroutine = true;
+			sawLocalVariable = false;
+			sawExecutableStatement = false;
+			// 固定槽位：fields[0] 名称，fields[1] 返回值，fields[2] 公开属性，
+			// fields[3] 及其后为说明。第三项只能为空或“公开”；不能把说明挤到这里。
+			if (fields.size() >= 3 && !fields[2].empty() && fields[2] != "公开") {
+				outError = "invalid subroutine header at line " + std::to_string(lineIndex + 1) +
+					": field 3 (public attribute) must be empty or public; description must start after the third comma in field 4";
+				return false;
+			}
 			continue;
 		}
-		// 固定槽位：fields[0] 名称，fields[1] 返回值，fields[2] 公开属性，
-		// fields[3] 及其后为说明。第三项只能为空或“公开”；不能把说明挤到这里。
-		if (fields.size() >= 3 && !fields[2].empty() && fields[2] != "公开") {
-			outError = "invalid subroutine header at line " + std::to_string(lineIndex + 1) +
-				": field 3 (public attribute) must be empty or public; description must start after the third comma in field 4";
-			return false;
+		if (!insideSubroutine) {
+			continue;
 		}
+
+		const std::string trimmed = TrimAsciiCopyLocal(lines[lineIndex]);
+		if (trimmed.empty() || (!trimmed.empty() && trimmed.front() == '\'')) {
+			continue;
+		}
+
+		size_t directivePos = 0;
+		if (TryMatchDirectiveAtLineStart(lines[lineIndex], kDirectiveParameter, &directivePos)) {
+			if (sawLocalVariable || sawExecutableStatement) {
+				outError = "invalid subroutine declaration order at line " + std::to_string(lineIndex + 1) +
+					": all parameters must precede local variables and executable statements";
+				return false;
+			}
+			continue;
+		}
+		if (TryMatchDirectiveAtLineStart(lines[lineIndex], kDirectiveLocalVariable, &directivePos)) {
+			if (sawExecutableStatement) {
+				outError = "invalid subroutine declaration order at line " + std::to_string(lineIndex + 1) +
+					": all local variables must precede executable statements";
+				return false;
+			}
+			sawLocalVariable = true;
+			continue;
+		}
+		// 任何非空、非注释且非声明行都视为执行语句/流程指令。
+		sawExecutableStatement = true;
 	}
 	return true;
 }

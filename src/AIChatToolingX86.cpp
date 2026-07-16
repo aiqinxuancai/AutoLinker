@@ -1497,7 +1497,7 @@ bool TryWriteRealPageCodeForAI(
 	const std::string normalizedNewCode = NormalizeRealCodeLineBreaksToCrLf(newCode);
 	std::string headerError;
 	if (!ValidateRealPageSubroutineHeaders(normalizedNewCode, headerError)) {
-		outTrace = "preflight_subroutine_header_slots";
+		outTrace = "preflight_subroutine_declaration_layout";
 		outError = headerError;
 		return false;
 	}
@@ -3389,7 +3389,7 @@ std::string BuildAddNewFileJsonOnMainThread(const std::string& argumentsJson, bo
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = headerError;
-			r["preflight"] = "subroutine_header_slots";
+			r["preflight"] = "subroutine_declaration_layout";
 			return JsonToLocalTextForAI(r);
 		}
 	}

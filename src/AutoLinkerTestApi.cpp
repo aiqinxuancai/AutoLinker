@@ -2053,6 +2053,9 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	std::string validPublicHeaderError;
 	std::string bareIdeTailHeaderError;
 	std::string shiftedDescriptionError;
+	std::string validDeclarationOrderError;
+	std::string parameterAfterLocalError;
+	std::string localAfterStatementError;
 	const bool validPrivateHeader = ValidateRealPageSubroutineHeaders(
 		".子程序 UnixMsToSysTime, , , 将Unix毫秒时间戳写入SYSTEMTIME, extra\r\n",
 		validPrivateHeaderError);
@@ -2065,6 +2068,24 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	const bool shiftedDescriptionRejected = !ValidateRealPageSubroutineHeaders(
 		".子程序 UnixMsToSysTime, , 将Unix毫秒时间戳写入SYSTEMTIME\r\n",
 		shiftedDescriptionError);
+	const bool validDeclarationOrder = ValidateRealPageSubroutineHeaders(
+		".子程序 Demo, 整数型\r\n"
+		".参数 value, 整数型\r\n"
+		"' 参数与局部变量之间允许注释\r\n"
+		".局部变量 result, 整数型\r\n"
+		"result ＝ value\r\n"
+		"返回 (result)\r\n",
+		validDeclarationOrderError);
+	const bool parameterAfterLocalRejected = !ValidateRealPageSubroutineHeaders(
+		".子程序 Demo\r\n"
+		".局部变量 result, 整数型\r\n"
+		".参数 value, 整数型\r\n",
+		parameterAfterLocalError);
+	const bool localAfterStatementRejected = !ValidateRealPageSubroutineHeaders(
+		".子程序 Demo\r\n"
+		"result ＝ 1\r\n"
+		".局部变量 result, 整数型\r\n",
+		localAfterStatementError);
 	report["checks"].push_back({
 		{"name", "real-page-subroutine-description-normalization"},
 		{"ok", subroutineBareHeader == subroutineDescribedHeader &&
@@ -2073,7 +2094,10 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 			validPrivateHeader &&
 			validPublicHeader &&
 			bareIdeTailHeaderAccepted &&
-			shiftedDescriptionRejected},
+			shiftedDescriptionRejected &&
+			validDeclarationOrder &&
+			parameterAfterLocalRejected &&
+			localAfterStatementRejected},
 		{"private_description_with_comma_omitted", subroutineBareHeader == subroutineDescribedHeader},
 		{"public_description_with_comma_omitted", publicSubroutineBareHeader == publicSubroutineDescribedHeader},
 		{"shifted_description_not_normalized", shiftedDescriptionHeader != subroutineBareHeader},
@@ -2081,7 +2105,12 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		{"valid_public_header", validPublicHeader},
 		{"bare_ide_tail_header_accepted", bareIdeTailHeaderAccepted},
 		{"shifted_description_rejected", shiftedDescriptionRejected},
-		{"shifted_description_error", shiftedDescriptionError}
+		{"shifted_description_error", shiftedDescriptionError},
+		{"valid_declaration_order", validDeclarationOrder},
+		{"parameter_after_local_rejected", parameterAfterLocalRejected},
+		{"parameter_after_local_error", parameterAfterLocalError},
+		{"local_after_statement_rejected", localAfterStatementRejected},
+		{"local_after_statement_error", localAfterStatementError}
 	});
 	const std::string ideDefaultClassCode =
 		".版本 2\r\n\r\n.程序集 类1\r\n\r\n"

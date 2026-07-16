@@ -603,6 +603,68 @@ bool HasPositivePaginationCursor(const json& args)
 	});
 }
 
+bool TryReadPositiveMirrorGenerationValue(const json& value, std::uint64_t& outGeneration)
+{
+	outGeneration = 0;
+	if (value.is_number_unsigned()) {
+		outGeneration = value.get<std::uint64_t>();
+		return outGeneration > 0;
+	}
+	if (!value.is_number_integer()) {
+		return false;
+	}
+	const long long signedValue = value.get<long long>();
+	if (signedValue <= 0) {
+		return false;
+	}
+	outGeneration = static_cast<std::uint64_t>(signedValue);
+	return true;
+}
+
+bool NormalizeReadFilesNestedMirrorGeneration(json& args, std::string& outError)
+{
+	outError.clear();
+	const auto filesIt = args.find("files");
+	if (filesIt == args.end() || !filesIt->is_array()) {
+		return true;
+	}
+
+	std::optional<std::uint64_t> nestedGeneration;
+	for (size_t index = 0; index < filesIt->size(); ++index) {
+		const json& item = (*filesIt)[index];
+		if (!item.is_object() || !item.contains("mirror_generation")) {
+			continue;
+		}
+		std::uint64_t currentGeneration = 0;
+		if (!TryReadPositiveMirrorGenerationValue(item["mirror_generation"], currentGeneration)) {
+			outError = "files[" + std::to_string(index) +
+				"].mirror_generation must be a positive integer";
+			return false;
+		}
+		if (nestedGeneration.has_value() && *nestedGeneration != currentGeneration) {
+			outError = "conflicting files[].mirror_generation values";
+			return false;
+		}
+		nestedGeneration = currentGeneration;
+	}
+
+	if (!nestedGeneration.has_value()) {
+		return true;
+	}
+	if (!args.contains("mirror_generation")) {
+		args["mirror_generation"] = *nestedGeneration;
+		return true;
+	}
+
+	std::uint64_t topLevelGeneration = 0;
+	if (TryReadPositiveMirrorGenerationValue(args["mirror_generation"], topLevelGeneration) &&
+		topLevelGeneration != *nestedGeneration) {
+		outError = "top-level mirror_generation conflicts with files[].mirror_generation";
+		return false;
+	}
+	return true;
+}
+
 bool ValidateMirrorGeneration(
 	const json& args,
 	const WorkspaceMirror::FileAccessSnapshot& snapshot,
@@ -809,6 +871,10 @@ std::string ExecuteReadFiles(
 	}
 	catch (const std::exception& ex) {
 		return BuildError(std::string("invalid arguments json: ") + ex.what());
+	}
+	std::string nestedGenerationError;
+	if (!NormalizeReadFilesNestedMirrorGeneration(args, nestedGenerationError)) {
+		return BuildError(nestedGenerationError);
 	}
 	std::string generationError;
 	if (!ValidateMirrorGeneration(args, snapshot, generationError)) {
@@ -1996,7 +2062,8 @@ std::string BuildPaginationSelfTestJson()
 	bool missingContinuationGenerationRejected = false;
 	bool zeroContinuationGenerationRejected = false;
 	bool currentContinuationGenerationAccepted = false;
-	bool nestedContinuationGenerationRequired = false;
+	bool nestedContinuationGenerationAccepted = false;
+	bool conflictingNestedGenerationRejected = false;
 	bool staleGenerationRejected = false;
 	std::error_code tempError;
 	const std::filesystem::path tempRoot = std::filesystem::temp_directory_path(tempError) /
@@ -2072,10 +2139,26 @@ std::string BuildPaginationSelfTestJson()
 				json({{"mirror_generation", 42}, {"offset", 10}}),
 				snapshot,
 				generationError);
-			nestedContinuationGenerationRequired = !ValidateMirrorGeneration(
-				json({{"files", json::array({json({{"file_path", "src/Large.txt"}, {"byte_offset", 1024}})})}}),
-				snapshot,
-				generationError);
+			json nestedContinuationArgs = {
+				{"files", json::array({json({
+					{"file_path", "src/Large.txt"},
+					{"byte_offset", 1024},
+					{"mirror_generation", 42}
+				})})}
+			};
+			nestedContinuationGenerationAccepted =
+				NormalizeReadFilesNestedMirrorGeneration(nestedContinuationArgs, generationError) &&
+				ValidateMirrorGeneration(nestedContinuationArgs, snapshot, generationError);
+			json conflictingNestedGenerationArgs = {
+				{"mirror_generation", 42},
+				{"files", json::array({json({
+					{"file_path", "src/Large.txt"},
+					{"byte_offset", 1024},
+					{"mirror_generation", 41}
+				})})}
+			};
+			conflictingNestedGenerationRejected =
+				!NormalizeReadFilesNestedMirrorGeneration(conflictingNestedGenerationArgs, generationError);
 			staleGenerationRejected = !ValidateMirrorGeneration(
 				json({{"mirror_generation", 41}}),
 				snapshot,
@@ -2089,7 +2172,8 @@ std::string BuildPaginationSelfTestJson()
 		{"ok", resultPageOk && linePageOk && sourcePageOk && byteCursorOk &&
 			fullSearchOk && streamingCodeItemOk && initialZeroGenerationAccepted &&
 			missingContinuationGenerationRejected && zeroContinuationGenerationRejected &&
-			currentContinuationGenerationAccepted && nestedContinuationGenerationRequired &&
+			currentContinuationGenerationAccepted && nestedContinuationGenerationAccepted &&
+			conflictingNestedGenerationRejected &&
 			staleGenerationRejected},
 		{"result_page", std::move(resultPage)},
 		{"line_page", std::move(linePage)},
@@ -2101,7 +2185,8 @@ std::string BuildPaginationSelfTestJson()
 		{"missing_continuation_generation_rejected", missingContinuationGenerationRejected},
 		{"zero_continuation_generation_rejected", zeroContinuationGenerationRejected},
 		{"current_continuation_generation_accepted", currentContinuationGenerationAccepted},
-		{"nested_continuation_generation_required", nestedContinuationGenerationRequired},
+		{"nested_continuation_generation_accepted", nestedContinuationGenerationAccepted},
+		{"conflicting_nested_generation_rejected", conflictingNestedGenerationRejected},
 		{"stale_generation_rejected", staleGenerationRejected}
 	}).dump();
 }
