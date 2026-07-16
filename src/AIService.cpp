@@ -1973,7 +1973,7 @@ nlohmann::json BuildPublicToolCatalog()
 			{"properties", {
 				{"glob", {{"type", "string"}, {"description", "Optional glob such as src/**/*.txt or ecom/**/*.txt."}}},
 				{"path", {{"type", "string"}, {"description", "Optional relative path prefix."}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Omit on the first page. When continuing with next_offset, pass the exact positive generation returned by the previous page."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "For stable pagination, pass the exact positive generation returned by the previous page. If omitted, the current prepared mirror generation is used."}}},
 				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based result offset for pagination. Use next_offset from the prior result."}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 5000}}}
 			}},
@@ -1993,7 +1993,7 @@ nlohmann::json BuildPublicToolCatalog()
 				{"regex", {{"type", "boolean"}, {"description", "Defaults to false."}}},
 				{"case_insensitive", {{"type", "boolean"}}},
 				{"context", {{"type", "integer"}, {"minimum", 0}, {"maximum", 20}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Omit on the first page. When continuing with next_offset, pass the exact positive generation returned by the previous page."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "For stable pagination, pass the exact positive generation returned by the previous page. If omitted, the current prepared mirror generation is used."}}},
 				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based result offset. Continue with next_offset returned by the previous page."}}},
 				{"head_limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}}}
 			}},
@@ -2007,9 +2007,9 @@ nlohmann::json BuildPublicToolCatalog()
 			{"type", "object"},
 			{"properties", {
 				{"file_path", {{"type", "string"}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Omit on the first page. When continuing with offset or next_source_byte_offset, pass the exact positive generation returned by the previous page."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "For stable pagination, pass the exact positive generation returned by the previous page. If omitted, the current prepared mirror generation is used."}}},
 				{"byte_offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Source byte cursor for files larger than the 1 MiB read window. Continue with next_source_byte_offset and reset line offset to 0."}}},
-				{"offset", {{"type", "integer"}, {"minimum", 0}}},
+				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based line offset. Positive initial offsets are allowed; include mirror_generation when continuing a prior page for cross-refresh consistency."}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 20000}}}
 			}},
 			{"required", nlohmann::json::array({"file_path"})},
@@ -2023,7 +2023,7 @@ nlohmann::json BuildPublicToolCatalog()
 			{"type", "object"},
 			{"properties", {
 				{"file_paths", {{"type", "array"}, {"maxItems", 12}, {"items", {{"type", "string"}}}, {"description", "Simple list of up to 12 mirror-relative file paths."}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Omit for initial reads. When any file entry continues with offset or byte_offset, pass the exact positive generation returned by the previous read."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "For stable pagination, pass the exact positive generation returned by the previous read. If omitted, the current prepared mirror generation is used."}}},
 				{"files", {{"type", "array"}, {"maxItems", 12}, {"items", {
 					{"type", "object"},
 					{"properties", {

@@ -673,10 +673,7 @@ bool ValidateMirrorGeneration(
 	outError.clear();
 	const bool isContinuation = HasPositivePaginationCursor(args);
 	if (!args.contains("mirror_generation")) {
-		if (isContinuation) {
-			outError = "mirror_generation is required when continuing pagination";
-			return false;
-		}
+		// AI 可能把 offset 当作首次区间读取的起始位置；漏传代次时绑定当前原子快照。
 		return true;
 	}
 	if (!args["mirror_generation"].is_number_unsigned() && !args["mirror_generation"].is_number_integer()) {
@@ -2059,7 +2056,8 @@ std::string BuildPaginationSelfTestJson()
 	bool fullSearchOk = false;
 	bool streamingCodeItemOk = false;
 	bool initialZeroGenerationAccepted = false;
-	bool missingContinuationGenerationRejected = false;
+	bool missingContinuationGenerationAccepted = false;
+	bool rangedReadWithoutGenerationOk = false;
 	bool zeroContinuationGenerationRejected = false;
 	bool currentContinuationGenerationAccepted = false;
 	bool nestedContinuationGenerationAccepted = false;
@@ -2127,10 +2125,28 @@ std::string BuildPaginationSelfTestJson()
 				json({{"mirror_generation", 0}, {"offset", 0}}),
 				snapshot,
 				generationError);
-			missingContinuationGenerationRejected = !ValidateMirrorGeneration(
+			missingContinuationGenerationAccepted = ValidateMirrorGeneration(
 				json({{"offset", 10}}),
 				snapshot,
 				generationError);
+			bool rangedReadToolOk = false;
+			const json rangedReadResult = json::parse(
+				ExecuteReadFile(
+					snapshot,
+					json({
+						{"file_path", "src/Large.txt"},
+						{"offset", 10},
+						{"limit", 5}
+					}).dump(),
+					rangedReadToolOk),
+				nullptr,
+				false);
+			rangedReadWithoutGenerationOk = rangedReadToolOk &&
+				!rangedReadResult.is_discarded() &&
+				rangedReadResult.value("ok", false) &&
+				rangedReadResult.value("mirror_generation", 0ull) == snapshot.generation &&
+				rangedReadResult.value("requested_offset", -1) == 10 &&
+				rangedReadResult.value("returned_lines", 0) == 5;
 			zeroContinuationGenerationRejected = !ValidateMirrorGeneration(
 				json({{"mirror_generation", 0}, {"offset", 10}}),
 				snapshot,
@@ -2171,7 +2187,8 @@ std::string BuildPaginationSelfTestJson()
 		{"name", "workspace-file-pagination"},
 		{"ok", resultPageOk && linePageOk && sourcePageOk && byteCursorOk &&
 			fullSearchOk && streamingCodeItemOk && initialZeroGenerationAccepted &&
-			missingContinuationGenerationRejected && zeroContinuationGenerationRejected &&
+			missingContinuationGenerationAccepted && rangedReadWithoutGenerationOk &&
+			zeroContinuationGenerationRejected &&
 			currentContinuationGenerationAccepted && nestedContinuationGenerationAccepted &&
 			conflictingNestedGenerationRejected &&
 			staleGenerationRejected},
@@ -2182,7 +2199,8 @@ std::string BuildPaginationSelfTestJson()
 		{"full_search_ok", fullSearchOk},
 		{"streaming_code_item_ok", streamingCodeItemOk},
 		{"initial_zero_generation_accepted", initialZeroGenerationAccepted},
-		{"missing_continuation_generation_rejected", missingContinuationGenerationRejected},
+		{"missing_continuation_generation_accepted", missingContinuationGenerationAccepted},
+		{"ranged_read_without_generation_ok", rangedReadWithoutGenerationOk},
 		{"zero_continuation_generation_rejected", zeroContinuationGenerationRejected},
 		{"current_continuation_generation_accepted", currentContinuationGenerationAccepted},
 		{"nested_continuation_generation_accepted", nestedContinuationGenerationAccepted},
