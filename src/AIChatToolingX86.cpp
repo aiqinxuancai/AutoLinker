@@ -71,6 +71,25 @@ bool CompileArtifactChanged(
 	return after.exists && (!before.exists || before.size != after.size || before.writeTime != after.writeTime);
 }
 
+std::string ExtractCompileOutputDelta(const std::string& before, const std::string& after)
+{
+	if (after == before) {
+		return {};
+	}
+	if (after.size() > before.size() && after.compare(0, before.size(), before) == 0) {
+		return after.substr(before.size());
+	}
+	return after;
+}
+
+bool ContainsCompileFailureMarker(const std::string& output)
+{
+	return output.find("错误(") != std::string::npos ||
+		output.find("错误（") != std::string::npos ||
+		output.find("语法错误") != std::string::npos ||
+		output.find("编译错误") != std::string::npos;
+}
+
 static long long ElapsedToolMs(const ToolPerfClock::time_point& start)
 {
 	return static_cast<long long>(
@@ -5231,20 +5250,26 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			&normalizedPath,
 			&diagnostics);
 
-		// 编译完成后，读取光标所在行内容及当前程序集。
-		// 编译失败时 IDE 通常会跳转到出错行，此处内容可辅助 AI 定位问题。
 		int caretRow = -1;
 		int caretCol = -1;
 		std::string caretLineText;
 		std::string caretPageName;
 		std::string caretPageType;
-		IDEFacade::Instance().GetCaretPosition(caretRow, caretCol);
-		if (caretRow >= 0) {
-			caretLineText = IDEFacade::Instance().GetRowFullText(caretRow);
-		}
-		IDEFacade::Instance().GetCurrentPageName(caretPageName, &caretPageType);
+		auto captureCompileLocation = [&]() {
+			caretRow = -1;
+			caretCol = -1;
+			caretLineText.clear();
+			caretPageName.clear();
+			caretPageType.clear();
+			IDEFacade::Instance().GetCaretPosition(caretRow, caretCol);
+			if (caretRow >= 0) {
+				caretLineText = IDEFacade::Instance().GetRowFullText(caretRow);
+			}
+			IDEFacade::Instance().GetCurrentPageName(caretPageName, &caretPageType);
+		};
 
 		if (!compileOk) {
+			captureCompileLocation();
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = diagnostics.empty() ? "compile_with_output_path_failed" : diagnostics;
@@ -5257,11 +5282,17 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			return JsonToLocalTextForAI(r);
 		}
 
+		std::string compileWaitOutcome = "not_required";
+		long long compileWaitElapsedMs = 0;
 		if (diagnostics == "compile_invoked_dialog_pending" ||
 			diagnostics == "compile_invoked_dialog_suppressed") {
-			const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+			const auto waitStartedAt = std::chrono::steady_clock::now();
+			const auto waitDeadline = waitStartedAt + std::chrono::seconds(30);
+			compileWaitOutcome = "timeout";
 			bool outputFileReadySeen = false;
 			std::chrono::steady_clock::time_point outputFileReadySince = {};
+			std::string observedOutputText = preOutputText;
+			std::chrono::steady_clock::time_point outputStableSince = waitStartedAt;
 			while (std::chrono::steady_clock::now() < waitDeadline) {
 				MSG msg = {};
 				while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
@@ -5274,6 +5305,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 					diagnostics = "compile_invoked_dialog_suppressed";
 				}
 				if (!IsSilentCompileOutputPathRequestActive() && !requestConsumed) {
+					compileWaitOutcome = "request_inactive";
 					break;
 				}
 
@@ -5285,31 +5317,43 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 						outputFileReadySince = std::chrono::steady_clock::now();
 					}
 					if (std::chrono::steady_clock::now() - outputFileReadySince >= std::chrono::milliseconds(1200)) {
+						compileWaitOutcome = "artifact_ready";
 						break;
 					}
 				}
 				else {
 					outputFileReadySeen = false;
 				}
+
+				std::string currentOutputText;
+				if (IDEFacade::Instance().GetOutputWindowText(currentOutputText)) {
+					const auto now = std::chrono::steady_clock::now();
+					if (currentOutputText != observedOutputText) {
+						observedOutputText = std::move(currentOutputText);
+						outputStableSince = now;
+					}
+					const std::string outputDelta = ExtractCompileOutputDelta(preOutputText, observedOutputText);
+					if (ContainsCompileFailureMarker(outputDelta) &&
+						now - outputStableSince >= std::chrono::milliseconds(250)) {
+						compileWaitOutcome = "compile_error_output";
+						break;
+					}
+				}
 				Sleep(20);
 			}
+			compileWaitElapsedMs = static_cast<long long>(
+				std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - waitStartedAt).count());
 			CancelSilentCompileOutputPathRequest();
 		}
 
+		// 编译失败时 IDE 通常会跳转到出错行，必须在等待结束后再采集。
+		captureCompileLocation();
+
 		// 编译后：读取输出窗口，提取本次编译产生的新内容。
-		// 易语言编译为同步操作，函数返回时编译输出已写入完毕。
 		std::string postOutputText;
 		IDEFacade::Instance().GetOutputWindowText(postOutputText);
-
-		std::string newOutput;
-		if (postOutputText.size() > preOutputText.size()) {
-			// IDE 追加输出模式：只取新增部分
-			newOutput = postOutputText.substr(preOutputText.size());
-		}
-		else {
-			// IDE 清空后重写，或编译为异步（输出尚未刷新）：返回当前全部文本
-			newOutput = postOutputText;
-		}
+		const std::string newOutput = ExtractCompileOutputDelta(preOutputText, postOutputText);
 
 		// 检查产物文件是否在编译启动后被创建/更新，用于确认编译是否成功。
 		const CompileArtifactFingerprint artifactAfter = CaptureCompileArtifactFingerprint(normalizedPath);
@@ -5335,6 +5379,8 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			: nlohmann::json(nullptr);
 		r["artifact_verified"] = artifactVerified;
 		r["trace"] = diagnostics;
+		r["wait_outcome"] = compileWaitOutcome;
+		r["wait_elapsed_ms"] = compileWaitElapsedMs;
 		r["caret_row"] = caretRow;
 		r["caret_line_text"] = LocalToUtf8Text(caretLineText);
 		r["caret_page_name"] = LocalToUtf8Text(caretPageName);
@@ -5379,13 +5425,25 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 	}
 	const CompileArtifactFingerprint updated = CaptureCompileArtifactFingerprint(path.string());
 	const bool updateDetected = CompileArtifactChanged(created, updated);
+	const std::string oldOutput = "旧编译输出\r\n错误(10001): 历史错误\r\n";
+	const std::string appendedErrorOutput = oldOutput + "错误(10003): 本次编译错误\r\n";
+	const bool appendedErrorDetected = ContainsCompileFailureMarker(
+		ExtractCompileOutputDelta(oldOutput, appendedErrorOutput));
+	const bool rewrittenErrorDetected = ContainsCompileFailureMarker(
+		ExtractCompileOutputDelta(oldOutput, "语法错误：表达式不完整\r\n"));
+	const bool unchangedHistoricalErrorRejected = !ContainsCompileFailureMarker(
+		ExtractCompileOutputDelta(oldOutput, oldOutput));
 	std::filesystem::remove(path, error);
 	return nlohmann::json({
 		{"name", "compile-artifact-fingerprint"},
-		{"ok", creationDetected && unchangedRejected && updateDetected},
+		{"ok", creationDetected && unchangedRejected && updateDetected &&
+			appendedErrorDetected && rewrittenErrorDetected && unchangedHistoricalErrorRejected},
 		{"creation_detected", creationDetected},
 		{"unchanged_rejected", unchangedRejected},
-		{"update_detected", updateDetected}
+		{"update_detected", updateDetected},
+		{"appended_error_detected", appendedErrorDetected},
+		{"rewritten_error_detected", rewrittenErrorDetected},
+		{"unchanged_historical_error_rejected", unchangedHistoricalErrorRejected}
 	}).dump();
 }
 
