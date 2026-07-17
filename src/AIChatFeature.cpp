@@ -88,6 +88,8 @@ constexpr UINT WM_AUTOLINKER_AI_CHAT_OPEN_MCP_SETTINGS = WM_APP + 223;
 constexpr UINT_PTR kHistoryWebViewFlushTimerId = 0xA17;
 constexpr UINT_PTR kSessionTimingTimerId = 0xA18;
 constexpr UINT_PTR kRemoteConfigPollTimerId = 0xA19;
+constexpr UINT_PTR kChatRefreshTimerId = 0xA1A;
+constexpr ULONGLONG kChatRefreshIntervalMs = 80;
 constexpr int kRemoteConfigPollMaxTicks = 20;
 
 constexpr int IDC_AI_CHAT_HISTORY = 2101;
@@ -236,6 +238,7 @@ struct ChatDialogContext {
 	bool webViewReady = false;
 	bool webViewContentReady = false;
 	bool webViewFlushScheduled = false;
+	ULONGLONG lastChatRefreshTick = 0;
 	int remoteConfigPollTicksRemaining = 0;
 	std::string pendingHistoryHtml;
 	AIChatStoredSessionListEntry pendingRestoreSession;
@@ -347,6 +350,8 @@ std::condition_variable g_chatRequestDoneCv;
 unsigned long long g_lastCompletedRequestId = 0;
 AIChatResult g_lastCompletedChatResult = {};
 std::atomic_bool g_clearHistoryInProgress = false;
+std::atomic_bool g_chatRefreshDirty = false;
+std::atomic_bool g_chatRefreshQueued = false;
 bool g_webView2RuntimeChecked = false;
 bool g_webView2RuntimeAvailable = false;
 
@@ -4682,8 +4687,45 @@ std::string BuildHistoryTextLocked(
 
 void PostRefreshDialog()
 {
-	if (g_chatDialog != nullptr && IsWindow(g_chatDialog)) {
-		PostMessage(g_chatDialog, WM_AUTOLINKER_AI_CHAT_REFRESH, 0, 0);
+	g_chatRefreshDirty = true;
+	const HWND chatDialog = g_chatDialog;
+	if (chatDialog == nullptr || !IsWindow(chatDialog)) {
+		g_chatRefreshQueued = false;
+		return;
+	}
+
+	if (!g_chatRefreshQueued.exchange(true) &&
+		PostMessage(chatDialog, WM_AUTOLINKER_AI_CHAT_REFRESH, 0, 0) == FALSE) {
+		g_chatRefreshQueued = false;
+	}
+}
+
+void RunPendingChatDialogRefresh(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx == nullptr || !g_chatRefreshDirty.load()) {
+		g_chatRefreshQueued = false;
+		return;
+	}
+
+	const ULONGLONG now = GetTickCount64();
+	const ULONGLONG elapsed = ctx->lastChatRefreshTick == 0
+		? kChatRefreshIntervalMs
+		: now - ctx->lastChatRefreshTick;
+	if (elapsed < kChatRefreshIntervalMs) {
+		const UINT delay = static_cast<UINT>(kChatRefreshIntervalMs - elapsed);
+		if (SetTimer(hWnd, kChatRefreshTimerId, (std::max)(delay, 1U), nullptr) != 0) {
+			return;
+		}
+	}
+
+	g_chatRefreshDirty = false;
+	RefreshChatDialog(hWnd);
+	ctx->lastChatRefreshTick = GetTickCount64();
+
+	// 先释放队列标志，再检查刷新期间到达的数据，避免末尾分片丢失唤醒。
+	g_chatRefreshQueued = false;
+	if (g_chatRefreshDirty.load()) {
+		PostRefreshDialog();
 	}
 }
 
@@ -6279,6 +6321,7 @@ void RefreshChatDialog(HWND hWnd)
 	AISettings currentSettings = {};
 	std::string missingField;
 	const bool settingsReady = QueryChatSettingsState(currentSettings, &missingField);
+	const bool nativeHistoryVisible = !ctx->webViewContentReady;
 	std::string history;
 	std::string historyHtml;
 	bool inFlight = false;
@@ -6298,7 +6341,9 @@ void RefreshChatDialog(HWND hWnd)
 			g_session.cancellation.reset();
 			g_session.streamingAssistantPreview.clear();
 		}
-		history = BuildHistoryTextLocked(g_session, settingsReady, missingField);
+		if (nativeHistoryVisible) {
+			history = BuildHistoryTextLocked(g_session, settingsReady, missingField);
+		}
 		if (ctx->webViewDesired) {
 			historyHtml = BuildHistoryHtmlLocked(g_session, settingsReady, missingField);
 		}
@@ -6316,8 +6361,10 @@ void RefreshChatDialog(HWND hWnd)
 	}
 	const bool timingVisibilityChanged = ctx->sessionTimingVisible != timingSnapshot.visible;
 
-	SetWindowTextA(ctx->hHistory, history.c_str());
-	ScrollEditToBottom(ctx->hHistory);
+	if (nativeHistoryVisible) {
+		SetWindowTextA(ctx->hHistory, history.c_str());
+		ScrollEditToBottom(ctx->hHistory);
+	}
 	if (ctx->webViewDesired) {
 		UpdateHistoryWebViewHtml(ctx, historyHtml);
 	}
@@ -6606,6 +6653,11 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		return 0;
 
 	case WM_TIMER:
+		if (ctx != nullptr && wParam == kChatRefreshTimerId) {
+			KillTimer(hWnd, kChatRefreshTimerId);
+			RunPendingChatDialogRefresh(hWnd, ctx);
+			return 0;
+		}
 		if (ctx != nullptr && wParam == kHistoryWebViewFlushTimerId) {
 			KillTimer(hWnd, kHistoryWebViewFlushTimerId);
 			if (ctx->webViewFlushScheduled) {
@@ -6702,7 +6754,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		return 0;
 
 	case WM_AUTOLINKER_AI_CHAT_REFRESH:
-		RefreshChatDialog(hWnd);
+		RunPendingChatDialogRefresh(hWnd, ctx);
 		return 0;
 
 	case WM_AUTOLINKER_AI_CHAT_UPDATE_TAG:
@@ -6777,6 +6829,9 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		KillTimer(hWnd, kHistoryWebViewFlushTimerId);
 		KillTimer(hWnd, kSessionTimingTimerId);
 		KillTimer(hWnd, kRemoteConfigPollTimerId);
+		KillTimer(hWnd, kChatRefreshTimerId);
+		g_chatRefreshDirty = false;
+		g_chatRefreshQueued = false;
 		ctx->webView = nullptr;
 		ctx->webViewController = nullptr;
 		ctx->webViewEnvironment = nullptr;

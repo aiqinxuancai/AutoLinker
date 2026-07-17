@@ -470,7 +470,8 @@ std::string BuildToolPayloadMetadata(const std::string& jsonText)
 		static constexpr const char* kKeys[] = {
 			"ok", "status", "error", "file_path", "page_name", "mapped_page_name",
 			"code_hash", "new_hash", "verified", "count", "returned", "returned_lines",
-			"match_count", "has_more", "truncated", "exit_code", "timed_out", "cancelled"
+			"match_count", "has_more", "truncated", "exit_code", "timed_out", "cancelled",
+			"trace", "wait_outcome", "wait_elapsed_ms"
 		};
 		for (const char* key : kKeys) {
 			const auto it = value.find(key);

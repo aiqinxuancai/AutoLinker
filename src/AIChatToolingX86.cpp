@@ -5350,9 +5350,22 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			std::chrono::steady_clock::time_point outputStableSince = waitStartedAt;
 			while (std::chrono::steady_clock::now() < waitDeadline) {
 				MSG msg = {};
-				while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+				bool quitRequested = false;
+				constexpr size_t kMaxMessagesPerCompileWaitSlice = 64;
+				for (size_t messageCount = 0;
+					messageCount < kMaxMessagesPerCompileWaitSlice && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE);
+					++messageCount) {
+					if (msg.message == WM_QUIT) {
+						PostQuitMessage(static_cast<int>(msg.wParam));
+						quitRequested = true;
+						break;
+					}
 					TranslateMessage(&msg);
 					DispatchMessageW(&msg);
+				}
+				if (quitRequested) {
+					compileWaitOutcome = "thread_quit";
+					break;
 				}
 
 				const bool requestConsumed = WasSilentCompileOutputPathRequestConsumed();
@@ -5394,7 +5407,12 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 						break;
 					}
 				}
-				Sleep(20);
+				MsgWaitForMultipleObjectsEx(
+					0,
+					nullptr,
+					20,
+					QS_ALLINPUT,
+					MWMO_INPUTAVAILABLE);
 			}
 			compileWaitElapsedMs = static_cast<long long>(
 				std::chrono::duration_cast<std::chrono::milliseconds>(
