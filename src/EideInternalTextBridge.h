@@ -17,6 +17,8 @@ struct NativeRealPageAccessResult {
 	bool rollbackSucceeded = false;
 	size_t textBytes = 0;
 	std::string pageCode;
+	std::string verificationPageCode; // 写入校验失败时，回滚前从 IDE 读回的页面文本。
+	std::string verificationSummary;  // 写入校验失败的结构化差异摘要。
 	std::string trace;
 };
 

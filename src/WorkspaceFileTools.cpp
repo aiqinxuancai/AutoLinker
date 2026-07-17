@@ -692,10 +692,13 @@ bool ValidateMirrorGeneration(
 		}
 		requested = static_cast<std::uint64_t>(signedRequested);
 	}
+	if (!isContinuation) {
+		// offset/byte_offset 均为 0 时本来就是从当前镜像重新开始。
+		// 模型常把 schema 的 minimum=1 误当默认值；首次查询安全忽略其猜测值，
+		// 避免自动刷新后因无意义的旧代次导致 list/search 同时失败。
+		return true;
+	}
 	if (requested == 0) {
-		if (!isContinuation) {
-			return true;
-		}
 		outError = "mirror_generation must be a positive integer when continuing pagination";
 		return false;
 	}
@@ -2062,7 +2065,8 @@ std::string BuildPaginationSelfTestJson()
 	bool currentContinuationGenerationAccepted = false;
 	bool nestedContinuationGenerationAccepted = false;
 	bool conflictingNestedGenerationRejected = false;
-	bool staleGenerationRejected = false;
+	bool staleInitialGenerationIgnored = false;
+	bool staleContinuationGenerationRejected = false;
 	std::error_code tempError;
 	const std::filesystem::path tempRoot = std::filesystem::temp_directory_path(tempError) /
 		std::format("autolinker_workspace_file_test_{}_{}", GetCurrentProcessId(), GetTickCount64());
@@ -2175,8 +2179,12 @@ std::string BuildPaginationSelfTestJson()
 			};
 			conflictingNestedGenerationRejected =
 				!NormalizeReadFilesNestedMirrorGeneration(conflictingNestedGenerationArgs, generationError);
-			staleGenerationRejected = !ValidateMirrorGeneration(
+			staleInitialGenerationIgnored = ValidateMirrorGeneration(
 				json({{"mirror_generation", 41}}),
+				snapshot,
+				generationError);
+			staleContinuationGenerationRejected = !ValidateMirrorGeneration(
+				json({{"mirror_generation", 41}, {"offset", 10}}),
 				snapshot,
 				generationError);
 		}
@@ -2191,7 +2199,7 @@ std::string BuildPaginationSelfTestJson()
 			zeroContinuationGenerationRejected &&
 			currentContinuationGenerationAccepted && nestedContinuationGenerationAccepted &&
 			conflictingNestedGenerationRejected &&
-			staleGenerationRejected},
+			staleInitialGenerationIgnored && staleContinuationGenerationRejected},
 		{"result_page", std::move(resultPage)},
 		{"line_page", std::move(linePage)},
 		{"source_page", std::move(sourcePage)},
@@ -2205,7 +2213,8 @@ std::string BuildPaginationSelfTestJson()
 		{"current_continuation_generation_accepted", currentContinuationGenerationAccepted},
 		{"nested_continuation_generation_accepted", nestedContinuationGenerationAccepted},
 		{"conflicting_nested_generation_rejected", conflictingNestedGenerationRejected},
-		{"stale_generation_rejected", staleGenerationRejected}
+		{"stale_initial_generation_ignored", staleInitialGenerationIgnored},
+		{"stale_continuation_generation_rejected", staleContinuationGenerationRejected}
 	}).dump();
 }
 

@@ -2206,6 +2206,19 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	}
 	report["checks"].push_back(std::move(planModeCheck));
 
+	nlohmann::json checkpointResumeCheck = nlohmann::json::parse(
+		AIChatFeature::BuildCheckpointResumeSelfTestJson(),
+		nullptr,
+		false);
+	if (checkpointResumeCheck.is_discarded() || !checkpointResumeCheck.is_object()) {
+		checkpointResumeCheck = {
+			{"name", "active-checkpoint-resume"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
+	report["checks"].push_back(std::move(checkpointResumeCheck));
+
 	nlohmann::json paginationCheck = nlohmann::json::parse(
 		WorkspaceFileTools::BuildPaginationSelfTestJson(),
 		nullptr,
@@ -2296,6 +2309,72 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		{"name", "real-page-trailing-empty-declaration-fields"},
 		{"ok", declarationWithoutTrailingEmptyFields == declarationWithTrailingEmptyFields},
 		{"trailing_empty_fields_omitted", declarationWithoutTrailingEmptyFields == declarationWithTrailingEmptyFields}
+	});
+	const std::string assemblyVariableWithRemark =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".程序集 String\r\n.程序集变量 m_int, 整数型, , \"0\", 这里是备注\r\n");
+	const std::string assemblyVariableWithoutRemark =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".程序集 String\r\n.程序集变量 m_int, 整数型, , \"0\"\r\n");
+	const std::string assemblyVariableWithoutArray =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".程序集 String\r\n.程序集变量 m_int, 整数型\r\n");
+	const std::string shiftedAssemblyVariableRemark =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".程序集 String\r\n.程序集变量 m_int, 整数型, , 这里是错位备注\r\n");
+	const std::string parameterWithRemark =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".子程序 方法1\r\n.参数 p1, 整数型, 参考 可空 数组, 这里是备注\r\n");
+	const std::string parameterWithoutRemark =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".子程序 方法1\r\n.参数 p1, 整数型, 参考 可空 数组\r\n");
+	const std::string parameterWithoutAttributes =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".子程序 方法1\r\n.参数 p1, 整数型\r\n");
+	const std::string localVariableWithRemark =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".子程序 方法1\r\n.局部变量 v1, 文本型, 静态, \"2,3\", 这里是备注\r\n");
+	const std::string localVariableWithoutRemark =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".子程序 方法1\r\n.局部变量 v1, 文本型, 静态, \"2,3\"\r\n");
+	const std::string localVariableWithoutArray =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".子程序 方法1\r\n.局部变量 v1, 文本型, 静态\r\n");
+	const std::string globalVariableWithRemark =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".全局变量 g1, 整数型, , \"10\", 这里是备注\r\n");
+	const std::string globalVariableWithoutRemark =
+		NormalizeRealPageAssemblyVariableAliasesForCompare(
+			".全局变量 g1, 整数型, , \"10\"\r\n");
+	const bool assemblyVariableRemarkOmitted =
+		assemblyVariableWithRemark == assemblyVariableWithoutRemark;
+	const bool assemblyVariableArrayPreserved =
+		assemblyVariableWithRemark != assemblyVariableWithoutArray;
+	const bool shiftedAssemblyVariableRemarkRejected =
+		shiftedAssemblyVariableRemark != assemblyVariableWithoutArray;
+	const bool parameterRemarkOmitted = parameterWithRemark == parameterWithoutRemark;
+	const bool parameterAttributesPreserved = parameterWithRemark != parameterWithoutAttributes;
+	const bool localVariableRemarkOmitted = localVariableWithRemark == localVariableWithoutRemark;
+	const bool localVariableArrayPreserved = localVariableWithRemark != localVariableWithoutArray;
+	const bool globalVariableRemarkOmitted = globalVariableWithRemark == globalVariableWithoutRemark;
+	report["checks"].push_back({
+		{"name", "real-page-declaration-metadata-normalization"},
+		{"ok", assemblyVariableRemarkOmitted &&
+			assemblyVariableArrayPreserved &&
+			shiftedAssemblyVariableRemarkRejected &&
+			parameterRemarkOmitted &&
+			parameterAttributesPreserved &&
+			localVariableRemarkOmitted &&
+			localVariableArrayPreserved &&
+			globalVariableRemarkOmitted},
+		{"assembly_variable_remark_omitted", assemblyVariableRemarkOmitted},
+		{"assembly_variable_array_preserved", assemblyVariableArrayPreserved},
+		{"shifted_assembly_variable_remark_rejected", shiftedAssemblyVariableRemarkRejected},
+		{"parameter_remark_omitted", parameterRemarkOmitted},
+		{"parameter_attributes_preserved", parameterAttributesPreserved},
+		{"local_variable_remark_omitted", localVariableRemarkOmitted},
+		{"local_variable_array_preserved", localVariableArrayPreserved},
+		{"global_variable_remark_omitted", globalVariableRemarkOmitted}
 	});
 	const std::string subroutineBareHeader =
 		NormalizeRealPageAssemblyVariableAliasesForCompare(
@@ -2476,6 +2555,68 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		{"hash_length", normalizedHashA.size()},
 		{"line_break_normalized", normalizedHashA == normalizedHashB},
 		{"different_text_differs", normalizedHashA != differentHash}
+	});
+
+	const std::string comparisonOperatorVariants =
+		"a ≤ b\r\n"
+		"c ＜＝ d\r\n"
+		"e ＜= f\r\n"
+		"g <＝ h\r\n"
+		"i ≥ j\r\n"
+		"k ＞＝ l\r\n"
+		"m ＞= n\r\n"
+		"o >＝ p\r\n"
+		"q ≠ r\r\n"
+		"s ！＝ t\r\n"
+		"u ！= v\r\n"
+		"w !＝ x\r\n"
+		"y ＜ z\r\n"
+		"aa ＞ bb";
+	const std::string canonicalComparisonOperators =
+		"a <= b\r\n"
+		"c <= d\r\n"
+		"e <= f\r\n"
+		"g <= h\r\n"
+		"i >= j\r\n"
+		"k >= l\r\n"
+		"m >= n\r\n"
+		"o >= p\r\n"
+		"q != r\r\n"
+		"s != t\r\n"
+		"u != v\r\n"
+		"w != x\r\n"
+		"y < z\r\n"
+		"aa > bb";
+	const std::string operatorsInsideStrings =
+		"asciiText ＝ \"a ≤ b, c ＜＝ d, e != f\"\r\n"
+		"ideText ＝ “a <= b, c ≥ d, e ！＝ f”\r\n"
+		"outside ＝ a ≤ b";
+	const std::string expectedOperatorsInsideStrings =
+		"asciiText = \"a ≤ b, c ＜＝ d, e != f\"\r\n"
+		"ideText = “a <= b, c ≥ d, e ！＝ f”\r\n"
+		"outside = a <= b";
+	const bool comparisonOperatorsNormalized =
+		NormalizeRealPageOperatorFormsForCompare(comparisonOperatorVariants) ==
+		canonicalComparisonOperators;
+	const bool canonicalOperatorsStable =
+		NormalizeRealPageOperatorFormsForCompare(canonicalComparisonOperators) ==
+		canonicalComparisonOperators;
+	const bool stringOperatorsPreserved =
+		NormalizeRealPageOperatorFormsForCompare(operatorsInsideStrings) ==
+		expectedOperatorsInsideStrings;
+	const bool arithmeticOperatorsStillNormalized =
+		NormalizeRealPageOperatorFormsForCompare("sum ＝ a ＋ b × c ÷ d － e") ==
+		"sum = a + b * c / d - e";
+	report["checks"].push_back({
+		{"name", "real-page-comparison-operator-normalization"},
+		{"ok", comparisonOperatorsNormalized &&
+			canonicalOperatorsStable &&
+			stringOperatorsPreserved &&
+			arithmeticOperatorsStillNormalized},
+		{"comparison_variants_normalized", comparisonOperatorsNormalized},
+		{"canonical_operators_stable", canonicalOperatorsStable},
+		{"string_operators_preserved", stringOperatorsPreserved},
+		{"arithmetic_operators_preserved", arithmeticOperatorsStillNormalized}
 	});
 
 	std::string quoteEditCode;

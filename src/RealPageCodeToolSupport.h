@@ -42,8 +42,9 @@ std::string PrepareNewClassPageLifecycleFunctions(
 	const std::string& ideDefaultCode,
 	bool* outChanged = nullptr,
 	bool* outComplete = nullptr);
+// 比较真实页时归一程序集变量别名，并忽略变量/参数在 IDE 读回中不可观测的备注字段；语义字段保持不变。
 std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string& text);
-// 比较真实页源码时消除 IDE 对运算符符号的自动换形差异。
+// 比较真实页源码时消除 IDE 对算术及单双字符比较运算符的自动换形差异；字符串字面量保持原样。
 std::string NormalizeRealPageOperatorFormsForCompare(const std::string& text);
 // 消除 IDE 存盘对结构指纹的等价改写（.版本页头 / 控制语句前导点 / 补空 .否则 / 页尾裸 .子程序），使写入与读回指纹可比。
 // 入参为「已去空白」的逐行 token 序列。

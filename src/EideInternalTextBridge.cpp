@@ -7193,6 +7193,8 @@ bool ReplaceRealPageCodeByEditorObjectInternal(
 			verifySummary;
 		appendRollbackTrace("verify_mismatch", failureTrace);
 		if (outResult != nullptr) {
+			outResult->verificationPageCode = verifyCode;
+			outResult->verificationSummary = verifySummary;
 			outResult->trace = std::move(failureTrace);
 		}
 		return false;

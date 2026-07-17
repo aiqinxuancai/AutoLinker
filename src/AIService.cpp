@@ -1963,7 +1963,7 @@ nlohmann::json BuildPublicToolCatalog()
 			{"properties", {
 				{"glob", {{"type", "string"}, {"description", "Optional glob such as src/**/*.txt or ecom/**/*.txt."}}},
 				{"path", {{"type", "string"}, {"description", "Optional relative path prefix."}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "For stable pagination, pass the exact positive generation returned by the previous page. If omitted, the current prepared mirror generation is used."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Pagination continuation only. MUST omit when offset is 0 or no previous page generation is available; never guess a value such as 1. For offset > 0, pass the exact generation returned by the previous page."}}},
 				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based result offset for pagination. Use next_offset from the prior result."}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 5000}}}
 			}},
@@ -1983,7 +1983,7 @@ nlohmann::json BuildPublicToolCatalog()
 				{"regex", {{"type", "boolean"}, {"description", "Defaults to false."}}},
 				{"case_insensitive", {{"type", "boolean"}}},
 				{"context", {{"type", "integer"}, {"minimum", 0}, {"maximum", 20}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "For stable pagination, pass the exact positive generation returned by the previous page. If omitted, the current prepared mirror generation is used."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Pagination continuation only. MUST omit when offset is 0 or no previous search page generation is available; never guess a value such as 1. For offset > 0, pass the exact generation returned by the previous page."}}},
 				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based result offset. Continue with next_offset returned by the previous page."}}},
 				{"head_limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}}}
 			}},
@@ -1997,7 +1997,7 @@ nlohmann::json BuildPublicToolCatalog()
 			{"type", "object"},
 			{"properties", {
 				{"file_path", {{"type", "string"}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "For stable pagination, pass the exact positive generation returned by the previous page. If omitted, the current prepared mirror generation is used."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Pagination continuation only. MUST omit when offset and byte_offset are 0 or no previous read generation is available; never guess. For continuation, pass the exact generation returned by the previous page."}}},
 				{"byte_offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Source byte cursor for files larger than the 1 MiB read window. Continue with next_source_byte_offset and reset line offset to 0."}}},
 				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based line offset. Positive initial offsets are allowed; include mirror_generation when continuing a prior page for cross-refresh consistency."}}},
 				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 20000}}}
@@ -2013,7 +2013,7 @@ nlohmann::json BuildPublicToolCatalog()
 			{"type", "object"},
 			{"properties", {
 				{"file_paths", {{"type", "array"}, {"maxItems", 12}, {"items", {{"type", "string"}}}, {"description", "Simple list of up to 12 mirror-relative file paths."}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "For stable pagination, pass the exact positive generation returned by the previous read. If omitted, the current prepared mirror generation is used."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Pagination continuation only. MUST omit for an initial batch read or when no previous read generation is available; never guess. For continuation, pass the exact generation returned by the previous page."}}},
 				{"files", {{"type", "array"}, {"maxItems", 12}, {"items", {
 					{"type", "object"},
 					{"properties", {
@@ -2042,7 +2042,7 @@ nlohmann::json BuildPublicToolCatalog()
 				{"file_path", {{"type", "string"}}},
 				{"item_name", {{"type", "string"}}},
 				{"occurrence", {{"type", "integer"}, {"minimum", 1}, {"description", "Select the Nth matching declaration when duplicate top-level names exist."}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Optional positive generation returned by a prior mirror read; omit when no prior generation is available."}}},
+				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Pagination continuation only. MUST omit when offset is 0 or no prior generation is available; never guess. For continuation, pass the exact generation returned by the previous result."}}},
 				{"include_references", {{"type", "boolean"}, {"description", "Defaults to false."}}},
 				{"reference_glob", {{"type", "string"}, {"description", "Optional reference search glob such as src/**/*.txt."}}},
 				{"reference_limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 50}}}
@@ -2547,6 +2547,19 @@ std::string BuildEideControlFlowPromptRules()
 		"- 流程控制必须精确配对闭合，不要漏掉 .如果结束、.如果真结束、.判断结束、.计次循环尾 ()、.变量循环尾 ()、.循环判断尾 (条件) 等结尾，也不要交叉嵌套闭合。\n";
 }
 
+std::string BuildEideDeclarationPromptRules()
+{
+	return
+		"易语言声明字段分割（逗号分隔的是固定槽位；只可省略行尾未使用槽位，不能省略中间空槽）：\n"
+		"- `.程序集变量`：完整格式有 5 个槽位、4 个结构逗号：`名称, 类型, 固定保留空槽, 数组维数, 备注`。类型与数组维数之间的第 3 槽必须为空；它不是静态属性。即使 IDE 界面中的可填写项都已填满，导出文本仍必须保留这个空槽。数组示例：`.程序集变量 m_int, 整数型, , \"0\", 这里是备注`；无数组但有备注：`.程序集变量 m_text, 文本型, , , 这里是备注`。禁止写成 `.程序集变量 m_int, 整数型, \"0\", 这里是备注`。\n"
+		"- `.局部变量`（普通变量）：完整格式有 5 个槽位、4 个结构逗号：`名称, 类型, 静态属性, 数组维数, 备注`。静态属性只能按需写 `静态` 或留空；示例：`.局部变量 v1, 文本型, 静态, \"10\", 这里是备注`。无静态、无数组但有备注时写 `.局部变量 v2, 文本型, , , 这里是备注`。\n"
+		"- `.全局变量`：完整格式有 5 个槽位、4 个结构逗号：`名称, 类型, 公开属性, 数组维数, 备注`。公开属性只能写 `公开` 或留空；示例：`.全局变量 g1, 整数型, 公开, \"10\", 这里是备注`。无公开、无数组但有备注时写 `.全局变量 g2, 整数型, , , 这里是备注`。\n"
+		"- `.参数`：完整格式有 4 个槽位、3 个结构逗号：`名称, 类型, 参数属性, 备注`。参数属性可由 `参考`、`可空`、`数组` 按需用空格组合；示例：`.参数 p1, 整数型, 参考 可空 数组, 这里是备注`。无属性但有备注时写 `.参数 p2, 整数型, , 这里是备注`。\n"
+		"- `.子程序`：完整格式有 4 个槽位、3 个结构逗号：`名称, 返回值类型, 公开属性, 备注`。公开属性只能写 `公开` 或留空；私有、无返回值但有备注时必须写 `.子程序 方法1, , , 这里是备注`，不能写成 `.子程序 方法1, , 这里是备注`。\n"
+		"- `.程序集`：完整格式有 4 个槽位、3 个结构逗号：`名称, 基类, 公开属性, 备注`。公开属性只能写 `公开` 或留空；无基类、非公开但有备注时必须写 `.程序集 String, , , 这里是备注`。\n"
+		"- 数组维数如 `\"0\"`、`\"10\"`、`\"2,3\"` 是一个完整槽位；引号内的逗号不是结构分隔符。备注前的数组维数槽不得被备注占用，`静态`、参数属性和数组维数也都不能在改写时丢失。\n";
+}
+
 std::string BuildChatSystemPrompt(const AISettings& settings)
 {
 	std::string projectName;
@@ -2612,6 +2625,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"- `.子程序` 和 `.程序集` 都只把前三个逗号视为字段结构；第三个逗号后的剩余内容全部属于说明文字，说明文字本身允许包含逗号。\n"
 			"- 每个 `.子程序` 内部的声明顺序固定为：先连续列出全部 `.参数`，再连续列出全部 `.局部变量`，最后才写执行语句和流程指令。禁止在 `.局部变量` 后继续声明 `.参数`，也禁止在任何执行语句之后补写 `.参数` 或 `.局部变量`。\n"
 			"- 易语言变量声明后会按类型自动获得默认值，不要为了默认初始化而生成冗余赋值：数值型默认为 0，逻辑型默认为 假，文本型默认为空文本，对象/类类型变量也无需写 `obj ＝ 类型名`。例如声明 `.局部变量 obj, DateTimeEx` 后可直接调用 `obj.SetDateTime (...)`。只有需要非默认初值，或在后续流程中明确重置变量时才进行赋值。\n"
+			+ BuildEideDeclarationPromptRules() +
 			"- 单引号 ' 开头表示整行注释，不要把注释内容当成代码，也不要改成 // 或 /* */。\n"
 			"- 真 / 假 是布尔值。\n"
 			"- 易语言使用全角的引号来表示字符串，例如 “Hello, World!”。\n"
@@ -2661,6 +2675,7 @@ std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal
 		"两种声明的第三个逗号后全部属于说明文字，说明中允许包含逗号。\n"
 		"每个 `.子程序` 必须先写全部 `.参数`，再写全部 `.局部变量`，最后写执行语句；参数不得出现在局部变量之后，参数和局部变量都不得出现在执行语句之后。\n"
 		"变量声明后由易语言按类型自动初始化；不要生成仅用于默认值的赋值，如对象变量 `obj ＝ 类型名`、数值变量 `n ＝ 0`、文本变量 `text ＝ “”`、逻辑变量 `flag ＝ 假`。仅在需要非默认初值或后续明确重置时赋值。\n"
+		+ BuildEideDeclarationPromptRules()
 		+ BuildEideControlFlowPromptRules();
 
 	if (!minimal) {
@@ -5881,15 +5896,22 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 
 	{
 		AISettings promptSettings = {};
-		const auto hasControlFlowRules = [](const std::string& prompt) {
-			return prompt.find("禁止把 `.如果真` 和 `.否则` 混用") != std::string::npos &&
-				prompt.find("流程控制必须精确配对闭合") != std::string::npos;
+		const std::string controlFlowRules = BuildEideControlFlowPromptRules();
+		const std::string declarationRules = BuildEideDeclarationPromptRules();
+		const auto containsCompleteSharedRules = [&](const std::string& prompt) {
+			return !controlFlowRules.empty() &&
+				!declarationRules.empty() &&
+				prompt.find(controlFlowRules) != std::string::npos &&
+				prompt.find(declarationRules) != std::string::npos;
 		};
-		const bool chatPromptOk = hasControlFlowRules(BuildChatSystemPrompt(promptSettings));
-		const bool geminiPromptOk = hasControlFlowRules(
-			BuildGeminiChatSystemPrompt(promptSettings, true));
-		const bool generationPromptOk = hasControlFlowRules(
-			BuildSystemPrompt(AITaskKind::OptimizeFunction, promptSettings));
+		const std::string chatPrompt = BuildChatSystemPrompt(promptSettings);
+		const std::string geminiPrompt = BuildGeminiChatSystemPrompt(promptSettings, true);
+		const std::string generationPrompt = BuildSystemPrompt(
+			AITaskKind::OptimizeFunction,
+			promptSettings);
+		const bool chatPromptOk = containsCompleteSharedRules(chatPrompt);
+		const bool geminiPromptOk = containsCompleteSharedRules(geminiPrompt);
+		const bool generationPromptOk = containsCompleteSharedRules(generationPrompt);
 		const bool ok = chatPromptOk && geminiPromptOk && generationPromptOk;
 		checks.push_back({
 			{"name", "eide_control_flow_system_prompts"},
@@ -5958,6 +5980,7 @@ std::string AIService::BuildSystemPrompt(AITaskKind kind, const AISettings& sett
 		"7) 两种声明都只用前三个逗号分隔结构，第三个逗号后的剩余内容全部是说明文字，说明中允许包含逗号。\n"
 		"8) 每个 `.子程序` 必须先声明全部 `.参数`，再声明全部 `.局部变量`，最后写执行语句；不得在局部变量之后声明参数，也不得在执行语句之后声明参数或局部变量。\n"
 		"9) 变量声明后会按类型自动初始化，不要生成冗余默认赋值，例如对象变量 `obj ＝ 类型名`、数值变量 `n ＝ 0`、文本变量 `text ＝ “”`、逻辑变量 `flag ＝ 假`；仅在需要非默认初值或后续重置时赋值。\n\n"
+		+ BuildEideDeclarationPromptRules()
 		+ BuildEideControlFlowPromptRules() + "\n"
 		"易语言格式示例：\n"
 		".版本 2\n"

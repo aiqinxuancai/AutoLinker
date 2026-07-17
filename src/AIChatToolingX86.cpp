@@ -145,7 +145,8 @@ std::vector<std::string> BuildRealPageStructuralFingerprintForAI(const std::stri
 bool VerifyRealPageCodeMatchesForAI(
 	const std::string& expectedCode,
 	const std::string& actualCode,
-	std::string* outMode);
+	std::string* outMode,
+	std::string* outDifference = nullptr);
 void AppendFullMirrorRefreshResult(nlohmann::json& r);
 void PutPageCodeCacheEntryForAI(
 	const ProgramTreeItemInfo& item,
@@ -1646,9 +1647,23 @@ bool TryWriteRealPageCodeForAI(
 
 	if (!writeOk) {
 		outTrace = writeTrace;
-		outError = writeResult.trace.find("verify_") != std::string::npos
-			? "whole page write verify failed"
-			: "whole page write failed";
+		if (writeResult.trace.find("verify_") != std::string::npos) {
+			std::string difference;
+			if (!writeResult.verificationPageCode.empty()) {
+				VerifyRealPageCodeMatchesForAI(
+					preparedExpectedCode,
+					writeResult.verificationPageCode,
+					nullptr,
+					&difference);
+			}
+			outError = "whole page write verify failed";
+			if (!difference.empty()) {
+				outError += ": " + difference;
+			}
+		}
+		else {
+			outError = "whole page write failed";
+		}
 		return false;
 	}
 
@@ -2942,10 +2957,14 @@ std::vector<std::string> BuildRealPageStructuralFingerprintForAI(const std::stri
 bool VerifyRealPageCodeMatchesForAI(
 	const std::string& expectedCode,
 	const std::string& actualCode,
-	std::string* outMode)
+	std::string* outMode,
+	std::string* outDifference)
 {
 	if (outMode != nullptr) {
 		outMode->clear();
+	}
+	if (outDifference != nullptr) {
+		outDifference->clear();
 	}
 
 	const std::string normalizedExpected = NormalizeRealPageCodeForLooseCompareForAI(expectedCode);
@@ -2964,6 +2983,28 @@ bool VerifyRealPageCodeMatchesForAI(
 			*outMode = "structural";
 		}
 		return true;
+	}
+	if (outDifference != nullptr) {
+		const size_t common = (std::min)(expectedFingerprint.size(), actualFingerprint.size());
+		size_t mismatchIndex = common;
+		for (size_t index = 0; index < common; ++index) {
+			if (expectedFingerprint[index] != actualFingerprint[index]) {
+				mismatchIndex = index;
+				break;
+			}
+		}
+		const auto truncateLine = [](const std::string& line) {
+			return line.size() <= 300 ? line : line.substr(0, 300) + "...";
+		};
+		const std::string expectedLine = mismatchIndex < expectedFingerprint.size()
+			? truncateLine(expectedFingerprint[mismatchIndex])
+			: "<missing>";
+		const std::string actualLine = mismatchIndex < actualFingerprint.size()
+			? truncateLine(actualFingerprint[mismatchIndex])
+			: "<missing>";
+		*outDifference =
+			"normalized structural line " + std::to_string(mismatchIndex + 1) +
+			" differs; expected `" + expectedLine + "`; actual `" + actualLine + "`";
 	}
 
 	return false;

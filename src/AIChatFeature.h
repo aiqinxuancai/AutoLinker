@@ -41,6 +41,8 @@ bool ExecutePublicTool(
 bool UpdatePlanFromTool(const std::string& argumentsJsonUtf8, std::string& outResultJsonLocal, bool& outOk);
 // 构建计划模式审批兼容性自检结果。
 std::string BuildPlanModeSelfTestJson();
+// 构建活动会话检查点自动恢复自检结果。
+std::string BuildCheckpointResumeSelfTestJson();
 // 重新读取并应用当前 AI 对话配色。
 void ReloadTheme();
 

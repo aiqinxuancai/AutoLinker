@@ -20,6 +20,7 @@ constexpr std::string_view kDirectiveSubroutine = ".子程序";
 constexpr std::string_view kDirectiveParameter = ".参数";
 constexpr std::string_view kDirectiveLocalVariable = ".局部变量";
 constexpr std::string_view kDirectiveAssemblyVariable = ".程序集变量";
+constexpr std::string_view kDirectiveGlobalVariable = ".全局变量";
 // 类声明指令（注意必须区别于 .程序集变量：后者是变量声明）。
 constexpr std::string_view kDirectiveAssembly = ".程序集";
 // 易语言默认基类标注。声明 `.程序集 X, <对象>` 与 `.程序集 X` 完全等价：
@@ -146,7 +147,7 @@ struct DiffOp {
 
 struct OperatorForm {
 	std::string_view text;
-	char canonical = '\0';
+	std::string_view canonical;
 };
 
 std::string TrimAsciiCopyLocal(const std::string& text)
@@ -886,6 +887,94 @@ bool ValidateRealPageControlFlow(const std::string& text, std::string& outError)
 	return true;
 }
 
+size_t FindDeclarationStructuralComma(const std::string& text, size_t start)
+{
+	bool inQuotedField = false;
+	for (size_t offset = start; offset < text.size();) {
+		const size_t quoteBytes = GetEquivalentDoubleQuoteBytes(text, offset);
+		if (quoteBytes != 0) {
+			if (inQuotedField) {
+				const size_t nextQuoteOffset = offset + quoteBytes;
+				const size_t nextQuoteBytes = GetEquivalentDoubleQuoteBytes(text, nextQuoteOffset);
+				if (nextQuoteBytes != 0) {
+					offset = nextQuoteOffset + nextQuoteBytes;
+					continue;
+				}
+			}
+			inQuotedField = !inQuotedField;
+			offset += quoteBytes;
+			continue;
+		}
+		if (!inQuotedField && text[offset] == ',') {
+			return offset;
+		}
+		offset += GetLocalCharacterBytes(text, offset);
+	}
+	return std::string::npos;
+}
+
+bool TryNormalizeDeclarationMetadataForCompare(std::string& line)
+{
+	struct DeclarationSpec {
+		std::string_view directive;
+		size_t semanticFieldCount;
+	};
+	static constexpr DeclarationSpec kSpecs[] = {
+		{kDirectiveAssemblyVariable, 4}, // 名称、类型、固定空槽、数组维数；第 5 字段是备注。
+		{kDirectiveLocalVariable, 4},    // 名称、类型、静态标志、数组维数；第 5 字段是备注。
+		{kDirectiveGlobalVariable, 4},   // 名称、类型、公开标志、数组维数；第 5 字段是备注。
+		{kDirectiveParameter, 3},       // 名称、类型、参考/可空/数组属性；第 4 字段是备注。
+	};
+
+	for (const auto& spec : kSpecs) {
+		size_t directivePos = 0;
+		if (!TryMatchDirectiveAtLineStart(line, spec.directive, &directivePos)) {
+			continue;
+		}
+
+		const std::string rest = line.substr(directivePos + spec.directive.size());
+		std::vector<std::string> fields;
+		fields.reserve(spec.semanticFieldCount + 1);
+		size_t fieldStart = 0;
+		for (size_t commaIndex = 0; commaIndex < spec.semanticFieldCount; ++commaIndex) {
+			const size_t comma = FindDeclarationStructuralComma(rest, fieldStart);
+			if (comma == std::string::npos) {
+				fields.push_back(TrimAsciiCopyLocal(rest.substr(fieldStart)));
+				fieldStart = std::string::npos;
+				break;
+			}
+			fields.push_back(TrimAsciiCopyLocal(rest.substr(fieldStart, comma - fieldStart)));
+			fieldStart = comma + 1;
+		}
+		if (fieldStart != std::string::npos) {
+			fields.push_back(TrimAsciiCopyLocal(rest.substr(fieldStart)));
+		}
+		if (fields.empty() || fields.front().empty()) {
+			return false;
+		}
+
+		// 超出 semanticFieldCount 的剩余正文是备注。备注在 direct formatter
+		// 读回中不可观测，只在比较副本中丢弃；所有具有运行语义的字段均保留。
+		if (fields.size() > spec.semanticFieldCount) {
+			fields.resize(spec.semanticFieldCount);
+		}
+		while (fields.size() > 2 && fields.back().empty()) {
+			fields.pop_back();
+		}
+
+		std::string rebuilt = line.substr(0, directivePos) + std::string(spec.directive) + " " + fields[0];
+		for (size_t fieldIndex = 1; fieldIndex < fields.size(); ++fieldIndex) {
+			rebuilt += ", " + fields[fieldIndex];
+		}
+		if (rebuilt == line) {
+			return false;
+		}
+		line = std::move(rebuilt);
+		return true;
+	}
+	return false;
+}
+
 // 把 IDE 读回时会省略的程序集头部字段归一化掉：
 // 保留类名和真实的非默认基类，忽略公开标记、说明等不会出现在真实页格式化结果中的字段。
 // 例如 ".程序集 X, , 公开, 说明" → ".程序集 X"，
@@ -1011,6 +1100,9 @@ std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string
 				changed = true;
 			}
 		}
+		if (TryNormalizeDeclarationMetadataForCompare(line)) {
+			changed = true;
+		}
 
 		if (IsDirectiveLine(trimmed, kDirectiveSubroutine)) {
 			reachedSubroutineBlock = true;
@@ -1023,13 +1115,28 @@ std::string NormalizeRealPageAssemblyVariableAliasesForCompare(const std::string
 std::string NormalizeRealPageOperatorFormsForCompare(const std::string& text)
 {
 	static constexpr OperatorForm kOperatorForms[] = {
-		{ "＋", '+' },
-		{ "－", '-' },
-		{ "＊", '*' },
-		{ "×", '*' },
-		{ "／", '/' },
-		{ "÷", '/' },
-		{ "＝", '=' },
+		// 先匹配复合比较符，避免先消费其中的单字符全角运算符。
+		{ "＜＝", "<=" },
+		{ "＜=", "<=" },
+		{ "<＝", "<=" },
+		{ "≤", "<=" },
+		{ "＞＝", ">=" },
+		{ "＞=", ">=" },
+		{ ">＝", ">=" },
+		{ "≥", ">=" },
+		{ "！＝", "!=" },
+		{ "！=", "!=" },
+		{ "!＝", "!=" },
+		{ "≠", "!=" },
+		{ "＋", "+" },
+		{ "－", "-" },
+		{ "＊", "*" },
+		{ "×", "*" },
+		{ "／", "/" },
+		{ "÷", "/" },
+		{ "＝", "=" },
+		{ "＜", "<" },
+		{ "＞", ">" },
 	};
 
 	std::string normalized;
@@ -1037,16 +1144,20 @@ std::string NormalizeRealPageOperatorFormsForCompare(const std::string& text)
 	bool inString = false;
 
 	for (size_t i = 0; i < text.size();) {
-		const char ch = text[i];
-		if (ch == '"') {
-			normalized.push_back(ch);
-			if (inString && i + 1 < text.size() && text[i + 1] == '"') {
-				normalized.push_back(text[i + 1]);
-				i += 2;
-				continue;
+		const size_t quoteBytes = GetEquivalentDoubleQuoteBytes(text, i);
+		if (quoteBytes != 0) {
+			normalized.append(text, i, quoteBytes);
+			if (inString) {
+				const size_t nextQuoteOffset = i + quoteBytes;
+				const size_t nextQuoteBytes = GetEquivalentDoubleQuoteBytes(text, nextQuoteOffset);
+				if (nextQuoteBytes != 0) {
+					normalized.append(text, nextQuoteOffset, nextQuoteBytes);
+					i = nextQuoteOffset + nextQuoteBytes;
+					continue;
+				}
 			}
 			inString = !inString;
-			++i;
+			i += quoteBytes;
 			continue;
 		}
 
@@ -1057,7 +1168,7 @@ std::string NormalizeRealPageOperatorFormsForCompare(const std::string& text)
 					continue;
 				}
 				if (text.compare(i, form.text.size(), form.text.data(), form.text.size()) == 0) {
-					normalized.push_back(form.canonical);
+					normalized.append(form.canonical.data(), form.canonical.size());
 					i += form.text.size();
 					matched = true;
 					break;
@@ -1068,7 +1179,7 @@ std::string NormalizeRealPageOperatorFormsForCompare(const std::string& text)
 			}
 		}
 
-		normalized.push_back(ch);
+		normalized.push_back(text[i]);
 		++i;
 	}
 

@@ -5226,13 +5226,45 @@ void RunAIChatWorker(void* pParams)
 	PostChatResult(result.release());
 }
 
+bool TryBuildRunCheckpointForRequest(
+	const AIChatRunCheckpoint* explicitCheckpoint,
+	const AIChatRunCheckpoint* pendingCheckpoint,
+	const std::string& userInput,
+	AIChatRunCheckpoint& outCheckpoint,
+	bool& outUsedPendingCheckpoint)
+{
+	outCheckpoint = {};
+	outUsedPendingCheckpoint = false;
+	const AIChatRunCheckpoint* source = explicitCheckpoint;
+	if (source == nullptr) {
+		source = pendingCheckpoint;
+		outUsedPendingCheckpoint = source != nullptr;
+	}
+	if (source == nullptr) {
+		return false;
+	}
+
+	outCheckpoint = *source;
+	outCheckpoint.state = "running";
+	const std::string trimmedInput = TrimAsciiCopy(userInput);
+	if (!trimmedInput.empty()) {
+		outCheckpoint.contextMessages.push_back(AIChatMessage{
+			"user",
+			trimmedInput,
+			"",
+			""
+		});
+	}
+	return true;
+}
+
 bool StartChatRequest(
 	const std::string& userInput,
 	const AIChatRunCheckpoint* resumeCheckpoint)
 {
 	const std::string trimmed = TrimAsciiCopy(userInput);
-	const bool resuming = resumeCheckpoint != nullptr;
-	if (trimmed.empty() && !resuming) {
+	const bool explicitResume = resumeCheckpoint != nullptr;
+	if (trimmed.empty() && !explicitResume) {
 		return false;
 	}
 	RebindChatSessionToCurrentSourceIfNeeded();
@@ -5246,6 +5278,12 @@ bool StartChatRequest(
 	if (!request) {
 		return false;
 	}
+	bool checkpointResumeStarted = false;
+	bool usedPendingCheckpoint = false;
+	bool appendedUserToCheckpoint = false;
+	int resumeSamplingRounds = 0;
+	size_t resumeContextMessages = 0;
+	size_t resumeToolCalls = 0;
 
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
@@ -5258,7 +5296,7 @@ bool StartChatRequest(
 		g_session.sourceFilePathLocal = GetCurrentChatSourceFilePathLocal();
 		g_session.sourceFileNameLocal = GetCurrentChatSourceFileNameLocal();
 		EnsureChatSessionBindingLocked(g_session);
-		if (!resuming) {
+		if (!trimmed.empty()) {
 			g_session.messages.push_back(SessionMessage{ SessionRole::User, trimmed, true, true, "", "" });
 		}
 		g_session.effectiveContextWindow = AIService::ResolveContextWindowTokens(settings);
@@ -5268,12 +5306,23 @@ bool StartChatRequest(
 		request->settings = settings;
 		request->contextMessages = BuildContextMessagesLocked(g_session);
 		request->cancellation = std::make_shared<AIChatRequestCancellation>();
-		if (resuming) {
+		const AIChatRunCheckpoint* pendingCheckpoint = g_session.hasPendingRunCheckpoint
+			? &g_session.pendingRunCheckpoint
+			: nullptr;
+		if (TryBuildRunCheckpointForRequest(
+				resumeCheckpoint,
+				pendingCheckpoint,
+				trimmed,
+				request->resumeCheckpoint,
+				usedPendingCheckpoint)) {
 			request->hasResumeCheckpoint = true;
-			request->resumeCheckpoint = *resumeCheckpoint;
 			g_session.hasPendingRunCheckpoint = true;
-			g_session.pendingRunCheckpoint = *resumeCheckpoint;
-			g_session.pendingRunCheckpoint.state = "running";
+			g_session.pendingRunCheckpoint = request->resumeCheckpoint;
+			checkpointResumeStarted = true;
+			appendedUserToCheckpoint = !trimmed.empty();
+			resumeSamplingRounds = request->resumeCheckpoint.samplingRounds;
+			resumeContextMessages = request->resumeCheckpoint.contextMessages.size();
+			resumeToolCalls = request->resumeCheckpoint.toolCalls.size();
 		}
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
@@ -5282,6 +5331,16 @@ bool StartChatRequest(
 		g_session.activeRequestId = request->requestId;
 		g_session.activeRequestStartedAtUnixMs = requestStartedAtMs;
 		g_session.cancellation = request->cancellation;
+	}
+	if (checkpointResumeStarted) {
+		OutputStringToELog(std::format(
+			"[AI Chat][Checkpoint] resume_start source={} request_id={} sampling_rounds={} context_messages={} tool_calls={} appended_user={}",
+			usedPendingCheckpoint ? "active_pending" : "explicit",
+			request->requestId,
+			resumeSamplingRounds,
+			resumeContextMessages,
+			resumeToolCalls,
+			appendedUserToCheckpoint ? 1 : 0));
 	}
 	SaveChatSessionSnapshotNow();
 
@@ -8123,6 +8182,101 @@ std::string BuildPlanModeSelfTestJson()
 		{"explicit_plan", explicitOk},
 		{"update_plan_fallback", toolPlanOk},
 		{"plain_text_fallback", plainPlanOk}
+	}).dump();
+}
+
+std::string BuildCheckpointResumeSelfTestJson()
+{
+	AIChatRunCheckpoint pending;
+	pending.protocolType = AIProtocolType::OpenAIResponses;
+	pending.model = "checkpoint-model";
+	pending.state = "paused";
+	pending.samplingRounds = 9;
+	pending.contextMessages = {
+		AIChatMessage{"user", "实现 String 类", "", ""},
+		AIChatMessage{
+			"assistant",
+			"正在读取源码",
+			"",
+			R"({"type":"function_call","call_id":"call_read","name":"read_files","arguments":"{}"})"},
+		AIChatMessage{
+			"tool",
+			R"({"ok":true})",
+			"",
+			R"({"type":"function_call_output","call_id":"call_read","output":"{\"ok\":true}"})"}
+	};
+	pending.toolCalls = {
+		AIChatCheckpointToolCall{
+			"call_write",
+			"write_file",
+			R"({"file_path":"src/String.txt"})",
+			R"({"ok":false,"error":"HTTP 522"})",
+			true,
+			false
+		}
+	};
+
+	AIChatRunCheckpoint resumed;
+	bool usedPending = false;
+	const bool pendingSelected = TryBuildRunCheckpointForRequest(
+		nullptr,
+		&pending,
+		"你刚才都做了什么",
+		resumed,
+		usedPending);
+	const bool priorContextPreserved = pendingSelected &&
+		usedPending &&
+		resumed.contextMessages.size() == pending.contextMessages.size() + 1 &&
+		resumed.contextMessages[1].rawMessageJsonUtf8 ==
+			pending.contextMessages[1].rawMessageJsonUtf8 &&
+		resumed.contextMessages[2].rawMessageJsonUtf8 ==
+			pending.contextMessages[2].rawMessageJsonUtf8;
+	const bool followupAppended = priorContextPreserved &&
+		resumed.contextMessages.back().role == "user" &&
+		resumed.contextMessages.back().content == "你刚才都做了什么";
+	const bool toolCallsPreserved = resumed.toolCalls.size() == 1 &&
+		resumed.toolCalls.front().name == "write_file" &&
+		resumed.toolCalls.front().completed &&
+		!resumed.toolCalls.front().ok;
+	const bool runningState = resumed.state == "running" && resumed.samplingRounds == 9;
+
+	AIChatRunCheckpoint explicitCheckpoint = pending;
+	explicitCheckpoint.model = "explicit-model";
+	AIChatRunCheckpoint explicitResult;
+	bool explicitUsedPending = true;
+	const bool explicitPrecedence = TryBuildRunCheckpointForRequest(
+		&explicitCheckpoint,
+		&pending,
+		"",
+		explicitResult,
+		explicitUsedPending) &&
+		!explicitUsedPending &&
+		explicitResult.model == "explicit-model";
+
+	AIChatRunCheckpoint emptyResult;
+	bool emptyUsedPending = true;
+	const bool noCheckpointRejected = !TryBuildRunCheckpointForRequest(
+		nullptr,
+		nullptr,
+		"继续",
+		emptyResult,
+		emptyUsedPending);
+	const bool ok = priorContextPreserved &&
+		followupAppended &&
+		toolCallsPreserved &&
+		runningState &&
+		explicitPrecedence &&
+		noCheckpointRejected;
+	return nlohmann::json({
+		{"name", "active-checkpoint-resume"},
+		{"ok", ok},
+		{"pending_checkpoint_selected", pendingSelected && usedPending},
+		{"prior_context_preserved", priorContextPreserved},
+		{"followup_appended", followupAppended},
+		{"tool_calls_preserved", toolCallsPreserved},
+		{"running_state", runningState},
+		{"explicit_checkpoint_precedence", explicitPrecedence},
+		{"no_checkpoint_rejected", noCheckpointRejected}
 	}).dump();
 }
 
