@@ -934,6 +934,7 @@ struct AIConfigPresetSite {
 	const char* const* models;
 	size_t modelCount;
 	AIProtocolType protocol;
+	AIThinkingLevel defaultThinkingLevel = AIThinkingLevel::Off;
 };
 
 constexpr const char* kRightPresetModels[] = { "gpt-5.5", "gpt-5.4", "gpt-5.4-mini" };
@@ -945,6 +946,7 @@ constexpr const char* kDoubaoPresetModels[] = { "doubao-seed-2.0-pro", "doubao-s
 constexpr const char* kMiniMaxPresetModels[] = { "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5" };
 constexpr const char* kAihubmixPresetModels[] = { "gpt-5.5", "claude-opus-4-8", "claude-sonnet-4-6", "deepseek-v4-pro", "deepseek-v4-flash", "gemini-3.1-pro-preview" };
 constexpr const char* kSiliconFlowPresetModels[] = { "deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro", "Pro/zai-org/GLM-5", "zai-org/GLM-5.1", "Qwen/Qwen3.5-397B-A17B" };
+constexpr const char* kXaiPresetModels[] = { "grok-4.5", "grok-4.5-latest", "grok-build-latest" };
 constexpr const char* kOpenAIPresetModels[] = {
 	"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
 	"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"
@@ -964,6 +966,7 @@ constexpr AIConfigPresetSite kAIConfigPresetSites[] = {
 	{ L"MiniMax",          "https://api.minimax.chat/v1",                       AI_PRESET_MODELS(kMiniMaxPresetModels),      AIProtocolType::OpenAI },
 	{ L"aihubmix",         "https://aihubmix.com/v1",                           AI_PRESET_MODELS(kAihubmixPresetModels),     AIProtocolType::OpenAI },
 	{ L"\u7845\u57FA\u6D41\u52A8", "https://api.siliconflow.cn/v1",             AI_PRESET_MODELS(kSiliconFlowPresetModels),  AIProtocolType::OpenAI },
+	{ L"xAI",              "https://api.x.ai/v1",                               AI_PRESET_MODELS(kXaiPresetModels),          AIProtocolType::OpenAI, AIThinkingLevel::High },
 	{ L"OpenAI",           "https://api.openai.com/v1",                         AI_PRESET_MODELS(kOpenAIPresetModels),       AIProtocolType::OpenAIResponses },
 	{ L"Claude",           "https://api.anthropic.com",                         AI_PRESET_MODELS(kClaudePresetModels),       AIProtocolType::Claude },
 	{ L"Gemini",           "https://generativelanguage.googleapis.com",         AI_PRESET_MODELS(kGeminiPresetModels),       AIProtocolType::Gemini },
@@ -998,7 +1001,7 @@ void AddNativePresetProfile(HWND hWnd, AIConfigDialogContext* ctx, const AIConfi
 	entry.name = BuildPresetProfileNameLocal(site, model);
 	entry.settings = {};
 	entry.settings.protocolType = site.protocol;
-	entry.settings.thinkingLevel = AIThinkingLevel::Off;
+	entry.settings.thinkingLevel = site.defaultThinkingLevel;
 	entry.settings.sourceEditMode = current.sourceEditMode;
 	entry.settings.baseUrl = site.baseUrl == nullptr ? std::string() : site.baseUrl;
 	entry.settings.model = model == nullptr ? std::string() : model;

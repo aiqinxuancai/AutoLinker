@@ -936,6 +936,12 @@ bool IsOpenAIGpt5Model(std::string_view model)
 	return ContainsAsciiInsensitive(model, "gpt-5");
 }
 
+bool IsGrok45Model(std::string_view model)
+{
+	return ContainsAsciiInsensitive(model, "grok-4.5") ||
+		ContainsAsciiInsensitive(model, "grok-build-latest");
+}
+
 void ApplyOpenAITemperatureIfSupported(nlohmann::json& requestBody, const AISettings& settings)
 {
 	if (IsOpenAIGpt5Model(settings.model)) {
@@ -969,6 +975,25 @@ std::string GetOpenAIReasoningEffort(AIThinkingLevel level)
 	case AIThinkingLevel::Off:
 	default:
 		return "none";
+	}
+}
+
+std::string GetGrok45ReasoningEffort(AIThinkingLevel level)
+{
+	switch (level) {
+	case AIThinkingLevel::Low:
+		return "low";
+	case AIThinkingLevel::Medium:
+		return "medium";
+	case AIThinkingLevel::High:
+	case AIThinkingLevel::XHigh:
+	case AIThinkingLevel::Max:
+	case AIThinkingLevel::Ultra:
+		return "high";
+	case AIThinkingLevel::Off:
+	default:
+		// Grok 4.5 不允许关闭推理；省略参数即可采用官方默认 high。
+		return std::string();
 	}
 }
 
@@ -1089,12 +1114,28 @@ void ApplyThinkingConfigToOpenAIChatRequest(nlohmann::json& requestBody, const A
 		requestBody["reasoning_effort"] = settings.thinkingLevel >= AIThinkingLevel::High ? "max" : "high";
 		return;
 	}
+	if (IsGrok45Model(settings.model)) {
+		const std::string effort = GetGrok45ReasoningEffort(settings.thinkingLevel);
+		if (!effort.empty()) {
+			requestBody["reasoning_effort"] = effort;
+		}
+		return;
+	}
 
 	requestBody["reasoning_effort"] = GetOpenAIReasoningEffort(settings.thinkingLevel);
 }
 
 void ApplyThinkingConfigToOpenAIResponsesRequest(nlohmann::json& requestBody, const AISettings& settings)
 {
+	if (IsGrok45Model(settings.model)) {
+		const std::string effort = GetGrok45ReasoningEffort(settings.thinkingLevel);
+		if (!effort.empty()) {
+			requestBody["reasoning"] = {
+				{"effort", effort}
+			};
+		}
+		return;
+	}
 	requestBody["reasoning"] = {
 		{"effort", GetOpenAIReasoningEffort(settings.thinkingLevel)}
 	};
@@ -4681,6 +4722,9 @@ int AIService::ResolveContextWindowTokens(const AISettings& settings)
 	// P2c: 子串表 —— 不规则命名或非递增族。更具体的在前。
 	struct Entry { const char* key; int window; };
 	static const Entry kTable[] = {
+		// xAI Grok（官方文档核实于 2026-07；grok-4.5-latest 会命中 grok-4.5）
+		{ "grok-4.5",        500000 },
+		{ "grok-build-latest", 500000 },
 		// OpenAI（gpt-5 系由上面的版本族处理）
 		{ "gpt-4.1",        1047576 },
 		{ "gpt-4o",          128000 },
@@ -5597,6 +5641,61 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"name", "gpt_5_6_context_window_presets"},
 			{"ok", ok},
 			{"context_window", 1050000}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		const std::array<const char*, 3> models = {
+			"grok-4.5", "grok-4.5-latest", "grok-build-latest"
+		};
+		bool contextOk = true;
+		for (const char* model : models) {
+			AISettings settings = {};
+			settings.model = model;
+			contextOk = contextOk && ResolveContextWindowTokens(settings) == 500000;
+		}
+
+		AISettings offSettings = {};
+		offSettings.model = "grok-4.5";
+		offSettings.thinkingLevel = AIThinkingLevel::Off;
+		nlohmann::json offChatRequest;
+		ApplyThinkingConfigToOpenAIChatRequest(offChatRequest, offSettings);
+		nlohmann::json offResponsesRequest;
+		ApplyThinkingConfigToOpenAIResponsesRequest(offResponsesRequest, offSettings);
+		const bool offUsesProviderDefault =
+			!offChatRequest.contains("reasoning_effort") &&
+			!offResponsesRequest.contains("reasoning");
+
+		bool effortMappingOk = true;
+		const std::array<std::pair<AIThinkingLevel, const char*>, 6> efforts = {{
+			{ AIThinkingLevel::Low, "low" },
+			{ AIThinkingLevel::Medium, "medium" },
+			{ AIThinkingLevel::High, "high" },
+			{ AIThinkingLevel::XHigh, "high" },
+			{ AIThinkingLevel::Max, "high" },
+			{ AIThinkingLevel::Ultra, "high" },
+		}};
+		for (const auto& [level, expected] : efforts) {
+			AISettings settings = {};
+			settings.model = "grok-4.5";
+			settings.thinkingLevel = level;
+			nlohmann::json chatRequest;
+			ApplyThinkingConfigToOpenAIChatRequest(chatRequest, settings);
+			nlohmann::json responsesRequest;
+			ApplyThinkingConfigToOpenAIResponsesRequest(responsesRequest, settings);
+			effortMappingOk = effortMappingOk &&
+				chatRequest.value("reasoning_effort", std::string()) == expected &&
+				responsesRequest["reasoning"].value("effort", std::string()) == expected &&
+				!responsesRequest.contains("include");
+		}
+		const bool ok = contextOk && offUsesProviderDefault && effortMappingOk;
+		checks.push_back({
+			{"name", "grok_4_5_model_defaults"},
+			{"ok", ok},
+			{"context_window", 500000},
+			{"off_uses_provider_default_high", offUsesProviderDefault},
+			{"supported_efforts_clamped", effortMappingOk}
 		});
 		allOk = allOk && ok;
 	}
