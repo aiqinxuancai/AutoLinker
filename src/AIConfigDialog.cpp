@@ -941,7 +941,7 @@ constexpr const char* kRightPresetModels[] = { "gpt-5.5", "gpt-5.4", "gpt-5.4-mi
 constexpr const char* kDeepseekPresetModels[] = { "deepseek-v4-flash", "deepseek-v4-pro" };
 constexpr const char* kZhipuPresetModels[] = { "glm-5.2", "glm-5-turbo", "glm-4.7", "glm-4.5-air" };
 constexpr const char* kQwenPresetModels[] = { "qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash", "qwen3-coder-next", "qwen3-coder-plus" };
-constexpr const char* kKimiPresetModels[] = { "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5" };
+constexpr const char* kKimiPresetModels[] = { "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5" };
 constexpr const char* kDoubaoPresetModels[] = { "doubao-seed-2.0-pro", "doubao-seed-2.0-code", "doubao-seed-2.0-lite", "doubao-seed-1.8" };
 constexpr const char* kMiniMaxPresetModels[] = { "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5" };
 constexpr const char* kAihubmixPresetModels[] = { "gpt-5.5", "claude-opus-4-8", "claude-sonnet-4-6", "deepseek-v4-pro", "deepseek-v4-flash", "gemini-3.1-pro-preview" };
@@ -961,7 +961,7 @@ constexpr AIConfigPresetSite kAIConfigPresetSites[] = {
 	{ L"Deepseek",         "https://api.deepseek.com",                          AI_PRESET_MODELS(kDeepseekPresetModels),     AIProtocolType::OpenAI },
 	{ L"\u667A\u8C31",     "https://open.bigmodel.cn/api/paas/v4",              AI_PRESET_MODELS(kZhipuPresetModels),        AIProtocolType::OpenAI },
 	{ L"\u5343\u95EE",     "https://dashscope.aliyuncs.com/compatible-mode/v1", AI_PRESET_MODELS(kQwenPresetModels),         AIProtocolType::OpenAI },
-	{ L"Kimi",             "https://api.moonshot.cn/v1",                        AI_PRESET_MODELS(kKimiPresetModels),         AIProtocolType::OpenAI },
+	{ L"Kimi",             "https://api.moonshot.cn/v1",                        AI_PRESET_MODELS(kKimiPresetModels),         AIProtocolType::OpenAI, AIThinkingLevel::Max },
 	{ L"\u8C46\u5305",     "https://ark.cn-beijing.volces.com/api/v3",          AI_PRESET_MODELS(kDoubaoPresetModels),       AIProtocolType::OpenAI },
 	{ L"MiniMax",          "https://api.minimax.chat/v1",                       AI_PRESET_MODELS(kMiniMaxPresetModels),      AIProtocolType::OpenAI },
 	{ L"aihubmix",         "https://aihubmix.com/v1",                           AI_PRESET_MODELS(kAihubmixPresetModels),     AIProtocolType::OpenAI },

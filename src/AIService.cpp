@@ -942,12 +942,38 @@ bool IsGrok45Model(std::string_view model)
 		ContainsAsciiInsensitive(model, "grok-build-latest");
 }
 
-void ApplyOpenAITemperatureIfSupported(nlohmann::json& requestBody, const AISettings& settings)
+bool IsKimiK27CodeModel(std::string_view model)
 {
-	if (IsOpenAIGpt5Model(settings.model)) {
+	return ContainsAsciiInsensitive(model, "kimi-k2.7-code");
+}
+
+bool IsKimiK3Model(std::string_view model)
+{
+	return ContainsAsciiInsensitive(model, "kimi-k3");
+}
+
+bool ShouldOmitOpenAITemperature(const AISettings& settings)
+{
+	// Kimi K2.7 Code/K3 的采样参数由服务端固定；显式发送用户温度会被 API 拒绝。
+	return IsOpenAIGpt5Model(settings.model) ||
+		IsKimiK27CodeModel(settings.model) ||
+		IsKimiK3Model(settings.model);
+}
+
+void ApplyOpenAITemperatureIfSupported(
+	nlohmann::json& requestBody,
+	const AISettings& settings,
+	double temperature)
+{
+	if (ShouldOmitOpenAITemperature(settings)) {
 		return;
 	}
-	requestBody["temperature"] = settings.temperature;
+	requestBody["temperature"] = temperature;
+}
+
+void ApplyOpenAITemperatureIfSupported(nlohmann::json& requestBody, const AISettings& settings)
+{
+	ApplyOpenAITemperatureIfSupported(requestBody, settings, settings.temperature);
 }
 
 bool ShouldSkipOpenAIChatReasoningForToolUse(const AISettings& settings)
@@ -1100,6 +1126,19 @@ void EnsureDeepSeekAssistantMessageCompat(nlohmann::json& message)
 
 void ApplyThinkingConfigToOpenAIChatRequest(nlohmann::json& requestBody, const AISettings& settings)
 {
+	if (IsKimiK27CodeModel(settings.model)) {
+		// K2.7 Code 始终启用 Preserved Thinking，不能由通用“思考等级”关闭或降级。
+		requestBody["thinking"] = {
+			{"type", "enabled"},
+			{"keep", "all"}
+		};
+		return;
+	}
+	if (IsKimiK3Model(settings.model)) {
+		// K3 当前仅接受 max；它使用 reasoning_effort，而不是 K2.7 的 thinking 对象。
+		requestBody["reasoning_effort"] = "max";
+		return;
+	}
 	if (IsDeepSeekCompatibleSettings(settings)) {
 		if (settings.thinkingLevel == AIThinkingLevel::Off) {
 			requestBody["thinking"] = {
@@ -4772,6 +4811,7 @@ int AIService::ResolveContextWindowTokens(const AISettings& settings)
 		{ "qwen-plus",      1000000 },
 		{ "qwen-max",        262144 },
 		// Kimi / Moonshot
+		{ "kimi-k3",        1000000 },
 		{ "kimi-k2",         262144 },
 		{ "kimi",            262144 },
 		{ "moonshot-v1-128k", 131072 },
@@ -4993,9 +5033,7 @@ AIResult AIService::TestConnection(const AISettings& settings)
 
 	nlohmann::json requestBody;
 	requestBody["model"] = modelUtf8;
-	if (!IsOpenAIGpt5Model(settings.model)) {
-		requestBody["temperature"] = 0;
-	}
+	ApplyOpenAITemperatureIfSupported(requestBody, settings, 0.0);
 	requestBody["stream"] = false;
 	requestBody["messages"] = nlohmann::json::array({
 		{
@@ -5696,6 +5734,52 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"context_window", 500000},
 			{"off_uses_provider_default_high", offUsesProviderDefault},
 			{"supported_efforts_clamped", effortMappingOk}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		const std::array<const char*, 2> k27Models = {
+			"kimi-k2.7-code", "kimi-k2.7-code-highspeed"
+		};
+		bool k27Ok = true;
+		for (const char* model : k27Models) {
+			AISettings settings = {};
+			settings.model = model;
+			settings.thinkingLevel = AIThinkingLevel::Off;
+			nlohmann::json request;
+			ApplyOpenAITemperatureIfSupported(request, settings, 0.0);
+			ApplyThinkingConfigToOpenAIChatRequest(request, settings);
+			k27Ok = k27Ok &&
+				!request.contains("temperature") &&
+				request.contains("thinking") &&
+				request["thinking"].is_object() &&
+				request["thinking"].value("type", std::string()) == "enabled" &&
+				request["thinking"].value("keep", std::string()) == "all" &&
+				!request.contains("reasoning_effort") &&
+				ResolveContextWindowTokens(settings) == 262144;
+		}
+
+		AISettings k3Settings = {};
+		k3Settings.model = "kimi-k3";
+		k3Settings.thinkingLevel = AIThinkingLevel::Off;
+		k3Settings.temperature = 0.2;
+		nlohmann::json k3Request;
+		ApplyOpenAITemperatureIfSupported(k3Request, k3Settings);
+		ApplyThinkingConfigToOpenAIChatRequest(k3Request, k3Settings);
+		const bool k3Ok =
+			!k3Request.contains("temperature") &&
+			!k3Request.contains("thinking") &&
+			k3Request.value("reasoning_effort", std::string()) == "max" &&
+			ResolveContextWindowTokens(k3Settings) == 1000000;
+		const bool ok = k27Ok && k3Ok;
+		checks.push_back({
+			{"name", "kimi_forced_thinking_model_defaults"},
+			{"ok", ok},
+			{"k2_7_thinking_enabled_keep_all", k27Ok},
+			{"k3_reasoning_effort_max", k3Ok},
+			{"temperature_omitted", k27Ok && k3Ok},
+			{"k3_context_window", 1000000}
 		});
 		allOk = allOk && ok;
 	}
