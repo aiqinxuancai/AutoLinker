@@ -8,7 +8,7 @@ on:
 env:
   SOLUTION_FILE_PATH: .
   BUILD_CONFIGURATION: fne_release
-  BUILD_PLATFORM: x86
+  BUILD_PLATFORM: Win32
   LANG: zh_CN.UTF-8
   MIRROR_RELEASE_OWNER: aiqinxuancai
   MIRROR_RELEASE_REPO: AutoLinker
@@ -31,7 +31,9 @@ jobs:
         Set-WinSystemLocale zh-CN
 
     - name: Add MSBuild to PATH
-      uses: microsoft/setup-msbuild@v1.1
+      uses: microsoft/setup-msbuild@v2
+      with:
+        msbuild-architecture: x64
 
     - name: Resolve Release Meta
       id: release_meta
@@ -89,11 +91,9 @@ jobs:
         Get-Content "./src/AutoLinker.h" -Encoding utf8BOM | Out-String | Write-Output
 
     - name: Build
-      env:
-        CL: /MP4
       working-directory: ${{env.GITHUB_WORKSPACE}}
       run: |
-        msbuild ${{env.SOLUTION_FILE_PATH}}/AutoLinker.vcxproj -t:rebuild -verbosity:normal -property:Configuration=${{env.BUILD_CONFIGURATION}} -property:Platform=${{env.BUILD_PLATFORM}}
+        msbuild ${{env.SOLUTION_FILE_PATH}}/AutoLinker.vcxproj -t:Build -maxCpuCount:1 -verbosity:normal -property:Configuration=${{env.BUILD_CONFIGURATION}} -property:Platform=${{env.BUILD_PLATFORM}}
 
     - name: Compress-Archive
       run: |
