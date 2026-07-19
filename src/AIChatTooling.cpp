@@ -4,6 +4,7 @@
 #include "AIService.h"
 #include "ConfigManager.h"
 #include "Global.h"
+#include "IdeCompileDialogGuard.h"
 #include "Logger.h"
 #include "PowerShellToolRunner.h"
 #include "TavilyClient.h"
@@ -553,9 +554,22 @@ bool RequestToolExecutionFromMainThread(
 
 	{
 		std::unique_lock<std::mutex> lock(request->mutex);
-		if (!request->cv.wait_for(lock, std::chrono::minutes(20), [&request]() {
-			return request->done;
-		})) {
+		const auto dispatchDeadline = std::chrono::steady_clock::now() + std::chrono::minutes(20);
+		bool dependencyDialogDismissed = false;
+		while (!request->done && std::chrono::steady_clock::now() < dispatchDeadline) {
+			if (request->cv.wait_for(lock, std::chrono::milliseconds(50), [&request]() {
+				return request->done;
+			})) {
+				break;
+			}
+			if (toolName == "compile_with_output_path" && !dependencyDialogDismissed) {
+				lock.unlock();
+				dependencyDialogDismissed =
+					IdeCompileDialogGuard::TryDismissDependencyWriteDialog();
+				lock.lock();
+			}
+		}
+		if (!request->done) {
 			request->cancelled = true;
 			lock.unlock();
 			CancelToolExecutionRequestForTooling(requestId);

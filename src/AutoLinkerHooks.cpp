@@ -20,6 +20,8 @@
 #include "Global.h"
 #include "HeadlessCompileRunner.h"
 #include "IDEFacade.h"
+#include "IdeCompileDialogGuard.h"
+#include "IdeCompileOutputCapture.h"
 #include "Logger.h"
 #include "MemFind.h"
 #include "PathHelper.h"
@@ -163,6 +165,7 @@ bool TryHandleSilentCompileOutputPathRequest(LPOPENFILENAMEA item, std::string* 
 	const auto now = std::chrono::steady_clock::now();
 	if (now - g_silentCompileOutputPathState.createdAt > kSilentCompileOutputPathTimeout) {
 		g_silentCompileOutputPathState = {};
+		IdeCompileDialogGuard::EndCompileSession();
 		if (diagnostics != nullptr) {
 			*diagnostics = "request_expired";
 		}
@@ -184,6 +187,7 @@ bool TryHandleSilentCompileOutputPathRequest(LPOPENFILENAMEA item, std::string* 
 	std::string fillDiagnostics;
 	if (!FillOpenFileNamePathA(item, g_silentCompileOutputPathState.outputPath, &fillDiagnostics)) {
 		g_silentCompileOutputPathState = {};
+		IdeCompileDialogGuard::EndCompileSession();
 		if (diagnostics != nullptr) {
 			*diagnostics = "fill_failed:" + fillDiagnostics;
 		}
@@ -208,6 +212,7 @@ bool IsSilentCompileOutputPathMessageBoxGuardActive()
 	const auto now = std::chrono::steady_clock::now();
 	if (now - g_silentCompileOutputPathState.createdAt > kSilentCompileMessageBoxGuardTimeout) {
 		g_silentCompileOutputPathState = {};
+		IdeCompileDialogGuard::EndCompileSession();
 		return false;
 	}
 
@@ -263,6 +268,7 @@ bool BeginSilentCompileOutputPathRequest(
 		ownerThreadId != 0 ? ownerThreadId : GetCurrentThreadId();
 	g_silentCompileOutputPathState.outputPath = normalized;
 	g_silentCompileOutputPathState.createdAt = std::chrono::steady_clock::now();
+	IdeCompileDialogGuard::BeginCompileSession();
 	if (diagnostics != nullptr) {
 		*diagnostics = normalized;
 	}
@@ -273,6 +279,7 @@ void CancelSilentCompileOutputPathRequest()
 {
 	std::lock_guard<std::mutex> lock(g_silentCompileOutputPathMutex);
 	g_silentCompileOutputPathState = {};
+	IdeCompileDialogGuard::EndCompileSession();
 }
 
 bool WasSilentCompileOutputPathRequestConsumed()
@@ -288,7 +295,12 @@ bool IsSilentCompileOutputPathRequestActive()
 		return false;
 	}
 	const auto now = std::chrono::steady_clock::now();
-	return now - g_silentCompileOutputPathState.createdAt <= kSilentCompileOutputPathTimeout;
+	if (now - g_silentCompileOutputPathState.createdAt > kSilentCompileOutputPathTimeout) {
+		g_silentCompileOutputPathState = {};
+		IdeCompileDialogGuard::EndCompileSession();
+		return false;
+	}
+	return true;
 }
 
 static auto originalCreateFileA = CreateFileA;
@@ -679,7 +691,11 @@ void StartHookCreateFileA()
 	}
 #endif
 
+	// 编译输出 Hook 是可选能力：解析或附加失败不会中止事务，工具层会回退控件取文本。
+	IdeCompileOutputCapture::AttachToCurrentDetourTransaction();
+
 	const LONG error = DetourTransactionCommit();
+	IdeCompileOutputCapture::CompleteHookInstallation(error == NO_ERROR);
 	if (error == NO_ERROR) {
 		g_fullHookInstalled = true;
 		if (attachMessageBoxHooks) {

@@ -502,6 +502,12 @@
     <ClCompile Include="src\EideProjectBinarySerializer.cpp" />
     <ClCompile Include="src\HeadlessCompileRunner.cpp" />
     <ClCompile Include="src\IDEFacade.cpp" />
+    <ClCompile Include="src\IdeCompileDialogGuard.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="src\IdeCompileOutputCapture.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="src\main.cpp" />
     <ClCompile Include="src\MemFind.cpp" />
     <ClCompile Include="src\ModelManager.cpp" />
@@ -601,6 +607,8 @@
     <ClInclude Include="src\Global.h" />
     <ClInclude Include="src\HeadlessCompileRunner.h" />
     <ClInclude Include="src\IDEFacade.h" />
+    <ClInclude Include="src\IdeCompileDialogGuard.h" />
+    <ClInclude Include="src\IdeCompileOutputCapture.h" />
     <ClInclude Include="src\InlineHook.h" />
     <ClInclude Include="src\LinkerManager.h" />
     <ClInclude Include="src\LocalMcpInstanceRegistry.h" />

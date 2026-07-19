@@ -23,6 +23,8 @@
 #include "EideEditorObjectResolver.h"
 #include "EideInternalTextBridge.h"
 #include "Global.h"
+#include "IdeCompileDialogGuard.h"
+#include "IdeCompileOutputCapture.h"
 #include "LocalMcpServer.h"
 #include "Logger.h"
 #include "PageCodeCacheManager.h"
@@ -89,6 +91,76 @@ bool ContainsCompileFailureMarker(const std::string& output)
 		output.find("语法错误") != std::string::npos ||
 		output.find("编译错误") != std::string::npos;
 }
+
+struct CompileOutputSelection {
+	std::string text;
+	std::string source;
+	bool hookAvailable = false;
+	bool truncated = false;
+};
+
+class CompileOutputCaptureSession final {
+public:
+	CompileOutputCaptureSession()
+		: m_sessionId(IdeCompileOutputCapture::BeginCapture())
+	{
+	}
+
+	~CompileOutputCaptureSession()
+	{
+		if (m_sessionId != 0) {
+			IdeCompileOutputCapture::CancelCapture(m_sessionId);
+		}
+	}
+
+	CompileOutputCaptureSession(const CompileOutputCaptureSession&) = delete;
+	CompileOutputCaptureSession& operator=(const CompileOutputCaptureSession&) = delete;
+
+	std::string ReadCurrentPreferred(const std::string& preOutputText) const
+	{
+		if (m_sessionId != 0) {
+			const auto snapshot = IdeCompileOutputCapture::SnapshotCapture(m_sessionId);
+			if (!snapshot.text.empty()) {
+				return snapshot.text;
+			}
+		}
+
+		std::string currentOutputText;
+		if (!IDEFacade::Instance().GetOutputWindowText(currentOutputText)) {
+			return {};
+		}
+		return ExtractCompileOutputDelta(preOutputText, currentOutputText);
+	}
+
+	CompileOutputSelection Finish(const std::string& preOutputText)
+	{
+		CompileOutputSelection result;
+		result.hookAvailable = m_sessionId != 0;
+		IdeCompileOutputCapture::CaptureSnapshot hookSnapshot;
+		if (m_sessionId != 0) {
+			hookSnapshot = IdeCompileOutputCapture::EndCapture(m_sessionId);
+			m_sessionId = 0;
+		}
+		result.truncated = hookSnapshot.truncated;
+
+		if (!hookSnapshot.text.empty()) {
+			result.text = std::move(hookSnapshot.text);
+			result.source = "ide_internal_hook";
+			return result;
+		}
+
+		std::string postOutputText;
+		IDEFacade::Instance().GetOutputWindowText(postOutputText);
+		result.text = ExtractCompileOutputDelta(preOutputText, postOutputText);
+		result.source = result.hookAvailable
+			? "output_window_control_fallback"
+			: "output_window_control";
+		return result;
+	}
+
+private:
+	IdeCompileOutputCapture::SessionId m_sessionId = 0;
+};
 
 static long long ElapsedToolMs(const ToolPerfClock::time_point& start)
 {
@@ -5296,6 +5368,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		// 编译前：快照输出窗口文本和产物高精度指纹。
 		std::string preOutputText;
 		IDEFacade::Instance().GetOutputWindowText(preOutputText);
+		CompileOutputCaptureSession outputCaptureSession;
 
 		std::string diagnostics;
 		const bool compileOk = IDEFacade::Instance().CompileWithOutputPath(
@@ -5325,11 +5398,19 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 
 		if (!compileOk) {
 			captureCompileLocation();
+			const CompileOutputSelection outputCapture = outputCaptureSession.Finish(preOutputText);
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = diagnostics.empty() ? "compile_with_output_path_failed" : diagnostics;
 			r["target"] = target;
 			r["static_compile"] = staticCompile;
+			r["output_path"] = LocalToUtf8Text(normalizedPath);
+			r["output_window_text"] = LocalToUtf8Text(outputCapture.text);
+			r["output_capture_source"] = outputCapture.source;
+			r["output_capture_available"] = outputCapture.hookAvailable;
+			r["output_capture_truncated"] = outputCapture.truncated;
+			r["dependency_write_dialog_suppressed"] =
+				IdeCompileDialogGuard::WasDependencyWriteDialogDismissed();
 			r["caret_row"] = caretRow;
 			r["caret_line_text"] = LocalToUtf8Text(caretLineText);
 			r["caret_page_name"] = LocalToUtf8Text(caretPageName);
@@ -5346,7 +5427,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			compileWaitOutcome = "timeout";
 			bool outputFileReadySeen = false;
 			std::chrono::steady_clock::time_point outputFileReadySince = {};
-			std::string observedOutputText = preOutputText;
+			std::string observedCompileOutput;
 			std::chrono::steady_clock::time_point outputStableSince = waitStartedAt;
 			while (std::chrono::steady_clock::now() < waitDeadline) {
 				MSG msg = {};
@@ -5393,19 +5474,17 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 					outputFileReadySeen = false;
 				}
 
-				std::string currentOutputText;
-				if (IDEFacade::Instance().GetOutputWindowText(currentOutputText)) {
-					const auto now = std::chrono::steady_clock::now();
-					if (currentOutputText != observedOutputText) {
-						observedOutputText = std::move(currentOutputText);
-						outputStableSince = now;
-					}
-					const std::string outputDelta = ExtractCompileOutputDelta(preOutputText, observedOutputText);
-					if (ContainsCompileFailureMarker(outputDelta) &&
-						now - outputStableSince >= std::chrono::milliseconds(250)) {
-						compileWaitOutcome = "compile_error_output";
-						break;
-					}
+				const std::string currentCompileOutput =
+					outputCaptureSession.ReadCurrentPreferred(preOutputText);
+				const auto now = std::chrono::steady_clock::now();
+				if (currentCompileOutput != observedCompileOutput) {
+					observedCompileOutput = currentCompileOutput;
+					outputStableSince = now;
+				}
+				if (ContainsCompileFailureMarker(observedCompileOutput) &&
+					now - outputStableSince >= std::chrono::milliseconds(250)) {
+					compileWaitOutcome = "compile_error_output";
+					break;
 				}
 				MsgWaitForMultipleObjectsEx(
 					0,
@@ -5423,10 +5502,8 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		// 编译失败时 IDE 通常会跳转到出错行，必须在等待结束后再采集。
 		captureCompileLocation();
 
-		// 编译后：读取输出窗口，提取本次编译产生的新内容。
-		std::string postOutputText;
-		IDEFacade::Instance().GetOutputWindowText(postOutputText);
-		const std::string newOutput = ExtractCompileOutputDelta(preOutputText, postOutputText);
+		// 优先返回 IDE 内部 Hook 捕获的原始编译输出；Hook 不可用或无内容时回退控件差分。
+		const CompileOutputSelection outputCapture = outputCaptureSession.Finish(preOutputText);
 
 		// 检查产物文件是否在编译启动后被创建/更新，用于确认编译是否成功。
 		const CompileArtifactFingerprint artifactAfter = CaptureCompileArtifactFingerprint(normalizedPath);
@@ -5440,7 +5517,12 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["target"] = target;
 		r["static_compile"] = staticCompile;
 		r["output_path"] = LocalToUtf8Text(normalizedPath);
-		r["output_window_text"] = LocalToUtf8Text(newOutput);
+		r["output_window_text"] = LocalToUtf8Text(outputCapture.text);
+		r["output_capture_source"] = outputCapture.source;
+		r["output_capture_available"] = outputCapture.hookAvailable;
+		r["output_capture_truncated"] = outputCapture.truncated;
+		r["dependency_write_dialog_suppressed"] =
+			IdeCompileDialogGuard::WasDependencyWriteDialogDismissed();
 		r["output_file_exists"] = outputFileExists;
 		r["output_file_modified_after_compile"] = outputFileModifiedAfterCompile;
 		r["output_file_existed_before_compile"] = artifactBefore.exists;
@@ -5506,17 +5588,46 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 		ExtractCompileOutputDelta(oldOutput, "语法错误：表达式不完整\r\n"));
 	const bool unchangedHistoricalErrorRejected = !ContainsCompileFailureMarker(
 		ExtractCompileOutputDelta(oldOutput, oldOutput));
+	nlohmann::json outputCaptureCheck = nlohmann::json::parse(
+		IdeCompileOutputCapture::BuildSelfTestJson(),
+		nullptr,
+		false);
+	const bool outputCaptureCheckPassed = outputCaptureCheck.is_object() &&
+		outputCaptureCheck.value("ok", false);
+	if (!outputCaptureCheck.is_object()) {
+		outputCaptureCheck = {
+			{"name", "ide-compile-output-capture"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
+	nlohmann::json dialogGuardCheck = nlohmann::json::parse(
+		IdeCompileDialogGuard::BuildSelfTestJson(),
+		nullptr,
+		false);
+	const bool dialogGuardCheckPassed = dialogGuardCheck.is_object() &&
+		dialogGuardCheck.value("ok", false);
+	if (!dialogGuardCheck.is_object()) {
+		dialogGuardCheck = {
+			{"name", "ide-compile-dialog-guard"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
 	std::filesystem::remove(path, error);
 	return nlohmann::json({
 		{"name", "compile-artifact-fingerprint"},
 		{"ok", creationDetected && unchangedRejected && updateDetected &&
-			appendedErrorDetected && rewrittenErrorDetected && unchangedHistoricalErrorRejected},
+			appendedErrorDetected && rewrittenErrorDetected && unchangedHistoricalErrorRejected &&
+			outputCaptureCheckPassed && dialogGuardCheckPassed},
 		{"creation_detected", creationDetected},
 		{"unchanged_rejected", unchangedRejected},
 		{"update_detected", updateDetected},
 		{"appended_error_detected", appendedErrorDetected},
 		{"rewritten_error_detected", rewrittenErrorDetected},
-		{"unchanged_historical_error_rejected", unchangedHistoricalErrorRejected}
+		{"unchanged_historical_error_rejected", unchangedHistoricalErrorRejected},
+		{"internal_output_capture", std::move(outputCaptureCheck)},
+		{"compile_dialog_guard", std::move(dialogGuardCheck)}
 	}).dump();
 }
 

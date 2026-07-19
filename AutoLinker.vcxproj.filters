@@ -104,6 +104,12 @@
     <ClCompile Include="src\IDEFacade.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\IdeCompileDialogGuard.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\IdeCompileOutputCapture.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\MemFind.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -349,6 +355,12 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\IDEFacade.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\IdeCompileDialogGuard.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\IdeCompileOutputCapture.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\InlineHook.h">
