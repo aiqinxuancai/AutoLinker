@@ -25,6 +25,8 @@
 #include "Global.h"
 #include "IdeCompileDialogGuard.h"
 #include "IdeCompileOutputCapture.h"
+#include "IdeLogStore.h"
+#include "IdeLogViewer.h"
 #include "LocalMcpServer.h"
 #include "Logger.h"
 #include "PageCodeCacheManager.h"
@@ -5614,12 +5616,39 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 			{"error", "invalid self-test json"}
 		};
 	}
+	nlohmann::json logStoreCheck = nlohmann::json::parse(
+		IdeLogStore::BuildSelfTestJson(),
+		nullptr,
+		false);
+	const bool logStoreCheckPassed = logStoreCheck.is_object() &&
+		logStoreCheck.value("ok", false);
+	if (!logStoreCheck.is_object()) {
+		logStoreCheck = {
+			{"name", "ide-log-store"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
+	nlohmann::json logViewerCheck = nlohmann::json::parse(
+		IdeLogViewer::BuildSelfTestJson(),
+		nullptr,
+		false);
+	const bool logViewerCheckPassed = logViewerCheck.is_object() &&
+		logViewerCheck.value("ok", false);
+	if (!logViewerCheck.is_object()) {
+		logViewerCheck = {
+			{"name", "ide-log-viewer-resource"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
 	std::filesystem::remove(path, error);
 	return nlohmann::json({
 		{"name", "compile-artifact-fingerprint"},
 		{"ok", creationDetected && unchangedRejected && updateDetected &&
 			appendedErrorDetected && rewrittenErrorDetected && unchangedHistoricalErrorRejected &&
-			outputCaptureCheckPassed && dialogGuardCheckPassed},
+			outputCaptureCheckPassed && dialogGuardCheckPassed &&
+			logStoreCheckPassed && logViewerCheckPassed},
 		{"creation_detected", creationDetected},
 		{"unchanged_rejected", unchangedRejected},
 		{"update_detected", updateDetected},
@@ -5627,7 +5656,9 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 		{"rewritten_error_detected", rewrittenErrorDetected},
 		{"unchanged_historical_error_rejected", unchangedHistoricalErrorRejected},
 		{"internal_output_capture", std::move(outputCaptureCheck)},
-		{"compile_dialog_guard", std::move(dialogGuardCheck)}
+		{"compile_dialog_guard", std::move(dialogGuardCheck)},
+		{"ide_log_store", std::move(logStoreCheck)},
+		{"ide_log_viewer", std::move(logViewerCheck)}
 	}).dump();
 }
 

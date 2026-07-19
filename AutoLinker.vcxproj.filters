@@ -110,6 +110,15 @@
     <ClCompile Include="src\IdeCompileOutputCapture.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\IdeLogStore.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\IdeLogViewer.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\IdeOutputTabController.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\MemFind.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -363,6 +372,15 @@
     <ClInclude Include="src\IdeCompileOutputCapture.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="src\IdeLogStore.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\IdeLogViewer.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\IdeOutputTabController.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
     <ClInclude Include="src\InlineHook.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -480,6 +498,9 @@
       <Filter>AI</Filter>
     </None>
     <None Include="src\webview\ai_preview_dialog.html">
+      <Filter>AI</Filter>
+    </None>
+    <None Include="src\webview\ide_log_viewer.html">
       <Filter>AI</Filter>
     </None>
     <None Include="src\webview\linker_config_dialog.html">

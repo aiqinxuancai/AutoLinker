@@ -18,6 +18,7 @@
 #include <detours.h>
 
 #include "..\\thirdparty\\json.hpp"
+#include "IdeLogStore.h"
 #include "Logger.h"
 #include "MemFind.h"
 
@@ -354,6 +355,8 @@ void __fastcall HookOutputFunction(
 {
 	const size_t length = SafeBoundedStringLength(text, kMaxTextProbeBytes);
 	if (length > 0) {
+		// UI 环形缓冲仅在日志中心打开期间接收；编译会话缓冲始终继续记录。
+		IdeLogStore::AppendLocal(text, length, IdeLogStore::EntrySource::IdeHook);
 		// Hook 边界绝不能把分配异常传播到 IDE；捕获失败时仍必须调用原函数。
 		try {
 			g_captureStore.Append(text, length);

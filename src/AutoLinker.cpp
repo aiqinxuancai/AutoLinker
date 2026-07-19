@@ -24,6 +24,7 @@
 #include "Global.h"
 #include "HeadlessCompileRunner.h"
 #include "IDEFacade.h"
+#include "IdeLogViewer.h"
 #include "LocalMcpServer.h"
 #include "Logger.h"
 #include "MemFind.h"
@@ -271,6 +272,7 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 	}
 	if (uMsg == WM_NCDESTROY) {
 		GameAnalyticsClient::Shutdown();
+		IdeLogViewer::Shutdown();
 		AIChatFeature::Shutdown();
 		LocalMcpServer::Shutdown();
 		WorkspaceMirror::ResetAndCleanup();
@@ -284,6 +286,16 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 
 	if (uMsg == WM_COMMAND) {
 		UINT cmd = LOWORD(wParam);
+		if (cmd == IDM_AUTOLINKER_LOG_CENTER) {
+			if (IdeLogViewer::IsOpen()) {
+				IdeLogViewer::Close();
+			}
+			else {
+				IdeLogViewer::Initialize(hWnd);
+			}
+			DrawMenuBar(hWnd);
+			return 0;
+		}
 		if (HandleTopLinkerMenuCommand(cmd)) {
 			return 0;
 		}

@@ -6,6 +6,7 @@
 #include "EPackagerIntegration.h"
 #include "Global.h"
 #include "IDEFacade.h"
+#include "IdeLogViewer.h"
 
 namespace {
 bool g_isContextMenuRegistered = false;
@@ -174,6 +175,87 @@ bool IsCompileOrToolsTopPopup(HMENU hPopupMenu)
 
 	// 只接受主菜单的直接子菜单，避免把右键菜单误判成顶部菜单。
 	return false;
+}
+
+bool IsViewTopPopup(HMENU hPopupMenu)
+{
+	if (g_hwnd == nullptr || hPopupMenu == nullptr) {
+		return false;
+	}
+	auto popupKeywordMatch = [hPopupMenu]() {
+		static constexpr const wchar_t* kViewKeywords[] = {
+			L"工具条", L"工具栏", L"状态条", L"状态栏", L"工作夹", L"输出夹",
+			L"窗口组件箱", L"自定义数据类型表", L"全局变量表", L"Dll命令定义表",
+			L"DLL命令定义表", L"常量数据表", L"资源表", L"书签", L"预览被设计窗口",
+			L"Toolbar", L"Status Bar", L"Workspace", L"Output", L"Global Variable",
+			L"DLL Command", L"Constant", L"Resource", L"Bookmark", L"Preview"
+		};
+		int keywordHits = 0;
+		const int itemCount = GetMenuItemCount(hPopupMenu);
+		for (int item = 0; item < itemCount; ++item) {
+			const std::wstring itemTitle = GetMenuTitleW(
+				hPopupMenu,
+				static_cast<UINT>(item),
+				MF_BYPOSITION);
+			for (const wchar_t* keyword : kViewKeywords) {
+				if (itemTitle.find(keyword) != std::wstring::npos) {
+					++keywordHits;
+					break;
+				}
+			}
+		}
+		return keywordHits >= 2;
+	};
+
+	HMENU mainMenu = GetMenu(g_hwnd);
+	if (mainMenu == nullptr) {
+		return popupKeywordMatch();
+	}
+
+	const int count = GetMenuItemCount(mainMenu);
+	for (int index = 0; index < count; ++index) {
+		if (GetSubMenu(mainMenu, index) != hPopupMenu) {
+			continue;
+		}
+		const std::wstring title = GetMenuTitleW(mainMenu, static_cast<UINT>(index), MF_BYPOSITION);
+		return title.find(L"查看") != std::wstring::npos || title.find(L"View") != std::wstring::npos;
+	}
+	return popupKeywordMatch();
+}
+
+void EnsureLogViewerMenuItem(HMENU viewMenu)
+{
+	if (viewMenu == nullptr) {
+		return;
+	}
+	const UINT checkedFlag = IdeLogViewer::IsOpen() ? MF_CHECKED : MF_UNCHECKED;
+	if (GetMenuState(viewMenu, IDM_AUTOLINKER_LOG_CENTER, MF_BYCOMMAND) != 0xFFFFFFFF) {
+		// MFC 会在下一次弹出菜单时把没有原生 ON_COMMAND 映射的动态命令置灰；
+		// 此处运行在宿主更新命令状态之后，必须同时恢复启用态和复选态。
+		EnableMenuItem(
+			viewMenu,
+			IDM_AUTOLINKER_LOG_CENTER,
+			MF_BYCOMMAND | MF_ENABLED);
+		CheckMenuItem(viewMenu, IDM_AUTOLINKER_LOG_CENTER, MF_BYCOMMAND | checkedFlag);
+		return;
+	}
+
+	const int count = GetMenuItemCount(viewMenu);
+	if (count > 0) {
+		const UINT lastState = GetMenuState(viewMenu, static_cast<UINT>(count - 1), MF_BYPOSITION);
+		if (lastState != 0xFFFFFFFF && (lastState & MF_SEPARATOR) != MF_SEPARATOR) {
+			AppendMenuW(viewMenu, MF_SEPARATOR, 0, nullptr);
+		}
+	}
+	AppendMenuW(
+		viewMenu,
+		MF_STRING | MF_ENABLED | checkedFlag,
+		IDM_AUTOLINKER_LOG_CENTER,
+		L"AutoLinker日志中心");
+	EnableMenuItem(
+		viewMenu,
+		IDM_AUTOLINKER_LOG_CENTER,
+		MF_BYCOMMAND | MF_ENABLED);
 }
 
 void ClearMenuItemsByPosition(HMENU hMenu)
@@ -385,6 +467,10 @@ void HandleInitMenuPopup(HMENU hMenu)
 		RebuildTopLinkerSubMenu();
 		return;
 	}
+	if (IsViewTopPopup(hMenu)) {
+		EnsureLogViewerMenuItem(hMenu);
+		return;
+	}
 
 	if (IsCompileOrToolsTopPopup(hMenu)) {
 		UpdateCurrentOpenSourceFile();
@@ -442,7 +528,7 @@ void PrepareAutoLinkerPopupMenu(HMENU hMenu)
 		return;
 	}
 
-	if (hMenu == g_topLinkerSubMenu || IsCompileOrToolsTopPopup(hMenu)) {
+	if (hMenu == g_topLinkerSubMenu || IsCompileOrToolsTopPopup(hMenu) || IsViewTopPopup(hMenu)) {
 		HandleInitMenuPopup(hMenu);
 		return;
 	}
@@ -482,7 +568,7 @@ void FinalizeAutoLinkerPopupMenu(HMENU hMenu)
 		return;
 	}
 
-	if (hMenu == g_topLinkerSubMenu || IsCompileOrToolsTopPopup(hMenu)) {
+	if (hMenu == g_topLinkerSubMenu || IsCompileOrToolsTopPopup(hMenu) || IsViewTopPopup(hMenu)) {
 		HandleInitMenuPopup(hMenu);
 		return;
 	}

@@ -1,0 +1,589 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AutoLinker 日志中心</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f8fb;
+      --panel: rgba(255, 255, 255, .9);
+      --panel-solid: #fff;
+      --border: #dfe3eb;
+      --text: #20242c;
+      --muted: #707784;
+      --accent: #356df3;
+      --accent-soft: #e9efff;
+      --selected: #dfe9ff;
+      --hover: #eef2f8;
+      --mark: #ffd75e;
+      --danger: #d04444;
+      --shadow: 0 8px 28px rgba(24, 35, 58, .08);
+      --row-height: 23px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #11151b;
+        --panel: rgba(24, 29, 37, .92);
+        --panel-solid: #181d25;
+        --border: #2c3440;
+        --text: #e7eaf0;
+        --muted: #99a2b1;
+        --accent: #6d9bff;
+        --accent-soft: #23345d;
+        --selected: #263b68;
+        --hover: #202732;
+        --mark: #8f6d13;
+        --danger: #ff7c7c;
+        --shadow: 0 8px 30px rgba(0, 0, 0, .26);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 13px/1.45 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+    }
+    button, input { font: inherit; color: inherit; }
+    .app { display: grid; grid-template-columns: 50px minmax(0, 1fr); height: 100%; }
+	.action-rail {
+	  display: flex; flex-direction: column; align-items: center; width: 50px; min-width: 50px;
+	  background: var(--panel); border-right: 1px solid var(--border); box-shadow: var(--shadow);
+	  backdrop-filter: blur(14px); z-index: 5;
+	}
+	.action-stack { display: flex; flex-direction: column; align-items: center; gap: 7px; padding-top: 9px; }
+	.rail-button {
+	  position: relative; display: grid; place-items: center; width: 36px; height: 36px; padding: 0;
+	  color: var(--muted); background: transparent; border: 1px solid transparent; border-radius: 9px;
+	  cursor: pointer; transition: color .14s, background .14s, border-color .14s, transform .08s;
+	}
+	.rail-button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+	.rail-button:hover { color: var(--text); background: var(--hover); border-color: var(--border); }
+	.rail-button:active { transform: translateY(1px); }
+	.rail-button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
+	.rail-button.danger:hover { color: var(--danger); }
+	.rail-button.has-filter::after {
+	  content: ''; position: absolute; right: 4px; top: 4px; width: 6px; height: 6px;
+	  border-radius: 50%; background: var(--accent);
+	}
+	.rail-count {
+	  margin-top: auto; width: 100%; padding: 8px 2px 9px; color: var(--muted);
+	  border-top: 1px solid var(--border); text-align: center; line-height: 1.05;
+	}
+	#log-count { display: block; max-width: 46px; overflow: hidden; font-size: 12px; font-weight: 650; text-overflow: ellipsis; }
+	.rail-count small { display: block; margin-top: 3px; font-size: 9px; }
+	.workspace { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; }
+	.search-panel {
+	  grid-row: 1; display: none; align-items: center; gap: 7px; min-height: 50px; padding: 8px 10px;
+	  background: var(--panel); border-bottom: 1px solid var(--border); box-shadow: var(--shadow); z-index: 4;
+	}
+	.search-panel.open { display: flex; animation: reveal-search .15s ease-out; }
+	@keyframes reveal-search { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
+    .search-wrap { position: relative; flex: 1 1 340px; min-width: 120px; max-width: 760px; }
+    #search-input {
+      width: 100%; height: 32px; padding: 0 70px 0 32px;
+      background: var(--panel-solid); border: 1px solid var(--border); border-radius: 8px;
+      outline: none; transition: border-color .15s, box-shadow .15s;
+    }
+    #search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+    .search-icon { position: absolute; left: 10px; top: 7px; color: var(--muted); pointer-events: none; }
+    .search-count { position: absolute; right: 9px; top: 7px; color: var(--muted); font-size: 12px; }
+	.search-notice {
+	  max-width: 180px; overflow: hidden; color: var(--muted); font-size: 11px;
+	  text-overflow: ellipsis; white-space: nowrap;
+	}
+	#regex-error { color: var(--danger); }
+    .tool-button {
+      height: 32px; min-width: 32px; padding: 0 10px; border: 1px solid var(--border);
+      border-radius: 7px; background: var(--panel-solid); cursor: pointer;
+      transition: background .12s, border-color .12s, transform .08s;
+    }
+    .tool-button:hover { background: var(--hover); border-color: color-mix(in srgb, var(--accent) 44%, var(--border)); }
+    .tool-button:active { transform: translateY(1px); }
+    .tool-button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+    .tool-button.danger:hover { color: var(--danger); border-color: var(--danger); }
+    .main { grid-row: 2; position: relative; min-height: 0; display: grid; grid-template-rows: 27px minmax(0, 1fr); }
+    .header-row {
+      display: grid; grid-template-columns: 92px 64px minmax(0, 1fr);
+      align-items: center; padding: 0 11px; color: var(--muted);
+      background: var(--panel-solid); border-bottom: 1px solid var(--border);
+      font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+    }
+    .viewport { position: relative; overflow: auto; min-height: 0; contain: strict; background: var(--panel-solid); }
+    #virtual-spacer { position: relative; width: 100%; min-width: 480px; }
+    #rows-layer { position: absolute; inset: 0 0 auto 0; will-change: transform; }
+    .log-row {
+      display: grid; grid-template-columns: 92px 64px minmax(0, 1fr);
+      align-items: center; height: var(--row-height); padding: 0 11px;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+      font-family: "Cascadia Mono", "SFMono-Regular", Consolas, "Microsoft YaHei UI", monospace;
+      font-size: 12px; cursor: default; user-select: text;
+    }
+    .log-row:hover { background: var(--hover); }
+    .log-row.selected { background: var(--selected); }
+    .time, .thread { color: var(--muted); white-space: nowrap; overflow: hidden; }
+    .message { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .source-snapshot, .source-fallback { color: var(--accent); margin-right: 6px; }
+	.source-fallback { color: #d17b20; }
+    mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1px; }
+    .empty {
+      position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted);
+      pointer-events: none; text-align: center;
+    }
+    .toast {
+      position: fixed; right: 14px; bottom: 14px; max-width: 420px; padding: 9px 12px;
+      color: #fff; background: rgba(27, 34, 45, .94); border-radius: 8px;
+      box-shadow: var(--shadow); opacity: 0; transform: translateY(6px); pointer-events: none;
+      transition: opacity .18s, transform .18s; z-index: 10;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    @media (max-width: 720px) {
+	  .app { grid-template-columns: 46px minmax(0, 1fr); }
+	  .action-rail { width: 46px; min-width: 46px; }
+	  .search-panel { gap: 5px; padding-inline: 7px; }
+	  .search-notice { display: none; }
+      .tool-button { padding: 0 7px; }
+      .header-row, .log-row { grid-template-columns: 72px 48px minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="action-rail" aria-label="日志操作">
+      <div class="action-stack">
+        <button id="search-button" class="rail-button" type="button" aria-pressed="false" title="搜索日志 (Ctrl+F)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="m16 16 4 4"></path></svg>
+        </button>
+        <button id="export-button" class="rail-button" type="button" title="导出全部缓冲日志">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12"></path><path d="m7.5 10.5 4.5 4.5 4.5-4.5"></path><path d="M5 15.5V20h14v-4.5"></path></svg>
+        </button>
+        <button id="clear-button" class="rail-button danger" type="button" title="清空缓冲日志">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"></path><path d="M9 3h6l1 4H8l1-4Z"></path><path d="m6.5 7 .8 13h9.4l.8-13"></path><path d="M10 11v5M14 11v5"></path></svg>
+        </button>
+      </div>
+      <div class="rail-count" title="日志数量">
+        <strong id="log-count">0</strong>
+        <small>条</small>
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <header id="search-panel" class="search-panel">
+        <div class="search-wrap">
+          <span class="search-icon">⌕</span>
+          <input id="search-input" type="text" spellcheck="false" autocomplete="off" placeholder="搜索日志，支持普通文本与正则表达式…">
+          <span id="search-count" class="search-count">0 / 0</span>
+        </div>
+        <span id="dropped-status" class="search-notice"></span>
+        <span id="regex-error" class="search-notice"></span>
+        <button id="regex-toggle" class="tool-button" type="button" aria-pressed="false" title="正则表达式">.*</button>
+        <button id="case-toggle" class="tool-button" type="button" aria-pressed="false" title="区分大小写">Aa</button>
+        <button id="previous-match" class="tool-button" type="button" title="上一个匹配">↑</button>
+        <button id="next-match" class="tool-button" type="button" title="下一个匹配">↓</button>
+        <button id="search-close" class="tool-button" type="button" title="关闭搜索">×</button>
+      </header>
+
+      <main class="main">
+        <div class="header-row"><span>时间</span><span>线程</span><span>消息</span></div>
+        <div id="viewport" class="viewport">
+          <div id="virtual-spacer"><div id="rows-layer"></div></div>
+          <div id="empty-state" class="empty">等待 IDE 日志…</div>
+        </div>
+      </main>
+    </section>
+  </div>
+  <div id="toast" class="toast"></div>
+
+  <script>
+    (() => {
+      'use strict';
+      const ROW_HEIGHT = 23;
+      const OVERSCAN = 12;
+      const SELECTION_OVERSCAN = 120;
+      const MAX_CLIENT_ENTRIES = 50000;
+      const state = {
+        entries: [],
+        filteredIndices: [],
+        query: '',
+        regex: false,
+        caseSensitive: false,
+        regexError: '',
+        selectedFilteredPosition: -1,
+        dropped: 0,
+		firstBatchReported: false,
+        filterTimer: 0,
+        selectionReleaseTimer: 0,
+        selectionPointerDown: false,
+        textSelectionActive: false,
+        renderedFirst: 0,
+        renderedEnd: 0
+      };
+
+      const viewport = document.getElementById('viewport');
+      const spacer = document.getElementById('virtual-spacer');
+      const rowsLayer = document.getElementById('rows-layer');
+      const emptyState = document.getElementById('empty-state');
+      const searchButton = document.getElementById('search-button');
+      const searchPanel = document.getElementById('search-panel');
+      const searchClose = document.getElementById('search-close');
+      const searchInput = document.getElementById('search-input');
+      const searchCount = document.getElementById('search-count');
+      const regexToggle = document.getElementById('regex-toggle');
+      const caseToggle = document.getElementById('case-toggle');
+      const logCount = document.getElementById('log-count');
+      const droppedStatus = document.getElementById('dropped-status');
+      const regexError = document.getElementById('regex-error');
+      const toast = document.getElementById('toast');
+
+      function post(action, extra = {}) {
+        if (window.chrome && chrome.webview) {
+          chrome.webview.postMessage(JSON.stringify({ action, ...extra }));
+        }
+      }
+
+      function formatTime(ms) {
+        const date = new Date(Number(ms) || 0);
+        const pad = (value, width = 2) => String(value).padStart(width, '0');
+        return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+      }
+
+      function escapeRegex(text) {
+        return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      }
+
+      function buildMatcher(global = false) {
+        if (!state.query) return null;
+        const flags = `${state.caseSensitive ? '' : 'i'}${global ? 'g' : ''}`;
+        try {
+          return new RegExp(state.regex ? state.query : escapeRegex(state.query), flags);
+        } catch (error) {
+          state.regexError = error && error.message ? error.message : '无效的正则表达式';
+          return null;
+        }
+      }
+
+      function rebuildFilter() {
+        state.regexError = '';
+        const matcher = buildMatcher(false);
+        const next = [];
+        if (!state.query) {
+          for (let i = 0; i < state.entries.length; i += 1) next.push(i);
+        } else if (matcher) {
+          for (let i = 0; i < state.entries.length; i += 1) {
+            matcher.lastIndex = 0;
+            if (matcher.test(state.entries[i].text || '')) next.push(i);
+          }
+        }
+        state.filteredIndices = next;
+		if (!next.length || state.selectedFilteredPosition >= next.length) {
+			state.selectedFilteredPosition = -1;
+		}
+        regexError.textContent = state.regexError;
+        updateStatus();
+        renderVirtualRows(true);
+      }
+
+      function scheduleFilter() {
+        clearTimeout(state.filterTimer);
+        state.filterTimer = setTimeout(rebuildFilter, 110);
+      }
+
+      function appendHighlighted(target, text) {
+        if (!state.query || state.regexError) {
+          target.textContent = text;
+          return;
+        }
+        const matcher = buildMatcher(true);
+        if (!matcher) {
+          target.textContent = text;
+          return;
+        }
+        let cursor = 0;
+        let match;
+        let guard = 0;
+        while ((match = matcher.exec(text)) && guard++ < 200) {
+          if (match.index > cursor) target.append(document.createTextNode(text.slice(cursor, match.index)));
+          const mark = document.createElement('mark');
+          mark.textContent = match[0] || text.charAt(match.index);
+          target.append(mark);
+          cursor = match.index + Math.max(match[0].length, 1);
+          if (!match[0].length) matcher.lastIndex += 1;
+        }
+        if (cursor < text.length) target.append(document.createTextNode(text.slice(cursor)));
+      }
+
+      function selectFilteredPosition(position) {
+        if (position < 0 || position >= state.filteredIndices.length) return;
+        state.selectedFilteredPosition = position;
+        searchCount.textContent = `${position + 1} / ${state.filteredIndices.length}`;
+        const previous = rowsLayer.querySelector('.log-row.selected');
+        if (previous) previous.classList.remove('selected');
+        const current = rowsLayer.querySelector(`.log-row[data-position="${position}"]`);
+        if (current) current.classList.add('selected');
+      }
+
+      function createLogRow(position) {
+        const entry = state.entries[state.filteredIndices[position]];
+        const row = document.createElement('div');
+        row.className = `log-row${position === state.selectedFilteredPosition ? ' selected' : ''}`;
+        row.dataset.position = String(position);
+        row.title = entry.text || '';
+
+        const time = document.createElement('span');
+        time.className = 'time';
+        time.textContent = formatTime(entry.time);
+        const thread = document.createElement('span');
+        thread.className = 'thread';
+        thread.textContent = `T${entry.thread}`;
+        const message = document.createElement('span');
+        message.className = 'message';
+        if (entry.source === 'snapshot') {
+          const badge = document.createElement('span');
+          badge.className = 'source-snapshot';
+          badge.textContent = '历史';
+          message.append(badge);
+        }
+        if (entry.source === 'control') {
+          const badge = document.createElement('span');
+          badge.className = 'source-fallback';
+          badge.textContent = '控件';
+          message.append(badge);
+        }
+        appendHighlighted(message, (entry.text || '').replace(/[\r\n]+/g, ' ↵ '));
+        if (entry.truncated) message.append(document.createTextNode(' … [已截断]'));
+        row.append(time, thread, message);
+        row.addEventListener('click', () => {
+          const selection = window.getSelection();
+          if (selection && !selection.isCollapsed) return;
+          selectFilteredPosition(position);
+        });
+        return row;
+      }
+
+      function createRowsFragment(first, end) {
+        const fragment = document.createDocumentFragment();
+        for (let position = first; position < end; position += 1) {
+          fragment.append(createLogRow(position));
+        }
+        return fragment;
+      }
+
+      function expandRowsForTextSelection(first, end) {
+        const expandedFirst = Math.max(0, first - SELECTION_OVERSCAN);
+        const expandedEnd = Math.min(state.filteredIndices.length, end + SELECTION_OVERSCAN);
+        if (expandedFirst < state.renderedFirst) {
+          rowsLayer.prepend(createRowsFragment(expandedFirst, state.renderedFirst));
+          state.renderedFirst = expandedFirst;
+          rowsLayer.style.transform = `translateY(${state.renderedFirst * ROW_HEIGHT}px)`;
+        }
+        if (expandedEnd > state.renderedEnd) {
+          rowsLayer.append(createRowsFragment(state.renderedEnd, expandedEnd));
+          state.renderedEnd = expandedEnd;
+        }
+      }
+
+      function renderVirtualRows(force = false) {
+        const count = state.filteredIndices.length;
+        spacer.style.height = `${count * ROW_HEIGHT}px`;
+        emptyState.style.display = count ? 'none' : 'grid';
+        if (!count) {
+          rowsLayer.textContent = '';
+          state.renderedFirst = 0;
+          state.renderedEnd = 0;
+          emptyState.textContent = state.query ? (state.regexError ? '正则表达式无效' : '没有匹配的日志') : '等待 IDE 日志…';
+          return;
+        }
+
+        const first = Math.max(0, Math.floor(viewport.scrollTop / ROW_HEIGHT) - OVERSCAN);
+        const visibleCount = Math.ceil(viewport.clientHeight / ROW_HEIGHT) + OVERSCAN * 2;
+        const end = Math.min(count, first + visibleCount);
+        if (!force && state.textSelectionActive && rowsLayer.childElementCount && state.renderedEnd > state.renderedFirst) {
+          expandRowsForTextSelection(first, end);
+          return;
+        }
+
+        rowsLayer.textContent = '';
+        state.renderedFirst = first;
+        state.renderedEnd = end;
+        rowsLayer.style.transform = `translateY(${first * ROW_HEIGHT}px)`;
+        rowsLayer.append(createRowsFragment(first, end));
+      }
+
+      function selectionTouchesLogRows(selection) {
+        return Boolean(selection && !selection.isCollapsed &&
+          (rowsLayer.contains(selection.anchorNode) || rowsLayer.contains(selection.focusNode)));
+      }
+
+      function updateTextSelectionMode() {
+        const active = state.selectionPointerDown || selectionTouchesLogRows(window.getSelection());
+        const wasActive = state.textSelectionActive;
+        state.textSelectionActive = active;
+        if (wasActive && !active) renderVirtualRows(true);
+      }
+
+      function updateStatus() {
+        const total = state.entries.length;
+		logCount.textContent = total > 9999 ? `${Math.floor(total / 1000)}k` : total.toLocaleString();
+		logCount.parentElement.title = `${total.toLocaleString()} 条日志`;
+        droppedStatus.textContent = state.dropped ? `已丢弃 ${state.dropped.toLocaleString()} 条旧日志` : '';
+		searchCount.textContent = state.selectedFilteredPosition >= 0
+		  ? `${state.selectedFilteredPosition + 1} / ${state.filteredIndices.length}`
+		  : `0 / ${state.filteredIndices.length}`;
+        searchButton.classList.toggle('has-filter', Boolean(state.query));
+      }
+
+      function setSearchPanelOpen(open) {
+        searchPanel.classList.toggle('open', open);
+        searchButton.setAttribute('aria-pressed', String(open));
+        if (open) {
+          requestAnimationFrame(() => {
+            searchInput.focus();
+            searchInput.select();
+          });
+        }
+      }
+
+      function scrollToBottom() {
+        requestAnimationFrame(() => {
+          viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+          renderVirtualRows();
+        });
+      }
+
+      function isViewportAtBottom() {
+        return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 2;
+      }
+
+      function moveMatch(direction) {
+        if (!state.filteredIndices.length) return;
+        let next = state.selectedFilteredPosition;
+        if (next < 0) next = direction > 0 ? 0 : state.filteredIndices.length - 1;
+        else next = (next + direction + state.filteredIndices.length) % state.filteredIndices.length;
+        viewport.scrollTop = Math.max(0, next * ROW_HEIGHT - Math.floor(viewport.clientHeight / 2));
+        selectFilteredPosition(next);
+      }
+
+      function showToast(message) {
+        toast.textContent = message;
+        toast.classList.add('show');
+        clearTimeout(showToast.timer);
+        showToast.timer = setTimeout(() => toast.classList.remove('show'), 2600);
+      }
+
+      function applyBatch(payload) {
+        const shouldAutoScroll = isViewportAtBottom();
+		let fullRebuildRequired = Boolean(payload.reset);
+        if (payload.reset) {
+          state.entries = [];
+          state.selectedFilteredPosition = -1;
+        }
+		const firstNewIndex = state.entries.length;
+        if (Array.isArray(payload.entries)) state.entries.push(...payload.entries);
+        if (state.entries.length > MAX_CLIENT_ENTRIES) {
+          state.entries.splice(0, state.entries.length - MAX_CLIENT_ENTRIES);
+          state.selectedFilteredPosition = -1;
+		  fullRebuildRequired = true;
+        }
+        state.dropped = Number(payload.droppedEntries) || 0;
+		if (fullRebuildRequired) {
+		  rebuildFilter();
+		} else {
+		  state.regexError = '';
+		  const matcher = buildMatcher(false);
+		  if (!state.query) {
+			for (let i = firstNewIndex; i < state.entries.length; i += 1) state.filteredIndices.push(i);
+		  } else if (matcher) {
+			for (let i = firstNewIndex; i < state.entries.length; i += 1) {
+			  matcher.lastIndex = 0;
+			  if (matcher.test(state.entries[i].text || '')) state.filteredIndices.push(i);
+			}
+		  }
+		  regexError.textContent = state.regexError;
+		  updateStatus();
+		  renderVirtualRows();
+		}
+        if (shouldAutoScroll) scrollToBottom();
+		if (!state.firstBatchReported && state.entries.length) {
+			state.firstBatchReported = true;
+			post('batch-applied', { count: state.entries.length });
+		}
+      }
+
+      searchInput.addEventListener('input', () => { state.query = searchInput.value; scheduleFilter(); });
+      searchInput.addEventListener('keydown', event => {
+        if (event.key === 'Enter') { event.preventDefault(); moveMatch(event.shiftKey ? -1 : 1); }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          if (state.query) {
+            searchInput.value = '';
+            state.query = '';
+            rebuildFilter();
+          } else {
+            setSearchPanelOpen(false);
+          }
+        }
+      });
+      regexToggle.addEventListener('click', () => {
+        state.regex = !state.regex;
+        regexToggle.setAttribute('aria-pressed', String(state.regex));
+        rebuildFilter();
+      });
+      caseToggle.addEventListener('click', () => {
+        state.caseSensitive = !state.caseSensitive;
+        caseToggle.setAttribute('aria-pressed', String(state.caseSensitive));
+        rebuildFilter();
+      });
+      document.getElementById('previous-match').addEventListener('click', () => moveMatch(-1));
+      document.getElementById('next-match').addEventListener('click', () => moveMatch(1));
+      searchButton.addEventListener('click', () => setSearchPanelOpen(!searchPanel.classList.contains('open')));
+      searchClose.addEventListener('click', () => setSearchPanelOpen(false));
+      document.getElementById('clear-button').addEventListener('click', () => post('clear'));
+      document.getElementById('export-button').addEventListener('click', () => post('export'));
+      viewport.addEventListener('mousedown', event => {
+        if (event.button !== 0 || !event.target.closest('.log-row')) return;
+        clearTimeout(state.selectionReleaseTimer);
+        state.selectionPointerDown = true;
+        state.textSelectionActive = true;
+      });
+      window.addEventListener('mouseup', () => {
+        if (!state.selectionPointerDown) return;
+        state.selectionPointerDown = false;
+        clearTimeout(state.selectionReleaseTimer);
+        state.selectionReleaseTimer = setTimeout(updateTextSelectionMode, 0);
+      });
+      document.addEventListener('selectionchange', () => {
+        if (state.selectionPointerDown) return;
+        clearTimeout(state.selectionReleaseTimer);
+        state.selectionReleaseTimer = setTimeout(updateTextSelectionMode, 0);
+      });
+      viewport.addEventListener('scroll', () => {
+        renderVirtualRows();
+      }, { passive: true });
+      window.addEventListener('resize', renderVirtualRows);
+      window.addEventListener('keydown', event => {
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+          event.preventDefault();
+          setSearchPanelOpen(true);
+        }
+      });
+
+      if (window.chrome && chrome.webview) {
+        chrome.webview.addEventListener('message', event => {
+          const payload = event.data;
+          if (!payload || typeof payload !== 'object') return;
+          if (payload.type === 'log-batch') applyBatch(payload);
+          if (payload.type === 'export-result') {
+            showToast(payload.ok ? `已导出到 ${payload.path}` : `导出失败：${payload.error || '未知错误'}`);
+          }
+        });
+      }
+
+      updateStatus();
+      renderVirtualRows();
+      post('ready');
+    })();
+  </script>
+</body>
+</html>
