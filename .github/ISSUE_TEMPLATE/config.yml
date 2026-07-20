@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 AI / MCP 功能配置指南
+    url: https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md
+    about: 提交前请先查阅配置文档（API Key、中转站、各平台配置），很多使用问题这里已有说明。
+  - name: 📖 易语言 × AI Agent 实践白皮书
+    url: https://github.com/aiqinxuancai/Awesome-E-Agent
+    about: 了解易语言接入 AI Agent 的整体思路与最佳实践。
