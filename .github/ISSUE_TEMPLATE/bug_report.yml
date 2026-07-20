@@ -1,0 +1,134 @@
+name: 🐞 问题反馈（Bug）
+description: 反馈使用 AutoLinker 时遇到的错误、崩溃或异常行为
+title: "[Bug] 请用一句话概括问题"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！**请尽量把下面每一项填写完整**——信息越具体，越能一次定位问题，避免来回追问。
+        > 只写「不能用」「报错了」这类一句话，我们无从下手，往往只能反复追问，双方都很累 🙏
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前确认
+      description: 提交前请先自查，勾选后再继续
+      options:
+        - label: 我已升级到最新 Release 版本，问题仍然存在
+          required: true
+        - label: 我已在 [现有 Issues](../issues?q=is%3Aissue) 中搜索过，没有重复
+          required: true
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: 出问题的功能模块
+      description: 选择问题最相关的功能；不确定就选「其他 / 不确定」
+      options:
+        - AI Agent 会话页签
+        - 右键菜单 AI 功能（优化 / 注释 / 翻译 / 添加代码）
+        - 项目规范文件 .AGENTS.md
+        - 不同 .e 源文件使用不同链接器
+        - 调试 / 编译时动静态 ec 模块自动切换
+        - 本地 MCP 服务（外部客户端接入）
+        - 无头命令行编译（headless-compile）
+        - 重写核心库函数
+        - 支持库加载 / IDE 启动
+        - 其他 / 不确定
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mcp-client
+    attributes:
+      label: MCP 接入客户端（仅本地 MCP 服务相关时填写）
+      description: 如果问题与本地 MCP 服务无关，选「不涉及 MCP」
+      options:
+        - 不涉及 MCP
+        - Claude Code
+        - Codex
+        - Gemini CLI
+        - Cursor
+        - Windsurf
+        - 其他客户端（请在描述中注明）
+    validations:
+      required: false
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 问题描述
+      description: 详细说明发生了什么。**做了什么操作 → 期望得到什么 → 实际得到什么**，三者都要写清楚。
+      placeholder: |
+        例：在 AI Agent 会话页签中让 AI 修改某个子程序后，IDE 闪退。
+        - 期望：AI 正常写回修改
+        - 实际：点击发送约 3 秒后 IDE 直接崩溃退出，无报错弹窗
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 请按顺序写出能稳定复现的最小操作步骤。若不稳定，也请说明大概多少次能触发一次。
+      placeholder: |
+        1. 打开 xxx.e（可脱敏 / 提供最小复现工程更佳）
+        2. 切换到「AI Agent 会话页签」
+        3. 输入指令「……」并发送
+        4. 约 3 秒后 IDE 闪退
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: input
+    id: repro-rate
+    attributes:
+      label: 复现概率
+      description: 每次必现？还是偶发？
+      placeholder: 例：100% 必现 / 约 3 次触发 1 次 / 只出现过 1 次
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志
+      description: |
+        请粘贴相关日志。AutoLinker 日志位于 IDE 目录下的 `e\AutoLinker\Log\`，运行日志为 `autolinker.log`，IDE 输出窗口内容也可一并附上。
+        粘贴时用 ``` 代码块包裹；日志过长可作为文件拖拽上传。
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图 / 录屏
+      description: 直接把图片或视频拖拽到此处上传。报错弹窗、IDE 界面、控制台输出等都很有帮助。
+    validations:
+      required: false
+
+  - type: textarea
+    id: env
+    attributes:
+      label: 环境信息
+      description: 请填写各项版本与系统信息
+      value: |
+        - AutoLinker 版本（Release Tag / 编译日期）：
+        - 易语言 IDE 版本（如 e571 / e595）：
+        - 操作系统（如 Windows 11 23H2）：
+        - 所用链接器 / VC 版本（如涉及编译）：
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 其他任何有助于定位的线索——最小复现工程、相关配置（link.ini、ec 切换规则等）、你已尝试过的排查方法。
+    validations:
+      required: false

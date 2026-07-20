@@ -1,0 +1,42 @@
+name: 💡 功能建议 / 需求
+description: 提出新功能、改进现有功能或使用体验上的建议
+title: "[Feature] 请用一句话概括你的建议"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你的建议！请描述清楚**你遇到的场景**和**期望的效果**，而不仅仅是「加个 XX 功能」，这样更容易判断价值与可行性。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的问题 / 场景
+      description: 是什么实际场景让你产生了这个需求？现在的做法有什么不便？
+      placeholder: 例：每次给不同 .e 切换链接器都要手动操作，多工程来回切时很繁琐……
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的功能 / 解决方案
+      description: 你希望 AutoLinker 怎么做？尽量具体到交互方式或效果。
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案 / 现有绕行办法
+      description: 你目前是怎么绕过这个问题的？有没有考虑过其他做法？
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 参考截图、其他工具的类似实现、相关链接等。
+    validations:
+      required: false
