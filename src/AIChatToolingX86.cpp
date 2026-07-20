@@ -227,6 +227,7 @@ void PutPageCodeCacheEntryForAI(
 	const std::string& code,
 	const PageCodeCacheEntry* existingEntry,
 	PageCodeCacheEntry* outSavedEntry);
+void PumpPendingIdeMessagesForAI();
 
 AISourceEditMode GetActiveSourceEditModeForAI()
 {
@@ -902,6 +903,91 @@ bool TryGetProgramItemByNameForAI(
 	return true;
 }
 
+bool TryCreateMissingFixedTableProgramItemForAI(
+	const WorkspaceMirror::ProgramItemRef& item,
+	ProgramTreeItemInfo& outItem,
+	std::string& outTrace,
+	std::string& outError)
+{
+	outTrace.clear();
+	outError.clear();
+
+	const char* functionName = nullptr;
+	unsigned int fixedTableItemData = 0;
+	int expectedActiveWindowType = 0;
+	bool insertReportedOk = false;
+	IDEFacade& ide = IDEFacade::Instance();
+	if (item.kind == "global_var") {
+		functionName = "FN_INSERT_NEW_GLOBAL_VAR";
+		fixedTableItemData = 0x20000000u;
+		expectedActiveWindowType = static_cast<int>(IDEFacade::ActiveWindowType::GlobalVar);
+		insertReportedOk = ide.RunInsertNewGlobalVar();
+	}
+	else if (item.kind == "user_data_type") {
+		functionName = "FN_INSERT_NEW_DATA_TYPE";
+		fixedTableItemData = 0x30000000u;
+		expectedActiveWindowType = static_cast<int>(IDEFacade::ActiveWindowType::UserDataType);
+		insertReportedOk = ide.RunInsertNewDataType();
+	}
+	else if (item.kind == "dll_command") {
+		functionName = "FN_INSERT_NEW_DLL_CMD";
+		fixedTableItemData = 0x40000000u;
+		expectedActiveWindowType = static_cast<int>(IDEFacade::ActiveWindowType::DllCommand);
+		insertReportedOk = ide.RunInsertNewDllCmd();
+	}
+	else if (item.kind == "const_resource") {
+		functionName = "FN_INSERT_NEW_CONST_RES";
+		fixedTableItemData = 0x60000000u;
+		expectedActiveWindowType = static_cast<int>(IDEFacade::ActiveWindowType::ConstResource);
+		insertReportedOk = ide.RunInsertNewConstRes();
+	}
+	else {
+		outError = "unsupported fixed table kind: " + item.kind;
+		return false;
+	}
+
+	outTrace =
+		std::string("create_missing_fixed_table_item|fn=") + functionName +
+		"|reported_ok=" + (insertReportedOk ? "1" : "0");
+	std::string lookupError;
+	for (int attempt = 0; attempt < 20; ++attempt) {
+		PumpPendingIdeMessagesForAI();
+		if (TryGetProgramItemByNameForAI(item.pageNameLocal, item.kind, outItem, lookupError)) {
+			outTrace +=
+				"|tree_item_ready=1|attempt=" + std::to_string(attempt + 1) +
+				"|item_data=" + std::to_string(outItem.itemData);
+			return true;
+		}
+		if (attempt + 1 < 20) {
+			Sleep(25);
+		}
+	}
+
+	outTrace += "|tree_item_ready=0|lookup_error=" + lookupError;
+	int activeWindowType = 0;
+	const bool activeWindowTypeOk = ide.RunGetActiveWndType(activeWindowType);
+	if (activeWindowTypeOk &&
+		activeWindowType == expectedActiveWindowType &&
+		fixedTableItemData != 0) {
+		outItem.name = item.pageNameLocal;
+		outItem.itemData = fixedTableItemData;
+		outItem.typeKey = item.kind;
+		outItem.typeName = GetProgramTreeTypeName(item.kind);
+		outTrace +=
+			"|active_fixed_table_ready=1|active_window_type=" + std::to_string(activeWindowType) +
+			"|synthetic_item_data=" + std::to_string(fixedTableItemData);
+		return true;
+	}
+	outTrace +=
+		"|active_fixed_table_ready=0|active_window_type_query_ok=" +
+		std::to_string(activeWindowTypeOk ? 1 : 0) +
+		"|active_window_type=" + std::to_string(activeWindowType);
+	outError = insertReportedOk
+		? "fixed table item was inserted but its program tree node did not become available"
+		: "insert first fixed table item failed";
+	return false;
+}
+
 bool ReplaceExactlyOnceForAI(
 	const std::string& source,
 	const std::string& oldText,
@@ -982,6 +1068,39 @@ bool IsFixedTableProgramItemForAI(const ProgramTreeItemInfo& item)
 		item.typeKey == "user_data_type" ||
 		item.typeKey == "dll_command" ||
 		item.typeKey == "const_resource";
+}
+
+bool HasConcreteFixedTableDeclarationForAI(const std::string& code, const std::string& kind)
+{
+	const char* directive = nullptr;
+	if (kind == "global_var") {
+		directive = ".全局变量";
+	}
+	else if (kind == "user_data_type") {
+		directive = ".数据类型";
+	}
+	else if (kind == "dll_command") {
+		directive = ".DLL命令";
+	}
+	else if (kind == "const_resource") {
+		directive = ".常量";
+	}
+	else {
+		return false;
+	}
+
+	const size_t directiveLength = std::strlen(directive);
+	for (const std::string& line : SplitLinesCopyForAI(code)) {
+		const std::string trimmed = TrimAsciiCopy(line);
+		if (trimmed.rfind(directive, 0) != 0) {
+			continue;
+		}
+		const std::string declaration = TrimAsciiCopy(trimmed.substr(directiveLength));
+		if (!declaration.empty() && declaration.front() != ',') {
+			return true;
+		}
+	}
+	return false;
 }
 
 std::string JoinLinesWithCrLfForAI(const std::vector<std::string>& lines)
@@ -4771,6 +4890,13 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		totalStart);
 
 	ProgramTreeItemInfo programItem;
+	bool fixedTablePageMissing = false;
+	std::string missingFixedTableBaseCode;
+	std::string missingFixedTableReadTrace;
+	bool fixedTableItemAutoCreated = false;
+	bool fixedTableCreateAttempted = false;
+	bool expectedBaseHashIgnoredAfterCreate = false;
+	std::string fixedTableCreateTrace;
 	LogToolStageForAI(
 		"file_mapped_tool",
 		"before_program_item_lookup|tool=" + publicToolName +
@@ -4778,20 +4904,136 @@ std::string ExecuteFileMappedRealPageToolForAI(
 			"|kind=" + item.kind,
 		totalStart);
 	if (!TryGetProgramItemByNameForAI(item.pageNameLocal, item.kind, programItem, error)) {
-		LogToolStageForAI(
-			"file_mapped_tool",
-			"after_program_item_lookup_failed|tool=" + publicToolName +
-				"|page=" + LocalToUtf8Text(item.pageNameLocal) +
-				"|kind=" + item.kind +
-				"|error=" + LocalToUtf8Text(error),
-			totalStart);
-		nlohmann::json r;
-		r["ok"] = false;
-		r["error"] = error.empty() ? "program item lookup failed" : error;
-		r["file_path"] = filePathUtf8;
-		r["mapped_page_name"] = LocalToUtf8Text(item.pageNameLocal);
-		r["mapped_kind"] = item.kind;
-		return JsonToLocalTextForAI(r);
+		const bool canReadMissingFixedTable =
+			publicToolName == "read_real_file" &&
+			item.fixedTable &&
+			error == "program item not found";
+		if (canReadMissingFixedTable) {
+			std::string mirrorReadError;
+			if (TryReadWorkspaceMirrorTextLocalForAI(
+					filePathUtf8,
+					missingFixedTableBaseCode,
+					mirrorReadError)) {
+				missingFixedTableReadTrace = "fixed_table_page_missing|base=workspace_mirror";
+				fixedTablePageMissing = true;
+			}
+			else if (mirrorReadError.rfind("file not found in workspace mirror:", 0) == 0) {
+				missingFixedTableBaseCode.clear();
+				missingFixedTableReadTrace = "fixed_table_page_missing|base=conceptual_empty";
+				fixedTablePageMissing = true;
+			}
+			else {
+				error = mirrorReadError.empty()
+					? "read missing fixed table base failed"
+					: mirrorReadError;
+			}
+
+			if (fixedTablePageMissing) {
+				programItem.name = item.pageNameLocal;
+				programItem.typeKey = item.kind;
+				programItem.typeName = GetProgramTreeTypeName(item.kind);
+				error.clear();
+			}
+		}
+
+		const bool canCreateMissingFixedTable =
+			!fixedTablePageMissing &&
+			invalidateOnWrite &&
+			item.fixedTable &&
+			error == "program item not found";
+		if (canCreateMissingFixedTable) {
+			fixedTableCreateAttempted = true;
+			WorkspaceMirror::InvalidateMirror();
+			std::string createError;
+			if (TryCreateMissingFixedTableProgramItemForAI(
+					item,
+					programItem,
+					fixedTableCreateTrace,
+					createError)) {
+				fixedTableItemAutoCreated = true;
+				expectedBaseHashIgnoredAfterCreate =
+					!TrimAsciiCopy(GetJsonStringArgumentLocal(args, "expected_base_hash")).empty();
+				args.erase("expected_base_hash");
+				LogToolStageForAI(
+					"file_mapped_tool",
+					"missing_fixed_table_item_created|tool=" + publicToolName +
+						"|page=" + LocalToUtf8Text(item.pageNameLocal) +
+						"|kind=" + item.kind +
+						"|trace=" + fixedTableCreateTrace,
+					totalStart);
+			}
+			else {
+				error = createError;
+			}
+		}
+
+		if (!fixedTablePageMissing && !fixedTableItemAutoCreated) {
+			LogToolStageForAI(
+				"file_mapped_tool",
+				"after_program_item_lookup_failed|tool=" + publicToolName +
+					"|page=" + LocalToUtf8Text(item.pageNameLocal) +
+					"|kind=" + item.kind +
+					"|error=" + LocalToUtf8Text(error),
+				totalStart);
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = error.empty() ? "program item lookup failed" : error;
+			r["file_path"] = filePathUtf8;
+			r["mapped_page_name"] = LocalToUtf8Text(item.pageNameLocal);
+			r["mapped_kind"] = item.kind;
+			if (!fixedTableCreateTrace.empty()) {
+				r["fixed_table_create_trace"] = LocalToUtf8Text(fixedTableCreateTrace);
+			}
+			if (fixedTableCreateAttempted) {
+				r["fixed_table_create_attempted"] = true;
+				r["workspace_mirror_invalidated"] = true;
+			}
+			return JsonToLocalTextForAI(r);
+		}
+	}
+	if (invalidateOnWrite && item.fixedTable && !fixedTableItemAutoCreated) {
+		std::string mirrorCode;
+		std::string mirrorReadError;
+		const bool mirrorReadOk = TryReadWorkspaceMirrorTextLocalForAI(
+			filePathUtf8,
+			mirrorCode,
+			mirrorReadError);
+		const bool fixedTableHasNoDeclaration =
+			(mirrorReadOk && !HasConcreteFixedTableDeclarationForAI(mirrorCode, item.kind)) ||
+			(!mirrorReadOk && mirrorReadError.rfind("file not found in workspace mirror:", 0) == 0);
+		if (fixedTableHasNoDeclaration) {
+			fixedTableCreateAttempted = true;
+			WorkspaceMirror::InvalidateMirror();
+			std::string createError;
+			if (!TryCreateMissingFixedTableProgramItemForAI(
+					item,
+					programItem,
+					fixedTableCreateTrace,
+					createError)) {
+				nlohmann::json r;
+				r["ok"] = false;
+				r["error"] = createError.empty() ? "create first fixed table item failed" : createError;
+				r["file_path"] = filePathUtf8;
+				r["mapped_page_name"] = LocalToUtf8Text(item.pageNameLocal);
+				r["mapped_kind"] = item.kind;
+				r["fixed_table_create_attempted"] = true;
+				r["fixed_table_create_trace"] = LocalToUtf8Text(fixedTableCreateTrace);
+				r["workspace_mirror_invalidated"] = true;
+				return JsonToLocalTextForAI(r);
+			}
+
+			fixedTableItemAutoCreated = true;
+			expectedBaseHashIgnoredAfterCreate =
+				!TrimAsciiCopy(GetJsonStringArgumentLocal(args, "expected_base_hash")).empty();
+			args.erase("expected_base_hash");
+			LogToolStageForAI(
+				"file_mapped_tool",
+				"empty_fixed_table_item_created|tool=" + publicToolName +
+					"|page=" + LocalToUtf8Text(item.pageNameLocal) +
+					"|kind=" + item.kind +
+					"|trace=" + fixedTableCreateTrace,
+				totalStart);
+		}
 	}
 	LogToolStageForAI(
 		"file_mapped_tool",
@@ -4809,7 +5051,39 @@ std::string ExecuteFileMappedRealPageToolForAI(
 	if (publicToolName == "read_real_file") {
 		std::string realCode;
 		e571::NativeRealPageAccessResult accessResult{};
-		if (!TryReadRealPageCodeForAI(programItem, realCode, accessResult, error)) {
+		bool readOk = true;
+		if (fixedTablePageMissing) {
+			realCode = missingFixedTableBaseCode;
+			accessResult.ok = true;
+			accessResult.textBytes = realCode.size();
+			accessResult.trace = missingFixedTableReadTrace;
+		}
+		else {
+			readOk = TryReadRealPageCodeForAI(programItem, realCode, accessResult, error);
+			if (!readOk && item.fixedTable) {
+				std::string mirrorReadError;
+				std::string mirrorCode;
+				const bool mirrorReadOk = TryReadWorkspaceMirrorTextLocalForAI(
+					filePathUtf8,
+					mirrorCode,
+					mirrorReadError);
+				const bool fixedTableHasNoDeclaration =
+					(mirrorReadOk && !HasConcreteFixedTableDeclarationForAI(mirrorCode, item.kind)) ||
+					(!mirrorReadOk && mirrorReadError.rfind("file not found in workspace mirror:", 0) == 0);
+				if (fixedTableHasNoDeclaration) {
+					realCode = mirrorReadOk ? mirrorCode : std::string();
+					fixedTablePageMissing = true;
+					readOk = true;
+					error.clear();
+					accessResult.ok = true;
+					accessResult.textBytes = realCode.size();
+					accessResult.trace +=
+						"|fixed_table_page_empty|base=" +
+						std::string(mirrorReadOk ? "workspace_mirror" : "conceptual_empty");
+				}
+			}
+		}
+		if (!readOk) {
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "copy real page code failed" : error;
@@ -4835,7 +5109,7 @@ std::string ExecuteFileMappedRealPageToolForAI(
 			r["type_name"] = LocalToUtf8Text(programItem.typeName);
 			r["item_data"] = programItem.itemData;
 			r["source_edit_mode"] = SourceEditModeStringForAI(GetActiveSourceEditModeForAI());
-			r["code_kind"] = "real_source";
+			r["code_kind"] = fixedTablePageMissing ? "fixed_table_missing_page" : "real_source";
 			r["code_hash"] = cacheEntry.codeHash;
 			r["total_lines"] = totalLines;
 			r["requested_offset"] = offset;
@@ -4854,6 +5128,10 @@ std::string ExecuteFileMappedRealPageToolForAI(
 				: nlohmann::json(nullptr);
 			r["content"] = LocalToUtf8Text(content);
 			r["trace"] = LocalToUtf8Text(accessResult.trace);
+			if (fixedTablePageMissing) {
+				r["fixed_table_page_missing"] = true;
+				r["write_will_create_first_item"] = true;
+			}
 			resultLocal = JsonToLocalTextForAI(r);
 			outOk = true;
 		}
@@ -4912,7 +5190,7 @@ std::string ExecuteFileMappedRealPageToolForAI(
 
 	const bool ok = result.value("ok", false);
 	const bool noChanges = result.value("no_changes", false);
-	if (item.fixedTable && ok && result.contains("code_kind")) {
+	if (item.fixedTable && !fixedTablePageMissing && ok && result.contains("code_kind")) {
 		result["code_kind"] = "fixed_table_real_page";
 	}
 	if (ok && invalidateOnWrite && !noChanges) {
@@ -4947,8 +5225,16 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		if (result.contains("code_hash") && result["code_hash"].is_string()) {
 			result["new_hash"] = result["code_hash"];
 		}
-		result["mirror_updated"] = result.value("workspace_mirror_updated", false) || noChanges;
+		result["mirror_updated"] =
+			result.value("workspace_mirror_updated", false) ||
+			(noChanges && !fixedTableItemAutoCreated);
 		result["verification_note"] = "write completed with internal structural verification; do not re-read only for confirmation";
+	}
+	if (fixedTableItemAutoCreated) {
+		result["fixed_table_item_auto_created"] = true;
+		result["fixed_table_create_trace"] = LocalToUtf8Text(fixedTableCreateTrace);
+		result["expected_base_hash_ignored_after_create"] = expectedBaseHashIgnoredAfterCreate;
+		result["workspace_mirror_invalidated"] = true;
 	}
 
 	if (!ok &&
