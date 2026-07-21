@@ -2,9 +2,12 @@
 
 #include <CommCtrl.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
+#include <vector>
 
+#include "..\\thirdparty\\json.hpp"
 #include "IdeLogStore.h"
 
 #pragma comment(lib, "comctl32.lib")
@@ -14,10 +17,13 @@ namespace {
 
 constexpr UINT_PTR kSubclassId = 0xA110;
 constexpr std::size_t kMaxMessageChars = 256 * 1024;
+constexpr int kMaxControlSnapshotChars = 16 * 1024 * 1024;
+constexpr std::size_t kMinimumRollingOverlap = 64;
 
 HWND g_outputWindow = nullptr;
 HWND g_observerWindow = nullptr;
 UINT g_layoutChangedMessage = 0;
+std::string g_lastControlText;
 
 void NotifyLayoutChanged(HWND outputWindow) noexcept
 {
@@ -80,23 +86,25 @@ bool HasVisibleText(const char* text, std::size_t length) noexcept
 	}
 }
 
-void AppendAnsiText(const char* text) noexcept
+std::string CopyAnsiText(const char* text) noexcept
 {
 	const std::size_t length = SafeAnsiLength(text, kMaxMessageChars + 1);
 	if (length == 0 || !HasVisibleText(text, length)) {
-		return;
+		return {};
 	}
-	IdeLogStore::AppendLocal(
-		text,
-		length,
-		IdeLogStore::EntrySource::OutputControlSubclass);
+	try {
+		return std::string(text, length);
+	}
+	catch (...) {
+		return {};
+	}
 }
 
-void AppendWideText(const wchar_t* text) noexcept
+bool ConvertWideToLocal(const wchar_t* text, std::size_t length, std::string& outText) noexcept
 {
-	const std::size_t length = SafeWideLength(text, kMaxMessageChars + 1);
-	if (length == 0) {
-		return;
+	outText.clear();
+	if (text == nullptr || length == 0) {
+		return true;
 	}
 	try {
 		const int localLength = WideCharToMultiByte(
@@ -109,41 +117,210 @@ void AppendWideText(const wchar_t* text) noexcept
 			nullptr,
 			nullptr);
 		if (localLength <= 0) {
-			return;
+			return false;
 		}
-		std::string localText(static_cast<std::size_t>(localLength), '\0');
-		if (WideCharToMultiByte(
+		outText.resize(static_cast<std::size_t>(localLength));
+		return WideCharToMultiByte(
 			CP_ACP,
 			0,
 			text,
 			static_cast<int>(length),
-			localText.data(),
+			outText.data(),
 			localLength,
 			nullptr,
-			nullptr) <= 0 ||
-			!HasVisibleText(localText.data(), localText.size())) {
-			return;
-		}
-		IdeLogStore::AppendLocal(
-			localText.data(),
-			localText.size(),
-			IdeLogStore::EntrySource::OutputControlSubclass);
+			nullptr) > 0;
 	}
 	catch (...) {
-		// 控件消息采集失败不能影响 IDE 原始窗口过程。
+		outText.clear();
+		return false;
 	}
 }
 
-void AppendMessageText(HWND window, LPARAM lParam) noexcept
+std::string CopyWideText(const wchar_t* text) noexcept
+{
+	const std::size_t length = SafeWideLength(text, kMaxMessageChars + 1);
+	if (length == 0) {
+		return {};
+	}
+	std::string localText;
+	if (!ConvertWideToLocal(text, length, localText) ||
+		!HasVisibleText(localText.data(), localText.size())) {
+		return {};
+	}
+	return localText;
+}
+
+std::string CopyMessageText(HWND window, LPARAM lParam) noexcept
 {
 	if (lParam == 0) {
-		return;
+		return {};
 	}
 	if (IsWindowUnicode(window)) {
-		AppendWideText(reinterpret_cast<const wchar_t*>(lParam));
+		return CopyWideText(reinterpret_cast<const wchar_t*>(lParam));
 	}
-	else {
-		AppendAnsiText(reinterpret_cast<const char*>(lParam));
+	return CopyAnsiText(reinterpret_cast<const char*>(lParam));
+}
+
+bool ReadControlTextLocal(HWND window, std::string& outText) noexcept
+{
+	outText.clear();
+	try {
+		if (IsWindowUnicode(window)) {
+			const int length = GetWindowTextLengthW(window);
+			if (length < 0 || length > kMaxControlSnapshotChars) {
+				return false;
+			}
+			std::wstring wideText(static_cast<std::size_t>(length) + 1, L'\0');
+			const int copied = GetWindowTextW(window, wideText.data(), length + 1);
+			if (copied < 0) {
+				return false;
+			}
+			return ConvertWideToLocal(
+				wideText.data(),
+				static_cast<std::size_t>(copied),
+				outText);
+		}
+
+		const int length = GetWindowTextLengthA(window);
+		if (length < 0 || length > kMaxControlSnapshotChars) {
+			return false;
+		}
+		outText.resize(static_cast<std::size_t>(length) + 1);
+		const int copied = GetWindowTextA(window, outText.data(), length + 1);
+		if (copied < 0) {
+			outText.clear();
+			return false;
+		}
+		outText.resize(static_cast<std::size_t>(copied));
+		return true;
+	}
+	catch (...) {
+		outText.clear();
+		return false;
+	}
+}
+
+std::size_t FindRollingOverlap(
+	const std::string& previousText,
+	const std::string& currentText)
+{
+	if (previousText.empty() || currentText.empty()) {
+		return 0;
+	}
+	std::vector<std::size_t> prefix(currentText.size(), 0);
+	for (std::size_t index = 1; index < currentText.size(); ++index) {
+		std::size_t matched = prefix[index - 1];
+		while (matched > 0 && currentText[index] != currentText[matched]) {
+			matched = prefix[matched - 1];
+		}
+		if (currentText[index] == currentText[matched]) {
+			++matched;
+		}
+		prefix[index] = matched;
+	}
+
+	std::size_t matched = 0;
+	for (std::size_t index = 0; index < previousText.size(); ++index) {
+		while (matched > 0 && previousText[index] != currentText[matched]) {
+			matched = prefix[matched - 1];
+		}
+		if (previousText[index] == currentText[matched]) {
+			++matched;
+		}
+		if (matched == currentText.size() && index + 1 < previousText.size()) {
+			matched = prefix[matched - 1];
+		}
+	}
+	return matched;
+}
+
+std::string ExtractAddedText(
+	const std::string& previousText,
+	const std::string& currentText)
+{
+	if (currentText.empty() || currentText == previousText) {
+		return {};
+	}
+	if (previousText.empty()) {
+		return currentText;
+	}
+	if (currentText.size() >= previousText.size() &&
+		currentText.compare(0, previousText.size(), previousText) == 0) {
+		return currentText.substr(previousText.size());
+	}
+	if (previousText.size() >= currentText.size() &&
+		previousText.compare(0, currentText.size(), currentText) == 0) {
+		return {};
+	}
+
+	const std::size_t overlap = FindRollingOverlap(previousText, currentText);
+	const std::size_t shorterLength = (std::min)(previousText.size(), currentText.size());
+	if (overlap > 0 &&
+		(overlap >= kMinimumRollingOverlap || overlap * 2 >= shorterLength)) {
+		return currentText.substr(overlap);
+	}
+
+	std::size_t commonPrefix = 0;
+	while (commonPrefix < shorterLength &&
+		previousText[commonPrefix] == currentText[commonPrefix]) {
+		++commonPrefix;
+	}
+	std::size_t commonSuffix = 0;
+	while (commonSuffix < previousText.size() - commonPrefix &&
+		commonSuffix < currentText.size() - commonPrefix &&
+		previousText[previousText.size() - commonSuffix - 1] ==
+			currentText[currentText.size() - commonSuffix - 1]) {
+		++commonSuffix;
+	}
+	return currentText.substr(
+		commonPrefix,
+		currentText.size() - commonPrefix - commonSuffix);
+}
+
+void AppendDeltaLines(const std::string& delta) noexcept
+{
+	try {
+		std::size_t start = 0;
+		while (start < delta.size()) {
+			const std::size_t lineEnd = delta.find_first_of("\r\n", start);
+			std::size_t next = lineEnd;
+			if (lineEnd == std::string::npos) {
+				next = delta.size();
+			}
+			else {
+				next = lineEnd + 1;
+				if (delta[lineEnd] == '\r' && next < delta.size() && delta[next] == '\n') {
+					++next;
+				}
+			}
+			const std::size_t length = next - start;
+			if (length > 0 && HasVisibleText(delta.data() + start, length)) {
+				IdeLogStore::AppendLocal(
+					delta.data() + start,
+					length,
+					IdeLogStore::EntrySource::OutputControlSubclass);
+			}
+			start = next;
+		}
+	}
+	catch (...) {
+	}
+}
+
+void CaptureControlChange(HWND window, const std::string& fallbackText) noexcept
+{
+	try {
+		std::string currentText;
+		if (!ReadControlTextLocal(window, currentText)) {
+			AppendDeltaLines(fallbackText);
+			return;
+		}
+		const std::string delta = ExtractAddedText(g_lastControlText, currentText);
+		g_lastControlText = std::move(currentText);
+		AppendDeltaLines(delta);
+	}
+	catch (...) {
+		AppendDeltaLines(fallbackText);
 	}
 }
 
@@ -156,9 +333,11 @@ LRESULT CALLBACK OutputControlSubclassProc(
 	DWORD_PTR /*referenceData*/)
 {
 	const bool capturesText = message == EM_REPLACESEL || message == WM_SETTEXT;
+	// lParam 仅作读取控件失败时的兜底；日志边界以原输出控件处理后的实际文本变化为准。
+	const std::string capturedText = capturesText ? CopyMessageText(window, lParam) : std::string();
 	const LRESULT result = DefSubclassProc(window, message, wParam, lParam);
 	if (capturesText && (message != WM_SETTEXT || result != FALSE)) {
-		AppendMessageText(window, lParam);
+		CaptureControlChange(window, capturedText);
 	}
 	if (message == WM_WINDOWPOSCHANGED || message == WM_SHOWWINDOW || message == WM_STYLECHANGED) {
 		NotifyLayoutChanged(window);
@@ -168,6 +347,7 @@ LRESULT CALLBACK OutputControlSubclassProc(
 		g_outputWindow = nullptr;
 		g_observerWindow = nullptr;
 		g_layoutChangedMessage = 0;
+		g_lastControlText.clear();
 	}
 	return result;
 }
@@ -196,6 +376,7 @@ bool Attach(HWND outputWindow, HWND observerWindow, UINT layoutChangedMessage) n
 	g_outputWindow = outputWindow;
 	g_observerWindow = observerWindow;
 	g_layoutChangedMessage = layoutChangedMessage;
+	ReadControlTextLocal(outputWindow, g_lastControlText);
 	return true;
 }
 
@@ -205,6 +386,7 @@ void Detach() noexcept
 	g_outputWindow = nullptr;
 	g_observerWindow = nullptr;
 	g_layoutChangedMessage = 0;
+	g_lastControlText.clear();
 	if (outputWindow != nullptr && IsWindow(outputWindow)) {
 		RemoveWindowSubclass(
 			outputWindow,
@@ -218,6 +400,47 @@ bool IsAttachedTo(HWND outputWindow) noexcept
 	return outputWindow != nullptr &&
 		g_outputWindow == outputWindow &&
 		IsWindow(outputWindow);
+}
+
+std::string BuildSelfTestJson()
+{
+	char ansiBuffer[] = {'f', 'i', 'r', 's', 't', '\0', 's', 'e', 'c', 'o', 'n', 'd', '\0'};
+	const std::string ansiCopy = CopyAnsiText(ansiBuffer);
+	ansiBuffer[5] = '-';
+	const bool ansiBufferReusePassed = ansiCopy == "first";
+
+	wchar_t wideBuffer[] = {L'1', L'2', L'3', L'\0', L'4', L'5', L'6', L'\0'};
+	const std::string wideCopy = CopyWideText(wideBuffer);
+	wideBuffer[3] = L'-';
+	const bool wideBufferReusePassed = wideCopy == "123";
+
+	const bool appendDeltaPassed = ExtractAddedText(
+		"* 1\r\n* 2\r\n",
+		"* 1\r\n* 2\r\n* 3\r\n") == "* 3\r\n";
+	const std::string rollingPrevious =
+		"prefix-padding-that-keeps-the-overlap-above-the-minimum-threshold\r\n"
+		"* 100\r\n* 101\r\n* 102\r\n";
+	const std::string rollingCurrent =
+		"* 100\r\n* 101\r\n* 102\r\n* 103\r\n";
+	const bool rollingDeltaPassed = ExtractAddedText(
+		rollingPrevious,
+		rollingCurrent) == "* 103\r\n";
+	const bool replacementDeltaPassed = ExtractAddedText(
+		"old-prefix\r\nkept-line\r\n",
+		"trim-marker\r\nkept-line\r\n") == "trim-marker";
+	const bool deletionSkipped = ExtractAddedText("abcdef", "abc").empty();
+
+	return nlohmann::json({
+		{"name", "ide-output-control-capture"},
+		{"ok", ansiBufferReusePassed && wideBufferReusePassed &&
+			appendDeltaPassed && rollingDeltaPassed && replacementDeltaPassed && deletionSkipped},
+		{"ansi_buffer_reuse_safe", ansiBufferReusePassed},
+		{"wide_buffer_reuse_safe", wideBufferReusePassed},
+		{"append_delta", appendDeltaPassed},
+		{"rolling_snapshot_delta", rollingDeltaPassed},
+		{"replacement_delta", replacementDeltaPassed},
+		{"deletion_skipped", deletionSkipped}
+	}).dump();
 }
 
 } // namespace IdeOutputControlCapture

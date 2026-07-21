@@ -718,8 +718,12 @@ void PauseViewer(HWND window)
 	KillTimer(window, kFlushTimerId);
 	IdeOutputControlCapture::Detach();
 	auto* context = reinterpret_cast<ViewerContext*>(GetWindowLongPtrW(window, GWLP_USERDATA));
-	if (context != nullptr && context->controller != nullptr) {
-		context->controller->put_IsVisible(FALSE);
+	if (context != nullptr) {
+		context->overlayLayoutReady = false;
+		context->overlayVisible = false;
+		if (context->controller != nullptr) {
+			context->controller->put_IsVisible(FALSE);
+		}
 	}
 }
 

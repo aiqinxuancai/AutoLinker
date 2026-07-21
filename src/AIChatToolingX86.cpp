@@ -27,6 +27,7 @@
 #include "IdeCompileOutputCapture.h"
 #include "IdeLogStore.h"
 #include "IdeLogViewer.h"
+#include "IdeOutputControlCapture.h"
 #include "LocalMcpServer.h"
 #include "Logger.h"
 #include "PageCodeCacheManager.h"
@@ -5915,6 +5916,19 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 			{"error", "invalid self-test json"}
 		};
 	}
+	nlohmann::json outputControlCaptureCheck = nlohmann::json::parse(
+		IdeOutputControlCapture::BuildSelfTestJson(),
+		nullptr,
+		false);
+	const bool outputControlCaptureCheckPassed = outputControlCaptureCheck.is_object() &&
+		outputControlCaptureCheck.value("ok", false);
+	if (!outputControlCaptureCheck.is_object()) {
+		outputControlCaptureCheck = {
+			{"name", "ide-output-control-capture"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
 	nlohmann::json logViewerCheck = nlohmann::json::parse(
 		IdeLogViewer::BuildSelfTestJson(),
 		nullptr,
@@ -5934,7 +5948,7 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 		{"ok", creationDetected && unchangedRejected && updateDetected &&
 			appendedErrorDetected && rewrittenErrorDetected && unchangedHistoricalErrorRejected &&
 			outputCaptureCheckPassed && dialogGuardCheckPassed &&
-			logStoreCheckPassed && logViewerCheckPassed},
+			logStoreCheckPassed && outputControlCaptureCheckPassed && logViewerCheckPassed},
 		{"creation_detected", creationDetected},
 		{"unchanged_rejected", unchangedRejected},
 		{"update_detected", updateDetected},
@@ -5944,6 +5958,7 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 		{"internal_output_capture", std::move(outputCaptureCheck)},
 		{"compile_dialog_guard", std::move(dialogGuardCheck)},
 		{"ide_log_store", std::move(logStoreCheck)},
+		{"ide_output_control_capture", std::move(outputControlCaptureCheck)},
 		{"ide_log_viewer", std::move(logViewerCheck)}
 	}).dump();
 }
