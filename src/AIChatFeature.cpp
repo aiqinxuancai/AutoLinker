@@ -3735,13 +3735,17 @@ std::string BuildRemoteNewsLinksHtml()
 		std::set<std::string> seenTitles;
 		AppendNewsLinkItemsHtml(html, parsed, count, seenTitles);
 		if (html.empty()) {
-			OutputStringToELog("[AI Chat][Remote Config] NEWS-LINK parsed but no displayable items");
+			Logger::Instance().Write(
+				"GameAnalytics",
+				"AI Chat Remote Config NEWS-LINK parsed but no displayable items");
 			return std::string();
 		}
 		return "<div class=\"empty-state-news\">" + html + "</div>";
 	}
 	catch (const std::exception& ex) {
-		OutputStringToELog(std::format("[AI Chat][Remote Config] NEWS-LINK parse failed: {}", ex.what()));
+		Logger::Instance().Write(
+			"GameAnalytics",
+			std::format("AI Chat Remote Config NEWS-LINK parse failed: {}", ex.what()));
 		return std::string();
 	}
 }
@@ -6675,16 +6679,18 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 				KillTimer(hWnd, kRemoteConfigPollTimerId);
 				ctx->remoteConfigPollTicksRemaining = 0;
 				if (!snapshot.ready) {
-					OutputStringToELog(std::format(
-						"[AI Chat][Remote Config] polling stopped ready=0 status={} error={}",
-						snapshot.httpStatus,
-						snapshot.error));
+					Logger::Instance().Write(
+						"GameAnalytics",
+						std::format("AI Chat Remote Config polling stopped ready=0 status={} error={}",
+							snapshot.httpStatus,
+							snapshot.error));
 				}
 				else if (snapshot.values.find(kNewsLinkRemoteConfigKey) == snapshot.values.end()) {
-					OutputStringToELog(std::format(
-						"[AI Chat][Remote Config] {} not found, keys={}",
-						kNewsLinkRemoteConfigKey,
-						snapshot.values.size()));
+					Logger::Instance().Write(
+						"GameAnalytics",
+						std::format("AI Chat Remote Config {} not found, keys={}",
+							kNewsLinkRemoteConfigKey,
+							snapshot.values.size()));
 				}
 			}
 			else {

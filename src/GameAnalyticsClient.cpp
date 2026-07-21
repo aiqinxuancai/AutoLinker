@@ -377,6 +377,23 @@ void LogGA(const std::string& message)
 	Logger::Instance().Write("GameAnalytics", message);
 }
 
+std::string BuildRemoteConfigRequestError(int httpStatus, const std::string& responseBody)
+{
+	const std::string responsePreview = responseBody.substr(0, 600);
+	if (httpStatus == 0) {
+		return responsePreview.empty()
+			? "remote config transport error without details"
+			: responsePreview;
+	}
+
+	std::string error = std::format("remote config HTTP {}", httpStatus);
+	if (!responsePreview.empty()) {
+		error += ": ";
+		error += responsePreview;
+	}
+	return error;
+}
+
 std::vector<std::string> ParseStartShowIdeMessages(const std::string& rawValue, std::string& outError)
 {
 	outError.clear();
@@ -519,13 +536,16 @@ bool UpdateServerOffsetFromJson(const nlohmann::json& body)
 void UpdateRemoteSnapshotRequestStarted()
 {
 	std::lock_guard<std::mutex> lock(g_mutex);
+	g_state.remoteConfigs.ready = false;
 	g_state.remoteConfigs.requestInFlight = true;
+	g_state.remoteConfigs.httpStatus = 0;
 	g_state.remoteConfigs.error.clear();
 }
 
 void UpdateRemoteSnapshotFailure(int status, const std::string& error)
 {
 	std::lock_guard<std::mutex> lock(g_mutex);
+	g_state.remoteConfigs.ready = false;
 	g_state.remoteConfigs.requestInFlight = false;
 	g_state.remoteConfigs.httpStatus = status;
 	g_state.remoteConfigs.error = error;
@@ -678,27 +698,29 @@ void PerformRemoteConfigRefresh()
 		true,
 		true);
 
+	if (response.second != 200 && response.second != 201) {
+		const std::string error = BuildRemoteConfigRequestError(response.second, response.first);
+		UpdateRemoteSnapshotFailure(response.second, error);
+		LogGA(std::format(
+			"remote config request failed status={} error={}",
+			response.second,
+			error));
+		return;
+	}
+
 	try {
 		const nlohmann::json parsed = response.first.empty()
 			? nlohmann::json::object()
 			: nlohmann::json::parse(response.first);
 		UpdateServerOffsetFromJson(parsed);
-		if (response.second == 200 || response.second == 201) {
-			UpdateRemoteSnapshotSuccess(response.second, parsed);
-			const auto snapshot = GameAnalyticsClient::GetRemoteConfigs();
-			OutputStartShowIdeRemoteConfig(snapshot);
-			LogGA(std::format(
-				"remote config success status={} hash={} keys={} response={}",
-				response.second,
-				snapshot.configsHash,
-				snapshot.values.size(),
-				response.first.substr(0, 600)));
-			return;
-		}
-		UpdateRemoteSnapshotFailure(response.second, "remote config http error");
+		UpdateRemoteSnapshotSuccess(response.second, parsed);
+		const auto snapshot = GameAnalyticsClient::GetRemoteConfigs();
+		OutputStartShowIdeRemoteConfig(snapshot);
 		LogGA(std::format(
-			"remote config failed status={} response={}",
+			"remote config success status={} hash={} keys={} response={}",
 			response.second,
+			snapshot.configsHash,
+			snapshot.values.size(),
 			response.first.substr(0, 600)));
 	}
 	catch (const std::exception& ex) {
@@ -920,6 +942,15 @@ bool ParseRemoteConfigExampleOk()
 		snapshot.values.at("NEWS-LINK").find("AutoLinker") != std::string::npos;
 }
 
+bool RemoteConfigRequestErrorPreservedOk()
+{
+	const std::string transportError =
+		"HttpSendRequest failed, wininet_error=12029 ERROR_INTERNET_CANNOT_CONNECT";
+	return BuildRemoteConfigRequestError(0, transportError) == transportError &&
+		BuildRemoteConfigRequestError(503, "Service Unavailable") ==
+		"remote config HTTP 503: Service Unavailable";
+}
+
 bool StartShowIdeRemoteConfigParseOk()
 {
 	std::string error;
@@ -1128,12 +1159,14 @@ std::string BuildSelfTestReportJson()
 		g_state.remoteConfigs = RemoteConfigSnapshot();
 	}
 	report["remote_config_parse_ok"] = ParseRemoteConfigExampleOk();
+	report["remote_config_request_error_preserved_ok"] = RemoteConfigRequestErrorPreservedOk();
 	report["start_show_ide_parse_ok"] = StartShowIdeRemoteConfigParseOk();
 	report["lifecycle_event_format_ok"] = LifecycleEventFormatOk();
 	report["ok"] =
 		report["hmac_sha256_base64_ok"].get<bool>() &&
 		report["gzip_stored_deflate_ok"].get<bool>() &&
 		report["remote_config_parse_ok"].get<bool>() &&
+		report["remote_config_request_error_preserved_ok"].get<bool>() &&
 		report["start_show_ide_parse_ok"].get<bool>() &&
 		report["lifecycle_event_format_ok"].get<bool>();
 	return report.dump(2);
