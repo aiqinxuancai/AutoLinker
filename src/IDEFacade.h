@@ -164,6 +164,8 @@ public:
 	bool AppendOutputWindowLine(const std::string& text) const;
 	// 读取 IDE 输出窗口全文（ANSI 编码，失败时返回 false）。
 	bool GetOutputWindowText(std::string& outText) const;
+	// 获取 IDE 原生日志输出控件句柄，供受控的窗口子类化使用。
+	HWND GetOutputWindowHandle() const;
 
 	// ECOM 管理。
 	bool AddECOM(const std::string& filePath) const;

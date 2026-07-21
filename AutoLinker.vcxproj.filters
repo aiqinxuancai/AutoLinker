@@ -113,10 +113,10 @@
     <ClCompile Include="src\IdeLogStore.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
-    <ClCompile Include="src\IdeLogViewer.cpp">
+    <ClCompile Include="src\IdeOutputControlCapture.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
-    <ClCompile Include="src\IdeOutputTabController.cpp">
+    <ClCompile Include="src\IdeLogViewer.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
     <ClCompile Include="src\MemFind.cpp">
@@ -375,10 +375,10 @@
     <ClInclude Include="src\IdeLogStore.h">
       <Filter>Utils</Filter>
     </ClInclude>
-    <ClInclude Include="src\IdeLogViewer.h">
+    <ClInclude Include="src\IdeOutputControlCapture.h">
       <Filter>Utils</Filter>
     </ClInclude>
-    <ClInclude Include="src\IdeOutputTabController.h">
+    <ClInclude Include="src\IdeLogViewer.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\InlineHook.h">

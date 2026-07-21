@@ -2392,6 +2392,11 @@ HWND IDEFacade::FindOutputWindowHandle() const
 	return outputHwnd;
 }
 
+HWND IDEFacade::GetOutputWindowHandle() const
+{
+	return FindOutputWindowHandle();
+}
+
 bool IDEFacade::GetOutputWindowText(std::string& outText) const
 {
 	HWND outputHwnd = FindOutputWindowHandle();

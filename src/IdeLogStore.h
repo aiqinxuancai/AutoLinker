@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-// IDE 全量日志环形缓冲：供内部输出 Hook 写入，并由日志查看器按序增量读取。
+// IDE 全量日志环形缓冲：供日志控件采集器写入，并由日志查看器按序增量读取。
 
 #include <cstddef>
 #include <cstdint>
@@ -13,6 +13,7 @@ enum class EntrySource {
 	IdeHook,
 	AutoLinkerDirect,
 	ExistingOutputSnapshot,
+	OutputControlSubclass,
 	OutputControlFallback,
 };
 
@@ -20,7 +21,7 @@ struct Entry {
 	std::uint64_t sequence = 0;
 	std::uint64_t unixTimeMs = 0;
 	std::uint32_t threadId = 0;
-	EntrySource source = EntrySource::IdeHook;
+	EntrySource source = EntrySource::OutputControlSubclass;
 	std::string localText;
 	bool truncated = false;
 };
@@ -33,8 +34,11 @@ struct Batch {
 	std::vector<Entry> entries;
 };
 
-// Hook 安全边界：内部吞掉分配异常，且对单条与总缓冲大小设有上限。
-void AppendLocal(const char* text, std::size_t length, EntrySource source = EntrySource::IdeHook) noexcept;
+// 采集安全边界：内部吞掉分配异常，且对单条与总缓冲大小设有上限。
+void AppendLocal(
+	const char* text,
+	std::size_t length,
+	EntrySource source = EntrySource::OutputControlSubclass) noexcept;
 
 // 仅日志中心打开期间启用 UI 环形缓冲；编译会话 Hook 缓冲不受此开关影响。
 void BeginRecording() noexcept;

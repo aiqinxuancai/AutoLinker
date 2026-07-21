@@ -4,6 +4,7 @@
 #include <CommDlg.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
@@ -18,11 +19,11 @@
 
 #include "..\\thirdparty\\json.hpp"
 #include "..\\thirdparty\\WebView2.h"
+#include "ConfigManager.h"
 #include "Global.h"
 #include "IDEFacade.h"
-#include "IdeCompileOutputCapture.h"
 #include "IdeLogStore.h"
-#include "IdeOutputTabController.h"
+#include "IdeOutputControlCapture.h"
 #include "Logger.h"
 #include "ResourceTextLoader.h"
 #include "resource.h"
@@ -36,6 +37,7 @@ constexpr UINT kFlushIntervalMs = 80;
 constexpr std::size_t kMaxEntriesPerBatch = 500;
 constexpr std::size_t kMaxTextBytesPerBatch = 512 * 1024;
 constexpr ULONGLONG kControlFallbackPollMs = 400;
+constexpr char kOpenStateConfigKey[] = "ui.log_center.open";
 
 struct ViewerContext {
 	HWND hostWindow = nullptr;
@@ -47,15 +49,30 @@ struct ViewerContext {
 	std::uint64_t generation = 0;
 	ULONGLONG lastControlPollTick = 0;
 	std::string lastControlText;
+	bool controlFallbackBaselineReady = false;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> environment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> controller;
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
 };
 
-HWND g_mainWindow = nullptr;
 HWND g_viewerWindow = nullptr;
 bool g_isOpen = false;
-IdeOutputTabController::HiddenTabState g_hiddenTabState;
+ConfigManager* g_persistenceConfig = nullptr;
+
+bool ParsePersistedOpenState(const std::string& value)
+{
+	std::string normalized = value;
+	std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+		[](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+	return normalized == "1" || normalized == "true" || normalized == "yes" || normalized == "on";
+}
+
+void PersistOpenState(bool isOpen)
+{
+	if (g_persistenceConfig != nullptr) {
+		g_persistenceConfig->setValue(kOpenStateConfigKey, isOpen ? "1" : "0");
+	}
+}
 
 HMODULE GetCurrentModuleHandle()
 {
@@ -125,36 +142,6 @@ std::string WideToUtf8(const std::wstring& text)
 		return {};
 	}
 	return utf8;
-}
-
-std::string WideToLocal(const std::wstring& text)
-{
-	if (text.empty()) {
-		return {};
-	}
-	const int length = WideCharToMultiByte(
-		CP_ACP,
-		0,
-		text.data(),
-		static_cast<int>(text.size()),
-		nullptr,
-		0,
-		nullptr,
-		nullptr);
-	if (length <= 0) {
-		return {};
-	}
-	std::string local(static_cast<std::size_t>(length), '\0');
-	WideCharToMultiByte(
-		CP_ACP,
-		0,
-		text.data(),
-		static_cast<int>(text.size()),
-		local.data(),
-		length,
-		nullptr,
-		nullptr);
-	return local;
 }
 
 std::string LocalToUtf8(const std::string& text)
@@ -252,7 +239,8 @@ nlohmann::json BuildEntryJson(const IdeLogStore::Entry& entry)
 	if (entry.source == IdeLogStore::EntrySource::ExistingOutputSnapshot) {
 		source = "snapshot";
 	}
-	else if (entry.source == IdeLogStore::EntrySource::OutputControlFallback) {
+	else if (entry.source == IdeLogStore::EntrySource::OutputControlSubclass ||
+		entry.source == IdeLogStore::EntrySource::OutputControlFallback) {
 		source = "control";
 	}
 	else if (entry.source == IdeLogStore::EntrySource::AutoLinkerDirect) {
@@ -567,9 +555,34 @@ void StartWebView(HWND window, ViewerContext* context)
 	}
 }
 
+bool TryAttachOutputControl()
+{
+	const HWND outputWindow = IDEFacade::Instance().GetOutputWindowHandle();
+	if (outputWindow == nullptr) {
+		IdeOutputControlCapture::Detach();
+		return false;
+	}
+	return IdeOutputControlCapture::Attach(outputWindow);
+}
+
+void StartOutputControlCapture(ViewerContext* context)
+{
+	if (context == nullptr) {
+		return;
+	}
+	context->lastControlPollTick = 0;
+	context->lastControlText.clear();
+	context->controlFallbackBaselineReady = false;
+	if (TryAttachOutputControl()) {
+		return;
+	}
+	context->controlFallbackBaselineReady =
+		IDEFacade::Instance().GetOutputWindowText(context->lastControlText);
+}
+
 void PollOutputControlFallback(ViewerContext* context)
 {
-	if (context == nullptr || IdeCompileOutputCapture::IsHookAvailable()) {
+	if (context == nullptr) {
 		return;
 	}
 	const ULONGLONG now = GetTickCount64();
@@ -578,9 +591,19 @@ void PollOutputControlFallback(ViewerContext* context)
 		return;
 	}
 	context->lastControlPollTick = now;
+	if (TryAttachOutputControl()) {
+		context->lastControlText.clear();
+		context->controlFallbackBaselineReady = false;
+		return;
+	}
 
 	std::string currentText;
 	if (!IDEFacade::Instance().GetOutputWindowText(currentText)) {
+		return;
+	}
+	if (!context->controlFallbackBaselineReady) {
+		context->lastControlText = std::move(currentText);
+		context->controlFallbackBaselineReady = true;
 		return;
 	}
 	std::string delta;
@@ -600,12 +623,65 @@ void PollOutputControlFallback(ViewerContext* context)
 	}
 }
 
+bool SynchronizeOverlay(HWND window, ViewerContext* context)
+{
+	if (window == nullptr || !IsWindow(window) || context == nullptr || !g_isOpen) {
+		return false;
+	}
+
+	const HWND outputWindow = IDEFacade::Instance().GetOutputWindowHandle();
+	const HWND outputParent = outputWindow != nullptr ? GetParent(outputWindow) : nullptr;
+	if (outputWindow == nullptr || !IsWindow(outputWindow) ||
+		outputParent == nullptr || !IsWindow(outputParent)) {
+		ShowWindow(window, SW_HIDE);
+		if (context->controller != nullptr) {
+			context->controller->put_IsVisible(FALSE);
+		}
+		return false;
+	}
+
+	if (GetParent(window) != outputParent) {
+		ShowWindow(window, SW_HIDE);
+		SetLastError(ERROR_SUCCESS);
+		if (SetParent(window, outputParent) == nullptr && GetLastError() != ERROR_SUCCESS) {
+			return false;
+		}
+	}
+
+	RECT bounds = {};
+	if (GetWindowRect(outputWindow, &bounds) == FALSE) {
+		ShowWindow(window, SW_HIDE);
+		if (context->controller != nullptr) {
+			context->controller->put_IsVisible(FALSE);
+		}
+		return false;
+	}
+	MapWindowPoints(HWND_DESKTOP, outputParent, reinterpret_cast<LPPOINT>(&bounds), 2);
+
+	const int width = (std::max)(0L, bounds.right - bounds.left);
+	const int height = (std::max)(0L, bounds.bottom - bounds.top);
+	const bool shouldShow = IsWindowVisible(outputWindow) != FALSE && width > 0 && height > 0;
+	SetWindowPos(
+		window,
+		HWND_TOP,
+		bounds.left,
+		bounds.top,
+		width,
+		height,
+		SWP_NOACTIVATE | (shouldShow ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+	if (context->controller != nullptr) {
+		context->controller->put_IsVisible(shouldShow ? TRUE : FALSE);
+	}
+	return shouldShow;
+}
+
 void PauseViewer(HWND window)
 {
 	if (window == nullptr || !IsWindow(window)) {
 		return;
 	}
 	KillTimer(window, kFlushTimerId);
+	IdeOutputControlCapture::Detach();
 	auto* context = reinterpret_cast<ViewerContext*>(GetWindowLongPtrW(window, GWLP_USERDATA));
 	if (context != nullptr && context->controller != nullptr) {
 		context->controller->put_IsVisible(FALSE);
@@ -623,14 +699,9 @@ void ResumeViewer(HWND window)
 	}
 	context->lastSequence = 0;
 	context->generation = 0;
-	context->lastControlPollTick = 0;
-	if (!IdeCompileOutputCapture::IsHookAvailable()) {
-		IDEFacade::Instance().GetOutputWindowText(context->lastControlText);
-	}
-	if (context->controller != nullptr) {
-		context->controller->put_IsVisible(TRUE);
-		LayoutViewer(window, context);
-	}
+	StartOutputControlCapture(context);
+	LayoutViewer(window, context);
+	SynchronizeOverlay(window, context);
 	SetTimer(window, kFlushTimerId, kFlushIntervalMs, nullptr);
 }
 
@@ -686,9 +757,7 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
 		SendMessageW(created->loadingLabel, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
 		SendMessageW(created->fallbackEdit, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(ANSI_FIXED_FONT)), TRUE);
 		SetTimer(window, kFlushTimerId, kFlushIntervalMs, nullptr);
-		if (!IdeCompileOutputCapture::IsHookAvailable()) {
-			IDEFacade::Instance().GetOutputWindowText(created->lastControlText);
-		}
+		StartOutputControlCapture(created);
 		StartWebView(window, created);
 		return 0;
 	}
@@ -697,6 +766,7 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
 		return 0;
 	case WM_TIMER:
 		if (wParam == kFlushTimerId) {
+			SynchronizeOverlay(window, context);
 			PollOutputControlFallback(context);
 			if (context != nullptr && context->fallbackActive) {
 				AppendFallbackBatch(context);
@@ -714,13 +784,13 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
 		}
 		return 0;
 	case WM_NCDESTROY:
+		IdeOutputControlCapture::Detach();
 		IdeLogStore::EndRecording();
 		SetWindowLongPtrW(window, GWLP_USERDATA, 0);
 		delete context;
 		if (g_viewerWindow == window) {
 			g_viewerWindow = nullptr;
 			g_isOpen = false;
-			g_hiddenTabState = {};
 		}
 		return DefWindowProcW(window, message, wParam, lParam);
 	default:
@@ -746,6 +816,22 @@ bool RegisterViewerWindowClass()
 
 } // namespace
 
+void ConfigurePersistence(ConfigManager* configManager)
+{
+	g_persistenceConfig = configManager;
+}
+
+void RestorePersistedState(HWND mainWindow)
+{
+	if (g_persistenceConfig == nullptr ||
+		!ParsePersistedOpenState(g_persistenceConfig->getValue(kOpenStateConfigKey))) {
+		return;
+	}
+	if (!Initialize(mainWindow)) {
+		Logger::Instance().Write("IdeLogViewer", "failed to restore persisted open state");
+	}
+}
+
 bool Initialize(HWND mainWindow)
 {
 	if (mainWindow == nullptr || !IsWindow(mainWindow)) {
@@ -756,20 +842,20 @@ bool Initialize(HWND mainWindow)
 			return true;
 		}
 		IdeLogStore::BeginRecording();
-		const std::string caption = WideToLocal(L"日志中心");
-		if (!IdeOutputTabController::RestoreHiddenTab(
-			g_viewerWindow,
-			caption,
-			g_hiddenTabState)) {
-			IdeLogStore::EndRecording();
-			Logger::Instance().Write("IdeLogViewer", "failed to restore hidden log tab");
-			return false;
-		}
-		ResumeViewer(g_viewerWindow);
 		g_isOpen = true;
-		Logger::Instance().Write("IdeLogViewer", "restored registered log viewer");
+		ResumeViewer(g_viewerWindow);
+		PersistOpenState(true);
+		Logger::Instance().Write("IdeLogViewer", "restored native output overlay");
 		OutputStringToELog("日志中心已开始记录");
 		return true;
+	}
+
+	const HWND outputWindow = IDEFacade::Instance().GetOutputWindowHandle();
+	const HWND outputParent = outputWindow != nullptr ? GetParent(outputWindow) : nullptr;
+	if (outputWindow == nullptr || !IsWindow(outputWindow) ||
+		outputParent == nullptr || !IsWindow(outputParent)) {
+		Logger::Instance().Write("IdeLogViewer", "native output control is unavailable");
+		return false;
 	}
 	if (!RegisterViewerWindowClass()) {
 		Logger::Instance().Write("IdeLogViewer", "failed to register viewer window class");
@@ -777,7 +863,6 @@ bool Initialize(HWND mainWindow)
 	}
 
 	IdeLogStore::BeginRecording();
-	g_mainWindow = mainWindow;
 	g_viewerWindow = CreateWindowExW(
 		WS_EX_CONTROLPARENT,
 		kViewerWindowClass,
@@ -787,64 +872,50 @@ bool Initialize(HWND mainWindow)
 		0,
 		960,
 		640,
-		mainWindow,
+		outputParent,
 		nullptr,
 		GetCurrentModuleHandle(),
 		nullptr);
 	if (g_viewerWindow == nullptr) {
+		IdeOutputControlCapture::Detach();
 		IdeLogStore::EndRecording();
 		Logger::Instance().Write("IdeLogViewer", "failed to create viewer window");
 		return false;
 	}
 
-	const std::string caption = WideToLocal(L"日志中心");
-	const std::string toolTip = WideToLocal(L"AutoLinker 高性能日志查看器");
-	if (!IDEFacade::Instance().AddOutputTab(g_viewerWindow, caption, toolTip, nullptr)) {
-		DestroyWindow(g_viewerWindow);
-		g_viewerWindow = nullptr;
-		IdeLogStore::EndRecording();
-		Logger::Instance().Write("IdeLogViewer", "FN_ADD_TAB failed");
-		return false;
-	}
-	g_hiddenTabState = {};
 	g_isOpen = true;
-	Logger::Instance().Write("IdeLogViewer", "FN_ADD_TAB registered log viewer");
+	auto* context = reinterpret_cast<ViewerContext*>(GetWindowLongPtrW(g_viewerWindow, GWLP_USERDATA));
+	SynchronizeOverlay(g_viewerWindow, context);
+	PersistOpenState(true);
+	Logger::Instance().Write("IdeLogViewer", "native output overlay opened");
 	OutputStringToELog("日志中心已开始记录");
 	return true;
 }
 
 void Close()
 {
-	if (!g_isOpen || g_viewerWindow == nullptr || !IsWindow(g_viewerWindow)) {
+	if (!g_isOpen) {
 		return;
 	}
-	const std::string caption = WideToLocal(L"日志中心");
-	if (g_mainWindow == nullptr || !IsWindow(g_mainWindow) ||
-		!IdeOutputTabController::HideTabByCaption(
-			g_mainWindow,
-			g_viewerWindow,
-			caption,
-			g_hiddenTabState)) {
-		Logger::Instance().Write("IdeLogViewer", "failed to hide log tab; viewer remains open");
-		return;
-	}
-	PauseViewer(g_viewerWindow);
-	ShowWindow(g_viewerWindow, SW_HIDE);
-	IdeLogStore::EndRecording();
 	g_isOpen = false;
-	Logger::Instance().Write("IdeLogViewer", "paused and hid registered log viewer");
+	PersistOpenState(false);
+	if (g_viewerWindow != nullptr && IsWindow(g_viewerWindow)) {
+		PauseViewer(g_viewerWindow);
+		ShowWindow(g_viewerWindow, SW_HIDE);
+	}
+	IdeLogStore::EndRecording();
+	Logger::Instance().Write("IdeLogViewer", "native output overlay closed");
 }
 
 void Shutdown()
 {
 	g_isOpen = false;
+	IdeOutputControlCapture::Detach();
 	IdeLogStore::EndRecording();
 	if (g_viewerWindow != nullptr && IsWindow(g_viewerWindow)) {
 		DestroyWindow(g_viewerWindow);
 	}
 	g_viewerWindow = nullptr;
-	g_mainWindow = nullptr;
-	g_hiddenTabState = {};
 }
 
 bool IsOpen()

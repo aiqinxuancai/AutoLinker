@@ -464,6 +464,12 @@ bool FneInit()
 	TraceInitStep("开始安装文件与编译相关 Hook");
 	StartHookCreateFileA();
 	TraceInitStep("文件与编译相关 Hook 安装完成");
+	IdeLogViewer::ConfigurePersistence(&g_configManager);
+	if (!headlessCompileMode) {
+		TraceInitStep("开始恢复日志中心状态");
+		IdeLogViewer::RestorePersistedState(g_hwnd);
+		TraceInitStep("日志中心状态恢复完成");
+	}
 	HeadlessCompileRunner::NotifyIdeRuntimeReady();
 	TraceInitStep("检查无头编译请求");
 	HeadlessCompileRunner::StartIfRequested();

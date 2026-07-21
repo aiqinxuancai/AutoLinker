@@ -1,15 +1,21 @@
 ﻿#pragma once
 
-// 基于 FN_ADD_TAB 与 WebView2 的 IDE 高性能日志查看器。
+// 覆盖 IDE 原生日志控件并基于 WebView2 展示日志的高性能查看器。
 
 #include <Windows.h>
 
 #include <string>
 
+class ConfigManager;
+
 namespace IdeLogViewer {
 
+// 设置日志中心开关状态使用的持久化配置。
+void ConfigurePersistence(ConfigManager* configManager);
+// 按持久化状态恢复日志中心；未启用时不创建界面。
+void RestorePersistedState(HWND mainWindow);
 bool Initialize(HWND mainWindow);
-// 暂停并隐藏日志中心，但保留首次 FN_ADD_TAB 建立的 IDE 页面映射。
+// 暂停并隐藏日志中心，露出下方的 IDE 原生日志控件。
 void Close();
 // IDE 退出时彻底释放查看器。
 void Shutdown();

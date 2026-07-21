@@ -14,8 +14,6 @@
 #include "AIChatFeature.h"
 #include "Global.h"
 #include "IDEFacade.h"
-#include "IdeCompileOutputCapture.h"
-#include "IdeLogStore.h"
 #include "Logger.h"
 #include "PageCodeCacheManager.h"
 #include "WindowHelper.h"
@@ -81,14 +79,6 @@ void OutputStringToELog(const std::string& szbuf)
 		: line.substr(0, 256 * 1024) + "\r\n[AutoLinker] 单条输出过长，IDE 窗口已截断，完整内容已写入日志文件。";
 	OutputDebugStringA((line + "\n").c_str());
 	IDEFacade::Instance().AppendOutputWindowLine(ideLine);
-	// 直接编辑旧输出控件不会经过 IDE 内部输出 Hook；日志中心打开时需显式广播。
-	// Hook 不可用时由打开中的日志中心轮询控件，避免同一条日志被重复记录。
-	if (IdeCompileOutputCapture::IsHookAvailable()) {
-		IdeLogStore::AppendLocal(
-			ideLine.data(),
-			ideLine.size(),
-			IdeLogStore::EntrySource::AutoLinkerDirect);
-	}
 	Logger::Instance().WriteGbk(line);
 }
 
