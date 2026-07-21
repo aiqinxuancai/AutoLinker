@@ -6,8 +6,8 @@
 
 namespace IdeOutputControlCapture {
 
-// 子类化指定的 IDE 日志控件；重复传入同一窗口时保持现有安装。
-bool Attach(HWND outputWindow) noexcept;
+// 子类化指定的 IDE 日志控件；布局变化时向观察窗口投递指定消息。
+bool Attach(HWND outputWindow, HWND observerWindow = nullptr, UINT layoutChangedMessage = 0) noexcept;
 
 // 解除当前日志控件子类化。
 void Detach() noexcept;

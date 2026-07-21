@@ -34,6 +34,7 @@ namespace {
 constexpr wchar_t kViewerWindowClass[] = L"AutoLinkerIdeLogViewerWindow";
 constexpr UINT_PTR kFlushTimerId = 1;
 constexpr UINT kFlushIntervalMs = 80;
+constexpr UINT kOutputLayoutChangedMessage = WM_APP + 0x431;
 constexpr std::size_t kMaxEntriesPerBatch = 500;
 constexpr std::size_t kMaxTextBytesPerBatch = 512 * 1024;
 constexpr ULONGLONG kControlFallbackPollMs = 400;
@@ -561,17 +562,22 @@ void StartWebView(HWND window, ViewerContext* context)
 	}
 }
 
-bool TryAttachOutputControl()
+bool SynchronizeOverlay(HWND window, ViewerContext* context, bool placeAboveOutput);
+
+bool TryAttachOutputControl(HWND observerWindow)
 {
 	const HWND outputWindow = IDEFacade::Instance().GetOutputWindowHandle();
 	if (outputWindow == nullptr) {
 		IdeOutputControlCapture::Detach();
 		return false;
 	}
-	return IdeOutputControlCapture::Attach(outputWindow);
+	return IdeOutputControlCapture::Attach(
+		outputWindow,
+		observerWindow,
+		kOutputLayoutChangedMessage);
 }
 
-void StartOutputControlCapture(ViewerContext* context)
+void StartOutputControlCapture(HWND window, ViewerContext* context)
 {
 	if (context == nullptr) {
 		return;
@@ -579,14 +585,14 @@ void StartOutputControlCapture(ViewerContext* context)
 	context->lastControlPollTick = 0;
 	context->lastControlText.clear();
 	context->controlFallbackBaselineReady = false;
-	if (TryAttachOutputControl()) {
+	if (TryAttachOutputControl(window)) {
 		return;
 	}
 	context->controlFallbackBaselineReady =
 		IDEFacade::Instance().GetOutputWindowText(context->lastControlText);
 }
 
-void PollOutputControlFallback(ViewerContext* context)
+void PollOutputControlFallback(HWND window, ViewerContext* context)
 {
 	if (context == nullptr) {
 		return;
@@ -597,7 +603,10 @@ void PollOutputControlFallback(ViewerContext* context)
 		return;
 	}
 	context->lastControlPollTick = now;
-	if (TryAttachOutputControl()) {
+	const bool attached = TryAttachOutputControl(window);
+	// 子类通知负责正常布局变化；此处仅为控件销毁重建和祖先可见性变化兜底。
+	SynchronizeOverlay(window, context, false);
+	if (attached) {
 		context->lastControlText.clear();
 		context->controlFallbackBaselineReady = false;
 		return;
@@ -629,7 +638,7 @@ void PollOutputControlFallback(ViewerContext* context)
 	}
 }
 
-bool SynchronizeOverlay(HWND window, ViewerContext* context, bool bringToFront)
+bool SynchronizeOverlay(HWND window, ViewerContext* context, bool placeAboveOutput)
 {
 	if (window == nullptr || !IsWindow(window) || context == nullptr || !g_isOpen) {
 		return false;
@@ -681,17 +690,12 @@ bool SynchronizeOverlay(HWND window, ViewerContext* context, bool bringToFront)
 		EqualRect(&context->overlayBounds, &bounds) == FALSE;
 	const bool visibilityChanged = !context->overlayLayoutReady ||
 		context->overlayVisible != shouldShow;
-	if (bringToFront || targetChanged || boundsChanged || visibilityChanged) {
-		// 后台同步不改变同级窗口层级；仅由用户显式打开时置顶。
+	if (placeAboveOutput || targetChanged || boundsChanged || visibilityChanged) {
 		UINT flags = SWP_NOACTIVATE | (shouldShow ? SWP_SHOWWINDOW : SWP_HIDEWINDOW);
-		HWND insertAfter = HWND_TOP;
-		if (!bringToFront) {
-			flags |= SWP_NOZORDER;
-			insertAfter = nullptr;
-		}
+		flags |= SWP_NOZORDER;
 		if (SetWindowPos(
 			window,
-			insertAfter,
+			nullptr,
 			bounds.left,
 			bounds.top,
 			width,
@@ -701,6 +705,17 @@ bool SynchronizeOverlay(HWND window, ViewerContext* context, bool bringToFront)
 			context->overlayVisible = false;
 			return false;
 		}
+	}
+	if (shouldShow && (placeAboveOutput || targetChanged || visibilityChanged)) {
+		// 只建立日志窗口与原输出控件的相对层级，不读取或重排其他同级窗口。
+		SetWindowPos(
+			outputWindow,
+			window,
+			0,
+			0,
+			0,
+			0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 	}
 	context->overlayOutputWindow = outputWindow;
 	context->overlayParentWindow = outputParent;
@@ -737,7 +752,7 @@ void ResumeViewer(HWND window)
 	}
 	context->lastSequence = 0;
 	context->generation = 0;
-	StartOutputControlCapture(context);
+	StartOutputControlCapture(window, context);
 	LayoutViewer(window, context);
 	SynchronizeOverlay(window, context, true);
 	SetTimer(window, kFlushTimerId, kFlushIntervalMs, nullptr);
@@ -795,17 +810,19 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
 		SendMessageW(created->loadingLabel, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
 		SendMessageW(created->fallbackEdit, WM_SETFONT, reinterpret_cast<WPARAM>(GetStockObject(ANSI_FIXED_FONT)), TRUE);
 		SetTimer(window, kFlushTimerId, kFlushIntervalMs, nullptr);
-		StartOutputControlCapture(created);
+		StartOutputControlCapture(window, created);
 		StartWebView(window, created);
 		return 0;
 	}
 	case WM_SIZE:
 		LayoutViewer(window, context);
 		return 0;
+	case kOutputLayoutChangedMessage:
+		SynchronizeOverlay(window, context, false);
+		return 0;
 	case WM_TIMER:
 		if (wParam == kFlushTimerId) {
-			SynchronizeOverlay(window, context, false);
-			PollOutputControlFallback(context);
+			PollOutputControlFallback(window, context);
 			if (context != nullptr && context->fallbackActive) {
 				AppendFallbackBatch(context);
 			}

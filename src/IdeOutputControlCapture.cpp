@@ -16,6 +16,17 @@ constexpr UINT_PTR kSubclassId = 0xA110;
 constexpr std::size_t kMaxMessageChars = 256 * 1024;
 
 HWND g_outputWindow = nullptr;
+HWND g_observerWindow = nullptr;
+UINT g_layoutChangedMessage = 0;
+
+void NotifyLayoutChanged(HWND outputWindow) noexcept
+{
+	const HWND observerWindow = g_observerWindow;
+	const UINT message = g_layoutChangedMessage;
+	if (observerWindow != nullptr && IsWindow(observerWindow) && message != 0) {
+		PostMessageW(observerWindow, message, reinterpret_cast<WPARAM>(outputWindow), 0);
+	}
+}
 
 std::size_t SafeAnsiLength(const char* text, std::size_t maxLength) noexcept
 {
@@ -149,20 +160,28 @@ LRESULT CALLBACK OutputControlSubclassProc(
 	if (capturesText && (message != WM_SETTEXT || result != FALSE)) {
 		AppendMessageText(window, lParam);
 	}
+	if (message == WM_WINDOWPOSCHANGED || message == WM_SHOWWINDOW || message == WM_STYLECHANGED) {
+		NotifyLayoutChanged(window);
+	}
 	if (message == WM_NCDESTROY && g_outputWindow == window) {
+		NotifyLayoutChanged(window);
 		g_outputWindow = nullptr;
+		g_observerWindow = nullptr;
+		g_layoutChangedMessage = 0;
 	}
 	return result;
 }
 
 } // namespace
 
-bool Attach(HWND outputWindow) noexcept
+bool Attach(HWND outputWindow, HWND observerWindow, UINT layoutChangedMessage) noexcept
 {
 	if (outputWindow == nullptr || !IsWindow(outputWindow)) {
 		return false;
 	}
 	if (IsAttachedTo(outputWindow)) {
+		g_observerWindow = observerWindow;
+		g_layoutChangedMessage = layoutChangedMessage;
 		return true;
 	}
 
@@ -175,6 +194,8 @@ bool Attach(HWND outputWindow) noexcept
 		return false;
 	}
 	g_outputWindow = outputWindow;
+	g_observerWindow = observerWindow;
+	g_layoutChangedMessage = layoutChangedMessage;
 	return true;
 }
 
@@ -182,6 +203,8 @@ void Detach() noexcept
 {
 	const HWND outputWindow = g_outputWindow;
 	g_outputWindow = nullptr;
+	g_observerWindow = nullptr;
+	g_layoutChangedMessage = 0;
 	if (outputWindow != nullptr && IsWindow(outputWindow)) {
 		RemoveWindowSubclass(
 			outputWindow,
