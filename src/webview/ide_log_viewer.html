@@ -106,16 +106,16 @@
     .tool-button.danger:hover { color: var(--danger); border-color: var(--danger); }
     .main { grid-row: 2; position: relative; min-height: 0; display: grid; grid-template-rows: 27px minmax(0, 1fr); }
     .header-row {
-      display: grid; grid-template-columns: 92px 64px minmax(0, 1fr);
+      display: grid; grid-template-columns: 92px minmax(0, 1fr);
       align-items: center; padding: 0 11px; color: var(--muted);
       background: var(--panel-solid); border-bottom: 1px solid var(--border);
       font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
     }
     .viewport { position: relative; overflow: auto; min-height: 0; contain: strict; background: var(--panel-solid); }
-    #virtual-spacer { position: relative; width: 100%; min-width: 480px; }
+    #virtual-spacer { position: relative; width: 100%; min-width: 416px; }
     #rows-layer { position: absolute; inset: 0 0 auto 0; will-change: transform; }
     .log-row {
-      display: grid; grid-template-columns: 92px 64px minmax(0, 1fr);
+      display: grid; grid-template-columns: 92px minmax(0, 1fr);
       align-items: center; height: var(--row-height); padding: 0 11px;
       border-bottom: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
       font-family: "Cascadia Mono", "SFMono-Regular", Consolas, "Microsoft YaHei UI", monospace;
@@ -123,7 +123,7 @@
     }
     .log-row:hover { background: var(--hover); }
     .log-row.selected { background: var(--selected); }
-    .time, .thread { color: var(--muted); white-space: nowrap; overflow: hidden; }
+    .time { color: var(--muted); white-space: nowrap; overflow: hidden; }
     .message { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .source-snapshot, .source-fallback { color: var(--accent); margin-right: 6px; }
 	.source-fallback { color: #d17b20; }
@@ -145,7 +145,7 @@
 	  .search-panel { gap: 5px; padding-inline: 7px; }
 	  .search-notice { display: none; }
       .tool-button { padding: 0 7px; }
-      .header-row, .log-row { grid-template-columns: 72px 48px minmax(0, 1fr); }
+      .header-row, .log-row { grid-template-columns: 72px minmax(0, 1fr); }
     }
   </style>
 </head>
@@ -186,7 +186,7 @@
       </header>
 
       <main class="main">
-        <div class="header-row"><span>时间</span><span>线程</span><span>消息</span></div>
+        <div class="header-row"><span>时间</span><span>消息</span></div>
         <div id="viewport" class="viewport">
           <div id="virtual-spacer"><div id="rows-layer"></div></div>
           <div id="empty-state" class="empty">等待 IDE 日志…</div>
@@ -334,9 +334,6 @@
         const time = document.createElement('span');
         time.className = 'time';
         time.textContent = formatTime(entry.time);
-        const thread = document.createElement('span');
-        thread.className = 'thread';
-        thread.textContent = `T${entry.thread}`;
         const message = document.createElement('span');
         message.className = 'message';
         if (entry.source === 'snapshot') {
@@ -353,7 +350,7 @@
         }
         appendHighlighted(message, (entry.text || '').replace(/[\r\n]+/g, ' ↵ '));
         if (entry.truncated) message.append(document.createTextNode(' … [已截断]'));
-        row.append(time, thread, message);
+        row.append(time, message);
         row.addEventListener('click', () => {
           const selection = window.getSelection();
           if (selection && !selection.isCollapsed) return;

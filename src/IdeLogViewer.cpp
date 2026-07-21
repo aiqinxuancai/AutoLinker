@@ -50,6 +50,11 @@ struct ViewerContext {
 	ULONGLONG lastControlPollTick = 0;
 	std::string lastControlText;
 	bool controlFallbackBaselineReady = false;
+	HWND overlayOutputWindow = nullptr;
+	HWND overlayParentWindow = nullptr;
+	RECT overlayBounds = {};
+	bool overlayLayoutReady = false;
+	bool overlayVisible = false;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> environment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> controller;
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
@@ -537,7 +542,8 @@ void StartWebView(HWND window, ViewerContext* context)
 									}).Get(),
 								nullptr);
 
-							inner->controller->put_IsVisible(g_isOpen ? TRUE : FALSE);
+							inner->controller->put_IsVisible(
+								g_isOpen && IsWindowVisible(window) ? TRUE : FALSE);
 							LayoutViewer(window, inner);
 							const std::string html = LoadUtf8HtmlResourceText(IDR_HTML_IDE_LOG_VIEWER);
 							const std::wstring htmlWide = Utf8ToWide(html);
@@ -623,7 +629,7 @@ void PollOutputControlFallback(ViewerContext* context)
 	}
 }
 
-bool SynchronizeOverlay(HWND window, ViewerContext* context)
+bool SynchronizeOverlay(HWND window, ViewerContext* context, bool bringToFront)
 {
 	if (window == nullptr || !IsWindow(window) || context == nullptr || !g_isOpen) {
 		return false;
@@ -633,13 +639,21 @@ bool SynchronizeOverlay(HWND window, ViewerContext* context)
 	const HWND outputParent = outputWindow != nullptr ? GetParent(outputWindow) : nullptr;
 	if (outputWindow == nullptr || !IsWindow(outputWindow) ||
 		outputParent == nullptr || !IsWindow(outputParent)) {
-		ShowWindow(window, SW_HIDE);
+		if (context->overlayVisible || IsWindowVisible(window)) {
+			ShowWindow(window, SW_HIDE);
+		}
 		if (context->controller != nullptr) {
 			context->controller->put_IsVisible(FALSE);
 		}
+		context->overlayOutputWindow = nullptr;
+		context->overlayParentWindow = nullptr;
+		context->overlayLayoutReady = false;
+		context->overlayVisible = false;
 		return false;
 	}
 
+	const bool targetChanged = context->overlayOutputWindow != outputWindow ||
+		context->overlayParentWindow != outputParent;
 	if (GetParent(window) != outputParent) {
 		ShowWindow(window, SW_HIDE);
 		SetLastError(ERROR_SUCCESS);
@@ -654,6 +668,8 @@ bool SynchronizeOverlay(HWND window, ViewerContext* context)
 		if (context->controller != nullptr) {
 			context->controller->put_IsVisible(FALSE);
 		}
+		context->overlayLayoutReady = false;
+		context->overlayVisible = false;
 		return false;
 	}
 	MapWindowPoints(HWND_DESKTOP, outputParent, reinterpret_cast<LPPOINT>(&bounds), 2);
@@ -661,14 +677,36 @@ bool SynchronizeOverlay(HWND window, ViewerContext* context)
 	const int width = (std::max)(0L, bounds.right - bounds.left);
 	const int height = (std::max)(0L, bounds.bottom - bounds.top);
 	const bool shouldShow = IsWindowVisible(outputWindow) != FALSE && width > 0 && height > 0;
-	SetWindowPos(
-		window,
-		HWND_TOP,
-		bounds.left,
-		bounds.top,
-		width,
-		height,
-		SWP_NOACTIVATE | (shouldShow ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+	const bool boundsChanged = !context->overlayLayoutReady ||
+		EqualRect(&context->overlayBounds, &bounds) == FALSE;
+	const bool visibilityChanged = !context->overlayLayoutReady ||
+		context->overlayVisible != shouldShow;
+	if (bringToFront || targetChanged || boundsChanged || visibilityChanged) {
+		// 后台同步不改变同级窗口层级；仅由用户显式打开时置顶。
+		UINT flags = SWP_NOACTIVATE | (shouldShow ? SWP_SHOWWINDOW : SWP_HIDEWINDOW);
+		HWND insertAfter = HWND_TOP;
+		if (!bringToFront) {
+			flags |= SWP_NOZORDER;
+			insertAfter = nullptr;
+		}
+		if (SetWindowPos(
+			window,
+			insertAfter,
+			bounds.left,
+			bounds.top,
+			width,
+			height,
+			flags) == FALSE) {
+			context->overlayLayoutReady = false;
+			context->overlayVisible = false;
+			return false;
+		}
+	}
+	context->overlayOutputWindow = outputWindow;
+	context->overlayParentWindow = outputParent;
+	context->overlayBounds = bounds;
+	context->overlayLayoutReady = true;
+	context->overlayVisible = shouldShow;
 	if (context->controller != nullptr) {
 		context->controller->put_IsVisible(shouldShow ? TRUE : FALSE);
 	}
@@ -701,7 +739,7 @@ void ResumeViewer(HWND window)
 	context->generation = 0;
 	StartOutputControlCapture(context);
 	LayoutViewer(window, context);
-	SynchronizeOverlay(window, context);
+	SynchronizeOverlay(window, context, true);
 	SetTimer(window, kFlushTimerId, kFlushIntervalMs, nullptr);
 }
 
@@ -766,7 +804,7 @@ LRESULT CALLBACK ViewerWindowProc(HWND window, UINT message, WPARAM wParam, LPAR
 		return 0;
 	case WM_TIMER:
 		if (wParam == kFlushTimerId) {
-			SynchronizeOverlay(window, context);
+			SynchronizeOverlay(window, context, false);
 			PollOutputControlFallback(context);
 			if (context != nullptr && context->fallbackActive) {
 				AppendFallbackBatch(context);
@@ -885,7 +923,7 @@ bool Initialize(HWND mainWindow)
 
 	g_isOpen = true;
 	auto* context = reinterpret_cast<ViewerContext*>(GetWindowLongPtrW(g_viewerWindow, GWLP_USERDATA));
-	SynchronizeOverlay(g_viewerWindow, context);
+	SynchronizeOverlay(g_viewerWindow, context, true);
 	PersistOpenState(true);
 	Logger::Instance().Write("IdeLogViewer", "native output overlay opened");
 	OutputStringToELog("日志中心已开始记录");
