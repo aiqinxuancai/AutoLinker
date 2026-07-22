@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include "AIConfigDialog.h"
+#include "AutoLinkerSettingsDialog.h"
 #include "AIService.h"
 #include "Global.h"
 #include "IDEFacade.h"
@@ -259,10 +260,14 @@ bool EnsureAISettingsReady(AISettings& settings)
 	}
 
 	OutputStringToELog("AI配置缺失，准备打开配置窗口");
-	if (!ShowAIConfigDialog(g_hwnd, g_aiJsonConfig, settings)) {
+	const AutoLinkerSettingsResult settingsResult = ShowAutoLinkerSettingsDialog(
+		g_hwnd,
+		AutoLinkerSettingsPageId::AiService);
+	if (!settingsResult.aiSettingsSaved) {
 		OutputStringToELog("AI配置已取消，本次操作终止");
 		return false;
 	}
+	AIService::LoadSettings(g_aiJsonConfig, &g_configManager, settings);
 	OutputStringToELog("AI配置已保存");
 	return true;
 }

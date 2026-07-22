@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "ComponentUpdateStatus.h"
+
 // e-packager 集成：负责工具更新、解包当前易语言工程和打开输出目录。
 namespace EPackagerIntegration {
 
@@ -49,6 +51,10 @@ bool EnsureLatestToolReady(std::filesystem::path& outToolPath, std::string& outE
 
 // 后台检查并更新 e-packager.exe，忽略自动检查间隔。
 void RunToolUpdateInBackground();
+
+// 设置并读取“关于”页展示的组件更新状态。
+void SetUpdateStatusNotificationWindow(HWND window);
+ComponentUpdateStatus GetUpdateStatus();
 
 // 执行 e-packager 子进程并捕获输出。
 ProcessRunResult RunProcessAndCapture(

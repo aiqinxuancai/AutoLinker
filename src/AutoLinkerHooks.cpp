@@ -691,8 +691,10 @@ void StartHookCreateFileA()
 	}
 #endif
 
-	// 编译输出 Hook 是可选能力：解析或附加失败不会中止事务，工具层会回退控件取文本。
-	IdeCompileOutputCapture::AttachToCurrentDetourTransaction();
+	// 编译输出 Hook 是可选能力：关闭时不解析地址、不附加 Detour。
+	if (IdeCompileOutputCapture::IsCaptureHookEnabled()) {
+		IdeCompileOutputCapture::AttachToCurrentDetourTransaction();
+	}
 
 	const LONG error = DetourTransactionCommit();
 	IdeCompileOutputCapture::CompleteHookInstallation(error == NO_ERROR);

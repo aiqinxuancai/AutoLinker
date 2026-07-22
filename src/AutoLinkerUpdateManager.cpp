@@ -8,12 +8,14 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <vector>
 
 #include "AutoLinkerReleaseClient.h"
 #include "AutoLinkerUpdateInstaller.h"
 #include "AutoLinkerVersion.h"
+#include "AIChatFeature.h"
 #include "Global.h"
 #include "PathHelper.h"
 #include "PowerShellToolRunner.h"
@@ -23,6 +25,40 @@ namespace AutoLinkerUpdateManager {
 namespace {
 
 std::atomic_bool g_updateRunning = false;
+std::atomic_bool g_checkRunning = false;
+std::mutex g_taskStartMutex;
+std::mutex g_statusMutex;
+ComponentUpdateStatus g_status = {
+	ComponentUpdateState::Idle,
+	AUTOLINKER_VERSION,
+	{},
+	"尚未检查更新。",
+	-1
+};
+HWND g_statusNotificationWindow = nullptr;
+
+void PublishStatus(
+	ComponentUpdateState state,
+	std::string message,
+	std::string latestVersion = {},
+	int progressPercent = -1)
+{
+	HWND notificationWindow = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(g_statusMutex);
+		g_status.state = state;
+		g_status.currentVersion = AUTOLINKER_VERSION;
+		if (!latestVersion.empty()) {
+			g_status.latestVersion = std::move(latestVersion);
+		}
+		g_status.message = std::move(message);
+		g_status.progressPercent = progressPercent;
+		notificationWindow = g_statusNotificationWindow;
+	}
+	if (notificationWindow != nullptr && IsWindow(notificationWindow)) {
+		PostMessageW(notificationWindow, WM_AUTOLINKER_COMPONENT_UPDATE_STATUS, 0, 0);
+	}
+}
 
 struct UpdateRunningGuard {
 	~UpdateRunningGuard()
@@ -275,10 +311,12 @@ void UpdateWorker(void*)
 	UpdateRunningGuard guard;
 	std::filesystem::path stagingRoot;
 	try {
+		PublishStatus(ComponentUpdateState::Checking, "正在检查最新 Release...");
 		OutputUpdateLog("[AutoLinker更新] 正在检查最新 Release...");
 		AutoLinkerReleaseInfo release;
 		std::string error;
 		if (!AutoLinkerReleaseClient::FetchLatest(release, error)) {
+			PublishStatus(ComponentUpdateState::Error, error);
 			OutputUpdateLog("[AutoLinker更新] " + error);
 			ShowError(error);
 			return;
@@ -288,6 +326,7 @@ void UpdateWorker(void*)
 		const std::wstring currentVersionWide = WideFromUtf8(currentVersion);
 		const std::wstring releaseTagWide = WideFromUtf8(release.tag);
 		if (!IsNewerVersion(release.tag, currentVersion)) {
+			PublishStatus(ComponentUpdateState::UpToDate, "当前已是最新版本。", release.tag);
 			const std::wstring message =
 				L"当前版本：" + currentVersionWide +
 				L"\r\n最新 Release：" + releaseTagWide +
@@ -295,15 +334,18 @@ void UpdateWorker(void*)
 			MessageBoxW(g_hwnd, message.c_str(), L"AutoLinker 更新", MB_OK | MB_ICONINFORMATION);
 			return;
 		}
+		PublishStatus(ComponentUpdateState::UpdateAvailable, "发现可用的新版本。", release.tag);
 
 		const std::filesystem::path ideExecutable = GetIdeExecutablePath();
 		if (ideExecutable.empty()) {
+			PublishStatus(ComponentUpdateState::Error, "无法获取当前易语言 IDE 路径。", release.tag);
 			ShowError("无法获取当前易语言 IDE 路径，不能执行更新。");
 			return;
 		}
 		const std::filesystem::path targetFne = ideExecutable.parent_path() / L"lib" / L"AutoLinker.fne";
 		std::error_code ec;
 		if (!std::filesystem::is_regular_file(targetFne, ec)) {
+			PublishStatus(ComponentUpdateState::Error, "未找到当前 AutoLinker.fne。", release.tag);
 			ShowError("未找到当前支持库：" + Utf8FromWide(targetFne.wstring()));
 			return;
 		}
@@ -320,6 +362,7 @@ void UpdateWorker(void*)
 				L"更新 AutoLinker 支持库",
 				MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND) != IDYES) {
 			OutputUpdateLog("[AutoLinker更新] 用户取消更新");
+			PublishStatus(ComponentUpdateState::UpdateAvailable, "已取消本次更新。", release.tag);
 			return;
 		}
 
@@ -329,14 +372,17 @@ void UpdateWorker(void*)
 		const std::filesystem::path extractDirectory = stagingRoot / L"extract";
 		std::filesystem::create_directories(extractDirectory, ec);
 		if (ec) {
+			PublishStatus(ComponentUpdateState::Error, "创建更新临时目录失败：" + ec.message(), release.tag);
 			ShowError("创建更新临时目录失败：" + ec.message());
 			CleanupStaging(stagingRoot);
 			return;
 		}
 
+		PublishStatus(ComponentUpdateState::Downloading, "正在下载并校验更新包...", release.tag);
 		std::string archiveBytes;
 		if (!AutoLinkerReleaseClient::DownloadArchive(release.asset, archiveBytes, error) ||
 			!WriteBinaryFile(archivePath, archiveBytes, error)) {
+			PublishStatus(ComponentUpdateState::Error, "下载更新包失败：" + error, release.tag);
 			OutputUpdateLog("[AutoLinker更新] 下载失败：" + error);
 			ShowError("下载 AutoLinker 更新包失败：\r\n" + error);
 			CleanupStaging(stagingRoot);
@@ -347,12 +393,17 @@ void UpdateWorker(void*)
 		archiveBytes.shrink_to_fit();
 
 		if (!ExtractArchive(archivePath, extractDirectory, error)) {
+			PublishStatus(ComponentUpdateState::Error, "解压更新包失败：" + error, release.tag);
 			ShowError("解压 AutoLinker 更新包失败：\r\n" + error);
 			CleanupStaging(stagingRoot);
 			return;
 		}
 		const std::filesystem::path extractedFne = FindExtractedFne(extractDirectory);
 		if (extractedFne.empty() || !ValidateWin32Fne(extractedFne, error)) {
+			PublishStatus(
+				ComponentUpdateState::Error,
+				error.empty() ? "更新包中未找到 AutoLinker.fne。" : error,
+				release.tag);
 			ShowError(error.empty() ? "更新包中未找到 AutoLinker.fne" : error);
 			CleanupStaging(stagingRoot);
 			return;
@@ -361,12 +412,14 @@ void UpdateWorker(void*)
 		const std::filesystem::path stagedFne = stagingRoot / L"AutoLinker.fne.new";
 		std::filesystem::copy_file(extractedFne, stagedFne, std::filesystem::copy_options::overwrite_existing, ec);
 		if (ec) {
+			PublishStatus(ComponentUpdateState::Error, "暂存 AutoLinker.fne 失败：" + ec.message(), release.tag);
 			ShowError("暂存 AutoLinker.fne 失败：" + ec.message());
 			CleanupStaging(stagingRoot);
 			return;
 		}
 
 		AutoLinkerUpdateInstallRequest installRequest;
+		PublishStatus(ComponentUpdateState::Installing, "正在准备退出 IDE 后的替换任务...", release.tag);
 		installRequest.processId = GetCurrentProcessId();
 		installRequest.stagedFne = stagedFne;
 		installRequest.targetFne = targetFne;
@@ -375,6 +428,7 @@ void UpdateWorker(void*)
 		installRequest.targetVersion = release.tag;
 		PROCESS_INFORMATION updaterProcess = {};
 		if (!AutoLinkerUpdateInstaller::Launch(installRequest, updaterProcess, error)) {
+			PublishStatus(ComponentUpdateState::Error, error, release.tag);
 			ShowError(error);
 			CleanupStaging(stagingRoot);
 			return;
@@ -383,11 +437,13 @@ void UpdateWorker(void*)
 		OutputUpdateLog(
 			"[AutoLinker更新] 更新包已准备完成，退出 IDE 后将替换：" +
 			Utf8FromWide(targetFne.wstring()));
+		PublishStatus(ComponentUpdateState::ReadyToRestart, "更新已准备完成，IDE 退出后将自动替换。", release.tag);
 		if (PostMessageW(g_hwnd, WM_CLOSE, 0, 0) == FALSE) {
 			TerminateProcess(updaterProcess.hProcess, 1);
 			WaitForSingleObject(updaterProcess.hProcess, 5000);
 			CloseHandle(updaterProcess.hThread);
 			CloseHandle(updaterProcess.hProcess);
+			PublishStatus(ComponentUpdateState::Error, "无法请求关闭当前易语言 IDE。", release.tag);
 			ShowError("无法请求关闭当前易语言 IDE，更新已取消。");
 			CleanupStaging(stagingRoot);
 			return;
@@ -400,20 +456,84 @@ void UpdateWorker(void*)
 	catch (const std::exception& ex) {
 		const std::string error = std::string("AutoLinker 更新异常：") + ex.what();
 		OutputUpdateLog("[AutoLinker更新] " + error);
+		PublishStatus(ComponentUpdateState::Error, error);
 		ShowError(error);
 	}
 	catch (...) {
 		OutputUpdateLog("[AutoLinker更新] 发生未知异常");
+		PublishStatus(ComponentUpdateState::Error, "AutoLinker 更新发生未知异常。");
 		ShowError("AutoLinker 更新发生未知异常。");
 	}
 	CleanupStaging(stagingRoot);
 }
 
+void CheckWorker(void*)
+{
+	try {
+		PublishStatus(ComponentUpdateState::Checking, "正在检查最新 Release...");
+		AutoLinkerReleaseInfo release;
+		std::string error;
+		if (!AutoLinkerReleaseClient::FetchLatest(release, error)) {
+			PublishStatus(ComponentUpdateState::Error, error);
+			g_checkRunning.store(false);
+			return;
+		}
+		if (IsNewerVersion(release.tag, AUTOLINKER_VERSION)) {
+			PublishStatus(ComponentUpdateState::UpdateAvailable, "发现可用的新版本。", release.tag);
+			AIChatFeature::SetUpdateAvailable(release.tag);
+		}
+		else {
+			PublishStatus(ComponentUpdateState::UpToDate, "当前已是最新版本。", release.tag);
+		}
+	}
+	catch (const std::exception& ex) {
+		PublishStatus(ComponentUpdateState::Error, std::string("检查更新失败：") + ex.what());
+	}
+	catch (...) {
+		PublishStatus(ComponentUpdateState::Error, "检查更新发生未知异常。");
+	}
+	g_checkRunning.store(false);
+}
+
 } // namespace
+
+void CheckForUpdatesInBackground()
+{
+	{
+		std::lock_guard<std::mutex> lock(g_taskStartMutex);
+		if (g_updateRunning.load(std::memory_order_acquire) ||
+			g_checkRunning.load(std::memory_order_acquire)) {
+			return;
+		}
+		g_checkRunning.store(true, std::memory_order_release);
+	}
+	if (_beginthread(CheckWorker, 0, nullptr) == static_cast<uintptr_t>(-1)) {
+		g_checkRunning.store(false);
+		PublishStatus(ComponentUpdateState::Error, "启动后台检查任务失败。");
+	}
+}
 
 void RunUpdateInBackground()
 {
-	if (g_updateRunning.exchange(true)) {
+	bool checkRunning = false;
+	bool updateRunning = false;
+	{
+		std::lock_guard<std::mutex> lock(g_taskStartMutex);
+		checkRunning = g_checkRunning.load(std::memory_order_acquire);
+		updateRunning = g_updateRunning.load(std::memory_order_acquire);
+		if (!checkRunning && !updateRunning) {
+			g_updateRunning.store(true, std::memory_order_release);
+		}
+	}
+	if (checkRunning) {
+		MessageBoxW(
+			g_hwnd,
+			L"正在检查 AutoLinker 最新版本，请稍候。",
+			L"AutoLinker 更新",
+			MB_OK | MB_ICONINFORMATION);
+		return;
+	}
+	if (updateRunning) {
 		MessageBoxW(
 			g_hwnd,
 			L"已有 AutoLinker 更新任务正在执行，请稍候。",
@@ -424,8 +544,21 @@ void RunUpdateInBackground()
 
 	if (_beginthread(UpdateWorker, 0, nullptr) == static_cast<uintptr_t>(-1)) {
 		g_updateRunning.store(false);
+		PublishStatus(ComponentUpdateState::Error, "启动 AutoLinker 后台更新任务失败。");
 		ShowError("启动 AutoLinker 后台更新任务失败。");
 	}
+}
+
+void SetStatusNotificationWindow(HWND window)
+{
+	std::lock_guard<std::mutex> lock(g_statusMutex);
+	g_statusNotificationWindow = window != nullptr && IsWindow(window) ? window : nullptr;
+}
+
+ComponentUpdateStatus GetStatus()
+{
+	std::lock_guard<std::mutex> lock(g_statusMutex);
+	return g_status;
 }
 
 } // namespace AutoLinkerUpdateManager

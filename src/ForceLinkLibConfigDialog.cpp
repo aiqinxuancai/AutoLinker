@@ -3,6 +3,7 @@
 #include "ForceLinkLibManager.h"
 #include "Global.h"
 #include "resource.h"
+#include "AutoLinkerSettingsDialog.h"
 #include "ResourceTextLoader.h"
 
 #include <Windows.h>
@@ -31,6 +32,8 @@ struct ForceLinkLibConfigWebViewDialogContext {
 	HWND hLoading = nullptr;
 	std::vector<ForceLinkLibRule> rules;
 	std::filesystem::path configPath;
+	bool embedded = false;
+	bool ownsContext = false;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
@@ -478,7 +481,9 @@ HRESULT OnForceLinkLibConfigControllerCreated(HWND hWnd, HRESULT controllerResul
 						HandleForceLinkLibWebViewSave(messageCtx, payload["data"]);
 					}
 					else if (action == "cancel") {
-						DestroyWindow(hWnd);
+						if (!messageCtx->embedded) {
+							DestroyWindow(hWnd);
+						}
 					}
 				}
 				catch (...) {
@@ -505,6 +510,11 @@ HRESULT OnForceLinkLibConfigControllerCreated(HWND hWnd, HRESULT controllerResul
 					}
 					LayoutForceLinkLibConfigWebViewDialog(hWnd, navCtx);
 					ApplyForceLinkLibWebViewData(navCtx);
+					if (navCtx->embedded) {
+						navCtx->webView->ExecuteScript(
+							L"(function(){var b=document.getElementById('cancelBtn');if(b)b.style.display='none';})();",
+							nullptr);
+					}
 					return S_OK;
 				}
 				COREWEBVIEW2_WEB_ERROR_STATUS webErrorStatus = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
@@ -724,6 +734,15 @@ LRESULT CALLBACK ForceLinkLibConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARA
 			ctx->webViewEnvironment = nullptr;
 		}
 		return 0;
+	case WM_NCDESTROY: {
+		const bool ownsContext = ctx != nullptr && ctx->ownsContext;
+		SetWindowLongPtrA(hWnd, GWLP_USERDATA, 0);
+		const LRESULT result = DefWindowProcA(hWnd, uMsg, wParam, lParam);
+		if (ownsContext) {
+			delete ctx;
+		}
+		return result;
+	}
 
 	default:
 		break;
@@ -781,4 +800,31 @@ void ShowForceLinkLibConfigDialog(HWND owner)
 	ApplyWindowIconLocal(hDialog);
 	SetWindowTextW(hDialog, L"AutoLinker 核心库函数重写设置");
 	RunModalWindowLocal(owner, hDialog);
+}
+
+HWND CreateForceLinkLibConfigSettingsPage(HWND parent)
+{
+	if (parent == nullptr || !IsWindow(parent) || !IsWebView2RuntimeAvailableLocal()) {
+		return nullptr;
+	}
+	WNDCLASSEXA wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.lpfnWndProc = ForceLinkLibConfigWebViewDialogProc;
+	wc.hInstance = GetModuleHandleA(nullptr);
+	wc.lpszClassName = "AutoLinkerForceLinkLibConfigWebViewDialogWindow";
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	RegisterClassExA(&wc);
+	auto* ctx = new ForceLinkLibConfigWebViewDialogContext();
+	ctx->rules = LoadForceLinkLibRulesFromDisk(ctx->configPath);
+	ctx->embedded = true;
+	ctx->ownsContext = true;
+	HWND page = CreateWindowExA(
+		WS_EX_CONTROLPARENT, wc.lpszClassName, "",
+		WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+		0, 0, 0, 0, parent, nullptr, wc.hInstance, ctx);
+	if (page == nullptr) {
+		delete ctx;
+	}
+	return page;
 }

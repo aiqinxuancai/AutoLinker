@@ -1,6 +1,7 @@
 ﻿#include "AIChatMcpConfigDialog.h"
 
 #include "resource.h"
+#include "AutoLinkerSettingsDialog.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -42,6 +43,8 @@ struct McpWebViewDialogContext {
 	bool saved = false;
 	bool fallbackRequested = false;
 	bool webViewReady = false;
+	bool embedded = false;
+	bool ownsContext = false;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
@@ -365,7 +368,13 @@ bool TrySaveWebConfig(HWND hWnd, McpWebViewDialogContext* ctx, const nlohmann::j
 
 	ctx->saved = true;
 	ctx->done = true;
-	DestroyWindow(hWnd);
+	if (ctx->embedded) {
+		OutputStringToELog("MCP配置已保存");
+		PostMessageW(GetParent(hWnd), WM_AUTOLINKER_SETTINGS_PAGE_SAVED, 1, 0);
+	}
+	else {
+		DestroyWindow(hWnd);
+	}
 	return true;
 }
 
@@ -449,7 +458,9 @@ void StartMcpWebView(HWND hWnd, McpWebViewDialogContext* ctx)
 											}
 											else if (action == "cancel") {
 												messageCtx->done = true;
-												DestroyWindow(hWnd);
+												if (!messageCtx->embedded) {
+													DestroyWindow(hWnd);
+												}
 											}
 										}
 										catch (const std::exception& ex) {
@@ -480,6 +491,11 @@ void StartMcpWebView(HWND hWnd, McpWebViewDialogContext* ctx)
 											}
 											LayoutMcpWebViewDialog(hWnd, navCtx);
 											ApplyMcpWebViewConfig(navCtx);
+											if (navCtx->embedded) {
+												navCtx->webView->ExecuteScript(
+													L"(function(){var b=document.getElementById('cancelBtn');if(b)b.style.display='none';})();",
+													nullptr);
+											}
 											return S_OK;
 										}
 
@@ -607,6 +623,15 @@ LRESULT CALLBACK McpWebViewDialogProc(HWND hWnd, UINT message, WPARAM wParam, LP
 			ctx->webViewEnvironment = nullptr;
 		}
 		return 0;
+	case WM_NCDESTROY: {
+		const bool ownsContext = ctx != nullptr && ctx->ownsContext;
+		SetWindowLongPtrW(hWnd, GWLP_USERDATA, 0);
+		const LRESULT result = DefWindowProcW(hWnd, message, wParam, lParam);
+		if (ownsContext) {
+			delete ctx;
+		}
+		return result;
+	}
 	default:
 		break;
 	}
@@ -845,4 +870,31 @@ bool ShowAIChatMcpConfigDialog(HWND owner)
 		return ShowAIChatMcpConfigDialogNative(owner);
 	}
 	return webViewResult.saved;
+}
+
+HWND CreateAIChatMcpConfigSettingsPage(HWND parent)
+{
+	if (parent == nullptr || !IsWindow(parent) || !IsMcpWebViewRuntimeAvailable()) {
+		return nullptr;
+	}
+	const wchar_t* className = L"AutoLinkerAIChatMcpConfigWebViewDialogWindow";
+	WNDCLASSEXW wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.lpfnWndProc = McpWebViewDialogProc;
+	wc.hInstance = GetModuleHandleW(nullptr);
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	wc.lpszClassName = className;
+	RegisterClassExW(&wc);
+	auto* ctx = new McpWebViewDialogContext();
+	ctx->embedded = true;
+	ctx->ownsContext = true;
+	HWND page = CreateWindowExW(
+		WS_EX_CONTROLPARENT, className, L"",
+		WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+		0, 0, 0, 0, parent, nullptr, wc.hInstance, ctx);
+	if (page == nullptr) {
+		delete ctx;
+	}
+	return page;
 }

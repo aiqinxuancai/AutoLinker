@@ -25,7 +25,10 @@
 #include "AIChatToolPolicy.h"
 #include "AIService.h"
 #include "AutoLinkerVersion.h"
+#include "AutoLinkerSettingsDialog.h"
 #include "GameAnalyticsClient.h"
+#include "IdeCompileOutputCapture.h"
+#include "IdeLogViewer.h"
 #include "LocalMcpInstanceRegistry.h"
 #include "LocalMcpServer.h"
 #include "PathHelper.h"
@@ -2755,6 +2758,21 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	nlohmann::json configInvariantsCheck;
 	RunMcpConfigInvariantsSelfTest(configInvariantsCheck);
 	report["checks"].push_back(configInvariantsCheck);
+
+	for (const std::string& settingsSelfTest : {
+			BuildAutoLinkerSettingsSelfTestJson(),
+			IdeCompileOutputCapture::BuildSelfTestJson(),
+			IdeLogViewer::BuildSelfTestJson() }) {
+		nlohmann::json settingsCheck = nlohmann::json::parse(settingsSelfTest, nullptr, false);
+		if (settingsCheck.is_discarded() || !settingsCheck.is_object()) {
+			settingsCheck = {
+				{"name", "autolinker-settings-self-test"},
+				{"ok", false},
+				{"error", "invalid self-test json"}
+			};
+		}
+		report["checks"].push_back(std::move(settingsCheck));
+	}
 
 	bool ok = report.value("ok", false);
 	for (const auto& check : report["checks"]) {

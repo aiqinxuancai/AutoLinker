@@ -6,3 +6,6 @@
 // 打开“当前程序 AGENTS.md 设置”WebView2 对话框。
 void ShowProjectAgentsConfigDialog(HWND owner);
 
+// 创建统一设置窗口使用的当前项目 AGENTS.md 子页。
+HWND CreateProjectAgentsConfigSettingsPage(HWND parent);
+

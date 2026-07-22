@@ -6,6 +6,7 @@
 #include <process.h>
 
 #include <array>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -16,6 +17,7 @@
 #include "AIChatFeature.h"
 #include "AIConfigDialog.h"
 #include "AutoLinkerUpdateManager.h"
+#include "AutoLinkerSettingsDialog.h"
 #include "EcSwitchConfigDialog.h"
 #include "ECOMEx.h"
 #include "EPackagerIntegration.h"
@@ -32,9 +34,7 @@
 #include "MouseBack.h"
 #include "PathHelper.h"
 #include "ProjectAgentsConfigDialog.h"
-#include "Version.h"
 #include "WorkspaceMirror.h"
-#include "WinINetUtil.h"
 #include "WindowHelper.h"
 
 #pragma comment(lib, "comctl32.lib")
@@ -48,6 +48,7 @@ bool g_initTraceSessionStarted = false;
 std::mutex g_initTraceMutex;
 
 constexpr char kDebugOutputOptimizationConfigKey[] = "debug.output_optimization.enabled";
+constexpr char kCompileOutputCaptureHookConfigKey[] = "ide.compile_output_capture_hook.enabled";
 constexpr char kDebugOutputOptimizationEnabledMessage[] =
 	"开启后输出调试文本等调试输出函数的性能大幅提升，减少调试与界面更新在同一线程造成的延时";
 
@@ -135,65 +136,18 @@ void OpenELanguageDirectoryAddIn()
 	ShellExecute(NULL, "open", "explorer.exe", cmd.c_str(), NULL, SW_SHOWDEFAULT);
 }
 
-void ShowAISettingsAddIn()
+void ShowSettingsAddIn()
 {
-	AISettings settings = {};
-	AIService::LoadSettings(g_aiJsonConfig, &g_configManager, settings);
-	if (!ShowAIConfigDialog(g_hwnd, g_aiJsonConfig, settings)) {
-		return;
-	}
-	OutputStringToELog("AI配置已保存");
-}
-
-void ShowProjectAgentsSettingsAddIn()
-{
-	ShowProjectAgentsConfigDialog(g_hwnd);
-}
-
-void UpdateEPackagerComponentAddIn()
-{
-	EPackagerIntegration::RunToolUpdateInBackground();
-}
-
-void UpdateAutoLinkerAddIn()
-{
-	AutoLinkerUpdateManager::RunUpdateInBackground();
-}
-
-void ShowLinkerSettingsAddIn()
-{
-	ShowLinkerConfigDialog(g_hwnd);
-}
-
-void ShowEcSwitchSettingsAddIn()
-{
-	ShowEcSwitchConfigDialog(g_hwnd);
-}
-
-void ShowForceLinkLibSettingsAddIn()
-{
-	ShowForceLinkLibConfigDialog(g_hwnd);
-}
-
-void ShowAIChatThemeSettingsAddIn()
-{
-	ShowAIChatThemeConfigDialog(g_hwnd);
+	ShowAutoLinkerSettingsDialog(g_hwnd, AutoLinkerSettingsPageId::LastUsed);
 }
 
 const auto& GetAddInMenuEntries()
 {
-	static const std::array<AddInMenuEntry, 11> kEntries = { {
+	static const std::array<AddInMenuEntry, 4> kEntries = { {
 		{ "打开项目目录", "这是个用作测试的辅助工具功能。", &OpenProjectDirectoryAddIn },
-		{ "打开AutoLinker配置目录", "这是个用作测试的辅助工具功能。", &OpenAutoLinkerConfigDirectoryAddIn },
-		{ "打开E语言目录", "这是个用作测试的辅助工具功能。", &OpenELanguageDirectoryAddIn },
-		{ "AutoLinker AI接口设置", "编辑AI接口地址、API Key、模型和提示词等配置。", &ShowAISettingsAddIn },
-		{ "AutoLinker 当前程序AGENTS.md设置", "编辑当前源程序同目录同名的 .AGENTS.md 项目规范文件。", &ShowProjectAgentsSettingsAddIn },
-		{ "AutoLinker AI对话配色设置", "编辑 AI 对话界面的多套颜色方案。", &ShowAIChatThemeSettingsAddIn },
-		{ "AutoLinker 链接器设置", "查看并编辑 AutoLinker/Config 下的 link.ini 链接器配置。", &ShowLinkerSettingsAddIn },
-		{ "AutoLinker EC模块自动切换设置", "配置调试用动态 ec 与编译用静态 ec 的成对自动切换规则。", &ShowEcSwitchSettingsAddIn },
-		{ "AutoLinker 核心库函数重写设置", "配置静态编译时额外强制链接的 .lib，用于覆盖核心库或第三方库同名符号。", &ShowForceLinkLibSettingsAddIn },
-		{ "更新AutoLinker支持库", "检查最新 Release，并在退出 IDE 后更新 AutoLinker.fne。", &UpdateAutoLinkerAddIn },
-		{ "更新e-packager组件", "检查并下载最新的 e-packager 组件。", &UpdateEPackagerComponentAddIn },
+		{ "打开 AutoLinker 配置目录", "打开 AutoLinker 的本地配置目录。", &OpenAutoLinkerConfigDirectoryAddIn },
+		{ "打开易语言目录", "打开当前易语言 IDE 所在目录。", &OpenELanguageDirectoryAddIn },
+		{ "AutoLinker 设置", "统一管理 AI、MCP、链接器、日志优化与组件更新。", &ShowSettingsAddIn },
 	} };
 	return kEntries;
 }
@@ -231,6 +185,13 @@ bool LoadDebugOutputOptimizationEnabled()
 {
 	const std::string value = ToLowerAsciiCopy(TrimAsciiCopy(
 		g_configManager.getValue(kDebugOutputOptimizationConfigKey)));
+	return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
+bool LoadCompileOutputCaptureHookEnabled()
+{
+	const std::string value = ToLowerAsciiCopy(TrimAsciiCopy(
+		g_configManager.getValue(kCompileOutputCaptureHookConfigKey)));
 	return value == "1" || value == "true" || value == "yes" || value == "on";
 }
 
@@ -302,26 +263,6 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 
 	if (uMsg == WM_COMMAND) {
 		UINT cmd = LOWORD(wParam);
-		if (cmd == IDM_AUTOLINKER_LOG_CENTER) {
-			if (IdeLogViewer::IsOpen()) {
-				IdeLogViewer::Close();
-			}
-			else {
-				IdeLogViewer::Initialize(hWnd);
-			}
-			DrawMenuBar(hWnd);
-			return 0;
-		}
-		if (cmd == IDM_AUTOLINKER_DEBUG_OUTPUT_OPTIMIZATION) {
-			const bool enabled = !IdeCompileOutputCapture::IsDebugOutputOptimizationEnabled();
-			IdeCompileOutputCapture::SetDebugOutputOptimizationEnabled(enabled);
-			g_configManager.setValue(kDebugOutputOptimizationConfigKey, enabled ? "1" : "0");
-			if (enabled) {
-				OutputStringToELog(kDebugOutputOptimizationEnabledMessage);
-			}
-			DrawMenuBar(hWnd);
-			return 0;
-		}
 		if (HandleTopLinkerMenuCommand(cmd)) {
 			return 0;
 		}
@@ -368,44 +309,6 @@ INT WINAPI fnAddInFunc(INT nAddInFnIndex)
 	}
 
 	return 0;
-}
-
-void FneCheckNewVersion(void* pParams)
-{
-	Sleep(1000);
-
-	OutputStringToELog("AutoLinker开源下载地址：https://github.com/aiqinxuancai/AutoLinker");
-	std::string url = "https://api.github.com/repos/aiqinxuancai/AutoLinker/releases";
-	auto response = PerformGetRequest(url);
-
-	std::string currentVersion = AUTOLINKER_VERSION;
-	if (response.second == 200) {
-		std::string nowGithubVersion = "0.0.0";
-		if (strcmp(AUTOLINKER_VERSION, "0.0.0") == 0) {
-			OutputStringToELog(std::format("自编译版本，不检查更新，当前版本：{}", currentVersion));
-		}
-		else if (!response.first.empty()) {
-			try {
-				auto releases = json::parse(response.first);
-				for (const auto& release : releases) {
-					if (!release["prerelease"].get<bool>()) {
-						nowGithubVersion = release["tag_name"];
-						break;
-					}
-				}
-
-				Version nowGithubVersionObj(nowGithubVersion);
-				Version currentVersionObj(AUTOLINKER_VERSION);
-				if (nowGithubVersionObj > currentVersionObj) {
-					OutputStringToELog(std::format("有新版本：{}", nowGithubVersion));
-					AIChatFeature::SetUpdateAvailable(nowGithubVersion);
-				}
-			}
-			catch (const std::exception& e) {
-				OutputStringToELog(std::format("检查新版本失败，当前版本：{} 错误：{}", currentVersion, e.what()));
-			}
-		}
-	}
 }
 
 bool FneInit()
@@ -487,8 +390,14 @@ bool FneInit()
 		TraceInitStep("无头编译模式：跳过 GameAnalytics 初始化");
 	}
 	ResolveCompileDebugStartAddressesForInit();
-	IdeCompileOutputCapture::SetDebugOutputOptimizationEnabled(
-		LoadDebugOutputOptimizationEnabled());
+	const bool compileOutputCaptureHookEnabled = LoadCompileOutputCaptureHookEnabled();
+	IdeCompileOutputCapture::SetCaptureHookEnabled(compileOutputCaptureHookEnabled);
+	const bool debugOutputOptimizationEnabled =
+		compileOutputCaptureHookEnabled && LoadDebugOutputOptimizationEnabled();
+	IdeCompileOutputCapture::SetDebugOutputOptimizationEnabled(debugOutputOptimizationEnabled);
+	if (!compileOutputCaptureHookEnabled && LoadDebugOutputOptimizationEnabled()) {
+		g_configManager.setValue(kDebugOutputOptimizationConfigKey, "0");
+	}
 	TraceInitStep("开始安装文件与编译相关 Hook");
 	StartHookCreateFileA();
 	TraceInitStep("文件与编译相关 Hook 安装完成");
@@ -501,13 +410,16 @@ bool FneInit()
 	HeadlessCompileRunner::NotifyIdeRuntimeReady();
 	TraceInitStep("检查无头编译请求");
 	HeadlessCompileRunner::StartIfRequested();
-	if (!headlessCompileMode) {
+	if (!headlessCompileMode && strcmp(AUTOLINKER_VERSION, "0.0.0") != 0) {
 		TraceInitStep("开始启动版本检查线程");
-		_beginthread(FneCheckNewVersion, 0, NULL);
+		AutoLinkerUpdateManager::CheckForUpdatesInBackground();
 		TraceInitStep("版本检查线程已启动");
 	}
-	else {
+	else if (headlessCompileMode) {
 		TraceInitStep("无头编译模式：跳过版本检查线程");
+	}
+	else {
+		TraceInitStep("自编译版本：跳过启动版本检查");
 	}
 	g_uiInitialized = true;
 	TraceInitStep("FneInit 完成");

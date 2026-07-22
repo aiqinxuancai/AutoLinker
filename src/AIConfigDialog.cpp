@@ -1,5 +1,6 @@
 ﻿#include "AIConfigDialog.h"
 #include "resource.h"
+#include "AutoLinkerSettingsDialog.h"
 
 #include <algorithm>
 #include <array>
@@ -504,12 +505,15 @@ struct AIConfigDialogContext {
 struct AIConfigWebViewDialogContext {
 	AIJsonConfig* jsonConfig = nullptr;
 	AISettings* settings = nullptr;
+	AISettings ownedSettings;
 	std::vector<AIConfigProfileEntry> profiles;
 	std::string activeProfileId;
 	bool accepted = false;
 	bool fallbackRequested = false;
 	bool webViewReady = false;
 	bool testInFlight = false;
+	bool embedded = false;
+	bool ownsContext = false;
 	HWND hHost = nullptr;
 	HWND hLoading = nullptr;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
@@ -2002,7 +2006,13 @@ bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* c
 	ctx->activeProfileId = activeProfileId;
 	*ctx->settings = activeSettings;
 	ctx->accepted = true;
-	DestroyWindow(hWnd);
+	if (ctx->embedded) {
+		OutputStringToELog("AI配置已保存");
+		PostMessageW(GetParent(hWnd), WM_AUTOLINKER_SETTINGS_PAGE_SAVED, 0, 0);
+	}
+	else {
+		DestroyWindow(hWnd);
+	}
 	return true;
 }
 
@@ -2207,7 +2217,9 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 												}
 											}
 											else if (action == "cancel") {
-												DestroyWindow(hWnd);
+												if (!messageCtx->embedded) {
+													DestroyWindow(hWnd);
+												}
 											}
 											else if (action == "open_url") {
 												const std::string openUrl = payload.value("url", "");
@@ -2241,6 +2253,11 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 											}
 											LayoutAIConfigWebViewDialog(hWnd, navCtx);
 											ApplyAIConfigWebViewSettings(navCtx);
+											if (navCtx->embedded) {
+												navCtx->webView->ExecuteScript(
+													L"(function(){var b=document.getElementById('cancelBtn');if(b)b.style.display='none';var s=document.getElementById('saveBtn');if(s)s.textContent='保存';})();",
+													nullptr);
+											}
 											return S_OK;
 										}
 
@@ -2398,6 +2415,16 @@ LRESULT CALLBACK AIConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, 
 			ctx->webViewEnvironment = nullptr;
 		}
 		return 0;
+
+	case WM_NCDESTROY: {
+		const bool ownsContext = ctx != nullptr && ctx->ownsContext;
+		SetWindowLongPtrA(hWnd, GWLP_USERDATA, 0);
+		const LRESULT result = DefWindowProcA(hWnd, uMsg, wParam, lParam);
+		if (ownsContext) {
+			delete ctx;
+		}
+		return result;
+	}
 
 	default:
 		break;
@@ -3187,6 +3214,46 @@ bool ShowAIConfigDialog(HWND owner, AIJsonConfig& jsonConfig, AISettings& ioSett
 	return webViewResult.accepted;
 }
 
+HWND CreateAIConfigSettingsPage(HWND parent)
+{
+	if (parent == nullptr || !IsWindow(parent) || !IsWebView2RuntimeAvailable()) {
+		return nullptr;
+	}
+	WNDCLASSEXA wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.lpfnWndProc = AIConfigWebViewDialogProc;
+	wc.hInstance = GetModuleHandleA(nullptr);
+	wc.lpszClassName = "AutoLinkerAIConfigWebViewDialogWindow";
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	RegisterClassExA(&wc);
+
+	auto* ctx = new AIConfigWebViewDialogContext();
+	ctx->jsonConfig = &g_aiJsonConfig;
+	AIService::LoadSettings(g_aiJsonConfig, &g_configManager, ctx->ownedSettings);
+	ctx->settings = &ctx->ownedSettings;
+	ctx->profiles = LoadProfileEntriesFromJsonConfig(
+		g_aiJsonConfig,
+		ctx->ownedSettings,
+		ctx->activeProfileId);
+	ctx->embedded = true;
+	ctx->ownsContext = true;
+	HWND page = CreateWindowExA(
+		WS_EX_CONTROLPARENT,
+		wc.lpszClassName,
+		"",
+		WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+		0, 0, 0, 0,
+		parent,
+		nullptr,
+		wc.hInstance,
+		ctx);
+	if (page == nullptr) {
+		delete ctx;
+	}
+	return page;
+}
+
 AIPreviewAction ShowAIPreviewDialogNative(
 	HWND owner,
 	const std::string& title,
@@ -3398,6 +3465,8 @@ struct LinkerConfigWebViewDialogContext {
 	HWND hLoading = nullptr;
 	std::string sourceFilePath;
 	std::vector<LinkerEntry> linkers;
+	bool embedded = false;
+	bool ownsContext = false;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
@@ -3794,7 +3863,9 @@ HRESULT OnLinkerConfigControllerCreated(HWND hWnd, HRESULT controllerResult, ICo
 						HandleLinkerWebViewSave(hWnd, messageCtx, payload["data"]);
 					}
 					else if (action == "cancel") {
-						DestroyWindow(hWnd);
+						if (!messageCtx->embedded) {
+							DestroyWindow(hWnd);
+						}
 					}
 				}
 				catch (...) {
@@ -3820,6 +3891,11 @@ HRESULT OnLinkerConfigControllerCreated(HWND hWnd, HRESULT controllerResult, ICo
 					}
 					LayoutLinkerConfigWebViewDialog(hWnd, navCtx);
 					ApplyLinkerWebViewData(navCtx);
+					if (navCtx->embedded) {
+						navCtx->webView->ExecuteScript(
+							L"(function(){var b=document.getElementById('cancelBtn');if(b)b.style.display='none';})();",
+							nullptr);
+					}
 					return S_OK;
 				}
 				COREWEBVIEW2_WEB_ERROR_STATUS webErrorStatus = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
@@ -3955,6 +4031,15 @@ LRESULT CALLBACK LinkerConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wPar
 			ctx->webViewEnvironment = nullptr;
 		}
 		return 0;
+	case WM_NCDESTROY: {
+		const bool ownsContext = ctx != nullptr && ctx->ownsContext;
+		SetWindowLongPtrA(hWnd, GWLP_USERDATA, 0);
+		const LRESULT result = DefWindowProcA(hWnd, uMsg, wParam, lParam);
+		if (ownsContext) {
+			delete ctx;
+		}
+		return result;
+	}
 
 	default:
 		break;
@@ -4017,6 +4102,35 @@ void ShowLinkerConfigDialog(HWND owner)
 	RunModalWindow(owner, hDialog);
 }
 
+HWND CreateLinkerConfigSettingsPage(HWND parent)
+{
+	if (parent == nullptr || !IsWindow(parent) || !IsWebView2RuntimeAvailable()) {
+		return nullptr;
+	}
+	WNDCLASSEXA wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.lpfnWndProc = LinkerConfigWebViewDialogProc;
+	wc.hInstance = GetModuleHandleA(nullptr);
+	wc.lpszClassName = "AutoLinkerLinkerConfigWebViewDialogWindow";
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	RegisterClassExA(&wc);
+	auto* ctx = new LinkerConfigWebViewDialogContext();
+	UpdateCurrentOpenSourceFile();
+	ctx->sourceFilePath = g_nowOpenSourceFilePath;
+	ctx->linkers = LoadLinkerEntriesFromDisk();
+	ctx->embedded = true;
+	ctx->ownsContext = true;
+	HWND page = CreateWindowExA(
+		WS_EX_CONTROLPARENT, wc.lpszClassName, "",
+		WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+		0, 0, 0, 0, parent, nullptr, wc.hInstance, ctx);
+	if (page == nullptr) {
+		delete ctx;
+	}
+	return page;
+}
+
 namespace {
 constexpr UINT_PTR kAIChatThemeConfigWebViewInitTimerId = 0xAC04;
 constexpr UINT kAIChatThemeConfigWebViewInitTimeoutMs = 12000;
@@ -4024,6 +4138,8 @@ constexpr UINT kAIChatThemeConfigWebViewInitTimeoutMs = 12000;
 struct AIChatThemeConfigWebViewDialogContext {
 	HWND hHost = nullptr;
 	HWND hLoading = nullptr;
+	bool embedded = false;
+	bool ownsContext = false;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
@@ -4153,7 +4269,9 @@ HRESULT OnAIChatThemeConfigControllerCreated(HWND hWnd, HRESULT controllerResult
 						HandleAIChatThemeConfigWebViewSave(hWnd, messageCtx, payload["data"]);
 					}
 					else if (action == "cancel") {
-						DestroyWindow(hWnd);
+						if (!messageCtx->embedded) {
+							DestroyWindow(hWnd);
+						}
 					}
 				}
 				catch (...) {
@@ -4179,6 +4297,11 @@ HRESULT OnAIChatThemeConfigControllerCreated(HWND hWnd, HRESULT controllerResult
 					}
 					LayoutAIChatThemeConfigWebViewDialog(hWnd, navCtx);
 					ApplyAIChatThemeConfigWebViewData(navCtx);
+					if (navCtx->embedded) {
+						navCtx->webView->ExecuteScript(
+							L"(function(){var b=document.getElementById('cancelBtn');if(b)b.style.display='none';})();",
+							nullptr);
+					}
 					return S_OK;
 				}
 				COREWEBVIEW2_WEB_ERROR_STATUS webErrorStatus = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
@@ -4302,6 +4425,15 @@ LRESULT CALLBACK AIChatThemeConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM
 			ctx->webViewEnvironment = nullptr;
 		}
 		return 0;
+	case WM_NCDESTROY: {
+		const bool ownsContext = ctx != nullptr && ctx->ownsContext;
+		SetWindowLongPtrA(hWnd, GWLP_USERDATA, 0);
+		const LRESULT result = DefWindowProcA(hWnd, uMsg, wParam, lParam);
+		if (ownsContext) {
+			delete ctx;
+		}
+		return result;
+	}
 	default:
 		break;
 	}
@@ -4357,6 +4489,32 @@ void ShowAIChatThemeConfigDialog(HWND owner)
 	ApplyWindowIcon(hDialog);
 	EnsureWindowTitle(hDialog, "AutoLinker AI 对话配色设置");
 	RunModalWindow(owner, hDialog);
+}
+
+HWND CreateAIChatThemeConfigSettingsPage(HWND parent)
+{
+	if (parent == nullptr || !IsWindow(parent) || !IsWebView2RuntimeAvailable()) {
+		return nullptr;
+	}
+	WNDCLASSEXA wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.lpfnWndProc = AIChatThemeConfigWebViewDialogProc;
+	wc.hInstance = GetModuleHandleA(nullptr);
+	wc.lpszClassName = "AutoLinkerAIChatThemeConfigWebViewDialogWindow";
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	RegisterClassExA(&wc);
+	auto* ctx = new AIChatThemeConfigWebViewDialogContext();
+	ctx->embedded = true;
+	ctx->ownsContext = true;
+	HWND page = CreateWindowExA(
+		WS_EX_CONTROLPARENT, wc.lpszClassName, "",
+		WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+		0, 0, 0, 0, parent, nullptr, wc.hInstance, ctx);
+	if (page == nullptr) {
+		delete ctx;
+	}
+	return page;
 }
 
 

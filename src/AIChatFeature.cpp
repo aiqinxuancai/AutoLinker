@@ -30,6 +30,7 @@
 #include "..\\thirdparty\\WebView2.h"
 
 #include "AIConfigDialog.h"
+#include "AutoLinkerSettingsDialog.h"
 #include "AIJsonConfig.h"
 #include "AIChatMcpClient.h"
 #include "AIChatMcpConfigDialog.h"
@@ -4992,10 +4993,14 @@ bool EnsureChatSettingsReady(AISettings& settings)
 	}
 
 	OutputStringToELog("[AI Chat] AI settings missing, opening config dialog");
-	if (!ShowAIConfigDialog(g_mainWindow, *g_aiJsonConfig, settings)) {
+	const AutoLinkerSettingsResult settingsResult = ShowAutoLinkerSettingsDialog(
+		g_mainWindow,
+		AutoLinkerSettingsPageId::AiService);
+	if (!settingsResult.aiSettingsSaved) {
 		OutputStringToELog("[AI Chat] AI config cancelled");
 		return false;
 	}
+	AIService::LoadSettings(*g_aiJsonConfig, g_configManager, settings);
 	OutputStringToELog("[AI Chat] AI config saved");
 	return true;
 }
@@ -5608,7 +5613,10 @@ void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx)
 		LayoutAIChatDialog(hWnd, ctx);
 	}
 	Logger::Instance().WriteGbk("[AutoLinker][AI Chat] open config dialog from chat page");
-	if (!ShowAIConfigDialog(g_mainWindow != nullptr ? g_mainWindow : hWnd, *g_aiJsonConfig, settings)) {
+	const AutoLinkerSettingsResult settingsResult = ShowAutoLinkerSettingsDialog(
+		g_mainWindow != nullptr ? g_mainWindow : hWnd,
+		AutoLinkerSettingsPageId::AiService);
+	if (!settingsResult.aiSettingsSaved) {
 		Logger::Instance().WriteGbk("[AutoLinker][AI Chat] AI config cancelled from chat page");
 		if (ctx != nullptr) {
 			if (ctx->webViewDesired) {
@@ -5639,7 +5647,9 @@ void HandleChatOpenMcpSettingsUi(HWND hWnd, ChatDialogContext* ctx)
 		LayoutAIChatDialog(hWnd, ctx);
 	}
 	Logger::Instance().WriteGbk("[AutoLinker][AI Chat] open MCP config dialog from chat page");
-	ShowAIChatMcpConfigDialog(g_mainWindow != nullptr ? g_mainWindow : hWnd);
+	ShowAutoLinkerSettingsDialog(
+		g_mainWindow != nullptr ? g_mainWindow : hWnd,
+		AutoLinkerSettingsPageId::Mcp);
 	RefreshChatDialog(hWnd);
 	if (ctx != nullptr) {
 		if (ctx->webViewDesired) {

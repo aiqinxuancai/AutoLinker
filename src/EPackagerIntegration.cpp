@@ -12,6 +12,7 @@
 #include <format>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -46,6 +47,44 @@ constexpr long long kUpdateCheckIntervalSeconds = 7LL * 24LL * 60LL * 60LL;
 
 std::atomic_bool g_unpackTaskRunning = false;
 std::atomic_bool g_toolUpdateTaskRunning = false;
+std::mutex g_updateStatusMutex;
+std::string Utf8FromStatusText(const std::string& text);
+ComponentUpdateStatus g_updateStatus = {
+	ComponentUpdateState::Idle,
+	{},
+	{},
+	Utf8FromStatusText("尚未检查组件更新。"),
+	-1
+};
+HWND g_updateStatusNotificationWindow = nullptr;
+
+void PublishUpdateStatus(
+	ComponentUpdateState state,
+	std::string message,
+	std::string currentVersion = {},
+	std::string latestVersion = {})
+{
+	message = Utf8FromStatusText(message);
+	currentVersion = Utf8FromStatusText(currentVersion);
+	latestVersion = Utf8FromStatusText(latestVersion);
+	HWND notificationWindow = nullptr;
+	{
+		std::lock_guard<std::mutex> lock(g_updateStatusMutex);
+		g_updateStatus.state = state;
+		if (!currentVersion.empty()) {
+			g_updateStatus.currentVersion = std::move(currentVersion);
+		}
+		if (!latestVersion.empty()) {
+			g_updateStatus.latestVersion = std::move(latestVersion);
+		}
+		g_updateStatus.message = std::move(message);
+		g_updateStatus.progressPercent = -1;
+		notificationWindow = g_updateStatusNotificationWindow;
+	}
+	if (notificationWindow != nullptr && IsWindow(notificationWindow)) {
+		PostMessageW(notificationWindow, WM_AUTOLINKER_COMPONENT_UPDATE_STATUS, 1, 0);
+	}
+}
 
 struct ScopedComInit {
 	HRESULT hr = E_FAIL;
@@ -164,6 +203,15 @@ std::string LocalFromWide(const std::wstring& text)
 std::string Utf8FromWide(const std::wstring& text)
 {
 	return StringFromWideCodePage(text, CP_UTF8);
+}
+
+std::string Utf8FromStatusText(const std::string& text)
+{
+	if (text.empty() || !WideFromUtf8(text).empty()) {
+		return text;
+	}
+	const std::wstring wide = WideFromLocal(text);
+	return wide.empty() ? std::string() : Utf8FromWide(wide);
 }
 
 std::string LocalFromUtf8(const std::string& text)
@@ -493,6 +541,19 @@ std::string BytesToLocalText(const std::string& bytes)
 	return bytes;
 }
 
+std::string BytesToUtf8Text(const std::string& bytes)
+{
+	if (bytes.empty()) {
+		return std::string();
+	}
+
+	std::wstring wide = WideFromUtf8(bytes);
+	if (wide.empty()) {
+		wide = WideFromCodePage(bytes, CP_ACP);
+	}
+	return wide.empty() ? std::string() : Utf8FromWide(wide);
+}
+
 void OutputTextBlock(const std::string& title, const std::string& text)
 {
 	const std::string localText = BytesToLocalText(text);
@@ -617,15 +678,15 @@ std::string DetectInstalledVersion(const std::filesystem::path& exePath)
 	}
 
 	ProcessRunResult result = RunProcessAndCaptureImpl(exePath, { L"version" }, exePath.parent_path());
-	std::string text = BytesToLocalText(result.stdOutBytes);
+	std::string text = BytesToUtf8Text(result.stdOutBytes);
 	if (!result.stdErrBytes.empty()) {
 		text += "\n";
-		text += BytesToLocalText(result.stdErrBytes);
+		text += BytesToUtf8Text(result.stdErrBytes);
 	}
 	if (!result.ok && text.empty()) {
 		return std::string();
 	}
-	return text;
+	return TrimAsciiCopy(std::move(text));
 }
 
 bool WriteBinaryFile(const std::filesystem::path& path, const std::string& bytes, std::string& outError)
@@ -841,8 +902,17 @@ bool EnsureToolReadyImpl(
 {
 	const std::filesystem::path toolPath = GetEPackagerExePath();
 	const bool toolExists = std::filesystem::exists(toolPath);
+	const std::string installedVersion = toolExists ? DetectInstalledVersion(toolPath) : std::string();
+	PublishUpdateStatus(
+		ComponentUpdateState::Checking,
+		"正在检查 e-packager 最新版本...",
+		installedVersion.empty() ? (toolExists ? "已安装" : "未安装") : installedVersion);
 	if (!forceCheck && !IsUpdateCheckDue(toolExists)) {
 		outToolPath = toolPath;
+		PublishUpdateStatus(
+			ComponentUpdateState::Completed,
+			"组件在最近检查周期内可用。",
+			installedVersion.empty() ? "已安装" : installedVersion);
 		return true;
 	}
 
@@ -852,9 +922,14 @@ bool EnsureToolReadyImpl(
 		if (toolExists && allowExistingFallback) {
 			OutputStringToELog("[e-packager] 检查更新失败，将继续使用现有工具：" + fetchError);
 			outToolPath = toolPath;
+			PublishUpdateStatus(
+				ComponentUpdateState::Error,
+				"检查失败，继续使用已安装组件：" + fetchError,
+				installedVersion.empty() ? "已安装" : installedVersion);
 			return true;
 		}
 		outError = "无法下载 e-packager：" + fetchError;
+		PublishUpdateStatus(ComponentUpdateState::Error, outError);
 		return false;
 	}
 
@@ -873,20 +948,37 @@ bool EnsureToolReadyImpl(
 		OutputStringToELog("[e-packager] 本地工具已是最新版本：" + latest.tag);
 		SaveMeta(latest);
 		outToolPath = toolPath;
+		PublishUpdateStatus(
+			ComponentUpdateState::UpToDate,
+			"本地组件已是最新版本。",
+			installedVersion,
+			latest.tag);
 		return true;
 	}
 
+	PublishUpdateStatus(
+		ComponentUpdateState::Downloading,
+		"正在下载并安装 e-packager...",
+		installedVersion.empty() ? (toolExists ? "已安装" : "未安装") : installedVersion,
+		latest.tag);
 	if (!DownloadAndInstallTool(latest, outError)) {
 		if (toolExists && allowExistingFallback) {
 			OutputStringToELog("[e-packager] 更新失败，将继续使用现有工具：" + outError);
+			PublishUpdateStatus(
+				ComponentUpdateState::Error,
+				"更新失败，继续使用已安装组件：" + outError,
+				installedVersion,
+				latest.tag);
 			outError.clear();
 			outToolPath = toolPath;
 			return true;
 		}
+		PublishUpdateStatus(ComponentUpdateState::Error, outError, installedVersion, latest.tag);
 		return false;
 	}
 
 	outToolPath = toolPath;
+	PublishUpdateStatus(ComponentUpdateState::Completed, "e-packager 已更新完成。", latest.tag, latest.tag);
 	return true;
 }
 
@@ -905,9 +997,11 @@ void ToolUpdateWorker(void*)
 	}
 	catch (const std::exception& ex) {
 		OutputStringToELog(std::string("[e-packager] 手动更新异常：") + ex.what());
+		PublishUpdateStatus(ComponentUpdateState::Error, std::string("e-packager 更新异常：") + ex.what());
 	}
 	catch (...) {
 		OutputStringToELog("[e-packager] 手动更新发生未知异常");
+		PublishUpdateStatus(ComponentUpdateState::Error, "e-packager 更新发生未知异常。");
 	}
 
 	g_toolUpdateTaskRunning.store(false);
@@ -1144,6 +1238,18 @@ void RunToolUpdateInBackground()
 		OutputStringToELog("[e-packager] 启动后台更新任务失败");
 		return;
 	}
+}
+
+void SetUpdateStatusNotificationWindow(HWND window)
+{
+	std::lock_guard<std::mutex> lock(g_updateStatusMutex);
+	g_updateStatusNotificationWindow = window != nullptr && IsWindow(window) ? window : nullptr;
+}
+
+ComponentUpdateStatus GetUpdateStatus()
+{
+	std::lock_guard<std::mutex> lock(g_updateStatusMutex);
+	return g_updateStatus;
 }
 
 ProcessRunResult RunProcessAndCapture(

@@ -2,6 +2,7 @@
 
 #include "Global.h"
 #include "resource.h"
+#include "AutoLinkerSettingsDialog.h"
 #include "ResourceTextLoader.h"
 
 #include <Windows.h>
@@ -36,6 +37,8 @@ struct EcSwitchConfigWebViewDialogContext {
 	HWND hHost = nullptr;
 	HWND hLoading = nullptr;
 	std::vector<EcSwitchRule> rules;
+	bool embedded = false;
+	bool ownsContext = false;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
@@ -550,7 +553,9 @@ HRESULT OnEcSwitchConfigControllerCreated(HWND hWnd, HRESULT controllerResult, I
 						HandleEcSwitchWebViewSave(messageCtx, payload["data"]);
 					}
 					else if (action == "cancel") {
-						DestroyWindow(hWnd);
+						if (!messageCtx->embedded) {
+							DestroyWindow(hWnd);
+						}
 					}
 				}
 				catch (...) {
@@ -577,6 +582,11 @@ HRESULT OnEcSwitchConfigControllerCreated(HWND hWnd, HRESULT controllerResult, I
 					}
 					LayoutEcSwitchConfigWebViewDialog(hWnd, navCtx);
 					ApplyEcSwitchWebViewData(navCtx);
+					if (navCtx->embedded) {
+						navCtx->webView->ExecuteScript(
+							L"(function(){var b=document.getElementById('cancelBtn');if(b)b.style.display='none';})();",
+							nullptr);
+					}
 					return S_OK;
 				}
 				COREWEBVIEW2_WEB_ERROR_STATUS webErrorStatus = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
@@ -796,6 +806,15 @@ LRESULT CALLBACK EcSwitchConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPARAM wP
 			ctx->webViewEnvironment = nullptr;
 		}
 		return 0;
+	case WM_NCDESTROY: {
+		const bool ownsContext = ctx != nullptr && ctx->ownsContext;
+		SetWindowLongPtrA(hWnd, GWLP_USERDATA, 0);
+		const LRESULT result = DefWindowProcA(hWnd, uMsg, wParam, lParam);
+		if (ownsContext) {
+			delete ctx;
+		}
+		return result;
+	}
 
 	default:
 		break;
@@ -853,4 +872,31 @@ void ShowEcSwitchConfigDialog(HWND owner)
 	ApplyWindowIconLocal(hDialog);
 	SetWindowTextW(hDialog, L"AutoLinker EC 模块自动切换设置");
 	RunModalWindowLocal(owner, hDialog);
+}
+
+HWND CreateEcSwitchConfigSettingsPage(HWND parent)
+{
+	if (parent == nullptr || !IsWindow(parent) || !IsWebView2RuntimeAvailableLocal()) {
+		return nullptr;
+	}
+	WNDCLASSEXA wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.lpfnWndProc = EcSwitchConfigWebViewDialogProc;
+	wc.hInstance = GetModuleHandleA(nullptr);
+	wc.lpszClassName = "AutoLinkerEcSwitchConfigWebViewDialogWindow";
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	RegisterClassExA(&wc);
+	auto* ctx = new EcSwitchConfigWebViewDialogContext();
+	ctx->rules = LoadEcSwitchRulesFromManager();
+	ctx->embedded = true;
+	ctx->ownsContext = true;
+	HWND page = CreateWindowExA(
+		WS_EX_CONTROLPARENT, wc.lpszClassName, "",
+		WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+		0, 0, 0, 0, parent, nullptr, wc.hInstance, ctx);
+	if (page == nullptr) {
+		delete ctx;
+	}
+	return page;
 }

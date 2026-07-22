@@ -5,3 +5,6 @@
 
 // 打开“核心库函数重写设置”WebView2 对话框。
 void ShowForceLinkLibConfigDialog(HWND owner);
+
+// 创建统一设置窗口使用的核心库函数重写子页。
+HWND CreateForceLinkLibConfigSettingsPage(HWND parent);

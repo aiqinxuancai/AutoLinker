@@ -450,6 +450,7 @@ private:
 
 CaptureStore g_captureStore;
 std::atomic_bool g_hookAvailable = false;
+std::atomic_bool g_captureHookEnabled = false;
 std::atomic_bool g_debugOutputOptimizationEnabled = false;
 bool g_hookAttachQueued = false;
 std::uintptr_t g_resolvedAddress = 0;
@@ -831,6 +832,11 @@ void __fastcall HookOutputFunction(
 	const char* text,
 	int appendMode)
 {
+	if (!g_captureHookEnabled.load(std::memory_order_acquire)) {
+		g_originalOutputFunction(thisPtr, text, appendMode);
+		return;
+	}
+
 	const size_t length = SafeBoundedStringLength(text, kMaxTextProbeBytes);
 	if (length > 0) {
 		// 内部 Hook 仅服务编译会话；日志中心统一从实际输出控件采集，避免重复记录。
@@ -931,6 +937,10 @@ bool AttachToCurrentDetourTransaction()
 	g_resolvedAddress = 0;
 	g_debugOutputCallReturnAddress = 0;
 	g_resolutionMethod.clear();
+	if (!g_captureHookEnabled.load(std::memory_order_acquire)) {
+		Logger::Instance().Write("CompileOutputCapture", "hook disabled by configuration; installation skipped");
+		return false;
+	}
 
 #if !defined(_M_IX86)
 	Logger::Instance().Write("CompileOutputCapture", "unsupported architecture; control fallback enabled");
@@ -1002,11 +1012,27 @@ void CompleteHookInstallation(bool transactionCommitted)
 
 bool IsHookAvailable()
 {
-	return g_hookAvailable.load(std::memory_order_acquire);
+	return g_captureHookEnabled.load(std::memory_order_acquire) &&
+		g_hookAvailable.load(std::memory_order_acquire);
+}
+
+void SetCaptureHookEnabled(bool enabled) noexcept
+{
+	const bool wasEnabled = g_captureHookEnabled.exchange(enabled, std::memory_order_acq_rel);
+	if (!enabled && wasEnabled) {
+		SetDebugOutputOptimizationEnabled(false);
+		ClearPendingDebugOutput();
+	}
+}
+
+bool IsCaptureHookEnabled() noexcept
+{
+	return g_captureHookEnabled.load(std::memory_order_acquire);
 }
 
 void SetDebugOutputOptimizationEnabled(bool enabled) noexcept
 {
+	enabled = enabled && g_captureHookEnabled.load(std::memory_order_acquire);
 	const bool wasEnabled = g_debugOutputOptimizationEnabled.exchange(
 		enabled,
 		std::memory_order_acq_rel);

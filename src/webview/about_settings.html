@@ -1,0 +1,111 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light only">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{font-family:"Microsoft YaHei UI","Segoe UI",Arial,sans-serif;color:#20252b;background:#fff;font-size:13px}*{box-sizing:border-box}html,body{height:100%;margin:0}body{overflow:auto;background:#fff;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}button{font:inherit}.page{min-height:100%}.page-header{padding:12px 20px;border-bottom:1px solid #e2e8f0;background:#fff}.page-header-inner{display:flex;min-height:46px;align-items:center;justify-content:space-between;gap:12px}.page-heading{min-width:0}.page-title{overflow:hidden;margin:0;color:#020617;font-size:18px;font-weight:600;line-height:24px;text-overflow:ellipsis;white-space:nowrap}.page-subtitle{overflow:hidden;min-height:20px;margin:2px 0 0;color:#64748b;font-size:12px;line-height:20px;text-overflow:ellipsis;white-space:nowrap}.content{padding:20px 20px 38px}.product{display:grid;grid-template-columns:92px minmax(0,1fr);align-items:center;gap:24px;padding-bottom:25px;border-bottom:1px solid #dfe3e8}.logo-shell{position:relative;display:grid;place-items:center;width:92px;height:92px;border:1px solid #d9dfe5;border-radius:8px;background:#f5f7f9;color:#2b6fa7;font-size:25px;font-weight:700}.logo-shell.loaded{border-color:transparent;background:transparent}.logo-shell.loaded>span{display:none}.logo{display:none;width:92px;height:92px;object-fit:contain}.logo-shell.loaded .logo{display:block}.name{margin:0;font-size:28px;line-height:1.2;font-weight:700;color:#14181d}.version{display:inline-block;margin-top:8px;border:1px solid #d7dce2;background:#f7f8fa;border-radius:4px;padding:4px 8px;color:#59636e;font-size:12px}.intro{max-width:760px;margin:12px 0 0;color:#68717c;line-height:1.75}.features{display:flex;flex-wrap:wrap;gap:8px;margin-top:15px}.feature{border:1px solid #dce1e6;background:#fff;border-radius:4px;padding:5px 8px;color:#46515c;font-size:12px}.section{padding:24px 0;border-bottom:1px solid #e5e8ec}.section:last-child{border-bottom:0}.section-title{margin:0 0 13px;font-size:15px;font-weight:650;color:#22272d}.links{display:flex;flex-wrap:wrap;gap:9px}.btn{min-height:34px;border:1px solid #c8cfd7;background:#fff;color:#303941;border-radius:4px;padding:7px 12px;cursor:pointer;transition:.12s}.btn:hover:not(:disabled){border-color:#8fa1b2;background:#f6f8fa}.btn:disabled{cursor:not-allowed;opacity:.48}.btn-primary{border-color:#236aa5;background:#2878b7;color:#fff}.btn-primary:hover:not(:disabled){border-color:#1c5b8e;background:#246da7}.updates{display:grid;grid-template-columns:1fr 1fr;gap:28px}.component{min-width:0}.component-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.component-name{font-size:14px;font-weight:650;color:#242a30}.component-version{margin-top:5px;color:#77818b;font-size:12px}.component-status{min-height:40px;margin:14px 0 12px;color:#5d6873;line-height:1.6}.component-actions{display:flex;flex-wrap:wrap;gap:8px}.state{display:inline-block;margin-top:10px;border-radius:4px;padding:3px 7px;background:#f1f3f5;color:#5f6973;font-size:11px}.state.available{background:#edf6ff;color:#195f99}.state.success{background:#edf8f2;color:#1d704d}.state.error{background:#fff1f1;color:#993b3b}.progress{display:none;height:3px;margin-top:12px;background:#e4e8ec;overflow:hidden}.progress.show{display:block}.progress>span{display:block;height:100%;background:#2878b7;transition:width .2s}@media(max-width:780px){.updates{grid-template-columns:1fr;gap:26px}.product{grid-template-columns:72px 1fr}.logo-shell,.logo{width:72px;height:72px}.name{font-size:24px}}
+</style>
+</head>
+<body>
+<main class="page">
+  <header class="page-header">
+    <div class="page-header-inner">
+      <div class="page-heading">
+        <h1 class="page-title">关于</h1>
+        <p class="page-subtitle">查看项目信息、文档链接与组件更新状态。</p>
+      </div>
+    </div>
+  </header>
+
+  <div class="content">
+    <section class="product">
+      <div id="logoShell" class="logo-shell"><span>AL</span><img id="productIcon" class="logo" alt="AutoLinker 图标"></div>
+      <div>
+        <h2 class="name">AutoLinker</h2>
+        <span id="versionBadge" class="version">当前版本</span>
+        <p class="intro">面向易语言 IDE 的 AI Agent 支持库。提供工程搜索、代码读写、本地 MCP、按项目链接器和编译流程增强。</p>
+        <div class="features">
+          <span class="feature">AI Agent</span><span class="feature">本地 MCP</span><span class="feature">工程代码读写</span><span class="feature">链接器管理</span><span class="feature">EC 动静态切换</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+    <h2 class="section-title">项目与文档</h2>
+    <div class="links">
+      <button class="btn" data-link="github" type="button">GitHub</button>
+      <button class="btn" data-link="releases" type="button">Releases</button>
+      <button class="btn" data-link="config" type="button">AI / MCP 配置指南</button>
+      <button class="btn" data-link="awesome_agent" type="button">Awesome-E-Agent</button>
+      <button class="btn" data-link="e_packager" type="button">e-packager</button>
+    </div>
+    </section>
+
+    <section class="section">
+    <h2 class="section-title">组件更新</h2>
+    <div class="updates">
+      <article class="component">
+        <div class="component-head">
+          <div><div class="component-name">AutoLinker</div><div id="autoVersion" class="component-version">当前版本</div></div>
+          <span id="autoState" class="state">尚未检查</span>
+        </div>
+        <div id="autoStatus" class="component-status">尚未检查更新。</div>
+        <div class="component-actions">
+          <button id="checkAutoBtn" class="btn" type="button">检查更新</button>
+          <button id="applyAutoBtn" class="btn btn-primary" type="button" disabled>执行更新</button>
+        </div>
+        <div id="autoProgress" class="progress"><span></span></div>
+      </article>
+
+      <article class="component">
+        <div class="component-head">
+          <div><div class="component-name">e-packager</div><div id="packagerVersion" class="component-version">检测安装状态中</div></div>
+          <span id="packagerState" class="state">尚未检查</span>
+        </div>
+        <div id="packagerStatus" class="component-status">用于工程镜像、解包和外部 AI 工具协作。</div>
+        <div class="component-actions">
+          <button id="updatePackagerBtn" class="btn" type="button">检查并更新组件</button>
+        </div>
+        <div id="packagerProgress" class="progress"><span></span></div>
+      </article>
+    </div>
+    </section>
+  </div>
+</main>
+<script>
+function $(id){return document.getElementById(id)}
+function post(action,data){if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify({action:action,data:data||{}}))}}
+function stateText(state){var map={idle:"尚未检查",checking:"检查中",up_to_date:"已是最新",update_available:"有可用更新",downloading:"下载中",installing:"准备更新",ready_to_restart:"等待退出 IDE",completed:"已完成",error:"发生错误"};return map[state]||""}
+function stateClass(state){if(state==="update_available"||state==="checking"||state==="downloading"||state==="installing")return"state available";if(state==="up_to_date"||state==="completed"||state==="ready_to_restart")return"state success";if(state==="error")return"state error";return"state"}
+function busy(state){return state==="checking"||state==="downloading"||state==="installing"}
+function renderProgress(id,value){var root=$(id),bar=root.querySelector("span");var show=typeof value==="number"&&value>=0;root.className="progress"+(show?" show":"");bar.style.width=(show?Math.max(0,Math.min(100,value)):0)+"%"}
+window.autolinkerApplyAbout=function(payload){
+  var data=payload||{},auto=data.autoLinker||{},pack=data.ePackager||{};
+  var icon=$("productIcon");
+  icon.onload=function(){$("logoShell").className="logo-shell loaded"};
+  icon.onerror=function(){$("logoShell").className="logo-shell"};
+  icon.src=data.iconDataUrl||"";
+  $("versionBadge").textContent="当前版本 "+(data.version||"");
+  $("autoVersion").textContent="当前版本 "+(auto.currentVersion||data.version||"")+(auto.latestVersion?" · 最新 "+auto.latestVersion:"");
+  $("autoStatus").textContent=auto.message||"尚未检查更新。";
+  $("autoState").textContent=stateText(auto.state);$("autoState").className=stateClass(auto.state);
+  $("checkAutoBtn").disabled=busy(auto.state)||auto.state==="ready_to_restart";
+  $("applyAutoBtn").disabled=auto.state!=="update_available";
+  $("applyAutoBtn").textContent=auto.latestVersion?"更新到 "+auto.latestVersion:"执行更新";
+  renderProgress("autoProgress",auto.progressPercent);
+  $("packagerVersion").textContent=pack.currentVersion?"当前版本 "+pack.currentVersion:(data.ePackagerInstalled?"已安装":"未安装");
+  $("packagerStatus").textContent=pack.message||"用于工程镜像、解包和外部 AI 工具协作。";
+  $("packagerState").textContent=stateText(pack.state);$("packagerState").className=stateClass(pack.state);
+  $("updatePackagerBtn").disabled=busy(pack.state);
+  renderProgress("packagerProgress",pack.progressPercent);
+};
+document.querySelector(".links").addEventListener("click",function(e){var btn=e.target.closest("[data-link]");if(btn)post("open_link",{id:btn.getAttribute("data-link")})});
+$("checkAutoBtn").addEventListener("click",function(){post("check_autolinker")});
+$("applyAutoBtn").addEventListener("click",function(){post("update_autolinker")});
+$("updatePackagerBtn").addEventListener("click",function(){post("update_e_packager")});
+document.addEventListener("DOMContentLoaded",function(){post("ready")});
+</script>
+</body>
+</html>

@@ -41,6 +41,9 @@
     <ClCompile Include="src\AutoLinkerUpdateManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\AutoLinkerSettingsDialog.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\DownloadProgressReporter.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -261,6 +264,9 @@
     <ClInclude Include="src\AutoLinkerUpdateManager.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="src\AutoLinkerSettingsDialog.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
     <ClInclude Include="src\AutoLinkerInternal.h">
       <Filter>Utils</Filter>
     </ClInclude>
@@ -322,6 +328,9 @@
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\ConfigManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ComponentUpdateStatus.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\DependencyCatalogCache.h">

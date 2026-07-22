@@ -470,6 +470,9 @@
     <ClCompile Include="src\AutoLinkerUpdateManager.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
+    <ClCompile Include="src\AutoLinkerSettingsDialog.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="src\DownloadProgressReporter.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -579,6 +582,7 @@
     <ClInclude Include="src\AutoLinkerReleaseClient.h" />
     <ClInclude Include="src\AutoLinkerUpdateInstaller.h" />
     <ClInclude Include="src\AutoLinkerUpdateManager.h" />
+    <ClInclude Include="src\AutoLinkerSettingsDialog.h" />
     <ClInclude Include="src\AutoLinkerInternal.h" />
     <ClInclude Include="src\AutoLinkerTestApi.h" />
     <ClInclude Include="src\AutoLinkerVersion.h" />
@@ -599,6 +603,7 @@
     <ClInclude Include="src\WorkspaceMirror.h" />
     <ClInclude Include="src\WorkspaceFileTools.h" />
     <ClInclude Include="src\ConfigManager.h" />
+    <ClInclude Include="src\ComponentUpdateStatus.h" />
     <ClInclude Include="src\DependencyCatalogCache.h" />
     <ClInclude Include="src\DownloadProgressReporter.h" />
     <ClInclude Include="src\EPackagerIntegration.h" />

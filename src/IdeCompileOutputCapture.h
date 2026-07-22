@@ -25,6 +25,10 @@ void CompleteHookInstallation(bool transactionCommitted);
 
 bool IsHookAvailable();
 
+// 控制编译输出捕获 Hook 的业务开关；关闭后已安装入口仅做原函数直通。
+void SetCaptureHookEnabled(bool enabled) noexcept;
+bool IsCaptureHookEnabled() noexcept;
+
 // 控制调试文本异步合并输出；关闭时完全旁路快速输出路径。
 void SetDebugOutputOptimizationEnabled(bool enabled) noexcept;
 bool IsDebugOutputOptimizationEnabled() noexcept;

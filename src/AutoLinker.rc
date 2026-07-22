@@ -11,3 +11,6 @@ IDR_HTML_AI_CHAT_THEME_CONFIG_DIALOG HTML "webview\\ai_chat_theme_config_dialog.
 IDR_HTML_PROJECT_AGENTS_CONFIG_DIALOG HTML "webview\\project_agents_config_dialog.html"
 IDR_HTML_AI_CHAT_MCP_CONFIG_DIALOG HTML "webview\\ai_chat_mcp_config_dialog.html"
 IDR_HTML_IDE_LOG_VIEWER HTML "webview\\ide_log_viewer.html"
+IDR_HTML_LOG_OPTIMIZATION_SETTINGS HTML "webview\\log_optimization_settings.html"
+IDR_HTML_ABOUT_SETTINGS HTML "webview\\about_settings.html"
+IDR_PNG_APP_ICON RCDATA "..\\res\\icon128.png"

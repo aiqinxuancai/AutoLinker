@@ -3,6 +3,7 @@
 #include "AutoLinkerInternal.h"
 #include "Global.h"
 #include "resource.h"
+#include "AutoLinkerSettingsDialog.h"
 #include "ResourceTextLoader.h"
 
 #include <Windows.h>
@@ -35,6 +36,8 @@ struct ProjectAgentsConfigWebViewDialogContext {
 	std::filesystem::path sourcePath;
 	std::filesystem::path agentsPath;
 	std::string contentUtf8;
+	bool embedded = false;
+	bool ownsContext = false;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController;
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
@@ -550,7 +553,9 @@ HRESULT OnProjectAgentsConfigControllerCreated(HWND hWnd, HRESULT controllerResu
 						HandleProjectAgentsWebViewSave(messageCtx, payload["data"]);
 					}
 					else if (action == "cancel") {
-						DestroyWindow(hWnd);
+						if (!messageCtx->embedded) {
+							DestroyWindow(hWnd);
+						}
 					}
 				}
 				catch (...) {
@@ -577,6 +582,11 @@ HRESULT OnProjectAgentsConfigControllerCreated(HWND hWnd, HRESULT controllerResu
 					}
 					LayoutProjectAgentsConfigWebViewDialog(hWnd, navCtx);
 					ApplyProjectAgentsWebViewData(navCtx);
+					if (navCtx->embedded) {
+						navCtx->webView->ExecuteScript(
+							L"(function(){var b=document.getElementById('cancelBtn');if(b)b.style.display='none';})();",
+							nullptr);
+					}
 					return S_OK;
 				}
 
@@ -796,6 +806,15 @@ LRESULT CALLBACK ProjectAgentsConfigWebViewDialogProc(HWND hWnd, UINT uMsg, WPAR
 			ctx->webViewEnvironment = nullptr;
 		}
 		return 0;
+	case WM_NCDESTROY: {
+		const bool ownsContext = ctx != nullptr && ctx->ownsContext;
+		SetWindowLongPtrA(hWnd, GWLP_USERDATA, 0);
+		const LRESULT result = DefWindowProcA(hWnd, uMsg, wParam, lParam);
+		if (ownsContext) {
+			delete ctx;
+		}
+		return result;
+	}
 
 	default:
 		break;
@@ -874,4 +893,42 @@ void ShowProjectAgentsConfigDialog(HWND owner)
 	ApplyWindowIconLocal(hDialog);
 	SetWindowTextW(hDialog, L"AutoLinker 当前程序 AGENTS.md 设置");
 	RunModalWindowLocal(owner, hDialog);
+}
+
+HWND CreateProjectAgentsConfigSettingsPage(HWND parent)
+{
+	if (parent == nullptr || !IsWindow(parent) || !IsWebView2RuntimeAvailableLocal()) {
+		return nullptr;
+	}
+	UpdateCurrentOpenSourceFile();
+	const std::string sourcePathText = TrimAsciiLocal(g_nowOpenSourceFilePath);
+	if (sourcePathText.empty()) {
+		return nullptr;
+	}
+	const std::filesystem::path sourcePath(sourcePathText);
+	if (!IsProjectSourceExtension(sourcePath)) {
+		return nullptr;
+	}
+	WNDCLASSEXA wc = {};
+	wc.cbSize = sizeof(wc);
+	wc.lpfnWndProc = ProjectAgentsConfigWebViewDialogProc;
+	wc.hInstance = GetModuleHandleA(nullptr);
+	wc.lpszClassName = "AutoLinkerProjectAgentsConfigWebViewDialogWindow";
+	wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+	wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+	RegisterClassExA(&wc);
+	auto* ctx = new ProjectAgentsConfigWebViewDialogContext();
+	ctx->sourcePath = sourcePath;
+	ctx->agentsPath = BuildProjectAgentsPath(sourcePath);
+	ctx->contentUtf8 = ReadProjectAgentsContentUtf8(ctx->agentsPath);
+	ctx->embedded = true;
+	ctx->ownsContext = true;
+	HWND page = CreateWindowExA(
+		WS_EX_CONTROLPARENT, wc.lpszClassName, "",
+		WS_CHILD | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+		0, 0, 0, 0, parent, nullptr, wc.hInstance, ctx);
+	if (page == nullptr) {
+		delete ctx;
+	}
+	return page;
 }
