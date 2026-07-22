@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <format>
 #include <mutex>
 #include <sstream>
@@ -16,8 +17,10 @@
 #include <vector>
 
 #include <detours.h>
+#include <intrin.h>
 
 #include "..\\thirdparty\\json.hpp"
+#include "Global.h"
 #include "Logger.h"
 #include "MemFind.h"
 
@@ -28,6 +31,14 @@ constexpr size_t kMaxCaptureBytes = 2 * 1024 * 1024;
 constexpr size_t kMaxTextProbeBytes = kMaxCaptureBytes + 1;
 constexpr size_t kSemanticDistanceLimit = 0x300;
 constexpr size_t kReturnSearchBytes = 0x100;
+constexpr size_t kDebugOutputQueueMaxBytes = 16 * 1024 * 1024;
+constexpr size_t kDebugOutputUiBatchBytes = 8 * 1024;
+constexpr int kDebugOutputNativeRollingThreshold = 8 * 1024;
+constexpr UINT kDebugOutputCoalesceMs = 40;
+constexpr UINT kDebugOutputContinueMs = 1;
+constexpr wchar_t kDebugOutputFlushMessageName[] = L"AutoLinker.IdeDebugOutputFlush.v1";
+constexpr wchar_t kDebugOutputTimerWindowClass[] = L"AutoLinker.DebugOutputTimer.v1";
+constexpr UINT_PTR kDebugOutputTimerId = 1;
 
 constexpr const char* kOutputFunctionEntryPattern =
 	"55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 "
@@ -46,6 +57,13 @@ constexpr const char* kOutputWriteSemanticPattern =
 	"52 FF D7";
 
 constexpr const char* kThiscallReturnPattern = "C2 08 00";
+
+// OUTPUT_DEBUG_STRING_EVENT 分支：验证 "* " 前缀后调用输出函数，再释放远程文本副本。
+constexpr const char* kDebugOutputCallSitePattern =
+	"80 3E 2A 75 ?? 80 7E 01 20 75 ?? 6A 01 56 "
+	"B9 ?? ?? ?? ?? E8 ?? ?? ?? ?? 56 E8 ?? ?? ?? ??";
+constexpr size_t kDebugOutputCallInstructionOffset = 19;
+constexpr size_t kDebugOutputCallReturnOffset = 24;
 
 struct CodeRange {
 	const byte* data = nullptr;
@@ -194,6 +212,39 @@ ResolveResult ResolveFromCodeRanges(const std::vector<CodeRange>& ranges)
 	return result;
 }
 
+std::uintptr_t ResolveDebugOutputCallReturnAddress(
+	const std::vector<CodeRange>& ranges,
+	std::uintptr_t outputFunctionAddress)
+{
+	if (outputFunctionAddress == 0) {
+		return 0;
+	}
+
+	std::vector<std::uintptr_t> validatedReturns;
+	for (size_t rangeIndex = 0; rangeIndex < ranges.size(); ++rangeIndex) {
+		const CodeRange& range = ranges[rangeIndex];
+		const auto matches = FindOffsetsInRange(range, 0, range.size, kDebugOutputCallSitePattern);
+		for (const size_t offset : matches) {
+			const size_t callOffset = offset + kDebugOutputCallInstructionOffset;
+			if (range.data == nullptr ||
+				callOffset + 5 > range.size ||
+				range.data[callOffset] != 0xE8) {
+				continue;
+			}
+
+			std::int32_t displacement = 0;
+			std::memcpy(&displacement, range.data + callOffset + 1, sizeof(displacement));
+			const std::uintptr_t returnAddress = range.runtimeBase + callOffset + 5;
+			const std::intptr_t callTarget = static_cast<std::intptr_t>(returnAddress) + displacement;
+			if (callTarget == static_cast<std::intptr_t>(outputFunctionAddress)) {
+				validatedReturns.push_back(range.runtimeBase + offset + kDebugOutputCallReturnOffset);
+			}
+		}
+	}
+
+	return validatedReturns.size() == 1 ? validatedReturns.front() : 0;
+}
+
 std::vector<CodeRange> GetMainExecutableCodeRanges()
 {
 	std::vector<CodeRange> ranges;
@@ -319,11 +370,123 @@ private:
 	bool m_truncated = false;
 };
 
+struct PendingDebugOutputBatch {
+	void* thisPtr = nullptr;
+	std::string text;
+};
+
+class DebugOutputQueue {
+public:
+	explicit DebugOutputQueue(size_t maxBytes = kDebugOutputQueueMaxBytes)
+		: m_maxBytes(maxBytes)
+	{
+	}
+
+	bool Enqueue(void* thisPtr, const char* text, size_t length, int appendMode)
+	{
+		if (thisPtr == nullptr || text == nullptr || length == 0) {
+			return false;
+		}
+
+		std::string normalized(text, length);
+		if (appendMode != 0 && normalized.back() != '\n') {
+			normalized.append("\r\n");
+		}
+		if (normalized.size() > m_maxBytes || m_bytes > m_maxBytes - normalized.size()) {
+			return false;
+		}
+		const size_t normalizedSize = normalized.size();
+
+		if (!m_entries.empty() &&
+			m_entries.back().thisPtr == thisPtr &&
+			m_entries.back().text.size() + normalized.size() <= kDebugOutputUiBatchBytes) {
+			m_entries.back().text.append(normalized);
+		}
+		else {
+			m_entries.push_back({thisPtr, std::move(normalized)});
+		}
+		m_bytes += normalizedSize;
+		return true;
+	}
+
+	bool MatchesActiveContext(void* thisPtr) const noexcept
+	{
+		return thisPtr != nullptr && !m_entries.empty() && m_entries.front().thisPtr == thisPtr;
+	}
+
+	PendingDebugOutputBatch TakeBatch() noexcept
+	{
+		if (m_entries.empty()) {
+			return {};
+		}
+
+		PendingDebugOutputBatch batch = std::move(m_entries.front());
+		m_bytes -= batch.text.size();
+		m_entries.pop_front();
+		return batch;
+	}
+
+	bool Empty() const noexcept
+	{
+		return m_entries.empty();
+	}
+
+	size_t SizeBytes() const noexcept
+	{
+		return m_bytes;
+	}
+
+	void Clear() noexcept
+	{
+		m_entries.clear();
+		m_bytes = 0;
+	}
+
+private:
+	size_t m_maxBytes = 0;
+	size_t m_bytes = 0;
+	std::deque<PendingDebugOutputBatch> m_entries;
+};
+
 CaptureStore g_captureStore;
 std::atomic_bool g_hookAvailable = false;
+std::atomic_bool g_debugOutputOptimizationEnabled = false;
 bool g_hookAttachQueued = false;
 std::uintptr_t g_resolvedAddress = 0;
+std::uintptr_t g_debugOutputCallReturnAddress = 0;
 std::string g_resolutionMethod;
+
+std::mutex g_debugOutputQueueMutex;
+DebugOutputQueue g_debugOutputQueue;
+bool g_debugOutputFlushScheduled = false;
+HWND g_debugOutputTimerWindow = nullptr;
+std::atomic_uint64_t g_debugOutputQueuedEntries = 0;
+std::atomic_uint64_t g_debugOutputQueuedBytes = 0;
+std::atomic_uint64_t g_debugOutputFlushedBatches = 0;
+std::atomic_uint64_t g_debugOutputLastEnqueueTick = 0;
+std::atomic_uint g_debugOutputFlushMessage = 0;
+
+UINT GetDebugOutputFlushMessage() noexcept
+{
+	UINT message = g_debugOutputFlushMessage.load(std::memory_order_acquire);
+	if (message != 0) {
+		return message;
+	}
+
+	message = RegisterWindowMessageW(kDebugOutputFlushMessageName);
+	if (message != 0) {
+		g_debugOutputFlushMessage.store(message, std::memory_order_release);
+	}
+	return message;
+}
+
+void ClearPendingDebugOutput() noexcept
+{
+	std::lock_guard<std::mutex> lock(g_debugOutputQueueMutex);
+	g_debugOutputQueue.Clear();
+	g_debugOutputFlushScheduled = false;
+	g_debugOutputLastEnqueueTick.store(0, std::memory_order_relaxed);
+}
 
 #if defined(_M_IX86)
 using OriginalOutputFunction = void(__thiscall*)(void* thisPtr, const char* text, int appendMode);
@@ -346,6 +509,322 @@ size_t SafeBoundedStringLength(const char* text, size_t maxLength) noexcept
 	}
 }
 
+bool TryQueueDebugOutput(
+	void* thisPtr,
+	const char* text,
+	size_t length,
+	int appendMode,
+	const void* returnAddress) noexcept
+{
+	if (!g_debugOutputOptimizationEnabled.load(std::memory_order_acquire) ||
+		g_debugOutputCallReturnAddress == 0 ||
+		reinterpret_cast<std::uintptr_t>(returnAddress) != g_debugOutputCallReturnAddress ||
+		length < 2 || text[0] != '*' || text[1] != ' ' ||
+		g_hwnd == nullptr || !IsWindow(g_hwnd)) {
+		return false;
+	}
+
+	const UINT flushMessage = GetDebugOutputFlushMessage();
+	if (flushMessage == 0) {
+		return false;
+	}
+
+	bool shouldPost = false;
+	const size_t queuedBytes = length +
+		(appendMode != 0 && text[length - 1] != '\n' ? 2 : 0);
+	try {
+		{
+			std::lock_guard<std::mutex> lock(g_debugOutputQueueMutex);
+			if (!g_debugOutputOptimizationEnabled.load(std::memory_order_relaxed) ||
+				!g_debugOutputQueue.Enqueue(thisPtr, text, length, appendMode)) {
+				return false;
+			}
+			if (!g_debugOutputFlushScheduled) {
+				g_debugOutputFlushScheduled = true;
+				shouldPost = true;
+				g_debugOutputQueuedEntries.store(1, std::memory_order_relaxed);
+				g_debugOutputQueuedBytes.store(queuedBytes, std::memory_order_relaxed);
+				g_debugOutputFlushedBatches.store(0, std::memory_order_relaxed);
+			}
+			else {
+				g_debugOutputQueuedEntries.fetch_add(1, std::memory_order_relaxed);
+				g_debugOutputQueuedBytes.fetch_add(queuedBytes, std::memory_order_relaxed);
+			}
+			g_debugOutputLastEnqueueTick.store(GetTickCount64(), std::memory_order_release);
+		}
+	}
+	catch (...) {
+		return false;
+	}
+
+	if (shouldPost && !PostMessageW(g_hwnd, flushMessage, 0, 0)) {
+		ClearPendingDebugOutput();
+		return false;
+	}
+	return true;
+}
+
+bool TryQueueFollowingDebugOutput(
+	void* thisPtr,
+	const char* text,
+	size_t length,
+	int appendMode) noexcept
+{
+	if (thisPtr == nullptr || text == nullptr || length == 0) {
+		return false;
+	}
+
+	const size_t queuedBytes = length +
+		(appendMode != 0 && text[length - 1] != '\n' ? 2 : 0);
+	try {
+		std::lock_guard<std::mutex> lock(g_debugOutputQueueMutex);
+		if (!g_debugOutputOptimizationEnabled.load(std::memory_order_relaxed) ||
+			!g_debugOutputFlushScheduled ||
+			!g_debugOutputQueue.MatchesActiveContext(thisPtr) ||
+			!g_debugOutputQueue.Enqueue(thisPtr, text, length, appendMode)) {
+			return false;
+		}
+
+		g_debugOutputQueuedEntries.fetch_add(1, std::memory_order_relaxed);
+		g_debugOutputQueuedBytes.fetch_add(queuedBytes, std::memory_order_relaxed);
+		g_debugOutputLastEnqueueTick.store(GetTickCount64(), std::memory_order_release);
+		return true;
+	}
+	catch (...) {
+		return false;
+	}
+}
+
+BOOL CALLBACK FindNativeOutputControl(HWND window, LPARAM parameter) noexcept
+{
+	if (GetDlgCtrlID(window) != 1011) {
+		return TRUE;
+	}
+	auto* outputWindow = reinterpret_cast<HWND*>(parameter);
+	*outputWindow = window;
+	return FALSE;
+}
+
+HWND GetNativeOutputControl() noexcept
+{
+	if (g_hwnd == nullptr || !IsWindow(g_hwnd)) {
+		return nullptr;
+	}
+	HWND outputWindow = nullptr;
+	EnumChildWindows(
+		g_hwnd,
+		FindNativeOutputControl,
+		reinterpret_cast<LPARAM>(&outputWindow));
+	return outputWindow;
+}
+
+bool AppendDebugOutputToNativeControl(const std::string& text) noexcept
+{
+	if (text.empty()) {
+		return true;
+	}
+	const HWND outputWindow = GetNativeOutputControl();
+	if (outputWindow == nullptr || !IsWindow(outputWindow)) {
+		return false;
+	}
+
+	const int originalLength = GetWindowTextLengthA(outputWindow);
+	if (originalLength < 0) {
+		return false;
+	}
+	const bool trimOldLines = originalLength >= kDebugOutputNativeRollingThreshold;
+	if (trimOldLines) {
+		SendMessageA(outputWindow, WM_SETREDRAW, FALSE, 0);
+		const int preferredTrimEnd = static_cast<int>((std::min)(
+			static_cast<size_t>(originalLength),
+			text.size()));
+		int trimEnd = originalLength;
+		if (preferredTrimEnd < originalLength) {
+			const LRESULT line = SendMessageA(
+				outputWindow,
+				EM_LINEFROMCHAR,
+				static_cast<WPARAM>(preferredTrimEnd),
+				0);
+			const LRESULT nextLineStart = line >= 0
+				? SendMessageA(outputWindow, EM_LINEINDEX, static_cast<WPARAM>(line + 1), 0)
+				: -1;
+			if (nextLineStart > 0 && nextLineStart <= originalLength) {
+				trimEnd = static_cast<int>(nextLineStart);
+			}
+		}
+		SendMessageA(outputWindow, EM_SETSEL, 0, static_cast<LPARAM>(trimEnd));
+		SendMessageA(outputWindow, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(""));
+	}
+
+	const int appendPosition = GetWindowTextLengthA(outputWindow);
+	SendMessageA(
+		outputWindow,
+		EM_SETSEL,
+		static_cast<WPARAM>(appendPosition),
+		static_cast<LPARAM>(appendPosition));
+	SendMessageA(
+		outputWindow,
+		EM_REPLACESEL,
+		FALSE,
+		reinterpret_cast<LPARAM>(text.c_str()));
+	SendMessageA(outputWindow, EM_EMPTYUNDOBUFFER, 0, 0);
+
+	const int finalLength = GetWindowTextLengthA(outputWindow);
+	if (trimOldLines) {
+		SendMessageA(outputWindow, WM_SETREDRAW, TRUE, 0);
+		InvalidateRect(outputWindow, nullptr, TRUE);
+	}
+	if (finalLength <= appendPosition) {
+		return false;
+	}
+	SendMessageA(
+		outputWindow,
+		EM_SETSEL,
+		static_cast<WPARAM>(finalLength),
+		static_cast<LPARAM>(finalLength));
+	SendMessageA(outputWindow, EM_SCROLLCARET, 0, 0);
+	return true;
+}
+
+bool FlushPendingDebugOutput() noexcept
+{
+	PendingDebugOutputBatch batch;
+	{
+		std::lock_guard<std::mutex> lock(g_debugOutputQueueMutex);
+		batch = g_debugOutputQueue.TakeBatch();
+		if (batch.text.empty()) {
+			g_debugOutputFlushScheduled = false;
+			return false;
+		}
+	}
+
+	try {
+		if (!AppendDebugOutputToNativeControl(batch.text)) {
+			Logger::Instance().Write(
+				"CompileOutputCapture",
+				std::format("failed to append debug output batch bytes={}", batch.text.size()));
+		}
+		g_debugOutputFlushedBatches.fetch_add(1, std::memory_order_relaxed);
+	}
+	catch (...) {
+	}
+
+	bool hasPending = false;
+	{
+		std::lock_guard<std::mutex> lock(g_debugOutputQueueMutex);
+		hasPending = !g_debugOutputQueue.Empty();
+		if (!hasPending) {
+			g_debugOutputFlushScheduled = false;
+		}
+	}
+	if (!hasPending) {
+		try {
+			const HWND outputWindow = GetNativeOutputControl();
+			Logger::Instance().Write(
+				"CompileOutputCapture",
+				std::format(
+					"debug output flushed entries={} bytes={} batches={} final_chars={}",
+					g_debugOutputQueuedEntries.load(std::memory_order_relaxed),
+					g_debugOutputQueuedBytes.load(std::memory_order_relaxed),
+					g_debugOutputFlushedBatches.load(std::memory_order_relaxed),
+					outputWindow != nullptr ? GetWindowTextLengthA(outputWindow) : -1));
+		}
+		catch (...) {
+		}
+	}
+	return hasPending;
+}
+
+void DrainPendingDebugOutput() noexcept
+{
+	while (FlushPendingDebugOutput()) {
+	}
+}
+
+LRESULT CALLBACK DebugOutputTimerWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	if (message == WM_TIMER && wParam == kDebugOutputTimerId) {
+		KillTimer(window, kDebugOutputTimerId);
+		const ULONGLONG now = GetTickCount64();
+		const ULONGLONG lastEnqueue =
+			g_debugOutputLastEnqueueTick.load(std::memory_order_acquire);
+		const ULONGLONG idleMs = now >= lastEnqueue ? now - lastEnqueue : 0;
+		if (lastEnqueue != 0 && idleMs < kDebugOutputCoalesceMs) {
+			const UINT remainingMs = static_cast<UINT>(kDebugOutputCoalesceMs - idleMs);
+			if (SetTimer(
+				window,
+				kDebugOutputTimerId,
+				(std::max)(remainingMs, 1u),
+				nullptr) == 0) {
+				DrainPendingDebugOutput();
+			}
+			return 0;
+		}
+		if (FlushPendingDebugOutput() &&
+			SetTimer(window, kDebugOutputTimerId, kDebugOutputContinueMs, nullptr) == 0) {
+			// 极端资源不足时仍保证日志完整，不让已经从调试线程接收的内容滞留或丢失。
+			DrainPendingDebugOutput();
+		}
+		return 0;
+	}
+	if (message == WM_NCDESTROY && g_debugOutputTimerWindow == window) {
+		g_debugOutputTimerWindow = nullptr;
+	}
+	return DefWindowProcW(window, message, wParam, lParam);
+}
+
+HMODULE GetCurrentModuleHandle() noexcept
+{
+	HMODULE module = nullptr;
+	GetModuleHandleExW(
+		GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+			GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		reinterpret_cast<LPCWSTR>(&GetCurrentModuleHandle),
+		&module);
+	return module;
+}
+
+bool EnsureDebugOutputTimerWindow() noexcept
+{
+	if (g_debugOutputTimerWindow != nullptr && IsWindow(g_debugOutputTimerWindow)) {
+		return true;
+	}
+
+	const HMODULE module = GetCurrentModuleHandle();
+	if (module == nullptr) {
+		return false;
+	}
+	WNDCLASSEXW windowClass = {};
+	windowClass.cbSize = sizeof(windowClass);
+	windowClass.lpfnWndProc = DebugOutputTimerWindowProc;
+	windowClass.hInstance = module;
+	windowClass.lpszClassName = kDebugOutputTimerWindowClass;
+	if (RegisterClassExW(&windowClass) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+		return false;
+	}
+
+	g_debugOutputTimerWindow = CreateWindowExW(
+		0,
+		kDebugOutputTimerWindowClass,
+		L"",
+		0,
+		0,
+		0,
+		0,
+		0,
+		HWND_MESSAGE,
+		nullptr,
+		module,
+		nullptr);
+	return g_debugOutputTimerWindow != nullptr;
+}
+
+bool ScheduleDebugOutputFlush(UINT delayMs) noexcept
+{
+	return EnsureDebugOutputTimerWindow() &&
+		SetTimer(g_debugOutputTimerWindow, kDebugOutputTimerId, delayMs, nullptr) != 0;
+}
+
 void __fastcall HookOutputFunction(
 	void* thisPtr,
 	void* /*dummy*/,
@@ -359,6 +838,19 @@ void __fastcall HookOutputFunction(
 			g_captureStore.Append(text, length);
 		}
 		catch (...) {
+		}
+	}
+	if (length > 0 &&
+		g_debugOutputOptimizationEnabled.load(std::memory_order_acquire)) {
+		const void* const returnAddress = _ReturnAddress();
+		if (TryQueueDebugOutput(
+				thisPtr,
+				text,
+				length,
+				appendMode,
+				returnAddress) ||
+			TryQueueFollowingDebugOutput(thisPtr, text, length, appendMode)) {
+			return;
 		}
 	}
 	g_originalOutputFunction(thisPtr, text, appendMode);
@@ -410,20 +902,42 @@ void WriteValidatedFunction(
 	}
 }
 
+void WriteDebugOutputCallSite(
+	std::vector<byte>& target,
+	size_t offset,
+	std::uintptr_t runtimeBase,
+	std::uintptr_t outputFunctionAddress)
+{
+	const auto callSite = MaterializePattern(kDebugOutputCallSitePattern, 0x11);
+	WriteBytes(target, offset, callSite);
+	const size_t callOffset = offset + kDebugOutputCallInstructionOffset;
+	if (callOffset + 5 > target.size()) {
+		return;
+	}
+	const std::uintptr_t returnAddress = runtimeBase + callOffset + 5;
+	const std::intptr_t displacementWide =
+		static_cast<std::intptr_t>(outputFunctionAddress) - static_cast<std::intptr_t>(returnAddress);
+	const std::int32_t displacement = static_cast<std::int32_t>(displacementWide);
+	std::memcpy(target.data() + callOffset + 1, &displacement, sizeof(displacement));
+}
+
 } // namespace
 
 bool AttachToCurrentDetourTransaction()
 {
+	ClearPendingDebugOutput();
 	g_hookAvailable.store(false, std::memory_order_release);
 	g_hookAttachQueued = false;
 	g_resolvedAddress = 0;
+	g_debugOutputCallReturnAddress = 0;
 	g_resolutionMethod.clear();
 
 #if !defined(_M_IX86)
 	Logger::Instance().Write("CompileOutputCapture", "unsupported architecture; control fallback enabled");
 	return false;
 #else
-	const ResolveResult resolved = ResolveFromCodeRanges(GetMainExecutableCodeRanges());
+	const std::vector<CodeRange> codeRanges = GetMainExecutableCodeRanges();
+	const ResolveResult resolved = ResolveFromCodeRanges(codeRanges);
 	if (resolved.address == 0) {
 		Logger::Instance().Write(
 			"CompileOutputCapture",
@@ -432,6 +946,7 @@ bool AttachToCurrentDetourTransaction()
 	}
 
 	g_resolvedAddress = resolved.address;
+	g_debugOutputCallReturnAddress = ResolveDebugOutputCallReturnAddress(codeRanges, resolved.address);
 	g_resolutionMethod = resolved.method;
 	g_originalOutputFunction = reinterpret_cast<OriginalOutputFunction>(resolved.address);
 	const LONG error = DetourAttach(
@@ -446,6 +961,7 @@ bool AttachToCurrentDetourTransaction()
 				resolved.address));
 		g_originalOutputFunction = nullptr;
 		g_resolvedAddress = 0;
+		g_debugOutputCallReturnAddress = 0;
 		g_resolutionMethod.clear();
 		return false;
 	}
@@ -464,12 +980,17 @@ void CompleteHookInstallation(bool transactionCommitted)
 		const std::uintptr_t rva = moduleBase != 0 && g_resolvedAddress >= moduleBase
 			? g_resolvedAddress - moduleBase
 			: 0;
+		const std::uintptr_t debugReturnRva = moduleBase != 0 && g_debugOutputCallReturnAddress >= moduleBase
+			? g_debugOutputCallReturnAddress - moduleBase
+			: 0;
 		Logger::Instance().Write(
 			"CompileOutputCapture",
 			std::format(
-				"IDE output hook installed method={} rva=0x{:X}",
+				"IDE output hook installed method={} rva=0x{:X} fast_debug={} debug_return_rva=0x{:X}",
 				g_resolutionMethod,
-				rva));
+				rva,
+				debugReturnRva != 0 ? 1 : 0,
+				debugReturnRva));
 	}
 	else if (g_hookAttachQueued) {
 		Logger::Instance().Write(
@@ -482,6 +1003,31 @@ void CompleteHookInstallation(bool transactionCommitted)
 bool IsHookAvailable()
 {
 	return g_hookAvailable.load(std::memory_order_acquire);
+}
+
+void SetDebugOutputOptimizationEnabled(bool enabled) noexcept
+{
+	const bool wasEnabled = g_debugOutputOptimizationEnabled.exchange(
+		enabled,
+		std::memory_order_acq_rel);
+#if defined(_M_IX86)
+	if (!enabled && wasEnabled) {
+		// 先关闭入队门，再在 IDE 主线程排空既有内容，保证切换时不丢日志。
+		DrainPendingDebugOutput();
+		if (g_debugOutputTimerWindow != nullptr && IsWindow(g_debugOutputTimerWindow)) {
+			KillTimer(g_debugOutputTimerWindow, kDebugOutputTimerId);
+			DestroyWindow(g_debugOutputTimerWindow);
+		}
+		g_debugOutputTimerWindow = nullptr;
+	}
+#else
+	(void)wasEnabled;
+#endif
+}
+
+bool IsDebugOutputOptimizationEnabled() noexcept
+{
+	return g_debugOutputOptimizationEnabled.load(std::memory_order_acquire);
 }
 
 SessionId BeginCapture()
@@ -507,16 +1053,77 @@ void CancelCapture(SessionId sessionId)
 	g_captureStore.Cancel(sessionId);
 }
 
+bool HandleMainWindowMessage(HWND window, UINT message, WPARAM wParam, LPARAM /*lParam*/) noexcept
+{
+#if !defined(_M_IX86)
+	(void)window;
+	(void)message;
+	(void)wParam;
+	return false;
+#else
+	if (!IsDebugOutputOptimizationEnabled()) {
+		const UINT registeredMessage = g_debugOutputFlushMessage.load(std::memory_order_acquire);
+		return registeredMessage != 0 && message == registeredMessage;
+	}
+	const UINT flushMessage = GetDebugOutputFlushMessage();
+	if (flushMessage != 0 && message == flushMessage) {
+		if (!ScheduleDebugOutputFlush(kDebugOutputCoalesceMs)) {
+			DrainPendingDebugOutput();
+		}
+		return true;
+	}
+	(void)window;
+	(void)wParam;
+	return false;
+#endif
+}
+
+void Shutdown(HWND window) noexcept
+{
+	(void)window;
+	g_debugOutputOptimizationEnabled.store(false, std::memory_order_release);
+	if (g_debugOutputTimerWindow != nullptr && IsWindow(g_debugOutputTimerWindow)) {
+		KillTimer(g_debugOutputTimerWindow, kDebugOutputTimerId);
+		DestroyWindow(g_debugOutputTimerWindow);
+	}
+	g_debugOutputTimerWindow = nullptr;
+	ClearPendingDebugOutput();
+}
+
 std::string BuildSelfTestJson()
 {
 	const auto runResolve = [](std::vector<byte>& code, std::uintptr_t base) {
 		return ResolveFromCodeRanges({CodeRange{code.data(), code.size(), base}});
 	};
 
+	constexpr std::uintptr_t primaryBase = 0x500000;
+	constexpr size_t primaryOutputOffset = 0x20;
+	constexpr size_t primaryDebugCallOffset = 0x3C0;
 	std::vector<byte> primaryCode(0x500, 0x90);
-	WriteValidatedFunction(primaryCode, 0x20, true, true);
-	const ResolveResult primary = runResolve(primaryCode, 0x500000);
-	const bool primaryResolved = primary.address == 0x500020 && primary.method == "entry_pattern";
+	WriteValidatedFunction(primaryCode, primaryOutputOffset, true, true);
+	WriteDebugOutputCallSite(
+		primaryCode,
+		primaryDebugCallOffset,
+		primaryBase,
+		primaryBase + primaryOutputOffset);
+	const ResolveResult primary = runResolve(primaryCode, primaryBase);
+	const bool primaryResolved = primary.address == primaryBase + primaryOutputOffset &&
+		primary.method == "entry_pattern";
+	const std::uintptr_t debugCallReturn = ResolveDebugOutputCallReturnAddress(
+		{CodeRange{primaryCode.data(), primaryCode.size(), primaryBase}},
+		primary.address);
+	const bool debugCallSiteResolved =
+		debugCallReturn == primaryBase + primaryDebugCallOffset + kDebugOutputCallReturnOffset;
+
+	std::vector<byte> wrongCallTargetCode(0x100, 0x90);
+	WriteDebugOutputCallSite(
+		wrongCallTargetCode,
+		0x20,
+		0x510000,
+		0x510080);
+	const bool wrongDebugCallTargetRejected = ResolveDebugOutputCallReturnAddress(
+		{CodeRange{wrongCallTargetCode.data(), wrongCallTargetCode.size(), 0x510000}},
+		primary.address) == 0;
 
 	std::vector<byte> fallbackCode(0x500, 0x90);
 	WriteValidatedFunction(fallbackCode, 0x40, false, true);
@@ -548,17 +1155,42 @@ std::string BuildSelfTestJson()
 	const CaptureSnapshot capped = store.End(cappedSession);
 	const bool capPassed = capped.truncated && capped.text.size() == kMaxCaptureBytes;
 
-	const bool ok = primaryResolved && fallbackResolved && ambiguousRejected &&
-		invalidReturnRejected && sessionIsolationPassed && capPassed;
+	DebugOutputQueue debugQueue(64);
+	void* const firstThisPtr = reinterpret_cast<void*>(static_cast<std::uintptr_t>(1));
+	void* const secondThisPtr = reinterpret_cast<void*>(static_cast<std::uintptr_t>(2));
+	const bool firstQueued = debugQueue.Enqueue(firstThisPtr, "* 1", 3, 1);
+	const bool secondQueued = debugQueue.Enqueue(firstThisPtr, "* 2\n", 4, 1);
+	const bool statusQueued = debugQueue.Enqueue(firstThisPtr, "finished", 8, 1);
+	const bool activeContextMatched = debugQueue.MatchesActiveContext(firstThisPtr) &&
+		!debugQueue.MatchesActiveContext(secondThisPtr);
+	const bool otherContextQueued = debugQueue.Enqueue(secondThisPtr, "other", 5, 0);
+	const PendingDebugOutputBatch firstBatch = debugQueue.TakeBatch();
+	const bool nextContextMatched = debugQueue.MatchesActiveContext(secondThisPtr);
+	const PendingDebugOutputBatch secondBatch = debugQueue.TakeBatch();
+	const bool debugBatchingPassed = firstQueued && secondQueued && statusQueued &&
+		activeContextMatched && otherContextQueued && nextContextMatched &&
+		firstBatch.thisPtr == firstThisPtr && firstBatch.text == "* 1\r\n* 2\nfinished\r\n" &&
+		secondBatch.thisPtr == secondThisPtr && secondBatch.text == "other" &&
+		debugQueue.Empty() && debugQueue.SizeBytes() == 0;
+	DebugOutputQueue cappedDebugQueue(4);
+	const bool debugQueueCapPassed = !cappedDebugQueue.Enqueue(firstThisPtr, "1234", 4, 1);
+
+	const bool ok = primaryResolved && debugCallSiteResolved && wrongDebugCallTargetRejected &&
+		fallbackResolved && ambiguousRejected && invalidReturnRejected &&
+		sessionIsolationPassed && capPassed && debugBatchingPassed && debugQueueCapPassed;
 	return nlohmann::json({
 		{"name", "ide-compile-output-capture"},
 		{"ok", ok},
 		{"primary_pattern_resolved", primaryResolved},
+		{"debug_call_site_resolved", debugCallSiteResolved},
+		{"wrong_debug_call_target_rejected", wrongDebugCallTargetRejected},
 		{"semantic_backtrack_resolved", fallbackResolved},
 		{"ambiguous_pattern_rejected", ambiguousRejected},
 		{"missing_thiscall_return_rejected", invalidReturnRejected},
 		{"session_isolation_passed", sessionIsolationPassed},
-		{"capture_cap_passed", capPassed}
+		{"capture_cap_passed", capPassed},
+		{"debug_batching_passed", debugBatchingPassed},
+		{"debug_queue_cap_passed", debugQueueCapPassed}
 	}).dump();
 }
 

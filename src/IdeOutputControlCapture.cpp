@@ -332,7 +332,8 @@ LRESULT CALLBACK OutputControlSubclassProc(
 	UINT_PTR /*subclassId*/,
 	DWORD_PTR /*referenceData*/)
 {
-	const bool capturesText = message == EM_REPLACESEL || message == WM_SETTEXT;
+	const bool capturesText = message == EM_REPLACESEL || message == WM_SETTEXT ||
+		message == WM_CLEAR || message == WM_CUT || message == WM_UNDO;
 	// lParam 仅作读取控件失败时的兜底；日志边界以原输出控件处理后的实际文本变化为准。
 	const std::string capturedText = capturesText ? CopyMessageText(window, lParam) : std::string();
 	const LRESULT result = DefSubclassProc(window, message, wParam, lParam);

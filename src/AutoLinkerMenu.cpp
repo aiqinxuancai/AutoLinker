@@ -6,12 +6,17 @@
 #include "EPackagerIntegration.h"
 #include "Global.h"
 #include "IDEFacade.h"
+#include "IdeCompileOutputCapture.h"
 #include "IdeLogViewer.h"
 
 namespace {
 bool g_isContextMenuRegistered = false;
 HMENU g_topLinkerSubMenu = NULL;
 std::unordered_map<UINT, std::string> g_topLinkerCommandMap;
+constexpr ULONG_PTR kOwnedViewMenuSeparatorTag = 0x41564D53;
+constexpr wchar_t kLogViewerMenuTitle[] = L"AutoLinker日志中心";
+constexpr wchar_t kDebugOutputOptimizationMenuTitle[] =
+	L"AutoLinker 调试输出效率优化（试验）";
 
 // 根据当前打开的源文件路径生成链接器父菜单项的显示标题（Wide 字符串）。
 // 无源文件时返回通用名；有源文件时返回"[xxxx.e]使用的链接器"。
@@ -223,39 +228,140 @@ bool IsViewTopPopup(HMENU hPopupMenu)
 	return popupKeywordMatch();
 }
 
-void EnsureLogViewerMenuItem(HMENU viewMenu)
+void RemoveOwnedViewMenuSeparators(HMENU viewMenu)
+{
+	for (int index = GetMenuItemCount(viewMenu) - 1; index >= 0; --index) {
+		MENUITEMINFOW item = {};
+		item.cbSize = sizeof(item);
+		item.fMask = MIIM_FTYPE | MIIM_DATA;
+		if (GetMenuItemInfoW(viewMenu, static_cast<UINT>(index), TRUE, &item) &&
+			(item.fType & MFT_SEPARATOR) != 0 &&
+			item.dwItemData == kOwnedViewMenuSeparatorTag) {
+			DeleteMenu(viewMenu, static_cast<UINT>(index), MF_BYPOSITION);
+		}
+	}
+}
+
+void AppendOwnedViewMenuSeparator(HMENU viewMenu)
+{
+	MENUITEMINFOW separator = {};
+	separator.cbSize = sizeof(separator);
+	separator.fMask = MIIM_FTYPE | MIIM_DATA;
+	separator.fType = MFT_SEPARATOR;
+	separator.dwItemData = kOwnedViewMenuSeparatorTag;
+	InsertMenuItemW(
+		viewMenu,
+		static_cast<UINT>(GetMenuItemCount(viewMenu)),
+		TRUE,
+		&separator);
+}
+
+bool IsOwnedViewMenuItemAtPosition(
+	HMENU viewMenu,
+	int position,
+	UINT commandId,
+	const wchar_t* expectedTitle)
+{
+	return position >= 0 &&
+		GetMenuItemID(viewMenu, position) == commandId &&
+		GetMenuTitleW(viewMenu, static_cast<UINT>(position), MF_BYPOSITION) == expectedTitle;
+}
+
+void RemoveOwnedViewMenuItems(
+	HMENU viewMenu,
+	UINT commandId,
+	const wchar_t* expectedTitle)
+{
+	for (int index = GetMenuItemCount(viewMenu) - 1; index >= 0; --index) {
+		if (IsOwnedViewMenuItemAtPosition(viewMenu, index, commandId, expectedTitle)) {
+			DeleteMenu(viewMenu, static_cast<UINT>(index), MF_BYPOSITION);
+		}
+	}
+}
+
+void RefreshOwnedViewMenuItemState(
+	HMENU viewMenu,
+	UINT commandId,
+	const wchar_t* expectedTitle,
+	bool checked)
+{
+	for (int index = GetMenuItemCount(viewMenu) - 1; index >= 0; --index) {
+		if (!IsOwnedViewMenuItemAtPosition(viewMenu, index, commandId, expectedTitle)) {
+			continue;
+		}
+		EnableMenuItem(viewMenu, static_cast<UINT>(index), MF_BYPOSITION | MF_ENABLED);
+		CheckMenuItem(
+			viewMenu,
+			static_cast<UINT>(index),
+			MF_BYPOSITION | (checked ? MF_CHECKED : MF_UNCHECKED));
+	}
+}
+
+void RefreshAutoLinkerViewMenuItemStates(HMENU viewMenu)
+{
+	RefreshOwnedViewMenuItemState(
+		viewMenu,
+		IDM_AUTOLINKER_LOG_CENTER,
+		kLogViewerMenuTitle,
+		IdeLogViewer::IsOpen());
+	RefreshOwnedViewMenuItemState(
+		viewMenu,
+		IDM_AUTOLINKER_DEBUG_OUTPUT_OPTIMIZATION,
+		kDebugOutputOptimizationMenuTitle,
+		IdeCompileOutputCapture::IsDebugOutputOptimizationEnabled());
+}
+
+void EnsureAutoLinkerViewMenuItems(HMENU viewMenu)
 {
 	if (viewMenu == nullptr) {
 		return;
 	}
-	const UINT checkedFlag = IdeLogViewer::IsOpen() ? MF_CHECKED : MF_UNCHECKED;
-	if (GetMenuState(viewMenu, IDM_AUTOLINKER_LOG_CENTER, MF_BYCOMMAND) != 0xFFFFFFFF) {
-		// MFC 会在下一次弹出菜单时把没有原生 ON_COMMAND 映射的动态命令置灰；
-		// 此处运行在宿主更新命令状态之后，必须同时恢复启用态和复选态。
-		EnableMenuItem(
+
+	const int initialCount = GetMenuItemCount(viewMenu);
+	if (initialCount >= 2 &&
+		IsOwnedViewMenuItemAtPosition(
 			viewMenu,
+			initialCount - 2,
 			IDM_AUTOLINKER_LOG_CENTER,
-			MF_BYCOMMAND | MF_ENABLED);
-		CheckMenuItem(viewMenu, IDM_AUTOLINKER_LOG_CENTER, MF_BYCOMMAND | checkedFlag);
+			kLogViewerMenuTitle) &&
+		IsOwnedViewMenuItemAtPosition(
+			viewMenu,
+			initialCount - 1,
+			IDM_AUTOLINKER_DEBUG_OUTPUT_OPTIMIZATION,
+			kDebugOutputOptimizationMenuTitle)) {
+		RefreshAutoLinkerViewMenuItemStates(viewMenu);
 		return;
 	}
+
+	// 只移动 ID 和标题都匹配的 AutoLinker 项，避免碰触其他插件的菜单命令。
+	RemoveOwnedViewMenuItems(viewMenu, IDM_AUTOLINKER_LOG_CENTER, kLogViewerMenuTitle);
+	RemoveOwnedViewMenuItems(
+		viewMenu,
+		IDM_AUTOLINKER_DEBUG_OUTPUT_OPTIMIZATION,
+		kDebugOutputOptimizationMenuTitle);
+	RemoveOwnedViewMenuSeparators(viewMenu);
 
 	const int count = GetMenuItemCount(viewMenu);
 	if (count > 0) {
 		const UINT lastState = GetMenuState(viewMenu, static_cast<UINT>(count - 1), MF_BYPOSITION);
 		if (lastState != 0xFFFFFFFF && (lastState & MF_SEPARATOR) != MF_SEPARATOR) {
-			AppendMenuW(viewMenu, MF_SEPARATOR, 0, nullptr);
+			AppendOwnedViewMenuSeparator(viewMenu);
 		}
 	}
 	AppendMenuW(
 		viewMenu,
-		MF_STRING | MF_ENABLED | checkedFlag,
+		MF_STRING | MF_ENABLED | (IdeLogViewer::IsOpen() ? MF_CHECKED : MF_UNCHECKED),
 		IDM_AUTOLINKER_LOG_CENTER,
-		L"AutoLinker日志中心");
-	EnableMenuItem(
+		kLogViewerMenuTitle);
+	AppendMenuW(
 		viewMenu,
-		IDM_AUTOLINKER_LOG_CENTER,
-		MF_BYCOMMAND | MF_ENABLED);
+		MF_STRING | MF_ENABLED |
+			(IdeCompileOutputCapture::IsDebugOutputOptimizationEnabled() ? MF_CHECKED : MF_UNCHECKED),
+		IDM_AUTOLINKER_DEBUG_OUTPUT_OPTIMIZATION,
+		kDebugOutputOptimizationMenuTitle);
+
+	// MFC 会把没有原生 ON_COMMAND 映射的动态命令置灰，需在宿主更新后恢复启用态。
+	RefreshAutoLinkerViewMenuItemStates(viewMenu);
 }
 
 void ClearMenuItemsByPosition(HMENU hMenu)
@@ -468,7 +574,7 @@ void HandleInitMenuPopup(HMENU hMenu)
 		return;
 	}
 	if (IsViewTopPopup(hMenu)) {
-		EnsureLogViewerMenuItem(hMenu);
+		EnsureAutoLinkerViewMenuItems(hMenu);
 		return;
 	}
 

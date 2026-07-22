@@ -24,6 +24,7 @@
 #include "Global.h"
 #include "HeadlessCompileRunner.h"
 #include "IDEFacade.h"
+#include "IdeCompileOutputCapture.h"
 #include "IdeLogViewer.h"
 #include "LocalMcpServer.h"
 #include "Logger.h"
@@ -45,6 +46,10 @@ namespace {
 bool g_mainWindowSubclassInstalled = false;
 bool g_initTraceSessionStarted = false;
 std::mutex g_initTraceMutex;
+
+constexpr char kDebugOutputOptimizationConfigKey[] = "debug.output_optimization.enabled";
+constexpr char kDebugOutputOptimizationEnabledMessage[] =
+	"开启后输出调试文本等调试输出函数的性能大幅提升，减少调试与界面更新在同一线程造成的延时";
 
 constexpr const char* kDebugStartPattern =
 	"55 8B EC 6A FF 68 ?? ?? ?? ?? 64 A1 00 00 00 00 50 64 89 25 00 00 00 00 81 EC ?? ?? 00 00 56 89 8D ?? FB FF FF 8B 8D ?? FB FF FF 81 C1 C0 00 00 00 E8 ?? ?? ?? ?? 85 C0 74 05 E9 ?? 08 00 00";
@@ -222,6 +227,13 @@ void RefreshSourcePathAfterWindowStateChange(HWND hWnd, UINT uMsg, WPARAM wParam
 	}
 }
 
+bool LoadDebugOutputOptimizationEnabled()
+{
+	const std::string value = ToLowerAsciiCopy(TrimAsciiCopy(
+		g_configManager.getValue(kDebugOutputOptimizationConfigKey)));
+	return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
 } // namespace
 
 void ChangeVMProtectModel(bool isLib)
@@ -262,6 +274,9 @@ void ChangeVMProtectModel(bool isLib)
 
 LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
+	if (IdeCompileOutputCapture::HandleMainWindowMessage(hWnd, uMsg, wParam, lParam)) {
+		return 0;
+	}
 	if (uMsg == WM_AUTOLINKER_AI_TASK_DONE) {
 		HandleAiTaskCompletionMessage(lParam);
 		return 0;
@@ -271,6 +286,7 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 		return 0;
 	}
 	if (uMsg == WM_NCDESTROY) {
+		IdeCompileOutputCapture::Shutdown(hWnd);
 		GameAnalyticsClient::Shutdown();
 		IdeLogViewer::Shutdown();
 		AIChatFeature::Shutdown();
@@ -292,6 +308,16 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 			}
 			else {
 				IdeLogViewer::Initialize(hWnd);
+			}
+			DrawMenuBar(hWnd);
+			return 0;
+		}
+		if (cmd == IDM_AUTOLINKER_DEBUG_OUTPUT_OPTIMIZATION) {
+			const bool enabled = !IdeCompileOutputCapture::IsDebugOutputOptimizationEnabled();
+			IdeCompileOutputCapture::SetDebugOutputOptimizationEnabled(enabled);
+			g_configManager.setValue(kDebugOutputOptimizationConfigKey, enabled ? "1" : "0");
+			if (enabled) {
+				OutputStringToELog(kDebugOutputOptimizationEnabledMessage);
 			}
 			DrawMenuBar(hWnd);
 			return 0;
@@ -461,6 +487,8 @@ bool FneInit()
 		TraceInitStep("无头编译模式：跳过 GameAnalytics 初始化");
 	}
 	ResolveCompileDebugStartAddressesForInit();
+	IdeCompileOutputCapture::SetDebugOutputOptimizationEnabled(
+		LoadDebugOutputOptimizationEnabled());
 	TraceInitStep("开始安装文件与编译相关 Hook");
 	StartHookCreateFileA();
 	TraceInitStep("文件与编译相关 Hook 安装完成");
