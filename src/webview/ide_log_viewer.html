@@ -150,6 +150,7 @@
       color: var(--text); background: transparent; border: 0; border-radius: 4px;
       cursor: pointer; text-align: left;
     }
+    .context-menu button[hidden] { display: none; }
     .context-menu button:hover, .context-menu button:focus { background: var(--hover); outline: none; }
     @media (max-width: 720px) {
 	  .app { grid-template-columns: 46px minmax(0, 1fr); }
@@ -208,6 +209,8 @@
   </div>
   <div id="toast" class="toast"></div>
   <div id="row-context-menu" class="context-menu" role="menu" aria-hidden="true">
+    <button id="copy-selection" type="button" role="menuitem" hidden>复制</button>
+    <button id="copy-selected-rows" type="button" role="menuitem" hidden>复制所选行内容</button>
     <button id="copy-row" type="button" role="menuitem">复制整行</button>
   </div>
 
@@ -252,7 +255,11 @@
       const regexError = document.getElementById('regex-error');
       const toast = document.getElementById('toast');
       const rowContextMenu = document.getElementById('row-context-menu');
+      const copySelectionButton = document.getElementById('copy-selection');
+      const copySelectedRowsButton = document.getElementById('copy-selected-rows');
       const copyRowButton = document.getElementById('copy-row');
+      let contextSelectionText = '';
+      let contextSelectedRowsText = '';
       let contextCopyText = '';
 
       function post(action, extra = {}) {
@@ -437,6 +444,37 @@
           (rowsLayer.contains(selection.anchorNode) || rowsLayer.contains(selection.focusNode)));
       }
 
+      function findSelectionRow(node) {
+        const element = node && node.nodeType === Node.ELEMENT_NODE ? node : node && node.parentElement;
+        return element ? element.closest('.log-row') : null;
+      }
+
+      function buildSelectedRowsCopyText(selection) {
+        if (!selectionTouchesLogRows(selection) || !selection.rangeCount) return '';
+        const positions = [];
+        const anchorRow = findSelectionRow(selection.anchorNode);
+        const focusRow = findSelectionRow(selection.focusNode);
+        if (anchorRow) positions.push(Number(anchorRow.dataset.position));
+        if (focusRow) positions.push(Number(focusRow.dataset.position));
+        if (positions.length < 2) {
+          const range = selection.getRangeAt(0);
+          for (const row of rowsLayer.querySelectorAll('.log-row')) {
+            if (range.intersectsNode(row)) positions.push(Number(row.dataset.position));
+          }
+        }
+        const validPositions = positions.filter(Number.isInteger);
+        if (!validPositions.length) return '';
+
+        const first = Math.max(0, Math.min(...validPositions));
+        const last = Math.min(state.filteredIndices.length - 1, Math.max(...validPositions));
+        const lines = [];
+        for (let position = first; position <= last; position += 1) {
+          const entry = state.entries[state.filteredIndices[position]];
+          if (entry) lines.push(buildRowCopyText(entry));
+        }
+        return lines.join('\r\n');
+      }
+
       function updateTextSelectionMode() {
         const active = state.selectionPointerDown || selectionTouchesLogRows(window.getSelection());
         const wasActive = state.textSelectionActive;
@@ -496,6 +534,8 @@
       function hideRowContextMenu() {
         rowContextMenu.classList.remove('open');
         rowContextMenu.setAttribute('aria-hidden', 'true');
+        contextSelectionText = '';
+        contextSelectedRowsText = '';
         contextCopyText = '';
       }
 
@@ -514,6 +554,11 @@
         const entry = state.entries[entryIndex];
         if (!Number.isInteger(position) || !entry) return;
 
+        const selection = window.getSelection();
+        contextSelectionText = selectionTouchesLogRows(selection) ? selection.toString() : '';
+        contextSelectedRowsText = contextSelectionText ? buildSelectedRowsCopyText(selection) : '';
+        copySelectionButton.hidden = !contextSelectionText;
+        copySelectedRowsButton.hidden = !contextSelectedRowsText;
         selectFilteredPosition(position);
         contextCopyText = buildRowCopyText(entry);
         rowContextMenu.style.left = `${event.clientX}px`;
@@ -592,6 +637,14 @@
       searchClose.addEventListener('click', () => setSearchPanelOpen(false));
       document.getElementById('clear-button').addEventListener('click', () => post('clear'));
       document.getElementById('export-button').addEventListener('click', () => post('export'));
+      copySelectionButton.addEventListener('click', () => {
+        if (contextSelectionText) post('copy-row', { text: contextSelectionText });
+        hideRowContextMenu();
+      });
+      copySelectedRowsButton.addEventListener('click', () => {
+        if (contextSelectedRowsText) post('copy-row', { text: contextSelectedRowsText });
+        hideRowContextMenu();
+      });
       copyRowButton.addEventListener('click', () => {
         if (contextCopyText) post('copy-row', { text: contextCopyText });
         hideRowContextMenu();

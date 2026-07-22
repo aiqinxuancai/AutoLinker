@@ -1039,6 +1039,8 @@ std::string BuildSelfTestJson()
 		html.find("new RegExp") != std::string::npos;
 	const bool webMessageBridgePresent = html.find("chrome.webview") != std::string::npos;
 	const bool copyRowContextMenuPresent = html.find("row-context-menu") != std::string::npos &&
+		html.find("copy-selection") != std::string::npos &&
+		html.find("copy-selected-rows") != std::string::npos &&
 		html.find("copy-row") != std::string::npos &&
 		html.find("contextmenu") != std::string::npos;
 	const bool ok = resourceLoaded && virtualListPresent && plainSearchPresent &&
