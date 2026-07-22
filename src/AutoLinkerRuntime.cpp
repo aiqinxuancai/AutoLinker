@@ -15,6 +15,7 @@
 #include "Global.h"
 #include "IDEFacade.h"
 #include "Logger.h"
+#include "LocalMcpServer.h"
 #include "PageCodeCacheManager.h"
 #include "WindowHelper.h"
 #include "EideProjectBinarySerializer.h"
@@ -244,11 +245,19 @@ void UpdateCurrentOpenSourceFile()
 	const std::string currentSourceFile = NormalizeSourcePathForRuntime(GetSourceFilePath());
 	if (AreSameSourcePathForRuntime(previousSourceFile, currentSourceFile)) {
 		g_nowOpenSourceFilePath = currentSourceFile;
+		std::string pageName;
+		std::string pageType;
+		IDEFacade::Instance().GetCurrentPageName(pageName, &pageType, nullptr);
+		LocalMcpServer::UpdateInstanceHints(currentSourceFile, pageName, pageType);
 		return;
 	}
 
 	g_nowOpenSourceFilePath = currentSourceFile;
 	HandleCurrentSourceFilePathChanged(previousSourceFile, currentSourceFile);
+	std::string pageName;
+	std::string pageType;
+	IDEFacade::Instance().GetCurrentPageName(pageName, &pageType, nullptr);
+	LocalMcpServer::UpdateInstanceHints(currentSourceFile, pageName, pageType);
 }
 
 void OutputCurrentSourceLinker()

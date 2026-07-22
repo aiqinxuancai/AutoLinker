@@ -5530,6 +5530,8 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["mcp_instance_id"] = LocalMcpServer::GetInstanceId();
 		r["mcp_port"] = LocalMcpServer::GetBoundPort();
 		r["mcp_endpoint"] = LocalMcpServer::GetEndpoint();
+		r["mcp_gateway_endpoint"] = LocalMcpServer::GetGatewayEndpoint();
+		r["mcp_gateway_owner"] = LocalMcpServer::IsGatewayOwner();
 		outOk = true;
 		return JsonToLocalTextForAI(r);
 	}

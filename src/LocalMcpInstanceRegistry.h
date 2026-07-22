@@ -14,9 +14,11 @@ struct InstanceRecord {
 	std::string processName; // 易语言主程序名
 	int port = 0; // MCP 监听端口
 	std::string endpoint; // MCP 完整地址
+	bool gatewayOwner = false; // 是否持有固定网关端口
 	std::string sourceFilePathHint; // 当前源码路径提示
 	std::string pageNameHint; // 当前页面名提示
 	std::string pageTypeHint; // 当前页面类型提示
+	std::uint64_t startedAtUnixMs = 0; // 实例启动时间
 	std::uint64_t lastSeenUnixMs = 0; // 最后心跳时间
 };
 

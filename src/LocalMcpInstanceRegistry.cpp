@@ -208,9 +208,11 @@ nlohmann::json BuildRecordJson(const LocalMcpInstanceRegistry::InstanceRecord& r
 		{"process_name", LocalToUtf8Text(record.processName)},
 		{"port", record.port},
 		{"endpoint", LocalToUtf8Text(record.endpoint)},
+		{"gateway_owner", record.gatewayOwner},
 		{"source_file_path_hint", LocalToUtf8Text(record.sourceFilePathHint)},
 		{"page_name_hint", LocalToUtf8Text(record.pageNameHint)},
 		{"page_type_hint", LocalToUtf8Text(record.pageTypeHint)},
+		{"started_at_unix_ms", record.startedAtUnixMs},
 		{"last_seen_unix_ms", record.lastSeenUnixMs}
 	};
 }
@@ -228,10 +230,12 @@ LocalMcpInstanceRegistry::InstanceRecord ParseRecordJson(const nlohmann::json& v
 	record.processName = Utf8ToLocalText(value.value("process_name", std::string()));
 	record.port = value.value("port", 0);
 	record.endpoint = Utf8ToLocalText(value.value("endpoint", std::string()));
+	record.gatewayOwner = value.value("gateway_owner", false);
 	record.sourceFilePathHint = Utf8ToLocalText(value.value("source_file_path_hint", std::string()));
 	record.pageNameHint = Utf8ToLocalText(value.value("page_name_hint", std::string()));
 	record.pageTypeHint = Utf8ToLocalText(value.value("page_type_hint", std::string()));
 	record.lastSeenUnixMs = value.value("last_seen_unix_ms", static_cast<std::uint64_t>(0));
+	record.startedAtUnixMs = value.value("started_at_unix_ms", record.lastSeenUnixMs);
 	return record;
 }
 
@@ -549,8 +553,8 @@ bool LoadInstancesAtBaseDirectory(
 		outRecords.push_back(std::move(record));
 	}
 	std::sort(outRecords.begin(), outRecords.end(), [](const auto& left, const auto& right) {
-		if (left.port != right.port) {
-			return left.port < right.port;
+		if (left.startedAtUnixMs != right.startedAtUnixMs) {
+			return left.startedAtUnixMs < right.startedAtUnixMs;
 		}
 		return left.instanceId < right.instanceId;
 	});
@@ -572,6 +576,7 @@ LocalMcpInstanceRegistry::InstanceRecord BuildSelfTestRecord(
 	record.sourceFilePathHint = "test.e";
 	record.pageNameHint = "test";
 	record.pageTypeHint = "assembly";
+	record.startedAtUnixMs = lastSeenUnixMs - 100;
 	record.lastSeenUnixMs = lastSeenUnixMs;
 	return record;
 }
@@ -667,9 +672,12 @@ std::string BuildSelfTestReportJson()
 		}
 
 		InstanceRecord legacyRecord = BuildSelfTestRecord("legacy-instance", 21000, nowMs);
+		nlohmann::json legacyRecordJson = BuildRecordJson(legacyRecord);
+		legacyRecordJson.erase("started_at_unix_ms");
+		legacyRecordJson.erase("gateway_owner");
 		const nlohmann::json legacyRoot = {
 			{"version", 1},
-			{"instances", nlohmann::json::array({BuildRecordJson(legacyRecord)})}
+			{"instances", nlohmann::json::array({std::move(legacyRecordJson)})}
 		};
 		std::string legacyWriteError;
 		const bool legacyWriteOk = SaveJsonFileAtomically(
@@ -689,6 +697,17 @@ std::string BuildSelfTestReportJson()
 		std::string loadError;
 		const bool loadOk = LoadInstancesAtBaseDirectory(baseDirectory, records, &loadError);
 		const bool concurrentRecordsOk = records.size() == kConcurrentInstanceCount + 1;
+		const bool startupOrderOk = std::is_sorted(records.begin(), records.end(), [](const auto& left, const auto& right) {
+			if (left.startedAtUnixMs != right.startedAtUnixMs) {
+				return left.startedAtUnixMs < right.startedAtUnixMs;
+			}
+			return left.instanceId < right.instanceId;
+		});
+		const bool legacyStartupFallbackOk = std::any_of(records.begin(), records.end(), [&](const auto& record) {
+			return record.instanceId == "legacy-instance" &&
+				record.startedAtUnixMs == record.lastSeenUnixMs &&
+				!record.gatewayOwner;
+		});
 		const bool staleIgnored = std::none_of(records.begin(), records.end(), [](const auto& record) {
 			return record.instanceId == "stale-instance";
 		});
@@ -710,6 +729,8 @@ std::string BuildSelfTestReportJson()
 			staleWriteOk &&
 			loadOk &&
 			concurrentRecordsOk &&
+			startupOrderOk &&
+			legacyStartupFallbackOk &&
 			staleIgnored &&
 			removeOk &&
 			reloadOk &&
@@ -719,6 +740,8 @@ std::string BuildSelfTestReportJson()
 		report["write_failures"] = writeFailures.load();
 		report["concurrent_record_count"] = records.size();
 		report["legacy_compatibility"] = legacyWriteOk;
+		report["startup_order"] = startupOrderOk;
+		report["legacy_startup_fallback"] = legacyStartupFallbackOk;
 		report["stale_record_ignored"] = staleIgnored;
 		report["remove_isolated"] = removeOk && removedRecordAbsent && removeCountOk;
 		if (!ok) {

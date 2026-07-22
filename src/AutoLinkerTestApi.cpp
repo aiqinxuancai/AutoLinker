@@ -30,6 +30,7 @@
 #include "IdeCompileOutputCapture.h"
 #include "IdeLogViewer.h"
 #include "LocalMcpInstanceRegistry.h"
+#include "LocalMcpProxyTransport.h"
 #include "LocalMcpServer.h"
 #include "PathHelper.h"
 #include "PowerShellToolRunner.h"
@@ -2685,6 +2686,32 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		};
 	}
 	report["checks"].push_back(std::move(refreshGateCheck));
+
+	nlohmann::json multiInstanceRoutingCheck = nlohmann::json::parse(
+		LocalMcpServer::BuildMultiInstanceRoutingSelfTestJson(),
+		nullptr,
+		false);
+	if (multiInstanceRoutingCheck.is_discarded() || !multiInstanceRoutingCheck.is_object()) {
+		multiInstanceRoutingCheck = {
+			{"name", "local-mcp-multi-instance-routing"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
+	report["checks"].push_back(std::move(multiInstanceRoutingCheck));
+
+	nlohmann::json loopbackTransportCheck = nlohmann::json::parse(
+		LocalMcpProxyTransport::BuildSelfTestReportJson(),
+		nullptr,
+		false);
+	if (loopbackTransportCheck.is_discarded() || !loopbackTransportCheck.is_object()) {
+		loopbackTransportCheck = {
+			{"name", "local-mcp-loopback-transport"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
+	report["checks"].push_back(std::move(loopbackTransportCheck));
 
 	nlohmann::json instanceRegistryCheck = nlohmann::json::parse(
 		LocalMcpInstanceRegistry::BuildSelfTestReportJson(),

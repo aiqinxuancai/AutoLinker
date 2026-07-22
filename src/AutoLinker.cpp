@@ -380,6 +380,7 @@ bool FneInit()
 	TraceInitStep("AI Chat 初始化完成");
 	TraceInitStep("开始初始化 Local MCP");
 	LocalMcpServer::Initialize();
+	UpdateCurrentOpenSourceFile();
 	TraceInitStep("Local MCP 初始化完成");
 	if (!headlessCompileMode) {
 		TraceInitStep("开始初始化 GameAnalytics");

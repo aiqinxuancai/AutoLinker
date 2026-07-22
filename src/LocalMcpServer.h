@@ -22,8 +22,17 @@ std::string GetInstanceId();
 // 获取当前 MCP 完整地址
 std::string GetEndpoint();
 
+// 获取固定 MCP 网关地址
+std::string GetGatewayEndpoint();
+
+// 判断当前实例是否持有固定 MCP 网关
+bool IsGatewayOwner();
+
 // 构建外部 MCP 首次刷新门禁的内部自测报告。
 std::string BuildWorkspaceRefreshGateSelfTestJson();
+
+// 构建多实例会话路由与网关接管的内部自测报告
+std::string BuildMultiInstanceRoutingSelfTestJson();
 
 // 更新当前实例的易语言上下文提示
 void UpdateInstanceHints(

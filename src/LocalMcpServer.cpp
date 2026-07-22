@@ -28,6 +28,7 @@
 #include "Global.h"
 #include "IDEFacade.h"
 #include "LocalMcpInstanceRegistry.h"
+#include "LocalMcpProxyTransport.h"
 #include "Logger.h"
 #include "PathHelper.h"
 #include "WorkspaceMirror.h"
@@ -39,8 +40,13 @@ namespace {
 constexpr const char* kServerName = "AutoLinker Local MCP";
 constexpr const char* kServerVersion = "0.0.0";
 constexpr const char* kBindHost = "127.0.0.1";
-constexpr int kBasePort = 19207;
-constexpr int kMaxPortAttempts = 16;
+constexpr int kGatewayPort = 19207;
+constexpr int kInstanceBasePort = 19208;
+constexpr int kMaxInstancePortAttempts = 64;
+constexpr auto kGatewayRetryInterval = std::chrono::seconds(1);
+constexpr const char* kProxiedHeaderName = "x-autolinker-mcp-proxied";
+constexpr const char* kListInstancesToolName = "list_instances";
+constexpr const char* kSelectInstanceToolName = "select_instance";
 constexpr std::size_t kClientWorkerCount = 4;
 constexpr std::size_t kMaxQueuedClients = 32;
 constexpr std::size_t kMaxExternalMcpSessions = 256;
@@ -50,10 +56,13 @@ std::atomic_bool g_stopRequested = false;
 std::atomic_bool g_running = false;
 std::atomic_bool g_registryRefreshFailed = false;
 std::atomic_int g_boundPort = 0;
+std::atomic_bool g_gatewayOwner = false;
 std::mutex g_stateMutex;
 std::thread g_serverThread;
-SOCKET g_listenSocket = INVALID_SOCKET;
+SOCKET g_backendListenSocket = INVALID_SOCKET;
+SOCKET g_gatewayListenSocket = INVALID_SOCKET;
 std::string g_instanceId;
+std::uint64_t g_startedAtUnixMs = 0;
 std::string g_sourceFilePathHint;
 std::string g_pageNameHint;
 std::string g_pageTypeHint;
@@ -67,10 +76,13 @@ struct ExternalMcpSessionState {
 	bool workspaceRefreshed = false;
 	std::string sourceFilePath;
 	std::uint64_t mirrorGeneration = 0;
+	std::string selectedInstanceId;
 	std::chrono::steady_clock::time_point lastSeen = std::chrono::steady_clock::now();
 };
 
 std::unordered_map<std::string, ExternalMcpSessionState> g_externalMcpSessions;
+
+std::string DumpJsonSafe(const nlohmann::json& value);
 
 struct HttpRequest {
 	std::string method;
@@ -631,6 +643,13 @@ std::string BuildEndpointForPort(int port)
 	return std::format("http://{}:{}/mcp", kBindHost, port);
 }
 
+std::uint64_t GetUnixTimeMilliseconds()
+{
+	return static_cast<std::uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
 std::string GenerateInstanceId()
 {
 	return std::format("pid-{}-{:X}", GetCurrentProcessId(), GetTickCount64());
@@ -722,6 +741,37 @@ void RemoveExternalMcpSession(const std::string& sessionId)
 	g_externalMcpSessions.erase(sessionId);
 }
 
+bool HasExternalMcpSession(const std::string& sessionId)
+{
+	std::lock_guard<std::mutex> lock(g_stateMutex);
+	const auto it = g_externalMcpSessions.find(sessionId);
+	if (it == g_externalMcpSessions.end()) {
+		return false;
+	}
+	it->second.lastSeen = std::chrono::steady_clock::now();
+	return true;
+}
+
+std::string GetSelectedInstanceId(const std::string& sessionId)
+{
+	std::lock_guard<std::mutex> lock(g_stateMutex);
+	const auto now = std::chrono::steady_clock::now();
+	PruneExternalMcpSessionsLocked(now);
+	ExternalMcpSessionState& state = g_externalMcpSessions[sessionId];
+	state.lastSeen = now;
+	return state.selectedInstanceId;
+}
+
+void SetSelectedInstanceId(const std::string& sessionId, const std::string& instanceId)
+{
+	std::lock_guard<std::mutex> lock(g_stateMutex);
+	const auto now = std::chrono::steady_clock::now();
+	PruneExternalMcpSessionsLocked(now);
+	ExternalMcpSessionState& state = g_externalMcpSessions[sessionId];
+	state.selectedInstanceId = instanceId == g_instanceId ? std::string() : instanceId;
+	state.lastSeen = now;
+}
+
 void ResetExternalWorkspaceRefreshStatesLocked()
 {
 	for (auto& [sessionId, state] : g_externalMcpSessions) {
@@ -733,6 +783,193 @@ void ResetExternalWorkspaceRefreshStatesLocked()
 	}
 }
 
+std::string LocalTextToUtf8(const std::string& text)
+{
+	std::wstring wide;
+	if (!TryDecodeTextToWide(text, wide)) {
+		return text;
+	}
+	const std::string utf8 = EncodeWideToUtf8(wide);
+	return utf8.empty() && !text.empty() ? text : utf8;
+}
+
+bool TryLoadRegisteredInstances(
+	std::vector<LocalMcpInstanceRegistry::InstanceRecord>& outInstances,
+	std::string& outError)
+{
+	outInstances.clear();
+	outError.clear();
+	if (!LocalMcpInstanceRegistry::LoadInstances(outInstances, &outError)) {
+		if (outError.empty()) {
+			outError = "load local MCP instances failed";
+		}
+		return false;
+	}
+	return true;
+}
+
+const LocalMcpInstanceRegistry::InstanceRecord* FindRegisteredInstance(
+	const std::vector<LocalMcpInstanceRegistry::InstanceRecord>& instances,
+	const std::string& instanceId)
+{
+	const auto it = std::find_if(instances.begin(), instances.end(), [&](const auto& instance) {
+		return instance.instanceId == instanceId;
+	});
+	return it == instances.end() ? nullptr : &*it;
+}
+
+nlohmann::json BuildInstanceSummary(
+	const LocalMcpInstanceRegistry::InstanceRecord& instance,
+	const std::string& activeInstanceId,
+	bool reachable)
+{
+	return {
+		{"instance_id", instance.instanceId},
+		{"process_id", instance.processId},
+		{"process_path", LocalTextToUtf8(instance.processPath)},
+		{"process_name", LocalTextToUtf8(instance.processName)},
+		{"source_file_path", LocalTextToUtf8(instance.sourceFilePathHint)},
+		{"page_name", LocalTextToUtf8(instance.pageNameHint)},
+		{"page_type", LocalTextToUtf8(instance.pageTypeHint)},
+		{"backend_port", instance.port},
+		{"backend_endpoint", instance.endpoint},
+		{"started_at_unix_ms", instance.startedAtUnixMs},
+		{"last_seen_unix_ms", instance.lastSeenUnixMs},
+		{"gateway_owner", instance.gatewayOwner},
+		{"reachable", reachable},
+		{"active", instance.instanceId == activeInstanceId}
+	};
+}
+
+nlohmann::json BuildInstanceListPayload(const std::string& sessionId, bool probeInstances)
+{
+	std::vector<LocalMcpInstanceRegistry::InstanceRecord> instances;
+	std::string loadError;
+	if (!TryLoadRegisteredInstances(instances, loadError)) {
+		return {
+			{"ok", false},
+			{"error", "instance_registry_unavailable"},
+			{"detail", loadError}
+		};
+	}
+
+	const std::string selectedInstanceId = GetSelectedInstanceId(sessionId);
+	const std::string activeInstanceId = selectedInstanceId.empty() ? g_instanceId : selectedInstanceId;
+	std::string gatewayInstanceId;
+	nlohmann::json items = nlohmann::json::array();
+	for (const auto& instance : instances) {
+		if (instance.gatewayOwner) {
+			gatewayInstanceId = instance.instanceId;
+		}
+		bool reachable = true;
+		if (probeInstances && instance.instanceId != g_instanceId) {
+			std::string probeError;
+			reachable = LocalMcpProxyTransport::ProbeInstance(
+				instance.port,
+				instance.instanceId,
+				probeError,
+				500);
+		}
+		items.push_back(BuildInstanceSummary(instance, activeInstanceId, reachable));
+	}
+
+	return {
+		{"ok", true},
+		{"gateway_endpoint", BuildEndpointForPort(kGatewayPort)},
+		{"gateway_instance_id", gatewayInstanceId},
+		{"active_instance_id", activeInstanceId},
+		{"instances", std::move(items)}
+	};
+}
+
+nlohmann::json BuildMcpToolResult(const nlohmann::json& structured, bool isError = false)
+{
+	return {
+		{"content", nlohmann::json::array({{
+			{"type", "text"},
+			{"text", DumpJsonSafe(structured)}
+		}})},
+		{"structuredContent", structured},
+		{"isError", isError}
+	};
+}
+
+bool TryHandleInstanceTool(
+	const std::string& toolName,
+	const nlohmann::json& arguments,
+	const std::string& sessionId,
+	nlohmann::json& outResult,
+	std::string& outError)
+{
+	if (toolName == kListInstancesToolName) {
+		if (!arguments.empty()) {
+			outError = "list_instances does not accept arguments";
+			return false;
+		}
+		const nlohmann::json payload = BuildInstanceListPayload(sessionId, true);
+		outResult = BuildMcpToolResult(payload, !payload.value("ok", false));
+		return true;
+	}
+	if (toolName != kSelectInstanceToolName) {
+		return false;
+	}
+	if (arguments.size() != 1 ||
+		!arguments.contains("instance_id") ||
+		!arguments["instance_id"].is_string()) {
+		outError = "select_instance requires only string argument instance_id";
+		return false;
+	}
+	const std::string instanceId = TrimAsciiCopy(arguments["instance_id"].get<std::string>());
+	if (instanceId.empty()) {
+		outError = "select_instance instance_id must not be empty";
+		return false;
+	}
+
+	std::vector<LocalMcpInstanceRegistry::InstanceRecord> instances;
+	std::string loadError;
+	if (!TryLoadRegisteredInstances(instances, loadError)) {
+		outResult = BuildMcpToolResult({
+			{"ok", false},
+			{"error", "instance_registry_unavailable"},
+			{"detail", loadError}
+		}, true);
+		return true;
+	}
+	const LocalMcpInstanceRegistry::InstanceRecord* instance = FindRegisteredInstance(instances, instanceId);
+	if (instance == nullptr) {
+		outResult = BuildMcpToolResult({
+			{"ok", false},
+			{"error", "instance_not_found"},
+			{"instance_id", instanceId},
+			{"available_instances", BuildInstanceListPayload(sessionId, false)["instances"]}
+		}, true);
+		return true;
+	}
+	if (instance->instanceId != g_instanceId) {
+		std::string probeError;
+		if (!LocalMcpProxyTransport::ProbeInstance(
+				instance->port,
+				instance->instanceId,
+				probeError,
+				500)) {
+			outResult = BuildMcpToolResult({
+				{"ok", false},
+				{"error", "instance_unreachable"},
+				{"instance_id", instanceId},
+				{"detail", probeError}
+			}, true);
+			return true;
+		}
+	}
+
+	SetSelectedInstanceId(sessionId, instanceId);
+	outResult = BuildMcpToolResult({
+		{"ok", true},
+		{"active_instance", BuildInstanceSummary(*instance, instanceId, true)}
+	});
+	return true;
+}
+
 LocalMcpInstanceRegistry::InstanceRecord BuildCurrentInstanceRecord()
 {
 	LocalMcpInstanceRegistry::InstanceRecord record;
@@ -742,15 +979,15 @@ LocalMcpInstanceRegistry::InstanceRecord BuildCurrentInstanceRecord()
 	record.processName = GetCurrentProcessNameLocal();
 	record.port = g_boundPort.load();
 	record.endpoint = BuildEndpointForPort(record.port);
+	record.gatewayOwner = g_gatewayOwner.load();
 	{
 		std::lock_guard<std::mutex> lock(g_stateMutex);
 		record.sourceFilePathHint = g_sourceFilePathHint;
 		record.pageNameHint = g_pageNameHint;
 		record.pageTypeHint = g_pageTypeHint;
 	}
-	record.lastSeenUnixMs = static_cast<std::uint64_t>(
-		std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::system_clock::now().time_since_epoch()).count());
+	record.startedAtUnixMs = g_startedAtUnixMs;
+	record.lastSeenUnixMs = GetUnixTimeMilliseconds();
 	return record;
 }
 
@@ -969,6 +1206,10 @@ std::string NegotiateProtocolVersion(const nlohmann::json& params)
 
 nlohmann::json BuildInitializeResult(const nlohmann::json& params)
 {
+	const std::string instructions = AIService::BuildExternalMcpInstructions() +
+		"\nAutoLinker multi-instance routing: connect to http://127.0.0.1:19207/mcp, "
+		"call list_instances before cross-project work, and call select_instance with the returned instance_id. "
+		"The selection is isolated to this MCP session and is never changed automatically.";
 	return {
 		{"protocolVersion", NegotiateProtocolVersion(params)},
 		{"capabilities", {
@@ -980,18 +1221,43 @@ nlohmann::json BuildInitializeResult(const nlohmann::json& params)
 			{"name", kServerName},
 			{"version", kServerVersion}
 		}},
-		{"instructions", AIService::BuildExternalMcpInstructions()}
+		{"instructions", instructions}
 	};
 }
 
 bool TryBuildToolListResult(nlohmann::json& outResult, std::string& outError)
 {
 	try {
-		const nlohmann::json tools = nlohmann::json::parse(AIService::BuildPublicToolCatalogJson());
+		nlohmann::json tools = nlohmann::json::parse(AIService::BuildPublicToolCatalogJson());
 		if (!tools.is_array()) {
 			outError = "public tool catalog must be an array";
 			return false;
 		}
+		tools.push_back({
+			{"name", kListInstancesToolName},
+			{"description", "List running AutoLinker IDE instances and show the instance selected for this MCP session."},
+			{"inputSchema", {
+				{"type", "object"},
+				{"properties", nlohmann::json::object()},
+				{"additionalProperties", false}
+			}}
+		});
+		tools.push_back({
+			{"name", kSelectInstanceToolName},
+			{"description", "Select one AutoLinker IDE instance for subsequent tool calls in this MCP session. Use list_instances first."},
+			{"inputSchema", {
+				{"type", "object"},
+				{"properties", {
+					{"instance_id", {
+						{"type", "string"},
+						{"minLength", 1},
+						{"description", "Stable instance_id returned by list_instances."}
+					}}
+				}},
+				{"required", nlohmann::json::array({"instance_id"})},
+				{"additionalProperties", false}
+			}}
+		});
 		outResult = {{"tools", tools}};
 		return true;
 	}
@@ -1190,6 +1456,130 @@ bool TryBuildToolCallResult(
 	return true;
 }
 
+nlohmann::json BuildInstanceRoutingError(
+	const nlohmann::json& id,
+	const std::string& instanceId,
+	const std::string& detail,
+	const std::string& sessionId)
+{
+	return {
+		{"jsonrpc", "2.0"},
+		{"id", id},
+		{"error", {
+			{"code", -32002},
+			{"message", "Selected AutoLinker instance is unavailable. Call list_instances and select_instance explicitly."},
+			{"data", {
+				{"error", "selected_instance_unavailable"},
+				{"instance_id", instanceId},
+				{"detail", detail},
+				{"discovery", BuildInstanceListPayload(sessionId, false)}
+			}}
+		}}
+	};
+}
+
+bool TryForwardSelectedToolCall(
+	const HttpRequest& request,
+	const nlohmann::json& id,
+	const std::string& sessionId,
+	std::string& outBody,
+	McpLogContext* outLogContext)
+{
+	const auto proxiedIt = request.headers.find(kProxiedHeaderName);
+	if (proxiedIt != request.headers.end() && TrimAsciiCopy(proxiedIt->second) == "1") {
+		return false;
+	}
+
+	const std::string selectedInstanceId = GetSelectedInstanceId(sessionId);
+	if (selectedInstanceId.empty() || selectedInstanceId == g_instanceId) {
+		return false;
+	}
+
+	std::vector<LocalMcpInstanceRegistry::InstanceRecord> instances;
+	std::string loadError;
+	if (!TryLoadRegisteredInstances(instances, loadError)) {
+		const nlohmann::json error = BuildInstanceRoutingError(
+			id,
+			selectedInstanceId,
+			loadError,
+			sessionId);
+		SetMcpLogResponseJson(outLogContext, error["error"]);
+		outBody = DumpJsonSafe(error);
+		return true;
+	}
+	const LocalMcpInstanceRegistry::InstanceRecord* target =
+		FindRegisteredInstance(instances, selectedInstanceId);
+	if (target == nullptr) {
+		const nlohmann::json error = BuildInstanceRoutingError(
+			id,
+			selectedInstanceId,
+			"selected instance is no longer registered",
+			sessionId);
+		SetMcpLogResponseJson(outLogContext, error["error"]);
+		outBody = DumpJsonSafe(error);
+		return true;
+	}
+
+	std::string proxyError;
+	if (!LocalMcpProxyTransport::ProbeInstance(
+			target->port,
+			target->instanceId,
+			proxyError,
+			500)) {
+		const nlohmann::json error = BuildInstanceRoutingError(
+			id,
+			selectedInstanceId,
+			proxyError,
+			sessionId);
+		SetMcpLogResponseJson(outLogContext, error["error"]);
+		outBody = DumpJsonSafe(error);
+		return true;
+	}
+
+	LocalMcpProxyTransport::HttpResponse response;
+	if (!LocalMcpProxyTransport::PostJsonRpc(
+			target->port,
+			request.body,
+			sessionId == "legacy" ? std::string() : sessionId,
+			response,
+			proxyError,
+			30000) ||
+		response.statusCode != 200) {
+		if (proxyError.empty()) {
+			proxyError = std::format("target returned HTTP {} {}", response.statusCode, response.reason);
+		}
+		const nlohmann::json error = BuildInstanceRoutingError(
+			id,
+			selectedInstanceId,
+			proxyError,
+			sessionId);
+		SetMcpLogResponseJson(outLogContext, error["error"]);
+		outBody = DumpJsonSafe(error);
+		return true;
+	}
+
+	const nlohmann::json remote = nlohmann::json::parse(response.body, nullptr, false);
+	if (remote.is_discarded() || !remote.is_object() ||
+		!remote.contains("jsonrpc") || remote.value("jsonrpc", std::string()) != "2.0" ||
+		!remote.contains("id") || remote["id"] != id ||
+		(!remote.contains("result") && !remote.contains("error"))) {
+		const nlohmann::json error = BuildInstanceRoutingError(
+			id,
+			selectedInstanceId,
+			"target returned an invalid or mismatched JSON-RPC response",
+			sessionId);
+		SetMcpLogResponseJson(outLogContext, error["error"]);
+		outBody = DumpJsonSafe(error);
+		return true;
+	}
+
+	SetMcpLogResponseJson(
+		outLogContext,
+		remote.contains("result") ? remote["result"] : remote["error"]);
+	outBody = response.body;
+	return true;
+}
+
 bool TryHandleJsonRpc(
 	const HttpRequest& request,
 	int& outStatusCode,
@@ -1250,9 +1640,38 @@ bool TryHandleJsonRpc(
 	const bool hasId = payload.contains("id");
 	const nlohmann::json params = payload.contains("params") ? payload["params"] : nlohmann::json::object();
 	std::string requestSessionId = "legacy";
-	if (const auto it = request.headers.find("mcp-session-id");
-		it != request.headers.end() && IsValidMcpSessionId(it->second)) {
-		requestSessionId = it->second;
+	const auto sessionHeaderIt = request.headers.find("mcp-session-id");
+	const bool hasSessionHeader = sessionHeaderIt != request.headers.end();
+	if (hasSessionHeader) {
+		if (!IsValidMcpSessionId(sessionHeaderIt->second)) {
+			outStatusCode = 400;
+			const nlohmann::json error = BuildJsonRpcError(id, -32600, "invalid Mcp-Session-Id header");
+			SetMcpLogResponseJson(outLogContext, error["error"]);
+			outBody = DumpJsonSafe(error);
+			return true;
+		}
+		requestSessionId = sessionHeaderIt->second;
+	}
+	const auto proxiedHeaderIt = request.headers.find(kProxiedHeaderName);
+	const bool isProxiedRequest = proxiedHeaderIt != request.headers.end() &&
+		TrimAsciiCopy(proxiedHeaderIt->second) == "1";
+	if (method != "initialize" &&
+		hasSessionHeader &&
+		!isProxiedRequest &&
+		!HasExternalMcpSession(requestSessionId)) {
+		outStatusCode = 404;
+		const nlohmann::json error = {
+			{"jsonrpc", "2.0"},
+			{"id", id},
+			{"error", {
+				{"code", -32001},
+				{"message", "MCP session is unknown or expired. Send initialize again before calling tools."},
+				{"data", {{"error", "mcp_session_not_found"}}}
+			}}
+		};
+		SetMcpLogResponseJson(outLogContext, error["error"]);
+		outBody = DumpJsonSafe(error);
+		return true;
 	}
 
 	if (method == "notifications/initialized") {
@@ -1280,12 +1699,14 @@ bool TryHandleJsonRpc(
 			state.workspaceRefreshed = false;
 			state.sourceFilePath.clear();
 			state.mirrorGeneration = 0;
+			state.selectedInstanceId.clear();
 			state.lastSeen = now;
 			if (requestSessionId == "legacy") {
 				ExternalMcpSessionState& legacyState = g_externalMcpSessions["legacy"];
 				legacyState.workspaceRefreshed = false;
 				legacyState.sourceFilePath.clear();
 				legacyState.mirrorGeneration = 0;
+				legacyState.selectedInstanceId.clear();
 				legacyState.lastSeen = now;
 			}
 		}
@@ -1314,6 +1735,33 @@ bool TryHandleJsonRpc(
 	if (method == "tools/call") {
 		nlohmann::json result;
 		std::string error;
+		const std::string toolName = params.is_object() &&
+			params.contains("name") && params["name"].is_string()
+			? params["name"].get<std::string>()
+			: std::string();
+		nlohmann::json arguments = params.is_object() && params.contains("arguments")
+			? params["arguments"]
+			: nlohmann::json::object();
+		if (arguments.is_null()) {
+			arguments = nlohmann::json::object();
+		}
+		if (toolName == kListInstancesToolName || toolName == kSelectInstanceToolName) {
+			if (!arguments.is_object() ||
+				!TryHandleInstanceTool(toolName, arguments, requestSessionId, result, error)) {
+				if (error.empty()) {
+					error = "instance tool arguments must be object";
+				}
+				SetMcpLogResponseJson(outLogContext, {{"code", -32602}, {"message", error}});
+				outBody = DumpJsonSafe(BuildJsonRpcError(id, -32602, error));
+				return true;
+			}
+			SetMcpLogResponseJson(outLogContext, result);
+			outBody = DumpJsonSafe(BuildJsonRpcResult(id, result));
+			return true;
+		}
+		if (TryForwardSelectedToolCall(request, id, requestSessionId, outBody, outLogContext)) {
+			return true;
+		}
 		if (!TryBuildToolCallResult(params, requestSessionId, result, error)) {
 			SetMcpLogResponseJson(outLogContext, {
 				{"code", -32602},
@@ -1381,6 +1829,9 @@ void HandleClientImpl(SOCKET clientSock)
 			{"instance_id", g_instanceId},
 			{"process_id", GetCurrentProcessId()},
 			{"port", g_boundPort.load()},
+			{"backend_endpoint", BuildEndpointForPort(g_boundPort.load())},
+			{"gateway_endpoint", BuildEndpointForPort(kGatewayPort)},
+			{"gateway_owner", g_gatewayOwner.load()},
 			{"mcp_endpoint", BuildEndpointForPort(g_boundPort.load())}
 		};
 		SendHttpResponse(clientSock, 200, "OK", "application/json; charset=utf-8", DumpJsonSafe(health));
@@ -1530,51 +1981,115 @@ void StopClientWorkersAndCloseQueue()
 	g_clientQueueCv.notify_all();
 }
 
-bool TryCreateListeningSocket(int& outPort)
+bool TryCreateListeningSocketAtPort(int port, SOCKET& outSocket)
+{
+	outSocket = INVALID_SOCKET;
+	SOCKET listenSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (listenSocket == INVALID_SOCKET) {
+		return false;
+	}
+
+	BOOL exclusive = TRUE;
+	setsockopt(
+		listenSocket,
+		SOL_SOCKET,
+		SO_EXCLUSIVEADDRUSE,
+		reinterpret_cast<const char*>(&exclusive),
+		sizeof(exclusive));
+
+	sockaddr_in address = {};
+	address.sin_family = AF_INET;
+	address.sin_port = htons(static_cast<u_short>(port));
+	if (inet_pton(AF_INET, kBindHost, &address.sin_addr) != 1) {
+		CloseSocketSafe(listenSocket);
+		return false;
+	}
+	if (bind(listenSocket, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == SOCKET_ERROR) {
+		const int error = WSAGetLastError();
+		CloseSocketSafe(listenSocket);
+		if (!IsPortInUseError(error)) {
+			LogMcp(std::format("bind {}:{} failed, error={}", kBindHost, port, error));
+		}
+		return false;
+	}
+	if (listen(listenSocket, SOMAXCONN) == SOCKET_ERROR) {
+		const int error = WSAGetLastError();
+		CloseSocketSafe(listenSocket);
+		LogMcp(std::format("listen {}:{} failed, error={}", kBindHost, port, error));
+		return false;
+	}
+	outSocket = listenSocket;
+	return true;
+}
+
+bool TryCreateBackendListeningSocket(int& outPort)
 {
 	outPort = 0;
-	for (int port = kBasePort; port < kBasePort + kMaxPortAttempts; ++port) {
-		SOCKET listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-		if (listenSock == INVALID_SOCKET) {
+	for (int port = kInstanceBasePort;
+		port < kInstanceBasePort + kMaxInstancePortAttempts;
+		++port) {
+		SOCKET listenSocket = INVALID_SOCKET;
+		if (!TryCreateListeningSocketAtPort(port, listenSocket)) {
 			continue;
 		}
-
-		BOOL exclusive = TRUE;
-		setsockopt(listenSock, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char*>(&exclusive), sizeof(exclusive));
-
-		sockaddr_in addr = {};
-		addr.sin_family = AF_INET;
-		addr.sin_port = htons(static_cast<u_short>(port));
-		if (inet_pton(AF_INET, kBindHost, &addr.sin_addr) != 1) {
-			CloseSocketSafe(listenSock);
-			return false;
-		}
-
-		if (bind(listenSock, reinterpret_cast<const sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
-			const int error = WSAGetLastError();
-			CloseSocketSafe(listenSock);
-			if (IsPortInUseError(error)) {
-				continue;
-			}
-			LogMcp(std::format("bind {}:{} failed, error={}", kBindHost, port, error));
-			return false;
-		}
-
-		if (listen(listenSock, SOMAXCONN) == SOCKET_ERROR) {
-			const int error = WSAGetLastError();
-			CloseSocketSafe(listenSock);
-			LogMcp(std::format("listen {}:{} failed, error={}", kBindHost, port, error));
-			return false;
-		}
-
 		{
 			std::lock_guard<std::mutex> lock(g_stateMutex);
-			g_listenSocket = listenSock;
+			g_backendListenSocket = listenSocket;
 		}
 		outPort = port;
 		return true;
 	}
 	return false;
+}
+
+bool TryAcquireGatewaySocket()
+{
+	if (g_gatewayOwner.load() || g_stopRequested.load()) {
+		return g_gatewayOwner.load();
+	}
+	SOCKET gatewaySocket = INVALID_SOCKET;
+	if (!TryCreateListeningSocketAtPort(kGatewayPort, gatewaySocket)) {
+		return false;
+	}
+	{
+		std::lock_guard<std::mutex> lock(g_stateMutex);
+		if (g_stopRequested.load() || g_gatewayListenSocket != INVALID_SOCKET) {
+			CloseSocketSafe(gatewaySocket);
+			return g_gatewayListenSocket != INVALID_SOCKET;
+		}
+		g_gatewayListenSocket = gatewaySocket;
+		g_gatewayOwner.store(true);
+	}
+	LogMcp(std::format("已接管固定 MCP 网关：http://{}:{}/mcp", kBindHost, kGatewayPort));
+	if (g_running.load()) {
+		RefreshCurrentInstanceRegistry();
+	}
+	return true;
+}
+
+void AcceptAndQueueClient(SOCKET listenSocket)
+{
+	sockaddr_in clientAddress = {};
+	int clientLength = sizeof(clientAddress);
+	SOCKET clientSocket = accept(
+		listenSocket,
+		reinterpret_cast<sockaddr*>(&clientAddress),
+		&clientLength);
+	if (clientSocket == INVALID_SOCKET) {
+		if (!g_stopRequested.load()) {
+			LogMcp(std::format("accept failed, error={}", WSAGetLastError()));
+		}
+		return;
+	}
+	if (!TryQueueClient(clientSocket)) {
+		SendHttpResponse(
+			clientSocket,
+			503,
+			"Service Unavailable",
+			"application/json; charset=utf-8",
+			R"({"ok":false,"error":"server busy"})");
+		CloseSocketSafe(clientSocket);
+	}
 }
 
 void ServerThreadMain()
@@ -1586,13 +2101,14 @@ void ServerThreadMain()
 	}
 
 	int boundPort = 0;
-	if (!TryCreateListeningSocket(boundPort)) {
-		LogMcp(std::format("failed to bind {} starting at port {}", kBindHost, kBasePort));
+	if (!TryCreateBackendListeningSocket(boundPort)) {
+		LogMcp(std::format("failed to bind {} starting at instance port {}", kBindHost, kInstanceBasePort));
 		WSACleanup();
 		return;
 	}
 
 	g_boundPort.store(boundPort);
+	TryAcquireGatewaySocket();
 	{
 		std::lock_guard<std::mutex> lock(g_clientQueueMutex);
 		g_clientWorkersStopping = false;
@@ -1615,19 +2131,24 @@ void ServerThreadMain()
 		}
 		{
 			std::lock_guard<std::mutex> lock(g_stateMutex);
-			CloseSocketSafe(g_listenSocket);
+			CloseSocketSafe(g_backendListenSocket);
+			CloseSocketSafe(g_gatewayListenSocket);
 		}
+		g_gatewayOwner.store(false);
 		g_boundPort.store(0);
 		WSACleanup();
 		return;
 	}
 	g_running.store(true);
 	LogMcp(std::format(
-		"本地 MCP 服务已启动：http://{}:{}/mcp",
+		"本地 MCP 实例后端已启动：http://{}:{}/mcp；固定入口：http://{}:{}/mcp",
 		kBindHost,
-		boundPort));
+		boundPort,
+		kBindHost,
+		kGatewayPort));
 	RefreshCurrentInstanceRegistry();
 	auto lastRegistryRefresh = std::chrono::steady_clock::now();
+	auto lastGatewayAttempt = std::chrono::steady_clock::now();
 
 	for (;;) {
 		if (g_stopRequested.load()) {
@@ -1637,19 +2158,29 @@ void ServerThreadMain()
 			RefreshCurrentInstanceRegistry();
 			lastRegistryRefresh = std::chrono::steady_clock::now();
 		}
+		if (!g_gatewayOwner.load() &&
+			std::chrono::steady_clock::now() - lastGatewayAttempt >= kGatewayRetryInterval) {
+			TryAcquireGatewaySocket();
+			lastGatewayAttempt = std::chrono::steady_clock::now();
+		}
 
-		SOCKET listenSock = INVALID_SOCKET;
+		SOCKET backendListenSocket = INVALID_SOCKET;
+		SOCKET gatewayListenSocket = INVALID_SOCKET;
 		{
 			std::lock_guard<std::mutex> lock(g_stateMutex);
-			listenSock = g_listenSocket;
+			backendListenSocket = g_backendListenSocket;
+			gatewayListenSocket = g_gatewayListenSocket;
 		}
-		if (listenSock == INVALID_SOCKET) {
+		if (backendListenSocket == INVALID_SOCKET) {
 			break;
 		}
 
 		fd_set readSet;
 		FD_ZERO(&readSet);
-		FD_SET(listenSock, &readSet);
+		FD_SET(backendListenSocket, &readSet);
+		if (gatewayListenSocket != INVALID_SOCKET) {
+			FD_SET(gatewayListenSocket, &readSet);
+		}
 		timeval timeout = {};
 		timeout.tv_sec = 0;
 		timeout.tv_usec = 250000;
@@ -1665,24 +2196,11 @@ void ServerThreadMain()
 			continue;
 		}
 
-		sockaddr_in clientAddr = {};
-		int clientLen = sizeof(clientAddr);
-		SOCKET clientSock = accept(listenSock, reinterpret_cast<sockaddr*>(&clientAddr), &clientLen);
-		if (clientSock == INVALID_SOCKET) {
-			if (!g_stopRequested.load()) {
-				LogMcp(std::format("accept failed, error={}", WSAGetLastError()));
-			}
-			continue;
+		if (FD_ISSET(backendListenSocket, &readSet)) {
+			AcceptAndQueueClient(backendListenSocket);
 		}
-
-		if (!TryQueueClient(clientSock)) {
-			SendHttpResponse(
-				clientSock,
-				503,
-				"Service Unavailable",
-				"application/json; charset=utf-8",
-				R"({"ok":false,"error":"server busy"})");
-			CloseSocketSafe(clientSock);
+		if (gatewayListenSocket != INVALID_SOCKET && FD_ISSET(gatewayListenSocket, &readSet)) {
+			AcceptAndQueueClient(gatewayListenSocket);
 		}
 	}
 
@@ -1694,9 +2212,11 @@ void ServerThreadMain()
 	}
 	{
 		std::lock_guard<std::mutex> lock(g_stateMutex);
-		CloseSocketSafe(g_listenSocket);
+		CloseSocketSafe(g_backendListenSocket);
+		CloseSocketSafe(g_gatewayListenSocket);
 	}
 	g_running.store(false);
+	g_gatewayOwner.store(false);
 	g_boundPort.store(0);
 	RemoveCurrentInstanceRegistry();
 	WSACleanup();
@@ -1717,7 +2237,11 @@ void Initialize()
 	g_running.store(false);
 	g_registryRefreshFailed.store(false);
 	g_boundPort.store(0);
+	g_gatewayOwner.store(false);
 	g_instanceId = GenerateInstanceId();
+	g_startedAtUnixMs = GetUnixTimeMilliseconds();
+	g_backendListenSocket = INVALID_SOCKET;
+	g_gatewayListenSocket = INVALID_SOCKET;
 	g_sourceFilePathHint.clear();
 	g_pageNameHint.clear();
 	g_pageTypeHint.clear();
@@ -1738,7 +2262,9 @@ void Shutdown()
 			return;
 		}
 		g_stopRequested.store(true);
-		CloseSocketSafe(g_listenSocket);
+		CloseSocketSafe(g_backendListenSocket);
+		CloseSocketSafe(g_gatewayListenSocket);
+		g_gatewayOwner.store(false);
 		worker = std::move(g_serverThread);
 	}
 	StopClientWorkersAndCloseQueue();
@@ -1766,6 +2292,16 @@ std::string GetInstanceId()
 std::string GetEndpoint()
 {
 	return BuildEndpointForPort(g_boundPort.load());
+}
+
+std::string GetGatewayEndpoint()
+{
+	return BuildEndpointForPort(kGatewayPort);
+}
+
+bool IsGatewayOwner()
+{
+	return g_gatewayOwner.load();
 }
 
 std::string BuildWorkspaceRefreshGateSelfTestJson()
@@ -1829,6 +2365,129 @@ std::string BuildWorkspaceRefreshGateSelfTestJson()
 		{"hidden_tool_error", hiddenError},
 		{"missing_hash_blocked", missingHashBlocked},
 		{"missing_hash_error", missingHashError}
+	}).dump();
+}
+
+std::string BuildMultiInstanceRoutingSelfTestJson()
+{
+	const std::string sessionA = "self-test-instance-a";
+	const std::string sessionB = "self-test-instance-b";
+	SetSelectedInstanceId(sessionA, "remote-a");
+	SetSelectedInstanceId(sessionB, "remote-b");
+	const bool sessionIsolation =
+		GetSelectedInstanceId(sessionA) == "remote-a" &&
+		GetSelectedInstanceId(sessionB) == "remote-b";
+
+	HttpRequest proxiedRequest;
+	proxiedRequest.headers[kProxiedHeaderName] = "1";
+	proxiedRequest.body = R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ping"}})";
+	std::string ignoredBody;
+	const bool loopPrevented = !TryForwardSelectedToolCall(
+		proxiedRequest,
+		1,
+		sessionA,
+		ignoredBody,
+		nullptr);
+
+	const std::string unknownSession = "self-test-unknown-session";
+	{
+		std::lock_guard<std::mutex> lock(g_stateMutex);
+		g_externalMcpSessions.erase(unknownSession);
+	}
+	HttpRequest unknownSessionRequest;
+	unknownSessionRequest.headers["mcp-session-id"] = unknownSession;
+	unknownSessionRequest.body = R"({"jsonrpc":"2.0","id":9,"method":"ping"})";
+	int unknownStatus = 0;
+	std::string unknownBody;
+	std::string unknownResponseSession;
+	const bool unknownHandled = TryHandleJsonRpc(
+		unknownSessionRequest,
+		unknownStatus,
+		unknownBody,
+		unknownResponseSession,
+		nullptr);
+	const nlohmann::json unknownJson = nlohmann::json::parse(unknownBody, nullptr, false);
+	const bool unknownSessionRejected = unknownHandled && unknownStatus == 404 &&
+		!unknownJson.is_discarded() && unknownJson.contains("error") &&
+		unknownJson["error"].value("code", 0) == -32001;
+	unknownSessionRequest.headers[kProxiedHeaderName] = "1";
+	int proxiedStatus = 0;
+	std::string proxiedBody;
+	const bool proxiedHandled = TryHandleJsonRpc(
+		unknownSessionRequest,
+		proxiedStatus,
+		proxiedBody,
+		unknownResponseSession,
+		nullptr);
+	const nlohmann::json proxiedJson = nlohmann::json::parse(proxiedBody, nullptr, false);
+	const bool proxiedSessionAccepted = proxiedHandled && proxiedStatus == 200 &&
+		!proxiedJson.is_discarded() && proxiedJson.contains("result");
+
+	nlohmann::json toolList;
+	std::string toolListError;
+	const bool toolListBuilt = TryBuildToolListResult(toolList, toolListError);
+	bool hasListInstances = false;
+	bool hasSelectInstance = false;
+	if (toolListBuilt && toolList.contains("tools") && toolList["tools"].is_array()) {
+		for (const auto& tool : toolList["tools"]) {
+			const std::string name = tool.value("name", std::string());
+			hasListInstances = hasListInstances || name == kListInstancesToolName;
+			hasSelectInstance = hasSelectInstance || name == kSelectInstanceToolName;
+		}
+	}
+
+	bool gatewayTakeover = false;
+	std::string gatewayTestError;
+	WSADATA winsockData = {};
+	if (WSAStartup(MAKEWORD(2, 2), &winsockData) == 0) {
+		SOCKET first = INVALID_SOCKET;
+		SOCKET contender = INVALID_SOCKET;
+		SOCKET successor = INVALID_SOCKET;
+		if (TryCreateListeningSocketAtPort(0, first)) {
+			sockaddr_in address = {};
+			int addressLength = sizeof(address);
+			if (getsockname(first, reinterpret_cast<sockaddr*>(&address), &addressLength) == 0) {
+				const int port = ntohs(address.sin_port);
+				const bool contenderBlocked = !TryCreateListeningSocketAtPort(port, contender);
+				CloseSocketSafe(first);
+				const bool successorAcquired = TryCreateListeningSocketAtPort(port, successor);
+				gatewayTakeover = contenderBlocked && successorAcquired;
+			}
+			else {
+				gatewayTestError = "getsockname failed, error=" + std::to_string(WSAGetLastError());
+			}
+		}
+		else {
+			gatewayTestError = "create first gateway test socket failed";
+		}
+		CloseSocketSafe(first);
+		CloseSocketSafe(contender);
+		CloseSocketSafe(successor);
+		WSACleanup();
+	}
+	else {
+		gatewayTestError = "WSAStartup failed";
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(g_stateMutex);
+		g_externalMcpSessions.erase(sessionA);
+		g_externalMcpSessions.erase(sessionB);
+	}
+	const bool ok = sessionIsolation && loopPrevented && unknownSessionRejected &&
+		proxiedSessionAccepted && toolListBuilt &&
+		hasListInstances && hasSelectInstance && gatewayTakeover;
+	return nlohmann::json({
+		{"name", "local-mcp-multi-instance-routing"},
+		{"ok", ok},
+		{"session_isolation", sessionIsolation},
+		{"proxy_loop_prevented", loopPrevented},
+		{"unknown_session_rejected", unknownSessionRejected},
+		{"proxied_session_accepted", proxiedSessionAccepted},
+		{"instance_tools_exposed", toolListBuilt && hasListInstances && hasSelectInstance},
+		{"gateway_takeover", gatewayTakeover},
+		{"tool_list_error", toolListError},
+		{"gateway_test_error", gatewayTestError}
 	}).dump();
 }
 

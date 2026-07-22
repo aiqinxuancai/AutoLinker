@@ -182,6 +182,9 @@
     <ClCompile Include="src\LocalMcpInstanceRegistry.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\LocalMcpProxyTransport.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\Logger.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -397,6 +400,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\LocalMcpInstanceRegistry.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\LocalMcpProxyTransport.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\Logger.h">

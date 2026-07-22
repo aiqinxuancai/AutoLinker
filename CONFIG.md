@@ -144,7 +144,7 @@ Tavily 是 AI 搜索 API。配置后 `search_web_tavily` 工具可实时联网�
 ---
 
 ## 🔌 外部 Agent MCP 配置
-AutoLinker 在易语言 IDE 启动后自动开启本地 **MCP 服务**（端口 `19207`）。
+AutoLinker 在易语言 IDE 启动后自动开启本地 **MCP 服务**。`19207` 是固定网关端口，各个 IDE 实例使用 `19208` 之后的端口作为内部后端。
 
 任何支持 **MCP Streamable HTTP** 的外部 AI 工具（如 Cursor、Claude Code、Codex CLI、Antigravity CLI）均可通过该地址配置。
 
@@ -154,6 +154,14 @@ AutoLinker 在易语言 IDE 启动后自动开启本地 **MCP 服务**（端口 
 | 协议 | Streamable HTTP；支持协商 MCP 多版本 |
 | 本地地址 | `http://127.0.0.1:19207/mcp` |
 | 传输类型 | `http` |
+
+### 多实例切换
+
+- 外部工具始终配置 `http://127.0.0.1:19207/mcp`，不要改成实例后端端口。
+- 同时打开多个易语言 IDE 时，调用 `list_instances` 查看实例、工程路径和当前页面，再使用 `select_instance` 的 `instance_id` 选择目标。
+- 选择结果按 `Mcp-Session-Id` 隔离，不会影响其他 MCP 客户端。
+- 选中的实例关闭后，AutoLinker 会明确要求重新选择，不会自动把修改操作切到其他工程。
+- 持有 `19207` 的 IDE 退出后，其他存活实例会自动接管固定网关；客户端重新连接后仍使用原地址。
 
 > 🔒 **安全说明：** 仅 `127.0.0.1` 可访问，浏览器脚本携带 `Origin` 会被拒绝，请勿暴露到局域网/公网。
 
