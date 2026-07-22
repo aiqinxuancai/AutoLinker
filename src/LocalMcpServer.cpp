@@ -979,7 +979,8 @@ nlohmann::json BuildInitializeResult(const nlohmann::json& params)
 		{"serverInfo", {
 			{"name", kServerName},
 			{"version", kServerVersion}
-		}}
+		}},
+		{"instructions", AIService::BuildExternalMcpInstructions()}
 	};
 }
 

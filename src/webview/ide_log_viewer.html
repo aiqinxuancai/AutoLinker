@@ -139,6 +139,18 @@
       transition: opacity .18s, transform .18s; z-index: 10;
     }
     .toast.show { opacity: 1; transform: translateY(0); }
+    .context-menu {
+      display: none; position: fixed; z-index: 100; min-width: 132px; padding: 4px;
+      background: var(--panel-solid); border: 1px solid var(--border); border-radius: 6px;
+      box-shadow: 0 10px 28px rgba(24, 35, 58, .18);
+    }
+    .context-menu.open { display: block; }
+    .context-menu button {
+      display: flex; align-items: center; width: 100%; height: 32px; padding: 0 10px;
+      color: var(--text); background: transparent; border: 0; border-radius: 4px;
+      cursor: pointer; text-align: left;
+    }
+    .context-menu button:hover, .context-menu button:focus { background: var(--hover); outline: none; }
     @media (max-width: 720px) {
 	  .app { grid-template-columns: 46px minmax(0, 1fr); }
 	  .action-rail { width: 46px; min-width: 46px; }
@@ -195,6 +207,9 @@
     </section>
   </div>
   <div id="toast" class="toast"></div>
+  <div id="row-context-menu" class="context-menu" role="menu" aria-hidden="true">
+    <button id="copy-row" type="button" role="menuitem">复制整行</button>
+  </div>
 
   <script>
     (() => {
@@ -236,6 +251,9 @@
       const droppedStatus = document.getElementById('dropped-status');
       const regexError = document.getElementById('regex-error');
       const toast = document.getElementById('toast');
+      const rowContextMenu = document.getElementById('row-context-menu');
+      const copyRowButton = document.getElementById('copy-row');
+      let contextCopyText = '';
 
       function post(action, extra = {}) {
         if (window.chrome && chrome.webview) {
@@ -247,6 +265,12 @@
         const date = new Date(Number(ms) || 0);
         const pad = (value, width = 2) => String(value).padStart(width, '0');
         return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
+      }
+
+      function buildRowCopyText(entry) {
+        const message = (entry.text || '').replace(/[\r\n]+/g, ' ↵ ');
+        const truncated = entry.truncated ? ' … [已截断]' : '';
+        return `${formatTime(entry.time)}\t${message}${truncated}`;
       }
 
       function escapeRegex(text) {
@@ -469,6 +493,36 @@
         showToast.timer = setTimeout(() => toast.classList.remove('show'), 2600);
       }
 
+      function hideRowContextMenu() {
+        rowContextMenu.classList.remove('open');
+        rowContextMenu.setAttribute('aria-hidden', 'true');
+        contextCopyText = '';
+      }
+
+      function constrainRowContextMenu() {
+        if (!rowContextMenu.classList.contains('open')) return;
+        const bounds = rowContextMenu.getBoundingClientRect();
+        const left = Math.max(4, Math.min(bounds.left, window.innerWidth - bounds.width - 4));
+        const top = Math.max(4, Math.min(bounds.top, window.innerHeight - bounds.height - 4));
+        rowContextMenu.style.left = `${left}px`;
+        rowContextMenu.style.top = `${top}px`;
+      }
+
+      function showRowContextMenu(event, row) {
+        const position = Number(row.dataset.position);
+        const entryIndex = state.filteredIndices[position];
+        const entry = state.entries[entryIndex];
+        if (!Number.isInteger(position) || !entry) return;
+
+        selectFilteredPosition(position);
+        contextCopyText = buildRowCopyText(entry);
+        rowContextMenu.style.left = `${event.clientX}px`;
+        rowContextMenu.style.top = `${event.clientY}px`;
+        rowContextMenu.classList.add('open');
+        rowContextMenu.setAttribute('aria-hidden', 'false');
+        constrainRowContextMenu();
+      }
+
       function applyBatch(payload) {
         const shouldAutoScroll = isViewportAtBottom();
 		let fullRebuildRequired = Boolean(payload.reset);
@@ -538,6 +592,22 @@
       searchClose.addEventListener('click', () => setSearchPanelOpen(false));
       document.getElementById('clear-button').addEventListener('click', () => post('clear'));
       document.getElementById('export-button').addEventListener('click', () => post('export'));
+      copyRowButton.addEventListener('click', () => {
+        if (contextCopyText) post('copy-row', { text: contextCopyText });
+        hideRowContextMenu();
+      });
+      viewport.addEventListener('contextmenu', event => {
+        const row = event.target.closest('.log-row');
+        if (!row) {
+          hideRowContextMenu();
+          return;
+        }
+        event.preventDefault();
+        showRowContextMenu(event, row);
+      });
+      document.addEventListener('pointerdown', event => {
+        if (rowContextMenu.classList.contains('open') && !rowContextMenu.contains(event.target)) hideRowContextMenu();
+      });
       viewport.addEventListener('mousedown', event => {
         if (event.button !== 0 || !event.target.closest('.log-row')) return;
         clearTimeout(state.selectionReleaseTimer);
@@ -556,10 +626,19 @@
         state.selectionReleaseTimer = setTimeout(updateTextSelectionMode, 0);
       });
       viewport.addEventListener('scroll', () => {
+        hideRowContextMenu();
         renderVirtualRows();
       }, { passive: true });
-      window.addEventListener('resize', renderVirtualRows);
+      window.addEventListener('resize', () => {
+        constrainRowContextMenu();
+        renderVirtualRows();
+      });
       window.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && rowContextMenu.classList.contains('open')) {
+          event.preventDefault();
+          hideRowContextMenu();
+          return;
+        }
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
           event.preventDefault();
           setSearchPanelOpen(true);
@@ -573,6 +652,9 @@
           if (payload.type === 'log-batch') applyBatch(payload);
           if (payload.type === 'export-result') {
             showToast(payload.ok ? `已导出到 ${payload.path}` : `导出失败：${payload.error || '未知错误'}`);
+          }
+          if (payload.type === 'copy-row-result') {
+            showToast(payload.ok ? '已复制整行' : '复制失败，请重试');
           }
         });
       }

@@ -5588,6 +5588,55 @@ std::string AIService::BuildPublicToolCatalogJson()
 	return AIChatToolRegistry::FilterExternalPublicCatalog(nativeCatalog).dump();
 }
 
+std::string AIService::BuildExternalMcpInstructions()
+{
+	// 说明：外部 MCP（本地端口）暴露的工具目录只按 externalPublic 静态标志过滤，
+	// 不随 source_edit_mode 变化；read_real_file 恒定可见，写工具的 expected_base_hash
+	// 恒定要求来自 read_real_file 的 code_hash。因此这里描述的是固定的“真实页优先”
+	// 编辑契约，不做模式分支，避免指令与真实工具行为矛盾。
+	std::string prompt =
+		"你正在通过 MCP 连接到 AutoLinker —— 一个内置于易语言（e-language）IDE 的插件。"
+		"本连接暴露的工具用于读写“当前在 IDE 中打开的易语言工程”。请严格遵守以下约定，否则生成的代码无法被 IDE 正确接收。\n\n"
+
+		"【最重要：唯一真源】\n"
+		"- 这个易语言工程只能通过本 MCP 提供的工具读写。工程源码不是磁盘上可直接编辑的普通文本文件，而是由 IDE 内存态经打包/整页映射维护的。\n"
+		"- 禁止使用你自带的通用能力（bash、python、sed、文件系统直接读写、内置编辑器等）去查看或修改该工程的任何文件：那样要么打不到真实程序项、要么被 IDE 忽略或覆盖，且往往看起来“成功”实则未生效。\n"
+		"- 一切读、写、搜索、编译、执行本地命令都必须走本 MCP 的对应工具。\n\n"
+
+		"【读取】\n"
+		"- 探索结构用 list_files；按内容/名称查找用 search_code；读取文件用 read_files（多个文件一次批量读，不要串行反复读单个）；已知子程序/代码项名称时用 read_code_item。\n"
+		"- 编辑当前工程源码前，必须先对同一 file_path 调用 read_real_file，取得 real_source（真实页文本）与 code_hash 作为编辑基准；不要用其它来源的文本臆测当前内容。\n\n"
+
+		"【写入】\n"
+		"- 修改已有源码只能用 edit_file / multi_edit_file / write_file / diff_file，并以 file_path 作为目标；新建程序集或类用 add_new_file。\n"
+		"- 写工具的 old_text / full_code 与 expected_base_hash 必须基于刚才 read_real_file 返回的 real_source / code_hash；expected_base_hash 对外部调用为必填，用于拒绝过期基准。\n"
+		"- 写工具返回 ok=true、verified=true 即表示写入与结构校验已完成，不要为确认而再次读取同一源码。\n"
+		"- src/*.xml 是窗口界面 XML，只读；窗口程序集代码请编辑对应 src/*.txt。ecom/、elib/、header/ 是依赖与公开信息参考，可读可搜不可写。\n\n"
+
+		"【验证与本地命令】\n"
+		"- 需要编译时用 compile_with_output_path（可先用 get_current_eide_info 确认工程类型与可用编译模式），不要用你自带的构建/脚本能力去编译。\n"
+		"- 需要执行本地命令时用 run_powershell_command（会经用户确认），不要用你自带的 shell/python。\n"
+		"- 需要联网查资料时用 search_web_tavily / extract_web_document / fetch_url。\n\n"
+
+		"【易语言语法要点（最易出错处，务必遵守）】\n"
+		"- 以 . 开头的是系统指令/关键字（.版本、.程序集、.子程序、.参数、.局部变量、.全局变量、.如果、.如果真、.否则、.返回 等）；不要删掉前导 .，不要改成 C/C++/JS 风格。\n"
+		"- 单引号 ' 开头是整行注释，不要当代码，也不要改成 // 或 /* */。真 / 假 是布尔值。\n"
+		"- 字符串用全角引号（如 “Hello”）；运算符用全角（＋ － × ÷）；赋值写 `变量 ＝ 值`（全角 ＝），不要写半角 =。自增写 `a ＝ a ＋ 1`，不要 a++。\n"
+		"- 字符串不支持转义序列，不要用 \\n、\\t；字符串用加号连接，如 `\"Hello\" ＋ \"World\"`。\n"
+		"- 数组下标通常从 1 开始，第一个元素是 数组 [1]。\n"
+		"- 每个 .子程序 内部声明顺序固定：先全部 .参数，再全部 .局部变量，最后才是执行语句；不要在局部变量后再声明参数，也不要在执行语句后补声明。\n"
+		"- 变量声明后按类型自动获得默认值（数值 0、逻辑 假、文本 空文本、对象无需 `obj ＝ 类型名`），不要为默认初始化生成冗余赋值。\n"
+		"- 类不支持覆盖/重写/多态，调用父类方法直接写 `父类方法名 ()`，没有 this./self./super.；类内无法实现单例，需要全局唯一实例应在 src/.全局变量.txt 声明该类类型的全局变量。\n"
+		"- 控件事件子程序（如 _按钮_Clear_被单击）必须留在所属窗口程序集页内，不要挪到普通程序集或其它窗口/类。子程序名全局解析，无命名空间，新增/重命名需保证全工程唯一。\n"
+		"- 只修改某个子程序时不要重写整个页面，也不要重复输出 .版本 2，保持原有缩进、空行与注释风格。\n"
+		+ BuildEideDeclarationPromptRules()
+		+ BuildEideControlFlowPromptRules();
+
+	// 这些字面量是本地编码（GBK）；MCP 响应以 UTF-8 payload 输出，且 DumpJsonSafe 会把
+	// 非法 UTF-8 字节替换掉。此处统一转 UTF-8，避免 initialize.instructions 中文变乱码。
+	return LocalToUtf8(prompt);
+}
+
 std::string AIService::BuildAgentOptimizationSelfTestJson()
 {
 	nlohmann::json checks = nlohmann::json::array();

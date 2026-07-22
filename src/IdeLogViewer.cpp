@@ -353,6 +353,60 @@ void PostExportResult(ViewerContext* context, bool ok, const std::wstring& path,
 	});
 }
 
+bool CopyUtf8TextToClipboard(HWND owner, const std::string& text, std::string& outError)
+{
+	const std::wstring wide = Utf8ToWide(text);
+	if (wide.empty()) {
+		outError = "invalid_text";
+		return false;
+	}
+
+	bool clipboardOpened = false;
+	for (int attempt = 0; attempt < 3 && !clipboardOpened; ++attempt) {
+		clipboardOpened = OpenClipboard(owner) != FALSE;
+		if (!clipboardOpened) {
+			Sleep(5);
+		}
+	}
+	if (!clipboardOpened) {
+		outError = "open_clipboard_failed";
+		return false;
+	}
+
+	if (EmptyClipboard() == FALSE) {
+		CloseClipboard();
+		outError = "empty_clipboard_failed";
+		return false;
+	}
+	const SIZE_T byteCount = (wide.size() + 1) * sizeof(wchar_t);
+	HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, byteCount);
+	if (memory == nullptr) {
+		CloseClipboard();
+		outError = "allocate_clipboard_failed";
+		return false;
+	}
+
+	auto* destination = static_cast<wchar_t*>(GlobalLock(memory));
+	if (destination == nullptr) {
+		GlobalFree(memory);
+		CloseClipboard();
+		outError = "lock_clipboard_failed";
+		return false;
+	}
+	std::copy(wide.begin(), wide.end(), destination);
+	destination[wide.size()] = L'\0';
+	GlobalUnlock(memory);
+
+	if (SetClipboardData(CF_UNICODETEXT, memory) == nullptr) {
+		GlobalFree(memory);
+		CloseClipboard();
+		outError = "set_clipboard_failed";
+		return false;
+	}
+	CloseClipboard();
+	return true;
+}
+
 void ExportLogs(HWND owner, ViewerContext* context)
 {
 	SYSTEMTIME now = {};
@@ -446,6 +500,18 @@ void HandleWebMessage(HWND window, ViewerContext* context, ICoreWebView2WebMessa
 	}
 	else if (action == "export") {
 		ExportLogs(window, context);
+	}
+	else if (action == "copy-row") {
+		std::string error;
+		const bool ok = CopyUtf8TextToClipboard(
+			window,
+			payload.value("text", std::string()),
+			error);
+		PostJson(context, {
+			{"type", "copy-row-result"},
+			{"ok", ok},
+			{"error", error}
+		});
 	}
 }
 
@@ -972,8 +1038,11 @@ std::string BuildSelfTestJson()
 	const bool regexSearchPresent = html.find("regex-toggle") != std::string::npos &&
 		html.find("new RegExp") != std::string::npos;
 	const bool webMessageBridgePresent = html.find("chrome.webview") != std::string::npos;
+	const bool copyRowContextMenuPresent = html.find("row-context-menu") != std::string::npos &&
+		html.find("copy-row") != std::string::npos &&
+		html.find("contextmenu") != std::string::npos;
 	const bool ok = resourceLoaded && virtualListPresent && plainSearchPresent &&
-		regexSearchPresent && webMessageBridgePresent;
+		regexSearchPresent && webMessageBridgePresent && copyRowContextMenuPresent;
 	return nlohmann::json({
 		{"name", "ide-log-viewer-resource"},
 		{"ok", ok},
@@ -981,7 +1050,8 @@ std::string BuildSelfTestJson()
 		{"virtual_list_present", virtualListPresent},
 		{"plain_search_present", plainSearchPresent},
 		{"regex_search_present", regexSearchPresent},
-		{"web_message_bridge_present", webMessageBridgePresent}
+		{"web_message_bridge_present", webMessageBridgePresent},
+		{"copy_row_context_menu_present", copyRowContextMenuPresent}
 	}).dump();
 }
 

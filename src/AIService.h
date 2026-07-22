@@ -182,6 +182,9 @@ public:
 		HttpRequestCancellation* cancelContext = nullptr,
 		const AIChatRunOptions& runOptions = {});
 	static std::string BuildPublicToolCatalogJson();
+	// 构建对外 MCP（本地端口）initialize 返回的 instructions：告知外部客户端
+	// 必须经本 MCP 工具读写易语言工程，并附带最易出错的易语言语法约定浓缩版。
+	static std::string BuildExternalMcpInstructions();
 	// 构建 Agent 工具优化与 Responses 流式解析的内部自测报告。
 	static std::string BuildAgentOptimizationSelfTestJson();
 	static std::string NormalizeModelOutputToCode(const std::string& modelText);
