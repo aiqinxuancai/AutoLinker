@@ -49,7 +49,10 @@ bool EnsureToolReady(std::filesystem::path& outToolPath, std::string& outError);
 // 强制检查最新版 e-packager.exe，失败时不静默回退到旧版本。
 bool EnsureLatestToolReady(std::filesystem::path& outToolPath, std::string& outError);
 
-// 后台检查并更新 e-packager.exe，忽略自动检查间隔。
+// 后台检查 e-packager.exe 的最新版本，不执行下载或安装。
+void CheckForToolUpdatesInBackground();
+
+// 后台安装最近一次检查确认可用的 e-packager.exe 版本。
 void RunToolUpdateInBackground();
 
 // 设置并读取“关于”页展示的组件更新状态。

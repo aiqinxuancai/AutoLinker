@@ -66,7 +66,8 @@
         </div>
         <div id="packagerStatus" class="component-status">用于工程镜像、解包和外部 AI 工具协作。</div>
         <div class="component-actions">
-          <button id="updatePackagerBtn" class="btn" type="button">检查并更新组件</button>
+          <button id="checkPackagerBtn" class="btn" type="button">检查更新</button>
+          <button id="applyPackagerBtn" class="btn btn-primary" type="button" disabled>执行更新</button>
         </div>
         <div id="packagerProgress" class="progress"><span></span></div>
       </article>
@@ -95,16 +96,20 @@ window.autolinkerApplyAbout=function(payload){
   $("applyAutoBtn").disabled=auto.state!=="update_available";
   $("applyAutoBtn").textContent=auto.latestVersion?"更新到 "+auto.latestVersion:"执行更新";
   renderProgress("autoProgress",auto.progressPercent);
-  $("packagerVersion").textContent=pack.currentVersion?"当前版本 "+pack.currentVersion:(data.ePackagerInstalled?"已安装":"未安装");
+  var packInstalled=!!data.ePackagerInstalled,packCurrent=pack.currentVersion||"",packVersionText=packInstalled?(packCurrent&&packCurrent!=="已安装"?"当前版本 "+packCurrent:"已安装"):"未安装";
+  $("packagerVersion").textContent=packVersionText+(pack.latestVersion?" · 最新 "+pack.latestVersion:"");
   $("packagerStatus").textContent=pack.message||"用于工程镜像、解包和外部 AI 工具协作。";
   $("packagerState").textContent=stateText(pack.state);$("packagerState").className=stateClass(pack.state);
-  $("updatePackagerBtn").disabled=busy(pack.state);
+  $("checkPackagerBtn").disabled=busy(pack.state);
+  $("applyPackagerBtn").disabled=pack.state!=="update_available";
+  $("applyPackagerBtn").textContent=pack.latestVersion?"更新到 "+pack.latestVersion:"执行更新";
   renderProgress("packagerProgress",pack.progressPercent);
 };
 document.querySelector(".links").addEventListener("click",function(e){var btn=e.target.closest("[data-link]");if(btn)post("open_link",{id:btn.getAttribute("data-link")})});
 $("checkAutoBtn").addEventListener("click",function(){post("check_autolinker")});
 $("applyAutoBtn").addEventListener("click",function(){post("update_autolinker")});
-$("updatePackagerBtn").addEventListener("click",function(){post("update_e_packager")});
+$("checkPackagerBtn").addEventListener("click",function(){post("check_e_packager")});
+$("applyPackagerBtn").addEventListener("click",function(){post("update_e_packager")});
 document.addEventListener("DOMContentLoaded",function(){post("ready")});
 </script>
 </body>

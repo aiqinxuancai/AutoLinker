@@ -517,6 +517,10 @@ void HandleSettingsWebViewMessage(
 		AutoLinkerUpdateManager::RunUpdateInBackground();
 		ApplySettingsWebViewData(context);
 	}
+	else if (action == "check_e_packager") {
+		EPackagerIntegration::CheckForToolUpdatesInBackground();
+		ApplySettingsWebViewData(context);
+	}
 	else if (action == "update_e_packager") {
 		EPackagerIntegration::RunToolUpdateInBackground();
 		ApplySettingsWebViewData(context);
@@ -1257,6 +1261,12 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		logOptimizationHtml.find("autolinkerApplyLogOptimization") != std::string::npos &&
 		aboutHtml.find("autolinkerApplyAbout") != std::string::npos &&
 		!aboutIconDataUrl.empty();
+	const bool ePackagerTwoStepUpdateValid =
+		aboutHtml.find("check_e_packager") != std::string::npos &&
+		aboutHtml.find("update_e_packager") != std::string::npos &&
+		aboutHtml.find("checkPackagerBtn") != std::string::npos &&
+		aboutHtml.find("applyPackagerBtn") != std::string::npos &&
+		aboutHtml.find("检查并更新组件") == std::string::npos;
 	bool invalidUtf8PayloadSafe = false;
 	try {
 		const json invalidPayload = {
@@ -1270,7 +1280,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		{"name", "unified-settings-self-test"},
 		{"ok", pages.size() == static_cast<size_t>(AutoLinkerSettingsPageId::Count) &&
 			hookDependencyValid && links.size() == 5 && webViewResourcesValid &&
-			invalidUtf8PayloadSafe},
+			invalidUtf8PayloadSafe && ePackagerTwoStepUpdateValid},
 		{"page_count", pages.size()},
 		{"pages", pages},
 		{"about_fixed_links", links},
@@ -1279,6 +1289,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		{"log_optimization_webview2", !logOptimizationHtml.empty()},
 		{"about_webview2", !aboutHtml.empty()},
 		{"about_icon_resource", !aboutIconDataUrl.empty()},
+		{"e_packager_two_step_update", ePackagerTwoStepUpdateValid},
 		{"webview_invalid_utf8_payload_safe", invalidUtf8PayloadSafe},
 		{"log_center_config_key", "ui.log_center.open"},
 		{"compile_hook_config_key", kCompileOutputCaptureHookConfigKey},
