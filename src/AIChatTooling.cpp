@@ -2,6 +2,7 @@
 #include "AIChatToolingInternal.h"
 #include "AIChatMcpClient.h"
 #include "AIService.h"
+#include "AISkillManager.h"
 #include "ConfigManager.h"
 #include "Global.h"
 #include "IdeCompileDialogGuard.h"
@@ -656,6 +657,17 @@ std::string ExecuteToolCallImpl(
 			cancellation);
 		outOk = result.ok;
 		return result.resultJsonLocal;
+	}
+
+	if (toolName == "read_skill_resource") {
+		nlohmann::json normalizedArgs = nlohmann::json::parse(argumentsJson, nullptr, false);
+		if (normalizedArgs.is_discarded()) {
+			return R"({"ok":false,"error":"invalid arguments json"})";
+		}
+		NormalizeJsonStringsToUtf8(normalizedArgs);
+		const std::string resultUtf8 = AISkillManager::ExecuteReadSkillResourceTool(
+			normalizedArgs.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), outOk);
+		return Utf8ToLocalText(resultUtf8);
 	}
 
 	if (toolName == "run_powershell_command") {

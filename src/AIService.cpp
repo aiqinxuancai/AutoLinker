@@ -17,6 +17,7 @@
 #include "AIChatToolRegistry.h"
 #include "AIChatToolPolicy.h"
 #include "AIJsonConfig.h"
+#include "AISkillManager.h"
 #include "ConfigManager.h"
 #include "Global.h"
 #include "IDEFacade.h"
@@ -2036,6 +2037,21 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
+		{"name", "read_skill_resource"},
+		{"description", "Read SKILL.md or a text resource inside one enabled AutoLinker skill. Call this before using a skill that clearly matches the task but was not explicitly injected with $skill-name. Relative paths are restricted to the selected skill directory; continue large resources with next_byte_offset."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"skill_name", {{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
+				{"relative_path", {{"type", "string"}, {"maxLength", 2048}, {"description", "Defaults to SKILL.md."}}},
+				{"byte_offset", {{"type", "integer"}, {"minimum", 0}}},
+				{"max_bytes", {{"type", "integer"}, {"minimum", 4096}, {"maximum", 262144}}}
+			}},
+			{"required", nlohmann::json::array({"skill_name"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
 		{"name", "list_files"},
 		{"description", "List files in the current e-packager workspace mirror. Paths are relative to the mirror root. Requires a prepared mirror; external MCP calls refresh_workspace_mirror, while built-in chat prepares it automatically. By default focuses on src, ecom, elib and header text areas. Continue paginated results with next_offset."},
 		{"inputSchema", {
@@ -2776,6 +2792,18 @@ std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal
 	return prompt;
 }
 
+std::string BuildSkillRuntimePrompt(const std::vector<AIChatMessage>& contextMessages)
+{
+	std::string latestUserMessage;
+	for (auto it = contextMessages.rbegin(); it != contextMessages.rend(); ++it) {
+		if (ToLowerAsciiCopy(AIService::Trim(it->role)) == "user") {
+			latestUserMessage = it->content;
+			break;
+		}
+	}
+	return Utf8ToLocal(AISkillManager::BuildRuntimePromptAddon(LocalToUtf8(latestUserMessage)));
+}
+
 std::string UrlEncode(const std::string& value)
 {
 	static constexpr char kHex[] = "0123456789ABCDEF";
@@ -3304,9 +3332,11 @@ bool TryGetResponsesPreviousResponseId(const nlohmann::json& item, std::string& 
 
 std::string BuildResponsesInstructions(
 	const std::vector<AIChatMessage>& contextMessages,
-	const AISettings& settings)
+	const AISettings& settings,
+	const std::string& skillPromptLocal)
 {
-	std::string instructionsUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings));
+	std::string instructionsUtf8 = LocalToUtf8(
+		BuildChatSystemPrompt(settings) + skillPromptLocal);
 	for (const AIChatMessage& msg : contextMessages) {
 		if (ToLowerAsciiCopy(AIService::Trim(msg.role)) != "system") {
 			continue;
@@ -3735,7 +3765,8 @@ AIChatResult ExecuteChatWithToolsClaude(
 	const std::string endpoint = BuildClaudeEndpoint(settings.baseUrl);
 	const nlohmann::json tools = BuildClaudeTools(settings, contextMessages);
 
-	std::string systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings));
+	const std::string skillPromptLocal = BuildSkillRuntimePrompt(runController.ContextMessages());
+	std::string systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal);
 	nlohmann::json messages = nlohmann::json::array();
 	for (const AIChatMessage& msg : runController.ContextMessages()) {
 		const std::string role = ToLowerAsciiCopy(AIService::Trim(msg.role));
@@ -3972,8 +4003,8 @@ AIChatResult ExecuteChatWithToolsClaude(
 			toolPolicy,
 			settings,
 			result,
-			[&systemUtf8, &messages, &settings](const std::string& summaryLocal) {
-				systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings)) +
+			[&systemUtf8, &messages, &settings, &skillPromptLocal](const std::string& summaryLocal) {
+				systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal) +
 					"\n\n" + LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal);
 				messages = nlohmann::json::array({
 					{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
@@ -4006,7 +4037,9 @@ AIChatResult ExecuteChatWithToolsGemini(
 	nlohmann::json tools = BuildGeminiTools(runController.ContextMessages(), false, settings);
 
 	bool degradedRequestMode = false;
-	std::string systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, degradedRequestMode));
+	const std::string skillPromptLocal = BuildSkillRuntimePrompt(runController.ContextMessages());
+	std::string systemUtf8 = LocalToUtf8(
+		BuildGeminiChatSystemPrompt(settings, degradedRequestMode) + skillPromptLocal);
 	nlohmann::json contents = nlohmann::json::array();
 	for (const AIChatMessage& msg : runController.ContextMessages()) {
 		const std::string role = ToLowerAsciiCopy(AIService::Trim(msg.role));
@@ -4082,7 +4115,8 @@ AIChatResult ExecuteChatWithToolsGemini(
 		if (statusCode < 200 || statusCode >= 300) {
 			if (!degradedRequestMode && IsGeminiResourceExhaustedResponse(statusCode, responseBody)) {
 				degradedRequestMode = true;
-				systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, degradedRequestMode));
+				systemUtf8 = LocalToUtf8(
+					BuildGeminiChatSystemPrompt(settings, degradedRequestMode) + skillPromptLocal);
 				tools = BuildGeminiTools(runController.ContextMessages(), true, settings);
 				--round;
 				continue;
@@ -4223,8 +4257,8 @@ AIChatResult ExecuteChatWithToolsGemini(
 			toolPolicy,
 			settings,
 			result,
-			[&systemUtf8, &contents, &settings](const std::string& summaryLocal) {
-				systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, false)) +
+			[&systemUtf8, &contents, &settings, &skillPromptLocal](const std::string& summaryLocal) {
+				systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, false) + skillPromptLocal) +
 					"\n\n" + LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal);
 				contents = nlohmann::json::array({
 					{{"role", "user"}, {"parts", nlohmann::json::array({
@@ -4277,7 +4311,9 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		input.push_back(BuildResponsesTextMessage(role, LocalToUtf8(msg.content)));
 	}
 
-	std::string instructionsUtf8 = BuildResponsesInstructions(runController.ContextMessages(), settings);
+	const std::string skillPromptLocal = BuildSkillRuntimePrompt(runController.ContextMessages());
+	std::string instructionsUtf8 = BuildResponsesInstructions(
+		runController.ContextMessages(), settings, skillPromptLocal);
 	AIChatToolPolicy::Session toolPolicy;
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
@@ -4500,8 +4536,9 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			toolPolicy,
 			settings,
 			result,
-			[&instructionsUtf8, &input, &settings, &runController](const std::string&) {
-				instructionsUtf8 = BuildResponsesInstructions(runController.ContextMessages(), settings);
+			[&instructionsUtf8, &input, &settings, &runController, &skillPromptLocal](const std::string&) {
+				instructionsUtf8 = BuildResponsesInstructions(
+					runController.ContextMessages(), settings, skillPromptLocal);
 				input = nlohmann::json::array({
 					BuildResponsesTextMessage("user", LocalToUtf8("请从检查点继续执行原任务。"))
 				});
@@ -5262,6 +5299,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 	}
 	AIChatRunController runController(settings, contextMessages, runOptions);
 	runController.PublishCheckpoint();
+	const std::string skillPromptLocal = BuildSkillRuntimePrompt(runController.ContextMessages());
 
 	const std::string endpoint = BuildEndpoint(settings.baseUrl);
 	const std::string headers = BuildOpenAIHeaders(settings);
@@ -5270,7 +5308,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 	nlohmann::json requestMessages = nlohmann::json::array();
 	requestMessages.push_back({
 		{"role", "system"},
-		{"content", LocalToUtf8(BuildChatSystemPrompt(settings))}
+		{"content", LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal)}
 	});
 	for (const AIChatMessage& msg : runController.ContextMessages()) {
 		const std::string role = ToLowerAsciiCopy(Trim(msg.role));
@@ -5546,9 +5584,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 				toolPolicy,
 				settings,
 				result,
-				[&requestMessages, &settings](const std::string& summaryLocal) {
+				[&requestMessages, &settings, &skillPromptLocal](const std::string& summaryLocal) {
 					requestMessages = nlohmann::json::array({
-						{{"role", "system"}, {"content", LocalToUtf8(BuildChatSystemPrompt(settings))}},
+						{{"role", "system"}, {"content", LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal)}},
 						{{"role", "system"}, {"content", LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal)}},
 						{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
 					});

@@ -10,6 +10,7 @@ enum class AutoLinkerSettingsPageId {
 	LastUsed = -1,
 	AiService = 0,
 	Mcp,
+	Skills,
 	ChatTheme,
 	ProjectAgents,
 	Linker,
@@ -23,6 +24,7 @@ enum class AutoLinkerSettingsPageId {
 struct AutoLinkerSettingsResult {
 	bool aiSettingsSaved = false;
 	bool mcpSettingsSaved = false;
+	bool skillsChanged = false;
 };
 
 inline constexpr UINT WM_AUTOLINKER_SETTINGS_PAGE_SAVED = WM_APP + 0x3A1;

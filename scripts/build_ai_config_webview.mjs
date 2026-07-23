@@ -17,7 +17,8 @@ const templates = [
 	{ src: "force_link_lib_config_dialog.src.html", out: "force_link_lib_config_dialog.html" },
 	{ src: "project_agents_config_dialog.src.html", out: "project_agents_config_dialog.html" },
 	{ src: "ai_chat_theme_config_dialog.src.html", out: "ai_chat_theme_config_dialog.html" },
-	{ src: "ai_chat_mcp_config_dialog.src.html", out: "ai_chat_mcp_config_dialog.html" }
+	{ src: "ai_chat_mcp_config_dialog.src.html", out: "ai_chat_mcp_config_dialog.html" },
+	{ src: "ai_skill_config_dialog.src.html", out: "ai_skill_config_dialog.html" }
 ];
 
 execFileSync(process.execPath, [

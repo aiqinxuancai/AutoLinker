@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="14.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -485,6 +485,12 @@
     <ClCompile Include="src\EPackagerIntegration.cpp" />
     <ClCompile Include="src\ConfigManager.cpp" />
     <ClCompile Include="src\AIJsonConfig.cpp" />
+    <ClCompile Include="src\AISkillManager.cpp">
+	  <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+	</ClCompile>
+	<ClCompile Include="src\AISkillConfigDialog.cpp">
+	  <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+	</ClCompile>
     <ClCompile Include="src\DependencyCatalogCache.cpp" />
     <ClCompile Include="src\EideInternalTextBridge.cpp" />
     <ClCompile Include="src\EcSwitchConfigDialog.cpp" />
@@ -601,6 +607,8 @@
     <ClInclude Include="src\AIChatToolPolicy.h" />
     <ClInclude Include="src\AIService.h" />
     <ClInclude Include="src\AIJsonConfig.h" />
+	<ClInclude Include="src\AISkillManager.h" />
+	<ClInclude Include="src\AISkillConfigDialog.h" />
     <ClInclude Include="src\WorkspaceMirror.h" />
     <ClInclude Include="src\WorkspaceFileTools.h" />
     <ClInclude Include="src\ConfigManager.h" />
@@ -658,6 +666,8 @@
     <None Include="src\webview\ai_chat_history.html" />
     <None Include="src\webview\ai_chat_mcp_config_dialog.html" />
     <None Include="src\webview\ai_chat_mcp_config_dialog.src.html" />
+	<None Include="src\webview\ai_skill_config_dialog.html" />
+	<None Include="src\webview\ai_skill_config_dialog.src.html" />
     <None Include="src\webview\ai_chat_theme_config_dialog.html" />
     <None Include="src\webview\ai_chat_theme_config_dialog.src.html" />
     <None Include="src\webview\ai_config_dialog.html" />

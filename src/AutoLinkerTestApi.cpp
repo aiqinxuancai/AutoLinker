@@ -19,6 +19,7 @@
 #include "AIChatFeature.h"
 #include "AIChatMcpClient.h"
 #include "AIChatMcpConfig.h"
+#include "AISkillManager.h"
 #include "AIChatThemeManager.h"
 #include "AIChatRunController.h"
 #include "AIChatSessionStore.h"
@@ -2788,6 +2789,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 
 	for (const std::string& settingsSelfTest : {
 			BuildAutoLinkerSettingsSelfTestJson(),
+			AISkillManager::BuildSelfTestJson(),
 			IdeCompileOutputCapture::BuildSelfTestJson(),
 			IdeLogViewer::BuildSelfTestJson() }) {
 		nlohmann::json settingsCheck = nlohmann::json::parse(settingsSelfTest, nullptr, false);

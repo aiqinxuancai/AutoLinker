@@ -86,6 +86,7 @@ constexpr UINT WM_AUTOLINKER_AI_CHAT_APPROVE_TOOL = WM_APP + 220;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_DENY_TOOL = WM_APP + 221;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_AUTO_ALLOW_TOOL = WM_APP + 222;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_OPEN_MCP_SETTINGS = WM_APP + 223;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_OPEN_SKILL_SETTINGS = WM_APP + 224;
 constexpr UINT_PTR kHistoryWebViewFlushTimerId = 0xA17;
 constexpr UINT_PTR kSessionTimingTimerId = 0xA18;
 constexpr UINT_PTR kRemoteConfigPollTimerId = 0xA19;
@@ -110,6 +111,7 @@ constexpr int IDC_AI_CHAT_SESSION_STATUS = 32564;
 constexpr int IDC_AI_CHAT_PLAN_MODE = 32565;
 constexpr int IDC_AI_CHAT_AUTO_ALLOW_MODE = 32566;
 constexpr int IDC_AI_CHAT_MCP_SETTINGS = 32567;
+constexpr int IDC_AI_CHAT_SKILL_SETTINGS = 32568;
 
 constexpr UINT_PTR kEditSubclassId = 1;
 constexpr UINT_PTR kActionControlSubclassId = 2;
@@ -127,6 +129,7 @@ constexpr UINT_PTR kActionClearCancel = 7;
 constexpr UINT_PTR kActionPlanMode = 8;
 constexpr UINT_PTR kActionAutoAllowMode = 9;
 constexpr UINT_PTR kActionOpenMcpSettings = 10;
+constexpr UINT_PTR kActionOpenSkillSettings = 11;
 
 constexpr const char* kChatMcpGuideUrl =
 	"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE";
@@ -220,6 +223,7 @@ struct ChatDialogContext {
 	HWND hRestoreSession = nullptr;
 	HWND hOpenSettings = nullptr;
 	HWND hOpenMcpSettings = nullptr;
+	HWND hOpenSkillSettings = nullptr;
 	HWND hClearConfirmText = nullptr;
 	HWND hClearConfirmApply = nullptr;
 	HWND hClearConfirmCancel = nullptr;
@@ -2359,6 +2363,10 @@ void PostChatAction(HWND hWnd, UINT_PTR action)
 		OutputStringToELog("[AI Chat][UI] click action: open_mcp_settings");
 		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_OPEN_MCP_SETTINGS, 0, 0);
 	}
+	else if (action == kActionOpenSkillSettings) {
+		OutputStringToELog("[AI Chat][UI] click action: open_skill_settings");
+		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_OPEN_SKILL_SETTINGS, 0, 0);
+	}
 	else if (action == kActionRestoreSession) {
 		OutputStringToELog("[AI Chat][UI] click action: restore_session");
 		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_RESTORE_LAST, 0, 0);
@@ -2527,6 +2535,9 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		if (ctx->hOpenMcpSettings != nullptr) {
 			ShowWindow(ctx->hOpenMcpSettings, SW_HIDE);
 		}
+		if (ctx->hOpenSkillSettings != nullptr) {
+			ShowWindow(ctx->hOpenSkillSettings, SW_HIDE);
+		}
 		if (ctx->hPlanMode != nullptr) {
 			ShowWindow(ctx->hPlanMode, SW_HIDE);
 		}
@@ -2582,6 +2593,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int restoreHistoryWidth = 26;
 	const int openSettingsWidth = 26;
 	const int openMcpSettingsWidth = 42;
+	const int openSkillSettingsWidth = 46;
 	const int planModeWidth = 68;
 	const int autoAllowModeWidth = 78;
 	const int clearConfirmApplyWidth = ctx->restoreConfirmVisible ? 72 : 52;
@@ -2647,11 +2659,21 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 			actionRowHeight,
 			TRUE);
 	}
+	if (ctx->hOpenSkillSettings != nullptr) {
+		ShowWindow(ctx->hOpenSkillSettings, showInlineConfirm ? SW_HIDE : SW_SHOW);
+		MoveWindow(
+			ctx->hOpenSkillSettings,
+			margin + clearHistoryWidth + gap + restoreHistoryWidth + gap + openSettingsWidth + gap + openMcpSettingsWidth + gap,
+			actionRowY,
+			openSkillSettingsWidth,
+			actionRowHeight,
+			TRUE);
+	}
 	if (ctx->hPlanMode != nullptr) {
 		ShowWindow(ctx->hPlanMode, showInlineConfirm ? SW_HIDE : SW_SHOW);
 		MoveWindow(
 			ctx->hPlanMode,
-			margin + clearHistoryWidth + gap + restoreHistoryWidth + gap + openSettingsWidth + gap + openMcpSettingsWidth + gap,
+			margin + clearHistoryWidth + gap + restoreHistoryWidth + gap + openSettingsWidth + gap + openMcpSettingsWidth + gap + openSkillSettingsWidth + gap,
 			actionRowY,
 			planModeWidth,
 			actionRowHeight,
@@ -2661,7 +2683,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		ShowWindow(ctx->hAutoAllowMode, showInlineConfirm ? SW_HIDE : SW_SHOW);
 		MoveWindow(
 			ctx->hAutoAllowMode,
-			margin + clearHistoryWidth + gap + restoreHistoryWidth + gap + openSettingsWidth + gap + openMcpSettingsWidth + gap + planModeWidth + gap,
+			margin + clearHistoryWidth + gap + restoreHistoryWidth + gap + openSettingsWidth + gap + openMcpSettingsWidth + gap + openSkillSettingsWidth + gap + planModeWidth + gap,
 			actionRowY,
 			autoAllowModeWidth,
 			actionRowHeight,
@@ -3281,6 +3303,9 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												}
 												else if (action == "open_mcp_settings") {
 													PostMessageA(hWnd, WM_AUTOLINKER_AI_CHAT_OPEN_MCP_SETTINGS, 0, 0);
+												}
+												else if (action == "open_skill_settings") {
+													PostMessageA(hWnd, WM_AUTOLINKER_AI_CHAT_OPEN_SKILL_SETTINGS, 0, 0);
 												}
 												else if (action == "enter_plan_mode") {
 													HandleChatEnterPlanModeUi(hWnd, msgCtx);
@@ -5672,6 +5697,27 @@ void HandleChatOpenMcpSettingsUi(HWND hWnd, ChatDialogContext* ctx)
 	}
 }
 
+void HandleChatOpenSkillSettingsUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx != nullptr) {
+		HideChatConfirmInPage(ctx);
+		LayoutAIChatDialog(hWnd, ctx);
+	}
+	Logger::Instance().WriteGbk("[AutoLinker][AI Chat] open SKILL settings from chat page");
+	ShowAutoLinkerSettingsDialog(
+		g_mainWindow != nullptr ? g_mainWindow : hWnd,
+		AutoLinkerSettingsPageId::Skills);
+	RefreshChatDialog(hWnd);
+	if (ctx != nullptr) {
+		if (ctx->webViewDesired) {
+			FocusWebViewInput(ctx);
+		}
+		else if (ctx->hInput != nullptr) {
+			SetFocus(ctx->hInput);
+		}
+	}
+}
+
 void HandleChatEnterPlanModeUi(HWND hWnd, ChatDialogContext* ctx)
 {
 	if (ctx != nullptr) {
@@ -6406,6 +6452,9 @@ void RefreshChatDialog(HWND hWnd)
 	if (ctx->hOpenMcpSettings != nullptr) {
 		EnableWindow(ctx->hOpenMcpSettings, inFlight ? FALSE : TRUE);
 	}
+	if (ctx->hOpenSkillSettings != nullptr) {
+		EnableWindow(ctx->hOpenSkillSettings, inFlight ? FALSE : TRUE);
+	}
 	if (ctx->hPlanMode != nullptr) {
 		EnableWindow(ctx->hPlanMode, inFlight ? FALSE : TRUE);
 	}
@@ -6498,6 +6547,9 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hOpenMcpSettings = CreateWindowW(L"STATIC", L"MCP",
 			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			108, 442, 42, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_MCP_SETTINGS), nullptr, nullptr);
+		ctx->hOpenSkillSettings = CreateWindowW(L"STATIC", L"SKILL",
+			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
+			156, 442, 46, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_SKILL_SETTINGS), nullptr, nullptr);
 		ctx->hPlanMode = CreateWindowW(L"STATIC", L"\u8ba1\u5212",
 			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			108, 442, 68, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_PLAN_MODE), nullptr, nullptr);
@@ -6548,6 +6600,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		SetDefaultFont(ctx->hRestoreSession);
 		SetDefaultFont(ctx->hOpenSettings);
 		SetDefaultFont(ctx->hOpenMcpSettings);
+		SetDefaultFont(ctx->hOpenSkillSettings);
 		SetDefaultFont(ctx->hPlanMode);
 		SetDefaultFont(ctx->hAutoAllowMode);
 		SetDefaultFont(ctx->hSessionElapsed);
@@ -6568,6 +6621,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		InstallChatActionControl(ctx->hRestoreSession, kActionRestoreSession);
 		InstallChatActionControl(ctx->hOpenSettings, kActionOpenSettings);
 		InstallChatActionControl(ctx->hOpenMcpSettings, kActionOpenMcpSettings);
+		InstallChatActionControl(ctx->hOpenSkillSettings, kActionOpenSkillSettings);
 		InstallChatActionControl(ctx->hPlanMode, kActionPlanMode);
 		InstallChatActionControl(ctx->hAutoAllowMode, kActionAutoAllowMode);
 		InstallChatActionControl(ctx->hClearConfirmApply, kActionClearConfirm);
@@ -6652,6 +6706,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 				hStatic != ctx->hRestoreSession &&
 				hStatic != ctx->hOpenSettings &&
 				hStatic != ctx->hOpenMcpSettings &&
+				hStatic != ctx->hOpenSkillSettings &&
 				hStatic != ctx->hPlanMode &&
 				hStatic != ctx->hAutoAllowMode &&
 				hStatic != ctx->hClearConfirmApply &&
@@ -6781,6 +6836,10 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 
 	case WM_AUTOLINKER_AI_CHAT_OPEN_MCP_SETTINGS:
 		HandleChatOpenMcpSettingsUi(hWnd, ctx);
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_OPEN_SKILL_SETTINGS:
+		HandleChatOpenSkillSettingsUi(hWnd, ctx);
 		return 0;
 
 	case WM_AUTOLINKER_AI_CHAT_RESTORE_LAST:

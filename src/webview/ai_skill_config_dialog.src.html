@@ -1,0 +1,88 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<style>/*__AUTOLINKER_AI_CONFIG_CSS__*/</style>
+	<style>
+		:root{color-scheme:light}*{box-sizing:border-box}body{margin:0;background:#fff;color:#171717;font-family:"Microsoft YaHei UI",sans-serif;font-size:14px;letter-spacing:0}.tabs{display:flex;border-bottom:1px solid #e5e7eb;margin-bottom:20px}.tab{border:0;background:transparent;padding:10px 16px;color:#6b7280;cursor:pointer;border-bottom:2px solid transparent}.tab.active{color:#111827;border-bottom-color:#111827}.panel{display:none}.panel.active{display:block}.toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px}.input,.select{height:36px;border:1px solid #d1d5db;border-radius:6px;background:#fff;padding:0 11px;outline:none}.input{flex:1;min-width:140px}.input:focus,.select:focus{border-color:#4b5563}.btn{height:34px;border:1px solid #d1d5db;border-radius:6px;background:#fff;padding:0 13px;cursor:pointer;color:#1f2937;white-space:nowrap}.btn:hover{background:#f7f7f8}.btn.primary{background:#171717;color:#fff;border-color:#171717}.btn.danger{color:#b42318}.btn:disabled{opacity:.5;cursor:default}.list{border-top:1px solid #e5e7eb}.row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;padding:15px 2px;border-bottom:1px solid #e5e7eb;align-items:center}.name-line{display:flex;align-items:center;gap:8px;min-width:0}.name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.badge{font-size:11px;line-height:20px;padding:0 7px;border-radius:4px;background:#f3f4f6;color:#4b5563}.badge.invalid{background:#fef2f2;color:#b42318}.desc{color:#5f6368;font-size:13px;line-height:1.55;margin-top:4px;word-break:break-word}.path{font-family:Consolas,monospace;color:#8a8f98;font-size:11px;margin-top:5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.actions{display:flex;gap:7px;align-items:center}.switch{width:34px;height:19px;appearance:none;background:#d1d5db;border-radius:10px;position:relative;cursor:pointer;flex:0 0 auto}.switch:after{content:"";position:absolute;width:15px;height:15px;left:2px;top:2px;border-radius:50%;background:white;transition:left .15s}.switch:checked{background:#16794b}.switch:checked:after{left:17px}.empty{padding:40px 12px;color:#777;text-align:center;border-top:1px solid #e5e7eb}.status{min-height:22px;margin:10px 0;color:#5f6368}.status.error{color:#b42318}.install-count{font-family:Consolas,monospace;color:#6b7280;font-size:12px}.candidate-select{max-width:420px}.busy{pointer-events:none;opacity:.65}.modal-layer{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:24px;background:rgba(17,24,39,.32)}.modal-layer[hidden]{display:none}.detail-dialog{width:min(680px,100%);max-height:min(680px,calc(100vh - 48px));overflow:hidden;background:#fff;border:1px solid #d1d5db;border-radius:8px;box-shadow:0 18px 50px rgba(17,24,39,.22);display:flex;flex-direction:column}.detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:20px 22px 14px;border-bottom:1px solid #e5e7eb}.detail-head h2{font-size:19px;line-height:1.4;margin:0;font-weight:650}.detail-close{width:30px;height:30px;border:0;background:transparent;color:#6b7280;font-size:24px;line-height:1;cursor:pointer}.detail-close:hover{color:#111827;background:#f3f4f6;border-radius:4px}.detail-meta{display:flex;flex-wrap:wrap;gap:8px 18px;padding:12px 22px;color:#6b7280;font-size:12px;border-bottom:1px solid #e5e7eb}.detail-description{padding:18px 22px;overflow:auto;white-space:pre-wrap;word-break:break-word;line-height:1.65;color:#374151;min-height:110px}.detail-foot{display:flex;justify-content:flex-end;gap:8px;padding:14px 22px;border-top:1px solid #e5e7eb}@media(max-width:720px){.toolbar{flex-wrap:wrap}.input{width:100%;flex-basis:100%}.row{grid-template-columns:1fr}.actions{flex-wrap:wrap}.modal-layer{padding:12px}.detail-dialog{max-height:calc(100vh - 24px)}}
+	</style>
+</head>
+<body class="font-sans text-[13px] text-slate-900">
+<div class="flex min-h-full flex-col bg-white" id="shell">
+	<header class="shrink-0 border-b border-slate-200 bg-white px-5 py-3">
+		<div class="flex min-h-[46px] items-center justify-between gap-3">
+			<div class="min-w-0">
+				<h1 class="truncate text-lg font-semibold leading-6 text-slate-950">AI SKILL 管理</h1>
+				<p class="mt-0.5 min-h-5 truncate text-[12px] leading-5 text-slate-500">管理已安装技能，并从 skills.sh 或 GitHub 安装 AI 技能。</p>
+			</div>
+		</div>
+	</header>
+	<main class="min-h-0 flex-1 overflow-auto bg-white p-5">
+	<nav class="tabs">
+		<button class="tab active" data-tab="installed">已安装</button>
+		<button class="tab" data-tab="market">skills.sh</button>
+		<button class="tab" data-tab="github">GitHub 安装</button>
+	</nav>
+	<section class="panel active" id="installed">
+		<div class="toolbar">
+			<select class="select" id="scopeFilter"><option value="all">全部作用域</option><option value="global">全局</option><option value="project">当前项目</option></select>
+			<button class="btn" id="reloadBtn">刷新</button>
+		</div>
+		<div class="list" id="installedList"></div>
+	</section>
+	<section class="panel" id="market">
+		<div class="toolbar"><input class="input" id="searchInput" placeholder="搜索技能"><select class="select" id="marketScope"><option value="global">安装到全局</option><option value="project">安装到当前项目</option></select><button class="btn primary" id="searchBtn">搜索</button></div>
+		<div class="status" id="searchStatus"></div><div class="list" id="searchList"></div>
+	</section>
+	<section class="panel" id="github">
+		<div class="toolbar"><input class="input" id="githubInput" placeholder="https://github.com/owner/repo"><select class="select" id="githubScope"><option value="global">安装到全局</option><option value="project">安装到当前项目</option></select><button class="btn primary" id="inspectBtn">检查仓库</button></div>
+		<div class="status" id="githubStatus"></div><div class="list" id="candidateList"></div>
+	</section>
+</main>
+</div>
+<div class="modal-layer" id="detailModal" hidden>
+	<section class="detail-dialog" role="dialog" aria-modal="true" aria-labelledby="detailTitle">
+		<header class="detail-head"><h2 id="detailTitle">技能详情</h2><button class="detail-close" id="detailClose" type="button" title="关闭" aria-label="关闭">&times;</button></header>
+		<div class="detail-meta"><span id="detailSource"></span><span id="detailInstalls"></span></div>
+		<div class="detail-description" id="detailDescription"></div>
+		<footer class="detail-foot"><button class="btn" id="detailCancel" type="button">关闭</button><button class="btn primary" id="detailInstall" type="button">安装</button></footer>
+	</section>
+</div>
+<script>
+/*__AUTOLINKER_PRELINE_JS__*/
+(function(){
+	"use strict";
+	var state={skills:[],project_available:false,global_root:"",project_root:""};
+	var currentGithubSource="";
+	var pendingInstall=null;
+	var detailSkill=null;
+	function $(id){return document.getElementById(id)}
+	function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
+	function post(action,data){var p=Object.assign({action:action},data||{});window.chrome.webview.postMessage(JSON.stringify(p))}
+	function busy(on){$("shell").classList.toggle("busy",!!on)}
+	function status(id,text,error){var e=$(id);e.textContent=text||"";e.classList.toggle("error",!!error)}
+	function scopeName(v){return v==="project"?"项目":"全局"}
+	function syncScopeControls(){["marketScope","githubScope"].forEach(function(id){var e=$(id),o=e.querySelector('option[value="project"]');o.disabled=!state.project_available;if(!state.project_available&&e.value==="project")e.value="global"})}
+	function renderInstalled(){var filter=$("scopeFilter").value;var items=state.skills.filter(function(s){return filter==="all"||s.scope===filter});var root=$("installedList");if(!items.length){root.innerHTML='<div class="empty">没有发现技能</div>';return}root.innerHTML=items.map(function(s){var controls='<input class="switch" type="checkbox" data-action="toggle" '+(s.enabled?'checked':'')+' '+(!s.valid?'disabled':'')+'>';if(s.managed)controls+='<button class="btn" data-action="update">更新</button>';controls+='<button class="btn" data-action="folder">目录</button><button class="btn danger" data-action="remove">卸载</button>';return '<div class="row" data-file="'+esc(s.skill_file)+'"><div><div class="name-line"><span class="name">'+esc(s.name)+'</span><span class="badge">'+scopeName(s.scope)+'</span>'+(!s.valid?'<span class="badge invalid">无效</span>':'')+'</div><div class="desc">'+esc(s.valid?s.description:s.error)+'</div><div class="path">'+esc(s.skill_file)+'</div></div><div class="actions">'+controls+'</div></div>'}).join("")}
+	function renderSearch(items){var root=$("searchList");if(!items||!items.length){root.innerHTML='<div class="empty">没有匹配结果</div>';return}root.innerHTML=items.map(function(s){return '<div class="row" data-source="'+esc(s.source)+'" data-skill-id="'+esc(s.skill_id)+'"><div><div class="name-line"><span class="name">'+esc(s.name)+'</span><span class="badge">'+esc(s.source)+'</span></div></div><div class="actions"><span class="install-count">'+Number(s.installs||0).toLocaleString()+" installs"+'</span><button class="btn" data-action="market-detail">详情</button><button class="btn primary" data-action="market-install">安装</button></div></div>'}).join("")}
+	function renderCandidates(items){var root=$("candidateList");if(!items||!items.length){root.innerHTML="";return}root.innerHTML=items.map(function(s){return '<div class="row"><div><div class="name-line"><span class="name">'+esc(s.name)+'</span><span class="badge">'+esc(s.repository_path)+'</span></div><div class="desc">'+esc(s.description)+'</div></div><div class="actions"><button class="btn primary" data-candidate="'+esc(s.repository_path)+'">安装</button></div></div>'}).join("")}
+	function openDetail(skill){detailSkill=skill;$('detailTitle').textContent=skill.name||'技能详情';$('detailSource').textContent=skill.source||'';$('detailInstalls').textContent=Number(skill.installs||0).toLocaleString()+' installs';$('detailDescription').textContent=skill.description||'暂无技能介绍';$('detailModal').hidden=false;$('detailInstall').focus()}
+	function closeDetail(){detailSkill=null;$('detailModal').hidden=true}
+	function applyState(next){state=next||state;syncScopeControls();renderInstalled()}
+	document.querySelectorAll(".tab").forEach(function(tab){tab.addEventListener("click",function(){document.querySelectorAll(".tab,.panel").forEach(function(e){e.classList.remove("active")});tab.classList.add("active");$(tab.dataset.tab).classList.add("active")})});
+	$("scopeFilter").addEventListener("change",renderInstalled);$("reloadBtn").addEventListener("click",function(){post("load")});
+	$("searchBtn").addEventListener("click",function(){var q=$("searchInput").value.trim();if(q.length<2){status("searchStatus","请输入至少两个字符",true);return}status("searchStatus","正在搜索...");busy(true);post("search",{query:q})});
+	$("searchInput").addEventListener("keydown",function(e){if(e.key==="Enter")$("searchBtn").click()});
+	$("inspectBtn").addEventListener("click",function(){var source=$("githubInput").value.trim();if(!source){status("githubStatus","请输入 GitHub 仓库地址",true);return}currentGithubSource=source;status("githubStatus","正在检查仓库...");busy(true);post("inspect",{source:source})});
+	$("installedList").addEventListener("click",function(e){var action=e.target.dataset.action;if(!action)return;var row=e.target.closest(".row"),file=row.dataset.file;if(action==="toggle")post("toggle",{skill_file:file,enabled:e.target.checked});if(action==="update"){busy(true);post("update",{skill_file:file})}if(action==="remove")post("remove",{skill_file:file});if(action==="folder")post("open_folder",{skill_file:file})});
+	$("searchList").addEventListener("click",function(e){var action=e.target.dataset.action;if(action!=="market-detail"&&action!=="market-install")return;var row=e.target.closest(".row"),source=row.dataset.source,skillId=row.dataset.skillId;if(action==="market-detail"){busy(true);status("searchStatus","正在读取技能详情...");post("details",{source:source,skill_id:skillId});return}busy(true);status("searchStatus","正在下载并安装...");pendingInstall={source:source,skill_id:skillId,scope:$("marketScope").value};post("install",pendingInstall)});
+	$("candidateList").addEventListener("click",function(e){if(!e.target.dataset.candidate)return;busy(true);status("githubStatus","正在下载并安装...");pendingInstall={source:currentGithubSource,repository_path:e.target.dataset.candidate,scope:$("githubScope").value};post("install",pendingInstall)});
+	$("detailInstall").addEventListener("click",function(){if(!detailSkill)return;var skill=detailSkill;closeDetail();busy(true);status("searchStatus","正在下载并安装...");pendingInstall={source:skill.source,skill_id:skill.skill_id,scope:$("marketScope").value};post("install",pendingInstall)});
+	$("detailClose").addEventListener("click",closeDetail);$("detailCancel").addEventListener("click",closeDetail);$("detailModal").addEventListener("click",function(e){if(e.target===this)closeDetail()});document.addEventListener("keydown",function(e){if(e.key==="Escape"&&!$("detailModal").hidden)closeDetail()});
+	window.chrome.webview.addEventListener("message",function(event){var p=event.data||{},r=p.result||{};if(p.action==="state"){applyState(r);return}busy(false);if(p.action==="search"){status("searchStatus",r.ok?"找到 "+(r.results||[]).length+" 个结果":r.error,!r.ok);if(r.ok)renderSearch(r.results);return}if(p.action==="details"){if(r.ok){status("searchStatus","");openDetail(r)}else status("searchStatus",r.error||"读取详情失败",true);return}if(p.action==="inspect"){status("githubStatus",r.ok?"发现 "+(r.candidates||[]).length+" 个技能":r.error,!r.ok);if(r.ok){currentGithubSource=$("githubInput").value.trim();renderCandidates(r.candidates)}return}if(p.action==="install"){var id=document.querySelector(".panel.active").id==="github"?"githubStatus":"searchStatus";status(id,r.ok?r.message:(r.error||"安装失败"),!r.ok);if(r.selection_required){currentGithubSource=r.repository;renderCandidates(r.candidates)}else if(r.conflict&&pendingInstall&&window.confirm("目标技能目录已经存在，是否替换现有技能？")){pendingInstall.allow_replace=true;busy(true);post("install",pendingInstall)}else if(r.ok){pendingInstall=null}return}if(p.action==="update"||p.action==="remove"||p.action==="toggle"){if(!r.cancelled)status("githubStatus",r.ok?(r.message||"操作完成"):(r.error||"操作失败"),!r.ok)}});
+	post("load");
+})();
+</script>
+</body>
+</html>

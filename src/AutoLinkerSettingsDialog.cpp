@@ -17,6 +17,7 @@
 
 #include "AIChatMcpConfigDialog.h"
 #include "AIConfigDialog.h"
+#include "AISkillConfigDialog.h"
 #include "AutoLinkerInternal.h"
 #include "AutoLinkerUpdateManager.h"
 #include "AutoLinkerVersion.h"
@@ -86,6 +87,7 @@ struct SettingsWindowContext {
 constexpr std::array<const wchar_t*, static_cast<size_t>(AutoLinkerSettingsPageId::Count)> kPageTitles = {
 	L"AI 接口",
 	L"MCP 服务",
+	L"AI SKILL",
 	L"AI 对话配色",
 	L"当前项目 AGENTS.md",
 	L"链接器",
@@ -899,6 +901,8 @@ HWND CreateSettingsPage(HWND window, AutoLinkerSettingsPageId pageId)
 		return CreateAIConfigSettingsPage(window);
 	case AutoLinkerSettingsPageId::Mcp:
 		return CreateAIChatMcpConfigSettingsPage(window);
+	case AutoLinkerSettingsPageId::Skills:
+		return CreateAISkillConfigSettingsPage(window);
 	case AutoLinkerSettingsPageId::ChatTheme:
 		return CreateAIChatThemeConfigSettingsPage(window);
 	case AutoLinkerSettingsPageId::ProjectAgents:
@@ -1102,6 +1106,9 @@ LRESULT CALLBACK SettingsWindowProc(HWND window, UINT message, WPARAM wParam, LP
 			else if (wParam == static_cast<WPARAM>(AutoLinkerSettingsPageId::Mcp)) {
 				context->result.mcpSettingsSaved = true;
 			}
+			else if (wParam == static_cast<WPARAM>(AutoLinkerSettingsPageId::Skills)) {
+				context->result.skillsChanged = true;
+			}
 		}
 		return 0;
 	case WM_CTLCOLORSTATIC:
@@ -1241,7 +1248,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 {
 	using nlohmann::json;
 	const json pages = {
-		"ai_service", "mcp", "chat_theme", "project_agents", "linker",
+		"ai_service", "mcp", "skills", "chat_theme", "project_agents", "linker",
 		"ec_switch", "force_link_lib", "log_optimization", "about"
 	};
 	const json links = {

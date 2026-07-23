@@ -1529,6 +1529,7 @@ body,
 				</svg>
 			</button>
 			<button id="mcp-settings-btn" class="top-action mcp-action" type="button" title="&#x5916;&#x90E8; MCP &#x670D;&#x52A1;&#x5668;" aria-label="&#x5916;&#x90E8; MCP &#x670D;&#x52A1;&#x5668;">MCP</button>
+			<button id="skill-settings-btn" class="top-action mcp-action" type="button" title="AI SKILL" aria-label="AI SKILL">SKILL</button>
 		</div>
 		<div id="session-menu" class="session-menu" hidden></div>
 	</div>
@@ -1725,6 +1726,7 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	var restore = document.getElementById("restore-btn");
 	var settings = document.getElementById("settings-btn");
 	var mcpSettings = document.getElementById("mcp-settings-btn");
+	var skillSettings = document.getElementById("skill-settings-btn");
 	var planMode = document.getElementById("plan-mode-btn");
 	var autoAllow = document.getElementById("auto-allow-btn");
 	var clearConfirm = document.getElementById("clear-confirm");
@@ -1753,6 +1755,9 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	}
 	if (mcpSettings) {
 		mcpSettings.disabled = isBusy;
+	}
+	if (skillSettings) {
+		skillSettings.disabled = isBusy;
 	}
 	if (planMode) {
 		planMode.disabled = isBusy;
@@ -1925,6 +1930,7 @@ window.autolinkerHideToolApproval = function() {
 	var restore = document.getElementById("restore-btn");
 	var settings = document.getElementById("settings-btn");
 	var mcpSettings = document.getElementById("mcp-settings-btn");
+	var skillSettings = document.getElementById("skill-settings-btn");
 	var planMode = document.getElementById("plan-mode-btn");
 	var autoAllow = document.getElementById("auto-allow-btn");
 	var clearConfirm = document.getElementById("clear-confirm");
@@ -2137,6 +2143,14 @@ window.autolinkerHideToolApproval = function() {
 			hideClearConfirm();
 			hideRestoreConfirm();
 			post({ action: "open_mcp_settings" });
+		});
+	}
+	if (skillSettings) {
+		skillSettings.addEventListener("click", function() {
+			hideSessionMenu();
+			hideClearConfirm();
+			hideRestoreConfirm();
+			post({ action: "open_skill_settings" });
 		});
 	}
 	if (planMode) {
