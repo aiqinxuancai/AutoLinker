@@ -33,5 +33,11 @@ std::string ExecuteToolCall(
 // 清除指定调用域中缓存的高风险工具授权。
 void ClearToolApprovalScope(const std::string& approvalScope);
 
+// 终止并清理指定内部聊天会话创建的全部命令进程。
+void CloseInternalExecSession(const std::string& sessionId);
+
+// 终止插件内全部内部 AI 命令进程。
+void ShutdownInternalExecSessions();
+
 // 判断调用域是否来自无需交互审批的 19207 外部 MCP 会话。
 bool ShouldBypassToolApprovalForScope(const std::string& approvalScope);

@@ -2392,16 +2392,35 @@ nlohmann::json BuildPublicToolCatalog()
 		}}
 	});
 	tools.push_back({
-		{"name", "run_powershell_command"},
-		{"description", "Run one PowerShell command on the local machine after explicit user confirmation."},
+		{"name", "exec_command"},
+		{"description", "Runs a command in a non-interactive local shell and returns output or a session ID for ongoing polling. The command starts only after explicit user confirmation. tty=true is not supported by AutoLinker; use write_stdin with an empty chars value to poll a running session."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
-				{"command", {{"type", "string"}}},
-				{"working_directory", {{"type", "string"}}},
-				{"timeout_seconds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 600}}}
+				{"cmd", {{"type", "string"}, {"description", "Shell command to execute."}}},
+				{"workdir", {{"type", "string"}, {"description", "Working directory. Defaults to the current e-language project directory."}}},
+				{"tty", {{"type", "boolean"}, {"enum", nlohmann::json::array({false})}, {"description", "Only false is supported; AutoLinker does not provide ConPTY."}}},
+				{"yield_time_ms", {{"type", "integer"}, {"description", "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms, with a 2000 ms Windows initial floor."}}},
+				{"max_output_tokens", {{"type", "integer"}, {"description", "Output token budget. Defaults to 10000; larger requests are capped by policy."}}},
+				{"shell", {{"type", "string"}, {"description", "Shell executable. Defaults to powershell.exe."}}},
+				{"login", {{"type", "boolean"}, {"description", "Use login/profile shell semantics. Defaults to true."}}}
 			}},
-			{"required", nlohmann::json::array({"command"})},
+			{"required", nlohmann::json::array({"cmd"})},
+			{"additionalProperties", false}
+		}}
+	});
+	tools.push_back({
+		{"name", "write_stdin"},
+		{"description", "Writes characters to an existing non-TTY exec_command session and returns recent output. Empty chars polls the session; only Ctrl-C is accepted as non-empty input because AutoLinker uses pipes rather than ConPTY."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"session_id", {{"type", "integer"}, {"description", "Identifier of the running exec_command session."}}},
+				{"chars", {{"type", "string"}, {"description", "Bytes to write. Defaults to empty, which polls without writing."}}},
+				{"yield_time_ms", {{"type", "integer"}, {"description", "Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms."}}},
+				{"max_output_tokens", {{"type", "integer"}, {"description", "Output token budget. Defaults to 10000; larger requests are capped by policy."}}}
+			}},
+			{"required", nlohmann::json::array({"session_id"})},
 			{"additionalProperties", false}
 		}}
 	});
@@ -2707,9 +2726,9 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"- 仅复杂、多文件或用户明确要求计划时使用 update_plan；局部单文件修改不要创建计划卡片。\n"
 			"- 需要确认当前页名/页类型时用 get_current_page_info，不要臆测当前页。\n"
 			"- 涉及联网、查文档、搜最新资料时用 search_web_tavily 搜索、extract_web_document 取正文、fetch_url 取原始响应。\n"
-			"- 需要本地命令时用 run_powershell_command（会经用户确认后执行）。\n\n"
+			"- 需要本地命令时用 exec_command（会经用户确认后执行）；长命令返回 session_id 后用 write_stdin 轮询。\n\n"
 			"计划模式：\n"
-			"- 如果上下文系统消息说明当前处于计划模式，只能探索、阅读、搜索和制定方案，不要写入文件、回滚、编译或执行 PowerShell。\n"
+			"- 如果上下文系统消息说明当前处于计划模式，只能探索、阅读、搜索和制定方案，不要写入文件、回滚、编译或调用 exec_command/write_stdin。\n"
 			"- 计划准备好时，必须用单独的 <proposed_plan>...</proposed_plan> 块提交方案，等待用户批准后再实施。\n"
 			"- 用户批准计划后再按批准方案执行；若用户要求修改计划，先重新提交新的 <proposed_plan>。\n\n"
 			"易语言基础约定：\n"
@@ -5639,7 +5658,7 @@ std::string AIService::BuildExternalMcpInstructions()
 		"【最重要：唯一真源】\n"
 		"- 这个易语言工程只能通过本 MCP 提供的工具读写。工程源码不是磁盘上可直接编辑的普通文本文件，而是由 IDE 内存态经打包/整页映射维护的。\n"
 		"- 禁止使用你自带的通用能力（bash、python、sed、文件系统直接读写、内置编辑器等）去查看或修改该工程的任何文件：那样要么打不到真实程序项、要么被 IDE 忽略或覆盖，且往往看起来“成功”实则未生效。\n"
-		"- 一切读、写、搜索、编译、执行本地命令都必须走本 MCP 的对应工具。\n\n"
+		"- 一切读、写、搜索和编译都必须走本 MCP 的对应工具；本 MCP 不对外提供通用本地命令执行。\n\n"
 
 		"【读取】\n"
 		"- 探索结构用 list_files；按内容/名称查找用 search_code；读取文件用 read_files（多个文件一次批量读，不要串行反复读单个）；已知子程序/代码项名称时用 read_code_item。\n"
@@ -5651,9 +5670,8 @@ std::string AIService::BuildExternalMcpInstructions()
 		"- 写工具返回 ok=true、verified=true 即表示写入与结构校验已完成，不要为确认而再次读取同一源码。\n"
 		"- src/*.xml 是窗口界面 XML，只读；窗口程序集代码请编辑对应 src/*.txt。ecom/、elib/、header/ 是依赖与公开信息参考，可读可搜不可写。\n\n"
 
-		"【验证与本地命令】\n"
+		"【验证】\n"
 		"- 需要编译时用 compile_with_output_path（可先用 get_current_eide_info 确认工程类型与可用编译模式），不要用你自带的构建/脚本能力去编译。\n"
-		"- 需要执行本地命令时用 run_powershell_command（会经用户确认），不要用你自带的 shell/python。\n"
 		"- 需要联网查资料时用 search_web_tavily / extract_web_document / fetch_url。\n\n"
 
 		"【易语言语法要点（最易出错处，务必遵守）】\n"
@@ -6097,7 +6115,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 				return item.is_object() && item.value("name", std::string()) == name;
 			}) != catalog.end();
 		};
-		const std::array<const char*, 13> alwaysVisible = {{
+		const std::array<const char*, 12> alwaysVisible = {{
 			"refresh_workspace_mirror",
 			"update_plan",
 			"read_file",
@@ -6106,7 +6124,6 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			"refresh_dependency_catalog",
 			"add_module_to_project",
 			"compile_with_output_path",
-			"run_powershell_command",
 			"search_web_tavily",
 			"fetch_url",
 			"extract_web_document",

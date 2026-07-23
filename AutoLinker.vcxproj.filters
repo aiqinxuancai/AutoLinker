@@ -179,6 +179,9 @@
     <ClCompile Include="src\AIService.cpp">
       <Filter>AI</Filter>
     </ClCompile>
+    <ClCompile Include="src\ExecCommandSessionManager.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
     <ClCompile Include="src\WorkspaceMirror.cpp">
       <Filter>AI</Filter>
     </ClCompile>
@@ -319,6 +322,9 @@
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIChatToolPolicy.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ExecCommandSessionManager.h">
       <Filter>AI</Filter>
     </ClInclude>
 	<ClInclude Include="src\AIChatRunController.h">

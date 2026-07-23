@@ -27,6 +27,7 @@
 #include "AIService.h"
 #include "AutoLinkerVersion.h"
 #include "AutoLinkerSettingsDialog.h"
+#include "ExecCommandSessionManager.h"
 #include "GameAnalyticsClient.h"
 #include "IdeCompileOutputCapture.h"
 #include "IdeLogViewer.h"
@@ -2734,27 +2735,24 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		!ShouldBypassToolApprovalForScope("internal-chat") &&
 		!ShouldBypassToolApprovalForScope("") &&
 		!ShouldBypassToolApprovalForScope("external-mcp:");
-	bool externalPowerShellExecuted = false;
-	bool externalPowerShellOk = false;
-	const std::string externalPowerShellResult = ExecuteToolCall(
-		"run_powershell_command",
-		nlohmann::json({
-			{"command", "Write-Output 'external-approval-bypass-ok'"},
-			{"timeout_seconds", 10}
-		}).dump(),
-		externalPowerShellOk,
+	bool externalExecRejected = false;
+	bool externalExecOk = true;
+	const std::string externalExecResult = ExecuteToolCall(
+		"exec_command",
+		nlohmann::json({{"cmd", "Write-Output 'external-exec-must-be-rejected'"}}).dump(),
+		externalExecOk,
 		false,
 		{},
 		nullptr,
 		"external-mcp:self-test");
-	externalPowerShellExecuted = externalPowerShellOk &&
-		externalPowerShellResult.find("external-approval-bypass-ok") != std::string::npos;
+	externalExecRejected = !externalExecOk &&
+		externalExecResult.find("internal AI chat") != std::string::npos;
 	report["checks"].push_back({
-		{"name", "external_mcp_approval_bypass"},
-		{"ok", externalApprovalBypassed && internalApprovalPreserved && externalPowerShellExecuted},
+		{"name", "external_mcp_exec_isolation"},
+		{"ok", externalApprovalBypassed && internalApprovalPreserved && externalExecRejected},
 		{"external_bypassed", externalApprovalBypassed},
 		{"internal_approval_preserved", internalApprovalPreserved},
-		{"external_powershell_executed", externalPowerShellExecuted}
+		{"external_exec_rejected", externalExecRejected}
 	});
 
 	nlohmann::json mockRoundtripCheck;
@@ -2768,6 +2766,19 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	nlohmann::json powerShellRunnerCheck;
 	RunPowerShellRunnerSelfTest(powerShellRunnerCheck);
 	report["checks"].push_back(powerShellRunnerCheck);
+
+	nlohmann::json execCommandCheck = nlohmann::json::parse(
+		ExecCommandSessionManager::Instance().BuildSelfTestJson(),
+		nullptr,
+		false);
+	if (execCommandCheck.is_discarded() || !execCommandCheck.is_object()) {
+		execCommandCheck = {
+			{"name", "exec-command-session"},
+			{"ok", false},
+			{"error", "invalid exec command self-test json"}
+		};
+	}
+	report["checks"].push_back(std::move(execCommandCheck));
 
 	for (const std::string& webSelfTest : {
 			WebDocumentClient::BuildSelfTestReportJson(),

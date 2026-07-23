@@ -10,7 +10,7 @@
 namespace AIChatToolRegistry {
 namespace {
 
-constexpr std::array<ToolMetadata, 29> kTools = {{
+constexpr std::array<ToolMetadata, 30> kTools = {{
 	{"refresh_workspace_mirror", true, false, false, false, false},
 	{"update_plan", false, false, false, false, false},
 	{"read_skill_resource", false, false, false, false, false},
@@ -36,7 +36,8 @@ constexpr std::array<ToolMetadata, 29> kTools = {{
 	{"remove_module_from_project", false, true, false, true, false},
 	{"add_support_library_to_project", false, true, false, true, false},
 	{"compile_with_output_path", true, false, false, true, false},
-	{"run_powershell_command", true, false, false, true, true},
+	{"exec_command", false, false, false, true, true},
+	{"write_stdin", false, false, false, false, false},
 	{"search_web_tavily", true, false, false, false, false},
 	{"fetch_url", true, false, false, false, false},
 	{"extract_web_document", true, false, false, false, false},

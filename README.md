@@ -109,7 +109,6 @@ url = "http://127.0.0.1:19207/mcp"
 | 当前页 | `get_current_page_info` | 当前页名称、类型与解析来源 |
 | 当前页 | `get_current_eide_info` | 源码路径、IDE 进程路径、MCP 端口等 |
 | 编译 | `compile_with_output_path` | `target` 默认 `auto`，以产物指纹验证成功 |
-| 交互 | `run_powershell_command` | 经确认后执行 PowerShell，超时终止进程树 |
 | 联网 | `search_web_tavily` | 联网搜索网页 |
 | 联网 | `fetch_url` | 抓取公网 HTTP(S) 文本，拦截回环 / 私网 / 重定向 |
 | 联网 | `extract_web_document` | 提取网页正文与绝对链接摘要 |

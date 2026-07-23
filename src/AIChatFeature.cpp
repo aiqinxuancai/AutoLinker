@@ -1300,7 +1300,8 @@ bool IsPlanModeWriteBlockedTool(const std::string& toolName)
 		_stricmp(toolName.c_str(), "remove_module_from_project") == 0 ||
 		_stricmp(toolName.c_str(), "add_support_library_to_project") == 0 ||
 		_stricmp(toolName.c_str(), "compile_with_output_path") == 0 ||
-		_stricmp(toolName.c_str(), "run_powershell_command") == 0;
+		_stricmp(toolName.c_str(), "exec_command") == 0 ||
+		_stricmp(toolName.c_str(), "write_stdin") == 0;
 }
 
 bool IsToolRequiringWriteApproval(const std::string& toolName)
@@ -1770,11 +1771,11 @@ std::string BuildToolInvocationTextLocal(const std::string& toolName, const std:
 	const std::string tool = TrimAsciiCopy(toolName).empty() ? std::string("<unknown>") : TrimAsciiCopy(toolName);
 	const std::string argumentsLocal = PrettyJsonForTranscript(LocalToUtf8Text(argumentsJsonLocalOrUtf8));
 
-	if (_stricmp(tool.c_str(), "run_powershell_command") == 0) {
+	if (_stricmp(tool.c_str(), "exec_command") == 0) {
 		try {
 			const nlohmann::json args = nlohmann::json::parse(LocalToUtf8Text(argumentsJsonLocalOrUtf8));
 			std::string commandUtf8;
-			if (ExtractJsonStringField(args, "command", commandUtf8)) {
+			if (ExtractJsonStringField(args, "cmd", commandUtf8)) {
 				return NormalizeSingleLineForTranscript(Utf8ToLocalText(commandUtf8));
 			}
 		}
@@ -2054,52 +2055,76 @@ void SaveChatSessionSnapshotNow()
 
 bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
 {
-	std::lock_guard<std::mutex> guard(g_session.mutex);
-	if (g_session.requestInFlight) {
-		return false;
-	}
-
-	g_session.messages.clear();
-	g_session.rollingSummary = stored.rollingSummaryLocal;
-	g_session.streamingAssistantPreview.clear();
-	g_session.agentActivityLines.clear();
-	g_session.planModeState = ParsePlanModeState(stored.planModeState);
-	g_session.pendingPlan = stored.pendingPlanLocal;
-	g_session.autoAllowWrites = stored.autoAllowWrites;
-	g_session.hasPendingRunCheckpoint = stored.hasRunCheckpoint;
-	g_session.pendingRunCheckpoint = stored.runCheckpoint;
-	g_session.activeSessionId = stored.sessionId;
-	g_session.activeSessionFilePath = stored.sessionFilePath;
-	g_session.sourceFilePathLocal = stored.sourceFilePathHintLocal.empty()
-		? GetCurrentChatSourceFilePathLocal()
-		: stored.sourceFilePathHintLocal;
-	g_session.sourceFileNameLocal = stored.sourceFileNameLocal.empty()
-		? GetCurrentChatSourceFileNameLocal()
-		: stored.sourceFileNameLocal;
-	g_session.createdAtUnixMs = stored.createdAtUnixMs;
-	g_session.accumulatedElapsedMs = stored.elapsedMs > 0 ? stored.elapsedMs : 0;
-	g_session.activeRequestStartedAtUnixMs = 0;
-	g_session.requestInFlight = false;
-	g_session.activeRequestId = 0;
-	g_session.cancellation.reset();
-	g_session.nextRequestId = 1;
-	g_session.lastInputTokens = 0;
-	g_session.hasLastUsage = false;
-	g_session.effectiveContextWindow = 0;
-	g_session.workspaceMirrorRefreshed = false;
-	g_session.workspaceMirrorGeneration = 0;
-
-	for (const auto& row : stored.messages) {
-		g_session.messages.push_back(SessionMessage{
-			ParseStoredMessageRole(row.role),
-			row.contentLocal,
-			row.includeInContext,
-			row.visibleInHistory,
-			row.reasoningContentUtf8,
-			row.rawMessageJsonUtf8
+	const bool hasLegacyPendingExecCall = stored.hasRunCheckpoint && std::any_of(
+		stored.runCheckpoint.toolCalls.begin(),
+		stored.runCheckpoint.toolCalls.end(),
+		[](const AIChatCheckpointToolCall& call) {
+			return !call.completed && _stricmp(call.name.c_str(), "run_powershell_command") == 0;
 		});
+	std::string previousSessionId;
+	bool autoAllowWrites = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (g_session.requestInFlight) {
+			return false;
+		}
+		previousSessionId = g_session.activeSessionId;
+		g_session.messages.clear();
+		g_session.rollingSummary = stored.rollingSummaryLocal;
+		g_session.streamingAssistantPreview.clear();
+		g_session.agentActivityLines.clear();
+		g_session.planModeState = ParsePlanModeState(stored.planModeState);
+		g_session.pendingPlan = stored.pendingPlanLocal;
+		g_session.autoAllowWrites = stored.autoAllowWrites;
+		g_session.hasPendingRunCheckpoint = stored.hasRunCheckpoint && !hasLegacyPendingExecCall;
+		g_session.pendingRunCheckpoint = hasLegacyPendingExecCall ? AIChatRunCheckpoint{} : stored.runCheckpoint;
+		g_session.activeSessionId = stored.sessionId;
+		g_session.activeSessionFilePath = stored.sessionFilePath;
+		g_session.sourceFilePathLocal = stored.sourceFilePathHintLocal.empty()
+			? GetCurrentChatSourceFilePathLocal()
+			: stored.sourceFilePathHintLocal;
+		g_session.sourceFileNameLocal = stored.sourceFileNameLocal.empty()
+			? GetCurrentChatSourceFileNameLocal()
+			: stored.sourceFileNameLocal;
+		g_session.createdAtUnixMs = stored.createdAtUnixMs;
+		g_session.accumulatedElapsedMs = stored.elapsedMs > 0 ? stored.elapsedMs : 0;
+		g_session.activeRequestStartedAtUnixMs = 0;
+		g_session.requestInFlight = false;
+		g_session.activeRequestId = 0;
+		g_session.cancellation.reset();
+		g_session.nextRequestId = 1;
+		g_session.lastInputTokens = 0;
+		g_session.hasLastUsage = false;
+		g_session.effectiveContextWindow = 0;
+		g_session.workspaceMirrorRefreshed = false;
+		g_session.workspaceMirrorGeneration = 0;
+
+		for (const auto& row : stored.messages) {
+			g_session.messages.push_back(SessionMessage{
+				ParseStoredMessageRole(row.role),
+				row.contentLocal,
+				row.includeInContext,
+				row.visibleInHistory,
+				row.reasoningContentUtf8,
+				row.rawMessageJsonUtf8
+			});
+		}
+		if (hasLegacyPendingExecCall) {
+			g_session.messages.push_back(SessionMessage{
+				SessionRole::System,
+				"Legacy run_powershell_command checkpoint cannot be resumed after exec_command migration.",
+				false,
+				true,
+				"",
+				""
+			});
+		}
+		autoAllowWrites = g_session.autoAllowWrites;
 	}
-	SavePersistedAutoAllowWrites(g_session.autoAllowWrites);
+	if (!previousSessionId.empty() && previousSessionId != stored.sessionId) {
+		CloseInternalExecSession(previousSessionId);
+	}
+	SavePersistedAutoAllowWrites(autoAllowWrites);
 	return true;
 }
 
@@ -2125,6 +2150,7 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 {
 	const std::string currentSourcePath = GetCurrentChatSourceFilePathLocal();
 	std::string previousSourcePath;
+	std::string previousSessionId;
 	bool hadHistory = false;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
@@ -2138,6 +2164,7 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 			return;
 		}
 		previousSourcePath = g_session.sourceFilePathLocal;
+		previousSessionId = g_session.activeSessionId;
 		hadHistory = HasAnyChatHistoryLocked(g_session);
 		if (hadHistory) {
 			PersistChatSessionSnapshotLocked(g_session);
@@ -2152,6 +2179,7 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 		g_session.pendingRunCheckpoint = {};
 		ResetChatSessionBindingLocked(g_session);
 	}
+	CloseInternalExecSession(previousSessionId);
 	WorkspaceMirror::ResetAndCleanup();
 	if (!previousSourcePath.empty() || !currentSourcePath.empty()) {
 		Logger::Instance().WriteGbk(std::format(
@@ -4126,7 +4154,7 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 			"system",
 			LocalFromWide(
 				L"\u5f53\u524d\u5904\u4e8e\u8ba1\u5212\u6a21\u5f0f\u3002\u4f60\u53ea\u80fd\u63a2\u7d22\u3001\u9605\u8bfb\u3001\u641c\u7d22\u548c\u8bbe\u8ba1\u5b9e\u73b0\u65b9\u6848\uff1b"
-				L"\u4e0d\u5f97\u8c03\u7528\u5199\u5165\u3001\u56de\u6eda\u3001\u7f16\u8bd1\u6216 PowerShell \u5de5\u5177\u3002"
+				L"\u4e0d\u5f97\u8c03\u7528\u5199\u5165\u3001\u56de\u6eda\u3001\u7f16\u8bd1\u6216\u547d\u4ee4\u6267\u884c\u5de5\u5177\u3002"
 				L"\u65b9\u6848\u51c6\u5907\u597d\u65f6\uff0c\u53ea\u8f93\u51fa\u4e00\u4e2a <proposed_plan>...</proposed_plan> \u5757\uff0c\u7b49\u5f85\u7528\u6237\u6279\u51c6\u540e\u518d\u5b9e\u65bd\u3002"),
 			"",
 			""
@@ -5989,7 +6017,12 @@ bool RestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry
 	}
 
 	RefreshChatDialog(g_chatDialog != nullptr ? g_chatDialog : hWnd);
-	if (stored.hasRunCheckpoint) {
+	bool hasRestorableCheckpoint = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		hasRestorableCheckpoint = g_session.hasPendingRunCheckpoint;
+	}
+	if (hasRestorableCheckpoint) {
 		const int choice = MessageBoxA(
 			hWnd,
 			"检测到该会话存在未完成的长期任务检查点。\n\n"
@@ -6080,6 +6113,7 @@ void ClearChatHistory()
 {
 	std::vector<SessionMessage> oldMessages;
 	std::string oldSummary;
+	std::string oldSessionId;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		if (HasAnyChatHistoryLocked(g_session)) {
@@ -6087,6 +6121,7 @@ void ClearChatHistory()
 		}
 		oldMessages.swap(g_session.messages);
 		oldSummary.swap(g_session.rollingSummary);
+		oldSessionId = g_session.activeSessionId;
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
 		g_session.requestInFlight = false;
@@ -6099,6 +6134,7 @@ void ClearChatHistory()
 		g_session.pendingRunCheckpoint = {};
 		ResetChatSessionBindingLocked(g_session);
 	}
+	CloseInternalExecSession(oldSessionId);
 	WorkspaceMirror::ResetAndCleanup();
 }
 
@@ -6907,8 +6943,14 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		return 0;
 
 	case WM_CLOSE:
+	{
+		std::string sessionId;
+		std::string projectDirectory;
+		GetAIChatExecContextForTooling(sessionId, projectDirectory);
+		CloseInternalExecSession(sessionId);
 		DestroyWindow(hWnd);
 		return 0;
+	}
 
 	case WM_DESTROY:
 		CompletePendingToolApproval(
@@ -7251,6 +7293,24 @@ ConfigManager* GetAIChatConfigManagerForTooling()
 AIJsonConfig* GetAIChatAIJsonConfigForTooling()
 {
 	return g_aiJsonConfig;
+}
+
+bool GetAIChatExecContextForTooling(std::string& outSessionId, std::string& outProjectDirectoryLocal)
+{
+	outSessionId.clear();
+	outProjectDirectoryLocal.clear();
+	std::lock_guard<std::mutex> guard(g_session.mutex);
+	if (g_session.activeSessionId.empty()) {
+		return false;
+	}
+	outSessionId = g_session.activeSessionId;
+	const std::string sourcePath = g_session.sourceFilePathLocal.empty()
+		? GetCurrentChatSourceFilePathLocal()
+		: g_session.sourceFilePathLocal;
+	if (!sourcePath.empty()) {
+		outProjectDirectoryLocal = std::filesystem::path(sourcePath).parent_path().string();
+	}
+	return !outProjectDirectoryLocal.empty();
 }
 
 UINT GetAIChatToolExecMessageForTooling()
@@ -7933,6 +7993,7 @@ void Initialize(HWND mainWindow, ConfigManager* configManager, AIJsonConfig* aiJ
 
 void Shutdown()
 {
+	ShutdownInternalExecSessions();
 	std::vector<std::shared_ptr<ToolExecutionRequest>> executionRequests;
 	{
 		std::lock_guard<std::mutex> guard(g_toolExecutionRequestMutex);
@@ -8097,7 +8158,7 @@ bool ExecutePublicTool(
 		outResultJsonUtf8,
 		outOk,
 		cancelCallback,
-		"internal-chat");
+		"public-api");
 }
 
 bool ExecutePublicTool(

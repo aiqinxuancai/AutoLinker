@@ -4,10 +4,10 @@
 #include "AIService.h"
 #include "AISkillManager.h"
 #include "ConfigManager.h"
+#include "ExecCommandSessionManager.h"
 #include "Global.h"
 #include "IdeCompileDialogGuard.h"
 #include "Logger.h"
-#include "PowerShellToolRunner.h"
 #include "TavilyClient.h"
 #include "WebDocumentClient.h"
 #include "WebDocumentExtractor.h"
@@ -19,7 +19,9 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <filesystem>
 #include <format>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -30,7 +32,7 @@
 
 namespace {
 
-// PowerShell 自动允许仅在同一调用域内生效，避免内部对话与不同外部 MCP 会话互相继承授权。
+// 命令执行自动允许仅在同一内部聊天会话内生效。
 std::mutex g_psApprovalScopeMutex;
 std::unordered_set<std::string> g_psAllowedScopes;
 
@@ -670,63 +672,114 @@ std::string ExecuteToolCallImpl(
 		return Utf8ToLocalText(resultUtf8);
 	}
 
-	if (toolName == "run_powershell_command") {
-		std::string commandUtf8;
-		std::string workingDirectoryUtf8;
-		int timeoutSeconds = 60;
+	if (toolName == "exec_command" || toolName == "write_stdin") {
+		if (approvalScope != "internal-chat") {
+			outOk = false;
+			return Utf8ToLocalText(toolName + " is available only to internal AI chat");
+		}
+
+		std::string ownerSessionId;
+		std::string projectDirectoryLocal;
+		if (!GetAIChatExecContextForTooling(ownerSessionId, projectDirectoryLocal)) {
+			outOk = false;
+			return Utf8ToLocalText(toolName + " requires an active internal chat session");
+		}
+
+		auto getUnsignedInteger = [](const nlohmann::json& object, const char* key, unsigned int fallback) {
+			if (!object.contains(key) || !object[key].is_number_integer()) {
+				return fallback;
+			}
+			const long long value = object[key].get<long long>();
+			return value < 0 ? 0u : static_cast<unsigned int>((std::min)(value, static_cast<long long>((std::numeric_limits<unsigned int>::max)())));
+		};
+		auto getMaxTokens = [](const nlohmann::json& object) {
+			if (!object.contains("max_output_tokens") || !object["max_output_tokens"].is_number_integer()) {
+				return size_t{10000};
+			}
+			const long long value = object["max_output_tokens"].get<long long>();
+			return value < 0 ? size_t{0} : static_cast<size_t>((std::min)(value, static_cast<long long>(1024 * 1024 / 4)));
+		};
+
+		nlohmann::json args;
 		try {
-			const nlohmann::json args = nlohmann::json::parse(argumentsJson);
-			if (args.contains("command") && args["command"].is_string()) {
-				commandUtf8 = args["command"].get<std::string>();
-			}
-			if (args.contains("working_directory") && args["working_directory"].is_string()) {
-				workingDirectoryUtf8 = args["working_directory"].get<std::string>();
-			}
-			if (args.contains("timeout_seconds") && args["timeout_seconds"].is_number_integer()) {
-				timeoutSeconds = (std::clamp)(args["timeout_seconds"].get<int>(), 1, 600);
-			}
+			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
 		}
 		catch (const std::exception& ex) {
-			nlohmann::json r;
-			r["ok"] = false;
-			r["error"] = std::string("invalid arguments json: ") + ex.what();
-			return JsonToLocalText(r);
+			outOk = false;
+			return Utf8ToLocalText(std::string("invalid arguments json: ") + ex.what());
 		}
 
-		if (TrimAsciiCopy(commandUtf8).empty()) {
-			return R"({"ok":false,"error":"command is required"})";
+		if (toolName == "write_stdin") {
+			if (!args.contains("session_id") || !args["session_id"].is_number_integer()) {
+				outOk = false;
+				return Utf8ToLocalText("write_stdin requires session_id");
+			}
+			ExecCommandWriteRequest request;
+			request.ownerSessionId = ownerSessionId;
+			request.sessionId = args["session_id"].get<int>();
+			request.charsUtf8 = args.contains("chars") && args["chars"].is_string()
+				? args["chars"].get<std::string>()
+				: std::string();
+			request.yieldTimeMs = getUnsignedInteger(args, "yield_time_ms", 250);
+			request.maxOutputTokens = getMaxTokens(args);
+			const ExecCommandResult result = ExecCommandSessionManager::Instance().WriteStdin(request, cancelCallback);
+			outOk = result.ok;
+			return result.ok ? Utf8ToLocalText(result.responseUtf8) : Utf8ToLocalText(result.error);
 		}
 
-		std::string confirmationText =
-			std::string("即将执行 PowerShell 命令：\r\n\r\n") +
-			Utf8ToLocalText(commandUtf8) +
-			"\r\n\r\n工作目录：\r\n" +
-			(TrimAsciiCopy(workingDirectoryUtf8).empty() ? std::string("(当前进程目录)") : Utf8ToLocalText(workingDirectoryUtf8)) +
-			"\r\n\r\n超时：\r\n" +
-			std::to_string(timeoutSeconds) +
-			" 秒\r\n\r\n请确认该命令不会造成你不希望的本机副作用。";
-		bool accepted = false;
-		bool secondaryAccepted = false;
-		const std::string effectiveApprovalScope = approvalScope.empty() ? "internal-chat" : approvalScope;
-		bool skipConfirm = ShouldBypassToolApprovalForScope(effectiveApprovalScope);
-		if (!skipConfirm) {
+		if (!args.contains("cmd") || !args["cmd"].is_string() || TrimAsciiCopy(args["cmd"].get<std::string>()).empty()) {
+			outOk = false;
+			return Utf8ToLocalText("exec_command requires cmd");
+		}
+		ExecCommandRequest request;
+		request.ownerSessionId = ownerSessionId;
+		request.commandUtf8 = args["cmd"].get<std::string>();
+		request.shellUtf8 = args.contains("shell") && args["shell"].is_string()
+			? args["shell"].get<std::string>()
+			: std::string();
+		request.loginShell = !args.contains("login") || !args["login"].is_boolean() || args["login"].get<bool>();
+		request.tty = args.contains("tty") && args["tty"].is_boolean() && args["tty"].get<bool>();
+		request.yieldTimeMs = getUnsignedInteger(args, "yield_time_ms", 10000);
+		request.maxOutputTokens = getMaxTokens(args);
+
+		std::string requestedWorkdirLocal = args.contains("workdir") && args["workdir"].is_string()
+			? Utf8ToLocalText(args["workdir"].get<std::string>())
+			: std::string();
+		std::filesystem::path workdir = requestedWorkdirLocal.empty()
+			? std::filesystem::path(projectDirectoryLocal)
+			: std::filesystem::path(requestedWorkdirLocal);
+		if (workdir.is_relative()) {
+			workdir = std::filesystem::path(projectDirectoryLocal) / workdir;
+		}
+		request.workingDirectoryUtf8 = LocalToUtf8Text(workdir.lexically_normal().string());
+
+		const std::string effectiveApprovalScope = "internal-chat:" + ownerSessionId;
+		bool skipConfirm = false;
+		{
 			std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
 			skipConfirm = g_psAllowedScopes.contains(effectiveApprovalScope);
 		}
 		if (!skipConfirm) {
+			const std::string shellDisplay = request.shellUtf8.empty() ? "powershell.exe" : request.shellUtf8;
+			const std::string confirmationText =
+				std::string("即将执行 exec_command：\r\n\r\n") +
+				Utf8ToLocalText(request.commandUtf8) +
+				"\r\n\r\nShell：\r\n" + Utf8ToLocalText(shellDisplay) +
+				"\r\n\r\n工作目录：\r\n" + Utf8ToLocalText(request.workingDirectoryUtf8) +
+				"\r\n\r\n首次等待：\r\n" + std::to_string(request.yieldTimeMs) +
+				" ms\r\n\r\n请确认该命令不会造成你不希望的本机副作用。";
+			bool accepted = false;
+			bool secondaryAccepted = false;
 			if (!RequestConfirmationForTooling(
-					LocalFromWide(L"AI PowerShell 执行确认"),
+					LocalFromWide(L"AI exec_command 执行确认"),
 					confirmationText,
 					LocalFromWide(L"执行"),
 					LocalFromWide(L"当前会话全允许并执行"),
 					accepted,
 					secondaryAccepted) ||
 				(!accepted && !secondaryAccepted)) {
-				nlohmann::json r;
-				r["ok"] = false;
-				r["cancelled"] = true;
-				r["error"] = "user cancelled powershell execution";
-				return JsonToLocalText(r);
+				outOk = false;
+				return Utf8ToLocalText("user cancelled exec_command execution");
 			}
 			if (secondaryAccepted) {
 				std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
@@ -734,26 +787,9 @@ std::string ExecuteToolCallImpl(
 			}
 		}
 
-		const PowerShellRunResult runResult = PowerShellToolRunner::Run(commandUtf8, workingDirectoryUtf8, timeoutSeconds, cancelCallback);
-		nlohmann::json r;
-		r["ok"] = runResult.ok;
-		r["cancelled"] = runResult.cancelled;
-		r["command"] = commandUtf8;
-		r["working_directory"] = runResult.effectiveWorkingDirectory;
-		r["stdout"] = runResult.stdOut;
-		r["stderr"] = runResult.stdErr;
-		r["stdout_truncated"] = runResult.stdOutTruncated;
-		r["stderr_truncated"] = runResult.stdErrTruncated;
-		r["exit_code"] = runResult.exitCode;
-		r["timed_out"] = runResult.timedOut;
-		if (runResult.cancelled) {
-			r["error"] = "powershell execution cancelled by user";
-		}
-		if (!runResult.error.empty()) {
-			r["error"] = runResult.error;
-		}
-		outOk = runResult.ok;
-		return JsonToLocalText(r);
+		const ExecCommandResult result = ExecCommandSessionManager::Instance().Execute(request, cancelCallback);
+		outOk = result.ok;
+		return result.ok ? Utf8ToLocalText(result.responseUtf8) : Utf8ToLocalText(result.error);
 	}
 
 	if (toolName == "search_web_tavily") {
@@ -1076,6 +1112,29 @@ void ClearToolApprovalScope(const std::string& approvalScope)
 	}
 	std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
 	g_psAllowedScopes.erase(approvalScope);
+}
+
+void CloseInternalExecSession(const std::string& sessionId)
+{
+	if (sessionId.empty()) {
+		return;
+	}
+	ExecCommandSessionManager::Instance().TerminateOwnerSession(sessionId);
+	ClearToolApprovalScope("internal-chat:" + sessionId);
+}
+
+void ShutdownInternalExecSessions()
+{
+	ExecCommandSessionManager::Instance().TerminateAll();
+	std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
+	for (auto it = g_psAllowedScopes.begin(); it != g_psAllowedScopes.end();) {
+		if (it->rfind("internal-chat:", 0) == 0) {
+			it = g_psAllowedScopes.erase(it);
+		}
+		else {
+			++it;
+		}
+	}
 }
 
 bool ShouldBypassToolApprovalForScope(const std::string& approvalScope)
