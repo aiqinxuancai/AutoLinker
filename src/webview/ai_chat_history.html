@@ -15,6 +15,12 @@ body {
 	padding: 0;
 }
 
+html:not(.autolinker-page-visible) *,
+html:not(.autolinker-page-visible) *::before,
+html:not(.autolinker-page-visible) *::after {
+	animation-play-state: paused !important;
+}
+
 .layout {
 	display: flex;
 	flex-direction: column;
@@ -1584,6 +1590,10 @@ window.autolinkerBusy = false;
 window.autolinkerPlanState = "normal";
 window.autolinkerAutoAllow = false;
 
+window.autolinkerSetPageVisible = function(visible) {
+	document.documentElement.classList.toggle("autolinker-page-visible", !!visible);
+};
+
 window.autolinkerEscapeHtml = function(text) {
 	return String(text || "")
 		.replace(/&/g, "&amp;")
@@ -2268,7 +2278,9 @@ window.autolinkerHideToolApproval = function() {
 		});
 		setTimeout(function() {
 			window.autolinkerResizeChatInput(input);
-			input.focus();
+			if (document.documentElement.classList.contains("autolinker-page-visible")) {
+				input.focus();
+			}
 		}, 0);
 	}
 })();

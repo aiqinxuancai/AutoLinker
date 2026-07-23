@@ -238,6 +238,7 @@ struct ChatDialogContext {
 	bool webViewDesired = false;
 	bool webViewReady = false;
 	bool webViewContentReady = false;
+	bool pageVisible = false;
 	bool webViewFlushScheduled = false;
 	ULONGLONG lastChatRefreshTick = 0;
 	int remoteConfigPollTicksRemaining = 0;
@@ -2730,8 +2731,16 @@ void SyncHistoryPresentation(ChatDialogContext* ctx)
 	}
 
 	const bool showWebView = ctx->webViewReady && ctx->webViewContentReady && ctx->hHistoryHost != nullptr && IsWindow(ctx->hHistoryHost);
+	const bool renderWebView = showWebView && ctx->pageVisible;
 	if (ctx->webViewController != nullptr) {
-		ctx->webViewController->put_IsVisible(showWebView ? TRUE : FALSE);
+		ctx->webViewController->put_IsVisible(renderWebView ? TRUE : FALSE);
+	}
+	if (ctx->webView != nullptr && ctx->webViewContentReady) {
+		ctx->webView->ExecuteScript(
+			ctx->pageVisible
+				? L"window.autolinkerSetPageVisible(true);"
+				: L"window.autolinkerSetPageVisible(false);",
+			nullptr);
 	}
 	if (ctx->hHistory != nullptr && IsWindow(ctx->hHistory)) {
 		ShowWindow(ctx->hHistory, showWebView ? SW_HIDE : SW_SHOW);
@@ -3379,7 +3388,9 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												UpdateWebViewUpdateTag(navCtx);
 												UpdateWebViewPlanModeState(navCtx, planModeState);
 												UpdateWebViewAutoAllowModeState(navCtx, autoAllowWrites);
-												FocusWebViewInput(navCtx);
+												if (navCtx->pageVisible) {
+													FocusWebViewInput(navCtx);
+												}
 												return S_OK;
 											}
 
@@ -6569,9 +6580,18 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		RefreshChatDialog(hWnd);
 		TryInitializeHistoryWebView(hWnd, ctx);
 		StartRemoteConfigHomePolling(hWnd, ctx);
-		SetFocus(ctx->hInput);
+		if (ctx->pageVisible) {
+			SetFocus(ctx->hInput);
+		}
 		return 0;
 	}
+
+	case WM_SHOWWINDOW:
+		if (ctx != nullptr) {
+			ctx->pageVisible = wParam != FALSE;
+			SyncHistoryPresentation(ctx);
+		}
+		break;
 
 	case WM_GETMINMAXINFO: {
 		auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
