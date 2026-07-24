@@ -5,6 +5,35 @@
 <meta name="color-scheme" content="light only">
 <style>
 /*__AUTOLINKER_AI_CONFIG_CSS__*/
+
+@keyframes preview-color-area-flash {
+	0%, 100% { box-shadow: none; }
+	50% { box-shadow: inset 0 0 0 9999px rgba(245, 158, 11, 0.20), 0 0 0 3px rgba(245, 158, 11, 0.38); }
+}
+@keyframes preview-color-text-flash {
+	0%, 100% { color: var(--preview-original-color); }
+	50% { color: var(--preview-flash-color); }
+}
+#previewRoot [data-preview-key] {
+	scroll-margin: 10px;
+}
+#previewRoot .preview-color-focus {
+	outline: 2px dashed #f59e0b;
+	outline-offset: -2px;
+}
+#previewRoot .preview-color-flash {
+	animation: preview-color-area-flash 340ms ease-in-out 2;
+}
+#previewRoot .preview-color-flash.preview-color-text-flash {
+	animation: preview-color-area-flash 340ms ease-in-out 2, preview-color-text-flash 340ms ease-in-out 2;
+}
+#previewRoot .preview-composer-input::placeholder {
+	color: var(--preview-placeholder-color);
+	opacity: 1;
+}
+#previewRoot .preview-color-flash.preview-color-text-flash.preview-composer-input::placeholder {
+	animation: preview-color-text-flash 340ms ease-in-out 2;
+}
 </style>
 </head>
 <body class="h-full overflow-hidden font-sans text-[13px]">
@@ -112,6 +141,9 @@ var _colorKeys = [];
 var _selectedId = "default";
 var _initialSnapshot = "";
 var _dirty = false;
+var _activeColorKey = "";
+var _lastColorActivationAt = 0;
+var _previewFlashTimer = 0;
 
 function $(id) { return document.getElementById(id); }
 function post(payload) {
@@ -210,8 +242,10 @@ function renderEditor() {
 		var key = _colorKeys[i];
 		var row = document.createElement("div");
 		row.className = "grid grid-cols-[150px_44px_1fr] items-center gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0";
+		row.setAttribute("data-color-key", key);
 		var label = document.createElement("label");
 		label.className = "text-[12px] font-medium text-slate-700";
+		label.setAttribute("data-color-key", key);
 		label.textContent = COLOR_LABELS[key] || key;
 		var color = document.createElement("input");
 		color.type = "color";
@@ -231,6 +265,101 @@ function renderEditor() {
 	}
 }
 
+function clearPreviewFocus() {
+	if (_previewFlashTimer) {
+		window.clearTimeout(_previewFlashTimer);
+		_previewFlashTimer = 0;
+	}
+	var root = $("previewRoot");
+	if (!root) { return; }
+	var active = root.querySelectorAll(".preview-color-focus, .preview-color-flash");
+	for (var i = 0; i < active.length; i++) {
+		active[i].classList.remove("preview-color-focus", "preview-color-flash", "preview-color-text-flash");
+		active[i].style.removeProperty("--preview-original-color");
+		active[i].style.removeProperty("--preview-flash-color");
+	}
+}
+
+function previewFlashColor(element) {
+	var node = element;
+	var match = null;
+	while (node && node !== document.documentElement) {
+		var background = window.getComputedStyle(node).backgroundColor || "";
+		match = background.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([\d.]+))?/i);
+		if (match && (typeof match[4] === "undefined" || Number(match[4]) > 0.05)) {
+			break;
+		}
+		node = node.parentElement;
+		match = null;
+	}
+	if (!match) { return "#fef08a"; }
+	var luminance = (Number(match[1]) * 0.299 + Number(match[2]) * 0.587 + Number(match[3]) * 0.114) / 255;
+	return luminance > 0.56 ? "#c026d3" : "#fef08a";
+}
+
+function previewKeyMatches(element, key) {
+	var keys = String(element.getAttribute("data-preview-key") || "").split(/\s+/);
+	return keys.indexOf(key) >= 0;
+}
+
+function highlightPreviewColor(key, flash) {
+	clearPreviewFocus();
+	if (!key) { return; }
+	var root = $("previewRoot");
+	if (!root) { return; }
+	var candidates = root.querySelectorAll("[data-preview-key]");
+	var targets = [];
+	for (var i = 0; i < candidates.length; i++) {
+		if (previewKeyMatches(candidates[i], key)) {
+			targets.push(candidates[i]);
+		}
+	}
+	if (!targets.length) { return; }
+	if (flash) {
+		void root.offsetWidth;
+	}
+	for (var j = 0; j < targets.length; j++) {
+		var target = targets[j];
+		target.classList.add("preview-color-focus");
+		var textKeys = String(target.getAttribute("data-preview-text-key") || "").split(/\s+/);
+		var flashesText = target.getAttribute("data-preview-text") === "true" && (!textKeys[0] || textKeys.indexOf(key) >= 0);
+		if (flashesText) {
+			var originalColor = window.getComputedStyle(target).color;
+			if (target.classList.contains("preview-composer-input")) {
+				originalColor = window.getComputedStyle(target, "::placeholder").color || originalColor;
+			}
+			target.classList.add("preview-color-text-flash");
+			target.style.setProperty("--preview-original-color", originalColor);
+			target.style.setProperty("--preview-flash-color", previewFlashColor(target));
+		}
+		if (flash) {
+			target.classList.add("preview-color-flash");
+		}
+	}
+	var scrollTarget = targets[0];
+	if (scrollTarget && scrollTarget.scrollIntoView) {
+		scrollTarget.scrollIntoView({ block: "nearest", inline: "nearest" });
+	}
+	if (flash) {
+		_previewFlashTimer = window.setTimeout(function () {
+			for (var k = 0; k < targets.length; k++) {
+				targets[k].classList.remove("preview-color-flash");
+			}
+			_previewFlashTimer = 0;
+		}, 760);
+	}
+}
+
+function activateColorPreview(key) {
+	var now = Date.now();
+	if (!key || (key === _activeColorKey && now - _lastColorActivationAt < 180)) {
+		return;
+	}
+	_activeColorKey = key;
+	_lastColorActivationAt = now;
+	highlightPreviewColor(key, true);
+}
+
 function renderPreview() {
 	var theme = currentTheme() || defaultTheme();
 	var c = clone((theme && theme.colors) || {});
@@ -238,39 +367,51 @@ function renderPreview() {
 	root.innerHTML = "";
 	var frame = document.createElement("div");
 	frame.className = "flex h-full flex-col";
+	frame.setAttribute("data-preview-key", "pageBg");
 	frame.style.background = c.pageBg;
 	frame.style.color = c.text;
 	var top = document.createElement("div");
 	top.className = "flex h-9 items-center justify-between px-3";
+	top.setAttribute("data-preview-key", "toolbarBg border");
 	top.style.background = c.toolbarBg;
 	top.style.borderBottom = "1px solid " + c.border;
-	top.innerHTML = '<strong style="color:' + c.brand + '">AUTOLINKER</strong><span style="color:' + c.subtleText + '">上下文 18%</span>';
+	top.innerHTML = '<strong data-preview-key="brand" data-preview-text="true" style="color:' + c.brand + '">AUTOLINKER</strong>' +
+		'<div style="display:flex;align-items:center;gap:8px"><span data-preview-key="accent" data-preview-text="true" style="color:' + c.accent + ';font-weight:600">强调</span>' +
+		'<span data-preview-key="subtleText" data-preview-text="true" style="color:' + c.subtleText + '">上下文 18%</span></div>';
 	var history = document.createElement("div");
 	history.className = "min-h-0 flex-1 overflow-auto";
 	history.innerHTML =
-		'<section style="background:' + c.userMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
-		'<div style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">用户</div>' +
-		'<div style="color:' + c.bodyText + '">请生成一个带日志输出的初始化函数。</div></section>' +
-		'<section style="background:' + c.assistantMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
-		'<div style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">AI</div>' +
-		'<div style="color:' + c.bodyText + '">可以这样组织：<a style="color:' + c.linkText + ';text-decoration:none" href="#">查看说明</a> <code style="background:' + c.inlineCodeBg + ';padding:1px 4px;border-radius:4px">Init()</code>' +
-		'<pre style="margin-top:8px;background:' + c.codeBlockBg + ';color:' + c.codeText + ';border-radius:6px;padding:10px;white-space:pre-wrap">bool Init() {\\n    return true;\\n}</pre>' +
-		'<div style="margin-top:8px;overflow:hidden;border:1px solid ' + c.softBorder + ';background:' + c.panelBg + ';border-radius:6px"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead style="background:' + c.buttonHoverBg + '"><tr><th style="padding:5px 7px;text-align:left;border-right:1px solid ' + c.softBorder + '">方法</th><th style="padding:5px 7px;text-align:left">优先级</th></tr></thead><tbody><tr><td style="padding:5px 7px;border-top:1px solid ' + c.softBorder + ';border-right:1px solid ' + c.softBorder + '"><code style="background:' + c.inlineCodeBg + ';padding:1px 4px;border-radius:4px">Init</code></td><td style="padding:5px 7px;border-top:1px solid ' + c.softBorder + '">高</td></tr></tbody></table></div></div></section>' +
-		'<section style="background:' + c.toolMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
-		'<div style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">工具 <span style="background:' + c.chipBg + ';color:' + c.success + ';padding:1px 6px;border-radius:5px;font-size:10px">完成</span></div>' +
-		'<pre style="margin:0;background:' + c.diffBg + ';color:' + c.planText + ';border-radius:6px;padding:8px;white-space:pre-wrap"><span style="color:' + c.diffAdd + '">+ 新增日志输出</span>\\n<span style="color:' + c.diffDel + '">- 删除旧提示</span></pre></section>' +
-		'<section style="background:' + c.planMsgBg + ';padding:10px 12px"><div style="border:1px solid ' + c.planBorder + ';background:' + c.planBg + ';color:' + c.planText + ';padding:10px;border-radius:8px">实施计划 <span style="background:' + c.chipBg + ';color:' + c.primary + ';padding:2px 6px;border-radius:5px">预览</span></div></section>' +
-		'<section style="background:' + c.systemMsgBg + ';padding:10px 12px"><div style="border:1px solid ' + c.softBorder + ';background:' + c.approvalBg + ';color:' + c.text + ';padding:8px;border-radius:8px">写入审批 <span style="color:' + c.warning + '">等待确认</span></div></section>';
+		'<section data-preview-key="userMsgBg" style="background:' + c.userMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
+		'<div data-preview-key="roleText" data-preview-text="true" style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">用户</div>' +
+		'<div data-preview-key="bodyText" data-preview-text="true" style="color:' + c.bodyText + '">请生成一个带日志输出的初始化函数。</div></section>' +
+		'<section data-preview-key="assistantMsgBg" style="background:' + c.assistantMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
+		'<div data-preview-key="roleText" data-preview-text="true" style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">AI</div>' +
+		'<div data-preview-key="bodyText" data-preview-text="true" style="color:' + c.bodyText + '">可以这样组织：<a data-preview-key="linkText" data-preview-text="true" style="color:' + c.linkText + ';text-decoration:none" href="#">查看说明</a> <code data-preview-key="inlineCodeBg" style="background:' + c.inlineCodeBg + ';padding:1px 4px;border-radius:4px">Init()</code>' +
+		'<pre data-preview-key="codeBlockBg codeText" data-preview-text="true" data-preview-text-key="codeText" style="margin-top:8px;background:' + c.codeBlockBg + ';color:' + c.codeText + ';border-radius:6px;padding:10px;white-space:pre-wrap">bool Init() {\\n    return true;\\n}</pre>' +
+		'<div data-preview-key="panelBg softBorder" style="margin-top:8px;overflow:hidden;border:1px solid ' + c.softBorder + ';background:' + c.panelBg + ';border-radius:6px"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead style="background:' + c.buttonHoverBg + '"><tr><th style="padding:5px 7px;text-align:left;border-right:1px solid ' + c.softBorder + '">方法</th><th style="padding:5px 7px;text-align:left">优先级</th></tr></thead><tbody><tr><td style="padding:5px 7px;border-top:1px solid ' + c.softBorder + ';border-right:1px solid ' + c.softBorder + '"><code data-preview-key="inlineCodeBg" style="background:' + c.inlineCodeBg + ';padding:1px 4px;border-radius:4px">Init</code></td><td style="padding:5px 7px;border-top:1px solid ' + c.softBorder + '">高</td></tr></tbody></table></div></div></section>' +
+		'<section data-preview-key="toolMsgBg" style="background:' + c.toolMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
+		'<div style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">工具 <span data-preview-key="chipBg" style="background:' + c.chipBg + ';padding:1px 6px;border-radius:5px;font-size:10px"><span data-preview-key="success" data-preview-text="true" style="color:' + c.success + '">完成</span></span></div>' +
+		'<pre data-preview-key="diffBg" style="margin:0;background:' + c.diffBg + ';color:' + c.planText + ';border-radius:6px;padding:8px;white-space:pre-wrap"><span data-preview-key="diffAdd" data-preview-text="true" style="color:' + c.diffAdd + '">+ 新增日志输出</span>\\n<span data-preview-key="diffDel" data-preview-text="true" style="color:' + c.diffDel + '">- 删除旧提示</span></pre></section>' +
+		'<section data-preview-key="planMsgBg" style="background:' + c.planMsgBg + ';padding:10px 12px"><div data-preview-key="planBg planBorder" style="border:1px solid ' + c.planBorder + ';background:' + c.planBg + ';color:' + c.planText + ';padding:10px;border-radius:8px"><span data-preview-key="planText" data-preview-text="true" style="color:' + c.planText + '">实施计划</span> <span style="background:' + c.chipBg + ';color:' + c.primary + ';padding:2px 6px;border-radius:5px">预览</span></div></section>' +
+		'<section data-preview-key="systemMsgBg" style="background:' + c.systemMsgBg + ';padding:10px 12px"><div data-preview-key="approvalBg" style="border:1px solid ' + c.softBorder + ';background:' + c.approvalBg + ';color:' + c.text + ';padding:8px;border-radius:8px"><span data-preview-key="text" data-preview-text="true" style="color:' + c.text + '">写入审批</span> <span data-preview-key="warning" data-preview-text="true" style="color:' + c.warning + '">等待确认</span><span style="color:' + c.subtleText + ';margin:0 5px">·</span><span data-preview-key="danger" data-preview-text="true" style="color:' + c.danger + '">拒绝</span></div></section>';
 	var composer = document.createElement("div");
 	composer.className = "border-t p-3";
+	composer.setAttribute("data-preview-key", "composerBg");
 	composer.style.borderColor = c.border;
 	composer.style.background = c.composerBg;
-	composer.innerHTML = '<textarea readonly style="width:100%;height:64px;border:1px solid ' + c.inputBorder + ';background:' + c.inputBg + ';color:' + c.text + ';border-radius:6px;padding:8px;resize:none">输入消息...</textarea>' +
-		'<div style="margin-top:8px;display:flex;align-items:center;justify-content:space-between"><span style="color:' + c.mutedText + '">自动允许</span><button style="border:1px solid ' + c.primary + ';background:' + c.primary + ';color:' + c.panelBg + ';border-radius:6px;padding:6px 14px">发送</button></div>';
+	composer.innerHTML = '<textarea class="preview-composer-input" data-preview-key="inputBg inputBorder placeholder" data-preview-text="true" data-preview-text-key="placeholder" readonly placeholder="输入消息..." style="--preview-placeholder-color:' + c.placeholder + ';width:100%;height:64px;border:1px solid ' + c.inputBorder + ';background:' + c.inputBg + ';color:' + c.text + ';border-radius:6px;padding:8px;resize:none"></textarea>' +
+		'<div style="margin-top:8px;display:flex;align-items:center;justify-content:space-between;gap:8px"><span data-preview-key="mutedText" data-preview-text="true" style="color:' + c.mutedText + '">自动允许</span>' +
+		'<div style="display:flex;align-items:center;gap:5px"><button data-preview-key="buttonBg" style="border:1px solid ' + c.softBorder + ';background:' + c.buttonBg + ';color:' + c.text + ';border-radius:6px;padding:6px 8px">设置</button>' +
+		'<button data-preview-key="buttonHoverBg" style="border:1px solid ' + c.softBorder + ';background:' + c.buttonHoverBg + ';color:' + c.text + ';border-radius:6px;padding:6px 8px">按钮悬停</button>' +
+		'<button data-preview-key="primaryHover" style="border:1px solid ' + c.primaryHover + ';background:' + c.primaryHover + ';color:' + c.panelBg + ';border-radius:6px;padding:6px 8px">主色悬停</button>' +
+		'<button data-preview-key="primary" style="border:1px solid ' + c.primary + ';background:' + c.primary + ';color:' + c.panelBg + ';border-radius:6px;padding:6px 10px">发送</button></div></div>';
 	frame.appendChild(top);
 	frame.appendChild(history);
 	frame.appendChild(composer);
 	root.appendChild(frame);
+	if (_activeColorKey) {
+		highlightPreviewColor(_activeColorKey, false);
+	}
 }
 
 function renderAll() {
@@ -357,6 +498,14 @@ $("themeList").addEventListener("click", function (e) {
 	if (!btn) { return; }
 	_selectedId = btn.getAttribute("data-theme-id") || "default";
 	renderAll();
+});
+$("colorEditor").addEventListener("mousedown", function (e) {
+	var target = e.target && e.target.closest ? e.target.closest("[data-color-key]") : null;
+	activateColorPreview(target ? target.getAttribute("data-color-key") : "");
+});
+$("colorEditor").addEventListener("focusin", function (e) {
+	var target = e.target && e.target.closest ? e.target.closest("[data-color-key]") : null;
+	activateColorPreview(target ? target.getAttribute("data-color-key") : "");
 });
 $("colorEditor").addEventListener("input", function (e) {
 	var input = e.target;
