@@ -83,11 +83,11 @@
 
 ### 🌟 Right（推荐中转站）
 - **简介：** 国内直连，聚合多平台模型
-- **官网：** https://right.codes/register
+- **官网：** https://www.rightapi.ai/register
 - **预设：**
   - Right(gpt-5.6-sol) — 代码任务
   - Right(gpt-5.6) — 通用任务
-- **地址：** `https://right.codes/codex`（自动填写）
+- **地址：** `https://www.rightapi.ai/codex`（自动填写）
 - **协议：** `OpenAI Chat`（自动填写）
 
 ### 🇨🇳 DeepSeek（性价比高）

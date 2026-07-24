@@ -961,7 +961,7 @@ constexpr const char* kGeminiPresetModels[] = { "gemini-3.1-pro-preview", "gemin
 #define AI_PRESET_MODELS(name) name, std::size(name)
 
 constexpr AIConfigPresetSite kAIConfigPresetSites[] = {
-	{ L"Right",            "https://right.codes/codex",                         AI_PRESET_MODELS(kRightPresetModels),        AIProtocolType::OpenAI },
+	{ L"Right",            "https://www.rightapi.ai/codex",                    AI_PRESET_MODELS(kRightPresetModels),        AIProtocolType::OpenAI },
 	{ L"Deepseek",         "https://api.deepseek.com",                          AI_PRESET_MODELS(kDeepseekPresetModels),     AIProtocolType::OpenAI },
 	{ L"\u667A\u8C31",     "https://open.bigmodel.cn/api/paas/v4",              AI_PRESET_MODELS(kZhipuPresetModels),        AIProtocolType::OpenAI },
 	{ L"\u5343\u95EE",     "https://dashscope.aliyuncs.com/compatible-mode/v1", AI_PRESET_MODELS(kQwenPresetModels),         AIProtocolType::OpenAI },
@@ -1643,7 +1643,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		PopulateSourceEditModeCombo(ctx->hSourceEditMode, ctx->settings->sourceEditMode);
 
 		const std::wstring getKeyLinkText =
-			L"<a href=\"https://right.codes/register?aff=3dc87885\">从转发平台获取Key</a>";
+			L"<a href=\"https://www.rightapi.ai/register?aff=3dc87885\">从转发平台获取Key</a>";
 		HWND hGetKeyLink = CreateWindowExW(0, L"SysLink",
 			getKeyLinkText.c_str(),
 			WS_CHILD | WS_VISIBLE | WS_TABSTOP,
@@ -1869,7 +1869,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		}
 
 		if (id == IDC_CFG_GET_KEY_LINK && HIWORD(wParam) == STN_CLICKED) {
-			ShellExecuteA(hWnd, "open", "https://right.codes/register?aff=3dc87885", nullptr, nullptr, SW_SHOWNORMAL);
+			ShellExecuteA(hWnd, "open", "https://www.rightapi.ai/register?aff=3dc87885", nullptr, nullptr, SW_SHOWNORMAL);
 			return 0;
 		}
 
@@ -1885,7 +1885,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 		const NMHDR* hdr = reinterpret_cast<const NMHDR*>(lParam);
 		if (hdr != nullptr && ctx != nullptr && ctx->useNativeLink && hdr->idFrom == IDC_CFG_GET_KEY_LINK &&
 			(hdr->code == NM_CLICK || hdr->code == NM_RETURN)) {
-			ShellExecuteA(hWnd, "open", "https://right.codes/register?aff=3dc87885", nullptr, nullptr, SW_SHOWNORMAL);
+			ShellExecuteA(hWnd, "open", "https://www.rightapi.ai/register?aff=3dc87885", nullptr, nullptr, SW_SHOWNORMAL);
 			return 0;
 		}
 		break;
