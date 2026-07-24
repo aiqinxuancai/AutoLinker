@@ -201,6 +201,142 @@ function isHexColor(value) {
 }
 </script>
 <script>
+var BASE_KEYS = [
+	{ key: "surface", label: "表面 / 背景色", preview: "pageBg" },
+	{ key: "ink", label: "文字色", preview: "text" },
+	{ key: "primary", label: "主色", preview: "primary" },
+	{ key: "accent", label: "强调色", preview: "accent" },
+	{ key: "success", label: "成功色", preview: "success" },
+	{ key: "warning", label: "警告色", preview: "warning" },
+	{ key: "danger", label: "危险色", preview: "danger" }
+];
+var BASE_ANCHOR = { surface: "pageBg", ink: "text", primary: "primary", accent: "accent", success: "success", warning: "warning", danger: "danger" };
+var OVERRIDE_TOLERANCE = 10;
+function _hexToRgb(hex) {
+	var m = /^#([0-9a-fA-F]{6})$/.exec(String(hex || ""));
+	if (!m) { return null; }
+	var v = parseInt(m[1], 16);
+	return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255 };
+}
+function _channelHex(x) {
+	x = Math.round(x); if (x < 0) { x = 0; } if (x > 255) { x = 255; }
+	var s = x.toString(16); return s.length < 2 ? "0" + s : s;
+}
+function _rgbToHex(r, g, b) { return "#" + _channelHex(r) + _channelHex(g) + _channelHex(b); }
+function mixColor(a, b, ratio) {
+	var ca = _hexToRgb(a), cb = _hexToRgb(b);
+	if (!ca || !cb) { return a; }
+	return _rgbToHex(ca.r + (cb.r - ca.r) * ratio, ca.g + (cb.g - ca.g) * ratio, ca.b + (cb.b - ca.b) * ratio);
+}
+function lightenColor(hex, amt) { return mixColor(hex, "#ffffff", amt); }
+function darkenColor(hex, amt) { return mixColor(hex, "#000000", amt); }
+function alphaOver(fg, bg, alpha) { return mixColor(bg, fg, alpha); }
+function colorLuminance(hex) {
+	var c = _hexToRgb(hex);
+	if (!c) { return 255; }
+	return (c.r * 299 + c.g * 587 + c.b * 114) / 1000;
+}
+function channelDiff(a, b) {
+	var ca = _hexToRgb(a), cb = _hexToRgb(b);
+	if (!ca || !cb) { return 999; }
+	return Math.max(Math.abs(ca.r - cb.r), Math.abs(ca.g - cb.g), Math.abs(ca.b - cb.b));
+}
+function deriveColors(base, mode) {
+	var surface = base.surface, ink = base.ink, primary = base.primary, accent = base.accent;
+	var dark = mode === "dark";
+	var lift = function (amt) { return dark ? lightenColor(surface, amt) : darkenColor(surface, amt * 0.55); };
+	var raise = function (amt) { return dark ? lightenColor(surface, amt) : lightenColor(surface, amt); };
+	var out = {};
+	out.pageBg = surface;
+	out.toolbarBg = surface;
+	out.composerBg = surface;
+	out.panelBg = dark ? lightenColor(surface, 0.12) : "#ffffff";
+	out.inputBg = dark ? darkenColor(surface, 0.28) : "#ffffff";
+	out.approvalBg = out.panelBg;
+	out.userMsgBg = raise(0.06);
+	out.assistantMsgBg = surface;
+	out.systemMsgBg = surface;
+	out.toolMsgBg = surface;
+	out.planMsgBg = mixColor(surface, primary, dark ? 0.14 : 0.10);
+	out.planBg = mixColor(surface, primary, dark ? 0.16 : 0.06);
+	out.chipBg = mixColor(surface, primary, dark ? 0.24 : 0.16);
+	out.diffBg = dark ? darkenColor(surface, 0.14) : lightenColor(surface, 0.35);
+	out.inlineCodeBg = lift(0.14);
+	out.codeBlockBg = dark ? darkenColor(surface, 0.22) : lift(0.14);
+	out.text = ink;
+	out.roleText = ink;
+	out.bodyText = ink;
+	out.codeText = mixColor(ink, primary, 0.06);
+	out.planText = mixColor(ink, surface, 0.14);
+	out.mutedText = alphaOver(ink, surface, 0.78);
+	out.subtleText = alphaOver(ink, surface, 0.55);
+	out.placeholder = alphaOver(ink, surface, 0.50);
+	out.border = alphaOver(ink, surface, dark ? 0.22 : 0.16);
+	out.softBorder = alphaOver(ink, surface, dark ? 0.30 : 0.22);
+	out.inputBorder = alphaOver(ink, surface, dark ? 0.34 : 0.24);
+	out.planBorder = mixColor(surface, primary, dark ? 0.45 : 0.32);
+	out.buttonBg = out.panelBg;
+	out.buttonHoverBg = dark ? lightenColor(surface, 0.18) : darkenColor(surface, 0.05);
+	out.primary = primary;
+	out.primaryHover = dark ? lightenColor(primary, 0.14) : darkenColor(primary, 0.14);
+	out.brand = primary;
+	out.accent = accent;
+	out.linkText = dark ? lightenColor(primary, 0.10) : darkenColor(primary, 0.08);
+	out.success = base.success;
+	out.warning = base.warning;
+	out.danger = base.danger;
+	out.diffAdd = dark ? lightenColor(base.success, 0.08) : darkenColor(base.success, 0.06);
+	out.diffDel = dark ? lightenColor(base.danger, 0.08) : darkenColor(base.danger, 0.06);
+	return out;
+}
+function reverseBase(colors) {
+	var base = {};
+	for (var i = 0; i < BASE_KEYS.length; i++) {
+		var k = BASE_KEYS[i].key;
+		base[k] = colors[BASE_ANCHOR[k]] || "#808080";
+	}
+	return base;
+}
+function ensureAuthoring(theme) {
+	if (!theme) { return null; }
+	if (theme._authoring) { return theme._authoring; }
+	var colors = theme.colors || {};
+	var base = reverseBase(colors);
+	var mode = colorLuminance(base.surface) < 128 ? "dark" : "light";
+	var derived = deriveColors(base, mode);
+	var overrides = {};
+	for (var i = 0; i < _colorKeys.length; i++) {
+		var key = _colorKeys[i];
+		if (typeof derived[key] === "undefined") {
+			if (typeof colors[key] === "string") { overrides[key] = colors[key]; }
+			continue;
+		}
+		if (typeof colors[key] === "string" && channelDiff(colors[key], derived[key]) > OVERRIDE_TOLERANCE) {
+			overrides[key] = colors[key];
+		}
+	}
+	theme._authoring = { base: base, mode: mode, overrides: overrides };
+	return theme._authoring;
+}
+function applyAuthoring(theme) {
+	var state = ensureAuthoring(theme);
+	if (!state) { return; }
+	var derived = deriveColors(state.base, state.mode);
+	var next = {};
+	for (var i = 0; i < _colorKeys.length; i++) {
+		var key = _colorKeys[i];
+		if (Object.prototype.hasOwnProperty.call(state.overrides, key)) {
+			next[key] = state.overrides[key];
+		} else if (typeof derived[key] === "string") {
+			next[key] = derived[key];
+		} else if (typeof theme.colors[key] === "string") {
+			next[key] = theme.colors[key];
+		}
+	}
+	theme.colors = next;
+}
+</script>
+<script>
 function renderThemeList() {
 	var list = $("themeList");
 	list.innerHTML = "";
@@ -229,6 +365,34 @@ function renderThemeList() {
 	$("resetBtn").disabled = readonly;
 }
 
+function colorRow(labelText, dataAttr, dataVal, value, locked, previewKey, extraNode) {
+	var row = document.createElement("div");
+	row.className = "grid grid-cols-[150px_44px_1fr_auto] items-center gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0";
+	row.setAttribute("data-color-key", previewKey);
+	var label = document.createElement("label");
+	label.className = "text-[12px] font-medium text-slate-700";
+	label.setAttribute("data-color-key", previewKey);
+	label.textContent = labelText;
+	var color = document.createElement("input");
+	color.type = "color";
+	color.value = isHexColor(value) ? value : "#000000";
+	color.disabled = locked;
+	color.setAttribute(dataAttr, dataVal);
+	color.setAttribute("data-color-key", previewKey);
+	color.className = "h-8 w-10 border border-slate-200 bg-white p-0";
+	var text = document.createElement("input");
+	text.value = value || "";
+	text.readOnly = locked;
+	text.setAttribute(dataAttr, dataVal);
+	text.setAttribute("data-color-key", previewKey);
+	text.className = "ui-input font-mono";
+	row.appendChild(label);
+	row.appendChild(color);
+	row.appendChild(text);
+	row.appendChild(extraNode || document.createElement("span"));
+	return row;
+}
+
 function renderEditor() {
 	var current = currentTheme();
 	var root = $("colorEditor");
@@ -236,33 +400,51 @@ function renderEditor() {
 	if (!current) {
 		return;
 	}
+	var locked = !!current.isBuiltIn || !!current.isDefault;
+	var state = ensureAuthoring(current);
 	$("editorTitle").textContent = current.name;
-	$("editorHint").textContent = (current.isBuiltIn || current.isDefault) ? "内置配色不可直接修改，可复制后再编辑。" : "可编辑颜色值，支持 #RRGGBB。";
-	for (var i = 0; i < _colorKeys.length; i++) {
-		var key = _colorKeys[i];
-		var row = document.createElement("div");
-		row.className = "grid grid-cols-[150px_44px_1fr] items-center gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0";
-		row.setAttribute("data-color-key", key);
-		var label = document.createElement("label");
-		label.className = "text-[12px] font-medium text-slate-700";
-		label.setAttribute("data-color-key", key);
-		label.textContent = COLOR_LABELS[key] || key;
-		var color = document.createElement("input");
-		color.type = "color";
-		color.value = current.colors[key] || "#000000";
-		color.disabled = !!current.isBuiltIn || !!current.isDefault;
-		color.setAttribute("data-color-key", key);
-		color.className = "h-8 w-10 border border-slate-200 bg-white p-0";
-		var text = document.createElement("input");
-		text.value = current.colors[key] || "";
-		text.readOnly = !!current.isBuiltIn || !!current.isDefault;
-		text.setAttribute("data-color-key", key);
-		text.className = "ui-input font-mono";
-		row.appendChild(label);
-		row.appendChild(color);
-		row.appendChild(text);
-		root.appendChild(row);
+	$("editorHint").textContent = locked ? "内置配色不可直接修改，可复制后再编辑。" : "调整下面 7 个主色即可，其余颜色自动推导。需要精修时展开高级。";
+
+	var modeRow = document.createElement("div");
+	modeRow.className = "flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2";
+	modeRow.innerHTML = '<span class="text-[12px] font-semibold text-slate-700">明暗基调</span>';
+	var modeGroup = document.createElement("div");
+	modeGroup.className = "flex gap-1";
+	["light", "dark"].forEach(function (m) {
+		var b = document.createElement("button");
+		b.type = "button";
+		b.setAttribute("data-mode-value", m);
+		b.className = "px-2 py-1 text-[12px] border " + (state.mode === m ? "border-blue-500 bg-blue-50 text-blue-800" : "border-slate-200 bg-white text-slate-600");
+		b.disabled = locked;
+		b.textContent = m === "light" ? "浅色" : "深色";
+		modeGroup.appendChild(b);
+	});
+	modeRow.appendChild(modeGroup);
+	root.appendChild(modeRow);
+
+	for (var i = 0; i < BASE_KEYS.length; i++) {
+		var bk = BASE_KEYS[i];
+		root.appendChild(colorRow(bk.label, "data-base-key", bk.key, state.base[bk.key], locked, bk.preview, null));
 	}
+
+	var details = document.createElement("details");
+	details.className = "border-t border-slate-200";
+	var summary = document.createElement("summary");
+	summary.className = "cursor-pointer select-none bg-slate-50 px-3 py-2 text-[12px] font-semibold text-slate-700";
+	summary.textContent = "高级：逐项颜色覆盖";
+	details.appendChild(summary);
+	for (var j = 0; j < _colorKeys.length; j++) {
+		var key = _colorKeys[j];
+		var overridden = Object.prototype.hasOwnProperty.call(state.overrides, key);
+		var reset = document.createElement("button");
+		reset.type = "button";
+		reset.setAttribute("data-reset-key", key);
+		reset.className = "px-1.5 py-0.5 text-[11px] border border-slate-200 text-slate-500 " + (overridden && !locked ? "" : "invisible");
+		reset.textContent = "重置";
+		var label = (COLOR_LABELS[key] || key) + (overridden ? " ●" : "");
+		details.appendChild(colorRow(label, "data-advanced-key", key, current.colors[key], locked, key, reset));
+	}
+	root.appendChild(details);
 }
 
 function clearPreviewFocus() {
@@ -467,6 +649,7 @@ function resetColors() {
 	var theme = currentTheme();
 	if (!theme || theme.isBuiltIn || theme.isDefault) { return; }
 	theme.colors = clone(defaultTheme().colors || {});
+	theme._authoring = null;
 	renderAll();
 }
 
@@ -507,22 +690,67 @@ $("colorEditor").addEventListener("focusin", function (e) {
 	var target = e.target && e.target.closest ? e.target.closest("[data-color-key]") : null;
 	activateColorPreview(target ? target.getAttribute("data-color-key") : "");
 });
+function syncInputs(attr, key, value, exclude) {
+	var nodes = $("colorEditor").querySelectorAll('[' + attr + '="' + key + '"]');
+	for (var i = 0; i < nodes.length; i++) {
+		if (nodes[i] !== exclude) { nodes[i].value = value; }
+	}
+}
+function syncAdvancedFromColors(theme) {
+	for (var i = 0; i < _colorKeys.length; i++) {
+		syncInputs("data-advanced-key", _colorKeys[i], theme.colors[_colorKeys[i]] || "", null);
+	}
+}
 $("colorEditor").addEventListener("input", function (e) {
 	var input = e.target;
-	var key = input && input.getAttribute ? input.getAttribute("data-color-key") : "";
+	if (!input || !input.getAttribute) { return; }
 	var theme = currentTheme();
-	if (!key || !theme || theme.isBuiltIn || theme.isDefault) { return; }
-	var value = input.value || "";
+	if (!theme || theme.isBuiltIn || theme.isDefault) { return; }
+	var value = (input.value || "").toLowerCase();
 	if (!isHexColor(value)) { return; }
-	theme.colors[key] = value.toLowerCase();
-	var siblings = $("colorEditor").querySelectorAll('[data-color-key="' + key + '"]');
-	for (var i = 0; i < siblings.length; i++) {
-		if (siblings[i] !== input) {
-			siblings[i].value = theme.colors[key];
-		}
+	var baseKey = input.getAttribute("data-base-key");
+	var advKey = input.getAttribute("data-advanced-key");
+	if (baseKey) {
+		var state = ensureAuthoring(theme);
+		state.base[baseKey] = value;
+		applyAuthoring(theme);
+		syncInputs("data-base-key", baseKey, value, input);
+		syncAdvancedFromColors(theme);
+		renderPreview();
+		recomputeDirty();
+	} else if (advKey) {
+		var st = ensureAuthoring(theme);
+		var wasOverride = Object.prototype.hasOwnProperty.call(st.overrides, advKey);
+		st.overrides[advKey] = value;
+		applyAuthoring(theme);
+		syncInputs("data-advanced-key", advKey, value, input);
+		if (!wasOverride) { renderEditor(); }
+		renderPreview();
+		recomputeDirty();
 	}
-	renderPreview();
-	recomputeDirty();
+});
+$("colorEditor").addEventListener("click", function (e) {
+	var theme = currentTheme();
+	if (!theme || theme.isBuiltIn || theme.isDefault) { return; }
+	var modeBtn = e.target && e.target.closest ? e.target.closest("[data-mode-value]") : null;
+	if (modeBtn) {
+		var state = ensureAuthoring(theme);
+		state.mode = modeBtn.getAttribute("data-mode-value");
+		applyAuthoring(theme);
+		renderEditor();
+		renderPreview();
+		recomputeDirty();
+		return;
+	}
+	var resetBtn = e.target && e.target.closest ? e.target.closest("[data-reset-key]") : null;
+	if (resetBtn) {
+		var st = ensureAuthoring(theme);
+		delete st.overrides[resetBtn.getAttribute("data-reset-key")];
+		applyAuthoring(theme);
+		renderEditor();
+		renderPreview();
+		recomputeDirty();
+	}
 });
 $("addBtn").addEventListener("click", function () { addThemeFrom(defaultTheme(), " 副本"); });
 $("copyBtn").addEventListener("click", function () { addThemeFrom(currentTheme(), " 副本"); });
@@ -535,7 +763,9 @@ $("saveBtn").addEventListener("click", function () {
 		action: "save",
 		data: {
 			currentThemeId: _selectedId,
-			themes: _themes
+			themes: _themes.map(function (t) {
+				return { id: t.id, name: t.name, isDefault: !!t.isDefault, isBuiltIn: !!t.isBuiltIn, colors: t.colors || {} };
+			})
 		}
 	});
 });
