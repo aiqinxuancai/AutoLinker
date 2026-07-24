@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <limits>
 #include <string_view>
 #include <unordered_set>
 #include <Windows.h>
@@ -93,7 +94,17 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 constexpr int kAiRequestRetryCount = 5;
 constexpr int kAiChatRequestRetryCount = 2;
 constexpr int kAiChatRequestTimeoutMs = 60000;
+constexpr int kAiConnectionTestExtraTimeoutMs = 20000;
 constexpr int kAiRequestCancelledHttpStatus = 499;
+
+int GetConnectionTestTimeoutMs(const AISettings& settings)
+{
+	const long long timeoutMs = static_cast<long long>(settings.timeoutMs) + kAiConnectionTestExtraTimeoutMs;
+	return static_cast<int>((std::clamp)(
+		timeoutMs,
+		1LL,
+		static_cast<long long>((std::numeric_limits<int>::max)())));
+}
 
 int GetChatRequestTimeoutMs(const AISettings& settings)
 {
@@ -5071,16 +5082,19 @@ AIResult AIService::TestConnection(const AISettings& settings)
 		return result;
 	}
 
+	AISettings connectionSettings = settings;
+	connectionSettings.timeoutMs = GetConnectionTestTimeoutMs(settings);
+
 	const std::string systemPrompt = "你是一个 API 连通性测试助手。请只返回 OK。";
 	const std::string inputText = "请只返回 OK。";
 	if (settings.protocolType == AIProtocolType::Claude) {
-		return ExecuteTaskClaude(systemPrompt, inputText, settings, 0);
+		return ExecuteTaskClaude(systemPrompt, inputText, connectionSettings, 0);
 	}
 	if (settings.protocolType == AIProtocolType::Gemini) {
-		return ExecuteTaskGemini(systemPrompt, inputText, settings, 0);
+		return ExecuteTaskGemini(systemPrompt, inputText, connectionSettings, 0);
 	}
 	if (settings.protocolType == AIProtocolType::OpenAIResponses) {
-		return ExecuteTaskOpenAIResponses(systemPrompt, inputText, settings, 0);
+		return ExecuteTaskOpenAIResponses(systemPrompt, inputText, connectionSettings, 0);
 	}
 
 	const std::string modelUtf8 = LocalToUtf8(settings.model);
@@ -5121,7 +5135,7 @@ AIResult AIService::TestConnection(const AISettings& settings)
 			endpoint,
 			requestBodyText,
 			headers,
-			settings.timeoutMs,
+			connectionSettings.timeoutMs,
 			false,
 			false,
 			"openai-test",
