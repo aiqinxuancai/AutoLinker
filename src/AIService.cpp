@@ -92,7 +92,7 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 }
 
 constexpr int kAiRequestRetryCount = 5;
-constexpr int kAiChatRequestRetryCount = 2;
+constexpr int kAiChatRequestRetryCount = 4; // 首次调用加四次重试，总共最多调用五次。
 constexpr int kAiChatRequestTimeoutMs = 60000;
 constexpr int kAiConnectionTestExtraTimeoutMs = 20000;
 constexpr int kAiRequestCancelledHttpStatus = 499;
