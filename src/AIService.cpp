@@ -3740,6 +3740,19 @@ void SyncLongTaskResult(AIChatResult& result, const AIChatRunController& control
 	result.continuationMessages = controller.ContextMessages();
 }
 
+void RemoveCompletedAssistantFromContinuation(
+	AIChatResult& result,
+	const std::string& completedAssistantContent)
+{
+	if (result.continuationMessages.empty()) {
+		return;
+	}
+	const AIChatMessage& last = result.continuationMessages.back();
+	if (last.role == "assistant" && last.content == completedAssistantContent) {
+		result.continuationMessages.pop_back();
+	}
+}
+
 AIChatMessage BuildRawCheckpointMessage(
 	const std::string& role,
 	const std::string& contentLocal,
@@ -3772,6 +3785,36 @@ void CompactLongTaskIfNeeded(
 	result.contextPrefixRawMessagesUtf8.clear();
 	resetProtocolContext(summary);
 	SyncLongTaskResult(result, controller);
+}
+
+std::vector<std::string> TakePendingUserInputs(
+	const AIChatRunOptions& runOptions,
+	const std::string& completedAssistantContent)
+{
+	if (!runOptions.takePendingUserInputsCallback) {
+		return {};
+	}
+	std::vector<std::string> pending =
+		runOptions.takePendingUserInputsCallback(completedAssistantContent);
+	pending.erase(
+		std::remove_if(
+			pending.begin(),
+			pending.end(),
+			[](const std::string& text) { return AIService::Trim(text).empty(); }),
+		pending.end());
+	return pending;
+}
+
+void AppendPendingUserInputsToController(
+	AIChatRunController& controller,
+	const std::vector<std::string>& pending)
+{
+	for (const std::string& text : pending) {
+		controller.AppendContextMessage(AIChatMessage{"user", text, "", ""});
+	}
+	if (!pending.empty()) {
+		controller.PublishCheckpoint();
+	}
 }
 
 AIChatResult ExecuteChatWithToolsClaude(
@@ -3918,14 +3961,49 @@ AIChatResult ExecuteChatWithToolsClaude(
 				result.error = "Claude response content is empty";
 				return result;
 			}
+			const std::string contentLocal = Utf8ToLocal(textUtf8);
+			if (streamCallback) {
+				streamCallback(contentLocal);
+			}
+			nlohmann::json assistantMessage = {
+				{"role", "assistant"},
+				{"content", parsed.value("content", nlohmann::json::array())}
+			};
+			messages.push_back(assistantMessage);
+			runController.AppendContextMessage(BuildRawCheckpointMessage(
+				"assistant", contentLocal, assistantMessage));
+			CompactLongTaskIfNeeded(
+				runController,
+				toolPolicy,
+				settings,
+				result,
+				[&systemUtf8, &messages, &settings, &skillPromptLocal](const std::string& summaryLocal) {
+					systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal) +
+						"\n\n" + LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal);
+					messages = nlohmann::json::array({
+						{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
+					});
+				});
+			const std::vector<std::string> pending = TakePendingUserInputs(runOptions, contentLocal);
+			if (!pending.empty()) {
+				for (const std::string& text : pending) {
+					messages.push_back({
+						{"role", "user"},
+						{"content", nlohmann::json::array({
+							{{"type", "text"}, {"text", LocalToUtf8(text)}}
+						})}
+					});
+				}
+				AppendPendingUserInputsToController(runController, pending);
+				SyncLongTaskResult(result, runController);
+				continue;
+			}
 			result.ok = true;
-			result.content = Utf8ToLocal(textUtf8);
+			result.content = contentLocal;
 			result.terminationReason = AIChatRunTerminationReason::Completed;
 			SyncLongTaskResult(result, runController);
+			RemoveCompletedAssistantFromContinuation(result, contentLocal);
 			runController.PublishCheckpoint("completed");
-			if (streamCallback) {
-				streamCallback(result.content);
-			}
 			return result;
 		}
 		if (streamCallback && !textUtf8.empty()) {
@@ -4040,6 +4118,16 @@ AIChatResult ExecuteChatWithToolsClaude(
 					{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
 				});
 			});
+		const std::vector<std::string> pending = TakePendingUserInputs(runOptions, "");
+		for (const std::string& text : pending) {
+			messages.push_back({
+				{"role", "user"},
+				{"content", nlohmann::json::array({
+					{{"type", "text"}, {"text", LocalToUtf8(text)}}
+				})}
+			});
+		}
+		AppendPendingUserInputsToController(runController, pending);
 		SyncLongTaskResult(result, runController);
 	}
 }
@@ -4197,14 +4285,45 @@ AIChatResult ExecuteChatWithToolsGemini(
 				result.error = "Gemini response content is empty";
 				return result;
 			}
+			const std::string contentLocal = Utf8ToLocal(textUtf8);
+			if (streamCallback) {
+				streamCallback(contentLocal);
+			}
+			contents.push_back(candidateContent);
+			runController.AppendContextMessage(BuildRawCheckpointMessage(
+				"assistant", contentLocal, candidateContent));
+			CompactLongTaskIfNeeded(
+				runController,
+				toolPolicy,
+				settings,
+				result,
+				[&systemUtf8, &contents, &settings, &skillPromptLocal](const std::string& summaryLocal) {
+					systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, false) + skillPromptLocal) +
+						"\n\n" + LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal);
+					contents = nlohmann::json::array({
+						{{"role", "user"}, {"parts", nlohmann::json::array({
+							{{"text", LocalToUtf8("请从检查点继续执行原任务。")}}
+						})}}
+					});
+				});
+			const std::vector<std::string> pending = TakePendingUserInputs(runOptions, contentLocal);
+			if (!pending.empty()) {
+				for (const std::string& text : pending) {
+					contents.push_back({
+						{"role", "user"},
+						{"parts", nlohmann::json::array({{{"text", LocalToUtf8(text)}}})}
+					});
+				}
+				AppendPendingUserInputsToController(runController, pending);
+				SyncLongTaskResult(result, runController);
+				continue;
+			}
 			result.ok = true;
-			result.content = Utf8ToLocal(textUtf8);
+			result.content = contentLocal;
 			result.terminationReason = AIChatRunTerminationReason::Completed;
 			SyncLongTaskResult(result, runController);
+			RemoveCompletedAssistantFromContinuation(result, contentLocal);
 			runController.PublishCheckpoint("completed");
-			if (streamCallback) {
-				streamCallback(result.content);
-			}
 			return result;
 		}
 		if (streamCallback && !textUtf8.empty()) {
@@ -4296,6 +4415,14 @@ AIChatResult ExecuteChatWithToolsGemini(
 					})}}
 				});
 			});
+		const std::vector<std::string> pending = TakePendingUserInputs(runOptions, "");
+		for (const std::string& text : pending) {
+			contents.push_back({
+				{"role", "user"},
+				{"parts", nlohmann::json::array({{{"text", LocalToUtf8(text)}}})}
+			});
+		}
+		AppendPendingUserInputsToController(runController, pending);
 		SyncLongTaskResult(result, runController);
 	}
 }
@@ -4458,14 +4585,48 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 				result.error = "Responses API response content is empty";
 				return result;
 			}
+			const std::string contentLocal = Utf8ToLocal(textUtf8);
+			if (!streamState.sawSseEvent && streamCallback) {
+				streamCallback(contentLocal);
+			}
+			AppendResponsesOutputItemsToInput(parsed, input);
+			if (parsed.contains("output") && parsed["output"].is_array()) {
+				for (const auto& item : parsed["output"]) {
+					nlohmann::json contextItem = item;
+					if (!PrepareResponsesInputItemForStatelessRequest(contextItem)) {
+						continue;
+					}
+					runController.AppendContextMessage(BuildRawCheckpointMessage(
+						"assistant", contentLocal, contextItem));
+				}
+			}
+			CompactLongTaskIfNeeded(
+				runController,
+				toolPolicy,
+				settings,
+				result,
+				[&instructionsUtf8, &input, &settings, &runController, &skillPromptLocal](const std::string&) {
+					instructionsUtf8 = BuildResponsesInstructions(
+						runController.ContextMessages(), settings, skillPromptLocal);
+					input = nlohmann::json::array({
+						BuildResponsesTextMessage("user", LocalToUtf8("请从检查点继续执行原任务。"))
+					});
+				});
+			const std::vector<std::string> pending = TakePendingUserInputs(runOptions, contentLocal);
+			if (!pending.empty()) {
+				for (const std::string& text : pending) {
+					input.push_back(BuildResponsesTextMessage("user", LocalToUtf8(text)));
+				}
+				AppendPendingUserInputsToController(runController, pending);
+				SyncLongTaskResult(result, runController);
+				continue;
+			}
 			result.ok = true;
-			result.content = Utf8ToLocal(textUtf8);
+			result.content = contentLocal;
 			result.terminationReason = AIChatRunTerminationReason::Completed;
 			SyncLongTaskResult(result, runController);
+			RemoveCompletedAssistantFromContinuation(result, contentLocal);
 			runController.PublishCheckpoint("completed");
-			if (!streamState.sawSseEvent && streamCallback) {
-				streamCallback(result.content);
-			}
 			return result;
 		}
 		if (!streamState.sawSseEvent && streamCallback && !textUtf8.empty()) {
@@ -4573,6 +4734,11 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 					BuildResponsesTextMessage("user", LocalToUtf8("请从检查点继续执行原任务。"))
 				});
 			});
+		const std::vector<std::string> pending = TakePendingUserInputs(runOptions, "");
+		for (const std::string& text : pending) {
+			input.push_back(BuildResponsesTextMessage("user", LocalToUtf8(text)));
+		}
+		AppendPendingUserInputsToController(runController, pending);
 		SyncLongTaskResult(result, runController);
 	}
 }
@@ -5624,6 +5790,11 @@ AIChatResult AIService::ExecuteChatWithTools(
 						{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
 					});
 				});
+			const std::vector<std::string> pending = TakePendingUserInputs(runOptions, "");
+			for (const std::string& text : pending) {
+				requestMessages.push_back({{"role", "user"}, {"content", LocalToUtf8(text)}});
+			}
+			AppendPendingUserInputsToController(runController, pending);
 			SyncLongTaskResult(result, runController);
 			continue;
 		}
@@ -5641,13 +5812,43 @@ AIChatResult AIService::ExecuteChatWithTools(
 			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(mergedUtf8));
 		}
 
+		const std::string contentLocal = Utf8ToLocal(mergedUtf8);
+		if (IsDeepSeekCompatibleSettings(settings)) {
+			EnsureDeepSeekAssistantMessageCompat(message);
+		}
+		requestMessages.push_back(message);
+		runController.AppendContextMessage(BuildRawCheckpointMessage(
+			"assistant", contentLocal, message));
+		CompactLongTaskIfNeeded(
+			runController,
+			toolPolicy,
+			settings,
+			result,
+			[&requestMessages, &settings, &skillPromptLocal](const std::string& summaryLocal) {
+				requestMessages = nlohmann::json::array({
+					{{"role", "system"}, {"content", LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal)}},
+					{{"role", "system"}, {"content", LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal)}},
+					{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
+				});
+			});
+		const std::vector<std::string> pending = TakePendingUserInputs(runOptions, contentLocal);
+		if (!pending.empty()) {
+			for (const std::string& text : pending) {
+				requestMessages.push_back({{"role", "user"}, {"content", LocalToUtf8(text)}});
+			}
+			AppendPendingUserInputsToController(runController, pending);
+			SyncLongTaskResult(result, runController);
+			continue;
+		}
+
 		result.ok = true;
-		result.content = Utf8ToLocal(mergedUtf8);
+		result.content = contentLocal;
 		result.terminationReason = AIChatRunTerminationReason::Completed;
 		if (message.contains("reasoning_content") && message["reasoning_content"].is_string()) {
 			result.reasoningContent = message["reasoning_content"].get<std::string>();
 		}
 		SyncLongTaskResult(result, runController);
+		RemoveCompletedAssistantFromContinuation(result, contentLocal);
 		runController.PublishCheckpoint("completed");
 		return result;
 	}

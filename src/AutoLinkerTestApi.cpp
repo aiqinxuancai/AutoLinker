@@ -359,7 +359,8 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	std::filesystem::create_directories(tempRoot, fileEc);
 	bool legacyV1 = false;
 	bool legacyV3 = false;
-	bool schemaV4RoundTrip = false;
+	bool legacyV4 = false;
+	bool schemaV5RoundTrip = false;
 	bool atomicReplace = false;
 	bool completedCheckpointIgnored = false;
 	if (!fileEc) {
@@ -383,13 +384,18 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		};
 		loadLegacy(1, legacyV1);
 		loadLegacy(3, legacyV3);
+		loadLegacy(4, legacyV4);
 
 		AIChatStoredSession stored;
-		stored.schemaVersion = 4;
-		stored.sessionId = "schema-v4";
-		stored.sessionFilePath = tempRoot / "schema-v4.json";
+		stored.schemaVersion = 5;
+		stored.sessionId = "schema-v5";
+		stored.sessionFilePath = tempRoot / "schema-v5.json";
 		stored.rollingSummaryLocal = "before";
 		stored.messages.push_back(AIChatStoredMessage{"user", "long task"});
+		stored.pendingInputs = {
+			AIChatStoredPendingInput{7, "first queued input", 1000},
+			AIChatStoredPendingInput{8, "second queued input", 2000}
+		};
 		stored.hasRunCheckpoint = true;
 		stored.runCheckpoint = interruptedCheckpoint;
 		stored.runCheckpoint.state = "running";
@@ -397,10 +403,15 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		stored.rollingSummaryLocal = "after";
 		const bool secondSave = SaveAIChatStoredSession(stored, nullptr);
 		AIChatStoredSession loaded;
-		schemaV4RoundTrip = firstSave && secondSave &&
+		schemaV5RoundTrip = firstSave && secondSave &&
 			LoadAIChatStoredSession(stored.sessionFilePath, loaded, nullptr) &&
-			loaded.schemaVersion == 4 &&
+			loaded.schemaVersion == 5 &&
 			loaded.rollingSummaryLocal == "after" &&
+			loaded.pendingInputs.size() == 2 &&
+			loaded.pendingInputs[0].id == 7 &&
+			loaded.pendingInputs[0].contentLocal == "first queued input" &&
+			loaded.pendingInputs[1].id == 8 &&
+			loaded.pendingInputs[1].contentLocal == "second queued input" &&
 			loaded.hasRunCheckpoint &&
 			loaded.runCheckpoint.state == "paused" &&
 			loaded.runCheckpoint.toolCalls.size() == 1;
@@ -439,7 +450,8 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		nearLimitResumeCompacted &&
 		legacyV1 &&
 		legacyV3 &&
-		schemaV4RoundTrip &&
+		legacyV4 &&
+		schemaV5RoundTrip &&
 		atomicReplace &&
 		completedCheckpointIgnored;
 	outCheck["ok"] = ok;
@@ -456,7 +468,8 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	outCheck["near_limit_resume_compacted"] = nearLimitResumeCompacted;
 	outCheck["legacy_v1"] = legacyV1;
 	outCheck["legacy_v3"] = legacyV3;
-	outCheck["schema_v4_round_trip"] = schemaV4RoundTrip;
+	outCheck["legacy_v4"] = legacyV4;
+	outCheck["schema_v5_round_trip"] = schemaV5RoundTrip;
 	outCheck["atomic_replace"] = atomicReplace;
 	outCheck["completed_checkpoint_ignored"] = completedCheckpointIgnored;
 	return ok;

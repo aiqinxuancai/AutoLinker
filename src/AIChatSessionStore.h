@@ -16,9 +16,16 @@ struct AIChatStoredMessage {
 	std::string rawMessageJsonUtf8;
 };
 
+// 尚未传入模型的用户输入。
+struct AIChatStoredPendingInput {
+	unsigned long long id = 0;
+	std::string contentLocal;
+	long long queuedAtUnixMs = 0;
+};
+
 // AI 对话会话存储数据。
 struct AIChatStoredSession {
-	int schemaVersion = 4;
+	int schemaVersion = 5;
 	std::string sessionId;
 	std::string sourceFileNameLocal;
 	std::string sourceFilePathHintLocal;
@@ -33,6 +40,7 @@ struct AIChatStoredSession {
 	bool autoAllowWrites = false;   // 自动允许写入模式。
 	bool hasRunCheckpoint = false;  // 是否存在待确认恢复的长期任务。
 	AIChatRunCheckpoint runCheckpoint;
+	std::vector<AIChatStoredPendingInput> pendingInputs;
 	std::vector<AIChatStoredMessage> messages;
 	std::filesystem::path sessionFilePath;
 };

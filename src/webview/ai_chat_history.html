@@ -396,6 +396,64 @@ html:not(.autolinker-page-visible) *::after {
 	margin-top: 2px;
 }
 
+.pending-inputs {
+	margin: 0 0 8px;
+	padding: 8px 10px;
+	border: 1px solid #d4d9e3;
+	border-radius: 6px;
+	background: rgba(255, 255, 255, .55);
+	font: 12px/1.45 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+}
+
+.pending-inputs[hidden] { display: none; }
+
+.pending-inputs-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin-bottom: 5px;
+	color: var(--al-subtle-text, #6c7086);
+}
+
+.pending-inputs-list {
+	max-height: 112px;
+	overflow-y: auto;
+}
+
+.pending-input-item {
+	display: grid;
+	grid-template-columns: 22px minmax(0, 1fr);
+	gap: 5px;
+	padding: 3px 0;
+	color: var(--al-body-text, #5c5f77);
+}
+
+.pending-input-order { color: var(--al-subtle-text, #8c8fa1); }
+.pending-input-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.pending-recall-btn {
+	width: 26px;
+	height: 24px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	background: transparent;
+	color: var(--al-primary, #1e66f5);
+	cursor: pointer;
+}
+
+.pending-recall-btn svg {
+	width: 15px;
+	height: 15px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.8;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
 .mode-bar {
 	display: flex;
 	align-items: center;
@@ -1581,6 +1639,7 @@ body,
 	<div class="composer">
 		<div class="input-wrap">
 			<div id="tool-approval" class="tool-approval" hidden></div>
+			<div id="pending-inputs" class="pending-inputs" hidden></div>
 			<div class="input-area">
 				<textarea id="chat-input" placeholder="&#x8F93;&#x5165;&#x6D88;&#x606F;&#xFF0C;Enter &#x53D1;&#x9001;&#xFF0C;Shift/Ctrl+Enter &#x6362;&#x884C;"></textarea>
 				<button id="send-btn" class="send-icon-btn" type="button" title="&#x53D1;&#x9001;" aria-label="&#x53D1;&#x9001;">
@@ -1832,8 +1891,9 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	var isStopping = !!stopRequested;
 	window.autolinkerBusy = isBusy;
 	if (send) {
-		send.disabled = isBusy;
-		send.style.display = isBusy ? "none" : "";
+		send.disabled = false;
+		send.style.display = "";
+		send.style.right = isBusy ? "42px" : "8px";
 	}
 	if (stop) {
 		stop.disabled = !isBusy || isStopping;
@@ -1862,7 +1922,8 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 		autoAllow.disabled = false;
 	}
 	if (input) {
-		input.disabled = isBusy;
+		input.disabled = false;
+		input.style.paddingRight = isBusy ? "76px" : "44px";
 	}
 	var planButtons = document.querySelectorAll ? document.querySelectorAll(".plan-action") : [];
 	for (var i = 0; i < planButtons.length; i++) {
@@ -1937,6 +1998,39 @@ window.autolinkerClearInput = function() {
 		window.autolinkerResizeChatInput(input);
 		input.focus();
 	}
+};
+
+window.autolinkerSetInput = function(text) {
+	var input = document.getElementById("chat-input");
+	if (input) {
+		input.value = text || "";
+		window.autolinkerResizeChatInput(input);
+		input.focus();
+		input.setSelectionRange(input.value.length, input.value.length);
+	}
+};
+
+window.autolinkerSetPendingInputs = function(items) {
+	var panel = document.getElementById("pending-inputs");
+	if (!panel) {
+		return;
+	}
+	var rows = Array.isArray(items) ? items : [];
+	if (!rows.length) {
+		panel.hidden = true;
+		panel.innerHTML = "";
+		return;
+	}
+	var html = '<div class="pending-inputs-head"><span>\u5F85\u4F20\u5165 ' + rows.length + ' \u6761</span>';
+	html += '<button class="pending-recall-btn" type="button" data-pending-action="recall" title="\u64A4\u56DE\u672B\u6761\u7F16\u8F91 (Alt+Up)" aria-label="\u64A4\u56DE\u672B\u6761\u7F16\u8F91">';
+	html += '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"></path><path d="M4 9h10a6 6 0 0 1 6 6v1"></path></svg></button></div>';
+	html += '<div class="pending-inputs-list">';
+	for (var i = 0; i < rows.length; i++) {
+		html += '<div class="pending-input-item"><span class="pending-input-order">' + (i + 1) + '.</span><span class="pending-input-text">' + window.autolinkerEscapeHtml(rows[i].text || "") + '</span></div>';
+	}
+	html += '</div>';
+	panel.innerHTML = html;
+	panel.hidden = false;
 };
 
 window.autolinkerFocusInput = function() {
@@ -2283,6 +2377,12 @@ window.autolinkerHideToolApproval = function() {
 	}
 
 	document.addEventListener("click", function(e) {
+		var pendingBtn = e.target && e.target.closest ? e.target.closest("[data-pending-action='recall']") : null;
+		if (pendingBtn) {
+			e.preventDefault();
+			post({ action: "recall_pending" });
+			return;
+		}
 		var toolBtn = e.target && e.target.closest ? e.target.closest("[data-tool-action]") : null;
 		if (toolBtn) {
 			e.preventDefault();
@@ -2393,6 +2493,11 @@ window.autolinkerHideToolApproval = function() {
 			window.autolinkerResizeChatInput(input);
 		});
 		input.addEventListener("keydown", function(e) {
+			if (e.key === "ArrowUp" && e.altKey) {
+				e.preventDefault();
+				post({ action: "recall_pending" });
+				return;
+			}
 			if (e.key === "Enter" && !e.ctrlKey && !e.shiftKey) {
 				e.preventDefault();
 				doSend();

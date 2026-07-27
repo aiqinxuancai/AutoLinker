@@ -324,6 +324,14 @@ bool SerializeSession(const AIChatStoredSession& session, nlohmann::json& outJso
 		if (session.hasRunCheckpoint) {
 			outJson["run_checkpoint"] = SerializeRunCheckpoint(session.runCheckpoint);
 		}
+		outJson["pending_inputs"] = nlohmann::json::array();
+		for (const auto& pending : session.pendingInputs) {
+			outJson["pending_inputs"].push_back({
+				{"id", pending.id},
+				{"content", LocalToUtf8TextForSessionStore(pending.contentLocal)},
+				{"queued_at_unix_ms", pending.queuedAtUnixMs}
+			});
+		}
 		outJson["messages"] = nlohmann::json::array();
 
 		for (const auto& message : session.messages) {
@@ -379,6 +387,21 @@ bool DeserializeSession(const nlohmann::json& jsonValue, AIChatStoredSession& ou
 			}
 			else {
 				outSession.runCheckpoint.state = "paused";
+			}
+		}
+	}
+	if (jsonValue.contains("pending_inputs") && jsonValue["pending_inputs"].is_array()) {
+		for (const auto& row : jsonValue["pending_inputs"]) {
+			if (!row.is_object()) {
+				continue;
+			}
+			AIChatStoredPendingInput pending = {};
+			const long long storedId = GetJsonInt64(row, "id", 0);
+			pending.id = storedId > 0 ? static_cast<unsigned long long>(storedId) : 0;
+			pending.contentLocal = GetJsonStringAsLocalText(row, "content");
+			pending.queuedAtUnixMs = GetJsonInt64(row, "queued_at_unix_ms", 0);
+			if (!pending.contentLocal.empty()) {
+				outSession.pendingInputs.push_back(std::move(pending));
 			}
 		}
 	}

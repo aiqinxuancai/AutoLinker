@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <ctime>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -87,6 +88,7 @@ constexpr UINT WM_AUTOLINKER_AI_CHAT_DENY_TOOL = WM_APP + 221;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_AUTO_ALLOW_TOOL = WM_APP + 222;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_OPEN_MCP_SETTINGS = WM_APP + 223;
 constexpr UINT WM_AUTOLINKER_AI_CHAT_OPEN_SKILL_SETTINGS = WM_APP + 224;
+constexpr UINT WM_AUTOLINKER_AI_CHAT_RECALL_PENDING = WM_APP + 225;
 constexpr UINT_PTR kHistoryWebViewFlushTimerId = 0xA17;
 constexpr UINT_PTR kSessionTimingTimerId = 0xA18;
 constexpr UINT_PTR kRemoteConfigPollTimerId = 0xA19;
@@ -112,6 +114,8 @@ constexpr int IDC_AI_CHAT_PLAN_MODE = 32565;
 constexpr int IDC_AI_CHAT_AUTO_ALLOW_MODE = 32566;
 constexpr int IDC_AI_CHAT_MCP_SETTINGS = 32567;
 constexpr int IDC_AI_CHAT_SKILL_SETTINGS = 32568;
+constexpr int IDC_AI_CHAT_PENDING_INPUTS = 32569;
+constexpr int IDC_AI_CHAT_RECALL_PENDING = 32570;
 
 constexpr UINT_PTR kEditSubclassId = 1;
 constexpr UINT_PTR kActionControlSubclassId = 2;
@@ -130,6 +134,7 @@ constexpr UINT_PTR kActionPlanMode = 8;
 constexpr UINT_PTR kActionAutoAllowMode = 9;
 constexpr UINT_PTR kActionOpenMcpSettings = 10;
 constexpr UINT_PTR kActionOpenSkillSettings = 11;
+constexpr UINT_PTR kActionRecallPending = 12;
 
 constexpr const char* kChatMcpGuideUrl =
 	"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE";
@@ -209,6 +214,8 @@ struct AIChatSessionState {
 	int effectiveContextWindow = 0;   // 请求开始时按当前 settings 解析的上下文窗口
 	bool hasPendingRunCheckpoint = false;
 	AIChatRunCheckpoint pendingRunCheckpoint;
+	std::deque<AIChatStoredPendingInput> pendingInputs;
+	unsigned long long nextPendingInputId = 1;
 	bool workspaceMirrorRefreshed = false;
 	std::uint64_t workspaceMirrorGeneration = 0;
 };
@@ -219,6 +226,8 @@ struct ChatDialogContext {
 	HWND hInput = nullptr;
 	HWND hSend = nullptr;
 	HWND hStop = nullptr;
+	HWND hPendingInputs = nullptr;
+	HWND hRecallPending = nullptr;
 	HWND hClearHistory = nullptr;
 	HWND hRestoreSession = nullptr;
 	HWND hOpenSettings = nullptr;
@@ -236,6 +245,8 @@ struct ChatDialogContext {
 	int inputRowsVisible = 1;
 	bool sessionTimingInProgress = false;
 	bool sessionTimingVisible = false;
+	bool pendingInputsVisible = false;
+	bool requestInFlight = false;
 	bool clearConfirmVisible = false;
 	bool restoreConfirmVisible = false;
 	bool hasPendingRestoreSession = false;
@@ -369,6 +380,7 @@ void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatClearConfirmedUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatClearCancelUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatStopUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatRecallPendingUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatOpenMcpSettingsUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatRestoreSessionUi(HWND hWnd, ChatDialogContext* ctx);
@@ -398,6 +410,7 @@ std::wstring WideFromUtf8Text(const std::string& text);
 bool StartChatRequest(
 	const std::string& userInput,
 	const AIChatRunCheckpoint* resumeCheckpoint = nullptr);
+bool StartNextPendingInputRequest();
 void HandleDebugRunAIChatRequest(LPARAM lParam);
 void HideWebViewToolApproval(ChatDialogContext* ctx);
 unsigned long long GetPendingToolApprovalId();
@@ -1917,7 +1930,7 @@ AIChatStoredSession BuildStoredSessionFromLockedState(const AIChatSessionState& 
 {
 	AIChatStoredSession stored = {};
 	const long long nowMs = GetCurrentUnixTimeMsForChat();
-	stored.schemaVersion = 4;
+	stored.schemaVersion = 5;
 	stored.sessionId = state.activeSessionId;
 	stored.sourceFileNameLocal = state.sourceFileNameLocal;
 	stored.sourceFilePathHintLocal = state.sourceFilePathLocal;
@@ -1934,6 +1947,7 @@ AIChatStoredSession BuildStoredSessionFromLockedState(const AIChatSessionState& 
 	if (stored.hasRunCheckpoint) {
 		stored.runCheckpoint = state.pendingRunCheckpoint;
 	}
+	stored.pendingInputs.assign(state.pendingInputs.begin(), state.pendingInputs.end());
 	stored.sessionFilePath = state.activeSessionFilePath;
 	for (const auto& message : state.messages) {
 		AIChatStoredMessage row = {};
@@ -2007,6 +2021,7 @@ void EnsureChatSessionBindingLocked(AIChatSessionState& state)
 bool HasAnyChatHistoryLocked(const AIChatSessionState& state)
 {
 	return !state.messages.empty() ||
+		!state.pendingInputs.empty() ||
 		!TrimAsciiCopy(state.rollingSummary).empty() ||
 		!TrimAsciiCopy(state.streamingAssistantPreview).empty() ||
 		state.planModeState != PlanModeState::Normal ||
@@ -2078,6 +2093,11 @@ bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
 		g_session.autoAllowWrites = stored.autoAllowWrites;
 		g_session.hasPendingRunCheckpoint = stored.hasRunCheckpoint && !hasLegacyPendingExecCall;
 		g_session.pendingRunCheckpoint = hasLegacyPendingExecCall ? AIChatRunCheckpoint{} : stored.runCheckpoint;
+		g_session.pendingInputs.assign(stored.pendingInputs.begin(), stored.pendingInputs.end());
+		g_session.nextPendingInputId = 1;
+		for (const auto& pending : g_session.pendingInputs) {
+			g_session.nextPendingInputId = (std::max)(g_session.nextPendingInputId, pending.id + 1);
+		}
 		g_session.activeSessionId = stored.sessionId;
 		g_session.activeSessionFilePath = stored.sessionFilePath;
 		g_session.sourceFilePathLocal = stored.sourceFilePathHintLocal.empty()
@@ -2141,6 +2161,8 @@ void ResetChatSessionBindingLocked(AIChatSessionState& state)
 	state.pendingPlan.clear();
 	state.hasPendingRunCheckpoint = false;
 	state.pendingRunCheckpoint = {};
+	state.pendingInputs.clear();
+	state.nextPendingInputId = 1;
 	state.autoAllowWrites = LoadPersistedAutoAllowWrites();
 	state.workspaceMirrorRefreshed = false;
 	state.workspaceMirrorGeneration = 0;
@@ -2177,6 +2199,8 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 		g_session.pendingPlan.clear();
 		g_session.hasPendingRunCheckpoint = false;
 		g_session.pendingRunCheckpoint = {};
+		g_session.pendingInputs.clear();
+		g_session.nextPendingInputId = 1;
 		ResetChatSessionBindingLocked(g_session);
 	}
 	CloseInternalExecSession(previousSessionId);
@@ -2302,11 +2326,20 @@ LRESULT CALLBACK EditControlSubclassProc(
 {
 	switch (uMsg)
 	{
+	case WM_SYSKEYDOWN:
 	case WM_KEYDOWN: {
 		const bool ctrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 		const bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+		const bool altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
 		if (ctrlDown && (wParam == 'A' || wParam == 'a')) {
 			SendMessageA(hWnd, EM_SETSEL, 0, -1);
+			return 0;
+		}
+		if ((dwRefData & kEditFlagSubmitOnEnter) != 0 && altDown && wParam == VK_UP) {
+			HWND hParent = GetParent(hWnd);
+			if (hParent != nullptr) {
+				PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_RECALL_PENDING, 0, 0);
+			}
 			return 0;
 		}
 
@@ -2394,6 +2427,10 @@ void PostChatAction(HWND hWnd, UINT_PTR action)
 	else if (action == kActionOpenSkillSettings) {
 		OutputStringToELog("[AI Chat][UI] click action: open_skill_settings");
 		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_OPEN_SKILL_SETTINGS, 0, 0);
+	}
+	else if (action == kActionRecallPending) {
+		OutputStringToELog("[AI Chat][UI] click action: recall_pending");
+		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_RECALL_PENDING, 0, 0);
 	}
 	else if (action == kActionRestoreSession) {
 		OutputStringToELog("[AI Chat][UI] click action: restore_session");
@@ -2602,6 +2639,12 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		if (ctx->hStop != nullptr) {
 			ShowWindow(ctx->hStop, SW_HIDE);
 		}
+		if (ctx->hPendingInputs != nullptr) {
+			ShowWindow(ctx->hPendingInputs, SW_HIDE);
+		}
+		if (ctx->hRecallPending != nullptr) {
+			ShowWindow(ctx->hRecallPending, SW_HIDE);
+		}
 		return;
 	}
 
@@ -2614,6 +2657,8 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int inputHeightSingle = 30;
 	const int inputHeightDouble = 54;
 	const int sendWidth = 92;
+	const int pendingInputHeight = ctx->pendingInputsVisible ? 28 : 0;
+	const int recallPendingWidth = 92;
 	const int sessionElapsedWidth = 86;
 	const int sessionStatusWidth = 54;
 	const int contextUsageWidth = 82;
@@ -2635,9 +2680,10 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int sessionTimingReservedWidth = showSessionTiming
 		? (sessionElapsedWidth + gap + sessionStatusWidth + gap)
 		: 0;
+	const int commandWidth = ctx->requestInFlight ? sendWidth * 2 + gap : sendWidth;
 	const int inputWidth = (std::max)(
 		80,
-		contentWidth - sessionTimingReservedWidth - contextUsageWidth - sendWidth - gap * 2);
+		contentWidth - sessionTimingReservedWidth - contextUsageWidth - commandWidth - gap * 2);
 	int nextInputSideX = margin + inputWidth + gap;
 	const int sessionElapsedX = nextInputSideX;
 	if (showSessionTiming) {
@@ -2649,8 +2695,10 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	}
 	const int contextUsageX = nextInputSideX;
 	const int sendX = contextUsageX + contextUsageWidth + gap;
+	const int stopX = sendX + sendWidth + gap;
 	const int inputY = clientHeight - bottomMargin - inputHeight;
-	const int mcpGuideY = inputY - mcpGuideGap - mcpGuideHeight;
+	const int pendingInputY = inputY - (ctx->pendingInputsVisible ? gap + pendingInputHeight : 0);
+	const int mcpGuideY = pendingInputY - mcpGuideGap - mcpGuideHeight;
 	const int actionRowY = mcpGuideY - gap - actionRowHeight;
 	const int historyY = margin;
 	const int historyHeight = (std::max)(80, actionRowY - gap - historyY);
@@ -2753,6 +2801,26 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		ShowWindow(ctx->hInput, SW_SHOW);
 		MoveWindow(ctx->hInput, margin, inputY, inputWidth, inputHeight, TRUE);
 	}
+	if (ctx->hPendingInputs != nullptr) {
+		ShowWindow(ctx->hPendingInputs, ctx->pendingInputsVisible ? SW_SHOW : SW_HIDE);
+		MoveWindow(
+			ctx->hPendingInputs,
+			margin,
+			pendingInputY,
+			(std::max)(80, contentWidth - recallPendingWidth - gap),
+			pendingInputHeight,
+			TRUE);
+	}
+	if (ctx->hRecallPending != nullptr) {
+		ShowWindow(ctx->hRecallPending, ctx->pendingInputsVisible ? SW_SHOW : SW_HIDE);
+		MoveWindow(
+			ctx->hRecallPending,
+			margin + contentWidth - recallPendingWidth,
+			pendingInputY,
+			recallPendingWidth,
+			pendingInputHeight,
+			TRUE);
+	}
 	if (ctx->hSessionElapsed != nullptr) {
 		ShowWindow(ctx->hSessionElapsed, showSessionTiming ? SW_SHOW : SW_HIDE);
 		MoveWindow(ctx->hSessionElapsed, sessionElapsedX, inputY, sessionElapsedWidth, inputHeight, TRUE);
@@ -2770,7 +2838,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		MoveWindow(ctx->hSend, sendX, inputY, sendWidth, inputHeight, TRUE);
 	}
 	if (ctx->hStop != nullptr) {
-		MoveWindow(ctx->hStop, sendX, inputY, sendWidth, inputHeight, TRUE);
+		MoveWindow(ctx->hStop, stopX, inputY, sendWidth, inputHeight, TRUE);
 	}
 }
 
@@ -3020,6 +3088,61 @@ void RefreshSessionTimingOnly(HWND hWnd, ChatDialogContext* ctx)
 void ClearWebViewInput(ChatDialogContext* ctx)
 {
 	ExecuteWebViewScript(ctx, L"window.autolinkerClearInput();");
+}
+
+void SetWebViewInput(ChatDialogContext* ctx, const std::string& text)
+{
+	std::wstring script = L"window.autolinkerSetInput('";
+	script += EscapeJsSingleQuotedWide(WideFromLocal(text));
+	script += L"');";
+	ExecuteWebViewScript(ctx, script);
+}
+
+void UpdateWebViewPendingInputs(
+	ChatDialogContext* ctx,
+	const std::vector<AIChatStoredPendingInput>& pendingInputs)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	nlohmann::json items = nlohmann::json::array();
+	for (const auto& pending : pendingInputs) {
+		items.push_back({
+			{"id", pending.id},
+			{"text", LocalToUtf8Text(pending.contentLocal)}
+		});
+	}
+	std::wstring script = L"window.autolinkerSetPendingInputs(";
+	script += WideFromUtf8Text(items.dump());
+	script += L");";
+	ExecuteWebViewScript(ctx, script);
+}
+
+void UpdateNativePendingInputs(
+	ChatDialogContext* ctx,
+	const std::vector<AIChatStoredPendingInput>& pendingInputs)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	ctx->pendingInputsVisible = !pendingInputs.empty();
+	if (ctx->hPendingInputs == nullptr) {
+		return;
+	}
+	if (pendingInputs.empty()) {
+		SetWindowTextW(ctx->hPendingInputs, L"");
+		return;
+	}
+	std::string preview = pendingInputs.front().contentLocal;
+	std::replace(preview.begin(), preview.end(), '\r', ' ');
+	std::replace(preview.begin(), preview.end(), '\n', ' ');
+	if (preview.size() > 100) {
+		preview.resize(100);
+		preview += "...";
+	}
+	const std::wstring label = L"\u5f85\u4f20\u5165 " + std::to_wstring(pendingInputs.size()) +
+		L" \u6761\uff1a" + WideFromLocal(preview);
+	SetWindowTextW(ctx->hPendingInputs, label.c_str());
 }
 
 void FocusWebViewInput(ChatDialogContext* ctx)
@@ -3326,6 +3449,9 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												else if (action == "stop") {
 													HandleChatStopUi(hWnd, msgCtx);
 												}
+												else if (action == "recall_pending") {
+													HandleChatRecallPendingUi(hWnd, msgCtx);
+												}
 												else if (action == "open_settings") {
 													PostMessageA(hWnd, WM_AUTOLINKER_AI_CHAT_OPEN_SETTINGS, 0, 0);
 												}
@@ -3419,6 +3545,7 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												bool stopRequested = false;
 												PlanModeState planModeState = PlanModeState::Normal;
 												bool autoAllowWrites = false;
+												std::vector<AIChatStoredPendingInput> pendingInputs;
 												ContextUsageSnapshot usageSnapshot;
 												SessionTimingSnapshot timingSnapshot;
 												{
@@ -3432,10 +3559,12 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 													stopRequested = IsStopRequestedLocked(g_session);
 													planModeState = g_session.planModeState;
 													autoAllowWrites = g_session.autoAllowWrites;
+													pendingInputs.assign(g_session.pendingInputs.begin(), g_session.pendingInputs.end());
 													usageSnapshot = BuildContextUsageSnapshotLocked(g_session, fallbackContextWindow);
 													timingSnapshot = BuildSessionTimingSnapshotLocked(g_session, GetCurrentUnixTimeMsForChat());
 												}
 												UpdateWebViewComposerState(navCtx, inFlight, stopRequested);
+												UpdateWebViewPendingInputs(navCtx, pendingInputs);
 												UpdateWebViewContextUsage(navCtx, usageSnapshot);
 												UpdateWebViewSessionTiming(navCtx, timingSnapshot);
 												UpdateWebViewUpdateTag(navCtx);
@@ -5011,6 +5140,90 @@ bool FlushStreamingAssistantPreviewToHistory(unsigned long long requestId)
 	return flushed;
 }
 
+bool EnqueuePendingUserInput(const std::string& text)
+{
+	const std::string trimmed = TrimAsciiCopy(text);
+	if (trimmed.empty()) {
+		return false;
+	}
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		EnsureChatSessionBindingLocked(g_session);
+		g_session.pendingInputs.push_back(AIChatStoredPendingInput{
+			g_session.nextPendingInputId++,
+			trimmed,
+			GetCurrentUnixTimeMsForChat()
+		});
+	}
+	PostRefreshDialog();
+	SaveChatSessionSnapshotNow();
+	return true;
+}
+
+std::vector<std::string> TakePendingUserInputsAtSafePoint(
+	unsigned long long requestId,
+	const std::string& completedAssistantContent)
+{
+	std::vector<std::string> inputs;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight || g_session.activeRequestId != requestId ||
+			g_session.pendingInputs.empty()) {
+			return inputs;
+		}
+
+		std::string assistantContent = NormalizeCodeForEIDE(g_session.streamingAssistantPreview);
+		g_session.streamingAssistantPreview.clear();
+		if (TrimAsciiCopy(assistantContent).empty()) {
+			assistantContent = NormalizeCodeForEIDE(completedAssistantContent);
+		}
+		if (!TrimAsciiCopy(assistantContent).empty()) {
+			g_session.messages.push_back(SessionMessage{
+				SessionRole::Assistant,
+				assistantContent,
+				false,
+				true,
+				"",
+				""
+			});
+		}
+
+		inputs.reserve(g_session.pendingInputs.size());
+		while (!g_session.pendingInputs.empty()) {
+			AIChatStoredPendingInput pending = std::move(g_session.pendingInputs.front());
+			g_session.pendingInputs.pop_front();
+			inputs.push_back(pending.contentLocal);
+			g_session.messages.push_back(SessionMessage{
+				SessionRole::User,
+				pending.contentLocal,
+				false,
+				true,
+				"",
+				""
+			});
+		}
+	}
+	PostRefreshDialog();
+	SaveChatSessionSnapshotNow();
+	return inputs;
+}
+
+bool RecallLastPendingUserInput(std::string& outText)
+{
+	outText.clear();
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (g_session.pendingInputs.empty()) {
+			return false;
+		}
+		outText = std::move(g_session.pendingInputs.back().contentLocal);
+		g_session.pendingInputs.pop_back();
+	}
+	PostRefreshDialog();
+	SaveChatSessionSnapshotNow();
+	return true;
+}
+
 void AppendAgentActivity(unsigned long long requestId, const std::string& line)
 {
 	const std::string trimmed = TrimAsciiCopy(line);
@@ -5266,6 +5479,10 @@ void RunAIChatWorker(void* pParams)
 					const AIChatRunCheckpoint& checkpoint) {
 					UpdateActiveRunCheckpoint(requestId, checkpoint);
 				};
+				runOptions.takePendingUserInputsCallback = [requestId = request->requestId](
+					const std::string& completedAssistantContent) {
+					return TakePendingUserInputsAtSafePoint(requestId, completedAssistantContent);
+				};
 				result->chatResult = AIService::ExecuteChatWithTools(
 					request->contextMessages,
 					request->settings,
@@ -5481,6 +5698,32 @@ bool StartChatRequest(
 	return true;
 }
 
+bool StartNextPendingInputRequest()
+{
+	AIChatStoredPendingInput pending;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (g_session.requestInFlight || g_session.pendingInputs.empty()) {
+			return false;
+		}
+		pending = std::move(g_session.pendingInputs.front());
+		g_session.pendingInputs.pop_front();
+	}
+
+	if (StartChatRequest(pending.contentLocal)) {
+		SaveChatSessionSnapshotNow();
+		return true;
+	}
+
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		g_session.pendingInputs.push_front(std::move(pending));
+	}
+	PostRefreshDialog();
+	SaveChatSessionSnapshotNow();
+	return false;
+}
+
 void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text)
 {
 	if (ctx == nullptr) {
@@ -5506,11 +5749,52 @@ void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& te
 		ClearWebViewInput(ctx);
 	}
 
-	EnableWindow(ctx->hSend, FALSE);
-	UpdateWebViewComposerState(ctx, true);
-	if (!StartChatRequest(trimmed)) {
+	bool inFlight = false;
+	bool hasPending = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		inFlight = g_session.requestInFlight;
+		hasPending = !g_session.pendingInputs.empty();
+	}
+
+	bool accepted = false;
+	if (inFlight) {
+		accepted = EnqueuePendingUserInput(trimmed);
+	}
+	else if (hasPending) {
+		accepted = EnqueuePendingUserInput(trimmed);
+		if (accepted) {
+			StartNextPendingInputRequest();
+		}
+	}
+	else {
+		accepted = StartChatRequest(trimmed);
+	}
+	if (!accepted) {
 		RefreshChatDialog(hWnd);
 	}
+	FocusChatComposerInput(ctx);
+}
+
+void HandleChatRecallPendingUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	std::string text;
+	if (!RecallLastPendingUserInput(text)) {
+		FocusChatComposerInput(ctx);
+		return;
+	}
+	if (ctx->webViewDesired && ctx->webViewContentReady) {
+		SetWebViewInput(ctx, text);
+	}
+	else if (ctx->hInput != nullptr) {
+		SetWindowTextA(ctx->hInput, text.c_str());
+		SendMessageA(ctx->hInput, EM_SETSEL, text.size(), text.size());
+		UpdateInputRowsAndLayout(hWnd, ctx, true);
+	}
+	FocusChatComposerInput(ctx);
 }
 
 void HandleDebugRunAIChatRequest(LPARAM lParam)
@@ -6211,6 +6495,7 @@ void HandleChatTaskDone(LPARAM lParam)
 	if (!result) {
 		return;
 	}
+	bool startPendingInput = false;
 
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
@@ -6224,6 +6509,16 @@ void HandleChatTaskDone(LPARAM lParam)
 		g_session.cancellation.reset();
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
+		const bool continueAfterCancel =
+			result->chatResult.cancelled && !g_session.pendingInputs.empty();
+		if (continueAfterCancel) {
+			startPendingInput = true;
+			result->chatResult.hasCheckpoint = false;
+			result->chatResult.paused = false;
+			result->chatResult.checkpoint = {};
+			g_session.hasPendingRunCheckpoint = false;
+			g_session.pendingRunCheckpoint = {};
+		}
 		if (!result->chatResult.ok && g_session.hasPendingRunCheckpoint) {
 			result->chatResult.hasCheckpoint = true;
 			result->chatResult.checkpoint = g_session.pendingRunCheckpoint;
@@ -6408,12 +6703,19 @@ void HandleChatTaskDone(LPARAM lParam)
 			OutputStringToELog("[" + LocalFromWide(L"AI\u5bf9\u8bdd") + "]" + err);
 		}
 
+		if (result->chatResult.ok && !g_session.pendingInputs.empty()) {
+			startPendingInput = true;
+		}
+
 		CompactHistoryLocked(g_session);
 	}
 
 	g_chatRequestDoneCv.notify_all();
 	PostRefreshDialog();
 	SaveChatSessionSnapshotNow();
+	if (startPendingInput) {
+		StartNextPendingInputRequest();
+	}
 }
 
 void RefreshChatDialog(HWND hWnd)
@@ -6435,6 +6737,7 @@ void RefreshChatDialog(HWND hWnd)
 	bool stopRequested = false;
 	PlanModeState planModeState = PlanModeState::Normal;
 	bool autoAllowWrites = false;
+	std::vector<AIChatStoredPendingInput> pendingInputs;
 	ContextUsageSnapshot usageSnapshot;
 	SessionTimingSnapshot timingSnapshot;
 	const int fallbackContextWindow = settingsReady
@@ -6458,6 +6761,7 @@ void RefreshChatDialog(HWND hWnd)
 		stopRequested = IsStopRequestedLocked(g_session);
 		planModeState = g_session.planModeState;
 		autoAllowWrites = g_session.autoAllowWrites;
+		pendingInputs.assign(g_session.pendingInputs.begin(), g_session.pendingInputs.end());
 		usageSnapshot = BuildContextUsageSnapshotLocked(g_session, fallbackContextWindow);
 		timingSnapshot = BuildSessionTimingSnapshotLocked(g_session, GetCurrentUnixTimeMsForChat());
 	}
@@ -6467,6 +6771,9 @@ void RefreshChatDialog(HWND hWnd)
 		HideChatConfirmInPage(ctx);
 	}
 	const bool timingVisibilityChanged = ctx->sessionTimingVisible != timingSnapshot.visible;
+	const bool pendingVisibilityChanged = ctx->pendingInputsVisible != !pendingInputs.empty();
+	const bool requestStateChanged = ctx->requestInFlight != inFlight;
+	ctx->requestInFlight = inFlight;
 
 	if (nativeHistoryVisible) {
 		SetWindowTextA(ctx->hHistory, history.c_str());
@@ -6474,6 +6781,7 @@ void RefreshChatDialog(HWND hWnd)
 	}
 	if (ctx->webViewDesired) {
 		UpdateHistoryWebViewHtml(ctx, historyHtml);
+		UpdateWebViewPendingInputs(ctx, pendingInputs);
 	}
 	const bool nativeComposerVisible = !ctx->webViewContentReady;
 	if (ctx->hClearHistory != nullptr) {
@@ -6504,8 +6812,8 @@ void RefreshChatDialog(HWND hWnd)
 		EnableWindow(ctx->hClearConfirmCancel, inFlight ? FALSE : TRUE);
 	}
 	if (ctx->hSend != nullptr) {
-		EnableWindow(ctx->hSend, inFlight ? FALSE : TRUE);
-		ShowWindow(ctx->hSend, (nativeComposerVisible && !inFlight) ? SW_SHOW : SW_HIDE);
+		EnableWindow(ctx->hSend, TRUE);
+		ShowWindow(ctx->hSend, nativeComposerVisible ? SW_SHOW : SW_HIDE);
 	}
 	if (ctx->hStop != nullptr) {
 		EnableWindow(ctx->hStop, (inFlight && !stopRequested) ? TRUE : FALSE);
@@ -6523,6 +6831,7 @@ void RefreshChatDialog(HWND hWnd)
 		ShowWindow(ctx->hSessionStatus, (nativeComposerVisible && timingSnapshot.visible) ? SW_SHOW : SW_HIDE);
 	}
 	UpdateNativeSessionTiming(ctx, timingSnapshot);
+	UpdateNativePendingInputs(ctx, pendingInputs);
 	UpdateNativePlanModeState(ctx, planModeState);
 	UpdateNativeAutoAllowModeState(ctx, autoAllowWrites);
 	UpdateWebViewComposerState(ctx, inFlight, stopRequested);
@@ -6531,7 +6840,7 @@ void RefreshChatDialog(HWND hWnd)
 	UpdateWebViewPlanModeState(ctx, planModeState);
 	UpdateWebViewAutoAllowModeState(ctx, autoAllowWrites);
 	SyncSessionTimingTimer(hWnd, timingSnapshot.inProgress);
-	if (hideInlineConfirmForBusy || timingVisibilityChanged) {
+	if (hideInlineConfirmForBusy || timingVisibilityChanged || pendingVisibilityChanged || requestStateChanged) {
 		LayoutAIChatDialog(hWnd, ctx);
 	}
 }
@@ -6630,6 +6939,12 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hStop = CreateWindowW(L"STATIC", L"\u505c\u6b62",
 			WS_CHILD | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			674, 476, 92, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_STOP), nullptr, nullptr);
+		ctx->hPendingInputs = CreateWindowW(L"STATIC", L"",
+			WS_CHILD | SS_LEFT | SS_CENTERIMAGE | SS_NOPREFIX,
+			14, 440, 560, 28, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_PENDING_INPUTS), nullptr, nullptr);
+		ctx->hRecallPending = CreateWindowW(L"STATIC", L"\u64a4\u56de\u672b\u6761",
+			WS_CHILD | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
+			580, 440, 92, 28, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_RECALL_PENDING), nullptr, nullptr);
 
 		SetDefaultFont(ctx->hHistory);
 		SetDefaultFont(ctx->hClearHistory);
@@ -6649,10 +6964,13 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		SetDefaultFont(ctx->hInput);
 		SetDefaultFont(ctx->hSend);
 		SetDefaultFont(ctx->hStop);
+		SetDefaultFont(ctx->hPendingInputs);
+		SetDefaultFont(ctx->hRecallPending);
 		InstallEditHotkeys(ctx->hHistory, kEditFlagNone);
 		InstallEditHotkeys(ctx->hInput, kEditFlagSubmitOnEnter);
 		InstallChatActionControl(ctx->hSend, kActionSubmit);
 		InstallChatActionControl(ctx->hStop, kActionStop);
+		InstallChatActionControl(ctx->hRecallPending, kActionRecallPending);
 		InstallChatActionControl(ctx->hClearHistory, kActionClear);
 		InstallChatActionControl(ctx->hRestoreSession, kActionRestoreSession);
 		InstallChatActionControl(ctx->hOpenSettings, kActionOpenSettings);
@@ -6733,6 +7051,11 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 				SetBkMode(hdc, TRANSPARENT);
 				return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
 			}
+			if (hStatic == ctx->hPendingInputs) {
+				SetTextColor(hdc, RGB(76, 79, 105));
+				SetBkMode(hdc, TRANSPARENT);
+				return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
+			}
 			if (hStatic == ctx->hSessionStatus) {
 				SetTextColor(hdc, ctx->sessionTimingInProgress ? RGB(30, 102, 245) : RGB(46, 125, 50));
 				SetBkMode(hdc, TRANSPARENT);
@@ -6749,7 +7072,9 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 				hStatic != ctx->hClearConfirmCancel &&
 				hStatic != ctx->hSend &&
 				hStatic != ctx->hStop) {
-				break;
+				if (hStatic != ctx->hRecallPending) {
+					break;
+				}
 			}
 			SetTextColor(hdc, hStatic == ctx->hClearConfirmApply ? RGB(180, 35, 24) : RGB(0, 102, 204));
 			SetBkMode(hdc, TRANSPARENT);
@@ -6863,6 +7188,12 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 	case WM_AUTOLINKER_AI_CHAT_STOP:
 		if (ctx != nullptr) {
 			HandleChatStopUi(hWnd, ctx);
+		}
+		return 0;
+
+	case WM_AUTOLINKER_AI_CHAT_RECALL_PENDING:
+		if (ctx != nullptr) {
+			HandleChatRecallPendingUi(hWnd, ctx);
 		}
 		return 0;
 
