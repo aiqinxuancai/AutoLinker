@@ -44,6 +44,9 @@ AUTOLINKER_TEST_API int AutoLinkerTest_RunGameAnalyticsSelfTest(char* buffer, in
 // 执行 AI 对话 MCP 客户端无 IDE 自检，并输出 JSON 结果。
 AUTOLINKER_TEST_API int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize);
 
+// 执行计划模式审批与结构化询问协议自检，并输出 JSON 结果。
+AUTOLINKER_TEST_API int AutoLinkerTest_RunPlanModeSelfTest(char* buffer, int bufferSize);
+
 // 对指定 DeepSeek 模型执行连通性、普通对话、thinking、多轮工具调用集成测试，并输出 JSON 结果。
 AUTOLINKER_TEST_API int AutoLinkerTest_RunDeepSeekModelIntegrationTest(
 	const char* apiKey,

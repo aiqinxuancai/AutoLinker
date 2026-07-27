@@ -164,6 +164,9 @@
     <ClCompile Include="src\AIChatThemeManager.cpp">
       <Filter>AI</Filter>
     </ClCompile>
+    <ClCompile Include="src\AIChatUserInputRequest.cpp">
+      <Filter>AI</Filter>
+    </ClCompile>
     <ClCompile Include="src\AIChatTooling.cpp">
       <Filter>AI</Filter>
     </ClCompile>
@@ -310,6 +313,9 @@
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIChatThemeManager.h">
+      <Filter>AI</Filter>
+    </ClInclude>
+    <ClInclude Include="src\AIChatUserInputRequest.h">
       <Filter>AI</Filter>
     </ClInclude>
     <ClInclude Include="src\AIChatTooling.h">

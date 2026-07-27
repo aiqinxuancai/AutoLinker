@@ -39,6 +39,7 @@
 #include "AIChatSessionStore.h"
 #include "AIChatThemeManager.h"
 #include "AIChatToolRegistry.h"
+#include "AIChatUserInputRequest.h"
 #include "AIService.h"
 #include "ConfigManager.h"
 #include "AIChatTooling.h"
@@ -148,6 +149,7 @@ constexpr const char* kNewsLinkRemoteConfigKey = "NEWS-LINK";
 constexpr const char* kAutoAllowWritesConfigKey = "ai.chat.auto_allow_writes";
 constexpr const char* kUpdatePlanMessageMarker = "@@AUTOLINKER_UPDATE_PLAN@@\n";
 constexpr const char* kToolTranscriptMessageMarker = "@@AUTOLINKER_TOOL_TRANSCRIPT@@\n";
+constexpr const char* kUserInputMessageMarker = "@@AUTOLINKER_USER_INPUT@@\n";
 
 enum class SessionRole {
 	System,
@@ -270,6 +272,7 @@ struct AIChatAsyncRequest {
 	AISettings settings = {};
 	std::vector<AIChatMessage> contextMessages;
 	std::shared_ptr<AIChatRequestCancellation> cancellation;
+	bool enablePlanUserInput = false;
 	bool hasResumeCheckpoint = false;
 	AIChatRunCheckpoint resumeCheckpoint;
 };
@@ -327,6 +330,25 @@ struct ToolApprovalRequestState {
 	nlohmann::json payloadUtf8;
 };
 
+struct PlanUserInputRequestState {
+	unsigned long long id = 0;
+	unsigned long long chatRequestId = 0;
+	std::vector<AIChatUserInputQuestion> questions;
+	std::vector<AIChatUserInputAnswer> nativeAnswers;
+	std::string responseJsonUtf8;
+	std::string error;
+	bool done = false;
+	bool cancelled = false;
+	std::mutex mutex;
+	std::condition_variable cv;
+};
+
+struct PlanUserInputDisplaySnapshot {
+	unsigned long long id = 0;
+	std::vector<AIChatUserInputQuestion> questions;
+	std::vector<AIChatUserInputAnswer> answers;
+};
+
 HWND g_mainWindow = nullptr;
 ConfigManager* g_configManager = nullptr;
 AIJsonConfig* g_aiJsonConfig = nullptr;
@@ -353,6 +375,9 @@ AIChatSessionState g_session;
 std::mutex g_toolApprovalMutex;
 ToolApprovalRequestState g_pendingToolApproval;
 unsigned long long g_nextToolApprovalId = 1;
+std::mutex g_planUserInputMutex;
+std::shared_ptr<PlanUserInputRequestState> g_pendingPlanUserInput;
+unsigned long long g_nextPlanUserInputId = 1;
 UINT g_msgAIChatDone = 0;
 UINT g_msgAIChatToolDialog = 0;
 UINT g_msgAIChatToolExec = 0;
@@ -395,6 +420,19 @@ void HandleChatRevisePlanUi(HWND hWnd, ChatDialogContext* ctx, const std::string
 void HandleChatToggleAutoAllowUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatApproveToolUi(HWND hWnd, ChatDialogContext* ctx, unsigned long long approvalId, bool enableAutoAllow);
 void HandleChatDenyToolUi(HWND hWnd, ChatDialogContext* ctx, unsigned long long approvalId);
+void HandleChatSubmitPlanUserInputUi(
+	HWND hWnd,
+	ChatDialogContext* ctx,
+	unsigned long long requestId,
+	const nlohmann::json& answersUtf8);
+void CancelPendingPlanUserInput(const std::string& reason, bool addHistory = true);
+bool TrySubmitNativePlanUserInput(HWND hWnd, ChatDialogContext* ctx, const std::string& text);
+PlanUserInputDisplaySnapshot GetPendingPlanUserInputSnapshot();
+nlohmann::json BuildPlanUserInputHistoryPayloadUtf8(
+	const std::vector<AIChatUserInputQuestion>& questions,
+	const std::vector<AIChatUserInputAnswer>& answers,
+	bool cancelled,
+	const std::string& reason);
 std::vector<AIChatStoredSessionListEntry> LoadRecentChatSessionsForCurrentSource();
 bool BeginRestoreStoredChatSessionUi(HWND hWnd, ChatDialogContext* ctx, const AIChatStoredSessionListEntry& selected);
 bool RestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry& selected);
@@ -1729,9 +1767,19 @@ bool IsUpdatePlanToolName(const std::string& toolName)
 	return _stricmp(toolName.c_str(), "update_plan") == 0;
 }
 
-bool IsUpdatePlanToolEvent(const AIChatToolEvent& evt)
+bool IsRequestUserInputToolName(const std::string& toolName)
 {
-	return IsUpdatePlanToolName(evt.name);
+	return _stricmp(toolName.c_str(), "request_user_input") == 0;
+}
+
+bool IsQuietChatToolName(const std::string& toolName)
+{
+	return IsUpdatePlanToolName(toolName) || IsRequestUserInputToolName(toolName);
+}
+
+bool IsQuietChatToolEvent(const AIChatToolEvent& evt)
+{
+	return IsQuietChatToolName(evt.name);
 }
 
 bool ExtractJsonStringField(const nlohmann::json& value, const char* key, std::string& out)
@@ -3476,6 +3524,29 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 														: std::string();
 													HandleChatRevisePlanUi(hWnd, msgCtx, feedback);
 												}
+												else if (action == "submit_plan_user_input") {
+													unsigned long long requestId = 0;
+													if (payload.contains("id")) {
+														if (payload["id"].is_number_unsigned()) {
+															requestId = payload["id"].get<unsigned long long>();
+														}
+														else if (payload["id"].is_string()) {
+															try {
+																requestId = std::stoull(payload["id"].get<std::string>());
+															}
+															catch (...) {
+																requestId = 0;
+															}
+														}
+													}
+													HandleChatSubmitPlanUserInputUi(
+														hWnd,
+														msgCtx,
+														requestId,
+														payload.contains("answers")
+															? payload["answers"]
+															: nlohmann::json::array());
+												}
 												else if (action == "toggle_auto_allow") {
 													HandleChatToggleAutoAllowUi(hWnd, msgCtx);
 												}
@@ -3607,7 +3678,7 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 							innerCtx->webViewContentReady = false;
 							SyncHistoryPresentation(innerCtx);
 							if (innerCtx->webViewReady) {
-								const std::wstring shellHtml = WideFromLocal(BuildHistoryWebViewShellHtml());
+								const std::wstring shellHtml = WideFromUtf8Text(BuildHistoryWebViewShellHtml());
 								if (!shellHtml.empty()) {
 									innerCtx->webView->NavigateToString(shellHtml.c_str());
 								}
@@ -4284,6 +4355,7 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 			LocalFromWide(
 				L"\u5f53\u524d\u5904\u4e8e\u8ba1\u5212\u6a21\u5f0f\u3002\u4f60\u53ea\u80fd\u63a2\u7d22\u3001\u9605\u8bfb\u3001\u641c\u7d22\u548c\u8bbe\u8ba1\u5b9e\u73b0\u65b9\u6848\uff1b"
 				L"\u4e0d\u5f97\u8c03\u7528\u5199\u5165\u3001\u56de\u6eda\u3001\u7f16\u8bd1\u6216\u547d\u4ee4\u6267\u884c\u5de5\u5177\u3002"
+				L"\u5982\u679c\u5b58\u5728\u4f1a\u5f71\u54cd\u65b9\u6848\u7684\u5173\u952e\u6b67\u4e49\uff0c\u4f7f\u7528 request_user_input \u63d0\u51fa 1 \u81f3 3 \u4e2a\u7ed3\u6784\u5316\u95ee\u9898\uff0c\u5e76\u5728\u7528\u6237\u56de\u7b54\u540e\u7ee7\u7eed\u5236\u5b9a\u65b9\u6848\u3002"
 				L"\u65b9\u6848\u51c6\u5907\u597d\u65f6\uff0c\u53ea\u8f93\u51fa\u4e00\u4e2a <proposed_plan>...</proposed_plan> \u5757\uff0c\u7b49\u5f85\u7528\u6237\u6279\u51c6\u540e\u518d\u5b9e\u65bd\u3002"),
 			"",
 			""
@@ -4633,6 +4705,146 @@ std::string RenderUpdatePlanContentHtml(const std::string& planText)
 	return html;
 }
 
+bool ExtractPlanUserInputHistoryPayload(const std::string& content, nlohmann::json& outPayloadUtf8)
+{
+	if (content.rfind(kUserInputMessageMarker, 0) != 0) {
+		return false;
+	}
+	const std::string payloadLocal = content.substr(std::strlen(kUserInputMessageMarker));
+	try {
+		outPayloadUtf8 = nlohmann::json::parse(LocalToUtf8Text(payloadLocal));
+		return outPayloadUtf8.is_object() &&
+			outPayloadUtf8.contains("questions") &&
+			outPayloadUtf8["questions"].is_array();
+	}
+	catch (...) {
+		return false;
+	}
+}
+
+std::string RenderPlanUserInputCardHtml(const nlohmann::json& payloadUtf8)
+{
+	const std::string status = payloadUtf8.value("status", std::string("active"));
+	const bool active = status == "active";
+	const bool cancelled = status == "cancelled";
+	const unsigned long long requestId = payloadUtf8.value("request_id", 0ULL);
+	const auto& questions = payloadUtf8["questions"];
+	const nlohmann::json answers = payloadUtf8.contains("answers") && payloadUtf8["answers"].is_array()
+		? payloadUtf8["answers"]
+		: nlohmann::json::array();
+
+	auto readLocal = [](const nlohmann::json& value, const char* key) {
+		return value.is_object() && value.contains(key) && value[key].is_string()
+			? Utf8ToLocalText(value[key].get<std::string>())
+			: std::string();
+	};
+	auto findAnswer = [&answers](const std::string& id) -> const nlohmann::json* {
+		for (const auto& answer : answers) {
+			if (answer.is_object() && answer.value("id", std::string()) == id) {
+				return &answer;
+			}
+		}
+		return nullptr;
+	};
+
+	std::string html;
+	html += "<div class=\"plan-user-input-card";
+	if (active) {
+		html += " active";
+	}
+	html += "\" data-plan-user-input-id=\"" + std::to_string(requestId) + "\">";
+	html += "<div class=\"plan-user-input-head\"><span>";
+	html += EscapeHtml(LocalFromWide(L"计划问题"));
+	html += "</span><span class=\"plan-status\">";
+	html += EscapeHtml(cancelled
+		? LocalFromWide(L"已取消")
+		: (active ? LocalFromWide(L"等待回答") : LocalFromWide(L"已回答")));
+	html += "</span></div>";
+
+	for (size_t questionIndex = 0; questionIndex < questions.size(); ++questionIndex) {
+		const auto& question = questions[questionIndex];
+		if (!question.is_object()) {
+			continue;
+		}
+		const std::string id = question.value("id", std::string());
+		const nlohmann::json* answer = findAnswer(id);
+		html += "<fieldset class=\"plan-user-input-question\" data-question-id=\"";
+		html += EscapeHtmlAttribute(id);
+		html += "\"><legend><span>";
+		html += EscapeHtml(readLocal(question, "header"));
+		html += "</span><span>" + std::to_string(questionIndex + 1) + "/" +
+			std::to_string(questions.size()) + "</span></legend><div class=\"plan-user-input-prompt\">";
+		html += EscapeHtml(readLocal(question, "question"));
+		html += "</div>";
+
+		if (active) {
+			html += "<div class=\"plan-user-input-options\">";
+			if (question.contains("options") && question["options"].is_array()) {
+				for (size_t optionIndex = 0; optionIndex < question["options"].size(); ++optionIndex) {
+					const auto& option = question["options"][optionIndex];
+					const std::string labelLocal = readLocal(option, "label");
+					html += "<label class=\"plan-user-input-option\"><input type=\"radio\" name=\"plan-question-";
+					html += EscapeHtmlAttribute(id);
+					html += "\" value=\"" + std::to_string(optionIndex) + "\" data-option-label=\"";
+					html += EscapeHtmlAttribute(labelLocal);
+					html += "\"><span><b>" + EscapeHtml(labelLocal) + "</b><small>";
+					html += EscapeHtml(readLocal(option, "description"));
+					html += "</small></span></label>";
+				}
+			}
+			html += "<label class=\"plan-user-input-option other\"><input type=\"radio\" name=\"plan-question-";
+			html += EscapeHtmlAttribute(id);
+			html += "\" value=\"other\" data-option-label=\"\"><span><b>";
+			html += EscapeHtml(LocalFromWide(L"其他"));
+			html += "</b><small>" + EscapeHtml(LocalFromWide(L"填写自定义回答")) + "</small></span></label></div>";
+			html += "<textarea class=\"plan-user-input-note\" maxlength=\"2000\" placeholder=\"";
+			html += EscapeHtmlAttribute(LocalFromWide(L"补充说明（可选）"));
+			html += "\"></textarea>";
+		}
+		else if (answer != nullptr) {
+			const std::string labelLocal = readLocal(*answer, "label");
+			const std::string noteLocal = readLocal(*answer, "note");
+			html += "<div class=\"plan-user-input-answer\"><b>";
+			html += EscapeHtml(labelLocal.empty() ? LocalFromWide(L"其他") : labelLocal);
+			html += "</b>";
+			if (!noteLocal.empty()) {
+				html += "<span>" + EscapeHtml(noteLocal) + "</span>";
+			}
+			html += "</div>";
+		}
+		else if (cancelled) {
+			html += "<div class=\"plan-user-input-answer muted\">";
+			html += EscapeHtml(LocalFromWide(L"未回答"));
+			html += "</div>";
+		}
+		html += "</fieldset>";
+	}
+	if (active) {
+		html += "<div class=\"plan-user-input-error\" role=\"alert\" hidden></div>";
+		html += "<div class=\"plan-user-input-actions\"><button class=\"btn primary\" type=\"button\" data-plan-user-input-action=\"submit\">";
+		html += EscapeHtml(LocalFromWide(L"提交回答"));
+		html += "</button></div>";
+	}
+	html += "</div>";
+	return html;
+}
+
+std::string BuildActivePlanUserInputHtml()
+{
+	const PlanUserInputDisplaySnapshot snapshot = GetPendingPlanUserInputSnapshot();
+	if (snapshot.id == 0) {
+		return std::string();
+	}
+	nlohmann::json payload = BuildPlanUserInputHistoryPayloadUtf8(
+		snapshot.questions,
+		snapshot.answers,
+		false,
+		"");
+	payload["status"] = "active";
+	payload["request_id"] = snapshot.id;
+	return RenderPlanUserInputCardHtml(payload);
+}
+
 std::string BuildHistoryHtmlLocked(
 	const AIChatSessionState& state,
 	bool settingsReady,
@@ -4679,6 +4891,14 @@ std::string BuildHistoryHtmlLocked(
 		html += "</div></div></section>";
 	};
 	auto appendMessageCard = [&appendPlanCard](std::string& html, SessionRole role, const std::string& roleText, const std::string& content, bool renderMarkdown) {
+		nlohmann::json userInputPayload;
+		if (role == SessionRole::Assistant &&
+			ExtractPlanUserInputHistoryPayload(content, userInputPayload)) {
+			html += "<section class=\"msg assistant plan-user-input-message\"><div class=\"role\">AI</div><div class=\"body\">";
+			html += RenderPlanUserInputCardHtml(userInputPayload);
+			html += "</div></section>";
+			return;
+		}
 		std::string awFile;
 		std::string awSummary;
 		std::string awDiff;
@@ -4781,6 +5001,12 @@ std::string BuildHistoryHtmlLocked(
 			appendMessageCard(body, SessionRole::Assistant, "AI", state.streamingAssistantPreview, true);
 		}
 	}
+	const std::string activeUserInputHtml = BuildActivePlanUserInputHtml();
+	if (!activeUserInputHtml.empty()) {
+		body += "<section class=\"msg assistant plan-user-input-message\"><div class=\"role\">AI</div><div class=\"body\">";
+		body += activeUserInputHtml;
+		body += "</div></section>";
+	}
 
 	if (TrimAsciiCopy(body).empty()) {
 		body += "<div class=\"empty-state\"><div class=\"empty-state-title\">";
@@ -4836,7 +5062,24 @@ std::string BuildHistoryTextLocked(
 		std::string transcriptInvocation;
 		std::string transcriptPreview;
 		bool transcriptOk = false;
-		if (ExtractAutoWriteDiffMessage(msg.content, awFile, awSummary, awDiff)) {
+		nlohmann::json userInputPayload;
+		if (msg.role == SessionRole::Assistant &&
+			ExtractPlanUserInputHistoryPayload(msg.content, userInputPayload)) {
+			const bool cancelled = userInputPayload.value("status", std::string()) == "cancelled";
+			text += cancelled
+				? LocalFromWide(L"计划问题已取消")
+				: LocalFromWide(L"计划问题已回答");
+			text += "\r\n";
+			if (userInputPayload.contains("questions") && userInputPayload["questions"].is_array()) {
+				for (const auto& question : userInputPayload["questions"]) {
+					text += Utf8ToLocalText(question.value("header", std::string()));
+					text += LocalFromWide(L"：");
+					text += Utf8ToLocalText(question.value("question", std::string()));
+					text += "\r\n";
+				}
+			}
+		}
+		else if (ExtractAutoWriteDiffMessage(msg.content, awFile, awSummary, awDiff)) {
 			text += LocalFromWide(L"\u5df2\u81ea\u52a8\u5199\u5165");
 			if (!awFile.empty()) {
 				text += LocalFromWide(L"\uff1a");
@@ -4879,6 +5122,27 @@ std::string BuildHistoryTextLocked(
 			text += state.streamingAssistantPreview;
 			text += "\r\n\r\n";
 		}
+	}
+	const PlanUserInputDisplaySnapshot userInput = GetPendingPlanUserInputSnapshot();
+	if (userInput.id != 0 && userInput.answers.size() < userInput.questions.size()) {
+		const size_t index = userInput.answers.size();
+		const auto& question = userInput.questions[index];
+		text += "[AI]\r\n";
+		text += LocalFromWide(L"计划问题：");
+		text += Utf8ToLocalText(question.headerUtf8);
+		text += "\r\n";
+		text += Utf8ToLocalText(question.questionUtf8);
+		text += "\r\n";
+		for (size_t optionIndex = 0; optionIndex < question.options.size(); ++optionIndex) {
+			text += std::to_string(optionIndex + 1);
+			text += ". ";
+			text += Utf8ToLocalText(question.options[optionIndex].labelUtf8);
+			text += " - ";
+			text += Utf8ToLocalText(question.options[optionIndex].descriptionUtf8);
+			text += "\r\n";
+		}
+		text += LocalFromWide(L"输入选项序号，或直接输入其他回答。");
+		text += "\r\n\r\n";
 	}
 	return text;
 }
@@ -4939,11 +5203,209 @@ bool RequestStopCurrentChat()
 	}
 
 	const bool started = cancellation->RequestCancel();
+	CancelPendingPlanUserInput(
+		"request_user_input was cancelled because the current AI request stopped");
 	if (started) {
 		OutputStringToELog("[AI Chat] stop requested for current dialog session");
 	}
 	PostRefreshDialog();
 	return started;
+}
+
+PlanUserInputDisplaySnapshot GetPendingPlanUserInputSnapshot()
+{
+	PlanUserInputDisplaySnapshot snapshot;
+	std::shared_ptr<PlanUserInputRequestState> pending;
+	{
+		std::lock_guard<std::mutex> guard(g_planUserInputMutex);
+		pending = g_pendingPlanUserInput;
+	}
+	if (pending == nullptr) {
+		return snapshot;
+	}
+	std::lock_guard<std::mutex> guard(pending->mutex);
+	if (pending->done) {
+		return snapshot;
+	}
+	snapshot.id = pending->id;
+	snapshot.questions = pending->questions;
+	snapshot.answers = pending->nativeAnswers;
+	return snapshot;
+}
+
+nlohmann::json BuildPlanUserInputHistoryPayloadUtf8(
+	const std::vector<AIChatUserInputQuestion>& questions,
+	const std::vector<AIChatUserInputAnswer>& answers,
+	bool cancelled,
+	const std::string& reason)
+{
+	nlohmann::json payload;
+	payload["status"] = cancelled ? "cancelled" : "answered";
+	payload["questions"] = nlohmann::json::array();
+	for (const auto& question : questions) {
+		nlohmann::json row = {
+			{"id", question.id},
+			{"header", question.headerUtf8},
+			{"question", question.questionUtf8},
+			{"options", nlohmann::json::array()}
+		};
+		for (const auto& option : question.options) {
+			row["options"].push_back({
+				{"label", option.labelUtf8},
+				{"description", option.descriptionUtf8}
+			});
+		}
+		payload["questions"].push_back(std::move(row));
+	}
+	payload["answers"] = nlohmann::json::array();
+	for (const auto& answer : answers) {
+		payload["answers"].push_back({
+			{"id", answer.questionId},
+			{"label", answer.selectedLabelUtf8},
+			{"note", answer.noteUtf8}
+		});
+	}
+	if (!reason.empty()) {
+		payload["reason"] = reason;
+	}
+	return payload;
+}
+
+void AppendPlanUserInputHistory(
+	const std::vector<AIChatUserInputQuestion>& questions,
+	const std::vector<AIChatUserInputAnswer>& answers,
+	bool cancelled,
+	const std::string& reason)
+{
+	const std::string payloadUtf8 = BuildPlanUserInputHistoryPayloadUtf8(
+		questions,
+		answers,
+		cancelled,
+		reason).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+	std::lock_guard<std::mutex> guard(g_session.mutex);
+	g_session.messages.push_back(SessionMessage{
+		SessionRole::Assistant,
+		std::string(kUserInputMessageMarker) + Utf8ToLocalText(payloadUtf8),
+		false,
+		true,
+		"",
+		""
+	});
+}
+
+void RemovePendingPlanUserInputIfSame(const std::shared_ptr<PlanUserInputRequestState>& request)
+{
+	std::lock_guard<std::mutex> guard(g_planUserInputMutex);
+	if (g_pendingPlanUserInput == request) {
+		g_pendingPlanUserInput.reset();
+	}
+}
+
+void CancelPendingPlanUserInput(const std::string& reason, bool addHistory)
+{
+	std::shared_ptr<PlanUserInputRequestState> pending;
+	{
+		std::lock_guard<std::mutex> guard(g_planUserInputMutex);
+		pending = g_pendingPlanUserInput;
+	}
+	if (pending == nullptr) {
+		return;
+	}
+
+	bool changed = false;
+	std::vector<AIChatUserInputQuestion> questions;
+	std::vector<AIChatUserInputAnswer> answers;
+	{
+		std::lock_guard<std::mutex> guard(pending->mutex);
+		if (!pending->done) {
+			pending->done = true;
+			pending->cancelled = true;
+			pending->error = reason.empty()
+				? "request_user_input was cancelled before receiving a response"
+				: reason;
+			questions = pending->questions;
+			answers = pending->nativeAnswers;
+			changed = true;
+		}
+	}
+	if (!changed) {
+		return;
+	}
+	RemovePendingPlanUserInputIfSame(pending);
+	if (addHistory) {
+		AppendPlanUserInputHistory(questions, answers, true, reason);
+	}
+	pending->cv.notify_one();
+	PostRefreshDialog();
+}
+
+std::string BuildPlanUserInputErrorResultLocal(const std::string& error)
+{
+	return Utf8ToLocalText(nlohmann::json({
+		{"ok", false},
+		{"error", error.empty() ? "request_user_input failed" : error}
+	}).dump());
+}
+
+std::string RequestPlanUserInputFromChatWorker(
+	unsigned long long chatRequestId,
+	const std::string& argumentsJsonUtf8,
+	const std::function<bool()>& cancelCallback,
+	bool& outOk)
+{
+	outOk = false;
+	std::vector<AIChatUserInputQuestion> questions;
+	std::string error;
+	if (!ParseAIChatUserInputRequestArguments(argumentsJsonUtf8, questions, error)) {
+		return BuildPlanUserInputErrorResultLocal(error);
+	}
+
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight ||
+			g_session.activeRequestId != chatRequestId ||
+			g_session.planModeState != PlanModeState::Planning) {
+			return BuildPlanUserInputErrorResultLocal(
+				"request_user_input is only available during active plan mode");
+		}
+	}
+
+	auto request = std::make_shared<PlanUserInputRequestState>();
+	request->chatRequestId = chatRequestId;
+	request->questions = std::move(questions);
+	{
+		std::lock_guard<std::mutex> guard(g_planUserInputMutex);
+		if (g_pendingPlanUserInput != nullptr) {
+			return BuildPlanUserInputErrorResultLocal(
+				"another request_user_input call is already waiting for an answer");
+		}
+		request->id = g_nextPlanUserInputId++;
+		g_pendingPlanUserInput = request;
+	}
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (g_session.requestInFlight && g_session.activeRequestId == chatRequestId) {
+			g_session.agentActivityLines.push_back(
+				LocalFromWide(L"等待用户回答计划问题..."));
+		}
+	}
+	PostRefreshDialog();
+
+	std::unique_lock<std::mutex> lock(request->mutex);
+	while (!request->done) {
+		request->cv.wait_for(lock, std::chrono::milliseconds(100));
+		if (!request->done && cancelCallback && cancelCallback()) {
+			lock.unlock();
+			CancelPendingPlanUserInput(
+				"request_user_input was cancelled before receiving a response");
+			lock.lock();
+		}
+	}
+	if (request->cancelled) {
+		return BuildPlanUserInputErrorResultLocal(request->error);
+	}
+	outOk = true;
+	return Utf8ToLocalText(request->responseJsonUtf8);
 }
 
 std::string DescribeMissingChatSettingField(const std::string& missingField)
@@ -5028,7 +5490,7 @@ void UpsertToolTranscriptMessage(
 	const std::string& resultJsonLocal,
 	bool ok)
 {
-	if (IsUpdatePlanToolName(toolName)) {
+	if (IsQuietChatToolName(toolName)) {
 		return;
 	}
 
@@ -5472,6 +5934,7 @@ void RunAIChatWorker(void* pParams)
 			}
 			else {
 				AIChatRunOptions runOptions;
+				runOptions.enablePlanUserInput = request->enablePlanUserInput;
 				if (request->hasResumeCheckpoint) {
 					runOptions.resumeCheckpoint = &request->resumeCheckpoint;
 				}
@@ -5491,6 +5954,15 @@ void RunAIChatWorker(void* pParams)
 						requestId = request->requestId
 					](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
 						FlushStreamingAssistantPreviewToHistory(requestId);
+						if (IsRequestUserInputToolName(toolName)) {
+							return RequestPlanUserInputFromChatWorker(
+								requestId,
+								argumentsJson,
+								[cancellation]() {
+									return cancellation != nullptr && cancellation->IsCancelled();
+								},
+								outOk);
+						}
 						if (ShouldBlockToolForCurrentPlanMode(toolName)) {
 							outOk = false;
 							AppendAgentActivity(
@@ -5515,7 +5987,7 @@ void RunAIChatWorker(void* pParams)
 								false);
 							return workspaceMirrorBlockedResult;
 						}
-						if (!IsUpdatePlanToolName(toolName)) {
+						if (!IsQuietChatToolName(toolName)) {
 							AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, false, false));
 						}
 						UpsertToolTranscriptMessage(requestId, "running", toolName, argumentsJson, "", false);
@@ -5530,7 +6002,7 @@ void RunAIChatWorker(void* pParams)
 							cancellation != nullptr ? &cancellation->httpRequest : nullptr);
 						UpdateInternalWorkspaceMirrorStateAfterToolCall(toolName, outOk);
 						UpsertToolTranscriptMessage(requestId, "ran", toolName, argumentsJson, toolResult, outOk);
-						if (!IsUpdatePlanToolName(toolName)) {
+						if (!IsQuietChatToolName(toolName)) {
 							AppendAgentActivity(requestId, BuildAgentActivityLine(toolName, true, outOk));
 						}
 						return toolResult;
@@ -5638,6 +6110,7 @@ bool StartChatRequest(
 		request->settings = settings;
 		request->contextMessages = BuildContextMessagesLocked(g_session);
 		request->cancellation = std::make_shared<AIChatRequestCancellation>();
+		request->enablePlanUserInput = g_session.planModeState == PlanModeState::Planning;
 		const AIChatRunCheckpoint* pendingCheckpoint = g_session.hasPendingRunCheckpoint
 			? &g_session.pendingRunCheckpoint
 			: nullptr;
@@ -5738,6 +6211,19 @@ void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& te
 		FocusChatComposerInput(ctx);
 		return;
 	}
+	if (!ctx->webViewContentReady && TrySubmitNativePlanUserInput(hWnd, ctx, trimmed)) {
+		if (ctx->hInput != nullptr) {
+			SetWindowTextA(ctx->hInput, "");
+			ctx->inputRowsVisible = 1;
+			LayoutAIChatDialog(hWnd, ctx);
+		}
+		FocusChatComposerInput(ctx);
+		return;
+	}
+	if (GetPendingPlanUserInputSnapshot().id != 0) {
+		FocusChatComposerInput(ctx);
+		return;
+	}
 
 	if (!ctx->webViewDesired && ctx->hInput != nullptr) {
 		SetWindowTextA(ctx->hInput, "");
@@ -5774,6 +6260,150 @@ void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& te
 		RefreshChatDialog(hWnd);
 	}
 	FocusChatComposerInput(ctx);
+}
+
+bool CompletePlanUserInputRequest(
+	unsigned long long requestId,
+	const std::vector<AIChatUserInputAnswer>& answers,
+	std::string& outError)
+{
+	outError.clear();
+	std::shared_ptr<PlanUserInputRequestState> pending;
+	{
+		std::lock_guard<std::mutex> guard(g_planUserInputMutex);
+		pending = g_pendingPlanUserInput;
+	}
+	if (pending == nullptr || pending->id != requestId) {
+		outError = "the question request is no longer active";
+		return false;
+	}
+
+	std::string responseJsonUtf8;
+	if (!BuildAIChatUserInputResponseJson(
+			pending->questions,
+			answers,
+			responseJsonUtf8,
+			outError)) {
+		return false;
+	}
+	{
+		std::lock_guard<std::mutex> guard(pending->mutex);
+		if (pending->done) {
+			outError = "the question request has already been completed";
+			return false;
+		}
+		pending->responseJsonUtf8 = std::move(responseJsonUtf8);
+		pending->nativeAnswers = answers;
+		pending->done = true;
+	}
+	RemovePendingPlanUserInputIfSame(pending);
+	AppendPlanUserInputHistory(pending->questions, answers, false, "");
+	pending->cv.notify_one();
+	SaveChatSessionSnapshotNow();
+	PostRefreshDialog();
+	return true;
+}
+
+void HandleChatSubmitPlanUserInputUi(
+	HWND hWnd,
+	ChatDialogContext* ctx,
+	unsigned long long requestId,
+	const nlohmann::json& answersUtf8)
+{
+	std::vector<AIChatUserInputAnswer> answers;
+	if (answersUtf8.is_array()) {
+		for (const auto& row : answersUtf8) {
+			if (!row.is_object()) {
+				continue;
+			}
+			answers.push_back(AIChatUserInputAnswer{
+				row.value("id", std::string()),
+				row.value("label", std::string()),
+				row.value("note", std::string())
+			});
+		}
+	}
+
+	std::string error;
+	if (!CompletePlanUserInputRequest(requestId, answers, error)) {
+		MessageBoxA(
+			hWnd,
+			Utf8ToLocalText(error).c_str(),
+			LocalFromWide(L"计划问题").c_str(),
+			MB_ICONWARNING | MB_OK);
+		RefreshChatDialog(hWnd);
+		return;
+	}
+	if (ctx != nullptr) {
+		FocusChatComposerInput(ctx);
+	}
+}
+
+bool TrySubmitNativePlanUserInput(HWND hWnd, ChatDialogContext* ctx, const std::string& text)
+{
+	(void)ctx;
+	std::shared_ptr<PlanUserInputRequestState> pending;
+	{
+		std::lock_guard<std::mutex> guard(g_planUserInputMutex);
+		pending = g_pendingPlanUserInput;
+	}
+	if (pending == nullptr) {
+		return false;
+	}
+
+	std::vector<AIChatUserInputAnswer> completedAnswers;
+	unsigned long long requestId = 0;
+	{
+		std::lock_guard<std::mutex> guard(pending->mutex);
+		if (pending->done || pending->nativeAnswers.size() >= pending->questions.size()) {
+			return true;
+		}
+		const AIChatUserInputQuestion& question = pending->questions[pending->nativeAnswers.size()];
+		const std::string trimmed = TrimAsciiCopy(text);
+		AIChatUserInputAnswer answer;
+		answer.questionId = question.id;
+		bool numeric = !trimmed.empty();
+		for (const unsigned char ch : trimmed) {
+			if (ch < '0' || ch > '9') {
+				numeric = false;
+				break;
+			}
+		}
+		if (numeric) {
+			const unsigned long selected = std::strtoul(trimmed.c_str(), nullptr, 10);
+			if (selected >= 1 && selected <= question.options.size()) {
+				answer.selectedLabelUtf8 = question.options[selected - 1].labelUtf8;
+			}
+			else {
+				MessageBoxA(
+					hWnd,
+					LocalFromWide(L"选项序号无效，请重新输入。").c_str(),
+					LocalFromWide(L"计划问题").c_str(),
+					MB_ICONWARNING | MB_OK);
+				return true;
+			}
+		}
+		else {
+			answer.noteUtf8 = LocalToUtf8Text(trimmed);
+		}
+		pending->nativeAnswers.push_back(std::move(answer));
+		if (pending->nativeAnswers.size() < pending->questions.size()) {
+			PostRefreshDialog();
+			return true;
+		}
+		completedAnswers = pending->nativeAnswers;
+		requestId = pending->id;
+	}
+
+	std::string error;
+	if (!CompletePlanUserInputRequest(requestId, completedAnswers, error)) {
+		MessageBoxA(
+			hWnd,
+			Utf8ToLocalText(error).c_str(),
+			LocalFromWide(L"计划问题").c_str(),
+			MB_ICONWARNING | MB_OK);
+	}
+	return true;
 }
 
 void HandleChatRecallPendingUi(HWND hWnd, ChatDialogContext* ctx)
@@ -6463,7 +7093,7 @@ void AppendToolEventHistoryMessagesLocked(AIChatSessionState& state, const AICha
 	std::vector<AIChatToolEvent> visibleEvents;
 	visibleEvents.reserve(chatResult.toolEvents.size());
 	for (const auto& evt : chatResult.toolEvents) {
-		if (!IsUpdatePlanToolEvent(evt)) {
+		if (!IsQuietChatToolEvent(evt)) {
 			visibleEvents.push_back(evt);
 		}
 	}
@@ -7275,6 +7905,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 
 	case WM_CLOSE:
 	{
+		RequestStopCurrentChat();
 		std::string sessionId;
 		std::string projectDirectory;
 		GetAIChatExecContextForTooling(sessionId, projectDirectory);
@@ -8324,6 +8955,17 @@ void Initialize(HWND mainWindow, ConfigManager* configManager, AIJsonConfig* aiJ
 
 void Shutdown()
 {
+	std::shared_ptr<AIChatRequestCancellation> chatCancellation;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		chatCancellation = g_session.cancellation;
+	}
+	if (chatCancellation != nullptr) {
+		chatCancellation->RequestCancel();
+	}
+	CancelPendingPlanUserInput(
+		"request_user_input was cancelled because AI chat is shutting down",
+		false);
 	ShutdownInternalExecSessions();
 	std::vector<std::shared_ptr<ToolExecutionRequest>> executionRequests;
 	{
@@ -8718,12 +9360,20 @@ std::string BuildPlanModeSelfTestJson()
 		ExtractProposedPlanContent(plainHistory, extractedPlainPlan) &&
 		extractedPlainPlan == plainPlan;
 
+	const nlohmann::json userInputCheck = nlohmann::json::parse(
+		BuildAIChatUserInputRequestSelfTestJson(),
+		nullptr,
+		false);
+	const bool userInputOk = userInputCheck.is_object() &&
+		userInputCheck.value("ok", false);
+
 	return nlohmann::json({
 		{"name", "plan-mode-approval-compat"},
-		{"ok", explicitOk && toolPlanOk && plainPlanOk},
+		{"ok", explicitOk && toolPlanOk && plainPlanOk && userInputOk},
 		{"explicit_plan", explicitOk},
 		{"update_plan_fallback", toolPlanOk},
-		{"plain_text_fallback", plainPlanOk}
+		{"plain_text_fallback", plainPlanOk},
+		{"user_input_protocol", userInputCheck}
 	}).dump();
 }
 

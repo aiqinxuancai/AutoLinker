@@ -2508,11 +2508,11 @@ nlohmann::json BuildConfiguredToolCatalog(const AISettings& settings)
 		FilterToolCatalogForSourceEditMode(BuildPublicToolCatalog(), settings.sourceEditMode));
 }
 
-nlohmann::json BuildInternalToolCatalog(const AISettings& settings);
+nlohmann::json BuildInternalToolCatalog(const AISettings& settings, bool enablePlanUserInput);
 
-nlohmann::json BuildChatToolDefinitions(const AISettings& settings)
+nlohmann::json BuildChatToolDefinitions(const AISettings& settings, bool enablePlanUserInput)
 {
-	const nlohmann::json catalog = BuildInternalToolCatalog(settings);
+	const nlohmann::json catalog = BuildInternalToolCatalog(settings, enablePlanUserInput);
 	nlohmann::json tools = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		tools.push_back({
@@ -2529,9 +2529,10 @@ nlohmann::json BuildChatToolDefinitions(const AISettings& settings)
 
 nlohmann::json BuildChatToolDefinitions(
 	const AISettings& settings,
-	const std::vector<AIChatMessage>&)
+	const std::vector<AIChatMessage>&,
+	bool enablePlanUserInput)
 {
-	return BuildChatToolDefinitions(settings);
+	return BuildChatToolDefinitions(settings, enablePlanUserInput);
 }
 
 std::string TruncateGeminiDescription(const std::string& text)
@@ -2620,14 +2621,70 @@ nlohmann::json SanitizeGeminiSchema(const nlohmann::json& schema)
 	return out;
 }
 
-nlohmann::json BuildInternalToolCatalog(const AISettings& settings)
+nlohmann::json BuildRequestUserInputToolDefinition()
 {
-	return BuildConfiguredToolCatalog(settings);
+	static const nlohmann::json definition = nlohmann::json::parse(R"json(
+{
+  "name": "request_user_input",
+  "description": "Request user input for one to three short questions and wait for the response. Use only for high-impact ambiguities during plan mode. Prefer one question. Provide two or three mutually exclusive choices, put the recommended option first, and suffix its label with (Recommended). The client adds a free-form Other option automatically.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "questions": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 3,
+        "description": "Questions to show the user. Prefer 1 and do not exceed 3.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9_]*$", "description": "Stable snake_case identifier for mapping the answer."},
+            "header": {"type": "string", "maxLength": 12, "description": "Short UI header with no more than 12 characters."},
+            "question": {"type": "string", "maxLength": 500, "description": "Single-sentence prompt shown to the user."},
+            "options": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 3,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "label": {"type": "string", "maxLength": 80, "description": "User-facing label of one to five words."},
+                  "description": {"type": "string", "maxLength": 300, "description": "One short sentence explaining the impact or tradeoff."}
+                },
+                "required": ["label", "description"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["id", "header", "question", "options"],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": ["questions"],
+    "additionalProperties": false
+  }
+}
+)json");
+	return definition;
 }
 
-nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>&, bool, const AISettings& settings)
+nlohmann::json BuildInternalToolCatalog(const AISettings& settings, bool enablePlanUserInput)
 {
-	const nlohmann::json catalog = BuildInternalToolCatalog(settings);
+	nlohmann::json catalog = BuildConfiguredToolCatalog(settings);
+	if (enablePlanUserInput) {
+		catalog.push_back(BuildRequestUserInputToolDefinition());
+	}
+	return catalog;
+}
+
+nlohmann::json BuildGeminiTools(
+	const std::vector<AIChatMessage>&,
+	bool,
+	const AISettings& settings,
+	bool enablePlanUserInput)
+{
+	const nlohmann::json catalog = BuildInternalToolCatalog(settings, enablePlanUserInput);
 	nlohmann::json declarations = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		if (!item.is_object()) {
@@ -2646,9 +2703,10 @@ nlohmann::json BuildGeminiTools(const std::vector<AIChatMessage>&, bool, const A
 
 nlohmann::json BuildResponsesToolDefinitions(
 	const AISettings& settings,
-	const std::vector<AIChatMessage>&)
+	const std::vector<AIChatMessage>&,
+	bool enablePlanUserInput)
 {
-	const nlohmann::json catalog = BuildInternalToolCatalog(settings);
+	const nlohmann::json catalog = BuildInternalToolCatalog(settings, enablePlanUserInput);
 	nlohmann::json tools = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		tools.push_back({
@@ -2740,6 +2798,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"- 需要本地命令时用 exec_command（会经用户确认后执行）；长命令返回 session_id 后用 write_stdin 轮询。\n\n"
 			"计划模式：\n"
 			"- 如果上下文系统消息说明当前处于计划模式，只能探索、阅读、搜索和制定方案，不要写入文件、回滚、编译或调用 exec_command/write_stdin。\n"
+			"- 仅当存在会实质改变方案且无法从工程中确认的歧义时，使用 request_user_input 提出 1 至 3 个短问题；收到工具返回的用户答案后继续规划，不要把工具答案当作最终批准。\n"
 			"- 计划准备好时，必须用单独的 <proposed_plan>...</proposed_plan> 块提交方案，等待用户批准后再实施。\n"
 			"- 用户批准计划后再按批准方案执行；若用户要求修改计划，先重新提交新的 <proposed_plan>。\n\n"
 			"易语言基础约定：\n"
@@ -2980,10 +3039,14 @@ std::string BuildJsonHeadersOnly(const AISettings& settings)
 
 nlohmann::json BuildClaudeTools(
 	const AISettings& settings,
-	const std::vector<AIChatMessage>& contextMessages)
+	const std::vector<AIChatMessage>& contextMessages,
+	bool enablePlanUserInput)
 {
 	nlohmann::json out = nlohmann::json::array();
-	const nlohmann::json openAiTools = BuildChatToolDefinitions(settings, contextMessages);
+	const nlohmann::json openAiTools = BuildChatToolDefinitions(
+		settings,
+		contextMessages,
+		enablePlanUserInput);
 	for (const auto& tool : openAiTools) {
 		if (!tool.contains("function") || !tool["function"].is_object()) {
 			continue;
@@ -2998,10 +3061,10 @@ nlohmann::json BuildClaudeTools(
 	return out;
 }
 
-nlohmann::json BuildGeminiTools(const AISettings& settings)
+nlohmann::json BuildGeminiTools(const AISettings& settings, bool enablePlanUserInput)
 {
 	nlohmann::json declarations = nlohmann::json::array();
-	const nlohmann::json openAiTools = BuildChatToolDefinitions(settings);
+	const nlohmann::json openAiTools = BuildChatToolDefinitions(settings, enablePlanUserInput);
 	for (const auto& tool : openAiTools) {
 		if (!tool.contains("function") || !tool["function"].is_object()) {
 			continue;
@@ -3836,7 +3899,10 @@ AIChatResult ExecuteChatWithToolsClaude(
 		return result;
 	}
 	const std::string endpoint = BuildClaudeEndpoint(settings.baseUrl);
-	const nlohmann::json tools = BuildClaudeTools(settings, contextMessages);
+	const nlohmann::json tools = BuildClaudeTools(
+		settings,
+		contextMessages,
+		runOptions.enablePlanUserInput);
 
 	const std::string skillPromptLocal = BuildSkillRuntimePrompt(runController.ContextMessages());
 	std::string systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal);
@@ -4152,7 +4218,11 @@ AIChatResult ExecuteChatWithToolsGemini(
 	}
 	std::string endpoint = BuildGeminiEndpoint(settings.baseUrl, LocalToUtf8(settings.model), false);
 	endpoint = AppendQueryParam(endpoint, "key", settings.apiKey);
-	nlohmann::json tools = BuildGeminiTools(runController.ContextMessages(), false, settings);
+	nlohmann::json tools = BuildGeminiTools(
+		runController.ContextMessages(),
+		false,
+		settings,
+		runOptions.enablePlanUserInput);
 
 	bool degradedRequestMode = false;
 	const std::string skillPromptLocal = BuildSkillRuntimePrompt(runController.ContextMessages());
@@ -4235,7 +4305,11 @@ AIChatResult ExecuteChatWithToolsGemini(
 				degradedRequestMode = true;
 				systemUtf8 = LocalToUtf8(
 					BuildGeminiChatSystemPrompt(settings, degradedRequestMode) + skillPromptLocal);
-				tools = BuildGeminiTools(runController.ContextMessages(), true, settings);
+				tools = BuildGeminiTools(
+					runController.ContextMessages(),
+					true,
+					settings,
+					runOptions.enablePlanUserInput);
 				--round;
 				continue;
 			}
@@ -4446,7 +4520,10 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		return result;
 	}
 	const std::string endpoint = BuildOpenAIResponsesEndpoint(settings.baseUrl);
-	const nlohmann::json tools = BuildResponsesToolDefinitions(settings, runController.ContextMessages());
+	const nlohmann::json tools = BuildResponsesToolDefinitions(
+		settings,
+		runController.ContextMessages(),
+		runOptions.enablePlanUserInput);
 
 	nlohmann::json input = nlohmann::json::array();
 	for (const AIChatMessage& msg : runController.ContextMessages()) {
@@ -5550,7 +5627,10 @@ AIChatResult AIService::ExecuteChatWithTools(
 				repairStats.removedIncompleteGroups));
 	}
 
-	const nlohmann::json tools = BuildChatToolDefinitions(settings, runController.ContextMessages());
+	const nlohmann::json tools = BuildChatToolDefinitions(
+		settings,
+		runController.ContextMessages(),
+		runOptions.enablePlanUserInput);
 	AIChatToolPolicy::Session toolPolicy;
 
 	for (int round = 0;; ++round) {
@@ -6354,7 +6434,22 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			contains(realPageCatalog, "read_real_file") &&
 			!contains(mirrorCatalog, "read_real_file") &&
 			contains(realPageCatalog, "refresh_workspace_mirror") &&
-			contains(mirrorCatalog, "refresh_workspace_mirror");
+			contains(mirrorCatalog, "refresh_workspace_mirror") &&
+			!contains(nativeCatalog, "request_user_input");
+		const nlohmann::json userInputTool = BuildRequestUserInputToolDefinition();
+		const nlohmann::json userInputSchema = userInputTool.value(
+			"inputSchema",
+			nlohmann::json::object());
+		const nlohmann::json userInputProperties = userInputSchema.value(
+			"properties",
+			nlohmann::json::object());
+		const bool planUserInputSchemaOk =
+			userInputTool.value("name", std::string()) == "request_user_input" &&
+			userInputProperties.contains("questions") &&
+			userInputProperties["questions"].value("minItems", 0) == 1 &&
+			userInputProperties["questions"].value("maxItems", 0) == 3 &&
+			!userInputProperties.contains("autoResolutionMs");
+		ok = ok && planUserInputSchemaOk;
 		checks.push_back({
 			{"name", "all_configured_tools_always_visible"},
 			{"ok", ok},
@@ -6363,6 +6458,8 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"mirror_tool_count", mirrorCatalog.size()},
 			{"real_page_refresh_visible", contains(realPageCatalog, "refresh_workspace_mirror")},
 			{"mirror_refresh_visible", contains(mirrorCatalog, "refresh_workspace_mirror")},
+			{"public_user_input_hidden", !contains(nativeCatalog, "request_user_input")},
+			{"plan_user_input_schema", planUserInputSchemaOk},
 			{"real_page_read_visible", contains(realPageCatalog, "read_real_file")},
 			{"mirror_real_page_read_hidden", !contains(mirrorCatalog, "read_real_file")}
 		});

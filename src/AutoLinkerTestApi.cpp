@@ -2113,6 +2113,11 @@ extern "C" int AutoLinkerTest_RunGameAnalyticsSelfTest(char* buffer, int bufferS
 	return CopyStringToBuffer(GameAnalyticsClient::BuildSelfTestReportJson(), buffer, bufferSize);
 }
 
+extern "C" int AutoLinkerTest_RunPlanModeSelfTest(char* buffer, int bufferSize)
+{
+	return CopyStringToBuffer(AIChatFeature::BuildPlanModeSelfTestJson(), buffer, bufferSize);
+}
+
 extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 {
 	nlohmann::json report = nlohmann::json::parse(AIChatMcpClient::BuildSelfTestReportJson(), nullptr, false);

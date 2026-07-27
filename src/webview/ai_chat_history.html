@@ -1008,6 +1008,157 @@ html:not(.autolinker-page-visible) *::after {
 	margin-top: 10px;
 }
 
+.plan-user-input-card {
+	border: 1px solid #b9cffb;
+	background: #f7faff;
+	border-radius: 8px;
+	padding: 10px;
+	box-sizing: border-box;
+}
+
+.plan-user-input-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	margin-bottom: 10px;
+	font-size: 12px;
+	font-weight: 700;
+}
+
+.plan-user-input-question {
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.plan-user-input-question + .plan-user-input-question {
+	margin-top: 14px;
+	padding-top: 12px;
+	border-top: 1px solid #d7dce6;
+}
+
+.plan-user-input-question legend {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	width: 100%;
+	padding: 0;
+	font-size: 11px;
+	font-weight: 700;
+	color: #5d6475;
+}
+
+.plan-user-input-prompt {
+	margin-top: 5px;
+	font-size: 13px;
+	line-height: 1.55;
+	font-weight: 600;
+}
+
+.plan-user-input-options {
+	display: grid;
+	gap: 6px;
+	margin-top: 8px;
+}
+
+.plan-user-input-option {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr);
+	align-items: start;
+	gap: 8px;
+	border: 1px solid #d7dce6;
+	border-radius: 6px;
+	background: #ffffff;
+	padding: 8px;
+	cursor: pointer;
+	box-sizing: border-box;
+}
+
+.plan-user-input-option:hover {
+	border-color: #8db0f7;
+}
+
+.plan-user-input-option:has(input:checked) {
+	border-color: #1e66f5;
+	background: #eef4ff;
+}
+
+.plan-user-input-option input {
+	width: 14px;
+	height: 14px;
+	margin: 2px 0 0;
+	accent-color: #1e66f5;
+}
+
+.plan-user-input-option span {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+
+.plan-user-input-option b,
+.plan-user-input-answer b {
+	font-size: 12px;
+	overflow-wrap: anywhere;
+}
+
+.plan-user-input-option small {
+	font-size: 11px;
+	line-height: 1.45;
+	font-weight: 400;
+	color: #5d6475;
+	overflow-wrap: anywhere;
+}
+
+.plan-user-input-note {
+	display: block;
+	width: 100%;
+	min-height: 54px;
+	max-height: 120px;
+	resize: vertical;
+	margin-top: 7px;
+	border: 1px solid #d4d9e3;
+	border-radius: 6px;
+	background: #ffffff;
+	color: #4c4f69;
+	font: 12px/1.5 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	padding: 7px 8px;
+	box-sizing: border-box;
+}
+
+.plan-user-input-note:focus {
+	border-color: #1e66f5;
+	outline: 1px solid #1e66f5;
+}
+
+.plan-user-input-answer {
+	display: grid;
+	gap: 3px;
+	margin-top: 7px;
+	border-left: 3px solid #1e66f5;
+	padding: 5px 8px;
+	overflow-wrap: anywhere;
+}
+
+.plan-user-input-answer span {
+	font-size: 11px;
+	color: #5d6475;
+}
+
+.plan-user-input-error {
+	margin-top: 9px;
+	color: #b42318;
+	font-size: 11px;
+}
+
+.plan-user-input-actions {
+	display: flex;
+	justify-content: flex-end;
+	margin-top: 10px;
+}
+
 .body a {
 	color: #0b63c9;
 	text-decoration: none;
@@ -1503,6 +1654,45 @@ body,
 	background: var(--al-plan-bg);
 	border-color: var(--al-plan-border);
 }
+.plan-user-input-card {
+	background: var(--al-plan-bg);
+	border-color: var(--al-plan-border);
+	color: var(--al-plan-text);
+}
+.plan-user-input-question + .plan-user-input-question {
+	border-color: var(--al-soft-border);
+}
+.plan-user-input-question legend,
+.plan-user-input-option small,
+.plan-user-input-answer span {
+	color: var(--al-muted-text);
+}
+.plan-user-input-option,
+.plan-user-input-note {
+	background: var(--al-input-bg);
+	border-color: var(--al-input-border);
+	color: var(--al-text);
+}
+.plan-user-input-option:hover {
+	border-color: var(--al-primary);
+}
+.plan-user-input-option:has(input:checked) {
+	border-color: var(--al-primary);
+	background: var(--al-plan-msg-bg);
+}
+.plan-user-input-option input {
+	accent-color: var(--al-primary);
+}
+.plan-user-input-note:focus {
+	border-color: var(--al-primary);
+	outline-color: var(--al-primary);
+}
+.plan-user-input-answer {
+	border-color: var(--al-primary);
+}
+.plan-user-input-error {
+	color: var(--al-danger);
+}
 .tool-transcript-card {
 	background: var(--al-system-msg-bg);
 	border-color: var(--al-soft-border);
@@ -1828,6 +2018,10 @@ window.autolinkerSetChatHtml = function(html) {
 		for (var i = 0; i < planButtons.length; i++) {
 			planButtons[i].disabled = !!window.autolinkerBusy;
 		}
+		window.autolinkerAwaitingPlanUserInput = !!(root.querySelector && root.querySelector(".plan-user-input-card.active"));
+		if (typeof window.autolinkerSetBusy === "function") {
+			window.autolinkerSetBusy(!!window.autolinkerBusy, !!window.autolinkerStopRequested);
+		}
 		if (scroll) {
 			scroll.scrollTop = scroll.scrollHeight;
 		}
@@ -1889,9 +2083,11 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	var input = document.getElementById("chat-input");
 	var isBusy = !!busy;
 	var isStopping = !!stopRequested;
+	var waitingForPlanInput = !!window.autolinkerAwaitingPlanUserInput;
 	window.autolinkerBusy = isBusy;
+	window.autolinkerStopRequested = isStopping;
 	if (send) {
-		send.disabled = false;
+		send.disabled = waitingForPlanInput;
 		send.style.display = "";
 		send.style.right = isBusy ? "42px" : "8px";
 	}
@@ -1922,7 +2118,7 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 		autoAllow.disabled = false;
 	}
 	if (input) {
-		input.disabled = false;
+		input.disabled = waitingForPlanInput;
 		input.style.paddingRight = isBusy ? "76px" : "44px";
 	}
 	var planButtons = document.querySelectorAll ? document.querySelectorAll(".plan-action") : [];
@@ -2377,6 +2573,54 @@ window.autolinkerHideToolApproval = function() {
 	}
 
 	document.addEventListener("click", function(e) {
+		var planUserInputBtn = e.target && e.target.closest ? e.target.closest("[data-plan-user-input-action='submit']") : null;
+		if (planUserInputBtn) {
+			e.preventDefault();
+			var card = planUserInputBtn.closest ? planUserInputBtn.closest(".plan-user-input-card.active") : null;
+			if (!card) {
+				return;
+			}
+			var error = card.querySelector ? card.querySelector(".plan-user-input-error") : null;
+			var questions = card.querySelectorAll ? card.querySelectorAll(".plan-user-input-question") : [];
+			var answers = [];
+			var invalidQuestion = null;
+			for (var questionIndex = 0; questionIndex < questions.length; questionIndex++) {
+				var question = questions[questionIndex];
+				var selected = question.querySelector ? question.querySelector("input[type='radio']:checked") : null;
+				var note = question.querySelector ? question.querySelector(".plan-user-input-note") : null;
+				var noteText = note ? (note.value || "").trim() : "";
+				if (!selected || ((selected.getAttribute("data-option-label") || "") === "" && !noteText)) {
+					invalidQuestion = question;
+					break;
+				}
+				answers.push({
+					id: question.getAttribute("data-question-id") || "",
+					label: selected.getAttribute("data-option-label") || "",
+					note: noteText
+				});
+			}
+			if (invalidQuestion) {
+				if (error) {
+					error.textContent = "\u8bf7\u56de\u7b54\u5168\u90e8\u95ee\u9898\uff1b\u9009\u62e9\u5176\u4ed6\u65f6\u9700\u8981\u586b\u5199\u5185\u5bb9\u3002";
+					error.hidden = false;
+				}
+				var firstInput = invalidQuestion.querySelector ? invalidQuestion.querySelector("input, textarea") : null;
+				if (firstInput) {
+					firstInput.focus();
+				}
+				return;
+			}
+			if (error) {
+				error.hidden = true;
+			}
+			planUserInputBtn.disabled = true;
+			post({
+				action: "submit_plan_user_input",
+				id: card.getAttribute("data-plan-user-input-id") || "0",
+				answers: answers
+			});
+			return;
+		}
 		var pendingBtn = e.target && e.target.closest ? e.target.closest("[data-pending-action='recall']") : null;
 		if (pendingBtn) {
 			e.preventDefault();
