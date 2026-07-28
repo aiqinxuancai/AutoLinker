@@ -17,6 +17,7 @@
 
 #include "AIChatTooling.h"
 #include "AIChatFeature.h"
+#include "AIChatGoalManager.h"
 #include "AIChatMcpClient.h"
 #include "AIChatMcpConfig.h"
 #include "AISkillManager.h"
@@ -2116,6 +2117,56 @@ extern "C" int AutoLinkerTest_RunGameAnalyticsSelfTest(char* buffer, int bufferS
 extern "C" int AutoLinkerTest_RunPlanModeSelfTest(char* buffer, int bufferSize)
 {
 	return CopyStringToBuffer(AIChatFeature::BuildPlanModeSelfTestJson(), buffer, bufferSize);
+}
+
+extern "C" int AutoLinkerTest_RunGoalModeSelfTest(char* buffer, int bufferSize)
+{
+	nlohmann::json report = nlohmann::json::parse(
+		AIChatGoalManager::BuildSelfTestReportJson(),
+		nullptr,
+		false);
+	if (report.is_discarded() || !report.is_object()) {
+		report = {{"name", "goal-mode-state-machine"}, {"ok", false}};
+	}
+
+	const std::filesystem::path tempDir = std::filesystem::temp_directory_path() /
+		std::format("autolinker_goal_test_{}_{}", GetCurrentProcessId(), GetCurrentThreadId());
+	AIChatStoredSession current;
+	current.schemaVersion = 6;
+	current.sessionId = "goal-schema-6";
+	current.sessionFilePath = tempDir / "goal-schema-6.json";
+	AIChatGoalManager::Create(current.goal, "persisted goal", 1000);
+	current.goal.tokensUsed = 77;
+	current.goal.elapsedMs = 1234;
+	current.goal.activeStartedAtUnixMs = 0;
+	std::string saveError;
+	const bool saved = SaveAIChatStoredSession(current, &saveError);
+	AIChatStoredSession loaded;
+	std::string loadError;
+	const bool loadedOk = saved && LoadAIChatStoredSession(current.sessionFilePath, loaded, &loadError);
+	const bool schemaRoundTrip = loadedOk && loaded.schemaVersion == 6 &&
+		loaded.goal.status == AIChatGoalStatus::Paused &&
+		loaded.goal.objectiveLocal == current.goal.objectiveLocal &&
+		loaded.goal.tokensUsed == 77 && loaded.goal.elapsedMs == 1234;
+
+	AIChatStoredSession legacy;
+	legacy.schemaVersion = 5;
+	legacy.sessionId = "goal-schema-5";
+	legacy.sessionFilePath = tempDir / "goal-schema-5.json";
+	const bool legacySaved = SaveAIChatStoredSession(legacy, &saveError);
+	AIChatStoredSession legacyLoaded;
+	const bool legacyCompatible = legacySaved &&
+		LoadAIChatStoredSession(legacy.sessionFilePath, legacyLoaded, &loadError) &&
+		legacyLoaded.schemaVersion == 5 && !AIChatGoalManager::HasGoal(legacyLoaded.goal);
+	std::error_code cleanupError;
+	std::filesystem::remove_all(tempDir, cleanupError);
+
+	report["schema_round_trip"] = schemaRoundTrip;
+	report["legacy_schema_compatible"] = legacyCompatible;
+	report["ok"] = report.value("ok", false) && schemaRoundTrip && legacyCompatible;
+	if (!saveError.empty() && !saved) report["save_error"] = saveError;
+	if (!loadError.empty() && (!loadedOk || !legacyCompatible)) report["load_error"] = loadError;
+	return CopyStringToBuffer(report.dump(), buffer, bufferSize);
 }
 
 extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)

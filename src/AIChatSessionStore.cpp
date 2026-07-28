@@ -215,6 +215,17 @@ std::string BuildSessionTitleLocal(const AIChatStoredSession& session)
 			return title;
 		}
 	}
+	if (AIChatGoalManager::HasGoal(session.goal)) {
+		std::string title = session.goal.objectiveLocal;
+		for (char& ch : title) {
+			if (ch == '\r' || ch == '\n' || ch == '\t') ch = ' ';
+		}
+		if (title.size() > 80) {
+			title.resize(80);
+			title += "...";
+		}
+		if (!title.empty()) return title;
+	}
 	return session.sourceFileNameLocal.empty()
 		? std::string("未命名会话")
 		: ("[" + session.sourceFileNameLocal + "] 会话");
@@ -321,6 +332,16 @@ bool SerializeSession(const AIChatStoredSession& session, nlohmann::json& outJso
 		outJson["plan_mode_state"] = session.planModeState;
 		outJson["pending_plan"] = LocalToUtf8TextForSessionStore(session.pendingPlanLocal);
 		outJson["auto_allow_writes"] = session.autoAllowWrites;
+		if (AIChatGoalManager::HasGoal(session.goal)) {
+			outJson["goal"] = {
+				{"objective", LocalToUtf8TextForSessionStore(session.goal.objectiveLocal)},
+				{"status", AIChatGoalManager::StatusToString(session.goal.status)},
+				{"tokens_used", session.goal.tokensUsed},
+				{"elapsed_ms", session.goal.elapsedMs},
+				{"created_at_unix_ms", session.goal.createdAtUnixMs},
+				{"updated_at_unix_ms", session.goal.updatedAtUnixMs}
+			};
+		}
 		if (session.hasRunCheckpoint) {
 			outJson["run_checkpoint"] = SerializeRunCheckpoint(session.runCheckpoint);
 		}
@@ -376,6 +397,21 @@ bool DeserializeSession(const nlohmann::json& jsonValue, AIChatStoredSession& ou
 	outSession.planModeState = GetJsonStringUtf8(jsonValue, "plan_mode_state");
 	outSession.pendingPlanLocal = GetJsonStringAsLocalText(jsonValue, "pending_plan");
 	outSession.autoAllowWrites = GetJsonBool(jsonValue, "auto_allow_writes", false);
+	if (jsonValue.contains("goal") && jsonValue["goal"].is_object()) {
+		const nlohmann::json& goalValue = jsonValue["goal"];
+		outSession.goal.objectiveLocal = GetJsonStringAsLocalText(goalValue, "objective");
+		outSession.goal.status = AIChatGoalManager::StatusFromString(GetJsonStringUtf8(goalValue, "status"));
+		outSession.goal.tokensUsed = (std::max)(0LL, GetJsonInt64(goalValue, "tokens_used", 0));
+		outSession.goal.elapsedMs = (std::max)(0LL, GetJsonInt64(goalValue, "elapsed_ms", 0));
+		outSession.goal.createdAtUnixMs = GetJsonInt64(goalValue, "created_at_unix_ms", 0);
+		outSession.goal.updatedAtUnixMs = GetJsonInt64(goalValue, "updated_at_unix_ms", 0);
+		if (outSession.goal.status == AIChatGoalStatus::Active) {
+			outSession.goal.status = AIChatGoalStatus::Paused;
+		}
+		if (!AIChatGoalManager::HasGoal(outSession.goal)) {
+			outSession.goal = {};
+		}
+	}
 	if (jsonValue.contains("run_checkpoint")) {
 		outSession.hasRunCheckpoint = DeserializeRunCheckpoint(
 			jsonValue["run_checkpoint"],

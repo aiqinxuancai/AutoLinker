@@ -124,6 +124,8 @@ struct AIChatRunOptions {
 	std::function<void(const AIChatRunCheckpoint& checkpoint)> checkpointCallback;
 	// 仅在计划阶段向内置聊天公开结构化询问工具。
 	bool enablePlanUserInput = false;
+	// 仅在活动 Goal 中公开查询和结束 Goal 的工具。
+	bool enableGoalTools = false;
 	// 在模型请求之间的安全边界取出新用户输入；参数为刚完成的助手回复。
 	std::function<std::vector<std::string>(const std::string& completedAssistantContent)> takePendingUserInputsCallback;
 };

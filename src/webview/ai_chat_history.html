@@ -493,6 +493,54 @@ html:not(.autolinker-page-visible) *::after {
 	color: #2e7d32;
 }
 
+.mode-chip.goal.active { color: #1e66f5; }
+.mode-chip.goal.paused { color: #8a5a00; border-color: rgba(138, 90, 0, .35); background: rgba(138, 90, 0, .08); }
+.mode-chip.goal.blocked { color: #b42318; border-color: rgba(180, 35, 24, .32); background: rgba(180, 35, 24, .08); }
+.mode-chip.goal.complete { color: #2e7d32; border-color: rgba(46, 125, 50, .3); background: rgba(46, 125, 50, .08); }
+
+.goal-panel {
+	margin-bottom: 8px;
+	padding: 9px 0;
+	border-top: 1px solid var(--al-soft-border, #d7dbe3);
+	border-bottom: 1px solid var(--al-soft-border, #d7dbe3);
+}
+
+.goal-panel[hidden] { display: none; }
+.goal-panel-head,
+.goal-panel-actions,
+.goal-panel-meta {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.goal-panel-head { justify-content: space-between; margin-bottom: 7px; }
+.goal-panel-title { color: var(--al-text, #4c4f69); font-size: 11px; font-weight: 700; }
+.goal-panel-meta { color: var(--al-subtle-text, #8c8fa1); font-size: 10px; }
+.goal-objective {
+	width: 100%;
+	min-height: 54px;
+	max-height: 132px;
+	box-sizing: border-box;
+	resize: vertical;
+	border: 1px solid var(--al-soft-border, #d4d9e3);
+	border-radius: 6px;
+	padding: 8px 9px;
+	background: var(--al-input-bg, #fff);
+	color: var(--al-text, #4c4f69);
+	font: 12px/1.5 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+}
+.goal-objective-view {
+	max-height: 100px;
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	color: var(--al-text, #4c4f69);
+	font-size: 12px;
+	line-height: 1.55;
+	margin-bottom: 8px;
+}
+.goal-panel-actions { justify-content: flex-end; margin-top: 8px; }
+
 .mode-chip:focus-visible {
 	outline: 2px solid rgba(30, 102, 245, .35);
 	outline-offset: 2px;
@@ -1830,6 +1878,7 @@ body,
 		<div class="input-wrap">
 			<div id="tool-approval" class="tool-approval" hidden></div>
 			<div id="pending-inputs" class="pending-inputs" hidden></div>
+			<div id="goal-panel" class="goal-panel" hidden></div>
 			<div class="input-area">
 				<textarea id="chat-input" placeholder="&#x8F93;&#x5165;&#x6D88;&#x606F;&#xFF0C;Enter &#x53D1;&#x9001;&#xFF0C;Shift/Ctrl+Enter &#x6362;&#x884C;"></textarea>
 				<button id="send-btn" class="send-icon-btn" type="button" title="&#x53D1;&#x9001;" aria-label="&#x53D1;&#x9001;">
@@ -1853,6 +1902,9 @@ body,
 			</div>
 			<div class="actions">
 				<div class="mode-bar">
+					<button id="goal-mode-btn" class="mode-chip goal" type="button" title="&#x76EE;&#x6807;" aria-label="&#x76EE;&#x6807;">
+						<span class="mode-label">&#x76EE;&#x6807;</span>
+					</button>
 					<button id="plan-mode-btn" class="mode-chip" type="button" title="&#x8FDB;&#x5165;&#x8BA1;&#x5212;&#x6A21;&#x5F0F;" aria-label="&#x8BA1;&#x5212;&#x6A21;&#x5F0F;">
 						<span class="mode-label">&#x8BA1;&#x5212;</span>
 					</button>
@@ -1881,6 +1933,8 @@ body,
 window.autolinkerBusy = false;
 window.autolinkerPlanState = "normal";
 window.autolinkerAutoAllow = false;
+window.autolinkerGoalState = { status: "none", objective: "", tokensUsed: 0, elapsedLabel: "0m 0s", label: "\u76EE\u6807" };
+window.autolinkerGoalPanelOpen = false;
 
 window.autolinkerSetPageVisible = function(visible) {
 	document.documentElement.classList.toggle("autolinker-page-visible", !!visible);
@@ -2068,6 +2122,58 @@ window.autolinkerSetAutoAllowMode = function(enabled, label, title) {
 	btn.setAttribute("aria-label", btn.title);
 };
 
+window.autolinkerRenderGoalPanel = function() {
+	var panel = document.getElementById("goal-panel");
+	if (!panel) return;
+	if (!window.autolinkerGoalPanelOpen) {
+		panel.hidden = true;
+		panel.innerHTML = "";
+		return;
+	}
+	var data = window.autolinkerGoalState || {};
+	var status = data.status || "none";
+	var html = '<div class="goal-panel-head"><div class="goal-panel-title">' + window.autolinkerEscapeHtml(data.label || "\u76EE\u6807") + '</div>';
+	if (status !== "none") {
+		html += '<div class="goal-panel-meta"><span>' + window.autolinkerEscapeHtml(data.elapsedLabel || "0m 0s") + '</span><span>' + Number(data.tokensUsed || 0) + ' tokens</span></div>';
+	}
+	html += '</div>';
+	if (status === "none") {
+		html += '<textarea id="goal-objective" class="goal-objective" maxlength="8000" placeholder="\u76EE\u6807"></textarea>';
+		html += '<div class="goal-panel-actions"><button class="btn" type="button" data-goal-action="cancel">\u53D6\u6D88</button><button class="btn primary" type="button" data-goal-action="create">\u5F00\u542F</button></div>';
+	} else {
+		html += '<div class="goal-objective-view">' + window.autolinkerEscapeHtml(data.objective || "") + '</div>';
+		html += '<div class="goal-panel-actions">';
+		if (status === "active") html += '<button class="btn" type="button" data-goal-action="pause">\u6682\u505C</button>';
+		if (status === "paused" || status === "blocked") html += '<button class="btn primary" type="button" data-goal-action="resume">\u6062\u590D</button>';
+		if (status !== "complete") html += '<button class="btn" type="button" data-goal-action="complete">\u6807\u8BB0\u5B8C\u6210</button>';
+		html += '<button class="btn danger" type="button" data-goal-action="clear">\u6E05\u9664</button></div>';
+	}
+	panel.innerHTML = html;
+	panel.hidden = false;
+	if (status === "none") {
+		var objective = document.getElementById("goal-objective");
+		if (objective) objective.focus();
+	}
+};
+
+window.autolinkerSetGoalState = function(payload) {
+	var data = payload || {};
+	window.autolinkerGoalState = data;
+	var status = data.status || "none";
+	var btn = document.getElementById("goal-mode-btn");
+	if (btn) {
+		var text = btn.querySelector ? btn.querySelector(".mode-label") : null;
+		if (text) text.textContent = data.label || "\u76EE\u6807";
+		btn.classList.toggle("active", status === "active");
+		btn.classList.toggle("paused", status === "paused");
+		btn.classList.toggle("blocked", status === "blocked");
+		btn.classList.toggle("complete", status === "complete");
+		btn.title = data.objective || data.label || "\u76EE\u6807";
+		btn.setAttribute("aria-label", data.label || "\u76EE\u6807");
+	}
+	window.autolinkerRenderGoalPanel();
+};
+
 window.autolinkerSetBusy = function(busy, stopRequested) {
 	var send = document.getElementById("send-btn");
 	var stop = document.getElementById("stop-btn");
@@ -2078,6 +2184,7 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	var skillSettings = document.getElementById("skill-settings-btn");
 	var planMode = document.getElementById("plan-mode-btn");
 	var autoAllow = document.getElementById("auto-allow-btn");
+	var goalMode = document.getElementById("goal-mode-btn");
 	var clearConfirm = document.getElementById("clear-confirm");
 	var restoreConfirm = document.getElementById("restore-confirm");
 	var input = document.getElementById("chat-input");
@@ -2116,6 +2223,9 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	}
 	if (autoAllow) {
 		autoAllow.disabled = false;
+	}
+	if (goalMode) {
+		goalMode.disabled = false;
 	}
 	if (input) {
 		input.disabled = waitingForPlanInput;
@@ -2319,6 +2429,7 @@ window.autolinkerHideToolApproval = function() {
 	var skillSettings = document.getElementById("skill-settings-btn");
 	var planMode = document.getElementById("plan-mode-btn");
 	var autoAllow = document.getElementById("auto-allow-btn");
+	var goalMode = document.getElementById("goal-mode-btn");
 	var clearConfirm = document.getElementById("clear-confirm");
 	var clearConfirmBtn = document.getElementById("clear-confirm-btn");
 	var clearCancelBtn = document.getElementById("clear-cancel-btn");
@@ -2571,8 +2682,46 @@ window.autolinkerHideToolApproval = function() {
 			post({ action: "toggle_auto_allow" });
 		});
 	}
+	if (goalMode) {
+		goalMode.addEventListener("click", function() {
+			hideSessionMenu();
+			hideClearConfirm();
+			hideRestoreConfirm();
+			window.autolinkerGoalPanelOpen = !window.autolinkerGoalPanelOpen;
+			window.autolinkerRenderGoalPanel();
+		});
+	}
 
 	document.addEventListener("click", function(e) {
+		var goalAction = e.target && e.target.closest ? e.target.closest("[data-goal-action]") : null;
+		if (goalAction) {
+			e.preventDefault();
+			var action = goalAction.getAttribute("data-goal-action") || "";
+			if (action === "cancel") {
+				window.autolinkerGoalPanelOpen = false;
+				window.autolinkerRenderGoalPanel();
+				if (input) input.focus();
+				return;
+			}
+			if (action === "create") {
+				var objective = document.getElementById("goal-objective");
+				var objectiveText = objective ? String(objective.value || "").trim() : "";
+				if (!objectiveText) {
+					if (objective) objective.focus();
+					return;
+				}
+				post({ action: "create_goal", objective: objectiveText });
+				return;
+			}
+			if (action === "pause") post({ action: "pause_goal" });
+			else if (action === "resume") post({ action: "resume_goal" });
+			else if (action === "complete") post({ action: "complete_goal" });
+			else if (action === "clear") {
+				window.autolinkerGoalPanelOpen = false;
+				post({ action: "clear_goal" });
+			}
+			return;
+		}
 		var planUserInputBtn = e.target && e.target.closest ? e.target.closest("[data-plan-user-input-action='submit']") : null;
 		if (planUserInputBtn) {
 			e.preventDefault();

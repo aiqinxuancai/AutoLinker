@@ -158,6 +158,9 @@
 	<ClCompile Include="src\AIChatRunController.cpp">
 	  <Filter>AI</Filter>
 	</ClCompile>
+	<ClCompile Include="src\AIChatGoalManager.cpp">
+	  <Filter>AI</Filter>
+	</ClCompile>
     <ClCompile Include="src\AIChatSessionStore.cpp">
       <Filter>AI</Filter>
     </ClCompile>
@@ -334,6 +337,9 @@
       <Filter>AI</Filter>
     </ClInclude>
 	<ClInclude Include="src\AIChatRunController.h">
+	  <Filter>AI</Filter>
+	</ClInclude>
+	<ClInclude Include="src\AIChatGoalManager.h">
 	  <Filter>AI</Filter>
 	</ClInclude>
     <ClInclude Include="src\AIService.h">

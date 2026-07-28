@@ -2508,11 +2508,17 @@ nlohmann::json BuildConfiguredToolCatalog(const AISettings& settings)
 		FilterToolCatalogForSourceEditMode(BuildPublicToolCatalog(), settings.sourceEditMode));
 }
 
-nlohmann::json BuildInternalToolCatalog(const AISettings& settings, bool enablePlanUserInput);
+nlohmann::json BuildInternalToolCatalog(
+	const AISettings& settings,
+	bool enablePlanUserInput,
+	bool enableGoalTools);
 
-nlohmann::json BuildChatToolDefinitions(const AISettings& settings, bool enablePlanUserInput)
+nlohmann::json BuildChatToolDefinitions(
+	const AISettings& settings,
+	bool enablePlanUserInput,
+	bool enableGoalTools)
 {
-	const nlohmann::json catalog = BuildInternalToolCatalog(settings, enablePlanUserInput);
+	const nlohmann::json catalog = BuildInternalToolCatalog(settings, enablePlanUserInput, enableGoalTools);
 	nlohmann::json tools = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		tools.push_back({
@@ -2530,9 +2536,10 @@ nlohmann::json BuildChatToolDefinitions(const AISettings& settings, bool enableP
 nlohmann::json BuildChatToolDefinitions(
 	const AISettings& settings,
 	const std::vector<AIChatMessage>&,
-	bool enablePlanUserInput)
+	bool enablePlanUserInput,
+	bool enableGoalTools)
 {
-	return BuildChatToolDefinitions(settings, enablePlanUserInput);
+	return BuildChatToolDefinitions(settings, enablePlanUserInput, enableGoalTools);
 }
 
 std::string TruncateGeminiDescription(const std::string& text)
@@ -2669,11 +2676,47 @@ nlohmann::json BuildRequestUserInputToolDefinition()
 	return definition;
 }
 
-nlohmann::json BuildInternalToolCatalog(const AISettings& settings, bool enablePlanUserInput)
+nlohmann::json BuildGetGoalToolDefinition()
+{
+	return {
+		{"name", "get_goal"},
+		{"description", "Get the current persistent Goal, including its objective, state, elapsed execution time, and token usage."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", nlohmann::json::object()},
+			{"additionalProperties", false}
+		}}
+	};
+}
+
+nlohmann::json BuildUpdateGoalToolDefinition()
+{
+	return {
+		{"name", "update_goal"},
+		{"description", "End the current persistent Goal only when it is genuinely complete or blocked. Use complete after the objective is fully achieved. Use blocked only when progress cannot continue without user input or an external state change."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"status", {{"type", "string"}, {"enum", nlohmann::json::array({"complete", "blocked"})}}}
+			}},
+			{"required", nlohmann::json::array({"status"})},
+			{"additionalProperties", false}
+		}}
+	};
+}
+
+nlohmann::json BuildInternalToolCatalog(
+	const AISettings& settings,
+	bool enablePlanUserInput,
+	bool enableGoalTools)
 {
 	nlohmann::json catalog = BuildConfiguredToolCatalog(settings);
 	if (enablePlanUserInput) {
 		catalog.push_back(BuildRequestUserInputToolDefinition());
+	}
+	if (enableGoalTools) {
+		catalog.push_back(BuildGetGoalToolDefinition());
+		catalog.push_back(BuildUpdateGoalToolDefinition());
 	}
 	return catalog;
 }
@@ -2682,9 +2725,10 @@ nlohmann::json BuildGeminiTools(
 	const std::vector<AIChatMessage>&,
 	bool,
 	const AISettings& settings,
-	bool enablePlanUserInput)
+	bool enablePlanUserInput,
+	bool enableGoalTools)
 {
-	const nlohmann::json catalog = BuildInternalToolCatalog(settings, enablePlanUserInput);
+	const nlohmann::json catalog = BuildInternalToolCatalog(settings, enablePlanUserInput, enableGoalTools);
 	nlohmann::json declarations = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		if (!item.is_object()) {
@@ -2704,9 +2748,10 @@ nlohmann::json BuildGeminiTools(
 nlohmann::json BuildResponsesToolDefinitions(
 	const AISettings& settings,
 	const std::vector<AIChatMessage>&,
-	bool enablePlanUserInput)
+	bool enablePlanUserInput,
+	bool enableGoalTools)
 {
-	const nlohmann::json catalog = BuildInternalToolCatalog(settings, enablePlanUserInput);
+	const nlohmann::json catalog = BuildInternalToolCatalog(settings, enablePlanUserInput, enableGoalTools);
 	nlohmann::json tools = nlohmann::json::array();
 	for (const auto& item : catalog) {
 		tools.push_back({
@@ -3040,13 +3085,15 @@ std::string BuildJsonHeadersOnly(const AISettings& settings)
 nlohmann::json BuildClaudeTools(
 	const AISettings& settings,
 	const std::vector<AIChatMessage>& contextMessages,
-	bool enablePlanUserInput)
+	bool enablePlanUserInput,
+	bool enableGoalTools)
 {
 	nlohmann::json out = nlohmann::json::array();
 	const nlohmann::json openAiTools = BuildChatToolDefinitions(
 		settings,
 		contextMessages,
-		enablePlanUserInput);
+		enablePlanUserInput,
+		enableGoalTools);
 	for (const auto& tool : openAiTools) {
 		if (!tool.contains("function") || !tool["function"].is_object()) {
 			continue;
@@ -3061,10 +3108,13 @@ nlohmann::json BuildClaudeTools(
 	return out;
 }
 
-nlohmann::json BuildGeminiTools(const AISettings& settings, bool enablePlanUserInput)
+nlohmann::json BuildGeminiTools(
+	const AISettings& settings,
+	bool enablePlanUserInput,
+	bool enableGoalTools)
 {
 	nlohmann::json declarations = nlohmann::json::array();
-	const nlohmann::json openAiTools = BuildChatToolDefinitions(settings, enablePlanUserInput);
+	const nlohmann::json openAiTools = BuildChatToolDefinitions(settings, enablePlanUserInput, enableGoalTools);
 	for (const auto& tool : openAiTools) {
 		if (!tool.contains("function") || !tool["function"].is_object()) {
 			continue;
@@ -3902,7 +3952,8 @@ AIChatResult ExecuteChatWithToolsClaude(
 	const nlohmann::json tools = BuildClaudeTools(
 		settings,
 		contextMessages,
-		runOptions.enablePlanUserInput);
+		runOptions.enablePlanUserInput,
+		runOptions.enableGoalTools);
 
 	const std::string skillPromptLocal = BuildSkillRuntimePrompt(runController.ContextMessages());
 	std::string systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal);
@@ -4222,7 +4273,8 @@ AIChatResult ExecuteChatWithToolsGemini(
 		runController.ContextMessages(),
 		false,
 		settings,
-		runOptions.enablePlanUserInput);
+		runOptions.enablePlanUserInput,
+		runOptions.enableGoalTools);
 
 	bool degradedRequestMode = false;
 	const std::string skillPromptLocal = BuildSkillRuntimePrompt(runController.ContextMessages());
@@ -4309,7 +4361,8 @@ AIChatResult ExecuteChatWithToolsGemini(
 					runController.ContextMessages(),
 					true,
 					settings,
-					runOptions.enablePlanUserInput);
+					runOptions.enablePlanUserInput,
+					runOptions.enableGoalTools);
 				--round;
 				continue;
 			}
@@ -4523,7 +4576,8 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 	const nlohmann::json tools = BuildResponsesToolDefinitions(
 		settings,
 		runController.ContextMessages(),
-		runOptions.enablePlanUserInput);
+		runOptions.enablePlanUserInput,
+		runOptions.enableGoalTools);
 
 	nlohmann::json input = nlohmann::json::array();
 	for (const AIChatMessage& msg : runController.ContextMessages()) {
@@ -5630,7 +5684,8 @@ AIChatResult AIService::ExecuteChatWithTools(
 	const nlohmann::json tools = BuildChatToolDefinitions(
 		settings,
 		runController.ContextMessages(),
-		runOptions.enablePlanUserInput);
+		runOptions.enablePlanUserInput,
+		runOptions.enableGoalTools);
 	AIChatToolPolicy::Session toolPolicy;
 
 	for (int round = 0;; ++round) {

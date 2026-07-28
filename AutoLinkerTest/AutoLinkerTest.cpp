@@ -1884,6 +1884,7 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest gameanalytics-self-test" << std::endl;
 	std::cout << "  AutoLinkerTest mcp-self-test" << std::endl;
 	std::cout << "  AutoLinkerTest plan-mode-self-test" << std::endl;
+	std::cout << "  AutoLinkerTest goal-mode-self-test" << std::endl;
 	std::cout << "  AutoLinkerTest deepseek-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest openai-chat-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest openai-responses-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
@@ -1994,6 +1995,29 @@ int main(int argc, char* argv[])
 		}
 		std::vector<char> buffer(65536, '\0');
 		const int result = AutoLinkerTest_RunPlanModeSelfTest(
+			buffer.data(),
+			static_cast<int>(buffer.size()));
+		if (result < 0) {
+			return PrintStringResult(commandName.c_str(), result, buffer.data());
+		}
+		const std::string report(buffer.data(), static_cast<size_t>(result));
+		std::cout << report << std::endl;
+		try {
+			const nlohmann::json parsed = nlohmann::json::parse(report);
+			return parsed.value("ok", false) ? EXIT_SUCCESS : EXIT_FAILURE;
+		}
+		catch (...) {
+			return EXIT_FAILURE;
+		}
+	}
+
+	if (commandName == "goal-mode-self-test") {
+		if (argc != 2) {
+			PrintUsage();
+			return EXIT_FAILURE;
+		}
+		std::vector<char> buffer(16384, '\0');
+		const int result = AutoLinkerTest_RunGoalModeSelfTest(
 			buffer.data(),
 			static_cast<int>(buffer.size()));
 		if (result < 0) {
