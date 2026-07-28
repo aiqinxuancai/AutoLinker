@@ -289,6 +289,7 @@ struct AIChatAsyncRequest {
 	std::shared_ptr<AIChatRequestCancellation> cancellation;
 	bool enablePlanUserInput = false;
 	bool enableGoalTools = false;
+	bool trackGoalProgress = false;
 	AIChatRequestOrigin origin = AIChatRequestOrigin::User;
 	bool hasResumeCheckpoint = false;
 	AIChatRunCheckpoint resumeCheckpoint;
@@ -296,7 +297,7 @@ struct AIChatAsyncRequest {
 
 struct AIChatAsyncResult {
 	unsigned long long requestId = 0;
-	bool goalEnabled = false;
+	bool goalProgressTracked = false;
 	AIChatRequestOrigin origin = AIChatRequestOrigin::User;
 	AIChatResult chatResult = {};
 };
@@ -3191,7 +3192,10 @@ std::string GoalStatusLabelLocal(AIChatGoalStatus status)
 	}
 }
 
-void UpdateWebViewGoalState(ChatDialogContext* ctx, const GoalUiSnapshot& snapshot)
+void UpdateWebViewGoalState(
+	ChatDialogContext* ctx,
+	const GoalUiSnapshot& snapshot,
+	PlanModeState planModeState)
 {
 	if (ctx == nullptr) {
 		return;
@@ -3201,7 +3205,8 @@ void UpdateWebViewGoalState(ChatDialogContext* ctx, const GoalUiSnapshot& snapsh
 		{"objective", LocalToUtf8Text(snapshot.goal.objectiveLocal)},
 		{"tokensUsed", snapshot.goal.tokensUsed},
 		{"elapsedLabel", LocalToUtf8Text(FormatSessionElapsedLocal(snapshot.currentElapsedMs))},
-		{"label", LocalToUtf8Text(GoalStatusLabelLocal(snapshot.goal.status))}
+		{"label", LocalToUtf8Text(GoalStatusLabelLocal(snapshot.goal.status))},
+		{"suspendedByPlan", IsPlanModeActive(planModeState) && AIChatGoalManager::IsActive(snapshot.goal)}
 	};
 	std::wstring script = L"window.autolinkerSetGoalState(";
 	script += WideFromUtf8Text(payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
@@ -3251,14 +3256,19 @@ void UpdateNativeAutoAllowModeState(ChatDialogContext* ctx, bool enabled)
 	SetWindowTextW(ctx->hAutoAllowMode, WideFromLocal(AutoAllowModeLabelLocal(enabled)).c_str());
 }
 
-void UpdateNativeGoalState(ChatDialogContext* ctx, const GoalUiSnapshot& snapshot)
+void UpdateNativeGoalState(
+	ChatDialogContext* ctx,
+	const GoalUiSnapshot& snapshot,
+	PlanModeState planModeState)
 {
 	if (ctx == nullptr || ctx->hGoalMode == nullptr) {
 		return;
 	}
 	SetWindowTextW(
 		ctx->hGoalMode,
-		WideFromLocal(GoalStatusLabelLocal(snapshot.goal.status)).c_str());
+		WideFromLocal(IsPlanModeActive(planModeState)
+			? LocalFromWide(L"目标")
+			: GoalStatusLabelLocal(snapshot.goal.status)).c_str());
 }
 
 void UpdateNativeContextUsage(ChatDialogContext* ctx, const ContextUsageSnapshot& snapshot)
@@ -4554,7 +4564,7 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 		});
 	}
 
-	if (AIChatGoalManager::IsActive(state.goal)) {
+	if (AIChatGoalManager::CanAdvance(state.goal, IsPlanModeActive(state.planModeState))) {
 		out.push_back(AIChatMessage{
 			"system",
 			LocalFromWide(
@@ -5445,7 +5455,9 @@ bool RequestStopCurrentChat()
 	bool goalPaused = false;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
-		goalPaused = AIChatGoalManager::Pause(g_session.goal, GetCurrentUnixTimeMsForChat());
+		if (!IsPlanModeActive(g_session.planModeState)) {
+			goalPaused = AIChatGoalManager::Pause(g_session.goal, GetCurrentUnixTimeMsForChat());
+		}
 		if (!g_session.requestInFlight || g_session.activeRequestId == 0 || g_session.cancellation == nullptr) {
 			cancellation.reset();
 		}
@@ -6177,7 +6189,7 @@ void RunAIChatWorker(void* pParams)
 		return;
 	}
 	result->requestId = request->requestId;
-	result->goalEnabled = request->enableGoalTools;
+	result->goalProgressTracked = request->trackGoalProgress;
 	result->origin = request->origin;
 	try {
 		const auto isCancelled = [&request]() {
@@ -6363,6 +6375,13 @@ bool StartChatRequest(
 			OutputStringToELog("[AI Chat] request is already in progress");
 			return false;
 		}
+		if (origin == AIChatRequestOrigin::GoalContinuation &&
+			(!g_session.pendingInputs.empty() ||
+				!AIChatGoalManager::CanAdvance(
+					g_session.goal,
+					IsPlanModeActive(g_session.planModeState)))) {
+			return false;
+		}
 
 		const long long requestStartedAtMs = GetCurrentUnixTimeMsForChat();
 		g_session.sourceFilePathLocal = GetCurrentChatSourceFilePathLocal();
@@ -6387,6 +6406,9 @@ bool StartChatRequest(
 		request->cancellation = std::make_shared<AIChatRequestCancellation>();
 		request->enablePlanUserInput = g_session.planModeState == PlanModeState::Planning;
 		request->enableGoalTools = AIChatGoalManager::IsActive(g_session.goal);
+		request->trackGoalProgress = AIChatGoalManager::CanAdvance(
+			g_session.goal,
+			IsPlanModeActive(g_session.planModeState));
 		request->origin = origin;
 		const AIChatRunCheckpoint* pendingCheckpoint = g_session.hasPendingRunCheckpoint
 			? &g_session.pendingRunCheckpoint
@@ -6480,7 +6502,9 @@ bool StartGoalContinuationRequest()
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		if (g_session.requestInFlight || !g_session.pendingInputs.empty() ||
-			!AIChatGoalManager::IsActive(g_session.goal)) {
+			!AIChatGoalManager::CanAdvance(
+				g_session.goal,
+				IsPlanModeActive(g_session.planModeState))) {
 			return false;
 		}
 	}
@@ -6494,27 +6518,24 @@ bool StartGoalContinuationRequest()
 void ScheduleNextChatWork()
 {
 	bool hasPending = false;
-	bool hasActiveGoal = false;
+	bool canAdvanceGoal = false;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		if (g_session.requestInFlight) {
 			return;
 		}
 		hasPending = !g_session.pendingInputs.empty();
-		hasActiveGoal = AIChatGoalManager::IsActive(g_session.goal);
+		canAdvanceGoal = AIChatGoalManager::CanAdvance(
+			g_session.goal,
+			IsPlanModeActive(g_session.planModeState));
 	}
 
 	if (hasPending) {
 		StartNextPendingInputRequest();
 		return;
 	}
-	if (hasActiveGoal && !StartGoalContinuationRequest()) {
-		{
-			std::lock_guard<std::mutex> guard(g_session.mutex);
-			AIChatGoalManager::Block(g_session.goal, GetCurrentUnixTimeMsForChat());
-		}
-		PostRefreshDialog();
-		SaveChatSessionSnapshotNow();
+	if (canAdvanceGoal) {
+		StartGoalContinuationRequest();
 	}
 }
 
@@ -6920,8 +6941,12 @@ void HandleGoalCreateUi(HWND hWnd, ChatDialogContext* ctx, const std::string& ob
 	bool startNow = false;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
-		created = AIChatGoalManager::Create(g_session.goal, objective, GetCurrentUnixTimeMsForChat());
+		const long long nowMs = GetCurrentUnixTimeMsForChat();
+		created = AIChatGoalManager::Create(g_session.goal, objective, nowMs);
 		if (created) {
+			if (IsPlanModeActive(g_session.planModeState)) {
+				AIChatGoalManager::SuspendActiveTiming(g_session.goal, nowMs);
+			}
 			EnsureChatSessionBindingLocked(g_session);
 			g_session.messages.push_back(SessionMessage{
 				SessionRole::System,
@@ -6931,7 +6956,7 @@ void HandleGoalCreateUi(HWND hWnd, ChatDialogContext* ctx, const std::string& ob
 				"",
 				""
 			});
-			startNow = !g_session.requestInFlight;
+			startNow = !g_session.requestInFlight && !IsPlanModeActive(g_session.planModeState);
 		}
 	}
 	if (!created) {
@@ -6969,8 +6994,13 @@ void HandleGoalResumeUi(HWND hWnd, ChatDialogContext* ctx)
 	bool startNow = false;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
-		changed = AIChatGoalManager::Resume(g_session.goal, GetCurrentUnixTimeMsForChat());
-		startNow = changed && !g_session.requestInFlight;
+		const long long nowMs = GetCurrentUnixTimeMsForChat();
+		changed = AIChatGoalManager::Resume(g_session.goal, nowMs);
+		if (changed && IsPlanModeActive(g_session.planModeState)) {
+			AIChatGoalManager::SuspendActiveTiming(g_session.goal, nowMs);
+		}
+		startNow = changed && !g_session.requestInFlight &&
+			!IsPlanModeActive(g_session.planModeState);
 	}
 	if (changed) SaveChatSessionSnapshotNow();
 	RefreshChatDialog(hWnd);
@@ -7151,6 +7181,7 @@ void HandleChatEnterPlanModeUi(HWND hWnd, ChatDialogContext* ctx)
 		}
 		g_session.planModeState = PlanModeState::Planning;
 		g_session.pendingPlan.clear();
+		AIChatGoalManager::SuspendActiveTiming(g_session.goal, GetCurrentUnixTimeMsForChat());
 		g_session.messages.push_back(SessionMessage{
 			SessionRole::System,
 			LocalFromWide(L"\u5df2\u8fdb\u5165\u8ba1\u5212\u6a21\u5f0f\u3002AI \u5c06\u5148\u63a2\u7d22\u5e76\u63d0\u4ea4\u65b9\u6848\uff0c\u6279\u51c6\u540e\u518d\u6267\u884c\u5199\u5165\u64cd\u4f5c\u3002"),
@@ -7186,6 +7217,7 @@ void HandleChatExitPlanModeUi(HWND hWnd, ChatDialogContext* ctx)
 		}
 		g_session.planModeState = PlanModeState::Normal;
 		g_session.pendingPlan.clear();
+		AIChatGoalManager::ResumeActiveTiming(g_session.goal, GetCurrentUnixTimeMsForChat());
 		g_session.messages.push_back(SessionMessage{
 			SessionRole::System,
 			LocalFromWide(L"\u5df2\u9000\u51fa\u8ba1\u5212\u6a21\u5f0f\u3002"),
@@ -7199,6 +7231,7 @@ void HandleChatExitPlanModeUi(HWND hWnd, ChatDialogContext* ctx)
 	if (changed) {
 		SaveChatSessionSnapshotNow();
 		RefreshChatDialog(hWnd);
+		ScheduleNextChatWork();
 	}
 	FocusChatComposerInput(ctx);
 }
@@ -7217,6 +7250,7 @@ void HandleChatApprovePlanUi(HWND hWnd, ChatDialogContext* ctx)
 			g_session.planModeState == PlanModeState::AwaitingApproval &&
 			!TrimAsciiCopy(g_session.pendingPlan).empty()) {
 			g_session.planModeState = PlanModeState::Approved;
+			AIChatGoalManager::ResumeActiveTiming(g_session.goal, GetCurrentUnixTimeMsForChat());
 			canApprove = true;
 		}
 	}
@@ -7647,13 +7681,13 @@ void HandleChatTaskDone(LPARAM lParam)
 			g_session.lastInputTokens = result->chatResult.promptTokens;
 			g_session.hasLastUsage = true;
 		}
-		if (result->goalEnabled && result->chatResult.hasUsage) {
+		if (result->goalProgressTracked && result->chatResult.hasUsage) {
 			AIChatGoalManager::AddUsage(
 				g_session.goal,
 				result->chatResult.totalTokens,
 				GetCurrentUnixTimeMsForChat());
 		}
-		if (!result->chatResult.ok && !result->chatResult.cancelled && result->goalEnabled) {
+		if (!result->chatResult.ok && !result->chatResult.cancelled && result->goalProgressTracked) {
 			AIChatGoalManager::Block(g_session.goal, GetCurrentUnixTimeMsForChat());
 		}
 
@@ -7816,7 +7850,10 @@ void HandleChatTaskDone(LPARAM lParam)
 		}
 
 		if (result->chatResult.ok &&
-			(!g_session.pendingInputs.empty() || AIChatGoalManager::IsActive(g_session.goal))) {
+			(!g_session.pendingInputs.empty() ||
+				AIChatGoalManager::CanAdvance(
+					g_session.goal,
+					IsPlanModeActive(g_session.planModeState)))) {
 			scheduleNextWork = true;
 		}
 
@@ -7955,13 +7992,13 @@ void RefreshChatDialog(HWND hWnd)
 	UpdateNativePendingInputs(ctx, pendingInputs);
 	UpdateNativePlanModeState(ctx, planModeState);
 	UpdateNativeAutoAllowModeState(ctx, autoAllowWrites);
-	UpdateNativeGoalState(ctx, goalSnapshot);
+	UpdateNativeGoalState(ctx, goalSnapshot, planModeState);
 	UpdateWebViewComposerState(ctx, inFlight, stopRequested);
 	UpdateWebViewContextUsage(ctx, usageSnapshot);
 	UpdateWebViewSessionTiming(ctx, timingSnapshot);
 	UpdateWebViewPlanModeState(ctx, planModeState);
 	UpdateWebViewAutoAllowModeState(ctx, autoAllowWrites);
-	UpdateWebViewGoalState(ctx, goalSnapshot);
+	UpdateWebViewGoalState(ctx, goalSnapshot, planModeState);
 	SyncSessionTimingTimer(hWnd, timingSnapshot.inProgress);
 	if (hideInlineConfirmForBusy || timingVisibilityChanged || pendingVisibilityChanged || requestStateChanged) {
 		LayoutAIChatDialog(hWnd, ctx);

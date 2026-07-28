@@ -39,6 +39,11 @@ bool AIChatGoalManager::IsActive(const AIChatGoalState& goal)
 	return HasGoal(goal) && goal.status == AIChatGoalStatus::Active;
 }
 
+bool AIChatGoalManager::CanAdvance(const AIChatGoalState& goal, bool planModeActive)
+{
+	return IsActive(goal) && !planModeActive;
+}
+
 bool AIChatGoalManager::Create(AIChatGoalState& goal, const std::string& objectiveLocal, long long nowUnixMs)
 {
 	if (HasGoal(goal) || objectiveLocal.empty()) return false;
@@ -64,6 +69,22 @@ bool AIChatGoalManager::Resume(AIChatGoalState& goal, long long nowUnixMs)
 {
 	if (!HasGoal(goal) || (goal.status != AIChatGoalStatus::Paused && goal.status != AIChatGoalStatus::Blocked)) return false;
 	goal.status = AIChatGoalStatus::Active;
+	goal.activeStartedAtUnixMs = nowUnixMs;
+	goal.updatedAtUnixMs = nowUnixMs;
+	return true;
+}
+
+bool AIChatGoalManager::SuspendActiveTiming(AIChatGoalState& goal, long long nowUnixMs)
+{
+	if (!IsActive(goal) || goal.activeStartedAtUnixMs <= 0) return false;
+	FinishActiveTiming(goal, nowUnixMs);
+	goal.updatedAtUnixMs = nowUnixMs;
+	return true;
+}
+
+bool AIChatGoalManager::ResumeActiveTiming(AIChatGoalState& goal, long long nowUnixMs)
+{
+	if (!IsActive(goal) || goal.activeStartedAtUnixMs > 0) return false;
 	goal.activeStartedAtUnixMs = nowUnixMs;
 	goal.updatedAtUnixMs = nowUnixMs;
 	return true;
@@ -133,12 +154,25 @@ std::string AIChatGoalManager::BuildSelfTestReportJson()
 	const bool statusRoundTrip = StatusFromString(StatusToString(goal.status)) == AIChatGoalStatus::Complete;
 	Clear(goal);
 	const bool cleared = !HasGoal(goal) && goal.status == AIChatGoalStatus::None;
+
+	AIChatGoalState planGoal;
+	const bool planGoalCreated = Create(planGoal, "plan isolation", 4000);
+	const bool timingSuspended = SuspendActiveTiming(planGoal, 4300) &&
+		planGoal.status == AIChatGoalStatus::Active &&
+		CurrentElapsedMs(planGoal, 5000) == 300;
+	const bool planBlocksAdvance = !CanAdvance(planGoal, true);
+	const bool timingResumed = ResumeActiveTiming(planGoal, 5200) &&
+		CurrentElapsedMs(planGoal, 5500) == 600;
+	const bool defaultAllowsAdvance = CanAdvance(planGoal, false);
 	const bool ok = created && duplicateRejected && activeElapsed && paused && invalidPauseRejected &&
-		resumed && blocked && resumedFromBlocked && completed && usageTracked && statusRoundTrip && cleared;
+		resumed && blocked && resumedFromBlocked && completed && usageTracked && statusRoundTrip && cleared &&
+		planGoalCreated && timingSuspended && planBlocksAdvance && timingResumed && defaultAllowsAdvance;
 	const auto flag = [](bool value) { return value ? "true" : "false"; };
 	return std::format(
-		R"({{"name":"goal-mode-state-machine","ok":{},"created":{},"duplicate_rejected":{},"active_elapsed":{},"paused":{},"invalid_pause_rejected":{},"resumed":{},"blocked":{},"resumed_from_blocked":{},"completed":{},"usage_tracked":{},"status_round_trip":{},"cleared":{}}})",
+		R"({{"name":"goal-mode-state-machine","ok":{},"created":{},"duplicate_rejected":{},"active_elapsed":{},"paused":{},"invalid_pause_rejected":{},"resumed":{},"blocked":{},"resumed_from_blocked":{},"completed":{},"usage_tracked":{},"status_round_trip":{},"cleared":{},"plan_goal_created":{},"timing_suspended":{},"plan_blocks_advance":{},"timing_resumed":{},"default_allows_advance":{}}})",
 		flag(ok), flag(created), flag(duplicateRejected), flag(activeElapsed), flag(paused),
 		flag(invalidPauseRejected), flag(resumed), flag(blocked), flag(resumedFromBlocked),
-		flag(completed), flag(usageTracked), flag(statusRoundTrip), flag(cleared));
+		flag(completed), flag(usageTracked), flag(statusRoundTrip), flag(cleared),
+		flag(planGoalCreated), flag(timingSuspended), flag(planBlocksAdvance),
+		flag(timingResumed), flag(defaultAllowsAdvance));
 }

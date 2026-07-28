@@ -2211,6 +2211,10 @@ window.autolinkerSetPlanMode = function(state, label, title) {
 		btn.title = title || (active ? "\u9000\u51FA\u8BA1\u5212\u6A21\u5F0F" : "\u8FDB\u5165\u8BA1\u5212\u6A21\u5F0F");
 		btn.setAttribute("aria-label", btn.title);
 	}
+	if (window.autolinkerApplyGoalButtonState) {
+		window.autolinkerApplyGoalButtonState();
+	}
+	window.autolinkerRenderGoalPanel();
 };
 
 window.autolinkerSetAutoAllowMode = function(enabled, label, title) {
@@ -2241,7 +2245,9 @@ window.autolinkerRenderGoalPanel = function() {
 	var status = data.status || "none";
 	var html = '<div class="goal-panel-head"><div class="goal-panel-title">' + window.autolinkerEscapeHtml(data.label || "\u76EE\u6807") + '</div>';
 	if (status !== "none") {
-		html += '<div class="goal-panel-meta"><span>' + window.autolinkerEscapeHtml(data.elapsedLabel || "0m 0s") + '</span><span>' + Number(data.tokensUsed || 0) + ' tokens</span></div>';
+		html += '<div class="goal-panel-meta">';
+		if (data.suspendedByPlan) html += '<span>\u8BA1\u5212\u6A21\u5F0F\u4E2D\u5DF2\u6682\u6302</span>';
+		html += '<span>' + window.autolinkerEscapeHtml(data.elapsedLabel || "0m 0s") + '</span><span>' + Number(data.tokensUsed || 0) + ' tokens</span></div>';
 	}
 	html += '</div>';
 	if (status === "none") {
@@ -2263,21 +2269,31 @@ window.autolinkerRenderGoalPanel = function() {
 	}
 };
 
+window.autolinkerApplyGoalButtonState = function() {
+	var data = window.autolinkerGoalState || {};
+	var status = data.status || "none";
+	var planState = window.autolinkerPlanState || "normal";
+	var suspendedByPlan = status === "active" &&
+		(planState === "planning" || planState === "awaiting_approval");
+	data.suspendedByPlan = suspendedByPlan;
+	var btn = document.getElementById("goal-mode-btn");
+	if (!btn) return;
+	var text = btn.querySelector ? btn.querySelector(".mode-label") : null;
+	if (text) text.textContent = suspendedByPlan ? "\u76EE\u6807" : (data.label || "\u76EE\u6807");
+	btn.classList.toggle("active", !suspendedByPlan && status === "active");
+	btn.classList.toggle("paused", !suspendedByPlan && status === "paused");
+	btn.classList.toggle("blocked", !suspendedByPlan && status === "blocked");
+	btn.classList.toggle("complete", !suspendedByPlan && status === "complete");
+	btn.title = suspendedByPlan
+		? "Goal \u5DF2\u5728\u8BA1\u5212\u6A21\u5F0F\u4E2D\u6682\u6302"
+		: (data.objective || data.label || "\u76EE\u6807");
+	btn.setAttribute("aria-label", suspendedByPlan ? "\u76EE\u6807" : (data.label || "\u76EE\u6807"));
+};
+
 window.autolinkerSetGoalState = function(payload) {
 	var data = payload || {};
 	window.autolinkerGoalState = data;
-	var status = data.status || "none";
-	var btn = document.getElementById("goal-mode-btn");
-	if (btn) {
-		var text = btn.querySelector ? btn.querySelector(".mode-label") : null;
-		if (text) text.textContent = data.label || "\u76EE\u6807";
-		btn.classList.toggle("active", status === "active");
-		btn.classList.toggle("paused", status === "paused");
-		btn.classList.toggle("blocked", status === "blocked");
-		btn.classList.toggle("complete", status === "complete");
-		btn.title = data.objective || data.label || "\u76EE\u6807";
-		btn.setAttribute("aria-label", data.label || "\u76EE\u6807");
-	}
+	window.autolinkerApplyGoalButtonState();
 	window.autolinkerRenderGoalPanel();
 };
 
