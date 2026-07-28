@@ -28,11 +28,15 @@ Source of truth in-repo: `README.md`, `CONFIG.md`, `AGENTS.md`.
 
 ## Install
 
-1. Download a Release and drop `AutoLinker.fne` into the 易语言 `lib` directory,
-   then enable the support library in the IDE.
+1. For a first install, download the latest Release, put `AutoLinker.fne` in the
+   易语言 `lib` directory, then enable the support library in the IDE.
 2. 易语言 **5.95+** is recommended for the best experience.
 3. On IDE launch, AutoLinker auto-starts the local MCP server and logs to the
    IDE output window and `autolinker.log`.
+
+For an existing install, use 插件菜单 → AutoLinker 设置 → 关于 → 组件更新 to
+check and update AutoLinker or e-packager. Updating AutoLinker replaces the
+loaded `AutoLinker.fne` after the current IDE exits; follow the page prompts.
 
 Config lives at `{易语言安装目录}\AutoLinker\AIConfig.json`; logs at
 `{易语言安装目录}\AutoLinker\Log`.
@@ -55,20 +59,22 @@ force-activate a SKILL for that turn (e.g. `$pdf 分析这份文档`).
 Create a same-named `.AGENTS.md` next to the `.e` file (e.g. `test_a.e` →
 `test_a.AGENTS.md`). Its content is injected into the system prompt of all AI
 features as the project convention — the E-language analogue of `CLAUDE.md`.
+The same file can be viewed and edited at 插件菜单 → AutoLinker 设置 → 当前项目
+AGENTS.md for the currently open project.
 
 ### 4. Per-source linker switching
-Add multiple `link.ini` configs (工具 menu), then switch the active linker for
-the current source under 主菜单 → 编译. No more manual back-and-forth.
+Add and edit `link.ini` configs at 插件菜单 → AutoLinker 设置 → 链接器, then
+switch the active linker for the current source under 主菜单 → 编译.
 
 ### 5. Dynamic/static ec auto-swap on debug/compile
 Keep a pair of ec files (dynamic + static) for one module in the **same
 folder**. AutoLinker swaps the imported module automatically: static on
 "开始编译", dynamic on "开始调试" (typical for VMP SDK, ExDui). Configure via
-工具 → **AutoLinker EC 模块自动切换设置**. You must first reference either ec.
+插件菜单 → AutoLinker 设置 → EC 模块切换. You must first reference either ec.
 
 ### 6. Core-library C++ rewrite (perf / anti-crack / AV-evasion-for-defense)
 Replace core-lib functions with modern C++ (`.lib`, 32-bit). Configure the
-force-linked `.lib` list under 工具 → **AutoLinker 核心库函数重写设置**
+force-linked `.lib` list under 插件菜单 → AutoLinker 设置 → 核心库函数重写
 (Lib path ordered before `krnln_static.lib`; optional linker-name substring
 match; per-rule enable). Enables linker `/FORCE`; own Lib must disable `/GL`.
 See `TestCore` (C++20 / VC2022) for a reference implementation.
@@ -81,14 +87,36 @@ e-packager. Only enabled when a `.e` source is open.
 Navigates to the previous modification, like other IDEs.
 
 ### 9. Unified settings window ("AutoLinker 设置")
-Add-in menu → AutoLinker 设置. Left-nav pages: AI Service, MCP, Skills, Chat
-Theme, Project AGENTS, Linker, EC Switch, ForceLinkLib, Log Optimization,
-About. Also add-in menu entries: 打开项目目录, 打开 AutoLinker 配置目录,
+
+The unified entry is 插件菜单 → AutoLinker 设置. When explaining where a
+feature lives, give the complete path from this table instead of referring only
+to a config file or an obsolete standalone dialog:
+
+| Settings tab | Location and purpose |
+| --- | --- |
+| AI 接口 | AutoLinker 设置 → AI 接口: provider profiles, API Key, protocol, model, source editing mode, and Tavily search |
+| MCP 服务 | AutoLinker 设置 → MCP 服务: inspect and manage MCP configuration for external agents |
+| AI SKILL | AutoLinker 设置 → AI SKILL: install, enable, disable, update, open, or remove global/project skills |
+| AI 对话配色 | AutoLinker 设置 → AI 对话配色: choose a built-in theme or create, copy, rename, delete, and edit custom themes |
+| 当前项目 AGENTS.md | AutoLinker 设置 → 当前项目 AGENTS.md: edit the convention file for the open `.e` project |
+| 链接器 | AutoLinker 设置 → 链接器: manage `link.ini`; select the active linker under 主菜单 → 编译 |
+| EC 模块切换 | AutoLinker 设置 → EC 模块切换: maintain dynamic/static ec switching rules |
+| 核心库函数重写 | AutoLinker 设置 → 核心库函数重写: maintain force-linked `.lib` rules |
+| 日志优化 | AutoLinker 设置 → 日志优化: compilation-log Hook and debug-output fast-path options |
+| 关于 | AutoLinker 设置 → 关于: version and project links; check/update AutoLinker and e-packager under 组件更新 |
+
+The AI 对话配色 page includes the default and built-in dark themes. Built-in
+themes are read-only; copy one before editing. A custom theme exposes seven
+primary colors (surface, text, primary, accent, success, warning, danger),
+advanced per-color overrides, and a live preview. Saving applies it immediately
+to any open AI chat view.
+
+The add-in menu also contains 打开项目目录, 打开 AutoLinker 配置目录, and
 打开易语言目录.
 
 ## AI provider configuration (see CONFIG.md for full detail)
 
-Configure in AutoLinker 设置 → AI Service. Recommended flow: **使用预设站点新建**
+Configure in 插件菜单 → AutoLinker 设置 → AI 接口. Recommended flow: **使用预设站点新建**
 → pick site/model → fill API Key → 测试连通性 → 保存.
 
 Key fields: 接口协议 (`OpenAI Chat` / `OpenAI Responses` / `Gemini` / `Claude`),
@@ -239,8 +267,9 @@ with the log directory.
 ## Common issues
 - 连通性测试失败 → check API key (stray spaces), Base URL + protocol, account
   balance, and overseas-network reachability for OpenAI/Claude.
-- e-packager won't download → grab it from the e-packager Releases and unzip
-  into `{易语言安装目录}\tools`.
+- e-packager won't download → first retry at AutoLinker 设置 → 关于 → 组件更新;
+  if the built-in updater still fails, download it from e-packager Releases and
+  unzip it into `{易语言安装目录}\tools`.
 - Config file location → `{易语言安装目录}\AutoLinker\AIConfig.json`.
 
 ## References
