@@ -1069,9 +1069,19 @@ html:not(.autolinker-page-visible) *::after {
 	align-items: center;
 	justify-content: space-between;
 	gap: 10px;
+	position: sticky;
+	top: 0;
+	z-index: 2;
 	margin-bottom: 10px;
+	padding-bottom: 4px;
+	background: inherit;
 	font-size: 12px;
 	font-weight: 700;
+}
+
+.plan-user-input-progress {
+	color: #1e66f5;
+	font-variant-numeric: tabular-nums;
 }
 
 .plan-user-input-question {
@@ -1079,6 +1089,10 @@ html:not(.autolinker-page-visible) *::after {
 	margin: 0;
 	padding: 0;
 	border: 0;
+}
+
+.plan-user-input-question[hidden] {
+	display: none;
 }
 
 .plan-user-input-question + .plan-user-input-question {
@@ -1203,8 +1217,23 @@ html:not(.autolinker-page-visible) *::after {
 
 .plan-user-input-actions {
 	display: flex;
+	align-items: center;
+	gap: 8px;
 	justify-content: flex-end;
+	position: sticky;
+	bottom: 0;
+	z-index: 2;
 	margin-top: 10px;
+	padding-top: 4px;
+	background: inherit;
+}
+
+.plan-user-input-previous {
+	margin-right: auto;
+}
+
+.plan-user-input-actions [hidden] {
+	display: none;
 }
 
 .body a {
@@ -1707,6 +1736,9 @@ body,
 	border-color: var(--al-plan-border);
 	color: var(--al-plan-text);
 }
+.plan-user-input-progress {
+	color: var(--al-primary);
+}
 .plan-user-input-question + .plan-user-input-question {
 	border-color: var(--al-soft-border);
 }
@@ -2063,6 +2095,80 @@ window.autolinkerScheduleLatestUserFloat = function() {
 	});
 };
 
+window.autolinkerShowPlanUserInputQuestion = function(card, requestedIndex, focusInput) {
+	if (!card || !card.querySelectorAll) {
+		return;
+	}
+	var questions = card.querySelectorAll(".plan-user-input-question");
+	if (!questions.length) {
+		return;
+	}
+	var index = Number(requestedIndex);
+	if (!isFinite(index)) {
+		index = 0;
+	}
+	index = Math.max(0, Math.min(questions.length - 1, Math.floor(index)));
+	card.setAttribute("data-current-question-index", String(index));
+	for (var i = 0; i < questions.length; i++) {
+		questions[i].hidden = i !== index;
+	}
+
+	var progress = card.querySelector(".plan-user-input-progress");
+	if (progress) {
+		progress.textContent = "(" + (index + 1) + "/" + questions.length + ")";
+	}
+	var previous = card.querySelector("[data-plan-user-input-action='previous']");
+	var next = card.querySelector("[data-plan-user-input-action='next']");
+	var submit = card.querySelector("[data-plan-user-input-action='submit']");
+	if (previous) {
+		previous.hidden = index === 0;
+	}
+	if (next) {
+		next.hidden = index >= questions.length - 1;
+	}
+	if (submit) {
+		submit.hidden = index < questions.length - 1;
+	}
+	var error = card.querySelector(".plan-user-input-error");
+	if (error) {
+		error.hidden = true;
+		error.textContent = "";
+	}
+
+	var question = questions[index];
+	if (focusInput) {
+		var target = question.querySelector("input[type='radio']:checked") ||
+			question.querySelector("input, textarea");
+		if (target) {
+			target.focus();
+		}
+	}
+	window.requestAnimationFrame(function() {
+		var scroll = document.getElementById("history-scroll");
+		if (!scroll || !question.getBoundingClientRect) {
+			return;
+		}
+		var scrollRect = scroll.getBoundingClientRect();
+		var questionRect = question.getBoundingClientRect();
+		var head = card.querySelector(".plan-user-input-head");
+		var headHeight = head ? head.getBoundingClientRect().height : 0;
+		scroll.scrollTop += questionRect.top - scrollRect.top - headHeight;
+	});
+};
+
+window.autolinkerInitializePlanUserInputCards = function(root) {
+	if (!root || !root.querySelectorAll) {
+		return;
+	}
+	var cards = root.querySelectorAll(".plan-user-input-card.active");
+	for (var i = 0; i < cards.length; i++) {
+		window.autolinkerShowPlanUserInputQuestion(
+			cards[i],
+			cards[i].getAttribute("data-current-question-index") || "0",
+			false);
+	}
+};
+
 window.autolinkerSetChatHtml = function(html) {
 	var root = document.getElementById("chat-root");
 	var scroll = document.getElementById("history-scroll");
@@ -2072,6 +2178,7 @@ window.autolinkerSetChatHtml = function(html) {
 		for (var i = 0; i < planButtons.length; i++) {
 			planButtons[i].disabled = !!window.autolinkerBusy;
 		}
+		window.autolinkerInitializePlanUserInputCards(root);
 		window.autolinkerAwaitingPlanUserInput = !!(root.querySelector && root.querySelector(".plan-user-input-card.active"));
 		if (typeof window.autolinkerSetBusy === "function") {
 			window.autolinkerSetBusy(!!window.autolinkerBusy, !!window.autolinkerStopRequested);
@@ -2692,6 +2799,53 @@ window.autolinkerHideToolApproval = function() {
 		});
 	}
 
+	function readPlanUserInputAnswer(question) {
+		var selected = question && question.querySelector
+			? question.querySelector("input[type='radio']:checked")
+			: null;
+		var note = question && question.querySelector
+			? question.querySelector(".plan-user-input-note")
+			: null;
+		var noteText = note ? (note.value || "").trim() : "";
+		var label = selected ? (selected.getAttribute("data-option-label") || "") : "";
+		return {
+			valid: !!selected && (label !== "" || noteText !== ""),
+			id: question ? (question.getAttribute("data-question-id") || "") : "",
+			label: label,
+			note: noteText,
+			selected: selected,
+			noteInput: note
+		};
+	}
+
+	function showPlanUserInputValidationError(card, question, questionIndex) {
+		window.autolinkerShowPlanUserInputQuestion(card, questionIndex, false);
+		var error = card.querySelector ? card.querySelector(".plan-user-input-error") : null;
+		if (error) {
+			error.textContent = "\u8bf7\u9009\u62e9\u4e00\u4e2a\u9009\u9879\uff1b\u9009\u62e9\u5176\u4ed6\u65f6\u9700\u8981\u586b\u5199\u5185\u5bb9\u3002";
+			error.hidden = false;
+		}
+		var answer = readPlanUserInputAnswer(question);
+		var target = answer.selected && !answer.label && !answer.note
+			? answer.noteInput
+			: (answer.selected || (question.querySelector ? question.querySelector("input, textarea") : null));
+		if (target) {
+			target.focus();
+		}
+	}
+
+	document.addEventListener("input", function(e) {
+		var card = e.target && e.target.closest ? e.target.closest(".plan-user-input-card.active") : null;
+		if (!card) {
+			return;
+		}
+		var error = card.querySelector ? card.querySelector(".plan-user-input-error") : null;
+		if (error) {
+			error.hidden = true;
+			error.textContent = "";
+		}
+	});
+
 	document.addEventListener("click", function(e) {
 		var goalAction = e.target && e.target.closest ? e.target.closest("[data-goal-action]") : null;
 		if (goalAction) {
@@ -2722,47 +2876,59 @@ window.autolinkerHideToolApproval = function() {
 			}
 			return;
 		}
-		var planUserInputBtn = e.target && e.target.closest ? e.target.closest("[data-plan-user-input-action='submit']") : null;
+		var planUserInputBtn = e.target && e.target.closest ? e.target.closest("[data-plan-user-input-action]") : null;
 		if (planUserInputBtn) {
 			e.preventDefault();
 			var card = planUserInputBtn.closest ? planUserInputBtn.closest(".plan-user-input-card.active") : null;
 			if (!card) {
 				return;
 			}
-			var error = card.querySelector ? card.querySelector(".plan-user-input-error") : null;
 			var questions = card.querySelectorAll ? card.querySelectorAll(".plan-user-input-question") : [];
+			var planUserInputAction = planUserInputBtn.getAttribute("data-plan-user-input-action") || "";
+			var currentQuestionIndex = Number(card.getAttribute("data-current-question-index") || "0");
+			if (!isFinite(currentQuestionIndex)) {
+				currentQuestionIndex = 0;
+			}
+			currentQuestionIndex = Math.max(0, Math.min(questions.length - 1, Math.floor(currentQuestionIndex)));
+			if (planUserInputAction === "previous") {
+				window.autolinkerShowPlanUserInputQuestion(card, currentQuestionIndex - 1, true);
+				return;
+			}
+			if (planUserInputAction === "next") {
+				var currentAnswer = readPlanUserInputAnswer(questions[currentQuestionIndex]);
+				if (!currentAnswer.valid) {
+					showPlanUserInputValidationError(card, questions[currentQuestionIndex], currentQuestionIndex);
+					return;
+				}
+				window.autolinkerShowPlanUserInputQuestion(card, currentQuestionIndex + 1, true);
+				return;
+			}
+			if (planUserInputAction !== "submit") {
+				return;
+			}
 			var answers = [];
-			var invalidQuestion = null;
+			var invalidQuestionIndex = -1;
 			for (var questionIndex = 0; questionIndex < questions.length; questionIndex++) {
 				var question = questions[questionIndex];
-				var selected = question.querySelector ? question.querySelector("input[type='radio']:checked") : null;
-				var note = question.querySelector ? question.querySelector(".plan-user-input-note") : null;
-				var noteText = note ? (note.value || "").trim() : "";
-				if (!selected || ((selected.getAttribute("data-option-label") || "") === "" && !noteText)) {
-					invalidQuestion = question;
+				var answer = readPlanUserInputAnswer(question);
+				if (!answer.valid) {
+					invalidQuestionIndex = questionIndex;
 					break;
 				}
 				answers.push({
-					id: question.getAttribute("data-question-id") || "",
-					label: selected.getAttribute("data-option-label") || "",
-					note: noteText
+					id: answer.id,
+					label: answer.label,
+					note: answer.note
 				});
 			}
-			if (invalidQuestion) {
-				if (error) {
-					error.textContent = "\u8bf7\u56de\u7b54\u5168\u90e8\u95ee\u9898\uff1b\u9009\u62e9\u5176\u4ed6\u65f6\u9700\u8981\u586b\u5199\u5185\u5bb9\u3002";
-					error.hidden = false;
-				}
-				var firstInput = invalidQuestion.querySelector ? invalidQuestion.querySelector("input, textarea") : null;
-				if (firstInput) {
-					firstInput.focus();
-				}
+			if (invalidQuestionIndex >= 0) {
+				showPlanUserInputValidationError(card, questions[invalidQuestionIndex], invalidQuestionIndex);
 				return;
 			}
-			if (error) {
-				error.hidden = true;
+			var actionButtons = card.querySelectorAll ? card.querySelectorAll("[data-plan-user-input-action]") : [];
+			for (var actionIndex = 0; actionIndex < actionButtons.length; actionIndex++) {
+				actionButtons[actionIndex].disabled = true;
 			}
-			planUserInputBtn.disabled = true;
 			post({
 				action: "submit_plan_user_input",
 				id: card.getAttribute("data-plan-user-input-id") || "0",

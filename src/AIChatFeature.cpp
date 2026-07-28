@@ -4970,9 +4970,17 @@ std::string RenderPlanUserInputCardHtml(const nlohmann::json& payloadUtf8)
 	if (active) {
 		html += " active";
 	}
-	html += "\" data-plan-user-input-id=\"" + std::to_string(requestId) + "\">";
-	html += "<div class=\"plan-user-input-head\"><span>";
+	html += "\" data-plan-user-input-id=\"" + std::to_string(requestId) + "\"";
+	if (active) {
+		html += " data-current-question-index=\"0\"";
+	}
+	html += "><div class=\"plan-user-input-head\"><span>";
 	html += EscapeHtml(LocalFromWide(L"计划问题"));
+	if (active) {
+		html += " <span class=\"plan-user-input-progress\" aria-live=\"polite\">(1/";
+		html += std::to_string(questions.size());
+		html += ")</span>";
+	}
 	html += "</span><span class=\"plan-status\">";
 	html += EscapeHtml(cancelled
 		? LocalFromWide(L"已取消")
@@ -4986,12 +4994,22 @@ std::string RenderPlanUserInputCardHtml(const nlohmann::json& payloadUtf8)
 		}
 		const std::string id = question.value("id", std::string());
 		const nlohmann::json* answer = findAnswer(id);
-		html += "<fieldset class=\"plan-user-input-question\" data-question-id=\"";
+		html += "<fieldset class=\"plan-user-input-question\" data-question-index=\"";
+		html += std::to_string(questionIndex);
+		html += "\" data-question-id=\"";
 		html += EscapeHtmlAttribute(id);
-		html += "\"><legend><span>";
+		html += "\"";
+		if (active && questionIndex != 0) {
+			html += " hidden";
+		}
+		html += "><legend><span>";
 		html += EscapeHtml(readLocal(question, "header"));
-		html += "</span><span>" + std::to_string(questionIndex + 1) + "/" +
-			std::to_string(questions.size()) + "</span></legend><div class=\"plan-user-input-prompt\">";
+		html += "</span>";
+		if (!active) {
+			html += "<span>(" + std::to_string(questionIndex + 1) + "/" +
+				std::to_string(questions.size()) + ")</span>";
+		}
+		html += "</legend><div class=\"plan-user-input-prompt\">";
 		html += EscapeHtml(readLocal(question, "question"));
 		html += "</div>";
 
@@ -5039,7 +5057,19 @@ std::string RenderPlanUserInputCardHtml(const nlohmann::json& payloadUtf8)
 	}
 	if (active) {
 		html += "<div class=\"plan-user-input-error\" role=\"alert\" hidden></div>";
-		html += "<div class=\"plan-user-input-actions\"><button class=\"btn primary\" type=\"button\" data-plan-user-input-action=\"submit\">";
+		html += "<div class=\"plan-user-input-actions\"><button class=\"btn plan-user-input-previous\" type=\"button\" data-plan-user-input-action=\"previous\" hidden>";
+		html += EscapeHtml(LocalFromWide(L"上一题"));
+		html += "</button><button class=\"btn primary\" type=\"button\" data-plan-user-input-action=\"next\"";
+		if (questions.size() <= 1) {
+			html += " hidden";
+		}
+		html += ">";
+		html += EscapeHtml(LocalFromWide(L"下一题"));
+		html += "</button><button class=\"btn primary\" type=\"button\" data-plan-user-input-action=\"submit\"";
+		if (questions.size() > 1) {
+			html += " hidden";
+		}
+		html += ">";
 		html += EscapeHtml(LocalFromWide(L"提交回答"));
 		html += "</button></div>";
 	}
@@ -9836,13 +9866,44 @@ std::string BuildPlanModeSelfTestJson()
 	const bool userInputOk = userInputCheck.is_object() &&
 		userInputCheck.value("ok", false);
 
+	auto makeStepQuestion = [](const char* id) {
+		return nlohmann::json({
+			{"id", id},
+			{"header", "Header"},
+			{"question", "Question?"},
+			{"options", nlohmann::json::array({
+				{{"label", "Option A"}, {"description", "First option."}},
+				{{"label", "Option B"}, {"description", "Second option."}}
+			})}
+		});
+	};
+	nlohmann::json stepUiPayload = {
+		{"status", "active"},
+		{"request_id", 73ULL},
+		{"questions", nlohmann::json::array({
+			makeStepQuestion("first_question"),
+			makeStepQuestion("second_question"),
+			makeStepQuestion("third_question")
+		})}
+	};
+	const std::string stepUiHtml = RenderPlanUserInputCardHtml(stepUiPayload);
+	const bool stepUiOk =
+		stepUiHtml.find("data-current-question-index=\"0\"") != std::string::npos &&
+		stepUiHtml.find("class=\"plan-user-input-progress\" aria-live=\"polite\">(1/3)") != std::string::npos &&
+		stepUiHtml.find("data-question-index=\"0\" data-question-id=\"first_question\"><legend") != std::string::npos &&
+		stepUiHtml.find("data-question-index=\"1\" data-question-id=\"second_question\" hidden>") != std::string::npos &&
+		stepUiHtml.find("data-question-index=\"2\" data-question-id=\"third_question\" hidden>") != std::string::npos &&
+		stepUiHtml.find("data-plan-user-input-action=\"next\">") != std::string::npos &&
+		stepUiHtml.find("data-plan-user-input-action=\"submit\" hidden>") != std::string::npos;
+
 	return nlohmann::json({
 		{"name", "plan-mode-approval-compat"},
-		{"ok", explicitOk && toolPlanOk && plainPlanOk && userInputOk},
+		{"ok", explicitOk && toolPlanOk && plainPlanOk && userInputOk && stepUiOk},
 		{"explicit_plan", explicitOk},
 		{"update_plan_fallback", toolPlanOk},
 		{"plain_text_fallback", plainPlanOk},
-		{"user_input_protocol", userInputCheck}
+		{"user_input_protocol", userInputCheck},
+		{"user_input_step_ui", stepUiOk}
 	}).dump();
 }
 
