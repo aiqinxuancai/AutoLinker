@@ -242,6 +242,33 @@ bool RequiresWorkspaceRefresh(std::string_view toolName)
 	return metadata != nullptr && metadata->externalPublic && metadata->requiresWorkspaceRefresh;
 }
 
+bool RequiresOpenSource(std::string_view toolName)
+{
+	if (RequiresWorkspaceRefresh(toolName)) {
+		return true;
+	}
+	return toolName == "refresh_workspace_mirror" ||
+		toolName == "add_new_file" ||
+		toolName == "get_current_page_info" ||
+		toolName == "list_imported_modules" ||
+		toolName == "add_module_to_project" ||
+		toolName == "remove_module_from_project" ||
+		toolName == "add_support_library_to_project" ||
+		toolName == "compile_with_output_path";
+}
+
+nlohmann::json BuildNoSourceOpenError(std::string_view toolName)
+{
+	return {
+		{"ok", false},
+		{"error", "no_source_open"},
+		{"source_state", "no_source_open"},
+		{"source_open", false},
+		{"tool", std::string(toolName)},
+		{"hint", "No E-language source project is open in the IDE. Open a .e source file, then call get_current_eide_info before retrying project read/write tools."}
+	};
+}
+
 nlohmann::json FilterExternalPublicCatalog(const nlohmann::json& catalog)
 {
 	nlohmann::json filtered = nlohmann::json::array();

@@ -285,6 +285,7 @@ struct ChatDialogContext {
 struct AIChatAsyncRequest {
 	unsigned long long requestId = 0;
 	AISettings settings = {};
+	std::string sourceFilePathLocal;
 	std::vector<AIChatMessage> contextMessages;
 	std::shared_ptr<AIChatRequestCancellation> cancellation;
 	bool enablePlanUserInput = false;
@@ -2387,11 +2388,18 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 	PostRefreshDialog();
 }
 
-bool PrepareWorkspaceMirrorForChat(unsigned long long requestId, std::string& outError)
+bool PrepareWorkspaceMirrorForChat(
+	unsigned long long requestId,
+	const std::string& sourceFilePathLocal,
+	std::string& outError)
 {
 	outError.clear();
 	std::string mode;
-	if (WorkspaceMirror::RefreshMirror(
+	const bool hasOpenSource = !TrimAsciiCopy(sourceFilePathLocal).empty();
+	if (!hasOpenSource) {
+		outError = LocalFromWide(L"当前没有打开易语言源码文件");
+	}
+	else if (WorkspaceMirror::RefreshMirror(
 			outError,
 			&mode,
 			WorkspaceMirror::RefreshMode::Full)) {
@@ -2415,14 +2423,21 @@ bool PrepareWorkspaceMirrorForChat(unsigned long long requestId, std::string& ou
 	}
 	if (!TrimAsciiCopy(outError).empty()) {
 		OutputStringToELog("[WorkspaceMirror] prepare chat workspace mirror failed: " + outError);
-		std::string displayError = TrimAsciiCopy(outError);
-		if (displayError.size() > 300) {
-			displayError.resize(300);
-			displayError += "...";
+		if (!hasOpenSource) {
+			AppendAgentActivity(
+				requestId,
+				LocalFromWide(L"当前未打开易语言源码，工程读写工具已禁用"));
 		}
-		AppendAgentActivity(
-			requestId,
-			LocalFromWide(L"\u5de5\u7a0b\u955c\u50cf\u51c6\u5907\u5931\u8d25\uff0cAI \u53ef\u8c03\u7528\u5237\u65b0\u5de5\u5177\u91cd\u8bd5\uff1a") + displayError);
+		else {
+			std::string displayError = TrimAsciiCopy(outError);
+			if (displayError.size() > 300) {
+				displayError.resize(300);
+				displayError += "...";
+			}
+			AppendAgentActivity(
+				requestId,
+				LocalFromWide(L"\u5de5\u7a0b\u955c\u50cf\u51c6\u5907\u5931\u8d25\uff0cAI \u53ef\u8c03\u7528\u5237\u65b0\u5de5\u5177\u91cd\u8bd5\uff1a") + displayError);
+		}
 	}
 	return false;
 }
@@ -2432,6 +2447,14 @@ bool EnsureWorkspaceMirrorForInternalSourceTool(
 	std::string& outBlockedResultLocal)
 {
 	outBlockedResultLocal.clear();
+	if (AIChatToolRegistry::RequiresOpenSource(toolName)) {
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (TrimAsciiCopy(g_session.sourceFilePathLocal).empty()) {
+			outBlockedResultLocal = Utf8ToLocalText(DumpJsonUtf8(
+				AIChatToolRegistry::BuildNoSourceOpenError(toolName)));
+			return false;
+		}
+	}
 	if (!AIChatToolRegistry::RequiresWorkspaceRefresh(toolName)) {
 		return true;
 	}
@@ -6201,7 +6224,10 @@ void RunAIChatWorker(void* pParams)
 		}
 		else {
 			std::string workspaceMirrorError;
-			PrepareWorkspaceMirrorForChat(request->requestId, workspaceMirrorError);
+			PrepareWorkspaceMirrorForChat(
+				request->requestId,
+				request->sourceFilePathLocal,
+				workspaceMirrorError);
 			if (isCancelled()) {
 				result->chatResult.ok = false;
 				result->chatResult.error = LocalFromWide(L"\u5df2\u53d6\u6d88\uff0c\u672a\u53d1\u9001 AI \u8bf7\u6c42\u3002");
@@ -6351,6 +6377,8 @@ bool StartChatRequest(
 	if (trimmed.empty() && !explicitResume) {
 		return false;
 	}
+	// 提交发生在 IDE UI 线程，在创建后台任务前完成所有当前工程探测。
+	UpdateCurrentOpenSourceFile();
 	RebindChatSessionToCurrentSourceIfNeeded();
 
 	AISettings settings = {};
@@ -6402,6 +6430,7 @@ bool StartChatRequest(
 
 		request->requestId = g_session.nextRequestId++;
 		request->settings = settings;
+		request->sourceFilePathLocal = g_session.sourceFilePathLocal;
 		request->contextMessages = BuildContextMessagesLocked(g_session);
 		request->cancellation = std::make_shared<AIChatRequestCancellation>();
 		request->enablePlanUserInput = g_session.planModeState == PlanModeState::Planning;
@@ -6430,7 +6459,10 @@ bool StartChatRequest(
 		}
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
-		g_session.agentActivityLines.push_back(LocalFromWide(L"\u6b63\u5728\u4ee5 full \u6a21\u5f0f\u51c6\u5907\u5de5\u7a0b\u955c\u50cf..."));
+		g_session.agentActivityLines.push_back(LocalFromWide(
+			request->sourceFilePathLocal.empty()
+				? L"当前未打开易语言源码，工程读写工具已禁用"
+				: L"\u6b63\u5728\u4ee5 full \u6a21\u5f0f\u51c6\u5907\u5de5\u7a0b\u955c\u50cf..."));
 		g_session.requestInFlight = true;
 		g_session.activeRequestId = request->requestId;
 		g_session.activeRequestOrigin = origin;

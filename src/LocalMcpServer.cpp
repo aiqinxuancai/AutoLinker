@@ -793,6 +793,20 @@ std::string LocalTextToUtf8(const std::string& text)
 	return utf8.empty() && !text.empty() ? text : utf8;
 }
 
+struct McpSourceStateSnapshot {
+	bool sourceOpen = false;
+	std::string sourceFilePath;
+};
+
+McpSourceStateSnapshot GetMcpSourceStateSnapshot()
+{
+	std::lock_guard<std::mutex> lock(g_stateMutex);
+	McpSourceStateSnapshot snapshot;
+	snapshot.sourceFilePath = TrimAsciiCopy(g_sourceFilePathHint);
+	snapshot.sourceOpen = !snapshot.sourceFilePath.empty();
+	return snapshot;
+}
+
 bool TryLoadRegisteredInstances(
 	std::vector<LocalMcpInstanceRegistry::InstanceRecord>& outInstances,
 	std::string& outError)
@@ -823,11 +837,14 @@ nlohmann::json BuildInstanceSummary(
 	const std::string& activeInstanceId,
 	bool reachable)
 {
+	const bool sourceOpen = !TrimAsciiCopy(instance.sourceFilePathHint).empty();
 	return {
 		{"instance_id", instance.instanceId},
 		{"process_id", instance.processId},
 		{"process_path", LocalTextToUtf8(instance.processPath)},
 		{"process_name", LocalTextToUtf8(instance.processName)},
+		{"source_state", sourceOpen ? "source_open" : "no_source_open"},
+		{"source_open", sourceOpen},
 		{"source_file_path", LocalTextToUtf8(instance.sourceFilePathHint)},
 		{"page_name", LocalTextToUtf8(instance.pageNameHint)},
 		{"page_type", LocalTextToUtf8(instance.pageTypeHint)},
@@ -1206,10 +1223,14 @@ std::string NegotiateProtocolVersion(const nlohmann::json& params)
 
 nlohmann::json BuildInitializeResult(const nlohmann::json& params)
 {
+	const McpSourceStateSnapshot sourceState = GetMcpSourceStateSnapshot();
 	const std::string instructions = AIService::BuildExternalMcpInstructions() +
 		"\nAutoLinker multi-instance routing: connect to http://127.0.0.1:19207/mcp, "
 		"call list_instances before cross-project work, and call select_instance with the returned instance_id. "
-		"The selection is isolated to this MCP session and is never changed automatically.";
+		"The selection is isolated to this MCP session and is never changed automatically.\nCurrent source state: " +
+		(sourceState.sourceOpen
+			? std::string("source_open. Project tools are available after a successful workspace refresh.")
+			: std::string("no_source_open. Do not call project read/write tools until a .e source file is opened."));
 	return {
 		{"protocolVersion", NegotiateProtocolVersion(params)},
 		{"capabilities", {
@@ -1221,7 +1242,12 @@ nlohmann::json BuildInitializeResult(const nlohmann::json& params)
 			{"name", kServerName},
 			{"version", kServerVersion}
 		}},
-		{"instructions", instructions}
+		{"instructions", instructions},
+		{"autolinkerState", {
+			{"source_state", sourceState.sourceOpen ? "source_open" : "no_source_open"},
+			{"source_open", sourceState.sourceOpen},
+			{"source_file_path", LocalTextToUtf8(sourceState.sourceFilePath)}
+		}}
 	};
 }
 
@@ -1315,7 +1341,7 @@ std::string BuildToolContentSummary(
 	summary["note"] = "Full machine-readable result is available in structuredContent.";
 	if (structured.is_object()) {
 		static constexpr const char* kSummaryKeys[] = {
-			"ok", "status", "error", "file_path", "page_name", "mapped_page_name",
+			"ok", "status", "error", "source_state", "source_open", "hint", "file_path", "page_name", "mapped_page_name",
 			"code_hash", "new_hash", "verified", "count", "returned", "returned_lines",
 			"match_count", "files_with_matches", "has_more", "next_offset", "truncated"
 		};
@@ -1369,6 +1395,22 @@ bool TryBuildToolCallResult(
 	if (!AIChatToolRegistry::ValidateArguments(arguments, inputSchema, validationError)) {
 		outError = "invalid tool arguments: " + validationError;
 		return false;
+	}
+	const McpSourceStateSnapshot sourceState = GetMcpSourceStateSnapshot();
+	if (AIChatToolRegistry::RequiresOpenSource(toolName) && !sourceState.sourceOpen) {
+		const nlohmann::json structured = AIChatToolRegistry::BuildNoSourceOpenError(toolName);
+		const std::string rawResult = structured.dump();
+		outResult = {
+			{"content", nlohmann::json::array({
+				{
+					{"type", "text"},
+					{"text", BuildToolContentSummary(toolName, structured, true, rawResult)}
+				}
+			})},
+			{"isError", true},
+			{"structuredContent", structured}
+		};
+		return true;
 	}
 	const bool requiresBaseHash =
 		toolName == "edit_file" ||
@@ -2307,6 +2349,12 @@ bool IsGatewayOwner()
 std::string BuildWorkspaceRefreshGateSelfTestJson()
 {
 	const std::string sessionId = "self-test-refresh-gate";
+	std::string previousSourceFilePathHint;
+	{
+		std::lock_guard<std::mutex> lock(g_stateMutex);
+		previousSourceFilePathHint = g_sourceFilePathHint;
+		g_sourceFilePathHint = "C:\\AutoLinkerSelfTest.e";
+	}
 	SetExternalWorkspaceRefreshed(sessionId, false);
 	nlohmann::json result;
 	std::string error;
@@ -2355,16 +2403,52 @@ std::string BuildWorkspaceRefreshGateSelfTestJson()
 		missingHashError);
 	const bool missingHashBlocked = !missingHashHandled &&
 		missingHashError.find("expected_base_hash") != std::string::npos;
+	{
+		std::lock_guard<std::mutex> lock(g_stateMutex);
+		g_sourceFilePathHint.clear();
+	}
+	nlohmann::json noSourceResult;
+	std::string noSourceError;
+	const bool noSourceHandled = TryBuildToolCallResult(
+		{
+			{"name", "read_files"},
+			{"arguments", {{"file_paths", nlohmann::json::array({"src/Test.txt"})}}}
+		},
+		sessionId,
+		noSourceResult,
+		noSourceError);
+	const bool noSourceBlocked = noSourceHandled &&
+		noSourceResult.value("isError", false) &&
+		noSourceResult.contains("structuredContent") &&
+		noSourceResult["structuredContent"].is_object() &&
+		noSourceResult["structuredContent"].value("error", std::string()) == "no_source_open" &&
+		!noSourceResult["structuredContent"].value("source_open", true);
+	const nlohmann::json initializeResult = BuildInitializeResult(nlohmann::json::object());
+	const bool initializeNoSourceState =
+		initializeResult.contains("autolinkerState") &&
+		initializeResult["autolinkerState"].is_object() &&
+		initializeResult["autolinkerState"].value("source_state", std::string()) == "no_source_open" &&
+		!initializeResult["autolinkerState"].value("source_open", true) &&
+		initializeResult.value("instructions", std::string()).find("no_source_open") != std::string::npos;
+	{
+		std::lock_guard<std::mutex> lock(g_stateMutex);
+		g_sourceFilePathHint = previousSourceFilePathHint;
+		g_externalMcpSessions.erase(sessionId);
+	}
 	return nlohmann::json({
 		{"name", "external_mcp_workspace_refresh_gate"},
-		{"ok", blocked && hiddenToolBlocked && missingHashBlocked},
+		{"ok", blocked && hiddenToolBlocked && missingHashBlocked && noSourceBlocked && initializeNoSourceState},
 		{"handled", handled},
 		{"error", error},
 		{"result", result},
 		{"hidden_tool_blocked", hiddenToolBlocked},
 		{"hidden_tool_error", hiddenError},
 		{"missing_hash_blocked", missingHashBlocked},
-		{"missing_hash_error", missingHashError}
+		{"missing_hash_error", missingHashError},
+		{"no_source_blocked", noSourceBlocked},
+		{"initialize_no_source_state", initializeNoSourceState},
+		{"no_source_error", noSourceError},
+		{"no_source_result", noSourceResult}
 	}).dump();
 }
 

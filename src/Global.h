@@ -17,6 +17,9 @@ extern std::string g_nowOpenSourceFilePath;
 extern HWND g_hwnd;
 extern ModelManager g_modelManager;
 
+// 在 IDE 主线程刷新当前打开的易语言源码路径及关联上下文。
+void UpdateCurrentOpenSourceFile();
+
 void OutputStringToELog(const std::string& szbuf);
 
 uint64_t AllocateAIPerfTraceId();

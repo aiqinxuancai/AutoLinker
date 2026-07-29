@@ -29,6 +29,12 @@ bool IsDependencyManagement(std::string_view toolName);
 // 判断聊天或 MCP 会话在调用该工具前是否必须刷新工作区镜像。
 bool RequiresWorkspaceRefresh(std::string_view toolName);
 
+// 判断工具是否依赖当前已打开的易语言源码工程。
+bool RequiresOpenSource(std::string_view toolName);
+
+// 构建未打开源码时统一返回的结构化工具错误。
+nlohmann::json BuildNoSourceOpenError(std::string_view toolName);
+
 // 按注册表过滤工具目录，仅保留真正允许对外公开的原生工具。
 nlohmann::json FilterExternalPublicCatalog(const nlohmann::json& catalog);
 

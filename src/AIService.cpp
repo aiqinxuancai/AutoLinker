@@ -56,6 +56,11 @@ bool EndsWithInsensitive(const std::string& text, const std::string& suffix)
 
 std::string DetectProjectTypeText()
 {
+	// FN_IS_FUNC_ENABLED 会访问 IDE 当前工程；空工程下只能返回未知类型。
+	if (AIService::Trim(g_nowOpenSourceFilePath).empty()) {
+		return "未知";
+	}
+
 	struct Candidate {
 		INT fnCode;
 		const char* text;
@@ -2793,7 +2798,8 @@ std::string BuildEideDeclarationPromptRules()
 std::string BuildChatSystemPrompt(const AISettings& settings)
 {
 	std::string projectName;
-	if (!AIService::Trim(g_nowOpenSourceFilePath).empty()) {
+	const bool sourceOpen = !AIService::Trim(g_nowOpenSourceFilePath).empty();
+	if (sourceOpen) {
 		try {
 			const std::filesystem::path sourcePath(g_nowOpenSourceFilePath);
 			projectName = sourcePath.stem().string();
@@ -2811,15 +2817,19 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 	const std::string sourceReadRule = mirrorSourceBase
 		? "4) 已知子程序/代码项名称时优先用 read_code_item；未知位置时优先批量 search_code，再用 read_files 批量读取必要文件。若结果仍缺少影响正确性的范围，可继续读取明确缺失的部分。写入工具以 read_files/read_code_item 的镜像文本和哈希为基准。\n"
 		: "4) 已知子程序/代码项名称时优先用 read_code_item；未知位置时优先批量 search_code，再用 read_files 批量读取必要镜像。若结果仍缺少影响正确性的范围，可继续读取明确缺失的部分；编辑当前工程源码前，再用 read_real_file 读取同一 file_path 的 IDE 真实页文本。\n";
+	const std::string workspaceRefreshRule = sourceOpen
+		? "2) 每轮内部 AI 请求开始前已用 mode=full 自动刷新工程镜像，通常无需重复调用 refresh_workspace_mirror；如果工具返回 workspace_refresh_required，或确需重新获取 IDE 最新内存状态，再调用该工具后重试。\n"
+		: "2) 当前未打开任何源码，不得调用工程读写、页面、依赖变更或编译工具；需要确认状态时调用 get_current_eide_info。\n";
 	{
 		std::string prompt =
 			"你是AutoLinker，一个内置于易语言IDE的插件形式的助手。\n"
 			"优先使用最少量的批量工具获取准确上下文，不要臆测当前页面、源码、模块、支持库或搜索结果。\n\n"
+			"当前源码状态：" + std::string(sourceOpen ? "已打开源码" : "未打开任何源码；工程读写工具不可用") + "\n\n"
 			"当前项目名称：" + (projectName.empty() ? std::string("未知") : projectName) + "\n\n"
 			"当前项目类型：" + projectType + "\n\n"
 			"统一源码工具规则：\n"
 			"1) list_files / search_code / read_files / read_code_item 基于 e-packager 解包出的当前工程镜像，路径一律是镜像内相对路径，并返回 mirror_source。\n"
-			"2) 每轮内部 AI 请求开始前已用 mode=full 自动刷新工程镜像，通常无需重复调用 refresh_workspace_mirror；如果工具返回 workspace_refresh_required，或确需重新获取 IDE 最新内存状态，再调用该工具后重试。\n"
+			+ workspaceRefreshRule +
 			"3) 源码探索不设置固定调用次数上限，以任务完成或用户取消为终止条件。已有上下文足够时立即实施；若仍缺少影响正确性的事实，可继续调用必要的只读工具。独立查询应在同一响应中一次发出，多个文件必须使用 read_files，不要串行重复 read_file。\n"
 			+ sourceReadRule +
 			"5) 修改已有源码时只能用 edit_file / multi_edit_file / write_file / diff_file / restore_file_snapshot，并以 file_path 作为目标；新建程序集或类使用 add_new_file。\n"
@@ -2891,11 +2901,15 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 }
 std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal)
 {
+	const bool sourceOpen = !AIService::Trim(g_nowOpenSourceFilePath).empty();
 	std::string prompt =
 		"你是 AutoLinker 内置的易语言项目助手。\n"
+		"当前源码状态：" + std::string(sourceOpen ? "已打开源码。\n" : "未打开任何源码，工程读写工具不可用。\n") +
 		"回答要直接、准确，优先使用已提供的工具获取工程上下文。\n"
 		"不要臆测当前页面、模块、支持库或源码内容。\n"
-		"每轮请求开始前已用 mode=full 自动刷新工程镜像；收到 workspace_refresh_required 或确需重新获取 IDE 最新内存状态时，再调用 refresh_workspace_mirror。已知代码项优先 read_code_item，多个文件使用 read_files，不要重复读取相同范围。\n"
+		+ std::string(sourceOpen
+			? "每轮请求开始前已用 mode=full 自动刷新工程镜像；收到 workspace_refresh_required 或确需重新获取 IDE 最新内存状态时，再调用 refresh_workspace_mirror。已知代码项优先 read_code_item，多个文件使用 read_files，不要重复读取相同范围。\n"
+			: "当前不得调用工程读写、页面、依赖变更或编译工具；需要确认状态时调用 get_current_eide_info。\n") +
 		"仅复杂、多文件或明确要求计划时使用 update_plan；写入 verified=true 后不要为了确认而复读源码。\n"
 		"如果需要读取网页或文档，优先调用 extract_web_document；需要原始响应时调用 fetch_url。\n"
 		"除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用依赖管理工具。\n"
@@ -6004,6 +6018,9 @@ std::string AIService::BuildExternalMcpInstructions()
 	std::string prompt =
 		"你正在通过 MCP 连接到 AutoLinker —— 一个内置于易语言（e-language）IDE 的插件。"
 		"本连接暴露的工具用于读写“当前在 IDE 中打开的易语言工程”。请严格遵守以下约定，否则生成的代码无法被 IDE 正确接收。\n\n"
+		"【工程状态】\n"
+		"- initialize 响应的 autolinkerState，以及 get_current_eide_info 的 source_state/source_open 字段，表示当前是否打开源码。\n"
+		"- source_state=no_source_open 时禁止调用工程读写、页面、依赖变更和编译工具；这些工具会稳定返回 error=no_source_open。打开 .e 源码后先调用 get_current_eide_info，再开始工程操作。\n\n"
 
 		"【最重要：唯一真源】\n"
 		"- 这个易语言工程只能通过本 MCP 提供的工具读写。工程源码不是磁盘上可直接编辑的普通文本文件，而是由 IDE 内存态经打包/整页映射维护的。\n"

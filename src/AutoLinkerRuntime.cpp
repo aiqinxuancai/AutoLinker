@@ -243,20 +243,18 @@ void UpdateCurrentOpenSourceFile()
 {
 	const std::string previousSourceFile = NormalizeSourcePathForRuntime(g_nowOpenSourceFilePath);
 	const std::string currentSourceFile = NormalizeSourcePathForRuntime(GetSourceFilePath());
-	if (AreSameSourcePathForRuntime(previousSourceFile, currentSourceFile)) {
-		g_nowOpenSourceFilePath = currentSourceFile;
-		std::string pageName;
-		std::string pageType;
-		IDEFacade::Instance().GetCurrentPageName(pageName, &pageType, nullptr);
-		LocalMcpServer::UpdateInstanceHints(currentSourceFile, pageName, pageType);
-		return;
+	const bool sourceChanged = !AreSameSourcePathForRuntime(previousSourceFile, currentSourceFile);
+	g_nowOpenSourceFilePath = currentSourceFile;
+	if (sourceChanged) {
+		HandleCurrentSourceFilePathChanged(previousSourceFile, currentSourceFile);
 	}
 
-	g_nowOpenSourceFilePath = currentSourceFile;
-	HandleCurrentSourceFilePathChanged(previousSourceFile, currentSourceFile);
 	std::string pageName;
 	std::string pageType;
-	IDEFacade::Instance().GetCurrentPageName(pageName, &pageType, nullptr);
+	// 易语言在未打开工程时没有当前文档对象，此时不可继续调用当前页相关 IDE 接口。
+	if (!currentSourceFile.empty()) {
+		IDEFacade::Instance().GetCurrentPageName(pageName, &pageType, nullptr);
+	}
 	LocalMcpServer::UpdateInstanceHints(currentSourceFile, pageName, pageType);
 }
 

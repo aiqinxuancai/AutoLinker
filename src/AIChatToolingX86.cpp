@@ -17,6 +17,7 @@
 #include "..\\thirdparty\\json.hpp"
 #include "AIService.h"
 #include "AIChatFeature.h"
+#include "AIChatToolRegistry.h"
 #include "ConfigManager.h"
 #include "DependencyCatalogCache.h"
 #include "IDEFacade.h"
@@ -479,7 +480,7 @@ std::string GetCurrentProcessNameForAI()
 
 std::string RefreshCurrentSourceFilePathForAI()
 {
-	g_nowOpenSourceFilePath = GetSourceFilePath();
+	UpdateCurrentOpenSourceFile();
 	return g_nowOpenSourceFilePath;
 }
 
@@ -5301,6 +5302,13 @@ bool TryReadMappedRealPageCodeForAI(
 std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
 {
 	outOk = false;
+	if (toolName == "__prepare_workspace_file_access" ||
+		AIChatToolRegistry::RequiresOpenSource(toolName)) {
+		UpdateCurrentOpenSourceFile();
+		if (TrimAsciiCopy(g_nowOpenSourceFilePath).empty()) {
+			return JsonToLocalTextForAI(AIChatToolRegistry::BuildNoSourceOpenError(toolName));
+		}
+	}
 	if (toolName == "__prepare_workspace_file_access") {
 		std::string error;
 		if (!WorkspaceMirror::PrepareFileAccess(error)) {
@@ -5458,10 +5466,15 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 
 	if (toolName == "get_current_eide_info") {
 		const std::string sourceFilePath = RefreshCurrentSourceFilePathForAI();
+		const bool sourceOpen = !TrimAsciiCopy(sourceFilePath).empty();
 		std::string pageName;
 		std::string pageType;
 		std::string pageNameTrace;
-		const bool pageNameOk = IDEFacade::Instance().GetCurrentPageName(pageName, &pageType, &pageNameTrace);
+		const bool pageNameOk = sourceOpen &&
+			IDEFacade::Instance().GetCurrentPageName(pageName, &pageType, &pageNameTrace);
+		if (!sourceOpen) {
+			pageNameTrace = "no_source_open";
+		}
 
 		std::string mainWindowTitle;
 		if (HWND mainWindow = IDEFacade::Instance().GetMainWindow();
@@ -5492,7 +5505,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		std::string projectTypeLabel = "\xe6\x9c\xaa\xe7\x9f\xa5"; // UTF-8: 未知
 		bool        projectSupportsStaticCompile = false;
 		for (const auto& k : kProjectKinds) {
-			if (mainWindowTitle.find(k.titleKeyword) != std::string::npos) {
+			if (sourceOpen && mainWindowTitle.find(k.titleKeyword) != std::string::npos) {
 				projectType                  = k.type;
 				projectTypeLabel             = k.label;
 				projectSupportsStaticCompile = k.supportsStaticCompile;
@@ -5502,9 +5515,11 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 
 		// 支持的编译目标及模式（供 AI 决策 compile_with_output_path 参数）。
 		nlohmann::json compileModes = nlohmann::json::array();
-		compileModes.push_back("compile");
-		if (projectSupportsStaticCompile) {
-			compileModes.push_back("static_compile");
+		if (sourceOpen) {
+			compileModes.push_back("compile");
+			if (projectSupportsStaticCompile) {
+				compileModes.push_back("static_compile");
+			}
 		}
 
 		LocalMcpServer::UpdateInstanceHints(sourceFilePath, pageName, pageType);
@@ -5514,6 +5529,8 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["process_id"] = GetCurrentProcessId();
 		r["process_path"] = LocalToUtf8Text(GetCurrentProcessPathForAI());
 		r["process_name"] = LocalToUtf8Text(GetCurrentProcessNameForAI());
+		r["source_state"] = sourceOpen ? "source_open" : "no_source_open";
+		r["source_open"] = sourceOpen;
 		r["source_file_path"] = LocalToUtf8Text(sourceFilePath);
 		r["source_file_name"] = LocalToUtf8Text(sourceFilePath.empty() ? std::string() : std::filesystem::path(sourceFilePath).filename().string());
 		r["source_directory"] = LocalToUtf8Text(sourceFilePath.empty() ? std::string() : std::filesystem::path(sourceFilePath).parent_path().string());
