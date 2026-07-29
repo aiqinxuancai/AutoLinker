@@ -3,11 +3,12 @@ name: autolinker-usage
 description: >-
   介绍如何使用 AutoLinker，即易语言 AI Agent 支持库和本地 MCP 服务器。内容涵盖安装、
   AI Agent 对话页、计划模式、目标模式、右键 AI 菜单操作、各项目的 .AGENTS.md 规范、
-  按源码切换链接器、动态/静态 ec 自动切换、本地 MCP HTTP 服务器及其工具集、外部
-  Agent（Claude Code / Codex / Cursor）的 MCP 配置、多实例路由、无界面命令行编译、
-  核心库 C++ 重写，以及 AI 服务商和配置（CONFIG.md）。当任务涉及运行、配置或驱动
-  AutoLinker，通过它将外部 AI Agent 连接到易语言 IDE，或排查版本兼容性、闪退、
-  响应慢、对话失败、MCP 连接异常等问题时使用此技能。
+  按源码切换链接器、动态/静态 ec 自动切换、e-packager 工程镜像及 EC 模块/支持库依赖
+  信息、本地 MCP HTTP 服务器及其工具集、外部 Agent（Claude Code / Codex / Cursor）
+  的 MCP 配置、多实例路由、无界面命令行编译、核心库 C++ 重写，以及 AI 服务商和配置
+  （CONFIG.md）。当任务涉及运行、配置或驱动 AutoLinker，通过它将外部 AI Agent 连接
+  到易语言 IDE，了解其代码读取技术原理，或排查版本兼容性、闪退、响应慢、对话失败、
+  MCP 连接异常等问题时使用此技能。
 ---
 
 # AutoLinker 使用指南
@@ -17,8 +18,9 @@ IDE 内直接提供 AI 辅助编码功能，并开放本地 **MCP Streamable HTT
 Agent（Claude Code、Codex、Gemini/Antigravity CLI、Cursor、Windsurf）能够通过 IDE
 读取和编辑已打开的 `.e` 工程。
 
-`.e` 源码是加密的单文件格式，无法在 IDE 外部直接编辑。AutoLinker 运行在 IDE 进程
-内部，因此所有读写均通过 IDE 内存中的工程完成，而不是直接操作原始文件。
+`.e` 源码是加密的单文件格式，无法在 IDE 外部直接编辑。AutoLinker 会从 IDE 内存导出
+包含未保存修改的临时快照，再由 e-packager 解包成文本镜像供读取和搜索；修改则按镜像
+路径映射回 IDE 真实程序项。整个过程不会直接改写磁盘上的原始 `.e` 文件。
 
 仓库内的权威资料：`README.md`、`CONFIG.md`、`AGENTS.md`。
 
@@ -229,6 +231,26 @@ url = "http://127.0.0.1:19207/mcp"
 实例关闭，AutoLinker 会要求重新选择，而不会静默切换到其他工程。如果占用 `19207`
 的 IDE 退出，仍存活的实例会接管网关，客户端继续重连同一地址即可。
 
+### 代码读取技术原理
+
+AutoLinker 不直接解析或修改加密的 `.e` 文件。准备完整工作区时，它先从当前 IDE 内存
+工程导出临时快照（因此能包含尚未保存的修改），再调用 e-packager 的 `unpack` 命令，
+将快照解包到 `%TEMP%/AutoLinker/workspace-mirror/` 下的实例专用目录。`list_files`、
+`search_code`、`read_file` / `read_files` 和 `read_code_item` 读取的都是这个文本镜像。
+
+完整镜像不只包含当前工程源码：
+
+| 镜像目录 | 可读取的内容 |
+| --- | --- |
+| `src/` | 当前 `.e` 工程解包后的程序集、类、固定表和窗口相关文件 |
+| `ecom/` | 当前工程引用的 EC 模块解包后的源码，可用于查找模块命令的实现和调用方式 |
+| `elib/` | 当前工程所用支持库的公开信息，包括支持库通过 `GetNewInf` 等公开描述提供的命令、数据类型和接口 |
+| `header/` | e-packager 生成的其他声明或头部参考信息 |
+
+`ecom/`、`elib/` 和 `header/` 只用于读取和搜索，不能通过源码写入工具修改。`elib/` 展示
+的是支持库公开接口，不是对 `.fne` 内部 C/C++ 实现的反编译。修改当前工程时，AutoLinker
+只允许把可写的 `src/` 文本映射回 IDE 程序项，并通过真实页哈希防止覆盖较新的修改。
+
 ### 读写模型（外部 Agent 必须了解）
 
 - 内置 AI 每轮都会以 `full` 模式自动准备镜像。**外部 MCP 会话在首次读写前必须调用
@@ -244,6 +266,8 @@ url = "http://127.0.0.1:19207/mcp"
   `expected_current_hash`），以防止基于过期版本覆盖。`src/*.xml` 是窗口 UI 文件，
   仅支持读取/搜索；固定表（常量、全局变量、DLL 声明、数据类型）可通过对应路径编辑。
   程序集变量会以 IDE 可接受的形式写回。
+- 需要了解模块或支持库时，使用 `list_files` / `search_code` / `read_files` 检索 `ecom/`
+  和 `elib/`。不要因为它们出现在镜像中就将其当作当前工程的可写源码。
 
 ### 工具集（`tools/list`）
 
