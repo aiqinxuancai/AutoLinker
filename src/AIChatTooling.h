@@ -30,6 +30,15 @@ std::string ExecuteToolCall(
 	HttpRequestCancellation* cancellation,
 	const std::string& approvalScope);
 
+// 记录绕过常规执行器的内部 AI 工具请求，沿用统一的脱敏与摘要策略。
+void LogAIChatToolRequest(const std::string& toolName, const std::string& argumentsJson);
+
+// 记录绕过常规执行器的内部 AI 工具结果，结果文本使用本地编码。
+void LogAIChatToolResponse(
+	const std::string& toolName,
+	const std::string& resultJsonLocal,
+	double elapsedMs);
+
 // 清除指定调用域中缓存的高风险工具授权。
 void ClearToolApprovalScope(const std::string& approvalScope);
 

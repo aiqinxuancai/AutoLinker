@@ -107,6 +107,85 @@ const AIChatUserInputQuestion* FindQuestion(
 		[&id](const AIChatUserInputQuestion& question) { return question.id == id; });
 	return it == questions.end() ? nullptr : &*it;
 }
+
+nlohmann::json BuildExpectedArguments()
+{
+	return {
+		{"questions", nlohmann::json::array({
+			{
+				{"id", "target_scope"},
+				{"header", "范围"},
+				{"question", "请选择实现范围？"},
+				{"options", nlohmann::json::array({
+					{
+						{"label", "完整支持 (Recommended)"},
+						{"description", "实现完整流程。"}
+					},
+					{
+						{"label", "最小支持"},
+						{"description", "只实现基础选择。"}
+					}
+				})}
+			}
+		})}
+	};
+}
+
+nlohmann::json BuildToolDefinition()
+{
+	nlohmann::json definition = nlohmann::json::parse(R"json(
+{
+  "name": "request_user_input",
+  "description": "Request user input for one to three short questions and wait for the response. Use only for high-impact ambiguities during plan mode. Prefer one question. Provide two or three mutually exclusive choices, put the recommended option first, and suffix its label with (Recommended). The client adds a free-form Other option automatically.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "questions": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 3,
+        "description": "Questions to show the user. Prefer 1 and do not exceed 3. Question ids must be unique.",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z][a-z0-9_]*$", "description": "Stable unique snake_case identifier for mapping the answer."},
+            "header": {"type": "string", "minLength": 1, "maxLength": 12, "description": "Non-blank short UI header with no more than 12 characters."},
+            "question": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Non-blank single-sentence prompt shown to the user."},
+            "options": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 3,
+              "description": "Mutually exclusive choices with unique non-blank labels.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "label": {"type": "string", "minLength": 1, "maxLength": 80, "description": "Non-blank user-facing label of one to five words."},
+                  "description": {"type": "string", "minLength": 1, "maxLength": 300, "description": "One non-blank short sentence explaining the impact or tradeoff."}
+                },
+                "required": ["label", "description"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["id", "header", "question", "options"],
+          "additionalProperties": false
+        }
+      }
+    },
+    "required": ["questions"],
+    "additionalProperties": false
+  }
+}
+)json");
+	auto& questionProperties = definition["inputSchema"]["properties"]["questions"]["items"]["properties"];
+	questionProperties["id"]["maxLength"] = kMaxQuestionIdBytes;
+	questionProperties["header"]["maxLength"] = kMaxHeaderCharacters;
+	questionProperties["question"]["maxLength"] = kMaxQuestionCharacters;
+	auto& optionProperties = questionProperties["options"]["items"]["properties"];
+	optionProperties["label"]["maxLength"] = kMaxLabelCharacters;
+	optionProperties["description"]["maxLength"] = kMaxDescriptionCharacters;
+	return definition;
+}
 } // namespace
 
 bool ParseAIChatUserInputRequestArguments(
@@ -256,9 +335,24 @@ bool BuildAIChatUserInputResponseJson(
 	return true;
 }
 
+std::string BuildAIChatUserInputToolDefinitionJson()
+{
+	return BuildToolDefinition().dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+std::string BuildAIChatUserInputValidationErrorJson(const std::string& error)
+{
+	return nlohmann::json({
+		{"ok", false},
+		{"tool", "request_user_input"},
+		{"error", error.empty() ? "request_user_input arguments are invalid" : error},
+		{"expected_arguments", BuildExpectedArguments()}
+	}).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
 std::string BuildAIChatUserInputRequestSelfTestJson()
 {
-	const std::string validArguments = R"json({"questions":[{"id":"target_scope","header":"范围","question":"请选择实现范围？","options":[{"label":"完整支持 (Recommended)","description":"实现完整流程。"},{"label":"最小支持","description":"只实现基础选择。"}]}]})json";
+	const std::string validArguments = BuildExpectedArguments().dump();
 	std::vector<AIChatUserInputQuestion> questions;
 	std::string error;
 	const bool validParsed = ParseAIChatUserInputRequestArguments(validArguments, questions, error) &&
@@ -282,6 +376,47 @@ std::string BuildAIChatUserInputRequestSelfTestJson()
 		R"({"questions":[{"id":"scope","header":"A","question":"A?","options":[{"label":"1","description":"a"},{"label":"2","description":"b"}]}],"autoResolutionMs":60000})",
 		ignored,
 		invalidError);
+	const bool missingHeaderRejected = !ParseAIChatUserInputRequestArguments(
+		R"({"questions":[{"id":"scope","question":"A?","options":[{"label":"1","description":"a"},{"label":"2","description":"b"}]}]})",
+		ignored,
+		invalidError);
+	const bool stringOptionsRejected = !ParseAIChatUserInputRequestArguments(
+		R"({"questions":[{"id":"scope","header":"A","question":"A?","options":["one","two"]}]})",
+		ignored,
+		invalidError);
+	const bool blankStringRejected = !ParseAIChatUserInputRequestArguments(
+		R"({"questions":[{"id":"scope","header":"   ","question":"A?","options":[{"label":"1","description":"a"},{"label":"2","description":"b"}]}]})",
+		ignored,
+		invalidError);
+	const bool duplicateOptionRejected = !ParseAIChatUserInputRequestArguments(
+		R"({"questions":[{"id":"scope","header":"A","question":"A?","options":[{"label":"same","description":"a"},{"label":"same","description":"b"}]}]})",
+		ignored,
+		invalidError);
+	const std::vector<std::string> historicalFailureArguments = {
+		R"({"prompt":"confirm","questions":[{"id":"q1","question":"A?","options":["one","two"]}]})",
+		R"({"prompt":"confirm"})",
+		R"({"questions":[{"id":"q1","question":"A?","options":["one","two"]}]})",
+		R"({"header":"confirm","questions":[{"id":"q1","question":"A?","options":["one","two"]}]})",
+		R"({"questions":["A?","B?"]})",
+		R"({"questions":[{"question":"A?","options":["one","two"]}]})",
+		R"({"questions":[{"id":"q1","question":"A?","options":["one","two"]}]})",
+		R"({"header":"confirm","questions":[{"id":"q1","question":"A?","options":["one","two"]}]})"
+	};
+	const bool historicalFailureShapesRejected = std::all_of(
+		historicalFailureArguments.begin(),
+		historicalFailureArguments.end(),
+		[&ignored, &invalidError](const std::string& arguments) {
+			return !ParseAIChatUserInputRequestArguments(arguments, ignored, invalidError);
+		});
+	const nlohmann::json validationError = nlohmann::json::parse(
+		BuildAIChatUserInputValidationErrorJson("header must be a string"),
+		nullptr,
+		false);
+	const bool validationErrorHasExample = validationError.is_object() &&
+		validationError.value("tool", std::string()) == "request_user_input" &&
+		validationError.value("error", std::string()) == "header must be a string" &&
+		validationError.contains("expected_arguments") &&
+		validationError["expected_arguments"] == BuildExpectedArguments();
 	const bool unknownOptionRejected = validParsed && !BuildAIChatUserInputResponseJson(
 		questions,
 		{{"target_scope", "unknown", ""}},
@@ -295,11 +430,19 @@ std::string BuildAIChatUserInputRequestSelfTestJson()
 
 	return nlohmann::json({
 		{"name", "plan-user-input-protocol"},
-		{"ok", validParsed && responseBuilt && duplicateRejected && additionalPropertyRejected && unknownOptionRejected && emptyOtherRejected},
+		{"ok", validParsed && responseBuilt && duplicateRejected && additionalPropertyRejected &&
+			missingHeaderRejected && stringOptionsRejected && blankStringRejected && duplicateOptionRejected &&
+			historicalFailureShapesRejected && validationErrorHasExample && unknownOptionRejected && emptyOtherRejected},
 		{"valid_arguments", validParsed},
 		{"response_shape", responseBuilt},
 		{"duplicate_id_rejected", duplicateRejected},
 		{"additional_property_rejected", additionalPropertyRejected},
+		{"missing_header_rejected", missingHeaderRejected},
+		{"string_options_rejected", stringOptionsRejected},
+		{"blank_string_rejected", blankStringRejected},
+		{"duplicate_option_rejected", duplicateOptionRejected},
+		{"historical_failure_shapes_rejected", historicalFailureShapesRejected},
+		{"validation_error_has_example", validationErrorHasExample},
 		{"unknown_option_rejected", unknownOptionRejected},
 		{"empty_other_rejected", emptyOtherRejected}
 	}).dump();

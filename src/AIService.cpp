@@ -17,6 +17,7 @@
 #include "AIChatRunController.h"
 #include "AIChatToolRegistry.h"
 #include "AIChatToolPolicy.h"
+#include "AIChatUserInputRequest.h"
 #include "AIJsonConfig.h"
 #include "AISkillManager.h"
 #include "ConfigManager.h"
@@ -2635,49 +2636,8 @@ nlohmann::json SanitizeGeminiSchema(const nlohmann::json& schema)
 
 nlohmann::json BuildRequestUserInputToolDefinition()
 {
-	static const nlohmann::json definition = nlohmann::json::parse(R"json(
-{
-  "name": "request_user_input",
-  "description": "Request user input for one to three short questions and wait for the response. Use only for high-impact ambiguities during plan mode. Prefer one question. Provide two or three mutually exclusive choices, put the recommended option first, and suffix its label with (Recommended). The client adds a free-form Other option automatically.",
-  "inputSchema": {
-    "type": "object",
-    "properties": {
-      "questions": {
-        "type": "array",
-        "minItems": 1,
-        "maxItems": 3,
-        "description": "Questions to show the user. Prefer 1 and do not exceed 3.",
-        "items": {
-          "type": "object",
-          "properties": {
-            "id": {"type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9_]*$", "description": "Stable snake_case identifier for mapping the answer."},
-            "header": {"type": "string", "maxLength": 12, "description": "Short UI header with no more than 12 characters."},
-            "question": {"type": "string", "maxLength": 500, "description": "Single-sentence prompt shown to the user."},
-            "options": {
-              "type": "array",
-              "minItems": 2,
-              "maxItems": 3,
-              "items": {
-                "type": "object",
-                "properties": {
-                  "label": {"type": "string", "maxLength": 80, "description": "User-facing label of one to five words."},
-                  "description": {"type": "string", "maxLength": 300, "description": "One short sentence explaining the impact or tradeoff."}
-                },
-                "required": ["label", "description"],
-                "additionalProperties": false
-              }
-            }
-          },
-          "required": ["id", "header", "question", "options"],
-          "additionalProperties": false
-        }
-      }
-    },
-    "required": ["questions"],
-    "additionalProperties": false
-  }
-}
-)json");
+	static const nlohmann::json definition = nlohmann::json::parse(
+		BuildAIChatUserInputToolDefinitionJson());
 	return definition;
 }
 
@@ -6515,11 +6475,63 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 		const nlohmann::json userInputProperties = userInputSchema.value(
 			"properties",
 			nlohmann::json::object());
+		const nlohmann::json questionsSchema = userInputProperties.value(
+			"questions",
+			nlohmann::json::object());
+		const nlohmann::json questionSchema = questionsSchema.value(
+			"items",
+			nlohmann::json::object());
+		const nlohmann::json questionProperties = questionSchema.value(
+			"properties",
+			nlohmann::json::object());
+		const nlohmann::json optionsSchema = questionProperties.value(
+			"options",
+			nlohmann::json::object());
+		const nlohmann::json optionSchema = optionsSchema.value(
+			"items",
+			nlohmann::json::object());
+		const nlohmann::json optionProperties = optionSchema.value(
+			"properties",
+			nlohmann::json::object());
 		const bool planUserInputSchemaOk =
 			userInputTool.value("name", std::string()) == "request_user_input" &&
-			userInputProperties.contains("questions") &&
-			userInputProperties["questions"].value("minItems", 0) == 1 &&
-			userInputProperties["questions"].value("maxItems", 0) == 3 &&
+			userInputSchema.value("type", std::string()) == "object" &&
+			userInputSchema.value("additionalProperties", true) == false &&
+			userInputSchema.value("required", nlohmann::json::array()) == nlohmann::json::array({"questions"}) &&
+			userInputProperties.size() == 1 &&
+			questionsSchema.value("type", std::string()) == "array" &&
+			questionsSchema.value("minItems", 0) == 1 &&
+			questionsSchema.value("maxItems", 0) == 3 &&
+			questionSchema.value("type", std::string()) == "object" &&
+			questionSchema.value("additionalProperties", true) == false &&
+			questionSchema.value("required", nlohmann::json::array()) ==
+				nlohmann::json::array({"id", "header", "question", "options"}) &&
+			questionProperties.size() == 4 &&
+			questionProperties.value("id", nlohmann::json::object()).value("type", std::string()) == "string" &&
+			questionProperties.value("id", nlohmann::json::object()).value("pattern", std::string()) ==
+				"^[a-z][a-z0-9_]*$" &&
+			questionProperties.value("id", nlohmann::json::object()).value("minLength", 0) == 1 &&
+			questionProperties.value("id", nlohmann::json::object()).value("maxLength", 0) == 64 &&
+			questionProperties.value("header", nlohmann::json::object()).value("type", std::string()) == "string" &&
+			questionProperties.value("header", nlohmann::json::object()).value("minLength", 0) == 1 &&
+			questionProperties.value("header", nlohmann::json::object()).value("maxLength", 0) == 12 &&
+			questionProperties.value("question", nlohmann::json::object()).value("type", std::string()) == "string" &&
+			questionProperties.value("question", nlohmann::json::object()).value("minLength", 0) == 1 &&
+			questionProperties.value("question", nlohmann::json::object()).value("maxLength", 0) == 500 &&
+			optionsSchema.value("type", std::string()) == "array" &&
+			optionsSchema.value("minItems", 0) == 2 &&
+			optionsSchema.value("maxItems", 0) == 3 &&
+			optionSchema.value("type", std::string()) == "object" &&
+			optionSchema.value("additionalProperties", true) == false &&
+			optionSchema.value("required", nlohmann::json::array()) ==
+				nlohmann::json::array({"label", "description"}) &&
+			optionProperties.size() == 2 &&
+			optionProperties.value("label", nlohmann::json::object()).value("type", std::string()) == "string" &&
+			optionProperties.value("label", nlohmann::json::object()).value("minLength", 0) == 1 &&
+			optionProperties.value("label", nlohmann::json::object()).value("maxLength", 0) == 80 &&
+			optionProperties.value("description", nlohmann::json::object()).value("type", std::string()) == "string" &&
+			optionProperties.value("description", nlohmann::json::object()).value("minLength", 0) == 1 &&
+			optionProperties.value("description", nlohmann::json::object()).value("maxLength", 0) == 300 &&
 			!userInputProperties.contains("autoResolutionMs");
 		ok = ok && planUserInputSchemaOk;
 		checks.push_back({

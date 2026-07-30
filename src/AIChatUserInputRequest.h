@@ -37,5 +37,11 @@ bool BuildAIChatUserInputResponseJson(
 	std::string& outResponseJsonUtf8,
 	std::string& outError);
 
+// 构建 request_user_input 工具定义的 UTF-8 JSON，供各 AI 协议共用。
+std::string BuildAIChatUserInputToolDefinitionJson();
+
+// 构建带标准参数示例的 request_user_input 校验失败结果。
+std::string BuildAIChatUserInputValidationErrorJson(const std::string& error);
+
 // 构建 request_user_input 参数与结果协议的自检报告。
 std::string BuildAIChatUserInputRequestSelfTestJson();

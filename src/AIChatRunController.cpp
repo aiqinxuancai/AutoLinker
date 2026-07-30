@@ -81,16 +81,21 @@ std::string BuildWriteTargetKey(
 	return ToLowerAsciiCopy(outDisplayTarget);
 }
 
+std::string BuildFailureDetail(const std::string& resultJson)
+{
+	std::string detail = GetJsonStringField(resultJson, "error");
+	if (detail.empty()) {
+		detail = GetJsonStringField(resultJson, "reason");
+	}
+	if (detail.empty()) {
+		detail = TruncateText(resultJson, 400);
+	}
+	return detail.empty() ? "<unknown>" : detail;
+}
+
 std::string BuildFailureSignature(const std::string& resultJson)
 {
-	std::string signature = GetJsonStringField(resultJson, "error");
-	if (signature.empty()) {
-		signature = GetJsonStringField(resultJson, "reason");
-	}
-	if (signature.empty()) {
-		signature = TruncateText(resultJson, 400);
-	}
-	return ToLowerAsciiCopy(signature);
+	return ToLowerAsciiCopy(BuildFailureDetail(resultJson));
 }
 
 } // namespace
@@ -197,6 +202,9 @@ void AIChatRunController::CompleteToolCall(
 	AppendContextMessage(std::move(contextMessage));
 	if (ok) {
 		m_consecutiveFailures = 0;
+		m_recoveryHint.clear();
+		m_lastFailedToolName.clear();
+		m_lastFailureDetail.clear();
 		if (IsSourceWriteTool(toolName)) {
 			std::string displayTarget;
 			m_writeFailures.erase(BuildWriteTargetKey(argumentsJson, displayTarget));
@@ -208,8 +216,19 @@ void AIChatRunController::CompleteToolCall(
 	}
 	else {
 		++m_consecutiveFailures;
+		m_lastFailedToolName = toolName.empty() ? "<unknown>" : toolName;
+		m_lastFailureDetail = BuildFailureDetail(resultJsonLocal);
 		if (m_consecutiveFailures == kRecoveryHintFailureCount) {
-			m_recoveryHint = "连续工具调用失败。请停止重复当前方案，检查错误结果并改用不同的验证或实现路径。";
+			m_recoveryHint =
+				"连续工具调用失败 " + std::to_string(m_consecutiveFailures) +
+				" 次。最近失败工具：" + m_lastFailedToolName +
+				"；最近错误：" + TruncateText(m_lastFailureDetail, 300) +
+				"。请先按错误结果修正根因，禁止继续猜测字段或无变化重试；无法修正时改用其他验证或实现路径。";
+			if (ToLowerAsciiCopy(m_lastFailedToolName) == "request_user_input") {
+				m_recoveryHint +=
+					"该工具的失败结果包含 expected_arguments，必须按其结构重新生成：根节点只允许 questions，"
+					"header 位于每个问题内，options 是包含 label 和 description 的对象数组。";
+			}
 		}
 		if (IsSourceWriteTool(toolName)) {
 			std::string displayTarget;
@@ -257,7 +276,11 @@ std::string AIChatRunController::StallReason() const
 			(m_repeatedWriteFailureTarget.empty() ? "<unknown>" : m_repeatedWriteFailureTarget);
 	}
 	return "tool execution stalled after " + std::to_string(kStalledFailureCount) +
-		" consecutive failures";
+		" consecutive failures; last tool: " +
+		(m_lastFailedToolName.empty() ? "<unknown>" : m_lastFailedToolName) +
+		"; last error: " + TruncateText(
+			m_lastFailureDetail.empty() ? "<unknown>" : m_lastFailureDetail,
+			400);
 }
 
 void AIChatRunController::ResetForNewContextWindow()
@@ -265,6 +288,8 @@ void AIChatRunController::ResetForNewContextWindow()
 	m_toolCalls.clear();
 	m_consecutiveFailures = 0;
 	m_recoveryHint.clear();
+	m_lastFailedToolName.clear();
+	m_lastFailureDetail.clear();
 }
 
 void AIChatRunController::RecordCompaction(const std::string& summaryLocal)

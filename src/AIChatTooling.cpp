@@ -1059,6 +1059,19 @@ std::string ExecuteToolCallImpl(
 
 } // namespace
 
+void LogAIChatToolRequest(const std::string& toolName, const std::string& argumentsJson)
+{
+	LogInternalToolRequest(toolName, argumentsJson);
+}
+
+void LogAIChatToolResponse(
+	const std::string& toolName,
+	const std::string& resultJsonLocal,
+	double elapsedMs)
+{
+	LogInternalToolResponse(toolName, resultJsonLocal, elapsedMs);
+}
+
 std::string ExecuteToolCall(
 	const std::string& toolName,
 	const std::string& argumentsJson,
@@ -1090,7 +1103,7 @@ std::string ExecuteToolCall(
 		return ExecuteToolCallImpl(toolName, argumentsJson, outOk, cancelCallback, cancellation, approvalScope);
 	}
 
-	LogInternalToolRequest(toolName, argumentsJson);
+	LogAIChatToolRequest(toolName, argumentsJson);
 	const auto startTime = std::chrono::steady_clock::now();
 	const std::string result = ExecuteToolCallImpl(
 		toolName,
@@ -1101,7 +1114,7 @@ std::string ExecuteToolCall(
 		approvalScope);
 	const double elapsedMs = std::chrono::duration<double, std::milli>(
 		std::chrono::steady_clock::now() - startTime).count();
-	LogInternalToolResponse(toolName, result, elapsedMs);
+	LogAIChatToolResponse(toolName, result, elapsedMs);
 	return result;
 }
 

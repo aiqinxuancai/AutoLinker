@@ -248,7 +248,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	for (int i = 0; i < 8; ++i) {
 		failedCalls.push_back(AIChatCheckpointToolCall{
 			std::format("call_{}", i),
-			"read_file",
+			"request_user_input",
 			"{}"
 		});
 	}
@@ -257,14 +257,58 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	for (size_t i = 0; i < 8; ++i) {
 		failureController.CompleteToolCall(
 			i,
-			R"({"ok":false})",
+			R"({"ok":false,"tool":"request_user_input","error":"header must be a string","expected_arguments":{"questions":[]}})",
 			false,
 			AIChatMessage{"tool", "failed", "", ""});
 		if (i == 2) {
-			recoveryHintAtThree = !failureController.TakeRecoveryHint().empty();
+			const std::string hint = failureController.TakeRecoveryHint();
+			recoveryHintAtThree =
+				hint.find("request_user_input") != std::string::npos &&
+				hint.find("header must be a string") != std::string::npos &&
+				hint.find("expected_arguments") != std::string::npos;
 		}
 	}
-	const bool stalledAtEight = failureController.IsStalled();
+	const std::string failureStallReason = failureController.StallReason();
+	const bool stalledAtEight = failureController.IsStalled() &&
+		failureStallReason.find("request_user_input") != std::string::npos &&
+		failureStallReason.find("header must be a string") != std::string::npos;
+
+	AIChatRunController resetFailureController(settings, initialContext, {});
+	for (int i = 0; i < 7; ++i) {
+		resetFailureController.BeginToolBatch({AIChatCheckpointToolCall{
+			std::format("failure_{}", i),
+			"request_user_input",
+			"{}"
+		}});
+		resetFailureController.CompleteToolCall(
+			0,
+			R"({"ok":false,"error":"header must be a string"})",
+			false,
+			AIChatMessage{"tool", "failed", "", ""});
+	}
+	resetFailureController.BeginToolBatch({AIChatCheckpointToolCall{
+		"success",
+		"read_file",
+		R"({"file_path":"src/Test.txt"})"
+	}});
+	resetFailureController.CompleteToolCall(
+		0,
+		R"({"ok":true})",
+		true,
+		AIChatMessage{"tool", "ok", "", ""});
+	resetFailureController.BeginToolBatch({AIChatCheckpointToolCall{
+		"failure_after_success",
+		"request_user_input",
+		"{}"
+	}});
+	resetFailureController.CompleteToolCall(
+		0,
+		R"({"ok":false,"error":"header must be a string"})",
+		false,
+		AIChatMessage{"tool", "failed", "", ""});
+	const bool failureStateResetAfterSuccess =
+		!resetFailureController.IsStalled() &&
+		resetFailureController.TakeRecoveryHint().empty();
 
 	AIChatRunController repeatedWriteController(settings, initialContext, {});
 	bool repeatedWriteHintAtThree = false;
@@ -443,6 +487,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		localCompactionFallback &&
 		recoveryHintAtThree &&
 		stalledAtEight &&
+		failureStateResetAfterSuccess &&
 		repeatedWriteHintAtThree &&
 		repeatedWriteStalledAtFive &&
 		sameProviderResume &&
@@ -461,6 +506,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	outCheck["local_compaction_fallback"] = localCompactionFallback;
 	outCheck["recovery_hint_at_3"] = recoveryHintAtThree;
 	outCheck["stalled_at_8"] = stalledAtEight;
+	outCheck["failure_state_reset_after_success"] = failureStateResetAfterSuccess;
 	outCheck["repeated_write_hint_at_3"] = repeatedWriteHintAtThree;
 	outCheck["repeated_write_stalled_at_5"] = repeatedWriteStalledAtFive;
 	outCheck["same_provider_resume"] = sameProviderResume;

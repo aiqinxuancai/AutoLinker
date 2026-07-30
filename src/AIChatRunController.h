@@ -71,6 +71,8 @@ private:
 	size_t m_contextBytesAfterUsage = 0;
 	int m_consecutiveFailures = 0;
 	std::string m_recoveryHint;
+	std::string m_lastFailedToolName;
+	std::string m_lastFailureDetail;
 	std::unordered_map<std::string, RepeatedWriteFailureState> m_writeFailures;
 	bool m_repeatedWriteFailureStalled = false;
 	std::string m_repeatedWriteFailureTarget;

@@ -5652,7 +5652,7 @@ std::string RequestPlanUserInputFromChatWorker(
 	std::vector<AIChatUserInputQuestion> questions;
 	std::string error;
 	if (!ParseAIChatUserInputRequestArguments(argumentsJsonUtf8, questions, error)) {
-		return BuildPlanUserInputErrorResultLocal(error);
+		return Utf8ToLocalText(BuildAIChatUserInputValidationErrorJson(error));
 	}
 
 	{
@@ -6256,13 +6256,19 @@ void RunAIChatWorker(void* pParams)
 					](const std::string& toolName, const std::string& argumentsJson, bool& outOk) -> std::string {
 						FlushStreamingAssistantPreviewToHistory(requestId);
 						if (IsRequestUserInputToolName(toolName)) {
-							return RequestPlanUserInputFromChatWorker(
+							LogAIChatToolRequest(toolName, argumentsJson);
+							const auto startTime = std::chrono::steady_clock::now();
+							const std::string toolResult = RequestPlanUserInputFromChatWorker(
 								requestId,
 								argumentsJson,
 								[cancellation]() {
 									return cancellation != nullptr && cancellation->IsCancelled();
 								},
 								outOk);
+							const double elapsedMs = std::chrono::duration<double, std::milli>(
+								std::chrono::steady_clock::now() - startTime).count();
+							LogAIChatToolResponse(toolName, toolResult, elapsedMs);
+							return toolResult;
 						}
 						std::string goalToolResult;
 						if (TryExecuteGoalTool(requestId, toolName, argumentsJson, outOk, goalToolResult)) {
