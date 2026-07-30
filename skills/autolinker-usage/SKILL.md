@@ -398,8 +398,14 @@ MSBuild.exe ..\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platfor
 
 ### e-packager 无法下载怎么办？
 
-先在“AutoLinker 设置 → 关于 → 组件更新”中检查并安装 e-packager。内置更新仍失败时，
-再从 e-packager Releases 手动下载，并解压到 `{易语言安装目录}\tools`。
+先在“AutoLinker 设置 → 关于 → 组件更新”中检查并安装 e-packager。如果自动下载失败或
+长时间卡住，不要反复等待：
+
+1. 打开 https://github.com/aiqinxuancai/e-packager/releases 下载最新 Release。
+2. 将下载包解压到 `{易语言安装目录}\tools`，并确认最终文件位于
+   `{易语言安装目录}\tools\e-packager.exe`，不要多套一层压缩包目录。
+3. 如果已经加入 AutoLinker 相关交流群，也可以在群共享中查找 e-packager；下载后仍按
+   上述路径解压。
 
 ### 配置文件在哪里？
 

@@ -296,9 +296,13 @@ with the log directory.
 ## Common issues
 - 连通性测试失败 → check API key (stray spaces), Base URL + protocol, account
   balance, and overseas-network reachability for OpenAI/Claude.
-- e-packager won't download → first retry at AutoLinker 设置 → 关于 → 组件更新;
-  if the built-in updater still fails, download it from e-packager Releases and
-  unzip it into `{易语言安装目录}\tools`.
+- e-packager download fails or stalls → first retry at AutoLinker 设置 → 关于 →
+  组件更新. If it still fails or remains stuck, download the latest Release
+  from https://github.com/aiqinxuancai/e-packager/releases and extract it into
+  `{易语言安装目录}\tools`. Confirm the executable is exactly
+  `{易语言安装目录}\tools\e-packager.exe`, without an extra archive directory
+  level. Users in an AutoLinker community group can alternatively obtain
+  e-packager from the group shared files and extract it to the same location.
 - Config file location → `{易语言安装目录}\AutoLinker\AIConfig.json`.
 
 ## References
