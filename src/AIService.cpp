@@ -2799,7 +2799,8 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 				: "6) 当前工具列表提供 read_real_file：编辑 src/*.txt 或固定表文件前，必须先对同一 file_path 调用 read_real_file；edit_file / multi_edit_file / write_file / diff_file 的 old_text、full_code 和 expected_base_hash 应基于 read_real_file 返回的 real_source/code_hash，不要用镜像源码作为编辑基准。\n"
 				  "7) edit_file / write_file 会把 file_path 映射到 IDE 真实程序项，基于真实页文本匹配，再整页写回。\n")
 			+ "8) 写工具返回 ok=true、verified=true 后，写入和结构校验已经完成；禁止为了确认而再次读取同一源码。需要验证时按用户要求编译/测试，只有失败后才重新读取定位。\n"
-			"9) src/*.xml 是窗口界面 XML，只读；窗口程序集代码应编辑对应 src/*.txt。\n"
+			"9) src/*.xml 是易语言原生窗口界面 XML，只读；不支持调整窗口或控件的位置、大小、层级和属性，不支持添加、删除控件，也不支持新增、删除或修改控件事件绑定。禁止写入窗口 XML 或声称已完成这些界面修改。\n"
+			"   窗口程序集代码应编辑对应 src/*.txt；可修改已有控件事件子程序的代码实现，但新增事件子程序不代表已经建立控件事件绑定。\n"
 			"10) ecom/、elib/、header/ 是依赖/公开信息参考，可读可搜但不可写。\n"
 			"11) 固定表文件 src/.数据类型.txt、src/.DLL声明.txt、src/.常量.txt、src/.全局变量.txt 可作为对应真实表页的编辑目标。\n"
 			"12) 需要预览改动用 diff_file；需要回滚最近写入用 restore_file_snapshot。\n"
@@ -5995,7 +5996,8 @@ std::string AIService::BuildExternalMcpInstructions()
 		"- 修改已有源码只能用 edit_file / multi_edit_file / write_file / diff_file，并以 file_path 作为目标；新建程序集或类用 add_new_file。\n"
 		"- 写工具的 old_text / full_code 与 expected_base_hash 必须基于刚才 read_real_file 返回的 real_source / code_hash；expected_base_hash 对外部调用为必填，用于拒绝过期基准。\n"
 		"- 写工具返回 ok=true、verified=true 即表示写入与结构校验已完成，不要为确认而再次读取同一源码。\n"
-		"- src/*.xml 是窗口界面 XML，只读；窗口程序集代码请编辑对应 src/*.txt。ecom/、elib/、header/ 是依赖与公开信息参考，可读可搜不可写。\n\n"
+		"- src/*.xml 是易语言原生窗口界面 XML，只读；不支持调整窗口或控件的位置、大小、层级和属性，不支持添加、删除控件，也不支持新增、删除或修改控件事件绑定。禁止写入窗口 XML 或声称已完成这些界面修改。\n"
+		"- 窗口程序集代码请编辑对应 src/*.txt；可修改已有控件事件子程序的代码实现，但新增事件子程序不代表已经建立控件事件绑定。ecom/、elib/、header/ 是依赖与公开信息参考，可读可搜不可写。\n\n"
 
 		"【验证】\n"
 		"- 需要编译时用 compile_with_output_path（可先用 get_current_eide_info 确认工程类型与可用编译模式），不要用你自带的构建/脚本能力去编译。\n"
