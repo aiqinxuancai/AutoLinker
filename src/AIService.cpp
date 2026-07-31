@@ -2396,13 +2396,13 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "compile_with_output_path"},
-		{"description", "Compile the current project with a specified output path, suppressing the IDE save-file dialog. target=auto detects the current project type. A successful result requires the output artifact to exist and be updated."},
+		{"description", "Compile the current project with a specified output path, suppressing the IDE save-file dialog. target=auto selects the default compile target. For an E-language module project, auto builds a win_console_exe test program; use target=ecom only to publish the module as .ec. Static compilation is the default for supported targets. A successful result requires the output artifact to exist and be updated."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
-				{"target", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "win_exe", "win_console_exe", "win_dll", "ecom"})}, {"description", "Defaults to auto."}}},
+				{"target", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "win_exe", "win_console_exe", "win_dll", "ecom"})}, {"description", "Defaults to auto. For module-project compile verification, use win_console_exe; ecom publishes a .ec module."}}},
 				{"output_path", {{"type", "string"}}},
-				{"static_compile", {{"type", "boolean"}}}
+				{"static_compile", {{"type", "boolean"}, {"description", "Defaults to true for win_exe, win_console_exe, and win_dll. target=ecom does not support static compilation and defaults to false, but a module project can be compiled as a static win_console_exe for testing. Set false only when the user explicitly requests non-static compilation or module publishing."}}}
 			}},
 			{"required", nlohmann::json::array({"output_path"})},
 			{"additionalProperties", false}
@@ -2805,7 +2805,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"11) 固定表文件 src/.数据类型.txt、src/.DLL声明.txt、src/.常量.txt、src/.全局变量.txt 可作为对应真实表页的编辑目标。\n"
 			"12) 需要预览改动用 diff_file；需要回滚最近写入用 restore_file_snapshot。\n"
 			"13) 通常我们只读取常量，不编辑和写入常量值，因为会覆盖一些长文本常量无法正确覆盖，所以我们通常用固定的程序集变量或局部变量来写固定的值，但需要给与一些注释，不要看起来像是魔法数字或文本。\n"
-			"14) 只有用户要求编译验证时，才调用compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type 和可用编译模式。\n"
+			"14) 只有用户要求编译验证时，才调用 compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type、project_supported_compile_targets 和可用编译模式。对 win_exe、win_console_exe、win_dll 默认使用 static_compile=true；只有用户明确要求动态编译或不使用静态编译时才设为 false。当 project_type=ecom 且目的是编译验证/调试测试时，默认使用 target=win_console_exe 和 static_compile=true 生成静态控制台程序；只有用户明确要求发布/生成 .ec 模块时才使用 target=ecom 和 static_compile=false。\n"
 			"15) 除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用 refresh_dependency_catalog、search_available_modules、search_available_support_libraries、list_imported_modules、add_module_to_project、remove_module_from_project、add_support_library_to_project。\n\n"
 			"其他工具：\n"
 			"- 仅复杂、多文件或用户明确要求计划时使用 update_plan；局部单文件修改不要创建计划卡片。\n"
@@ -6000,7 +6000,7 @@ std::string AIService::BuildExternalMcpInstructions()
 		"- 窗口程序集代码请编辑对应 src/*.txt；可修改已有控件事件子程序的代码实现，但新增事件子程序不代表已经建立控件事件绑定。ecom/、elib/、header/ 是依赖与公开信息参考，可读可搜不可写。\n\n"
 
 		"【验证】\n"
-		"- 需要编译时用 compile_with_output_path（可先用 get_current_eide_info 确认工程类型与可用编译模式），不要用你自带的构建/脚本能力去编译。\n"
+		"- 需要编译时用 compile_with_output_path（可先用 get_current_eide_info 确认工程类型、支持的输出目标与编译模式），不要用你自带的构建/脚本能力去编译。win_exe、win_console_exe、win_dll 默认使用 static_compile=true；只有用户明确要求动态编译或不使用静态编译时才使用 false。模块工程进行编译验证/调试测试时，默认使用 target=win_console_exe 和 static_compile=true；只有明确发布/生成 .ec 模块时才使用 target=ecom 和 static_compile=false。\n"
 		"- 需要联网查资料时用 search_web_tavily / extract_web_document / fetch_url。\n\n"
 
 		"【易语言语法要点（最易出错处，务必遵守）】\n"

@@ -77,6 +77,34 @@ bool CompileArtifactChanged(
 	return after.exists && (!before.exists || before.size != after.size || before.writeTime != after.writeTime);
 }
 
+bool ResolveCompileStaticMode(
+	const nlohmann::json& args,
+	IDEFacade::CompileOutputKind kind)
+{
+	const auto item = args.find("static_compile");
+	if (item != args.end() && item->is_boolean()) {
+		return item->get<bool>();
+	}
+	return kind != IDEFacade::CompileOutputKind::Ecom;
+}
+
+std::string ResolveAutoCompileTarget(const std::string& mainWindowTitle)
+{
+	if (mainWindowTitle.find(" Windows易语言模块 ") != std::string::npos) {
+		return "win_console_exe";
+	}
+	if (mainWindowTitle.find(" Windows动态链接库 ") != std::string::npos) {
+		return "win_dll";
+	}
+	if (mainWindowTitle.find(" Windows控制台程序 ") != std::string::npos) {
+		return "win_console_exe";
+	}
+	if (mainWindowTitle.find(" Windows窗口程序 ") != std::string::npos) {
+		return "win_exe";
+	}
+	return {};
+}
+
 std::string ExtractCompileOutputDelta(const std::string& before, const std::string& after)
 {
 	if (after == before) {
@@ -5495,7 +5523,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			bool supportsStaticCompile; // 是否支持静态编译
 		};
 		static const ProjectKindInfo kProjectKinds[] = {
-			{" Windows易语言模块 ",  "ecom",            "Windows易语言模块",  false},
+			{" Windows易语言模块 ",  "ecom",            "Windows易语言模块",  true},
 			{" Windows动态链接库 ",  "win_dll",         "Windows动态链接库",  true},
 			{" Windows控制台程序 ",  "win_console_exe", "Windows控制台程序",  true},
 			{" Windows窗口程序 ",    "win_exe",         "Windows窗口程序",    true},
@@ -5515,10 +5543,18 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 
 		// 支持的编译目标及模式（供 AI 决策 compile_with_output_path 参数）。
 		nlohmann::json compileModes = nlohmann::json::array();
+		nlohmann::json compileTargets = nlohmann::json::array();
 		if (sourceOpen) {
 			compileModes.push_back("compile");
 			if (projectSupportsStaticCompile) {
 				compileModes.push_back("static_compile");
+			}
+			if (projectType == "ecom") {
+				compileTargets.push_back("win_console_exe");
+				compileTargets.push_back("ecom");
+			}
+			else if (projectType != "unknown") {
+				compileTargets.push_back(projectType);
 			}
 		}
 
@@ -5543,6 +5579,10 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["project_type"] = projectType;
 		r["project_type_label"] = LocalToUtf8Text(projectTypeLabel);
 		r["project_supported_compile_modes"] = compileModes;
+		r["project_supported_compile_targets"] = compileTargets;
+		r["project_default_compile_target"] = projectType == "ecom"
+			? "win_console_exe"
+			: projectType;
 		r["mcp_running"] = LocalMcpServer::IsRunning();
 		r["mcp_instance_id"] = LocalMcpServer::GetInstanceId();
 		r["mcp_port"] = LocalMcpServer::GetBoundPort();
@@ -5600,10 +5640,6 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		const std::string outputPath = args.contains("output_path") && args["output_path"].is_string()
 			? Utf8ToLocalText(args["output_path"].get<std::string>())
 			: std::string();
-		const bool staticCompile = args.contains("static_compile") && args["static_compile"].is_boolean()
-			? args["static_compile"].get<bool>()
-			: false;
-
 		if (TrimAsciiCopy(outputPath).empty()) {
 			return R"({"ok":false,"error":"output_path is required"})";
 		}
@@ -5615,19 +5651,8 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 				GetWindowTextA(mainWindow, title, static_cast<int>(sizeof(title)));
 				mainWindowTitle = title;
 			}
-			if (mainWindowTitle.find(" Windows易语言模块 ") != std::string::npos) {
-				target = "ecom";
-			}
-			else if (mainWindowTitle.find(" Windows动态链接库 ") != std::string::npos) {
-				target = "win_dll";
-			}
-			else if (mainWindowTitle.find(" Windows控制台程序 ") != std::string::npos) {
-				target = "win_console_exe";
-			}
-			else if (mainWindowTitle.find(" Windows窗口程序 ") != std::string::npos) {
-				target = "win_exe";
-			}
-			else {
+			target = ResolveAutoCompileTarget(mainWindowTitle);
+			if (target.empty()) {
 				nlohmann::json r;
 				r["ok"] = false;
 				r["error"] = "auto target detection failed";
@@ -5656,6 +5681,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["error"] = "unsupported target";
 			return JsonToLocalTextForAI(r);
 		}
+		const bool staticCompile = ResolveCompileStaticMode(args, kind);
 
 		std::string normalizedPath;
 		std::string normalizeDiagnostics;
@@ -5896,6 +5922,17 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 		ExtractCompileOutputDelta(oldOutput, "语法错误：表达式不完整\r\n"));
 	const bool unchangedHistoricalErrorRejected = !ContainsCompileFailureMarker(
 		ExtractCompileOutputDelta(oldOutput, oldOutput));
+	const bool staticCompileDefaultsPassed =
+		ResolveCompileStaticMode(nlohmann::json::object(), IDEFacade::CompileOutputKind::WinExe) &&
+		ResolveCompileStaticMode(nlohmann::json::object(), IDEFacade::CompileOutputKind::WinConsoleExe) &&
+		ResolveCompileStaticMode(nlohmann::json::object(), IDEFacade::CompileOutputKind::WinDll) &&
+		!ResolveCompileStaticMode(nlohmann::json::object(), IDEFacade::CompileOutputKind::Ecom) &&
+		!ResolveCompileStaticMode({{"static_compile", false}}, IDEFacade::CompileOutputKind::WinExe) &&
+		ResolveCompileStaticMode({{"static_compile", true}}, IDEFacade::CompileOutputKind::WinExe);
+	const std::string moduleWindowTitle = "Demo - C:\\Demo.e - Windows易语言模块 - [程序集: Test]";
+	const bool autoCompileTargetsPassed =
+		ResolveAutoCompileTarget(moduleWindowTitle) == "win_console_exe" &&
+		ResolveAutoCompileTarget("Demo - Windows窗口程序 - Test") == "win_exe";
 	nlohmann::json outputCaptureCheck = nlohmann::json::parse(
 		IdeCompileOutputCapture::BuildSelfTestJson(),
 		nullptr,
@@ -5966,6 +6003,7 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 		{"name", "compile-artifact-fingerprint"},
 		{"ok", creationDetected && unchangedRejected && updateDetected &&
 			appendedErrorDetected && rewrittenErrorDetected && unchangedHistoricalErrorRejected &&
+			staticCompileDefaultsPassed && autoCompileTargetsPassed &&
 			outputCaptureCheckPassed && dialogGuardCheckPassed &&
 			logStoreCheckPassed && outputControlCaptureCheckPassed && logViewerCheckPassed},
 		{"creation_detected", creationDetected},
@@ -5974,6 +6012,8 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 		{"appended_error_detected", appendedErrorDetected},
 		{"rewritten_error_detected", rewrittenErrorDetected},
 		{"unchanged_historical_error_rejected", unchangedHistoricalErrorRejected},
+		{"static_compile_defaults", staticCompileDefaultsPassed},
+		{"auto_compile_targets", autoCompileTargetsPassed},
 		{"internal_output_capture", std::move(outputCaptureCheck)},
 		{"compile_dialog_guard", std::move(dialogGuardCheck)},
 		{"ide_log_store", std::move(logStoreCheck)},
