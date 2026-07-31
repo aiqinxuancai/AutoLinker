@@ -95,9 +95,20 @@ jobs:
       run: |
         msbuild ${{env.SOLUTION_FILE_PATH}}/AutoLinker.vcxproj -t:Build -maxCpuCount:1 -verbosity:normal -property:Configuration=${{env.BUILD_CONFIGURATION}} -property:Platform=${{env.BUILD_PLATFORM}}
 
-    - name: Compress-Archive
+    - name: Compress Release Assets
+      shell: pwsh
       run: |
-        powershell Compress-Archive -Path "bin/${{env.BUILD_CONFIGURATION}}/AutoLinker.fne" -DestinationPath "AutoLinker-${{steps.release_meta.outputs.version_label}}.zip"
+        $fnePath = "bin/${{env.BUILD_CONFIGURATION}}/AutoLinker.fne"
+        $pdbPath = "bin/${{env.BUILD_CONFIGURATION}}/AutoLinker.pdb"
+        if (-not (Test-Path -LiteralPath $fnePath -PathType Leaf)) {
+          throw "Release binary not found: $fnePath"
+        }
+        if (-not (Test-Path -LiteralPath $pdbPath -PathType Leaf)) {
+          throw "Release PDB not found: $pdbPath"
+        }
+
+        Compress-Archive -LiteralPath $fnePath -DestinationPath "AutoLinker-${{steps.release_meta.outputs.version_label}}.zip"
+        Compress-Archive -LiteralPath $pdbPath -DestinationPath "AutoLinker-${{steps.release_meta.outputs.version_label}}.pdb.zip"
 
     - name: Generate AI Release Notes
       shell: pwsh
@@ -116,7 +127,7 @@ jobs:
       with:
         tag: ${{ steps.release_meta.outputs.raw_tag }}
         name: AutoLinker ${{ steps.release_meta.outputs.version_label }}
-        artifacts: "AutoLinker-${{steps.release_meta.outputs.version_label}}.zip"
+        artifacts: "AutoLinker-${{steps.release_meta.outputs.version_label}}.zip,AutoLinker-${{steps.release_meta.outputs.version_label}}.pdb.zip"
         bodyFile: release_notes.md
         prerelease: ${{ steps.release_meta.outputs.prerelease }}
         makeLatest: ${{ steps.release_meta.outputs.make_latest }}
@@ -154,7 +165,7 @@ jobs:
         tag: ${{ steps.release_meta.outputs.raw_tag }}
         commit: ${{ steps.mirror_repo_meta.outputs.default_branch }}
         name: AutoLinker ${{ steps.release_meta.outputs.version_label }}
-        artifacts: "AutoLinker-${{steps.release_meta.outputs.version_label}}.zip"
+        artifacts: "AutoLinker-${{steps.release_meta.outputs.version_label}}.zip,AutoLinker-${{steps.release_meta.outputs.version_label}}.pdb.zip"
         bodyFile: release_notes.md
         prerelease: ${{ steps.release_meta.outputs.prerelease }}
         makeLatest: ${{ steps.release_meta.outputs.make_latest }}
