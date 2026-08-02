@@ -4,9 +4,10 @@ description: >-
   介绍如何使用 AutoLinker，即易语言 AI Agent 支持库和本地 MCP 服务器。内容涵盖安装、
   AI Agent 对话页、计划模式、目标模式、右键 AI 菜单操作、各项目的 .AGENTS.md 规范、
   按源码切换链接器、动态/静态 ec 自动切换、e-packager 工程镜像及 EC 模块/支持库依赖
-  信息、本地 MCP HTTP 服务器及其工具集、外部 Agent（Claude Code / Codex / Cursor）
-  的 MCP 配置、多实例路由、无界面命令行编译、核心库 C++ 重写，以及 AI 服务商和配置
-  （CONFIG.md）。当任务涉及运行、配置或驱动 AutoLinker，通过它将外部 AI Agent 连接
+  信息、本地 MCP HTTP 服务器、协议方法及完整工具参数、外部 Agent（Claude Code /
+  Codex / Cursor）的 MCP 配置、多实例路由、无界面命令行编译、核心库 C++ 重写，以及
+  AI 服务商和配置（CONFIG.md）。当任务涉及运行、配置或驱动 AutoLinker，通过它将
+  外部 AI Agent 连接
   到易语言 IDE，了解其代码读取技术原理，或排查版本兼容性、闪退、响应慢、对话失败、
   MCP 连接异常等问题时使用此技能。
 ---
@@ -275,26 +276,15 @@ AutoLinker 不直接解析或修改加密的 `.e` 文件。准备完整工作区
 
 ### 工具集（`tools/list`）
 
-| 类别 | 工具 | 用途 |
-| --- | --- | --- |
-| 读取 | `refresh_workspace_mirror` | 从 IDE 内存刷新镜像（`auto` / `main_only` / `full`） |
-| 读取 | `list_files` | 使用 Glob 列出镜像中的文件 |
-| 读取 | `search_code` | 按文件搜索：批量模式、Glob、上下文和分页 |
-| 读取 | `read_file` / `read_files` | 读取单个/多个文件或范围，并附带行号 |
-| 读取 | `read_code_item` | 按顶级项目名称读取完整子程序/声明块 |
-| 读取 | `read_real_file` | 从 IDE 真实页面获取分页视图和 `code_hash`（写入基线） |
-| 编辑 | `edit_file` / `multi_edit_file` | 精确文本替换（单次/批量） |
-| 编辑 | `write_file` | 使用 `expected_base_hash` 覆盖真实页面的完整源码 |
-| 编辑 | `diff_file` | 预览结构化差异，不执行写入 |
-| 编辑 | `restore_file_snapshot` | 恢复写入前的快照 |
-| 编辑 | `add_new_file` | 新建程序集/类，可选择写入完整源码并刷新镜像 |
-| 当前页 | `get_current_page_info` | 获取当前页面名称、类型和解析源码 |
-| 当前页 | `get_current_eide_info` | 获取源码路径、IDE 进程路径、MCP 端口等信息 |
-| 编译 | `compile_with_output_path` | `target` 默认为 `auto`；通过产物指纹验证成功状态 |
-| 网络 | `search_web_tavily` | 网络搜索（需要 Tavily 密钥） |
-| 网络 | `fetch_url` | 获取公开 HTTP(S) 文本；阻止回环/私有地址/重定向 |
-| 网络 | `extract_web_document` | 提取网页正文和绝对链接摘要 |
-| 网关 | `list_instances` / `select_instance` | 枚举实例/将会话路由到指定 IDE 实例 |
+需要查询、生成或排查 MCP 请求时，必须读取
+[完整 MCP API 参考](references/mcp-api.md)。该参考以当前代码中的公开目录和参数校验为准，
+包含协议级方法、HTTP 会话操作、21 个 `tools/list` 工具、所有参数及嵌套参数、默认值、
+取值范围、调用前置条件、关键返回字段和错误处理。
+
+工具按用途分为：工作区刷新与镜像读取、真实页 CAS 编辑、IDE 状态与编译、公网页面访问、
+多实例路由。标准调用顺序是 `initialize` → 必要时 `list_instances` / `select_instance` →
+`get_current_eide_info` → `refresh_workspace_mirror` → 读取/编辑/编译工具。不要根据本节摘要
+猜测参数；实际调用前查阅子文档中的对应工具条目。
 
 ## 无界面命令行编译
 
