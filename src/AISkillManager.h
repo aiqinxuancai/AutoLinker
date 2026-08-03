@@ -13,6 +13,12 @@ enum class AISkillScope {
 	Repo
 };
 
+// 本地 AI 技能安装方式。
+enum class AISkillLocalInstallMode {
+	Copy,
+	Reference
+};
+
 // 已发现的 AI 技能信息。
 struct AISkillInfo {
 	std::string name;
@@ -23,6 +29,7 @@ struct AISkillInfo {
 	std::filesystem::path skillFile;
 	bool enabled = true;
 	bool valid = false;
+	bool externalReference = false;
 	std::string error;
 	std::string sourceRepository;
 	std::string sourceRef;
@@ -60,12 +67,21 @@ std::string SearchSkillsSh(const std::string& query);
 std::string GetSkillsShSkillDetails(const std::string& source, const std::string& skillId);
 // 检查公开 GitHub 仓库并列出技能候选项。
 std::string InspectGitHubRepository(const std::string& source);
+// 检查本地目录、SKILL.md 或 ZIP 并列出技能候选项。
+std::string InspectLocalSource(const std::string& sourcePath);
 // 从公开 GitHub 仓库安装一个技能。
 std::string InstallFromGitHub(
 	const std::string& source,
 	AISkillScope scope,
 	const std::string& selectedRepositoryPath,
 	const std::string& expectedSkillId,
+	bool allowReplace);
+// 从本地来源复制安装或登记原路径引用。
+std::string InstallFromLocal(
+	const std::string& sourcePath,
+	AISkillScope scope,
+	const std::string& selectedCandidatePath,
+	AISkillLocalInstallMode mode,
 	bool allowReplace);
 // 更新一个由 AutoLinker 安装的技能。
 std::string UpdateInstalledSkill(const std::string& skillFilePath);

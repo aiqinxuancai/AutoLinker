@@ -74,6 +74,9 @@
     <ClCompile Include="src\AIJsonConfig.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+	<ClCompile Include="src\AISkillLocalPackage.cpp">
+	  <Filter>AI</Filter>
+	</ClCompile>
 	<ClCompile Include="src\AISkillManager.cpp">
 	  <Filter>AI</Filter>
 	</ClCompile>
@@ -472,6 +475,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\LocalMcpServer.h" />
+	<ClInclude Include="src\AISkillLocalPackage.h">
+	  <Filter>AI</Filter>
+	</ClInclude>
     <ClInclude Include="src\PowerShellToolRunner.h" />
     <ClInclude Include="src\RealPageCodeToolSupport.h" />
     <ClInclude Include="src\ResourceTextLoader.h">

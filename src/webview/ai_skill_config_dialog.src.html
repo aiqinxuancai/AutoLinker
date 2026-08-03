@@ -14,7 +14,7 @@
 		<div class="flex min-h-[46px] items-center justify-between gap-3">
 			<div class="min-w-0">
 				<h1 class="truncate text-lg font-semibold leading-6 text-slate-950">AI SKILL 管理</h1>
-				<p class="mt-0.5 min-h-5 truncate text-[12px] leading-5 text-slate-500">管理已安装技能，并从 skills.sh 或 GitHub 安装 AI 技能。</p>
+				<p class="mt-0.5 min-h-5 truncate text-[12px] leading-5 text-slate-500">管理已安装技能，并从本地、skills.sh 或 GitHub 添加 AI 技能。</p>
 			</div>
 		</div>
 	</header>
@@ -23,12 +23,15 @@
 		<button class="tab active" data-tab="installed">已安装</button>
 		<button class="tab" data-tab="market">skills.sh</button>
 		<button class="tab" data-tab="github">GitHub 安装</button>
+		<button class="tab" data-tab="local">本地添加</button>
 	</nav>
 	<section class="panel active" id="installed">
 		<div class="toolbar">
 			<select class="select" id="scopeFilter"><option value="all">全部作用域</option><option value="global">全局</option><option value="project">当前项目</option></select>
 			<button class="btn" id="reloadBtn">刷新</button>
+			<button class="btn primary" id="quickInstallBtn">快速安装易语言技能</button>
 		</div>
+		<div class="status" id="installedStatus"></div>
 		<div class="list" id="installedList"></div>
 	</section>
 	<section class="panel" id="market">
@@ -38,6 +41,10 @@
 	<section class="panel" id="github">
 		<div class="toolbar"><input class="input" id="githubInput" placeholder="https://github.com/owner/repo"><select class="select" id="githubScope"><option value="global">安装到全局</option><option value="project">安装到当前项目</option></select><button class="btn primary" id="inspectBtn">检查仓库</button></div>
 		<div class="status" id="githubStatus"></div><div class="list" id="candidateList"></div>
+	</section>
+	<section class="panel" id="local">
+		<div class="toolbar"><input class="input" id="localInput" placeholder="本地目录、SKILL.md 或 ZIP 路径"><select class="select" id="localScope"><option value="global">添加到全局</option><option value="project">添加到当前项目</option></select><button class="btn" id="localFolderBtn">选择文件夹</button><button class="btn" id="localZipBtn">选择 ZIP</button><button class="btn primary" id="localInspectBtn">检查</button></div>
+		<div class="status" id="localStatus"></div><div class="list" id="localCandidateList"></div>
 	</section>
 </main>
 </div>
@@ -49,6 +56,20 @@
 		<footer class="detail-foot"><button class="btn" id="detailCancel" type="button">关闭</button><button class="btn primary" id="detailInstall" type="button">安装</button></footer>
 	</section>
 </div>
+<div class="modal-layer" id="localModeModal" hidden>
+	<section class="detail-dialog mode-dialog" role="dialog" aria-modal="true" aria-labelledby="localModeTitle">
+		<header class="detail-head"><h2 id="localModeTitle">选择添加方式</h2><button class="detail-close" id="localModeClose" type="button" title="关闭" aria-label="关闭">&times;</button></header>
+		<div class="detail-description" id="localModeDescription"></div>
+		<footer class="detail-foot"><button class="btn" id="localModeCancel" type="button">取消</button><button class="btn" id="localReferenceBtn" type="button">引用原路径</button><button class="btn primary" id="localCopyBtn" type="button">复制安装</button></footer>
+	</section>
+</div>
+<div class="modal-layer" id="quickInstallModal" hidden>
+	<section class="detail-dialog mode-dialog" role="dialog" aria-modal="true" aria-labelledby="quickInstallTitle">
+		<header class="detail-head"><h2 id="quickInstallTitle">安装易语言技能</h2><button class="detail-close" id="quickInstallClose" type="button" title="关闭" aria-label="关闭">&times;</button></header>
+		<div class="detail-description">选择 e-language 技能的安装范围。</div>
+		<footer class="detail-foot"><button class="btn" id="quickInstallCancel" type="button">取消</button><button class="btn" id="quickProjectBtn" type="button">安装到当前项目</button><button class="btn primary" id="quickGlobalBtn" type="button">安装到全局</button></footer>
+	</section>
+</div>
 <script>
 /*__AUTOLINKER_PRELINE_JS__*/
 (function(){
@@ -56,31 +77,83 @@
 	var state={skills:[],project_available:false,global_root:"",project_root:""};
 	var currentGithubSource="";
 	var pendingInstall=null;
+	var currentLocalSource="";
+	var localInspection=null;
+	var pendingLocalInstall=null;
 	var detailSkill=null;
+	var quickSkillSource="https://github.com/aiqinxuancai/e-language-skill";
 	function $(id){return document.getElementById(id)}
 	function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 	function post(action,data){var p=Object.assign({action:action},data||{});window.chrome.webview.postMessage(JSON.stringify(p))}
 	function busy(on){$("shell").classList.toggle("busy",!!on)}
 	function status(id,text,error){var e=$(id);e.textContent=text||"";e.classList.toggle("error",!!error)}
 	function scopeName(v){return v==="project"?"项目":"全局"}
-	function syncScopeControls(){["marketScope","githubScope"].forEach(function(id){var e=$(id),o=e.querySelector('option[value="project"]');o.disabled=!state.project_available;if(!state.project_available&&e.value==="project")e.value="global"})}
-	function renderInstalled(){var filter=$("scopeFilter").value;var items=state.skills.filter(function(s){return filter==="all"||s.scope===filter});var root=$("installedList");if(!items.length){root.innerHTML='<div class="empty">没有发现技能</div>';return}root.innerHTML=items.map(function(s){var controls='<input class="switch" type="checkbox" data-action="toggle" '+(s.enabled?'checked':'')+' '+(!s.valid?'disabled':'')+'>';if(s.managed)controls+='<button class="btn" data-action="update">更新</button>';controls+='<button class="btn" data-action="folder">目录</button><button class="btn danger" data-action="remove">卸载</button>';return '<div class="row" data-file="'+esc(s.skill_file)+'"><div><div class="name-line"><span class="name">'+esc(s.name)+'</span><span class="badge">'+scopeName(s.scope)+'</span>'+(!s.valid?'<span class="badge invalid">无效</span>':'')+'</div><div class="desc">'+esc(s.valid?s.description:s.error)+'</div><div class="path">'+esc(s.skill_file)+'</div></div><div class="actions">'+controls+'</div></div>'}).join("")}
+	function syncScopeControls(){["marketScope","githubScope","localScope"].forEach(function(id){var e=$(id),o=e.querySelector('option[value="project"]');o.disabled=!state.project_available;if(!state.project_available&&e.value==="project")e.value="global"});$("quickProjectBtn").disabled=!state.project_available}
+	function renderInstalled(){var filter=$("scopeFilter").value;var items=state.skills.filter(function(s){return filter==="all"||s.scope===filter});var root=$("installedList");if(!items.length){root.innerHTML='<div class="empty">没有发现技能</div>';return}root.innerHTML=items.map(function(s){var controls='<input class="switch" type="checkbox" data-action="toggle" '+(s.enabled?'checked':'')+' '+(!s.valid?'disabled':'')+'>';if(s.managed&&!s.external_reference)controls+='<button class="btn" data-action="update">更新</button>';controls+='<button class="btn" data-action="folder">目录</button><button class="btn danger" data-action="remove">'+(s.external_reference?'移除':'卸载')+'</button>';return '<div class="row" data-file="'+esc(s.skill_file)+'"><div><div class="name-line"><span class="name">'+esc(s.name)+'</span><span class="badge">'+scopeName(s.scope)+'</span>'+(s.external_reference?'<span class="badge">原路径引用</span>':'')+(!s.valid?'<span class="badge invalid">无效</span>':'')+'</div><div class="desc">'+esc(s.valid?s.description:s.error)+'</div><div class="path">'+esc(s.skill_file)+'</div></div><div class="actions">'+controls+'</div></div>'}).join("")}
 	function renderSearch(items){var root=$("searchList");if(!items||!items.length){root.innerHTML='<div class="empty">没有匹配结果</div>';return}root.innerHTML=items.map(function(s){return '<div class="row" data-source="'+esc(s.source)+'" data-skill-id="'+esc(s.skill_id)+'"><div><div class="name-line"><span class="name">'+esc(s.name)+'</span><span class="badge">'+esc(s.source)+'</span></div></div><div class="actions"><span class="install-count">'+Number(s.installs||0).toLocaleString()+" installs"+'</span><button class="btn" data-action="market-detail">详情</button><button class="btn primary" data-action="market-install">安装</button></div></div>'}).join("")}
 	function renderCandidates(items){var root=$("candidateList");if(!items||!items.length){root.innerHTML="";return}root.innerHTML=items.map(function(s){return '<div class="row"><div><div class="name-line"><span class="name">'+esc(s.name)+'</span><span class="badge">'+esc(s.repository_path)+'</span></div><div class="desc">'+esc(s.description)+'</div></div><div class="actions"><button class="btn primary" data-candidate="'+esc(s.repository_path)+'">安装</button></div></div>'}).join("")}
+	function renderLocalCandidates(info){localInspection=info||null;var root=$("localCandidateList"),items=info&&info.candidates||[];if(!items.length){root.innerHTML="";return}var zip=info.source_kind==="zip";root.innerHTML=items.map(function(s){return '<div class="row"><div><div class="name-line"><span class="name">'+esc(s.name)+'</span><span class="badge">'+esc(s.candidate_path)+'</span>'+(zip?'<span class="badge">ZIP</span>':'')+'</div><div class="desc">'+esc(s.description)+'</div><div class="path">'+esc(s.skill_file)+'</div></div><div class="actions"><button class="btn primary" data-local-candidate="'+esc(s.candidate_path)+'">'+(zip?'复制安装':'添加')+'</button></div></div>'}).join("")}
+	function closeLocalMode(){$("localModeModal").hidden=true}
+	function openLocalMode(candidate){pendingLocalInstall={source:currentLocalSource,candidate_path:candidate,scope:$("localScope").value};$("localModeDescription").textContent="复制安装会把完整技能目录复制到 AutoLinker 管理目录；引用原路径不会复制文件，源目录中的后续修改会在刷新后生效。";$("localModeModal").hidden=false;$("localCopyBtn").focus()}
+	function submitLocalInstall(mode){if(!pendingLocalInstall)return;closeLocalMode();pendingLocalInstall.mode=mode;busy(true);status("localStatus",mode==="reference"?"正在添加原路径引用...":"正在复制安装...");post("install_local",pendingLocalInstall)}
+	function closeQuickInstall(){$("quickInstallModal").hidden=true}
+	function openQuickInstall(){$("quickInstallModal").hidden=false;$("quickGlobalBtn").focus()}
+	function submitQuickInstall(scope){closeQuickInstall();pendingInstall={source:quickSkillSource,repository_path:".",skill_id:"e-language",scope:scope,quick:true};status("installedStatus","正在下载并安装易语言技能...");busy(true);post("install",pendingInstall)}
 	function openDetail(skill){detailSkill=skill;$('detailTitle').textContent=skill.name||'技能详情';$('detailSource').textContent=skill.source||'';$('detailInstalls').textContent=Number(skill.installs||0).toLocaleString()+' installs';$('detailDescription').textContent=skill.description||'暂无技能介绍';$('detailModal').hidden=false;$('detailInstall').focus()}
 	function closeDetail(){detailSkill=null;$('detailModal').hidden=true}
 	function applyState(next){state=next||state;syncScopeControls();renderInstalled()}
 	document.querySelectorAll(".tab").forEach(function(tab){tab.addEventListener("click",function(){document.querySelectorAll(".tab,.panel").forEach(function(e){e.classList.remove("active")});tab.classList.add("active");$(tab.dataset.tab).classList.add("active")})});
-	$("scopeFilter").addEventListener("change",renderInstalled);$("reloadBtn").addEventListener("click",function(){post("load")});
+	$("scopeFilter").addEventListener("change",renderInstalled);$("reloadBtn").addEventListener("click",function(){post("load")});$("quickInstallBtn").addEventListener("click",openQuickInstall);
 	$("searchBtn").addEventListener("click",function(){var q=$("searchInput").value.trim();if(q.length<2){status("searchStatus","请输入至少两个字符",true);return}status("searchStatus","正在搜索...");busy(true);post("search",{query:q})});
 	$("searchInput").addEventListener("keydown",function(e){if(e.key==="Enter")$("searchBtn").click()});
 	$("inspectBtn").addEventListener("click",function(){var source=$("githubInput").value.trim();if(!source){status("githubStatus","请输入 GitHub 仓库地址",true);return}currentGithubSource=source;status("githubStatus","正在检查仓库...");busy(true);post("inspect",{source:source})});
+	$("localFolderBtn").addEventListener("click",function(){post("browse_local_folder")});
+	$("localZipBtn").addEventListener("click",function(){post("browse_local_zip")});
+	$("localInspectBtn").addEventListener("click",function(){var source=$("localInput").value.trim();if(!source){status("localStatus","请输入或选择本地来源",true);return}currentLocalSource=source;localInspection=null;renderLocalCandidates(null);status("localStatus","正在检查本地来源...");busy(true);post("inspect_local",{source:source})});
+	$("localInput").addEventListener("keydown",function(e){if(e.key==="Enter")$("localInspectBtn").click()});
 	$("installedList").addEventListener("click",function(e){var action=e.target.dataset.action;if(!action)return;var row=e.target.closest(".row"),file=row.dataset.file;if(action==="toggle")post("toggle",{skill_file:file,enabled:e.target.checked});if(action==="update"){busy(true);post("update",{skill_file:file})}if(action==="remove")post("remove",{skill_file:file});if(action==="folder")post("open_folder",{skill_file:file})});
 	$("searchList").addEventListener("click",function(e){var action=e.target.dataset.action;if(action!=="market-detail"&&action!=="market-install")return;var row=e.target.closest(".row"),source=row.dataset.source,skillId=row.dataset.skillId;if(action==="market-detail"){busy(true);status("searchStatus","正在读取技能详情...");post("details",{source:source,skill_id:skillId});return}busy(true);status("searchStatus","正在下载并安装...");pendingInstall={source:source,skill_id:skillId,scope:$("marketScope").value};post("install",pendingInstall)});
 	$("candidateList").addEventListener("click",function(e){if(!e.target.dataset.candidate)return;busy(true);status("githubStatus","正在下载并安装...");pendingInstall={source:currentGithubSource,repository_path:e.target.dataset.candidate,scope:$("githubScope").value};post("install",pendingInstall)});
+	$("localCandidateList").addEventListener("click",function(e){var candidate=e.target.dataset.localCandidate;if(!candidate||!localInspection)return;pendingLocalInstall={source:currentLocalSource,candidate_path:candidate,scope:$("localScope").value};if(localInspection.reference_allowed){openLocalMode(candidate)}else submitLocalInstall("copy")});
+	$("localCopyBtn").addEventListener("click",function(){submitLocalInstall("copy")});
+	$("localReferenceBtn").addEventListener("click",function(){submitLocalInstall("reference")});
+	$("localModeClose").addEventListener("click",closeLocalMode);$("localModeCancel").addEventListener("click",closeLocalMode);$("localModeModal").addEventListener("click",function(e){if(e.target===this)closeLocalMode()});
+	$("quickGlobalBtn").addEventListener("click",function(){submitQuickInstall("global")});$("quickProjectBtn").addEventListener("click",function(){submitQuickInstall("project")});$("quickInstallClose").addEventListener("click",closeQuickInstall);$("quickInstallCancel").addEventListener("click",closeQuickInstall);$("quickInstallModal").addEventListener("click",function(e){if(e.target===this)closeQuickInstall()});
 	$("detailInstall").addEventListener("click",function(){if(!detailSkill)return;var skill=detailSkill;closeDetail();busy(true);status("searchStatus","正在下载并安装...");pendingInstall={source:skill.source,skill_id:skill.skill_id,scope:$("marketScope").value};post("install",pendingInstall)});
-	$("detailClose").addEventListener("click",closeDetail);$("detailCancel").addEventListener("click",closeDetail);$("detailModal").addEventListener("click",function(e){if(e.target===this)closeDetail()});document.addEventListener("keydown",function(e){if(e.key==="Escape"&&!$("detailModal").hidden)closeDetail()});
-	window.chrome.webview.addEventListener("message",function(event){var p=event.data||{},r=p.result||{};if(p.action==="state"){applyState(r);return}busy(false);if(p.action==="search"){status("searchStatus",r.ok?"找到 "+(r.results||[]).length+" 个结果":r.error,!r.ok);if(r.ok)renderSearch(r.results);return}if(p.action==="details"){if(r.ok){status("searchStatus","");openDetail(r)}else status("searchStatus",r.error||"读取详情失败",true);return}if(p.action==="inspect"){status("githubStatus",r.ok?"发现 "+(r.candidates||[]).length+" 个技能":r.error,!r.ok);if(r.ok){currentGithubSource=$("githubInput").value.trim();renderCandidates(r.candidates)}return}if(p.action==="install"){var id=document.querySelector(".panel.active").id==="github"?"githubStatus":"searchStatus";status(id,r.ok?r.message:(r.error||"安装失败"),!r.ok);if(r.selection_required){currentGithubSource=r.repository;renderCandidates(r.candidates)}else if(r.conflict&&pendingInstall&&window.confirm("目标技能目录已经存在，是否替换现有技能？")){pendingInstall.allow_replace=true;busy(true);post("install",pendingInstall)}else if(r.ok){pendingInstall=null}return}if(p.action==="update"||p.action==="remove"||p.action==="toggle"){if(!r.cancelled)status("githubStatus",r.ok?(r.message||"操作完成"):(r.error||"操作失败"),!r.ok)}});
+	$("detailClose").addEventListener("click",closeDetail);$("detailCancel").addEventListener("click",closeDetail);$("detailModal").addEventListener("click",function(e){if(e.target===this)closeDetail()});document.addEventListener("keydown",function(e){if(e.key!=="Escape")return;if(!$("quickInstallModal").hidden)closeQuickInstall();else if(!$("localModeModal").hidden)closeLocalMode();else if(!$("detailModal").hidden)closeDetail()});
+	window.chrome.webview.addEventListener("message",function(event){
+		var p=event.data||{},r=p.result||{};
+		if(p.action==="state"){applyState(r);return}
+		busy(false);
+		if(p.action==="browse_local_folder"||p.action==="browse_local_zip"){
+			if(r.ok){$("localInput").value=r.path||"";$("localInspectBtn").click()}else if(!r.cancelled)status("localStatus",r.error||"选择本地来源失败",true);
+			return
+		}
+		if(p.action==="search"){status("searchStatus",r.ok?"找到 "+(r.results||[]).length+" 个结果":r.error,!r.ok);if(r.ok)renderSearch(r.results);return}
+		if(p.action==="details"){if(r.ok){status("searchStatus","");openDetail(r)}else status("searchStatus",r.error||"读取详情失败",true);return}
+		if(p.action==="inspect"){status("githubStatus",r.ok?"发现 "+(r.candidates||[]).length+" 个技能":r.error,!r.ok);if(r.ok){currentGithubSource=$("githubInput").value.trim();renderCandidates(r.candidates)}return}
+		if(p.action==="inspect_local"){
+			status("localStatus",r.ok?"发现 "+(r.candidates||[]).length+" 个技能":r.error,!r.ok);
+			if(r.ok){currentLocalSource=r.source_path||$("localInput").value.trim();$("localInput").value=currentLocalSource;renderLocalCandidates(r)}
+			return
+		}
+		if(p.action==="install"){
+			var id=pendingInstall&&pendingInstall.quick?"installedStatus":document.querySelector(".panel.active").id==="github"?"githubStatus":"searchStatus";
+			status(id,r.ok?r.message:(r.error||"安装失败"),!r.ok);
+			if(r.selection_required){currentGithubSource=r.repository;if(pendingInstall&&pendingInstall.quick){$("githubInput").value=currentGithubSource;$("githubScope").value=pendingInstall.scope;document.querySelector('[data-tab="github"]').click();status("githubStatus",r.error||"请选择要安装的技能",true)}renderCandidates(r.candidates)}
+			else if(r.conflict&&pendingInstall&&window.confirm("目标技能目录已经存在，是否替换现有技能？")){pendingInstall.allow_replace=true;busy(true);post("install",pendingInstall)}
+			else if(r.ok){pendingInstall=null}
+			return
+		}
+		if(p.action==="install_local"){
+			status("localStatus",r.ok?r.message:(r.error||"添加失败"),!r.ok);
+			if(r.selection_required){localInspection=r;renderLocalCandidates(r)}
+			else if(r.conflict&&pendingLocalInstall&&window.confirm("目标技能目录已经存在，是否替换现有技能？")){pendingLocalInstall.allow_replace=true;busy(true);post("install_local",pendingLocalInstall)}
+			else if(r.ok){pendingLocalInstall=null}
+			return
+		}
+		if(p.action==="update"||p.action==="remove"||p.action==="toggle"){if(!r.cancelled)status("installedStatus",r.ok?(r.message||"操作完成"):(r.error||"操作失败"),!r.ok)}
+	});
 	post("load");
 })();
 </script>

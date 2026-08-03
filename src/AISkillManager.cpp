@@ -16,6 +16,7 @@
 #include <unordered_set>
 
 #include "Global.h"
+#include "AISkillLocalPackage.h"
 #include "PathHelper.h"
 #include "PowerShellToolRunner.h"
 #include "WinINetUtil.h"
@@ -24,7 +25,7 @@ namespace {
 
 using nlohmann::json;
 
-constexpr int kConfigVersion = 1;
+constexpr int kConfigVersion = 2;
 constexpr int kMaxScanDepth = 6;
 constexpr size_t kMaxScannedDirectories = 2000;
 constexpr size_t kMaxSkillFileBytes = 4 * 1024 * 1024;
@@ -44,6 +45,13 @@ std::atomic_ullong g_tempCounter = 1;
 
 struct SkillConfig {
 	std::unordered_set<std::string> disabledPaths;
+	struct ExternalReference {
+		std::filesystem::path skillFile;
+		AISkillScope scope = AISkillScope::User;
+		std::filesystem::path projectDirectory;
+		long long addedAtUnixMs = 0;
+	};
+	std::vector<ExternalReference> externalReferences;
 };
 
 struct ParsedGithubSource {
@@ -58,6 +66,11 @@ struct PreparedRepository {
 	std::string commit;
 	std::filesystem::path stagingRoot;
 	std::filesystem::path repositoryRoot;
+	std::vector<AISkillInfo> candidates;
+};
+
+struct PreparedLocalSkills {
+	AISkillPreparedLocalSource source;
 	std::vector<AISkillInfo> candidates;
 };
 
@@ -244,27 +257,56 @@ bool WriteFileBytesAtomic(const std::filesystem::path& path, const std::string& 
 	return true;
 }
 
-SkillConfig LoadConfig()
+SkillConfig LoadConfigFromPath(const std::filesystem::path& configPath)
 {
 	SkillConfig config;
 	std::string text;
 	std::string error;
-	if (!ReadFileBytes(GetConfigPath(), 2 * 1024 * 1024, text, error)) {
+	if (!ReadFileBytes(configPath, 2 * 1024 * 1024, text, error)) {
 		return config;
 	}
 	const json root = json::parse(text, nullptr, false);
-	if (!root.is_object() || !root.contains("disabled_paths") || !root["disabled_paths"].is_array()) {
+	if (!root.is_object()) {
 		return config;
 	}
-	for (const auto& item : root["disabled_paths"]) {
-		if (item.is_string()) {
-			config.disabledPaths.insert(ToLowerAscii(item.get<std::string>()));
+	if (root.contains("disabled_paths") && root["disabled_paths"].is_array()) {
+		for (const auto& item : root["disabled_paths"]) {
+			if (item.is_string()) {
+				config.disabledPaths.insert(ToLowerAscii(item.get<std::string>()));
+			}
+		}
+	}
+	if (root.contains("external_references") && root["external_references"].is_array()) {
+		for (const auto& item : root["external_references"]) {
+			if (!item.is_object()) {
+				continue;
+			}
+			const std::string skillFile = TrimAscii(item.value("skill_file", std::string()));
+			const std::string scope = ToLowerAscii(item.value("scope", std::string("global")));
+			if (skillFile.empty() || (scope != "global" && scope != "project")) {
+				continue;
+			}
+			SkillConfig::ExternalReference reference;
+			reference.skillFile = Utf8ToPath(skillFile);
+			reference.scope = scope == "project" ? AISkillScope::Repo : AISkillScope::User;
+			reference.projectDirectory = Utf8ToPath(item.value("project_directory", std::string()));
+			reference.addedAtUnixMs = item.value("added_at_unix_ms", 0LL);
+			if (!reference.skillFile.is_absolute() || (reference.scope == AISkillScope::Repo &&
+				(reference.projectDirectory.empty() || !reference.projectDirectory.is_absolute()))) {
+				continue;
+			}
+			config.externalReferences.push_back(std::move(reference));
 		}
 	}
 	return config;
 }
 
-bool SaveConfig(const SkillConfig& config, std::string& outError)
+SkillConfig LoadConfig()
+{
+	return LoadConfigFromPath(GetConfigPath());
+}
+
+bool SaveConfigToPath(const SkillConfig& config, const std::filesystem::path& configPath, std::string& outError)
 {
 	json disabled = json::array();
 	std::vector<std::string> sorted(config.disabledPaths.begin(), config.disabledPaths.end());
@@ -272,11 +314,39 @@ bool SaveConfig(const SkillConfig& config, std::string& outError)
 	for (const auto& path : sorted) {
 		disabled.push_back(path);
 	}
+	std::vector<SkillConfig::ExternalReference> references = config.externalReferences;
+	std::stable_sort(references.begin(), references.end(), [](const auto& left, const auto& right) {
+		const std::string leftKey = NormalizePathKey(left.skillFile);
+		const std::string rightKey = NormalizePathKey(right.skillFile);
+		if (leftKey != rightKey) {
+			return leftKey < rightKey;
+		}
+		if (left.scope != right.scope) {
+			return left.scope == AISkillScope::User;
+		}
+		return NormalizePathKey(left.projectDirectory) < NormalizePathKey(right.projectDirectory);
+	});
+	json external = json::array();
+	for (const auto& reference : references) {
+		external.push_back({
+			{"skill_file", PathToUtf8(reference.skillFile)},
+			{"scope", reference.scope == AISkillScope::Repo ? "project" : "global"},
+			{"project_directory", reference.scope == AISkillScope::Repo
+				? PathToUtf8(reference.projectDirectory) : std::string()},
+			{"added_at_unix_ms", reference.addedAtUnixMs}
+		});
+	}
 	const json root = {
 		{"version", kConfigVersion},
-		{"disabled_paths", std::move(disabled)}
+		{"disabled_paths", std::move(disabled)},
+		{"external_references", std::move(external)}
 	};
-	return WriteFileBytesAtomic(GetConfigPath(), root.dump(2), outError);
+	return WriteFileBytesAtomic(configPath, root.dump(2), outError);
+}
+
+bool SaveConfig(const SkillConfig& config, std::string& outError)
+{
+	return SaveConfigToPath(config, GetConfigPath(), outError);
 }
 
 std::vector<std::string> SplitLines(const std::string& text)
@@ -488,6 +558,53 @@ void DiscoverUnderRoot(
 	}
 }
 
+std::optional<std::filesystem::path> CurrentProjectDirectory()
+{
+	const auto projectRoot = AISkillManager::GetProjectSkillsRoot();
+	if (!projectRoot) {
+		return std::nullopt;
+	}
+	return projectRoot->parent_path().parent_path();
+}
+
+bool ReferenceAppliesToProject(
+	const SkillConfig::ExternalReference& reference,
+	const std::optional<std::filesystem::path>& projectDirectory)
+{
+	if (reference.scope == AISkillScope::User) {
+		return true;
+	}
+	return projectDirectory &&
+		NormalizePathKey(reference.projectDirectory) == NormalizePathKey(*projectDirectory);
+}
+
+void DiscoverExternalReferences(
+	const SkillConfig& config,
+	const std::optional<std::filesystem::path>& projectDirectory,
+	std::vector<AISkillInfo>& out)
+{
+	std::unordered_set<std::string> discovered;
+	for (const auto& skill : out) {
+		discovered.insert(NormalizePathKey(skill.skillFile));
+	}
+	for (const auto& reference : config.externalReferences) {
+		if (!ReferenceAppliesToProject(reference, projectDirectory)) {
+			continue;
+		}
+		const std::string key = NormalizePathKey(reference.skillFile);
+		if (!discovered.insert(key).second) {
+			continue;
+		}
+		AISkillInfo skill;
+		skill.scope = reference.scope;
+		skill.externalReference = true;
+		skill.installedAtUnixMs = reference.addedAtUnixMs;
+		ParseSkillFile(reference.skillFile, skill);
+		skill.enabled = !config.disabledPaths.contains(key);
+		out.push_back(std::move(skill));
+	}
+}
+
 std::vector<AISkillInfo> DiscoverSkillsUnlocked()
 {
 	const SkillConfig config = LoadConfig();
@@ -496,6 +613,7 @@ std::vector<AISkillInfo> DiscoverSkillsUnlocked()
 	if (const auto projectRoot = AISkillManager::GetProjectSkillsRoot()) {
 		DiscoverUnderRoot(*projectRoot, AISkillScope::Repo, config, result);
 	}
+	DiscoverExternalReferences(config, CurrentProjectDirectory(), result);
 	std::stable_sort(result.begin(), result.end(), [](const AISkillInfo& left, const AISkillInfo& right) {
 		if (left.scope != right.scope) {
 			return left.scope == AISkillScope::Repo;
@@ -516,6 +634,7 @@ json SkillToJson(const AISkillInfo& skill)
 		{"skill_file", PathToUtf8(skill.skillFile)},
 		{"enabled", skill.enabled},
 		{"valid", skill.valid},
+		{"external_reference", skill.externalReference},
 		{"error", skill.error},
 		{"source_repository", skill.sourceRepository},
 		{"source_ref", skill.sourceRef},
@@ -911,6 +1030,15 @@ bool WriteSourceMetadata(const std::filesystem::path& directory, const AISkillIn
 
 bool ValidateInstallTree(const std::filesystem::path& source, std::string& outError)
 {
+	const DWORD rootAttributes = GetFileAttributesW(source.c_str());
+	if (rootAttributes == INVALID_FILE_ATTRIBUTES || (rootAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+		outError = "技能来源不是可读取的目录：" + PathToUtf8(source);
+		return false;
+	}
+	if ((rootAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+		outError = "技能来源目录是符号链接或目录联接：" + PathToUtf8(source);
+		return false;
+	}
 	std::error_code ec;
 	std::filesystem::recursive_directory_iterator it(
 		source, std::filesystem::directory_options::skip_permission_denied, ec), end;
@@ -940,7 +1068,8 @@ bool ReplaceDirectoryAtomically(
 	const std::filesystem::path& source,
 	const std::filesystem::path& target,
 	bool allowReplace,
-	std::string& outError)
+	std::string& outError,
+	bool stripSourceMetadata = false)
 {
 	if (!ValidateInstallTree(source, outError)) {
 		return false;
@@ -961,6 +1090,14 @@ bool ReplaceDirectoryAtomically(
 		outError = "复制技能目录失败：" + ec.message();
 		std::filesystem::remove_all(staged, ec);
 		return false;
+	}
+	if (stripSourceMetadata) {
+		std::filesystem::remove_all(staged / kSourceMetadataFileName, ec);
+		if (ec) {
+			outError = "清理本地技能来源标记失败：" + ec.message();
+			std::filesystem::remove_all(staged, ec);
+			return false;
+		}
 	}
 	const bool targetExists = std::filesystem::exists(target, ec);
 	if (targetExists && !allowReplace) {
@@ -992,6 +1129,161 @@ bool ReplaceDirectoryAtomically(
 		std::filesystem::remove_all(backup, ec);
 	}
 	return true;
+}
+
+void CleanupPreparedLocalSkills(PreparedLocalSkills& prepared)
+{
+	AISkillLocalPackage::Cleanup(prepared.source, GetAutoLinkerCacheDirectoryPath());
+	prepared.candidates.clear();
+}
+
+bool PrepareLocalSkills(const std::string& sourceText, PreparedLocalSkills& out, std::string& outError)
+{
+	out = {};
+	const std::string trimmed = TrimAscii(sourceText);
+	if (!AISkillLocalPackage::Prepare(
+		Utf8ToPath(trimmed), GetAutoLinkerCacheDirectoryPath(), out.source, outError)) {
+		return false;
+	}
+	if (out.source.kind == AISkillLocalSourceKind::ZipArchive &&
+		!ValidateInstallTree(out.source.scanRoot, outError)) {
+		CleanupPreparedLocalSkills(out);
+		return false;
+	}
+	if (!out.source.directSkillFile.empty()) {
+		AISkillInfo candidate;
+		if (ParseSkillFile(out.source.directSkillFile, candidate)) {
+			out.candidates.push_back(std::move(candidate));
+		}
+		else {
+			outError = "SKILL.md 无效：" + candidate.error;
+			CleanupPreparedLocalSkills(out);
+			return false;
+		}
+	}
+	else {
+		SkillConfig emptyConfig;
+		DiscoverUnderRoot(out.source.scanRoot, AISkillScope::User, emptyConfig, out.candidates);
+		std::erase_if(out.candidates, [](const AISkillInfo& candidate) { return !candidate.valid; });
+	}
+	for (auto& candidate : out.candidates) {
+		candidate.sourcePath = PathToUtf8(candidate.directory.lexically_relative(out.source.scanRoot));
+		std::replace(candidate.sourcePath.begin(), candidate.sourcePath.end(), '\\', '/');
+		if (candidate.sourcePath.empty() || candidate.sourcePath == ".") {
+			candidate.sourcePath = ".";
+		}
+	}
+	std::stable_sort(out.candidates.begin(), out.candidates.end(), [](const auto& left, const auto& right) {
+		return ToLowerAscii(left.sourcePath) < ToLowerAscii(right.sourcePath);
+	});
+	if (out.candidates.empty()) {
+		outError = "本地来源中未找到有效的 SKILL.md";
+		CleanupPreparedLocalSkills(out);
+		return false;
+	}
+	return true;
+}
+
+json LocalCandidatesJson(const PreparedLocalSkills& prepared)
+{
+	json result = json::array();
+	for (const auto& candidate : prepared.candidates) {
+		result.push_back({
+			{"name", candidate.name},
+			{"description", candidate.description},
+			{"candidate_path", candidate.sourcePath},
+			{"skill_file", prepared.source.kind == AISkillLocalSourceKind::ZipArchive
+				? (candidate.sourcePath == "." ? "SKILL.md" : candidate.sourcePath + "/SKILL.md")
+				: PathToUtf8(candidate.skillFile)}
+		});
+	}
+	return result;
+}
+
+json LocalInspectionJson(const PreparedLocalSkills& prepared)
+{
+	return {
+		{"ok", true},
+		{"source_path", PathToUtf8(prepared.source.sourcePath)},
+		{"source_kind", AISkillLocalPackage::KindName(prepared.source.kind)},
+		{"reference_allowed", prepared.source.kind != AISkillLocalSourceKind::ZipArchive},
+		{"candidates", LocalCandidatesJson(prepared)}
+	};
+}
+
+const AISkillInfo* SelectLocalCandidate(
+	const PreparedLocalSkills& prepared,
+	std::string selectedPath)
+{
+	selectedPath = TrimAscii(std::move(selectedPath));
+	std::replace(selectedPath.begin(), selectedPath.end(), '\\', '/');
+	while (selectedPath.starts_with("./")) {
+		selectedPath.erase(0, 2);
+	}
+	if (selectedPath.empty()) {
+		return prepared.candidates.size() == 1 ? &prepared.candidates.front() : nullptr;
+	}
+	for (const auto& candidate : prepared.candidates) {
+		if (ToLowerAscii(candidate.sourcePath) == ToLowerAscii(selectedPath)) {
+			return &candidate;
+		}
+	}
+	return nullptr;
+}
+
+bool SameReferenceRegistration(
+	const SkillConfig::ExternalReference& left,
+	const SkillConfig::ExternalReference& right)
+{
+	return left.scope == right.scope &&
+		(left.scope == AISkillScope::User ||
+			NormalizePathKey(left.projectDirectory) == NormalizePathKey(right.projectDirectory));
+}
+
+bool AddExternalReference(
+	SkillConfig& config,
+	const SkillConfig::ExternalReference& requested,
+	bool& outAlreadyRegistered,
+	std::string& outError)
+{
+	outAlreadyRegistered = false;
+	const std::string requestedKey = NormalizePathKey(requested.skillFile);
+	for (const auto& existing : config.externalReferences) {
+		if (NormalizePathKey(existing.skillFile) != requestedKey) {
+			continue;
+		}
+		if (SameReferenceRegistration(existing, requested)) {
+			outAlreadyRegistered = true;
+			return true;
+		}
+		outError = "同一个 SKILL.md 已在其他作用域或项目中引用，不能重复登记";
+		return false;
+	}
+	config.externalReferences.push_back(requested);
+	return true;
+}
+
+bool RemoveExternalReference(
+	SkillConfig& config,
+	const std::filesystem::path& skillFile,
+	AISkillScope scope,
+	const std::optional<std::filesystem::path>& projectDirectory)
+{
+	const std::string key = NormalizePathKey(skillFile);
+	const size_t before = config.externalReferences.size();
+	std::erase_if(config.externalReferences, [&](const SkillConfig::ExternalReference& reference) {
+		if (NormalizePathKey(reference.skillFile) != key || reference.scope != scope) {
+			return false;
+		}
+		return scope == AISkillScope::User || (projectDirectory &&
+			NormalizePathKey(reference.projectDirectory) == NormalizePathKey(*projectDirectory));
+	});
+	return config.externalReferences.size() != before;
+}
+
+bool PathsOverlap(const std::filesystem::path& left, const std::filesystem::path& right)
+{
+	return IsPathInside(left, right) || IsPathInside(right, left);
 }
 
 const AISkillInfo* FindSkillByPath(const std::vector<AISkillInfo>& skills, const std::filesystem::path& skillFile)
@@ -1030,6 +1322,101 @@ bool ParseSkillsShDetailDocument(const std::string& html, json& outDetails)
 		offset = jsonEnd + closing.size();
 	}
 	return false;
+}
+
+bool CreateZipFromDirectory(
+	const std::filesystem::path& source,
+	const std::filesystem::path& archive,
+	std::string& outError)
+{
+	const std::string command =
+		"Add-Type -AssemblyName System.IO.Compression.FileSystem; "
+		"[System.IO.Compression.ZipFile]::CreateFromDirectory(" + PowerShellLiteral(source) + "," +
+		PowerShellLiteral(archive) + ",[System.IO.Compression.CompressionLevel]::Optimal,$false)";
+	const PowerShellRunResult result = PowerShellToolRunner::Run(command, PathToUtf8(source.parent_path()), 60);
+	if (!result.ok) {
+		outError = !result.error.empty() ? result.error : result.stdErr;
+		return false;
+	}
+	return true;
+}
+
+bool CreateTraversalZip(const std::filesystem::path& archive, std::string& outError)
+{
+	const std::string command =
+		"Add-Type -AssemblyName System.IO.Compression; "
+		"$stream=[System.IO.File]::Open(" + PowerShellLiteral(archive) + ",[System.IO.FileMode]::Create); "
+		"try { $zip=[System.IO.Compression.ZipArchive]::new($stream,[System.IO.Compression.ZipArchiveMode]::Create,$true); "
+		"try { $entry=$zip.CreateEntry('../escape.txt'); $writer=[System.IO.StreamWriter]::new($entry.Open()); "
+		"try { $writer.Write('escape') } finally { $writer.Dispose() } } finally { $zip.Dispose() } } "
+		"finally { $stream.Dispose() }";
+	const PowerShellRunResult result = PowerShellToolRunner::Run(command, PathToUtf8(archive.parent_path()), 60);
+	if (!result.ok) {
+		outError = !result.error.empty() ? result.error : result.stdErr;
+		return false;
+	}
+	return true;
+}
+
+void AppendUInt16(std::string& bytes, const unsigned int value)
+{
+	bytes.push_back(static_cast<char>(value & 0xFF));
+	bytes.push_back(static_cast<char>((value >> 8) & 0xFF));
+}
+
+void AppendUInt32(std::string& bytes, const unsigned long value)
+{
+	for (int shift = 0; shift < 32; shift += 8) {
+		bytes.push_back(static_cast<char>((value >> shift) & 0xFF));
+	}
+}
+
+std::string BuildDeclaredOversizeZip()
+{
+	constexpr unsigned long declaredSize = 512UL * 1024 * 1024 + 1;
+	constexpr std::string_view name = "huge.bin";
+	std::string bytes;
+	AppendUInt32(bytes, 0x04034B50);
+	AppendUInt16(bytes, 20);
+	AppendUInt16(bytes, 0);
+	AppendUInt16(bytes, 0);
+	AppendUInt16(bytes, 0);
+	AppendUInt16(bytes, 0);
+	AppendUInt32(bytes, 0);
+	AppendUInt32(bytes, 0);
+	AppendUInt32(bytes, declaredSize);
+	AppendUInt16(bytes, static_cast<unsigned int>(name.size()));
+	AppendUInt16(bytes, 0);
+	bytes.append(name);
+	const unsigned long centralOffset = static_cast<unsigned long>(bytes.size());
+	AppendUInt32(bytes, 0x02014B50);
+	AppendUInt16(bytes, 20);
+	AppendUInt16(bytes, 20);
+	AppendUInt16(bytes, 0);
+	AppendUInt16(bytes, 0);
+	AppendUInt16(bytes, 0);
+	AppendUInt16(bytes, 0);
+	AppendUInt32(bytes, 0);
+	AppendUInt32(bytes, 0);
+	AppendUInt32(bytes, declaredSize);
+	AppendUInt16(bytes, static_cast<unsigned int>(name.size()));
+	AppendUInt16(bytes, 0);
+	AppendUInt16(bytes, 0);
+	AppendUInt16(bytes, 0);
+	AppendUInt16(bytes, 0);
+	AppendUInt32(bytes, 0);
+	AppendUInt32(bytes, 0);
+	bytes.append(name);
+	const unsigned long centralSize = static_cast<unsigned long>(bytes.size()) - centralOffset;
+	AppendUInt32(bytes, 0x06054B50);
+	AppendUInt16(bytes, 0);
+	AppendUInt16(bytes, 0);
+	AppendUInt16(bytes, 1);
+	AppendUInt16(bytes, 1);
+	AppendUInt32(bytes, centralSize);
+	AppendUInt32(bytes, centralOffset);
+	AppendUInt16(bytes, 0);
+	return bytes;
 }
 
 } // namespace
@@ -1284,6 +1671,18 @@ std::string InspectGitHubRepository(const std::string& source)
 	return result.dump();
 }
 
+std::string InspectLocalSource(const std::string& sourcePath)
+{
+	PreparedLocalSkills prepared;
+	std::string error;
+	if (!PrepareLocalSkills(sourcePath, prepared, error)) {
+		return json({{"ok", false}, {"error", error}}).dump();
+	}
+	const json result = LocalInspectionJson(prepared);
+	CleanupPreparedLocalSkills(prepared);
+	return result.dump();
+}
+
 std::string InstallFromGitHub(
 	const std::string& source,
 	AISkillScope scope,
@@ -1347,6 +1746,99 @@ std::string InstallFromGitHub(
 	}).dump();
 }
 
+std::string InstallFromLocal(
+	const std::string& sourcePath,
+	AISkillScope scope,
+	const std::string& selectedCandidatePath,
+	AISkillLocalInstallMode mode,
+	bool allowReplace)
+{
+	const auto requestedProjectRoot = scope == AISkillScope::Repo ? GetProjectSkillsRoot() : std::nullopt;
+	const auto projectDirectory = scope == AISkillScope::Repo ? CurrentProjectDirectory() : std::nullopt;
+	if (scope == AISkillScope::Repo && (!requestedProjectRoot || !projectDirectory)) {
+		return json({{"ok", false}, {"error", "当前没有打开可定位的易语言项目"}}).dump();
+	}
+	PreparedLocalSkills prepared;
+	std::string error;
+	if (!PrepareLocalSkills(sourcePath, prepared, error)) {
+		return json({{"ok", false}, {"error", error}}).dump();
+	}
+	const AISkillInfo* selected = SelectLocalCandidate(prepared, selectedCandidatePath);
+	if (selected == nullptr) {
+		json result = LocalInspectionJson(prepared);
+		result["ok"] = false;
+		result["selection_required"] = true;
+		result["error"] = "本地来源包含多个技能，请选择要添加的技能";
+		CleanupPreparedLocalSkills(prepared);
+		return result.dump();
+	}
+	const std::string selectedName = selected->name;
+	const std::filesystem::path selectedDirectory = selected->directory;
+	const std::filesystem::path selectedSkillFile = selected->skillFile;
+	if (mode == AISkillLocalInstallMode::Reference) {
+		if (prepared.source.kind == AISkillLocalSourceKind::ZipArchive) {
+			CleanupPreparedLocalSkills(prepared);
+			return json({{"ok", false}, {"error", "ZIP 来源只能复制安装，不能引用临时解压路径"}}).dump();
+		}
+		std::lock_guard<std::recursive_mutex> guard(g_skillMutex);
+		const auto globalRoot = GetGlobalSkillsRoot();
+		const auto currentProjectRoot = GetProjectSkillsRoot();
+		if (IsPathInside(selectedSkillFile, globalRoot) ||
+			(currentProjectRoot && IsPathInside(selectedSkillFile, *currentProjectRoot))) {
+			CleanupPreparedLocalSkills(prepared);
+			return json({{"ok", false}, {"error", "该技能已经位于 AutoLinker 管理目录中，无需登记外部引用"}}).dump();
+		}
+		SkillConfig config = LoadConfig();
+		SkillConfig::ExternalReference reference;
+		reference.skillFile = selectedSkillFile;
+		reference.scope = scope;
+		reference.projectDirectory = projectDirectory.value_or(std::filesystem::path());
+		reference.addedAtUnixMs = CurrentUnixMs();
+		bool alreadyRegistered = false;
+		if (!AddExternalReference(config, reference, alreadyRegistered, error)) {
+			CleanupPreparedLocalSkills(prepared);
+			return json({{"ok", false}, {"error", error}}).dump();
+		}
+		if (!alreadyRegistered && !SaveConfig(config, error)) {
+			CleanupPreparedLocalSkills(prepared);
+			return json({{"ok", false}, {"error", "保存技能引用失败：" + error}}).dump();
+		}
+		CleanupPreparedLocalSkills(prepared);
+		return json({
+			{"ok", true},
+			{"message", alreadyRegistered ? "该原路径引用已经存在" : "已添加原路径引用"},
+			{"name", selectedName},
+			{"scope", ScopeText(scope)},
+			{"skill_file", PathToUtf8(selectedSkillFile)},
+			{"external_reference", true},
+			{"already_registered", alreadyRegistered}
+		}).dump();
+	}
+	std::lock_guard<std::recursive_mutex> guard(g_skillMutex);
+	const auto root = scope == AISkillScope::Repo ? *requestedProjectRoot : GetGlobalSkillsRoot();
+	const auto target = root / Utf8ToPath(SanitizeDirectoryName(selectedName));
+	if (PathsOverlap(selectedDirectory, target)) {
+		CleanupPreparedLocalSkills(prepared);
+		return json({{"ok", false}, {"error", "技能来源目录与安装目标重叠，拒绝自复制"}}).dump();
+	}
+	if (!ReplaceDirectoryAtomically(selectedDirectory, target, allowReplace, error, true)) {
+		const bool conflict = std::filesystem::exists(target);
+		CleanupPreparedLocalSkills(prepared);
+		return json({
+			{"ok", false}, {"error", error}, {"conflict", conflict}, {"target", PathToUtf8(target)}
+		}).dump();
+	}
+	CleanupPreparedLocalSkills(prepared);
+	return json({
+		{"ok", true},
+		{"message", "本地技能已复制安装"},
+		{"name", selectedName},
+		{"scope", ScopeText(scope)},
+		{"skill_file", PathToUtf8(target / "SKILL.md")},
+		{"external_reference", false}
+	}).dump();
+}
+
 std::string UpdateInstalledSkill(const std::string& skillFilePath)
 {
 	AISkillInfo skill;
@@ -1371,6 +1863,18 @@ std::string RemoveInstalledSkill(const std::string& skillFilePath)
 	const AISkillInfo* skill = FindSkillByPath(skills, Utf8ToPath(skillFilePath));
 	if (skill == nullptr) {
 		return json({{"ok", false}, {"error", "未找到技能"}}).dump();
+	}
+	if (skill->externalReference) {
+		SkillConfig config = LoadConfig();
+		if (!RemoveExternalReference(config, skill->skillFile, skill->scope, CurrentProjectDirectory())) {
+			return json({{"ok", false}, {"error", "未找到对应的原路径引用配置"}}).dump();
+		}
+		config.disabledPaths.erase(NormalizePathKey(skill->skillFile));
+		std::string saveError;
+		if (!SaveConfig(config, saveError)) {
+			return json({{"ok", false}, {"error", "移除技能引用失败：" + saveError}}).dump();
+		}
+		return json({{"ok", true}, {"message", "技能引用已移除，原路径文件未被删除"}}).dump();
 	}
 	const auto globalRoot = GetGlobalSkillsRoot();
 	const auto projectRoot = GetProjectSkillsRoot();
@@ -1412,31 +1916,209 @@ bool SetSkillEnabled(const std::string& skillFilePath, bool enabled, std::string
 
 std::string BuildSelfTestJson()
 {
-	AISkillInfo valid;
 	const auto tempRoot = GetAutoLinkerCacheDirectoryPath() /
 		std::format(L"SkillSelfTest.{}.{}", GetCurrentProcessId(), g_tempCounter.fetch_add(1));
 	std::error_code ec;
-	std::filesystem::create_directories(tempRoot / "demo", ec);
+	std::filesystem::create_directories(tempRoot, ec);
 	std::string error;
-	const std::string sample = "\xEF\xBB\xBF---\r\nname: demo-skill\r\ndescription: >\r\n  Test skill for parser\r\nmetadata:\r\n  short-description: Demo\r\n---\r\nBody\r\n";
-	const bool writeOk = WriteFileBytesAtomic(tempRoot / "demo" / "SKILL.md", sample, error);
-	const bool parseOk = writeOk && ParseSkillFile(tempRoot / "demo" / "SKILL.md", valid) &&
-		valid.name == "demo-skill" && valid.description == "Test skill for parser" &&
+	auto writeSkill = [&](const std::filesystem::path& directory, const std::string& name) {
+		const std::string contents = "\xEF\xBB\xBF---\r\nname: " + name +
+			"\r\ndescription: >\r\n  Test skill for parser\r\nmetadata:\r\n  short-description: Demo\r\n---\r\nBody\r\n";
+		return WriteFileBytesAtomic(directory / "SKILL.md", contents, error);
+	};
+	const auto sourceRoot = tempRoot / "source";
+	const auto oneDirectory = sourceRoot / "one";
+	const auto twoDirectory = sourceRoot / "nested" / "two";
+	const auto threeDirectory = sourceRoot / "three";
+	const bool skillsWritten = writeSkill(oneDirectory, "one-skill") &&
+		writeSkill(twoDirectory, "two-skill") && writeSkill(threeDirectory, "three-skill");
+	AISkillInfo valid;
+	const bool parseOk = skillsWritten && ParseSkillFile(oneDirectory / "SKILL.md", valid) &&
+		valid.name == "one-skill" && valid.description == "Test skill for parser" &&
 		valid.shortDescription == "Demo";
 	const bool containmentOk = IsPathInside(tempRoot / "demo" / "SKILL.md", tempRoot) &&
 		!IsPathInside(tempRoot.parent_path() / "outside.txt", tempRoot) &&
 		IsPathStrictlyInside(tempRoot / "demo", tempRoot) &&
 		!IsPathStrictlyInside(tempRoot, tempRoot);
+
+	const auto configV1Path = tempRoot / "config-v1.json";
+	const bool configV1Written = WriteFileBytesAtomic(
+		configV1Path, R"({"version":1,"disabled_paths":["Legacy/Skill"]})", error);
+	const SkillConfig configV1 = LoadConfigFromPath(configV1Path);
+	const bool configV1Ok = configV1Written && configV1.disabledPaths.contains("legacy/skill") &&
+		configV1.externalReferences.empty();
+	SkillConfig configV2;
+	configV2.disabledPaths.insert("disabled/example");
+	configV2.externalReferences = {
+		{oneDirectory / "SKILL.md", AISkillScope::User, {}, 100},
+		{twoDirectory / "SKILL.md", AISkillScope::Repo, tempRoot / "project-a", 200}
+	};
+	const auto configV2Path = tempRoot / "config-v2.json";
+	const bool configV2Saved = SaveConfigToPath(configV2, configV2Path, error);
+	const SkillConfig configV2Loaded = LoadConfigFromPath(configV2Path);
+	std::string configV2Text;
+	std::string readError;
+	const bool configV2Read = ReadFileBytes(configV2Path, 2 * 1024 * 1024, configV2Text, readError);
+	const json configV2Json = json::parse(configV2Text, nullptr, false);
+	const bool configV2Ok = configV2Saved && configV2Read && configV2Json.is_object() &&
+		configV2Json.value("version", 0) == 2 && configV2Loaded.disabledPaths.contains("disabled/example") &&
+		configV2Loaded.externalReferences.size() == 2 &&
+		std::ranges::any_of(configV2Loaded.externalReferences, [](const auto& reference) {
+			return reference.scope == AISkillScope::Repo;
+		});
+
+	SkillConfig filterConfig = configV2;
+	filterConfig.externalReferences.push_back(
+		{threeDirectory / "SKILL.md", AISkillScope::Repo, tempRoot / "project-b", 300});
+	std::vector<AISkillInfo> filteredReferences;
+	DiscoverExternalReferences(filterConfig, tempRoot / "project-a", filteredReferences);
+	const bool projectFilterOk = filteredReferences.size() == 2 &&
+		std::ranges::any_of(filteredReferences, [](const AISkillInfo& skill) {
+			return skill.scope == AISkillScope::User && skill.name == "one-skill";
+		}) && std::ranges::any_of(filteredReferences, [](const AISkillInfo& skill) {
+			return skill.scope == AISkillScope::Repo && skill.name == "two-skill";
+		});
+	bool alreadyRegistered = false;
+	std::string duplicateError;
+	const bool idempotentReferenceOk = AddExternalReference(
+		filterConfig, filterConfig.externalReferences.front(), alreadyRegistered, duplicateError) && alreadyRegistered;
+	SkillConfig::ExternalReference conflictingReference = filterConfig.externalReferences.front();
+	conflictingReference.scope = AISkillScope::Repo;
+	conflictingReference.projectDirectory = tempRoot / "project-a";
+	const bool duplicateScopeRejected = !AddExternalReference(
+		filterConfig, conflictingReference, alreadyRegistered, duplicateError);
+	filterConfig.externalReferences.push_back(
+		{tempRoot / "missing" / "SKILL.md", AISkillScope::User, {}, 400});
+	std::vector<AISkillInfo> withMissing;
+	DiscoverExternalReferences(filterConfig, tempRoot / "project-a", withMissing);
+	const bool missingReferenceVisible = std::ranges::any_of(withMissing, [](const AISkillInfo& skill) {
+		return skill.externalReference && !skill.valid && skill.directory.filename() == L"missing";
+	});
+	SkillConfig missingRemovableConfig = filterConfig;
+	const bool missingReferenceRemovable = RemoveExternalReference(
+		missingRemovableConfig, tempRoot / "missing" / "SKILL.md", AISkillScope::User, std::nullopt);
+	SkillConfig removableConfig = filterConfig;
+	const bool sourceExistedBeforeRemove = std::filesystem::exists(oneDirectory / "SKILL.md");
+	const bool unregisterOk = RemoveExternalReference(
+		removableConfig, oneDirectory / "SKILL.md", AISkillScope::User, std::nullopt) &&
+		sourceExistedBeforeRemove && std::filesystem::exists(oneDirectory / "SKILL.md");
+
+	PreparedLocalSkills directoryPrepared;
+	const bool directoryDiscoveryOk = PrepareLocalSkills(PathToUtf8(sourceRoot), directoryPrepared, error) &&
+		directoryPrepared.candidates.size() == 3;
+	CleanupPreparedLocalSkills(directoryPrepared);
+	PreparedLocalSkills directPrepared;
+	const bool directFileDiscoveryOk = PrepareLocalSkills(
+		PathToUtf8(oneDirectory / "SKILL.md"), directPrepared, error) &&
+		directPrepared.candidates.size() == 1 && directPrepared.candidates.front().name == "one-skill";
+	CleanupPreparedLocalSkills(directPrepared);
+
+	const bool sourceMetadataWritten = WriteFileBytesAtomic(
+		oneDirectory / kSourceMetadataFileName, R"({"repository":"fake/source"})", error);
+	const auto copiedTarget = tempRoot / "installed" / "one-skill";
+	const bool localCopyOk = sourceMetadataWritten &&
+		ReplaceDirectoryAtomically(oneDirectory, copiedTarget, false, error, true) &&
+		std::filesystem::exists(copiedTarget / "SKILL.md") &&
+		!std::filesystem::exists(copiedTarget / kSourceMetadataFileName);
+	const bool overlapDetectionOk = PathsOverlap(oneDirectory, oneDirectory / "child") &&
+		!PathsOverlap(oneDirectory, tempRoot / "separate");
+
+	const auto singleZipSource = tempRoot / "zip-single-source";
+	const bool singleZipSkillWritten = writeSkill(singleZipSource / "only", "zip-one");
+	const auto singleZip = tempRoot / "single.zip";
+	const bool singleZipCreated = singleZipSkillWritten && CreateZipFromDirectory(singleZipSource, singleZip, error);
+	PreparedLocalSkills singleZipPrepared;
+	const bool singleZipOk = singleZipCreated && PrepareLocalSkills(PathToUtf8(singleZip), singleZipPrepared, error) &&
+		singleZipPrepared.source.kind == AISkillLocalSourceKind::ZipArchive &&
+		singleZipPrepared.candidates.size() == 1;
+	const auto singleZipStaging = singleZipPrepared.source.stagingRoot;
+	CleanupPreparedLocalSkills(singleZipPrepared);
+	const bool zipCleanupOk = singleZipStaging.empty() || !std::filesystem::exists(singleZipStaging);
+	const auto multiZip = tempRoot / "multi.ZIP";
+	const bool multiZipCreated = CreateZipFromDirectory(sourceRoot, multiZip, error);
+	PreparedLocalSkills multiZipPrepared;
+	const bool multiZipOk = multiZipCreated && PrepareLocalSkills(PathToUtf8(multiZip), multiZipPrepared, error) &&
+		multiZipPrepared.candidates.size() == 3 &&
+		std::ranges::any_of(multiZipPrepared.candidates, [](const AISkillInfo& skill) {
+			return skill.sourcePath == "nested/two";
+		});
+	CleanupPreparedLocalSkills(multiZipPrepared);
+
+	const auto invalidSignatureZip = tempRoot / "invalid.zip";
+	const bool invalidSignatureWritten = WriteBinaryFile(invalidSignatureZip, "not-a-zip", error);
+	AISkillPreparedLocalSource invalidPrepared;
+	std::string invalidSignatureError;
+	const bool invalidSignatureRejected = invalidSignatureWritten && !AISkillLocalPackage::Prepare(
+		invalidSignatureZip, GetAutoLinkerCacheDirectoryPath(), invalidPrepared, invalidSignatureError) &&
+		invalidSignatureError.find("PK") != std::string::npos;
+	const auto compressedOversizeZip = tempRoot / "compressed-oversize.zip";
+	bool compressedOversizeWritten = false;
+	{
+		std::ofstream output(compressedOversizeZip, std::ios::binary | std::ios::trunc);
+		if (output.is_open()) {
+			output.write("PK", 2);
+			output.seekp(static_cast<std::streamoff>(100ULL * 1024 * 1024));
+			output.put('\0');
+			compressedOversizeWritten = output.good();
+		}
+	}
+	AISkillPreparedLocalSource compressedOversizePrepared;
+	std::string compressedOversizeError;
+	const bool compressedOversizeRejected = compressedOversizeWritten && !AISkillLocalPackage::Prepare(
+		compressedOversizeZip, GetAutoLinkerCacheDirectoryPath(), compressedOversizePrepared, compressedOversizeError) &&
+		compressedOversizeError.find("100 MiB") != std::string::npos;
+	const auto declaredOversizeZip = tempRoot / "declared-oversize.zip";
+	const bool declaredOversizeWritten = WriteBinaryFile(declaredOversizeZip, BuildDeclaredOversizeZip(), error);
+	AISkillPreparedLocalSource declaredOversizePrepared;
+	std::string declaredOversizeError;
+	const bool declaredOversizeRejected = declaredOversizeWritten && !AISkillLocalPackage::Prepare(
+		declaredOversizeZip, GetAutoLinkerCacheDirectoryPath(), declaredOversizePrepared, declaredOversizeError) &&
+		declaredOversizeError.find("512 MiB") != std::string::npos;
+	const auto traversalZip = tempRoot / "traversal.zip";
+	const bool traversalZipCreated = CreateTraversalZip(traversalZip, error);
+	AISkillPreparedLocalSource traversalPrepared;
+	std::string traversalError;
+	const bool traversalRejected = traversalZipCreated && !AISkillLocalPackage::Prepare(
+		traversalZip, GetAutoLinkerCacheDirectoryPath(), traversalPrepared, traversalError) &&
+		traversalError.find("穿越") != std::string::npos &&
+		traversalPrepared.stagingRoot.empty();
+
 	json parsedDetails;
 	const bool detailsParserOk = ParseSkillsShDetailDocument(
 		R"(<script type="application/ld+json">{"@type":"SoftwareApplication","name":"demo","description":"Demo details"}</script>)",
 		parsedDetails) && parsedDetails.value("description", std::string()) == "Demo details";
 	std::filesystem::remove_all(tempRoot, ec);
+	const bool configOk = configV1Ok && configV2Ok && projectFilterOk && idempotentReferenceOk &&
+		duplicateScopeRejected && missingReferenceVisible && missingReferenceRemovable && unregisterOk;
+	const bool localSourceOk = directoryDiscoveryOk && directFileDiscoveryOk && localCopyOk && overlapDetectionOk;
+	const bool zipOk = singleZipOk && multiZipOk && invalidSignatureRejected && compressedOversizeRejected &&
+		declaredOversizeRejected && traversalRejected && zipCleanupOk;
 	return json({
 		{"name", "ai-skill-manager-self-test"},
-		{"ok", parseOk && containmentOk && detailsParserOk},
+		{"ok", parseOk && containmentOk && configOk && localSourceOk && zipOk && detailsParserOk},
 		{"frontmatter_parser", parseOk},
 		{"path_containment", containmentOk},
+		{"config_v1_compatibility", configV1Ok},
+		{"config_v2_round_trip", configV2Ok},
+		{"external_project_filter", projectFilterOk},
+		{"external_duplicate_registration", idempotentReferenceOk && duplicateScopeRejected},
+		{"external_missing_removable", missingReferenceVisible && missingReferenceRemovable},
+		{"external_unregister_preserves_source", unregisterOk},
+		{"local_directory_discovery", directoryDiscoveryOk},
+		{"local_skill_file_discovery", directFileDiscoveryOk},
+		{"local_copy_metadata_cleanup", localCopyOk},
+		{"local_copy_overlap_guard", overlapDetectionOk},
+		{"zip_single_and_multi", singleZipOk && multiZipOk},
+		{"zip_signature_and_size_limits", invalidSignatureRejected && compressedOversizeRejected && declaredOversizeRejected},
+		{"zip_invalid_signature", invalidSignatureRejected},
+		{"zip_compressed_size_limit", compressedOversizeRejected},
+		{"zip_declared_size_limit", declaredOversizeRejected},
+		{"zip_declared_size_error", declaredOversizeError},
+		{"zip_traversal_and_cleanup", traversalRejected && zipCleanupOk},
+		{"zip_traversal_created", traversalZipCreated},
+		{"zip_traversal_rejected", traversalRejected},
+		{"zip_traversal_error", traversalError},
+		{"zip_cleanup", zipCleanupOk},
 		{"skills_sh_details_parser", detailsParserOk},
 		{"skills_sh_endpoint", "https://skills.sh/api/search"},
 		{"global_root", PathToUtf8(GetGlobalSkillsRoot())}

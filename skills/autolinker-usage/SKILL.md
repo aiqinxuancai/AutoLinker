@@ -186,8 +186,12 @@ VC2022）。
 - 全局：`{易语言目录}\AutoLinker\Skills\<name>\SKILL.md`
 - 工程级：`<工程目录>\.agents\skills\<name>\SKILL.md`（重名时优先）
 
-可以从 **skills.sh** 页签或公开的 **GitHub** 仓库/tree/blob URL 安装。安装 skill
-不会运行其中的脚本；执行本地命令仍会触发正常的确认流程。只安装可信来源。
+从 **本地添加** 页签添加目录、直接的 `SKILL.md` 或 ZIP。目录和 `SKILL.md` 可复制到
+管理目录，也可引用原路径；ZIP 只复制。父目录或 ZIP 包含多个 skill 时逐个选择，全局和
+工程级作用域均受支持。移除原路径引用不会删除源文件。
+
+也可从 **skills.sh** 页签或公开的 **GitHub** 仓库/tree/blob URL 安装。安装 skill 不会
+运行其中的脚本；执行本地命令仍会触发正常的确认流程。只安装可信来源。
 
 ## 本地 MCP 服务器
 

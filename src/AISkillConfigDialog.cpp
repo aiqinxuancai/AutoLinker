@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 #include <Shellapi.h>
+#include <Shobjidl.h>
 
 #include <algorithm>
 #include <atomic>
@@ -171,6 +172,58 @@ bool Confirm(HWND owner, const std::wstring& text, const wchar_t* title)
 		MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND) == IDYES;
 }
 
+std::string PickLocalSource(HWND owner, bool pickFolder)
+{
+	Microsoft::WRL::ComPtr<IFileOpenDialog> dialog;
+	const HRESULT createResult = CoCreateInstance(
+		CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
+	if (FAILED(createResult) || dialog == nullptr) {
+		return json({{"ok", false}, {"error", std::format("无法创建本地选择窗口：0x{:08X}", static_cast<unsigned int>(createResult))}}).dump();
+	}
+	DWORD options = 0;
+	if (SUCCEEDED(dialog->GetOptions(&options))) {
+		options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
+		if (pickFolder) {
+			options |= FOS_PICKFOLDERS;
+		}
+		else {
+			options |= FOS_FILEMUSTEXIST;
+		}
+		dialog->SetOptions(options);
+	}
+	if (pickFolder) {
+		dialog->SetTitle(L"选择包含 AI 技能的目录");
+	}
+	else {
+		dialog->SetTitle(L"选择 AI 技能 ZIP 文件");
+		const COMDLG_FILTERSPEC filters[] = {
+			{L"ZIP 压缩包 (*.zip)", L"*.zip"},
+			{L"所有文件 (*.*)", L"*.*"}
+		};
+		dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
+		dialog->SetFileTypeIndex(1);
+	}
+	const HRESULT showResult = dialog->Show(owner);
+	if (showResult == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
+		return R"({"ok":false,"cancelled":true})";
+	}
+	if (FAILED(showResult)) {
+		return json({{"ok", false}, {"error", std::format("选择本地来源失败：0x{:08X}", static_cast<unsigned int>(showResult))}}).dump();
+	}
+	Microsoft::WRL::ComPtr<IShellItem> item;
+	if (FAILED(dialog->GetResult(&item)) || item == nullptr) {
+		return R"({"ok":false,"error":"无法读取选择结果"})";
+	}
+	PWSTR rawPath = nullptr;
+	const HRESULT pathResult = item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath);
+	if (FAILED(pathResult) || rawPath == nullptr) {
+		return R"({"ok":false,"error":"无法读取本地来源路径"})";
+	}
+	const std::string path = WideToUtf8(rawPath);
+	CoTaskMemFree(rawPath);
+	return json({{"ok", true}, {"path", path}}).dump();
+}
+
 const AISkillInfo* FindSkill(const std::vector<AISkillInfo>& skills, const std::string& skillFile)
 {
 	const std::wstring requested = Utf8ToWide(skillFile);
@@ -205,6 +258,28 @@ void HandleMessage(HWND window, SkillPageContext* context, const json& payload)
 	if (action == "inspect") {
 		const std::string source = payload.value("source", std::string());
 		RunAsync(window, action, [source]() { return AISkillManager::InspectGitHubRepository(source); });
+		return;
+	}
+	if (action == "browse_local_folder" || action == "browse_local_zip") {
+		SendWebPayload(context, action, PickLocalSource(window, action == "browse_local_folder"));
+		return;
+	}
+	if (action == "inspect_local") {
+		const std::string source = payload.value("source", std::string());
+		RunAsync(window, action, [source]() { return AISkillManager::InspectLocalSource(source); });
+		return;
+	}
+	if (action == "install_local") {
+		const std::string source = payload.value("source", std::string());
+		const std::string selectedPath = payload.value("candidate_path", std::string());
+		const bool replace = payload.value("allow_replace", false);
+		const AISkillScope scope = payload.value("scope", std::string("global")) == "project"
+			? AISkillScope::Repo : AISkillScope::User;
+		const AISkillLocalInstallMode mode = payload.value("mode", std::string("copy")) == "reference"
+			? AISkillLocalInstallMode::Reference : AISkillLocalInstallMode::Copy;
+		RunAsync(window, action, [source, scope, selectedPath, mode, replace]() {
+			return AISkillManager::InstallFromLocal(source, scope, selectedPath, mode, replace);
+		});
 		return;
 	}
 	if (action == "install") {
@@ -243,7 +318,10 @@ void HandleMessage(HWND window, SkillPageContext* context, const json& payload)
 			SendWebPayload(context, action, R"({"ok":false,"error":"未找到技能"})");
 			return;
 		}
-		if (!Confirm(window, L"将删除技能目录及其中全部文件：\r\n\r\n" + skill->directory.wstring(), L"卸载 AI 技能")) {
+		const std::wstring confirmText = skill->externalReference
+			? L"将移除此技能的原路径引用，源目录和文件不会被删除：\r\n\r\n" + skill->directory.wstring()
+			: L"将删除技能目录及其中全部文件：\r\n\r\n" + skill->directory.wstring();
+		if (!Confirm(window, confirmText, skill->externalReference ? L"移除 AI 技能引用" : L"卸载 AI 技能")) {
 			SendWebPayload(context, action, R"({"ok":false,"cancelled":true})");
 			return;
 		}
@@ -378,7 +456,8 @@ LRESULT CALLBACK SkillPageProc(HWND window, UINT message, WPARAM wParam, LPARAM 
 		std::unique_ptr<AsyncResult> result(reinterpret_cast<AsyncResult*>(lParam));
 		if (context != nullptr && result != nullptr) {
 			SendWebPayload(context, result->action, result->jsonText);
-			if (result->action == "install" || result->action == "update" || result->action == "remove") {
+			if (result->action == "install" || result->action == "install_local" ||
+				result->action == "update" || result->action == "remove") {
 				const json parsed = json::parse(result->jsonText, nullptr, false);
 				if (parsed.is_object() && parsed.value("ok", false)) {
 					PostMessageW(
