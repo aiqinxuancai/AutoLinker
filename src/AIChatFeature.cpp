@@ -109,8 +109,6 @@ constexpr int IDC_AI_CHAT_CLEAR_CONFIRM_TEXT = 32558;
 constexpr int IDC_AI_CHAT_CLEAR_CONFIRM_APPLY = 32559;
 constexpr int IDC_AI_CHAT_CLEAR_CONFIRM_CANCEL = 32560;
 constexpr int IDC_AI_CHAT_MCP_GUIDE_LINK = 32561;
-constexpr int IDC_AI_CHAT_CONTEXT_USAGE = 32562;
-constexpr int IDC_AI_CHAT_SESSION_ELAPSED = 32563;
 constexpr int IDC_AI_CHAT_SESSION_STATUS = 32564;
 constexpr int IDC_AI_CHAT_PLAN_MODE = 32565;
 constexpr int IDC_AI_CHAT_AUTO_ALLOW_MODE = 32566;
@@ -119,6 +117,7 @@ constexpr int IDC_AI_CHAT_SKILL_SETTINGS = 32568;
 constexpr int IDC_AI_CHAT_PENDING_INPUTS = 32569;
 constexpr int IDC_AI_CHAT_RECALL_PENDING = 32570;
 constexpr int IDC_AI_CHAT_GOAL_MODE = 32571;
+constexpr int IDC_AI_CHAT_API_PROFILE = 32572;
 
 constexpr UINT_PTR kEditSubclassId = 1;
 constexpr UINT_PTR kActionControlSubclassId = 2;
@@ -139,10 +138,12 @@ constexpr UINT_PTR kActionOpenMcpSettings = 10;
 constexpr UINT_PTR kActionOpenSkillSettings = 11;
 constexpr UINT_PTR kActionRecallPending = 12;
 constexpr UINT_PTR kActionGoalMode = 13;
+constexpr UINT_PTR kActionApiProfile = 14;
 constexpr UINT kGoalMenuPause = 46001;
 constexpr UINT kGoalMenuResume = 46002;
 constexpr UINT kGoalMenuComplete = 46003;
 constexpr UINT kGoalMenuClear = 46004;
+constexpr UINT kApiProfileMenuBase = 46100;
 
 constexpr const char* kChatMcpGuideUrl =
 	"https://github.com/aiqinxuancai/AutoLinker/blob/master/CONFIG.md#%E5%A4%96%E9%83%A8-agent-mcp-%E9%85%8D%E7%BD%AE";
@@ -222,6 +223,7 @@ struct AIChatSessionState {
 	long long activeRequestStartedAtUnixMs = 0;
 	bool requestInFlight = false;
 	unsigned long long activeRequestId = 0;
+	std::string activeRequestProfileIdLocal;
 	AIChatRequestOrigin activeRequestOrigin = AIChatRequestOrigin::User;
 	unsigned long long nextRequestId = 1;
 	std::shared_ptr<AIChatRequestCancellation> cancellation;
@@ -253,12 +255,14 @@ struct ChatDialogContext {
 	HWND hClearConfirmApply = nullptr;
 	HWND hClearConfirmCancel = nullptr;
 	HWND hMcpGuideLink = nullptr;
-	HWND hSessionElapsed = nullptr;
 	HWND hSessionStatus = nullptr;
-	HWND hContextUsage = nullptr;
 	HWND hPlanMode = nullptr;
 	HWND hGoalMode = nullptr;
 	HWND hAutoAllowMode = nullptr;
+	HWND hApiProfile = nullptr;
+	HWND hTooltip = nullptr;
+	std::wstring sessionStatusTooltip;
+	std::wstring apiProfileTooltip;
 	int inputRowsVisible = 1;
 	bool sessionTimingInProgress = false;
 	bool sessionTimingVisible = false;
@@ -320,12 +324,10 @@ struct AIChatDebugRunRequest {
 };
 
 struct ContextUsageSnapshot {
-	bool available = false;
 	bool estimated = true;
 	int percent = 0;
 	long long usedTokens = 0;
 	int contextWindow = 0;
-	std::string labelLocal;
 	std::string titleLocal;
 };
 
@@ -334,8 +336,17 @@ struct SessionTimingSnapshot {
 	bool inProgress = false;
 	long long elapsedMs = 0;
 	std::string elapsedLabelLocal;
-	std::string statusLabelLocal;
-	std::string titleLocal;
+};
+
+struct ApiProfileUiItem {
+	std::string idLocal;
+	std::string nameLocal;
+};
+
+struct ApiProfilesUiSnapshot {
+	std::vector<ApiProfileUiItem> profiles;
+	std::string activeProfileIdLocal;
+	std::string activeProfileNameLocal;
 };
 
 struct GoalUiSnapshot {
@@ -445,6 +456,8 @@ void HandleChatExitPlanModeUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatApprovePlanUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatRevisePlanUi(HWND hWnd, ChatDialogContext* ctx, const std::string& feedback);
 void HandleChatToggleAutoAllowUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatApiProfileMenuUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatSwitchApiProfileUi(HWND hWnd, ChatDialogContext* ctx, const std::string& profileIdLocal);
 void HandleGoalModeUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleGoalCreateUi(HWND hWnd, ChatDialogContext* ctx, const std::string& objectiveLocal);
 void HandleGoalPauseUi(HWND hWnd, ChatDialogContext* ctx);
@@ -1135,6 +1148,18 @@ std::string FormatSessionElapsedLocal(long long elapsedMs)
 	return std::format("{}m {}s", minutes, seconds);
 }
 
+std::string FormatSessionStatusTagLocal(long long elapsedMs)
+{
+	if (elapsedMs < 0) {
+		elapsedMs = 0;
+	}
+	const long long totalSeconds = elapsedMs / 1000;
+	return std::format(
+		"{}m {:02d}s",
+		totalSeconds / 60,
+		totalSeconds % 60);
+}
+
 long long CalculateSessionElapsedMsLocked(const AIChatSessionState& state, long long nowMs)
 {
 	long long elapsedMs = state.accumulatedElapsedMs;
@@ -1171,13 +1196,7 @@ SessionTimingSnapshot BuildSessionTimingSnapshotLocked(const AIChatSessionState&
 		!TrimAsciiCopy(state.streamingAssistantPreview).empty();
 	snapshot.inProgress = state.requestInFlight;
 	snapshot.elapsedMs = CalculateSessionElapsedMsLocked(state, nowMs);
-	snapshot.elapsedLabelLocal = FormatSessionElapsedLocal(snapshot.elapsedMs);
-	snapshot.statusLabelLocal = snapshot.inProgress
-		? LocalFromWide(L"\u5de5\u4f5c\u4e2d")
-		: LocalFromWide(L"\u5df2\u5b8c\u6210");
-	snapshot.titleLocal = snapshot.inProgress
-		? LocalFromWide(L"\u4f1a\u8bdd\u6b63\u5728\u5de5\u4f5c\uff0c\u7528\u65f6\u6301\u7eed\u589e\u52a0")
-		: LocalFromWide(L"\u4f1a\u8bdd\u5df2\u5b8c\u6210\u7684\u5b9e\u9645\u7528\u65f6");
+	snapshot.elapsedLabelLocal = FormatSessionStatusTagLocal(snapshot.elapsedMs);
 	return snapshot;
 }
 
@@ -1186,8 +1205,7 @@ ContextUsageSnapshot BuildContextUsageSnapshotLocked(const AIChatSessionState& s
 	ContextUsageSnapshot snapshot = {};
 	snapshot.contextWindow = state.effectiveContextWindow > 0 ? state.effectiveContextWindow : fallbackContextWindow;
 	if (snapshot.contextWindow <= 0) {
-		snapshot.labelLocal = LocalFromWide(L"\u4e0a\u4e0b\u6587 --");
-		snapshot.titleLocal = LocalFromWide(L"\u6682\u65e0\u53ef\u7528\u7684\u4e0a\u4e0b\u6587\u7a97\u53e3\u914d\u7f6e");
+		snapshot.titleLocal = LocalFromWide(L"\u4e0a\u4e0b\u6587\u7528\u91cf\u4e0d\u53ef\u7528");
 		return snapshot;
 	}
 
@@ -1198,7 +1216,6 @@ ContextUsageSnapshot BuildContextUsageSnapshotLocked(const AIChatSessionState& s
 		}
 	}
 
-	snapshot.available = true;
 	snapshot.estimated = !state.hasLastUsage || state.lastInputTokens <= 0;
 	snapshot.usedTokens = snapshot.estimated
 		? static_cast<long long>(contextChars / 4)
@@ -1210,15 +1227,38 @@ ContextUsageSnapshot BuildContextUsageSnapshotLocked(const AIChatSessionState& s
 	const long long rawPercent =
 		(snapshot.usedTokens * 100 + snapshot.contextWindow / 2) / snapshot.contextWindow;
 	snapshot.percent = static_cast<int>((std::min<long long>)(999, (std::max<long long>)(0, rawPercent)));
-	snapshot.labelLocal = std::format(
-		"{} {}%",
-		LocalFromWide(L"\u4e0a\u4e0b\u6587"),
-		snapshot.percent);
 	snapshot.titleLocal = std::format(
-		"{}{} / {} tokens",
-		snapshot.estimated ? LocalFromWide(L"\u4f30\u7b97\uff1a") : std::string(),
+		"{} {}% {} {}{} / {} tokens",
+		LocalFromWide(L"\u4e0a\u4e0b\u6587"),
+		snapshot.percent,
+		LocalFromWide(L"\u00b7"),
+		snapshot.estimated ? LocalFromWide(L"\u4f30\u7b97 ") : std::string(),
 		snapshot.usedTokens,
 		snapshot.contextWindow);
+	return snapshot;
+}
+
+ApiProfilesUiSnapshot BuildApiProfilesUiSnapshot()
+{
+	ApiProfilesUiSnapshot snapshot;
+	if (g_aiJsonConfig == nullptr) {
+		snapshot.activeProfileNameLocal = LocalFromWide(L"\u672a\u914d\u7f6e");
+		return snapshot;
+	}
+
+	snapshot.activeProfileIdLocal = g_aiJsonConfig->getActiveProfileId();
+	for (const auto& profile : g_aiJsonConfig->getProfilesLocal()) {
+		if (profile.id.empty() || profile.name.empty()) {
+			continue;
+		}
+		snapshot.profiles.push_back({ profile.id, profile.name });
+		if (profile.id == snapshot.activeProfileIdLocal) {
+			snapshot.activeProfileNameLocal = profile.name;
+		}
+	}
+	if (snapshot.activeProfileNameLocal.empty()) {
+		snapshot.activeProfileNameLocal = LocalFromWide(L"\u672a\u914d\u7f6e");
+	}
 	return snapshot;
 }
 
@@ -2652,6 +2692,11 @@ void PostChatAction(HWND hWnd, UINT_PTR action)
 		OutputStringToELog("[AI Chat][UI] click action: toggle_auto_allow");
 		PostMessageA(hParent, WM_AUTOLINKER_AI_CHAT_TOGGLE_AUTO_ALLOW, 0, 0);
 	}
+	else if (action == kActionApiProfile) {
+		OutputStringToELog("[AI Chat][UI] click action: show_api_profiles");
+		auto* ctx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(hParent, GWLP_USERDATA));
+		HandleChatApiProfileMenuUi(hParent, ctx);
+	}
 	else if (action == kActionGoalMode) {
 		auto* ctx = reinterpret_cast<ChatDialogContext*>(GetWindowLongPtrA(hParent, GWLP_USERDATA));
 		HandleGoalModeUi(hParent, ctx);
@@ -2808,20 +2853,17 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 		if (ctx->hAutoAllowMode != nullptr) {
 			ShowWindow(ctx->hAutoAllowMode, SW_HIDE);
 		}
+		if (ctx->hApiProfile != nullptr) {
+			ShowWindow(ctx->hApiProfile, SW_HIDE);
+		}
 		if (ctx->hGoalMode != nullptr) {
 			ShowWindow(ctx->hGoalMode, SW_HIDE);
 		}
 		if (ctx->hMcpGuideLink != nullptr) {
 			ShowWindow(ctx->hMcpGuideLink, SW_HIDE);
 		}
-		if (ctx->hSessionElapsed != nullptr) {
-			ShowWindow(ctx->hSessionElapsed, SW_HIDE);
-		}
 		if (ctx->hSessionStatus != nullptr) {
 			ShowWindow(ctx->hSessionStatus, SW_HIDE);
-		}
-		if (ctx->hContextUsage != nullptr) {
-			ShowWindow(ctx->hContextUsage, SW_HIDE);
 		}
 		if (ctx->hClearConfirmText != nullptr) {
 			ShowWindow(ctx->hClearConfirmText, SW_HIDE);
@@ -2861,9 +2903,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int sendWidth = 92;
 	const int pendingInputHeight = ctx->pendingInputsVisible ? 28 : 0;
 	const int recallPendingWidth = 92;
-	const int sessionElapsedWidth = 86;
-	const int sessionStatusWidth = 54;
-	const int contextUsageWidth = 82;
+	const int sessionStatusWidth = 78;
 	const int clearHistoryWidth = 26;
 	const int restoreHistoryWidth = 26;
 	const int openSettingsWidth = 26;
@@ -2871,6 +2911,7 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const int openSkillSettingsWidth = 46;
 	const int planModeWidth = 68;
 	const int autoAllowModeWidth = 78;
+	const int apiProfileWidth = 75;
 	const int goalModeWidth = 110;
 	const int clearConfirmApplyWidth = ctx->restoreConfirmVisible ? 72 : 52;
 	const int clearConfirmCancelWidth = 52;
@@ -2880,24 +2921,16 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 	const bool showSessionTiming = ctx->sessionTimingVisible;
 
 	const int contentWidth = (std::max)(120, clientWidth - margin * 2);
-	const int sessionTimingReservedWidth = showSessionTiming
-		? (sessionElapsedWidth + gap + sessionStatusWidth + gap)
-		: 0;
 	const int commandWidth = ctx->requestInFlight ? sendWidth * 2 + gap : sendWidth;
 	const int inputWidth = (std::max)(
 		80,
-		contentWidth - sessionTimingReservedWidth - contextUsageWidth - commandWidth - gap * 2);
+		contentWidth - commandWidth - (showSessionTiming ? sessionStatusWidth + gap * 2 : gap));
 	int nextInputSideX = margin + inputWidth + gap;
-	const int sessionElapsedX = nextInputSideX;
-	if (showSessionTiming) {
-		nextInputSideX += sessionElapsedWidth + gap;
-	}
 	const int sessionStatusX = nextInputSideX;
 	if (showSessionTiming) {
 		nextInputSideX += sessionStatusWidth + gap;
 	}
-	const int contextUsageX = nextInputSideX;
-	const int sendX = contextUsageX + contextUsageWidth + gap;
+	const int sendX = nextInputSideX;
 	const int stopX = sendX + sendWidth + gap;
 	const int inputY = clientHeight - bottomMargin - inputHeight;
 	const int pendingInputY = inputY - (ctx->pendingInputsVisible ? gap + pendingInputHeight : 0);
@@ -2968,12 +3001,23 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 			actionRowHeight,
 			TRUE);
 	}
+	if (ctx->hApiProfile != nullptr) {
+		ShowWindow(ctx->hApiProfile, showInlineConfirm ? SW_HIDE : SW_SHOW);
+		MoveWindow(
+			ctx->hApiProfile,
+			margin + clearHistoryWidth + gap + restoreHistoryWidth + gap + openSettingsWidth + gap +
+				openMcpSettingsWidth + gap + openSkillSettingsWidth + gap + planModeWidth + gap + autoAllowModeWidth + gap,
+			actionRowY,
+			apiProfileWidth,
+			actionRowHeight,
+			TRUE);
+	}
 	if (ctx->hGoalMode != nullptr) {
 		ShowWindow(ctx->hGoalMode, showInlineConfirm ? SW_HIDE : SW_SHOW);
 		MoveWindow(
 			ctx->hGoalMode,
 			margin + clearHistoryWidth + gap + restoreHistoryWidth + gap + openSettingsWidth + gap +
-				openMcpSettingsWidth + gap + openSkillSettingsWidth + gap + planModeWidth + gap + autoAllowModeWidth + gap,
+				openMcpSettingsWidth + gap + openSkillSettingsWidth + gap + planModeWidth + gap + autoAllowModeWidth + gap + apiProfileWidth + gap,
 			actionRowY,
 			goalModeWidth,
 			actionRowHeight,
@@ -3035,17 +3079,9 @@ void LayoutAIChatDialog(HWND hWnd, ChatDialogContext* ctx)
 			pendingInputHeight,
 			TRUE);
 	}
-	if (ctx->hSessionElapsed != nullptr) {
-		ShowWindow(ctx->hSessionElapsed, showSessionTiming ? SW_SHOW : SW_HIDE);
-		MoveWindow(ctx->hSessionElapsed, sessionElapsedX, inputY, sessionElapsedWidth, inputHeight, TRUE);
-	}
 	if (ctx->hSessionStatus != nullptr) {
 		ShowWindow(ctx->hSessionStatus, showSessionTiming ? SW_SHOW : SW_HIDE);
 		MoveWindow(ctx->hSessionStatus, sessionStatusX, inputY, sessionStatusWidth, inputHeight, TRUE);
-	}
-	if (ctx->hContextUsage != nullptr) {
-		ShowWindow(ctx->hContextUsage, SW_SHOW);
-		MoveWindow(ctx->hContextUsage, contextUsageX, inputY, contextUsageWidth, inputHeight, TRUE);
 	}
 	if (ctx->hSend != nullptr) {
 		ShowWindow(ctx->hSend, SW_SHOW);
@@ -3115,16 +3151,9 @@ void UpdateWebViewContextUsage(ChatDialogContext* ctx, const ContextUsageSnapsho
 	if (ctx == nullptr) {
 		return;
 	}
-	std::wstring script = L"window.autolinkerSetContextUsage(";
-	script += snapshot.available ? L"true" : L"false";
-	script += L",";
-	script += std::to_wstring(snapshot.percent);
-	script += L",\"";
-	script += EscapeJsDoubleQuotedWide(WideFromLocal(snapshot.labelLocal));
-	script += L"\",\"";
+	std::wstring script = L"window.autolinkerSetContextUsage(\"";
 	script += EscapeJsDoubleQuotedWide(WideFromLocal(snapshot.titleLocal));
-	script += L"\",";
-	script += snapshot.estimated ? L"true" : L"false";
+	script += L"\"";
 	script += L");";
 	ExecuteWebViewScript(ctx, script);
 }
@@ -3136,14 +3165,36 @@ void UpdateWebViewSessionTiming(ChatDialogContext* ctx, const SessionTimingSnaps
 	}
 	std::wstring script = L"window.autolinkerSetSessionTiming(\"";
 	script += EscapeJsDoubleQuotedWide(WideFromLocal(snapshot.elapsedLabelLocal));
-	script += L"\",\"";
-	script += EscapeJsDoubleQuotedWide(WideFromLocal(snapshot.statusLabelLocal));
-	script += L"\",\"";
-	script += EscapeJsDoubleQuotedWide(WideFromLocal(snapshot.titleLocal));
 	script += L"\",";
 	script += snapshot.inProgress ? L"true" : L"false";
 	script += L",";
 	script += snapshot.visible ? L"true" : L"false";
+	script += L");";
+	ExecuteWebViewScript(ctx, script);
+}
+
+void UpdateWebViewApiProfiles(
+	ChatDialogContext* ctx,
+	const ApiProfilesUiSnapshot& snapshot,
+	bool pendingForNextRequest)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	nlohmann::json payload = {
+		{ "activeProfileId", LocalToUtf8Text(snapshot.activeProfileIdLocal) },
+		{ "activeProfileName", LocalToUtf8Text(snapshot.activeProfileNameLocal) },
+		{ "pendingForNextRequest", pendingForNextRequest },
+		{ "profiles", nlohmann::json::array() }
+	};
+	for (const auto& profile : snapshot.profiles) {
+		payload["profiles"].push_back({
+			{ "id", LocalToUtf8Text(profile.idLocal) },
+			{ "name", LocalToUtf8Text(profile.nameLocal) }
+		});
+	}
+	std::wstring script = L"window.autolinkerSetApiProfiles(";
+	script += WideFromUtf8Text(payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 	script += L");";
 	ExecuteWebViewScript(ctx, script);
 }
@@ -3296,13 +3347,20 @@ void UpdateNativeGoalState(
 
 void UpdateNativeContextUsage(ChatDialogContext* ctx, const ContextUsageSnapshot& snapshot)
 {
-	if (ctx == nullptr || ctx->hContextUsage == nullptr) {
+	if (ctx == nullptr) {
 		return;
 	}
-	const std::wstring label = WideFromLocal(snapshot.labelLocal.empty()
-		? LocalFromWide(L"\u4e0a\u4e0b\u6587 --")
-		: snapshot.labelLocal);
-	SetWindowTextW(ctx->hContextUsage, label.c_str());
+	ctx->sessionStatusTooltip = WideFromLocal(snapshot.titleLocal.empty()
+		? LocalFromWide(L"\u4e0a\u4e0b\u6587\u7528\u91cf\u4e0d\u53ef\u7528")
+		: snapshot.titleLocal);
+	if (ctx->hTooltip != nullptr && ctx->hSessionStatus != nullptr) {
+		TOOLINFOW toolInfo = { sizeof(toolInfo) };
+		toolInfo.hwnd = GetParent(ctx->hSessionStatus);
+		toolInfo.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+		toolInfo.uId = reinterpret_cast<UINT_PTR>(ctx->hSessionStatus);
+		toolInfo.lpszText = ctx->sessionStatusTooltip.data();
+		SendMessageW(ctx->hTooltip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&toolInfo));
+	}
 }
 
 void UpdateNativeSessionTiming(ChatDialogContext* ctx, const SessionTimingSnapshot& snapshot)
@@ -3312,11 +3370,32 @@ void UpdateNativeSessionTiming(ChatDialogContext* ctx, const SessionTimingSnapsh
 	}
 	ctx->sessionTimingVisible = snapshot.visible;
 	ctx->sessionTimingInProgress = snapshot.inProgress;
-	if (ctx->hSessionElapsed != nullptr) {
-		SetWindowTextW(ctx->hSessionElapsed, WideFromLocal(snapshot.elapsedLabelLocal).c_str());
-	}
 	if (ctx->hSessionStatus != nullptr) {
-		SetWindowTextW(ctx->hSessionStatus, WideFromLocal(snapshot.statusLabelLocal).c_str());
+		SetWindowTextW(ctx->hSessionStatus, WideFromLocal(snapshot.elapsedLabelLocal).c_str());
+		InvalidateRect(ctx->hSessionStatus, nullptr, TRUE);
+	}
+}
+
+void UpdateNativeApiProfiles(
+	ChatDialogContext* ctx,
+	const ApiProfilesUiSnapshot& snapshot,
+	bool pendingForNextRequest)
+{
+	if (ctx == nullptr || ctx->hApiProfile == nullptr) {
+		return;
+	}
+	SetWindowTextW(ctx->hApiProfile, WideFromLocal(snapshot.activeProfileNameLocal).c_str());
+	ctx->apiProfileTooltip = std::format(
+		L"\u5f53\u524d API\uff1a{}{}",
+		WideFromLocal(snapshot.activeProfileNameLocal),
+		pendingForNextRequest ? L"\uff08\u4e0b\u6b21\u8bf7\u6c42\u751f\u6548\uff09" : L"");
+	if (ctx->hTooltip != nullptr) {
+		TOOLINFOW toolInfo = { sizeof(toolInfo) };
+		toolInfo.hwnd = GetParent(ctx->hApiProfile);
+		toolInfo.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+		toolInfo.uId = reinterpret_cast<UINT_PTR>(ctx->hApiProfile);
+		toolInfo.lpszText = ctx->apiProfileTooltip.data();
+		SendMessageW(ctx->hTooltip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&toolInfo));
 	}
 }
 
@@ -3770,6 +3849,12 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												else if (action == "toggle_auto_allow") {
 													HandleChatToggleAutoAllowUi(hWnd, msgCtx);
 												}
+												else if (action == "switch_api_profile") {
+													const std::string profileId = payload.contains("profileId") && payload["profileId"].is_string()
+														? Utf8ToLocalText(payload["profileId"].get<std::string>())
+														: std::string();
+													HandleChatSwitchApiProfileUi(hWnd, msgCtx, profileId);
+												}
 												else if (action == "create_goal") {
 													const std::string objective = payload.contains("objective") && payload["objective"].is_string()
 														? Utf8ToLocalText(payload["objective"].get<std::string>())
@@ -3852,11 +3937,13 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												}
 												bool inFlight = false;
 												bool stopRequested = false;
+												bool apiProfilePendingForNextRequest = false;
 												PlanModeState planModeState = PlanModeState::Normal;
 												bool autoAllowWrites = false;
 												std::vector<AIChatStoredPendingInput> pendingInputs;
 												ContextUsageSnapshot usageSnapshot;
 												SessionTimingSnapshot timingSnapshot;
+												const ApiProfilesUiSnapshot apiProfilesSnapshot = BuildApiProfilesUiSnapshot();
 												{
 													AISettings settings = {};
 													const int fallbackContextWindow =
@@ -3865,6 +3952,9 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 															: 200000;
 													std::lock_guard<std::mutex> guard(g_session.mutex);
 													inFlight = g_session.requestInFlight;
+													apiProfilePendingForNextRequest = inFlight &&
+														!g_session.activeRequestProfileIdLocal.empty() &&
+														apiProfilesSnapshot.activeProfileIdLocal != g_session.activeRequestProfileIdLocal;
 													stopRequested = IsStopRequestedLocked(g_session);
 													planModeState = g_session.planModeState;
 													autoAllowWrites = g_session.autoAllowWrites;
@@ -3876,6 +3966,7 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												UpdateWebViewPendingInputs(navCtx, pendingInputs);
 												UpdateWebViewContextUsage(navCtx, usageSnapshot);
 												UpdateWebViewSessionTiming(navCtx, timingSnapshot);
+												UpdateWebViewApiProfiles(navCtx, apiProfilesSnapshot, apiProfilePendingForNextRequest);
 												UpdateWebViewUpdateTag(navCtx);
 												UpdateWebViewPlanModeState(navCtx, planModeState);
 												UpdateWebViewAutoAllowModeState(navCtx, autoAllowWrites);
@@ -6391,6 +6482,9 @@ bool StartChatRequest(
 	if (!EnsureChatSettingsReady(settings)) {
 		return false;
 	}
+	const std::string requestProfileIdLocal = g_aiJsonConfig != nullptr
+		? g_aiJsonConfig->getActiveProfileId()
+		: std::string();
 
 	std::unique_ptr<AIChatAsyncRequest> request(new (std::nothrow) AIChatAsyncRequest());
 	if (!request) {
@@ -6471,6 +6565,7 @@ bool StartChatRequest(
 				: L"\u6b63\u5728\u4ee5 full \u6a21\u5f0f\u51c6\u5907\u5de5\u7a0b\u955c\u50cf..."));
 		g_session.requestInFlight = true;
 		g_session.activeRequestId = request->requestId;
+		g_session.activeRequestProfileIdLocal = requestProfileIdLocal;
 		g_session.activeRequestOrigin = origin;
 		g_session.activeRequestStartedAtUnixMs = requestStartedAtMs;
 		g_session.cancellation = request->cancellation;
@@ -7155,6 +7250,84 @@ void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx)
 		else if (ctx->hInput != nullptr) {
 			SetFocus(ctx->hInput);
 		}
+	}
+}
+
+void HandleChatSwitchApiProfileUi(
+	HWND hWnd,
+	ChatDialogContext* ctx,
+	const std::string& profileIdLocal)
+{
+	if (g_aiJsonConfig == nullptr || profileIdLocal.empty()) {
+		return;
+	}
+	if (!g_aiJsonConfig->setActiveProfileId(profileIdLocal)) {
+		OutputStringToELog("[AI Chat][UI] switch_api_profile rejected: profile not found");
+		RefreshChatDialog(hWnd);
+		return;
+	}
+
+	OutputStringToELog("[AI Chat][UI] active API profile switched");
+	RefreshChatDialog(hWnd);
+	if (ctx != nullptr) {
+		if (ctx->webViewDesired) {
+			FocusWebViewInput(ctx);
+		}
+		else if (ctx->hInput != nullptr) {
+			SetFocus(ctx->hInput);
+		}
+	}
+}
+
+void HandleChatApiProfileMenuUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	const ApiProfilesUiSnapshot snapshot = BuildApiProfilesUiSnapshot();
+	if (snapshot.profiles.empty()) {
+		HandleChatOpenSettingsUi(hWnd, ctx);
+		return;
+	}
+
+	HMENU menu = CreatePopupMenu();
+	if (menu == nullptr) {
+		return;
+	}
+	const size_t menuItemCount = (std::min<size_t>)(snapshot.profiles.size(), 1000);
+	for (size_t i = 0; i < menuItemCount; ++i) {
+		const auto& profile = snapshot.profiles[i];
+		UINT flags = MF_STRING;
+		if (profile.idLocal == snapshot.activeProfileIdLocal) {
+			flags |= MF_CHECKED;
+		}
+		AppendMenuW(
+			menu,
+			flags,
+			kApiProfileMenuBase + static_cast<UINT>(i),
+			WideFromLocal(profile.nameLocal).c_str());
+	}
+
+	RECT profileRect = {};
+	if (ctx != nullptr && ctx->hApiProfile != nullptr) {
+		GetWindowRect(ctx->hApiProfile, &profileRect);
+	}
+	else {
+		POINT cursor = {};
+		GetCursorPos(&cursor);
+		profileRect.left = cursor.x;
+		profileRect.top = cursor.y;
+	}
+	const UINT command = TrackPopupMenu(
+		menu,
+		TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RIGHTBUTTON,
+		profileRect.left,
+		profileRect.top,
+		0,
+		hWnd,
+		nullptr);
+	DestroyMenu(menu);
+
+	if (command >= kApiProfileMenuBase && command < kApiProfileMenuBase + menuItemCount) {
+		const size_t selectedIndex = static_cast<size_t>(command - kApiProfileMenuBase);
+		HandleChatSwitchApiProfileUi(hWnd, ctx, snapshot.profiles[selectedIndex].idLocal);
 	}
 }
 
@@ -7923,12 +8096,14 @@ void RefreshChatDialog(HWND hWnd)
 	std::string historyHtml;
 	bool inFlight = false;
 	bool stopRequested = false;
+	bool apiProfilePendingForNextRequest = false;
 	PlanModeState planModeState = PlanModeState::Normal;
 	bool autoAllowWrites = false;
 	std::vector<AIChatStoredPendingInput> pendingInputs;
 	ContextUsageSnapshot usageSnapshot;
 	SessionTimingSnapshot timingSnapshot;
 	GoalUiSnapshot goalSnapshot;
+	const ApiProfilesUiSnapshot apiProfilesSnapshot = BuildApiProfilesUiSnapshot();
 	const int fallbackContextWindow = settingsReady
 		? AIService::ResolveContextWindowTokens(currentSettings)
 		: 200000;
@@ -7947,6 +8122,9 @@ void RefreshChatDialog(HWND hWnd)
 			historyHtml = BuildHistoryHtmlLocked(g_session, settingsReady, missingField);
 		}
 		inFlight = g_session.requestInFlight;
+		apiProfilePendingForNextRequest = inFlight &&
+			!g_session.activeRequestProfileIdLocal.empty() &&
+			apiProfilesSnapshot.activeProfileIdLocal != g_session.activeRequestProfileIdLocal;
 		stopRequested = IsStopRequestedLocked(g_session);
 		planModeState = g_session.planModeState;
 		autoAllowWrites = g_session.autoAllowWrites;
@@ -7998,6 +8176,10 @@ void RefreshChatDialog(HWND hWnd)
 	if (ctx->hAutoAllowMode != nullptr) {
 		EnableWindow(ctx->hAutoAllowMode, TRUE);
 	}
+	if (ctx->hApiProfile != nullptr) {
+		EnableWindow(ctx->hApiProfile, TRUE);
+		ShowWindow(ctx->hApiProfile, nativeComposerVisible ? SW_SHOW : SW_HIDE);
+	}
 	if (ctx->hGoalMode != nullptr) {
 		EnableWindow(ctx->hGoalMode, TRUE);
 	}
@@ -8016,17 +8198,12 @@ void RefreshChatDialog(HWND hWnd)
 		SetWindowTextW(ctx->hStop, stopRequested ? L"\u505c\u6b62\u4e2d..." : L"\u505c\u6b62");
 		ShowWindow(ctx->hStop, (nativeComposerVisible && inFlight) ? SW_SHOW : SW_HIDE);
 	}
-	if (ctx->hContextUsage != nullptr) {
-		ShowWindow(ctx->hContextUsage, nativeComposerVisible ? SW_SHOW : SW_HIDE);
-		UpdateNativeContextUsage(ctx, usageSnapshot);
-	}
-	if (ctx->hSessionElapsed != nullptr) {
-		ShowWindow(ctx->hSessionElapsed, (nativeComposerVisible && timingSnapshot.visible) ? SW_SHOW : SW_HIDE);
-	}
 	if (ctx->hSessionStatus != nullptr) {
 		ShowWindow(ctx->hSessionStatus, (nativeComposerVisible && timingSnapshot.visible) ? SW_SHOW : SW_HIDE);
 	}
+	UpdateNativeContextUsage(ctx, usageSnapshot);
 	UpdateNativeSessionTiming(ctx, timingSnapshot);
+	UpdateNativeApiProfiles(ctx, apiProfilesSnapshot, apiProfilePendingForNextRequest);
 	UpdateNativePendingInputs(ctx, pendingInputs);
 	UpdateNativePlanModeState(ctx, planModeState);
 	UpdateNativeAutoAllowModeState(ctx, autoAllowWrites);
@@ -8034,6 +8211,7 @@ void RefreshChatDialog(HWND hWnd)
 	UpdateWebViewComposerState(ctx, inFlight, stopRequested);
 	UpdateWebViewContextUsage(ctx, usageSnapshot);
 	UpdateWebViewSessionTiming(ctx, timingSnapshot);
+	UpdateWebViewApiProfiles(ctx, apiProfilesSnapshot, apiProfilePendingForNextRequest);
 	UpdateWebViewPlanModeState(ctx, planModeState);
 	UpdateWebViewAutoAllowModeState(ctx, autoAllowWrites);
 	UpdateWebViewGoalState(ctx, goalSnapshot, planModeState);
@@ -8099,18 +8277,15 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		ctx->hAutoAllowMode = CreateWindowW(L"STATIC", L"\u8be2\u95ee",
 			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
 			182, 442, 78, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_AUTO_ALLOW_MODE), nullptr, nullptr);
+		ctx->hApiProfile = CreateWindowW(L"STATIC", L"\u672a\u914d\u7f6e",
+			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE | SS_ENDELLIPSIS,
+			266, 442, 75, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_API_PROFILE), nullptr, nullptr);
 		ctx->hGoalMode = CreateWindowW(L"STATIC", L"目标",
 			WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_CENTER | SS_CENTERIMAGE,
-			266, 442, 110, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_GOAL_MODE), nullptr, nullptr);
-		ctx->hSessionElapsed = CreateWindowW(L"STATIC", L"0m 0s",
+			347, 442, 110, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_GOAL_MODE), nullptr, nullptr);
+		ctx->hSessionStatus = CreateWindowW(L"STATIC", L"0m 00s",
 			WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE,
-			424, 476, 86, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_SESSION_ELAPSED), nullptr, nullptr);
-		ctx->hSessionStatus = CreateWindowW(L"STATIC", L"\u5df2\u5b8c\u6210",
-			WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE,
-			516, 476, 54, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_SESSION_STATUS), nullptr, nullptr);
-		ctx->hContextUsage = CreateWindowW(L"STATIC", L"\u4e0a\u4e0b\u6587 --",
-			WS_CHILD | WS_VISIBLE | SS_CENTER | SS_CENTERIMAGE,
-			586, 476, 82, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CONTEXT_USAGE), nullptr, nullptr);
+			516, 476, 78, 32, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_SESSION_STATUS), nullptr, nullptr);
 		ctx->hClearConfirmText = CreateWindowW(L"STATIC", L"\u5f53\u524d AI \u5bf9\u8bdd\u5c06\u4fdd\u5b58\u5230\u5386\u53f2\uff0c\u5e76\u5f00\u542f\u65b0\u4f1a\u8bdd\u3002",
 			WS_CHILD | SS_LEFT | SS_CENTERIMAGE,
 			14, 442, 540, 26, hWnd, reinterpret_cast<HMENU>(IDC_AI_CHAT_CLEAR_CONFIRM_TEXT), nullptr, nullptr);
@@ -8155,10 +8330,9 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		SetDefaultFont(ctx->hOpenSkillSettings);
 		SetDefaultFont(ctx->hPlanMode);
 		SetDefaultFont(ctx->hAutoAllowMode);
+		SetDefaultFont(ctx->hApiProfile);
 		SetDefaultFont(ctx->hGoalMode);
-		SetDefaultFont(ctx->hSessionElapsed);
 		SetDefaultFont(ctx->hSessionStatus);
-		SetDefaultFont(ctx->hContextUsage);
 		SetDefaultFont(ctx->hClearConfirmText);
 		SetDefaultFont(ctx->hClearConfirmApply);
 		SetDefaultFont(ctx->hClearConfirmCancel);
@@ -8180,9 +8354,42 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		InstallChatActionControl(ctx->hOpenSkillSettings, kActionOpenSkillSettings);
 		InstallChatActionControl(ctx->hPlanMode, kActionPlanMode);
 		InstallChatActionControl(ctx->hAutoAllowMode, kActionAutoAllowMode);
+		InstallChatActionControl(ctx->hApiProfile, kActionApiProfile);
 		InstallChatActionControl(ctx->hGoalMode, kActionGoalMode);
 		InstallChatActionControl(ctx->hClearConfirmApply, kActionClearConfirm);
 		InstallChatActionControl(ctx->hClearConfirmCancel, kActionClearCancel);
+		ctx->sessionStatusTooltip = L"\u4e0a\u4e0b\u6587\u7528\u91cf\u4e0d\u53ef\u7528";
+		ctx->apiProfileTooltip = L"\u5f53\u524d API\uff1a\u672a\u914d\u7f6e";
+		ctx->hTooltip = CreateWindowExW(
+			WS_EX_TOPMOST,
+			TOOLTIPS_CLASSW,
+			nullptr,
+			WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+			CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+			hWnd,
+			nullptr,
+			nullptr,
+			nullptr);
+		if (ctx->hTooltip != nullptr) {
+			SetWindowPos(
+				ctx->hTooltip,
+				HWND_TOPMOST,
+				0, 0, 0, 0,
+				SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+			SendMessageW(ctx->hTooltip, TTM_SETMAXTIPWIDTH, 0, 360);
+			const std::array<std::pair<HWND, std::wstring*>, 2> tooltipTargets = {
+				std::pair{ ctx->hSessionStatus, &ctx->sessionStatusTooltip },
+				std::pair{ ctx->hApiProfile, &ctx->apiProfileTooltip }
+			};
+			for (const auto& [toolHwnd, tooltipText] : tooltipTargets) {
+				TOOLINFOW toolInfo = { sizeof(toolInfo) };
+				toolInfo.hwnd = hWnd;
+				toolInfo.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+				toolInfo.uId = reinterpret_cast<UINT_PTR>(toolHwnd);
+				toolInfo.lpszText = tooltipText->data();
+				SendMessageW(ctx->hTooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&toolInfo));
+			}
+		}
 		ctx->inputRowsVisible = 1;
 		LayoutAIChatDialog(hWnd, ctx);
 		SyncHistoryPresentation(ctx);
@@ -8249,11 +8456,6 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 				SetBkMode(hdc, TRANSPARENT);
 				return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
 			}
-			if (hStatic == ctx->hSessionElapsed) {
-				SetTextColor(hdc, RGB(76, 79, 105));
-				SetBkMode(hdc, TRANSPARENT);
-				return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
-			}
 			if (hStatic == ctx->hPendingInputs) {
 				SetTextColor(hdc, RGB(76, 79, 105));
 				SetBkMode(hdc, TRANSPARENT);
@@ -8271,6 +8473,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 				hStatic != ctx->hOpenSkillSettings &&
 				hStatic != ctx->hPlanMode &&
 				hStatic != ctx->hAutoAllowMode &&
+				hStatic != ctx->hApiProfile &&
 				hStatic != ctx->hGoalMode &&
 				hStatic != ctx->hClearConfirmApply &&
 				hStatic != ctx->hClearConfirmCancel &&

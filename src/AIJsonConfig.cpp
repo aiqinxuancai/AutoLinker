@@ -1,6 +1,7 @@
 ﻿// AIJsonConfig.cpp
 #include "AIJsonConfig.h"
 
+#include <algorithm>
 #include <fstream>
 #include <Windows.h>
 
@@ -216,6 +217,27 @@ std::vector<AIJsonConfigProfileSnapshot> AIJsonConfig::getProfilesLocal() const
 std::string AIJsonConfig::getActiveProfileId() const
 {
     return Utf8ToLocal(m_activeProfileId);
+}
+
+bool AIJsonConfig::setActiveProfileId(const std::string& activeProfileId)
+{
+    const std::string activeProfileIdUtf8 = LocalToUtf8(activeProfileId);
+    const auto it = std::find_if(
+        m_profiles.begin(),
+        m_profiles.end(),
+        [&activeProfileIdUtf8](const StoredProfile& profile) {
+            return profile.id == activeProfileIdUtf8;
+        });
+    if (it == m_profiles.end()) {
+        return false;
+    }
+    if (m_activeProfileId == activeProfileIdUtf8) {
+        return true;
+    }
+
+    m_activeProfileId = activeProfileIdUtf8;
+    save();
+    return true;
 }
 
 bool AIJsonConfig::replaceProfiles(const std::vector<AIJsonConfigProfileSnapshot>& profiles, const std::string& activeProfileId)

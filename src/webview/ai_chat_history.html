@@ -227,17 +227,6 @@ html:not(.autolinker-page-visible) *::after {
 	margin-left: auto;
 }
 
-.session-elapsed {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	height: 20px;
-	color: #4c4f69;
-	font: 11px/1 "Microsoft YaHei UI", "Segoe UI", sans-serif;
-	white-space: nowrap;
-}
-
-.session-elapsed[hidden],
 .session-status[hidden] {
 	display: none;
 }
@@ -252,7 +241,8 @@ html:not(.autolinker-page-visible) *::after {
 	border-radius: 5px;
 	background: #fff;
 	color: #4c4f69;
-	font: 700 10px/1 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	font: 700 10px/1 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 	box-sizing: border-box;
 }
@@ -267,32 +257,6 @@ html:not(.autolinker-page-visible) *::after {
 	border-color: rgba(46, 125, 50, .28);
 	background: rgba(46, 125, 50, .08);
 	color: #2e7d32;
-}
-
-.context-usage {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	min-width: 0;
-	height: 20px;
-	border: 0;
-	border-radius: 0;
-	background: transparent;
-	color: #4c4f69;
-	font: 11px/1 "Microsoft YaHei UI", "Segoe UI", sans-serif;
-	white-space: nowrap;
-	padding: 0;
-	box-sizing: border-box;
-}
-
-.context-usage.warn {
-	color: #8a5a00;
-	background: transparent;
-}
-
-.context-usage.danger {
-	color: #9f1f17;
-	background: transparent;
 }
 
 .input-wrap {
@@ -458,6 +422,7 @@ html:not(.autolinker-page-visible) *::after {
 	display: flex;
 	align-items: center;
 	gap: 8px;
+	min-width: 0;
 }
 
 .mode-chip {
@@ -470,7 +435,7 @@ html:not(.autolinker-page-visible) *::after {
 	border-radius: 5px;
 	background: transparent;
 	color: #9aa0b0;
-	font: 700 10px/1 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	font: 700 10px/1 "Segoe UI", "Microsoft YaHei UI", sans-serif;
 	white-space: nowrap;
 	box-sizing: border-box;
 	cursor: pointer;
@@ -497,6 +462,80 @@ html:not(.autolinker-page-visible) *::after {
 .mode-chip.goal.paused { color: #8a5a00; border-color: rgba(138, 90, 0, .35); background: rgba(138, 90, 0, .08); }
 .mode-chip.goal.blocked { color: #b42318; border-color: rgba(180, 35, 24, .32); background: rgba(180, 35, 24, .08); }
 .mode-chip.goal.complete { color: #2e7d32; border-color: rgba(46, 125, 50, .3); background: rgba(46, 125, 50, .08); }
+
+.api-profile-switcher {
+	position: relative;
+	display: inline-flex;
+	min-width: 0;
+}
+
+.api-profile-chip {
+	max-width: 90px;
+	min-width: 0;
+}
+
+.api-profile-chip .mode-label {
+	display: block;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.api-profile-menu {
+	position: absolute;
+	left: 0;
+	bottom: calc(100% + 6px);
+	z-index: 20;
+	width: max-content;
+	min-width: 140px;
+	max-width: 240px;
+	max-height: 240px;
+	overflow-y: auto;
+	padding: 4px;
+	border: 1px solid #ccd3dd;
+	border-radius: 6px;
+	background: #fff;
+	box-shadow: 0 6px 18px rgba(30, 38, 58, .16);
+	box-sizing: border-box;
+}
+
+.api-profile-menu[hidden] { display: none; }
+
+.api-profile-item {
+	display: grid;
+	grid-template-columns: 16px minmax(0, 1fr);
+	align-items: center;
+	gap: 5px;
+	width: 100%;
+	min-height: 26px;
+	padding: 3px 7px;
+	border: 0;
+	border-radius: 4px;
+	background: transparent;
+	color: #4c4f69;
+	font: 11px/1.35 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	text-align: left;
+	cursor: pointer;
+	box-sizing: border-box;
+}
+
+.api-profile-item:hover,
+.api-profile-item:focus-visible {
+	background: #eef1f6;
+	outline: none;
+}
+
+.api-profile-item-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.api-profile-check {
+	color: #1e66f5;
+	font-weight: 700;
+}
 
 .goal-panel {
 	margin-bottom: 8px;
@@ -1574,8 +1613,6 @@ body,
 	background-clip: text;
 }
 .top-action,
-.session-elapsed,
-.context-usage,
 .btn,
 .msg,
 .role,
@@ -1820,7 +1857,8 @@ body,
 	color: var(--al-plan-text);
 }
 .tool-approval,
-.session-status {
+.session-status,
+.api-profile-menu {
 	background: var(--al-approval-bg);
 	color: var(--al-text);
 	border-color: var(--al-soft-border);
@@ -1855,6 +1893,10 @@ body,
 .session-item:hover {
 	background: var(--al-button-hover-bg);
 }
+.api-profile-item { color: var(--al-text); }
+.api-profile-item:hover,
+.api-profile-item:focus-visible { background: var(--al-button-hover-bg); }
+.api-profile-check { color: var(--al-primary); }
 .session-item-title,
 .page-msgbox-title {
 	color: var(--al-plan-text);
@@ -1862,8 +1904,6 @@ body,
 .page-msgbox-text {
 	color: var(--al-text);
 }
-.context-usage.warn { color: var(--al-warning); }
-.context-usage.danger { color: var(--al-danger); }
 .session-status.done,
 .mode-chip.auto.active { color: var(--al-success); }
 </style>
@@ -1943,11 +1983,15 @@ body,
 					<button id="auto-allow-btn" class="mode-chip auto" type="button" title="&#x9ED8;&#x8BA4;&#x8BE2;&#x95EE;&#x5199;&#x5165;&#x64CD;&#x4F5C;" aria-label="&#x81EA;&#x52A8;&#x5141;&#x8BB8;">
 						<span class="mode-label">&#x81EA;&#x52A8;&#x5141;&#x8BB8;</span>
 					</button>
+					<div class="api-profile-switcher">
+						<button id="api-profile-btn" class="mode-chip api-profile-chip" type="button" title="&#x5F53;&#x524D; API&#xFF1A;&#x672A;&#x914D;&#x7F6E;" aria-label="&#x5207;&#x6362; API &#x914D;&#x7F6E;" aria-haspopup="menu" aria-expanded="false">
+							<span class="mode-label">&#x672A;&#x914D;&#x7F6E;</span>
+						</button>
+						<div id="api-profile-menu" class="api-profile-menu" role="menu" hidden></div>
+					</div>
 				</div>
 				<div class="right-actions">
-					<span id="session-elapsed" class="session-elapsed" title="&#x4F1A;&#x8BDD;&#x5B9E;&#x9645;&#x7528;&#x65F6;" hidden>0m 0s</span>
-					<span id="session-status" class="session-status done" title="&#x4F1A;&#x8BDD;&#x72B6;&#x6001;" hidden>&#x5DF2;&#x5B8C;&#x6210;</span>
-					<span id="context-usage" class="context-usage" title="&#x5F53;&#x524D;&#x4E0A;&#x4E0B;&#x6587;&#x4F7F;&#x7528;&#x7387;">&#x4E0A;&#x4E0B;&#x6587; --</span>
+					<span id="session-status" class="session-status done" title="&#x4E0A;&#x4E0B;&#x6587;&#x7528;&#x91CF;&#x4E0D;&#x53EF;&#x7528;" hidden>0m 00s</span>
 				</div>
 			</div>
 			<div id="restore-confirm" class="page-msgbox" role="alertdialog" aria-labelledby="restore-confirm-title" aria-describedby="restore-confirm-text" hidden>
@@ -1967,6 +2011,8 @@ window.autolinkerPlanState = "normal";
 window.autolinkerAutoAllow = false;
 window.autolinkerGoalState = { status: "none", objective: "", tokensUsed: 0, elapsedLabel: "0m 0s", label: "\u76EE\u6807" };
 window.autolinkerGoalPanelOpen = false;
+window.autolinkerApiProfiles = { activeProfileId: "", activeProfileName: "\u672A\u914D\u7F6E", profiles: [], pendingForNextRequest: false };
+window.autolinkerContextUsageTitle = "\u4E0A\u4E0B\u6587\u7528\u91CF\u4E0D\u53EF\u7528";
 
 window.autolinkerSetPageVisible = function(visible) {
 	document.documentElement.classList.toggle("autolinker-page-visible", !!visible);
@@ -2233,6 +2279,35 @@ window.autolinkerSetAutoAllowMode = function(enabled, label, title) {
 	btn.setAttribute("aria-label", btn.title);
 };
 
+window.autolinkerRenderApiProfiles = function() {
+	var data = window.autolinkerApiProfiles || {};
+	var profiles = Array.isArray(data.profiles) ? data.profiles : [];
+	var activeName = data.activeProfileName || "\u672A\u914D\u7F6E";
+	var btn = document.getElementById("api-profile-btn");
+	var menu = document.getElementById("api-profile-menu");
+	if (btn) {
+		var label = btn.querySelector ? btn.querySelector(".mode-label") : null;
+		if (label) label.textContent = activeName;
+		btn.title = "\u5F53\u524D API\uFF1A" + activeName + (data.pendingForNextRequest ? "\uFF08\u4E0B\u6B21\u8BF7\u6C42\u751F\u6548\uFF09" : "");
+		btn.setAttribute("aria-label", profiles.length ? "\u5207\u6362 API \u914D\u7F6E\uFF0C\u5F53\u524D\u4E3A " + activeName : "\u6253\u5F00 AI \u670D\u52A1\u8BBE\u7F6E");
+	}
+	if (!menu) return;
+	var html = "";
+	for (var i = 0; i < profiles.length; i++) {
+		var profile = profiles[i] || {};
+		var selected = String(profile.id || "") === String(data.activeProfileId || "");
+		html += '<button class="api-profile-item" type="button" role="menuitemradio" aria-checked="' + (selected ? "true" : "false") + '" data-api-profile-id="' + window.autolinkerEscapeHtml(profile.id || "") + '" title="' + window.autolinkerEscapeHtml(profile.name || "") + '">';
+		html += '<span class="api-profile-check">' + (selected ? "\u2713" : "") + '</span>';
+		html += '<span class="api-profile-item-name">' + window.autolinkerEscapeHtml(profile.name || "") + '</span></button>';
+	}
+	menu.innerHTML = html;
+};
+
+window.autolinkerSetApiProfiles = function(payload) {
+	window.autolinkerApiProfiles = payload || { activeProfileId: "", activeProfileName: "\u672A\u914D\u7F6E", profiles: [], pendingForNextRequest: false };
+	window.autolinkerRenderApiProfiles();
+};
+
 window.autolinkerRenderGoalPanel = function() {
 	var panel = document.getElementById("goal-panel");
 	if (!panel) return;
@@ -2372,40 +2447,24 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	}
 };
 
-window.autolinkerSetSessionTiming = function(elapsedLabel, statusLabel, title, working, visible) {
-	var elapsed = document.getElementById("session-elapsed");
+window.autolinkerSetSessionTiming = function(elapsedLabel, working, visible) {
 	var status = document.getElementById("session-status");
 	var isWorking = !!working;
 	var shouldShow = !!visible;
-	if (elapsed) {
-		elapsed.hidden = !shouldShow;
-		elapsed.textContent = elapsedLabel || "0m 0s";
-		elapsed.title = title || "\u4F1A\u8BDD\u5B9E\u9645\u7528\u65F6";
-	}
 	if (status) {
 		status.hidden = !shouldShow;
-		status.textContent = statusLabel || (isWorking ? "\u5DE5\u4F5C\u4E2D" : "\u5DF2\u5B8C\u6210");
-		status.title = title || "\u4F1A\u8BDD\u72B6\u6001";
+		status.textContent = elapsedLabel || "0m 00s";
+		status.title = window.autolinkerContextUsageTitle || "\u4E0A\u4E0B\u6587\u7528\u91CF\u4E0D\u53EF\u7528";
 		status.classList.toggle("working", isWorking);
 		status.classList.toggle("done", !isWorking);
 	}
 };
 
-window.autolinkerSetContextUsage = function(available, percent, label, title, estimated) {
-	var el = document.getElementById("context-usage");
-	if (!el) {
-		return;
-	}
-	var value = Number(percent) || 0;
-	el.textContent = label || "\u4E0A\u4E0B\u6587 --";
-	el.title = title || "\u5F53\u524D\u4E0A\u4E0B\u6587\u4F7F\u7528\u7387";
-	el.classList.toggle("warn", !!available && value >= 70 && value < 90);
-	el.classList.toggle("danger", !!available && value >= 90);
-	if (estimated) {
-		el.setAttribute("data-estimated", "1");
-	} else {
-		el.removeAttribute("data-estimated");
-	}
+window.autolinkerSetContextUsage = function(title) {
+	var el = document.getElementById("session-status");
+	window.autolinkerContextUsageTitle = title || "\u4E0A\u4E0B\u6587\u7528\u91CF\u4E0D\u53EF\u7528";
+	if (!el) return;
+	el.title = window.autolinkerContextUsageTitle;
 };
 
 window.autolinkerResizeChatInput = function(input) {
@@ -2552,6 +2611,8 @@ window.autolinkerHideToolApproval = function() {
 	var skillSettings = document.getElementById("skill-settings-btn");
 	var planMode = document.getElementById("plan-mode-btn");
 	var autoAllow = document.getElementById("auto-allow-btn");
+	var apiProfile = document.getElementById("api-profile-btn");
+	var apiProfileMenu = document.getElementById("api-profile-menu");
 	var goalMode = document.getElementById("goal-mode-btn");
 	var clearConfirm = document.getElementById("clear-confirm");
 	var clearConfirmBtn = document.getElementById("clear-confirm-btn");
@@ -2617,6 +2678,11 @@ window.autolinkerHideToolApproval = function() {
 		}
 	}
 
+	function hideApiProfileMenu() {
+		if (apiProfileMenu) apiProfileMenu.hidden = true;
+		if (apiProfile) apiProfile.setAttribute("aria-expanded", "false");
+	}
+
 	function hideClearConfirm() {
 		if (clearConfirm) {
 			clearConfirm.hidden = true;
@@ -2635,6 +2701,7 @@ window.autolinkerHideToolApproval = function() {
 
 	function showClearConfirm() {
 		hideSessionMenu();
+		hideApiProfileMenu();
 		hideRestoreConfirm();
 		if (!clearConfirm) {
 			return;
@@ -2647,6 +2714,7 @@ window.autolinkerHideToolApproval = function() {
 
 	function showRestoreConfirm() {
 		hideSessionMenu();
+		hideApiProfileMenu();
 		hideClearConfirm();
 		if (!restoreConfirm) {
 			return;
@@ -2682,6 +2750,7 @@ window.autolinkerHideToolApproval = function() {
 	window.autolinkerShowClearConfirm = showClearConfirm;
 	window.autolinkerShowRestoreConfirm = showRestoreConfirm;
 	window.autolinkerShowSessionMenu = function(items) {
+		hideApiProfileMenu();
 		hideClearConfirm();
 		hideRestoreConfirm();
 		recentSessions = Array.isArray(items) ? items : [];
@@ -2805,6 +2874,29 @@ window.autolinkerHideToolApproval = function() {
 			post({ action: "toggle_auto_allow" });
 		});
 	}
+	if (apiProfile) {
+		apiProfile.addEventListener("click", function() {
+			if (!apiProfileMenu) return;
+			hideSessionMenu();
+			hideClearConfirm();
+			hideRestoreConfirm();
+			var profiles = window.autolinkerApiProfiles && Array.isArray(window.autolinkerApiProfiles.profiles)
+				? window.autolinkerApiProfiles.profiles
+				: [];
+			if (!profiles.length) {
+				hideApiProfileMenu();
+				post({ action: "open_settings" });
+				return;
+			}
+			var show = !!apiProfileMenu.hidden;
+			apiProfileMenu.hidden = !show;
+			apiProfile.setAttribute("aria-expanded", show ? "true" : "false");
+			if (show) {
+				var selected = apiProfileMenu.querySelector ? apiProfileMenu.querySelector('[aria-checked="true"]') : null;
+				if (selected) selected.focus();
+			}
+		});
+	}
 	if (goalMode) {
 		goalMode.addEventListener("click", function() {
 			hideSessionMenu();
@@ -2863,6 +2955,14 @@ window.autolinkerHideToolApproval = function() {
 	});
 
 	document.addEventListener("click", function(e) {
+		var apiProfileItem = e.target && e.target.closest ? e.target.closest("[data-api-profile-id]") : null;
+		if (apiProfileItem) {
+			e.preventDefault();
+			var profileId = apiProfileItem.getAttribute("data-api-profile-id") || "";
+			hideApiProfileMenu();
+			if (profileId) post({ action: "switch_api_profile", profileId: profileId });
+			return;
+		}
 		var goalAction = e.target && e.target.closest ? e.target.closest("[data-goal-action]") : null;
 		if (goalAction) {
 			e.preventDefault();
@@ -3036,18 +3136,27 @@ window.autolinkerHideToolApproval = function() {
 	});
 
 	document.addEventListener("mousedown", function(e) {
-		if (!sessionMenu || sessionMenu.hidden) {
-			return;
+		if (sessionMenu && !sessionMenu.hidden) {
+			var insideMenu = sessionMenu.contains(e.target);
+			var onRestoreBtn = restore && restore.contains && restore.contains(e.target);
+			if (!insideMenu && !onRestoreBtn) {
+				hideSessionMenu();
+			}
 		}
-		var insideMenu = sessionMenu.contains(e.target);
-		var onRestoreBtn = restore && restore.contains && restore.contains(e.target);
-		if (!insideMenu && !onRestoreBtn) {
-			hideSessionMenu();
+		if (apiProfileMenu && !apiProfileMenu.hidden) {
+			var insideApiMenu = apiProfileMenu.contains(e.target);
+			var onApiProfile = apiProfile && apiProfile.contains && apiProfile.contains(e.target);
+			if (!insideApiMenu && !onApiProfile) hideApiProfileMenu();
 		}
 	});
 
 	document.addEventListener("keydown", function(e) {
 		if (e.key === "Escape") {
+			if (apiProfileMenu && !apiProfileMenu.hidden) {
+				hideApiProfileMenu();
+				if (apiProfile) apiProfile.focus();
+				return;
+			}
 			var approval = document.getElementById("tool-approval");
 			if (approval && !approval.hidden) {
 				var denyBtn = approval.querySelector ? approval.querySelector("[data-tool-action='deny']") : null;

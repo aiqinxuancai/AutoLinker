@@ -59,6 +59,9 @@ public:
     // 获取当前活动配置组 ID。
     std::string getActiveProfileId() const;
 
+    // 切换当前活动配置组；配置组不存在时保持原状态并返回 false。
+    bool setActiveProfileId(const std::string& activeProfileId);
+
     // 替换全部配置组并设置活动组。
     bool replaceProfiles(const std::vector<AIJsonConfigProfileSnapshot>& profiles, const std::string& activeProfileId);
 
