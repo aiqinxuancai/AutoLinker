@@ -2786,6 +2786,17 @@ std::string BuildEideDeclarationPromptRules()
 		"- 数组维数如 `\"0\"`、`\"10\"`、`\"2,3\"` 是一个完整槽位；引号内的逗号不是结构分隔符。备注前的数组维数槽不得被备注占用，`静态`、参数属性和数组维数也都不能在改写时丢失。\n";
 }
 
+std::string BuildEideEntryPointPromptRules()
+{
+	return
+		"易语言程序入口与编译验证：\n"
+		"- 所有易语言程序都可以使用 `_启动子程序` 作为标准入口，它相当于 C/C++ 的 main。\n"
+		"- 窗口程序是特殊情况：存在名为 `_启动窗口` 的窗口时，IDE 会优先直接载入该窗口并忽略 `_启动子程序`；新建窗口程序默认通常就是这种状态，因此可以没有 `_启动子程序`。\n"
+		"- 如果窗口程序需要显式入口，应先把 `_启动窗口` 重命名为普通窗口名，再增加 `_启动子程序`，并在其中调用 `载入 (窗口名, , 假)` 载入重命名后的窗口。不要在仍存在 `_启动窗口` 时把测试逻辑只写进 `_启动子程序`，否则它不会执行。\n"
+		"- 需要编译验证代码时，可以直接在 `_启动子程序` 中编写验证代码或调用测试子程序，并使用 `标准输出` 把结果输出到控制台。\n"
+		"- ECOM（易模块）工程同样包含 `_启动子程序`。验证模块代码时，应显式编译为静态控制台 EXE（target=win_console_exe、static_compile=true）并通过 `_启动子程序` 执行验证逻辑；target=ecom 仅用于发布生成 .ec 模块。\n";
+}
+
 std::string BuildChatSystemPrompt(const AISettings& settings)
 {
 	std::string projectName;
@@ -2859,6 +2870,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"- 每个 `.子程序` 内部的声明顺序固定为：先连续列出全部 `.参数`，再连续列出全部 `.局部变量`，最后才写执行语句和流程指令。禁止在 `.局部变量` 后继续声明 `.参数`，也禁止在任何执行语句之后补写 `.参数` 或 `.局部变量`。\n"
 			"- 易语言变量声明后会按类型自动获得默认值，不要为了默认初始化而生成冗余赋值：数值型默认为 0，逻辑型默认为 假，文本型默认为空文本，对象/类类型变量也无需写 `obj ＝ 类型名`。例如声明 `.局部变量 obj, DateTimeEx` 后可直接调用 `obj.SetDateTime (...)`。只有需要非默认初值，或在后续流程中明确重置变量时才进行赋值。\n"
 			+ BuildEideDeclarationPromptRules() +
+			BuildEideEntryPointPromptRules() +
 			"- 单引号 ' 开头表示整行注释，不要把注释内容当成代码，也不要改成 // 或 /* */。\n"
 			"- 真 / 假 是布尔值。\n"
 			"- 易语言使用全角的引号来表示字符串，例如 “Hello, World!”。\n"
@@ -2913,6 +2925,7 @@ std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal
 		"每个 `.子程序` 必须先写全部 `.参数`，再写全部 `.局部变量`，最后写执行语句；参数不得出现在局部变量之后，参数和局部变量都不得出现在执行语句之后。\n"
 		"变量声明后由易语言按类型自动初始化；不要生成仅用于默认值的赋值，如对象变量 `obj ＝ 类型名`、数值变量 `n ＝ 0`、文本变量 `text ＝ “”`、逻辑变量 `flag ＝ 假`。仅在需要非默认初值或后续明确重置时赋值。\n"
 		+ BuildEideDeclarationPromptRules()
+		+ BuildEideEntryPointPromptRules()
 		+ BuildEideControlFlowPromptRules();
 
 	if (!minimal) {
@@ -6046,6 +6059,7 @@ std::string AIService::BuildExternalMcpInstructions()
 		"- 控件事件子程序（如 _按钮_Clear_被单击）必须留在所属窗口程序集页内，不要挪到普通程序集或其它窗口/类。子程序名全局解析，无命名空间，新增/重命名需保证全工程唯一。\n"
 		"- 只修改某个子程序时不要重写整个页面，也不要重复输出 .版本 2，保持原有缩进、空行与注释风格。\n"
 		+ BuildEideDeclarationPromptRules()
+		+ BuildEideEntryPointPromptRules()
 		+ BuildEideControlFlowPromptRules();
 
 	// 这些字面量是本地编码（GBK）；MCP 响应以 UTF-8 payload 输出，且 DumpJsonSafe 会把
@@ -6673,7 +6687,8 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 		AISettings promptSettings = {};
 		const std::string controlFlowRules = BuildEideControlFlowPromptRules();
 		const std::string declarationRules = BuildEideDeclarationPromptRules();
-		const auto containsCompleteSharedRules = [&](const std::string& prompt) {
+		const std::string entryPointRules = BuildEideEntryPointPromptRules();
+		const auto containsExistingSharedRules = [&](const std::string& prompt) {
 			return !controlFlowRules.empty() &&
 				!declarationRules.empty() &&
 				prompt.find(controlFlowRules) != std::string::npos &&
@@ -6684,18 +6699,40 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 		const std::string generationPrompt = BuildSystemPrompt(
 			AITaskKind::OptimizeFunction,
 			promptSettings);
-		const bool chatPromptOk = containsCompleteSharedRules(chatPrompt);
-		const bool geminiPromptOk = containsCompleteSharedRules(geminiPrompt);
-		const bool generationPromptOk = containsCompleteSharedRules(generationPrompt);
-		const bool ok = chatPromptOk && geminiPromptOk && generationPromptOk;
+		const std::string externalMcpPrompt = BuildExternalMcpInstructions();
+		const bool chatPromptOk = containsExistingSharedRules(chatPrompt);
+		const bool geminiPromptOk = containsExistingSharedRules(geminiPrompt);
+		const bool generationPromptOk = containsExistingSharedRules(generationPrompt);
+		const bool existingRulesOk = chatPromptOk && geminiPromptOk && generationPromptOk;
 		checks.push_back({
 			{"name", "eide_control_flow_system_prompts"},
-			{"ok", ok},
+			{"ok", existingRulesOk},
 			{"chat_prompt", chatPromptOk},
 			{"gemini_prompt", geminiPromptOk},
 			{"generation_prompt", generationPromptOk}
 		});
-		allOk = allOk && ok;
+		allOk = allOk && existingRulesOk;
+
+		const bool chatEntryPointOk =
+			!entryPointRules.empty() && chatPrompt.find(entryPointRules) != std::string::npos;
+		const bool geminiEntryPointOk =
+			!entryPointRules.empty() && geminiPrompt.find(entryPointRules) != std::string::npos;
+		const bool generationEntryPointOk =
+			!entryPointRules.empty() && generationPrompt.find(entryPointRules) != std::string::npos;
+		const bool externalMcpPromptOk =
+			!entryPointRules.empty() &&
+			externalMcpPrompt.find(LocalToUtf8(entryPointRules)) != std::string::npos;
+		const bool entryPointRulesOk =
+			chatEntryPointOk && geminiEntryPointOk && generationEntryPointOk && externalMcpPromptOk;
+		checks.push_back({
+			{"name", "eide_entry_point_system_prompts"},
+			{"ok", entryPointRulesOk},
+			{"chat_prompt", chatEntryPointOk},
+			{"gemini_prompt", geminiEntryPointOk},
+			{"generation_prompt", generationEntryPointOk},
+			{"external_mcp_prompt", externalMcpPromptOk}
+		});
+		allOk = allOk && entryPointRulesOk;
 	}
 
 	return nlohmann::json({
@@ -6756,6 +6793,7 @@ std::string AIService::BuildSystemPrompt(AITaskKind kind, const AISettings& sett
 		"8) 每个 `.子程序` 必须先声明全部 `.参数`，再声明全部 `.局部变量`，最后写执行语句；不得在局部变量之后声明参数，也不得在执行语句之后声明参数或局部变量。\n"
 		"9) 变量声明后会按类型自动初始化，不要生成冗余默认赋值，例如对象变量 `obj ＝ 类型名`、数值变量 `n ＝ 0`、文本变量 `text ＝ “”`、逻辑变量 `flag ＝ 假`；仅在需要非默认初值或后续重置时赋值。\n\n"
 		+ BuildEideDeclarationPromptRules()
+		+ BuildEideEntryPointPromptRules()
 		+ BuildEideControlFlowPromptRules() + "\n"
 		"易语言格式示例：\n"
 		".版本 2\n"
