@@ -66,10 +66,18 @@ std::string ToLowerAscii(std::string text)
 	return text;
 }
 
-bool EndsWithInsensitive(const std::string& text, const std::string& suffix)
+bool EqualsInsensitive(const std::string& left, const std::string& right)
 {
-	return text.size() >= suffix.size() &&
-		ToLowerAscii(text.substr(text.size() - suffix.size())) == ToLowerAscii(suffix);
+	return ToLowerAscii(left) == ToLowerAscii(right);
+}
+
+std::string BuildUpdateAssetName(const std::string& releaseTag)
+{
+	std::string versionLabel = releaseTag;
+	if (!versionLabel.empty() && (versionLabel.front() == 'v' || versionLabel.front() == 'V')) {
+		versionLabel.erase(versionLabel.begin());
+	}
+	return "AutoLinker-" + versionLabel + ".zip";
 }
 
 std::string BuildAcceleratedGitHubUrl(const std::string& url)
@@ -228,14 +236,19 @@ bool AutoLinkerReleaseClient::FetchLatest(AutoLinkerReleaseInfo& outInfo, std::s
 
 	AutoLinkerReleaseInfo info;
 	info.tag = release.value("tag_name", std::string());
+	if (info.tag.empty()) {
+		outError = "GitHub 返回的 AutoLinker Release 缺少版本 Tag";
+		return false;
+	}
+
+	const std::string expectedAssetName = BuildUpdateAssetName(info.tag);
 	const json assets = release.value("assets", json::array());
 	for (const auto& asset : assets) {
 		if (!asset.is_object()) {
 			continue;
 		}
 		const std::string name = asset.value("name", std::string());
-		const std::string lowered = ToLowerAscii(name);
-		if (lowered.rfind("autolinker-", 0) != 0 || !EndsWithInsensitive(name, ".zip")) {
+		if (!EqualsInsensitive(name, expectedAssetName)) {
 			continue;
 		}
 		info.asset.name = name;
@@ -245,8 +258,9 @@ bool AutoLinkerReleaseClient::FetchLatest(AutoLinkerReleaseInfo& outInfo, std::s
 		break;
 	}
 
-	if (info.tag.empty() || info.asset.name.empty() || info.asset.downloadUrl.empty()) {
-		outError = "最新 Release 中未找到 AutoLinker-*.zip 更新包";
+	if (info.asset.name.empty() || info.asset.downloadUrl.empty()) {
+		outError = "最新 Release 中未找到指定更新包 " + expectedAssetName +
+			"（PDB/符号包不会用于自动更新）";
 		return false;
 	}
 

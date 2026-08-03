@@ -93,7 +93,8 @@
 ### 🇨🇳 DeepSeek（性价比高）
 - **简介：** 国内领先，价格优势明显
 - **官网：** https://platform.deepseek.com
-- **预设模型：** deepseek-v4-flash / pro / chat / reasoner
+- **预设模型：** `deepseek-v4-flash` / `deepseek-v4-pro`
+- **版本说明：** `deepseek-v4-flash` 当前对应 DeepSeek-V4-Flash-0731；思考等级默认 `high`，并支持 `low` / `high` / `max`
 - **地址：** `https://api.deepseek.com`
 
 ### 🤖 智谱 GLM（中文场景）

@@ -52,18 +52,24 @@ jobs:
 
         $isPrerelease = $versionLabel -match '(?i)(?:^|[-.])(alpha|beta|pre|preview|rc)(?:[.-]?\d*)?(?:$|[-.])'
         $makeLatest = if ($isPrerelease) { 'false' } else { 'legacy' }
+        $updateAssetName = "AutoLinker-$versionLabel.zip"
+        $symbolsAssetName = "AutoLinkerSymbols-$versionLabel.pdb.zip"
 
         Add-Content -Path $env:GITHUB_OUTPUT -Value "raw_tag=$rawTag"
         Add-Content -Path $env:GITHUB_OUTPUT -Value "version_label=$versionLabel"
         Add-Content -Path $env:GITHUB_OUTPUT -Value "version_core=$coreVersion"
         Add-Content -Path $env:GITHUB_OUTPUT -Value "prerelease=$($isPrerelease.ToString().ToLowerInvariant())"
         Add-Content -Path $env:GITHUB_OUTPUT -Value "make_latest=$makeLatest"
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "update_asset_name=$updateAssetName"
+        Add-Content -Path $env:GITHUB_OUTPUT -Value "symbols_asset_name=$symbolsAssetName"
 
         Write-Output "raw_tag=$rawTag"
         Write-Output "version_label=$versionLabel"
         Write-Output "version_core=$coreVersion"
         Write-Output "prerelease=$($isPrerelease.ToString().ToLowerInvariant())"
         Write-Output "make_latest=$makeLatest"
+        Write-Output "update_asset_name=$updateAssetName"
+        Write-Output "symbols_asset_name=$symbolsAssetName"
 
     - name: Set Version
       shell: pwsh
@@ -100,15 +106,20 @@ jobs:
       run: |
         $fnePath = "bin/${{env.BUILD_CONFIGURATION}}/AutoLinker.fne"
         $pdbPath = "bin/${{env.BUILD_CONFIGURATION}}/AutoLinker.pdb"
+        $updateAssetName = "${{steps.release_meta.outputs.update_asset_name}}"
+        $symbolsAssetName = "${{steps.release_meta.outputs.symbols_asset_name}}"
         if (-not (Test-Path -LiteralPath $fnePath -PathType Leaf)) {
           throw "Release binary not found: $fnePath"
         }
         if (-not (Test-Path -LiteralPath $pdbPath -PathType Leaf)) {
           throw "Release PDB not found: $pdbPath"
         }
+        if ($symbolsAssetName.StartsWith("AutoLinker-", [System.StringComparison]::OrdinalIgnoreCase)) {
+          throw "The symbols asset name must not match the legacy AutoLinker-*.zip update rule: $symbolsAssetName"
+        }
 
-        Compress-Archive -LiteralPath $fnePath -DestinationPath "AutoLinker-${{steps.release_meta.outputs.version_label}}.zip"
-        Compress-Archive -LiteralPath $pdbPath -DestinationPath "AutoLinker-${{steps.release_meta.outputs.version_label}}.pdb.zip"
+        Compress-Archive -LiteralPath $fnePath -DestinationPath $updateAssetName
+        Compress-Archive -LiteralPath $pdbPath -DestinationPath $symbolsAssetName
 
     - name: Generate AI Release Notes
       shell: pwsh
@@ -127,7 +138,7 @@ jobs:
       with:
         tag: ${{ steps.release_meta.outputs.raw_tag }}
         name: AutoLinker ${{ steps.release_meta.outputs.version_label }}
-        artifacts: "AutoLinker-${{steps.release_meta.outputs.version_label}}.zip,AutoLinker-${{steps.release_meta.outputs.version_label}}.pdb.zip"
+        artifacts: "${{steps.release_meta.outputs.update_asset_name}},${{steps.release_meta.outputs.symbols_asset_name}}"
         bodyFile: release_notes.md
         prerelease: ${{ steps.release_meta.outputs.prerelease }}
         makeLatest: ${{ steps.release_meta.outputs.make_latest }}
@@ -165,7 +176,7 @@ jobs:
         tag: ${{ steps.release_meta.outputs.raw_tag }}
         commit: ${{ steps.mirror_repo_meta.outputs.default_branch }}
         name: AutoLinker ${{ steps.release_meta.outputs.version_label }}
-        artifacts: "AutoLinker-${{steps.release_meta.outputs.version_label}}.zip,AutoLinker-${{steps.release_meta.outputs.version_label}}.pdb.zip"
+        artifacts: "${{steps.release_meta.outputs.update_asset_name}},${{steps.release_meta.outputs.symbols_asset_name}}"
         bodyFile: release_notes.md
         prerelease: ${{ steps.release_meta.outputs.prerelease }}
         makeLatest: ${{ steps.release_meta.outputs.make_latest }}

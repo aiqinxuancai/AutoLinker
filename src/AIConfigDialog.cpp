@@ -962,7 +962,7 @@ constexpr const char* kGeminiPresetModels[] = { "gemini-3.1-pro-preview", "gemin
 
 constexpr AIConfigPresetSite kAIConfigPresetSites[] = {
 	{ L"Right",            "https://www.rightapi.ai/codex",                    AI_PRESET_MODELS(kRightPresetModels),        AIProtocolType::OpenAI },
-	{ L"Deepseek",         "https://api.deepseek.com",                          AI_PRESET_MODELS(kDeepseekPresetModels),     AIProtocolType::OpenAI },
+	{ L"Deepseek",         "https://api.deepseek.com",                          AI_PRESET_MODELS(kDeepseekPresetModels),     AIProtocolType::OpenAI, AIThinkingLevel::High },
 	{ L"\u667A\u8C31",     "https://open.bigmodel.cn/api/paas/v4",              AI_PRESET_MODELS(kZhipuPresetModels),        AIProtocolType::OpenAI },
 	{ L"\u5343\u95EE",     "https://dashscope.aliyuncs.com/compatible-mode/v1", AI_PRESET_MODELS(kQwenPresetModels),         AIProtocolType::OpenAI },
 	{ L"Kimi",             "https://api.moonshot.cn/v1",                        AI_PRESET_MODELS(kKimiPresetModels),         AIProtocolType::OpenAI, AIThinkingLevel::Max },

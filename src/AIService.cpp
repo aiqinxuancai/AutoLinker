@@ -916,6 +916,11 @@ bool IsDeepSeekCompatibleSettings(const AISettings& settings)
 		ContainsAsciiInsensitive(settings.model, "deepseek");
 }
 
+bool IsDeepSeekV4ProModel(std::string_view model)
+{
+	return ContainsAsciiInsensitive(model, "deepseek-v4-pro");
+}
+
 bool IsGemini25Model(std::string_view model)
 {
 	return ContainsAsciiInsensitive(model, "gemini-2.5");
@@ -1015,6 +1020,26 @@ std::string GetOpenAIReasoningEffort(AIThinkingLevel level)
 		return "max";
 	case AIThinkingLevel::Ultra:
 		// 与 Codex CLI 一致：Ultra 在请求层使用 max，额外能力来自客户端多代理调度。
+		return "max";
+	case AIThinkingLevel::Off:
+	default:
+		return "none";
+	}
+}
+
+std::string GetDeepSeekReasoningEffort(const AISettings& settings)
+{
+	switch (settings.thinkingLevel) {
+	case AIThinkingLevel::Low:
+		return "low";
+	case AIThinkingLevel::Medium:
+	case AIThinkingLevel::High:
+		return "high";
+	case AIThinkingLevel::XHigh:
+		// V4-Pro 暂时将 xhigh 映射为 max；V4-Flash 将其映射为 high。
+		return IsDeepSeekV4ProModel(settings.model) ? "max" : "high";
+	case AIThinkingLevel::Max:
+	case AIThinkingLevel::Ultra:
 		return "max";
 	case AIThinkingLevel::Off:
 	default:
@@ -1168,7 +1193,7 @@ void ApplyThinkingConfigToOpenAIChatRequest(nlohmann::json& requestBody, const A
 		requestBody["thinking"] = {
 			{"type", "enabled"}
 		};
-		requestBody["reasoning_effort"] = settings.thinkingLevel >= AIThinkingLevel::High ? "max" : "high";
+		requestBody["reasoning_effort"] = GetDeepSeekReasoningEffort(settings);
 		return;
 	}
 	if (IsGrok45Model(settings.model)) {
@@ -1184,6 +1209,12 @@ void ApplyThinkingConfigToOpenAIChatRequest(nlohmann::json& requestBody, const A
 
 void ApplyThinkingConfigToOpenAIResponsesRequest(nlohmann::json& requestBody, const AISettings& settings)
 {
+	if (IsDeepSeekCompatibleSettings(settings)) {
+		requestBody["reasoning"] = {
+			{"effort", GetDeepSeekReasoningEffort(settings)}
+		};
+		return;
+	}
 	if (IsGrok45Model(settings.model)) {
 		const std::string effort = GetGrok45ReasoningEffort(settings.thinkingLevel);
 		if (!effort.empty()) {
@@ -6113,6 +6144,64 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"name", "gpt_5_6_context_window_presets"},
 			{"ok", ok},
 			{"context_window", 1050000}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		struct DeepSeekEffortCase {
+			AIThinkingLevel level;
+			const char* flashEffort;
+			const char* proEffort;
+		};
+		const std::array<DeepSeekEffortCase, 6> efforts = {{
+			{ AIThinkingLevel::Low, "low", "low" },
+			{ AIThinkingLevel::Medium, "high", "high" },
+			{ AIThinkingLevel::High, "high", "high" },
+			{ AIThinkingLevel::XHigh, "high", "max" },
+			{ AIThinkingLevel::Max, "max", "max" },
+			{ AIThinkingLevel::Ultra, "max", "max" },
+		}};
+		bool effortMappingOk = true;
+		for (const auto& effort : efforts) {
+			for (const auto& [model, expected] : std::array<std::pair<const char*, const char*>, 2> {{
+				{"deepseek-v4-flash", effort.flashEffort},
+				{"deepseek-v4-pro", effort.proEffort}
+			}}) {
+				AISettings settings = {};
+				settings.model = model;
+				settings.thinkingLevel = effort.level;
+				nlohmann::json chatRequest;
+				ApplyThinkingConfigToOpenAIChatRequest(chatRequest, settings);
+				nlohmann::json responsesRequest;
+				ApplyThinkingConfigToOpenAIResponsesRequest(responsesRequest, settings);
+				effortMappingOk = effortMappingOk &&
+					chatRequest["thinking"].value("type", std::string()) == "enabled" &&
+					chatRequest.value("reasoning_effort", std::string()) == expected &&
+					responsesRequest["reasoning"].value("effort", std::string()) == expected &&
+					!responsesRequest.contains("include");
+			}
+		}
+
+		AISettings offSettings = {};
+		offSettings.model = "deepseek-v4-flash";
+		offSettings.thinkingLevel = AIThinkingLevel::Off;
+		nlohmann::json offChatRequest;
+		ApplyThinkingConfigToOpenAIChatRequest(offChatRequest, offSettings);
+		nlohmann::json offResponsesRequest;
+		ApplyThinkingConfigToOpenAIResponsesRequest(offResponsesRequest, offSettings);
+		const bool offMappingOk =
+			offChatRequest["thinking"].value("type", std::string()) == "disabled" &&
+			!offChatRequest.contains("reasoning_effort") &&
+			offResponsesRequest["reasoning"].value("effort", std::string()) == "none" &&
+			!offResponsesRequest.contains("include");
+		const bool ok = effortMappingOk && offMappingOk;
+		checks.push_back({
+			{"name", "deepseek_v4_reasoning_effort_mapping"},
+			{"ok", ok},
+			{"flash_low_high_max_supported", effortMappingOk},
+			{"off_disables_thinking", offMappingOk},
+			{"responses_omits_openai_encrypted_content", effortMappingOk && offMappingOk}
 		});
 		allOk = allOk && ok;
 	}
