@@ -32,6 +32,9 @@
       <Filter>detours</Filter>
     </ClCompile>
     <ClCompile Include="src\AutoLinker.cpp" />
+    <ClCompile Include="src\ArchiveExtractor.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\AutoLinkerReleaseClient.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -295,6 +298,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\AutoLinkerVersion.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ArchiveExtractor.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\AIConfigDialog.h">

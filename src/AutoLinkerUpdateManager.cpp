@@ -16,9 +16,9 @@
 #include "AutoLinkerUpdateInstaller.h"
 #include "AutoLinkerVersion.h"
 #include "AIChatFeature.h"
+#include "ArchiveExtractor.h"
 #include "Global.h"
 #include "PathHelper.h"
-#include "PowerShellToolRunner.h"
 #include "Version.h"
 
 namespace AutoLinkerUpdateManager {
@@ -190,44 +190,34 @@ bool WriteBinaryFile(const std::filesystem::path& path, const std::string& bytes
 	return true;
 }
 
-std::string EscapePowerShellSingleQuoted(const std::string& text)
-{
-	std::string escaped;
-	escaped.reserve(text.size() + 8);
-	for (const char ch : text) {
-		escaped.push_back(ch);
-		if (ch == '\'') {
-			escaped.push_back('\'');
-		}
-	}
-	return escaped;
-}
-
-std::string PowerShellLiteral(const std::filesystem::path& path)
-{
-	return "'" + EscapePowerShellSingleQuoted(Utf8FromWide(path.wstring())) + "'";
-}
-
 bool ExtractArchive(
 	const std::filesystem::path& archivePath,
 	const std::filesystem::path& destination,
 	std::string& outError)
 {
-	const std::string command =
-		"Expand-Archive -LiteralPath " + PowerShellLiteral(archivePath) +
-		" -DestinationPath " + PowerShellLiteral(destination) + " -Force";
-	const PowerShellRunResult result = PowerShellToolRunner::Run(
-		command,
-		Utf8FromWide(destination.parent_path().wstring()),
-		120);
-	if (!result.ok || result.exitCode != 0) {
-		outError = result.error.empty() ? result.stdErr : result.error;
-		if (outError.empty()) {
-			outError = "Expand-Archive exitCode=" + std::to_string(result.exitCode);
-		}
+	ArchiveExtractor::ExtractionResult result;
+	if (!ArchiveExtractor::ExtractZip(
+			archivePath,
+			destination,
+			destination.parent_path(),
+			result,
+			120)) {
+		outError = result.error;
 		return false;
 	}
+	OutputUpdateLog(std::format(
+		"[AutoLinker更新] 解压完成，extract_method={}",
+		ArchiveExtractor::MethodName(result.method)));
+	if (result.method == ArchiveExtractor::ExtractionMethod::Tar && !result.primaryError.empty()) {
+		OutputUpdateLog("[AutoLinker更新] PowerShell 解压失败，已使用 tar 后备：" + result.primaryError);
+	}
 	return true;
+}
+
+std::string BuildManualAutoLinkerUpdateGuidance(const std::filesystem::path& targetFne)
+{
+	return "\r\n\r\n如果自动解压或退出后替换失败，请关闭易语言 IDE，从 https://github.com/aiqinxuancai/AutoLinker/releases 或相关交流群群共享获取 AutoLinker.fne，手动替换：" +
+		Utf8FromWide(targetFne.wstring());
 }
 
 std::filesystem::path FindExtractedFne(const std::filesystem::path& root)
@@ -382,9 +372,10 @@ void UpdateWorker(void*)
 		std::string archiveBytes;
 		if (!AutoLinkerReleaseClient::DownloadArchive(release.asset, archiveBytes, error) ||
 			!WriteBinaryFile(archivePath, archiveBytes, error)) {
-			PublishStatus(ComponentUpdateState::Error, "下载更新包失败：" + error, release.tag);
-			OutputUpdateLog("[AutoLinker更新] 下载失败：" + error);
-			ShowError("下载 AutoLinker 更新包失败：\r\n" + error);
+			const std::string failure = "下载更新包失败：" + error + BuildManualAutoLinkerUpdateGuidance(targetFne);
+			PublishStatus(ComponentUpdateState::Error, failure, release.tag);
+			OutputUpdateLog("[AutoLinker更新] " + failure);
+			ShowError(failure);
 			CleanupStaging(stagingRoot);
 			return;
 		}
@@ -393,6 +384,7 @@ void UpdateWorker(void*)
 		archiveBytes.shrink_to_fit();
 
 		if (!ExtractArchive(archivePath, extractDirectory, error)) {
+			error += BuildManualAutoLinkerUpdateGuidance(targetFne);
 			PublishStatus(ComponentUpdateState::Error, "解压更新包失败：" + error, release.tag);
 			ShowError("解压 AutoLinker 更新包失败：\r\n" + error);
 			CleanupStaging(stagingRoot);
@@ -400,11 +392,14 @@ void UpdateWorker(void*)
 		}
 		const std::filesystem::path extractedFne = FindExtractedFne(extractDirectory);
 		if (extractedFne.empty() || !ValidateWin32Fne(extractedFne, error)) {
+			const std::string failure =
+				error.empty() ? "更新包中未找到 AutoLinker.fne。" : error;
+			error = failure + BuildManualAutoLinkerUpdateGuidance(targetFne);
 			PublishStatus(
 				ComponentUpdateState::Error,
-				error.empty() ? "更新包中未找到 AutoLinker.fne。" : error,
+				error,
 				release.tag);
-			ShowError(error.empty() ? "更新包中未找到 AutoLinker.fne" : error);
+			ShowError(error);
 			CleanupStaging(stagingRoot);
 			return;
 		}
@@ -412,8 +407,9 @@ void UpdateWorker(void*)
 		const std::filesystem::path stagedFne = stagingRoot / L"AutoLinker.fne.new";
 		std::filesystem::copy_file(extractedFne, stagedFne, std::filesystem::copy_options::overwrite_existing, ec);
 		if (ec) {
-			PublishStatus(ComponentUpdateState::Error, "暂存 AutoLinker.fne 失败：" + ec.message(), release.tag);
-			ShowError("暂存 AutoLinker.fne 失败：" + ec.message());
+			const std::string failure = "暂存 AutoLinker.fne 失败：" + ec.message() + BuildManualAutoLinkerUpdateGuidance(targetFne);
+			PublishStatus(ComponentUpdateState::Error, failure, release.tag);
+			ShowError(failure);
 			CleanupStaging(stagingRoot);
 			return;
 		}
@@ -428,6 +424,7 @@ void UpdateWorker(void*)
 		installRequest.targetVersion = release.tag;
 		PROCESS_INFORMATION updaterProcess = {};
 		if (!AutoLinkerUpdateInstaller::Launch(installRequest, updaterProcess, error)) {
+			error += BuildManualAutoLinkerUpdateGuidance(targetFne);
 			PublishStatus(ComponentUpdateState::Error, error, release.tag);
 			ShowError(error);
 			CleanupStaging(stagingRoot);
@@ -443,8 +440,9 @@ void UpdateWorker(void*)
 			WaitForSingleObject(updaterProcess.hProcess, 5000);
 			CloseHandle(updaterProcess.hThread);
 			CloseHandle(updaterProcess.hProcess);
-			PublishStatus(ComponentUpdateState::Error, "无法请求关闭当前易语言 IDE。", release.tag);
-			ShowError("无法请求关闭当前易语言 IDE，更新已取消。");
+			const std::string failure = "无法请求关闭当前易语言 IDE，更新已取消。" + BuildManualAutoLinkerUpdateGuidance(targetFne);
+			PublishStatus(ComponentUpdateState::Error, failure, release.tag);
+			ShowError(failure);
 			CleanupStaging(stagingRoot);
 			return;
 		}

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
@@ -178,6 +179,87 @@ std::wstring GetCurrentDirectoryWide()
 	}
 	return dir;
 }
+
+std::wstring QuoteCommandLineArgument(const std::wstring& argument)
+{
+	std::wstring quoted = L"\"";
+	size_t backslashes = 0;
+	for (const wchar_t ch : argument) {
+		if (ch == L'\\') {
+			++backslashes;
+			continue;
+		}
+		if (ch == L'\"') {
+			quoted.append(backslashes * 2 + 1, L'\\');
+			quoted.push_back(ch);
+			backslashes = 0;
+			continue;
+		}
+		quoted.append(backslashes, L'\\');
+		backslashes = 0;
+		quoted.push_back(ch);
+	}
+	quoted.append(backslashes * 2, L'\\');
+	quoted.push_back(L'\"');
+	return quoted;
+}
+
+std::filesystem::path GetWindowsDirectoryPath()
+{
+	std::vector<wchar_t> buffer(MAX_PATH);
+	for (;;) {
+		const UINT length = GetWindowsDirectoryW(buffer.data(), static_cast<UINT>(buffer.size()));
+		if (length == 0) {
+			return {};
+		}
+		if (length < buffer.size()) {
+			return std::filesystem::path(std::wstring(buffer.data(), length));
+		}
+		buffer.resize(static_cast<size_t>(length) + 1);
+	}
+}
+
+std::filesystem::path GetSystemDirectoryPath()
+{
+	std::vector<wchar_t> buffer(MAX_PATH);
+	for (;;) {
+		const UINT length = GetSystemDirectoryW(buffer.data(), static_cast<UINT>(buffer.size()));
+		if (length == 0) {
+			return {};
+		}
+		if (length < buffer.size()) {
+			return std::filesystem::path(std::wstring(buffer.data(), length));
+		}
+		buffer.resize(static_cast<size_t>(length) + 1);
+	}
+}
+
+std::filesystem::path ResolvePowerShellExecutable()
+{
+	std::vector<std::filesystem::path> candidates;
+	const auto addCandidate = [&candidates](std::filesystem::path candidate) {
+		if (!candidate.empty()) {
+			candidates.push_back(std::move(candidate));
+		}
+	};
+	const std::filesystem::path systemDirectory = GetSystemDirectoryPath();
+	const std::filesystem::path windowsDirectory = GetWindowsDirectoryPath();
+	addCandidate(systemDirectory / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe");
+	addCandidate(windowsDirectory / L"System32" / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe");
+
+	BOOL wow64 = FALSE;
+	if (IsWow64Process(GetCurrentProcess(), &wow64) != FALSE && wow64 != FALSE) {
+		addCandidate(windowsDirectory / L"Sysnative" / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe");
+		addCandidate(windowsDirectory / L"SysWOW64" / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe");
+	}
+	for (const auto& candidate : candidates) {
+		std::error_code ec;
+		if (std::filesystem::is_regular_file(candidate, ec) && !ec) {
+			return candidate;
+		}
+	}
+	return {};
+}
 } // namespace
 
 PowerShellRunResult PowerShellToolRunner::Run(
@@ -211,8 +293,15 @@ PowerShellRunResult PowerShellToolRunner::Run(
 
 	result.effectiveWorkingDirectory = WideToUtf8(workingDirectory);
 	const int boundedTimeoutSeconds = (std::clamp)(timeoutSeconds, 1, 600);
+	const std::filesystem::path powershellPath = ResolvePowerShellExecutable();
+	if (powershellPath.empty()) {
+		result.error = "powershell.exe was not found in the Windows system directory";
+		return result;
+	}
+
 	const std::string encodedCommand = BuildEncodedCommand(command);
-	std::wstring commandLine = L"powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ";
+	std::wstring commandLine = QuoteCommandLineArgument(powershellPath.wstring());
+	commandLine += L" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ";
 	commandLine += Utf8ToWide(encodedCommand);
 
 	SECURITY_ATTRIBUTES sa = {};
@@ -258,6 +347,7 @@ PowerShellRunResult PowerShellToolRunner::Run(
 		workingDirectory.c_str(),
 		&si,
 		&pi);
+	const DWORD createError = created == FALSE ? GetLastError() : ERROR_SUCCESS;
 
 	CloseHandle(stdOutWrite);
 	CloseHandle(stdErrWrite);
@@ -265,7 +355,7 @@ PowerShellRunResult PowerShellToolRunner::Run(
 	if (created == FALSE) {
 		CloseHandle(stdOutRead);
 		CloseHandle(stdErrRead);
-		result.error = "CreateProcessW powershell.exe failed";
+		result.error = "CreateProcessW powershell.exe failed, Win32 error=" + std::to_string(createError);
 		return result;
 	}
 

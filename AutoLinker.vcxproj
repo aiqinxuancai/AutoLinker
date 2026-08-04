@@ -461,6 +461,9 @@
     <ClCompile Include="detours\image.cpp" />
     <ClCompile Include="detours\modules.cpp" />
     <ClCompile Include="src\AutoLinker.cpp" />
+    <ClCompile Include="src\ArchiveExtractor.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="src\AutoLinkerReleaseClient.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -606,6 +609,7 @@
     <ClInclude Include="src\AutoLinkerInternal.h" />
     <ClInclude Include="src\AutoLinkerTestApi.h" />
     <ClInclude Include="src\AutoLinkerVersion.h" />
+    <ClInclude Include="src\ArchiveExtractor.h" />
     <ClInclude Include="src\AIConfigDialog.h" />
     <ClInclude Include="src\AIChatFeature.h" />
     <ClInclude Include="src\AIChatMarkdownTableRenderer.h" />

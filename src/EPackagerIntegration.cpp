@@ -22,11 +22,11 @@
 #include "..\\thirdparty\\json.hpp"
 
 #include "AutoLinkerInternal.h"
+#include "ArchiveExtractor.h"
 #include "DownloadProgressReporter.h"
 #include "EideProjectBinarySerializer.h"
 #include "Global.h"
 #include "PathHelper.h"
-#include "PowerShellToolRunner.h"
 #include "WinINetUtil.h"
 
 #pragma comment(lib, "ole32.lib")
@@ -394,6 +394,13 @@ std::filesystem::path GetToolsDirectory()
 std::filesystem::path GetEPackagerExePath()
 {
 	return GetToolsDirectory() / L"e-packager.exe";
+}
+
+std::string BuildManualEPackagerInstallGuidance()
+{
+	return "如自动下载或解压失败，请从 https://github.com/aiqinxuancai/e-packager 或相关交流群群共享获取 e-packager，解压后将 e-packager.exe 放到 " +
+		LocalPathString(GetEPackagerExePath()) +
+		"，不要多套一层压缩包目录，然后重试。";
 }
 
 std::filesystem::path GetEPackagerMetaPath()
@@ -822,37 +829,24 @@ bool DownloadZip(const LatestReleaseInfo& info, const std::filesystem::path& zip
 	return true;
 }
 
-std::string EscapePowerShellSingleQuoted(const std::string& text)
-{
-	std::string escaped;
-	escaped.reserve(text.size() + 8);
-	for (char ch : text) {
-		escaped.push_back(ch);
-		if (ch == '\'') {
-			escaped.push_back('\'');
-		}
-	}
-	return escaped;
-}
-
 bool ExtractZip(const std::filesystem::path& zipPath, const std::filesystem::path& destination, std::string& outError)
 {
 	OutputStringToELog("[e-packager] 正在解压工具包...");
-	const std::string command =
-		"Expand-Archive -LiteralPath '" + EscapePowerShellSingleQuoted(Utf8PathString(zipPath)) +
-		"' -DestinationPath '" + EscapePowerShellSingleQuoted(Utf8PathString(destination)) + "' -Force";
-	PowerShellRunResult result = PowerShellToolRunner::Run(command, Utf8PathString(GetToolsDirectory()), 120);
-	if (!result.stdOut.empty()) {
-		OutputTextBlock("[e-packager] 解压输出：", result.stdOut);
-	}
-	if (!result.stdErr.empty()) {
-		OutputTextBlock("[e-packager] 解压错误输出：", result.stdErr);
-	}
-	if (!result.ok || result.exitCode != 0) {
-		outError = result.error.empty()
-			? std::format("Expand-Archive exitCode={}", result.exitCode)
-			: result.error;
+	ArchiveExtractor::ExtractionResult result;
+	if (!ArchiveExtractor::ExtractZip(
+			zipPath,
+			destination,
+			GetToolsDirectory(),
+			result,
+			120)) {
+		outError = result.error;
 		return false;
+	}
+	OutputStringToELog(std::format(
+		"[e-packager] 解压完成，extract_method={}",
+		ArchiveExtractor::MethodName(result.method)));
+	if (result.method == ArchiveExtractor::ExtractionMethod::Tar && !result.primaryError.empty()) {
+		OutputStringToELog("[e-packager] PowerShell 解压失败，已使用 tar 后备：" + result.primaryError);
 	}
 	return true;
 }
@@ -972,7 +966,7 @@ bool EnsureToolReadyImpl(
 				installedVersion.empty() ? "已安装" : installedVersion);
 			return true;
 		}
-		outError = "无法下载 e-packager：" + fetchError;
+		outError = "无法下载 e-packager：" + fetchError + "\r\n" + BuildManualEPackagerInstallGuidance();
 		PublishUpdateStatus(ComponentUpdateState::Error, outError);
 		return false;
 	}
@@ -997,6 +991,7 @@ bool EnsureToolReadyImpl(
 		installedVersion.empty() ? (toolExists ? "已安装" : "未安装") : installedVersion,
 		latest.tag);
 	if (!DownloadAndInstallTool(latest, outError)) {
+		outError += "\r\n" + BuildManualEPackagerInstallGuidance();
 		if (toolExists && allowExistingFallback) {
 			OutputStringToELog("[e-packager] 更新失败，将继续使用现有工具：" + outError);
 			PublishUpdateStatus(
@@ -1050,11 +1045,12 @@ void ToolCheckWorker(void*)
 		LatestReleaseInfo latest;
 		std::string error;
 		if (!FetchLatestRelease(latest, error)) {
+			const std::string guidance = toolExists ? std::string() : "\r\n" + BuildManualEPackagerInstallGuidance();
 			PublishUpdateStatus(
 				ComponentUpdateState::Error,
-				"检查 e-packager 更新失败：" + error,
+				"检查 e-packager 更新失败：" + error + guidance,
 				displayedVersion);
-			OutputStringToELog("[e-packager] 检查更新失败：" + error);
+			OutputStringToELog("[e-packager] 检查更新失败：" + error + guidance);
 			return;
 		}
 
@@ -1123,6 +1119,7 @@ void ToolUpdateWorker(void* parameter)
 			latest->tag);
 		std::string error;
 		if (!DownloadAndInstallTool(*latest, error)) {
+			error += "\r\n" + BuildManualEPackagerInstallGuidance();
 			PublishUpdateStatus(
 				ComponentUpdateState::Error,
 				"e-packager 更新失败：" + error,
