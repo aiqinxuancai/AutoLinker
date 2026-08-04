@@ -390,16 +390,20 @@ MSBuild.exe ..\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platfor
 优先确认中转站网络和所选模型线路当前可用，再检查 API 密钥是否带有多余空格、Base URL
 和协议是否匹配、账户余额，以及访问 OpenAI/Claude 所需的海外网络是否连通。
 
-### e-packager 无法下载怎么办？
+### e-packager 无法下载或正确解压怎么办？
 
-先在“AutoLinker 设置 → 关于 → 组件更新”中检查并安装 e-packager。如果自动下载失败或
-长时间卡住，不要反复等待：
+先在“AutoLinker 设置 → 关于 → 组件更新”中检查并安装 e-packager。如果自动下载失败、
+下载后无法正确解压，或长时间卡住，不要反复等待，建议手动获取工具包：
 
-1. 打开 https://github.com/aiqinxuancai/e-packager/releases 下载最新 Release。
-2. 将下载包解压到 `{易语言安装目录}\tools`，并确认最终文件位于
+1. 打开 https://github.com/aiqinxuancai/e-packager（或其 Releases 页面）下载最新 Release。
+2. 如果无法访问 GitHub，也可以从 AutoLinker 相关交流群的群共享中获取 e-packager。
+3. 将下载包解压到 `{易语言安装目录}\tools`，并确认最终文件位于
    `{易语言安装目录}\tools\e-packager.exe`，不要多套一层压缩包目录。
-3. 如果已经加入 AutoLinker 相关交流群，也可以在群共享中查找 e-packager；下载后仍按
-   上述路径解压。
+4. 重启易语言 IDE，再调用或重试 `refresh_workspace_mirror`。
+
+更新 `AutoLinker.fne` 时，如果自动解压、PowerShell 或退出后替换仍失败，先关闭易语言 IDE，
+从 AutoLinker Releases 或相关交流群群共享获取 `AutoLinker.fne`，再手动替换
+`{易语言安装目录}\lib\AutoLinker.fne`。
 
 ### 配置文件在哪里？
 
