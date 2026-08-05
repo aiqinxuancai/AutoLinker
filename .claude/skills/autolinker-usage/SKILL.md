@@ -37,7 +37,7 @@ Source of truth in-repo: `README.md`, `CONFIG.md`, `AGENTS.md`.
 3. On IDE launch, AutoLinker auto-starts the local MCP server and logs to the
    IDE output window and `autolinker.log`.
 
-For an existing install, use 插件菜单 → AutoLinker 设置 → 关于 → 组件更新 to
+For an existing install, use 工具菜单 → AutoLinker 设置 → 关于 → 组件更新 to
 check and update AutoLinker or e-packager. Updating AutoLinker replaces the
 loaded `AutoLinker.fne` after the current IDE exits; follow the page prompts.
 
@@ -62,22 +62,22 @@ force-activate a SKILL for that turn (e.g. `$pdf 分析这份文档`).
 Create a same-named `.AGENTS.md` next to the `.e` file (e.g. `test_a.e` →
 `test_a.AGENTS.md`). Its content is injected into the system prompt of all AI
 features as the project convention — the E-language analogue of `CLAUDE.md`.
-The same file can be viewed and edited at 插件菜单 → AutoLinker 设置 → 当前项目
+The same file can be viewed and edited at 工具菜单 → AutoLinker 设置 → 当前项目
 AGENTS.md for the currently open project.
 
 ### 4. Per-source linker switching
-Add and edit `link.ini` configs at 插件菜单 → AutoLinker 设置 → 链接器, then
+Add and edit `link.ini` configs at 工具菜单 → AutoLinker 设置 → 链接器, then
 switch the active linker for the current source under 主菜单 → 编译.
 
 ### 5. Dynamic/static ec auto-swap on debug/compile
 Keep a pair of ec files (dynamic + static) for one module in the **same
 folder**. AutoLinker swaps the imported module automatically: static on
 "开始编译", dynamic on "开始调试" (typical for VMP SDK, ExDui). Configure via
-插件菜单 → AutoLinker 设置 → EC 模块切换. You must first reference either ec.
+工具菜单 → AutoLinker 设置 → EC 模块切换. You must first reference either ec.
 
 ### 6. Core-library C++ rewrite (perf / anti-crack / AV-evasion-for-defense)
 Replace core-lib functions with modern C++ (`.lib`, 32-bit). Configure the
-force-linked `.lib` list under 插件菜单 → AutoLinker 设置 → 核心库函数重写
+force-linked `.lib` list under 工具菜单 → AutoLinker 设置 → 核心库函数重写
 (Lib path ordered before `krnln_static.lib`; optional linker-name substring
 match; per-rule enable). Enables linker `/FORCE`; own Lib must disable `/GL`.
 See `TestCore` (C++20 / VC2022) for a reference implementation.
@@ -91,7 +91,7 @@ Navigates to the previous modification, like other IDEs.
 
 ### 9. Unified settings window ("AutoLinker 设置")
 
-The unified entry is 插件菜单 → AutoLinker 设置. When explaining where a
+The unified entry is 工具菜单 → AutoLinker 设置. When explaining where a
 feature lives, give the complete path from this table instead of referring only
 to a config file or an obsolete standalone dialog:
 
@@ -119,7 +119,7 @@ The add-in menu also contains 打开项目目录, 打开 AutoLinker 配置目录
 
 ## AI provider configuration (see CONFIG.md for full detail)
 
-Configure in 插件菜单 → AutoLinker 设置 → AI 接口. Recommended flow: **使用预设站点新建**
+Configure in 工具菜单 → AutoLinker 设置 → AI 接口. Recommended flow: **使用预设站点新建**
 → pick site/model → fill API Key → 测试连通性 → 保存.
 
 Key fields: 接口协议 (`OpenAI Chat` / `OpenAI Responses` / `Gemini` / `Claude`),
