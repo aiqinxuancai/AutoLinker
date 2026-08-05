@@ -34,7 +34,7 @@ Agent（Claude Code、Codex、Gemini/Antigravity CLI、Cursor、Windsurf）能�
 4. IDE 启动时，AutoLinker 会自动启动本地 MCP 服务器，并将日志写入 IDE 输出窗口和
    `autolinker.log`。
 
-已经安装 AutoLinker 后，优先通过“插件菜单 → AutoLinker 设置 → 关于 → 组件更新”
+已经安装 AutoLinker 后，优先通过“工具菜单 → AutoLinker 设置 → 关于 → 组件更新”
 检查和更新 AutoLinker 或 e-packager，不必重新执行首次安装流程。AutoLinker 更新需要
 退出当前 IDE 后替换正在加载的 `AutoLinker.fne`；按页面提示完成即可。
 
@@ -97,24 +97,24 @@ Agent（Claude Code、Codex、Gemini/Antigravity CLI、Cursor、Windsurf）能�
 `test_a.AGENTS.md`）。文件内容会作为工程规范注入所有 AI 功能的系统提示词，相当于
 易语言工程中的 `CLAUDE.md`。
 
-也可以打开“插件菜单 → AutoLinker 设置 → 当前项目 AGENTS.md”，直接查看和编辑当前
+也可以打开“工具菜单 → AutoLinker 设置 → 当前项目 AGENTS.md”，直接查看和编辑当前
 已打开工程对应的规范文件。
 
 ### 4. 按源码切换链接器
 
-通过“插件菜单 → AutoLinker 设置 → 链接器”添加和编辑多个 `link.ini` 配置，然后在
+通过“工具菜单 → AutoLinker 设置 → 链接器”添加和编辑多个 `link.ini` 配置，然后在
 “主菜单 → 编译”中切换当前源码使用的链接器，无需再手动来回替换。
 
 ### 5. 调试/编译时自动切换动态和静态 ec
 
 将同一模块的一对 ec 文件（动态版和静态版）放在**同一文件夹**。AutoLinker 会自动
 切换导入模块：“开始编译”时使用静态版，“开始调试”时使用动态版，常用于 VMP SDK、
-ExDui。通过“插件菜单 → AutoLinker 设置 → EC 模块切换”维护规则。必须先引用其中任意
+ExDui。通过“工具菜单 → AutoLinker 设置 → EC 模块切换”维护规则。必须先引用其中任意
 一个 ec。
 
 ### 6. 核心库 C++ 重写（性能、反破解、防御性免杀）
 
-使用现代 C++（`.lib`、32 位）替换核心库函数。通过“插件菜单 → AutoLinker 设置 →
+使用现代 C++（`.lib`、32 位）替换核心库函数。通过“工具菜单 → AutoLinker 设置 →
 核心库函数重写”配置需要强制链接的 `.lib` 列表（Lib 路径排在
 `krnln_static.lib` 之前；可选择按链接器名称子串匹配；每条规则可单独启用）。此功能会
 启用链接器 `/FORCE`；自有 Lib 必须禁用 `/GL`。参考实现见 `TestCore`（C++20 /
@@ -131,7 +131,7 @@ VC2022）。
 
 ### 9. 统一设置窗口（“AutoLinker 设置”）
 
-统一入口是“插件菜单 → AutoLinker 设置”。回答“某功能在哪里”或指导用户操作时，优先
+统一入口是“工具菜单 → AutoLinker 设置”。回答“某功能在哪里”或指导用户操作时，优先
 给出下表中的完整路径，不要只描述配置文件或旧版独立窗口：
 
 | 设置页签 | 位置和用途 |
@@ -151,11 +151,11 @@ VC2022）。
 自定义配色可先调整表面、文字、主色、强调、成功、警告、危险 7 个主色，再按需展开高级
 颜色覆盖。右侧可实时预览，保存后会立即应用到已经打开的 AI 对话界面。
 
-插件菜单还包含“打开项目目录”、“打开 AutoLinker 配置目录”、“打开易语言目录”。
+工具菜单还包含“打开项目目录”、“打开 AutoLinker 配置目录”、“打开易语言目录”。
 
 ## AI 服务商配置
 
-完整说明见 `CONFIG.md`。在“插件菜单 → AutoLinker 设置 → AI 接口”中配置。推荐流程：
+完整说明见 `CONFIG.md`。在“工具菜单 → AutoLinker 设置 → AI 接口”中配置。推荐流程：
 **使用预设站点新建** → 选择站点/模型 → 填写 API Key → 测试连通性 → 保存。
 
 | 配置项 | 使用说明 |
