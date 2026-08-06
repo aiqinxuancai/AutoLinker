@@ -5387,8 +5387,6 @@ std::string BuildHistoryHtmlLocked(
 		body += BuildRemoteNewsLinksHtml();
 		body += "<a class=\"mcp-guide-link\" href=\"https://github.com/aiqinxuancai/Awesome-E-Agent\">";
 		body += EscapeHtml(LocalFromWide(L"易语言 × AI Agent 实践白皮书"));
-		body += "</a><a class=\"mcp-guide-link\" href=\"https://github.com/aiqinxuancai/AutoLinker\">";
-		body += EscapeHtml(LocalFromWide(L"了解如何使用"));
 		body += "</a></div></div>";
 	}
 
