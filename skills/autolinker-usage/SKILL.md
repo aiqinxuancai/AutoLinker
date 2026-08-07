@@ -2,7 +2,8 @@
 name: autolinker-usage
 description: >-
   介绍如何使用 AutoLinker，即易语言 AI Agent 支持库和本地 MCP 服务器。内容涵盖安装、
-  AI Agent 对话页、计划模式、目标模式、右键 AI 菜单操作、各项目的 .AGENTS.md 规范、
+  AI Agent 对话页、多模态图片输入、计划模式、目标模式、右键 AI 菜单操作、各项目的
+  .AGENTS.md 规范、
   按源码切换链接器、动态/静态 ec 自动切换、e-packager 工程镜像及 EC 模块/支持库依赖
   信息、本地 MCP HTTP 服务器、协议方法及完整工具参数、外部 Agent（Claude Code /
   Codex / Cursor）的 MCP 配置、多实例路由、无界面命令行编译、核心库 C++ 重写，以及
@@ -22,6 +23,11 @@ Agent（Claude Code、Codex、Gemini/Antigravity CLI、Cursor、Windsurf）能�
 `.e` 源码是加密的单文件格式，无法在 IDE 外部直接编辑。AutoLinker 会从 IDE 内存导出
 包含未保存修改的临时快照，再由 e-packager 解包成文本镜像供读取和搜索；修改则按镜像
 路径映射回 IDE 真实程序项。整个过程不会直接改写磁盘上的原始 `.e` 文件。
+
+AutoLinker 项目已开源，源码、Release 与问题反馈入口：
+https://github.com/aiqinxuancai/AutoLinker
+版本更新内容和下载以 GitHub Releases 为准：
+https://github.com/aiqinxuancai/AutoLinker/releases
 
 仓库内的权威资料：`README.md`、`CONFIG.md`、`AGENTS.md`。
 
@@ -48,6 +54,29 @@ Agent（Claude Code、Codex、Gemini/Antigravity CLI、Cursor、Windsurf）能�
 位于左侧工作区。直接告诉 AI 你的需求，它会自动搜索、读取、编辑当前打开的工程，并
 插入代码。输入 `$skillname` 可在当前轮次强制激活指定 SKILL（例如
 `$pdf 分析这份文档`）。
+
+#### 多模态图片输入
+
+AutoLinker 5.0.0 起支持在内置 AI 对话中发送图片。可点击输入区的回形针按钮选择图片，
+也可粘贴剪贴板图片，或将图片拖放到输入区。支持图片与文字一起发送，也支持仅发送
+图片；每条消息最多 10 张，单个原始文件不得超过 20 MB。过大图片会缩放到最长边不超过
+2048 像素，处理后快照不得超过 4 MB。
+
+发送图片前，必须选择服务商明确支持图像理解的多模态模型；以服务商的当前模型文档为准。
+AutoLinker 能够为 OpenAI Chat、OpenAI Responses、Claude 和 Gemini 协议序列化图片，但协议支持
+不代表所选模型具有看图能力。不要向纯文本、Coder 或其他非多模态模型发送图片，否则服务商
+可能拒绝请求，或模型无法理解图片内容。
+
+在“工具菜单 → AutoLinker 设置 → AI 接口 → 图片输入”中配置能力判断：
+
+- **自动识别模型能力**：默认选项。AutoLinker 会禁止已知的纯文本模型；对未识别的自定义模型，
+  会按当前协议尝试发送。
+- **启用**：仅在确认当前模型支持图片、但自动判断不正确时使用。它只会绕过 AutoLinker 的
+  客户端限制，不能让非多模态模型获得图像理解能力。
+- **禁用**：当前模型或中转站不接受图片时使用。
+
+附加图片时如提示“当前模型配置已禁用图片输入”，优先切换到确实支持图像理解的模型；
+不要因为希望发送图片，就将已知的非多模态模型强制设为“启用”。
 
 #### 计划模式
 
@@ -169,6 +198,7 @@ VC2022）。
 | 接口地址 | 填写服务商提供的 Base URL；优先使用预设，让 AutoLinker 自动填写地址和协议 |
 | API 密钥与模型 | 两者均必填；妥善保管密钥，不要写入工程或公开日志；可点击 `↻` 获取模型列表 |
 | 上下文长度 | 达到 95% 时自动压缩历史；留空使用模型默认值 |
+| 图片输入 | 默认“自动识别模型能力”；只有确认模型支持图像理解时才手动“启用” |
 | 思考等级 | 支持 `off` / `low` / `medium` / `high` / `xhigh` / `max`；接口拒绝参数时降低等级 |
 | 系统提示词 | 作为附加要求追加到 AutoLinker 内置提示词之后，不会替换内置规则 |
 | 自定义请求头 | 可选，每行填写一个 `Name: Value`，按中转站文档配置 |
