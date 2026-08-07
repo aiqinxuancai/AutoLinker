@@ -39,9 +39,6 @@ void LogAIChatToolResponse(
 	const std::string& resultJsonLocal,
 	double elapsedMs);
 
-// 清除指定调用域中缓存的高风险工具授权。
-void ClearToolApprovalScope(const std::string& approvalScope);
-
 // 终止并清理指定内部聊天会话创建的全部命令进程。
 void CloseInternalExecSession(const std::string& sessionId);
 

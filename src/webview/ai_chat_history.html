@@ -2559,6 +2559,7 @@ window.autolinkerShowToolApproval = function(payload) {
 	var summary = data.summary || "";
 	var filePath = data.file_path || data.mapped_page_name || "";
 	var pageName = data.page_name || data.mapped_page_name || "";
+	var previewKind = data.preview_kind || "arguments";
 	var previewText = data.preview_text || "";
 	var html = "";
 	html += '<div class="tool-approval-head">';
@@ -2575,8 +2576,10 @@ window.autolinkerShowToolApproval = function(payload) {
 	html += '<b>\u6458\u8981</b><span>' + window.autolinkerEscapeHtml(summary) + '</span>';
 	html += '</div>';
 	if (previewText) {
-		html += '<div class="tool-approval-preview" role="region" aria-label="\u4EE3\u7801\u5DEE\u5F02\u9884\u89C8">';
-		html += window.autolinkerRenderDiffPreview(previewText);
+		html += '<div class="tool-approval-preview" role="region" aria-label="\u64CD\u4F5C\u9884\u89C8">';
+		html += previewKind === "diff"
+			? window.autolinkerRenderDiffPreview(previewText)
+			: window.autolinkerEscapeHtml(previewText);
 		html += '</div>';
 	}
 	html += '<div class="tool-approval-actions">';

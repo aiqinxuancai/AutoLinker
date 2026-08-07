@@ -694,7 +694,6 @@ void PruneExternalMcpSessionsLocked(std::chrono::steady_clock::time_point now)
 {
 	for (auto it = g_externalMcpSessions.begin(); it != g_externalMcpSessions.end();) {
 		if (it->first != "legacy" && now - it->second.lastSeen >= kExternalMcpSessionTtl) {
-			ClearToolApprovalScope("external-mcp:" + it->first);
 			it = g_externalMcpSessions.erase(it);
 		}
 		else {
@@ -714,7 +713,6 @@ void PruneExternalMcpSessionsLocked(std::chrono::steady_clock::time_point now)
 		if (oldest == g_externalMcpSessions.end()) {
 			break;
 		}
-		ClearToolApprovalScope("external-mcp:" + oldest->first);
 		g_externalMcpSessions.erase(oldest);
 	}
 }
@@ -737,7 +735,6 @@ void RemoveExternalMcpSession(const std::string& sessionId)
 		return;
 	}
 	std::lock_guard<std::mutex> lock(g_stateMutex);
-	ClearToolApprovalScope("external-mcp:" + sessionId);
 	g_externalMcpSessions.erase(sessionId);
 }
 
@@ -1736,7 +1733,6 @@ bool TryHandleJsonRpc(
 			std::lock_guard<std::mutex> lock(g_stateMutex);
 			const auto now = std::chrono::steady_clock::now();
 			PruneExternalMcpSessionsLocked(now);
-			ClearToolApprovalScope("external-mcp:" + outResponseSessionId);
 			ExternalMcpSessionState& state = g_externalMcpSessions[outResponseSessionId];
 			state.workspaceRefreshed = false;
 			state.sourceFilePath.clear();

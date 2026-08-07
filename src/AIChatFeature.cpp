@@ -1412,8 +1412,8 @@ std::string DumpJsonUtf8(const nlohmann::json& value)
 std::string AutoAllowModeTitleLocal(bool enabled)
 {
 	return enabled
-		? LocalFromWide(L"\u81ea\u52a8\u5141\u8bb8\u5199\u5165\u64cd\u4f5c\uff0c\u70b9\u51fb\u5207\u56de\u9ed8\u8ba4\u8be2\u95ee")
-		: LocalFromWide(L"\u9ed8\u8ba4\u8be2\u95ee\u5199\u5165\u64cd\u4f5c\uff0c\u70b9\u51fb\u5f00\u542f\u81ea\u52a8\u5141\u8bb8");
+		? LocalFromWide(L"\u81ea\u52a8\u5141\u8bb8\u5199\u5165\u548c\u547d\u4ee4\u6267\u884c\uff0c\u70b9\u51fb\u5207\u56de\u9ed8\u8ba4\u8be2\u95ee")
+		: LocalFromWide(L"\u9ed8\u8ba4\u8be2\u95ee\u5199\u5165\u548c\u547d\u4ee4\u6267\u884c\uff0c\u70b9\u51fb\u5f00\u542f\u81ea\u52a8\u5141\u8bb8");
 }
 
 bool IsPlanModeWriteBlockedTool(const std::string& toolName)
@@ -1431,7 +1431,7 @@ bool IsPlanModeWriteBlockedTool(const std::string& toolName)
 		_stricmp(toolName.c_str(), "write_stdin") == 0;
 }
 
-bool IsToolRequiringWriteApproval(const std::string& toolName)
+bool IsToolRequiringInteractiveApproval(const std::string& toolName)
 {
 	return _stricmp(toolName.c_str(), "edit_file") == 0 ||
 		_stricmp(toolName.c_str(), "multi_edit_file") == 0 ||
@@ -1440,7 +1440,18 @@ bool IsToolRequiringWriteApproval(const std::string& toolName)
 		_stricmp(toolName.c_str(), "add_new_file") == 0 ||
 		_stricmp(toolName.c_str(), "add_module_to_project") == 0 ||
 		_stricmp(toolName.c_str(), "remove_module_from_project") == 0 ||
-		_stricmp(toolName.c_str(), "add_support_library_to_project") == 0;
+		_stricmp(toolName.c_str(), "add_support_library_to_project") == 0 ||
+		_stricmp(toolName.c_str(), "exec_command") == 0;
+}
+
+bool ShouldRequestInteractiveApproval(
+	const std::string& toolName,
+	bool bypassInteractiveApproval,
+	bool autoAllowWrites)
+{
+	return !bypassInteractiveApproval &&
+		!autoAllowWrites &&
+		IsToolRequiringInteractiveApproval(toolName);
 }
 
 std::string BuildPlanModeToolBlockedResult(const std::string& toolName)
@@ -1545,6 +1556,9 @@ std::string ToolApprovalTitleLocal(const std::string& toolName)
 	if (_stricmp(toolName.c_str(), "add_new_file") == 0) {
 		return LocalFromWide(L"\u6279\u51c6\u65b0\u5efa\u7a0b\u5e8f\u96c6\u6216\u7c7b");
 	}
+	if (_stricmp(toolName.c_str(), "exec_command") == 0) {
+		return LocalFromWide(L"\u6279\u51c6\u6267\u884c\u672c\u673a\u547d\u4ee4");
+	}
 	return LocalFromWide(L"\u6279\u51c6\u5199\u5165\u64cd\u4f5c");
 }
 
@@ -1588,7 +1602,7 @@ nlohmann::json BuildToolApprovalPayloadUtf8(
 	payload["id"] = approvalId;
 	payload["tool"] = toolName;
 	payload["title"] = LocalToUtf8Text(ToolApprovalTitleLocal(toolName));
-	payload["summary"] = LocalToUtf8Text(LocalFromWide(L"\u9ed8\u8ba4\u8be2\u95ee\u6a21\u5f0f\u9700\u8981\u4f60\u6279\u51c6\u6b64\u6b21\u5199\u5165\u3002"));
+	payload["summary"] = LocalToUtf8Text(LocalFromWide(L"\u9ed8\u8ba4\u8be2\u95ee\u6a21\u5f0f\u9700\u8981\u4f60\u6279\u51c6\u6b64\u6b21\u64cd\u4f5c\u3002"));
 	payload["preview_kind"] = "arguments";
 	payload["preview_ok"] = false;
 
@@ -1605,6 +1619,27 @@ nlohmann::json BuildToolApprovalPayloadUtf8(
 	const std::string filePathUtf8 = GetJsonStringArgumentUtf8(args, "file_path");
 	if (!filePathUtf8.empty()) {
 		payload["file_path"] = filePathUtf8;
+	}
+
+	if (_stricmp(toolName.c_str(), "exec_command") == 0) {
+		const std::string commandUtf8 = GetJsonStringArgumentUtf8(args, "cmd");
+		const std::string shellUtf8 = GetJsonStringArgumentUtf8(args, "shell");
+		const std::string workdirUtf8 = GetJsonStringArgumentUtf8(args, "workdir");
+		const int yieldTimeMs = GetJsonIntArgument(args, "yield_time_ms", 10000);
+		std::string preview = commandUtf8;
+		preview += "\n\nShell: ";
+		preview += shellUtf8.empty() ? "powershell.exe" : shellUtf8;
+		preview += "\nWorkdir: ";
+		preview += workdirUtf8.empty() ? "." : workdirUtf8;
+		preview += "\nYield: ";
+		preview += std::to_string(yieldTimeMs);
+		preview += " ms";
+		payload["summary"] = LocalToUtf8Text(LocalFromWide(
+			L"\u5373\u5c06\u6267\u884c\u672c\u673a\u547d\u4ee4\uff0c\u8bf7\u786e\u8ba4\u4e0d\u4f1a\u4ea7\u751f\u4e0d\u5e0c\u671b\u7684\u526f\u4f5c\u7528\u3002"));
+		payload["preview_kind"] = "command";
+		payload["preview_ok"] = !commandUtf8.empty();
+		payload["preview_text"] = TruncateUtf8ForToolApproval(preview, 32000);
+		return payload;
 	}
 
 	if (_stricmp(toolName.c_str(), "edit_file") == 0 ||
@@ -7542,7 +7577,7 @@ void HandleChatToggleAutoAllowUi(HWND hWnd, ChatDialogContext* ctx)
 		if (g_session.autoAllowWrites) {
 			g_session.messages.push_back(SessionMessage{
 				SessionRole::System,
-				LocalFromWide(L"\u5df2\u5f00\u542f\u81ea\u52a8\u5141\u8bb8\u6a21\u5f0f\uff0c\u4ee3\u7801\u5199\u5165\u5c06\u76f4\u63a5\u6267\u884c\u3002"),
+				LocalFromWide(L"\u5df2\u5f00\u542f\u81ea\u52a8\u5141\u8bb8\u6a21\u5f0f\uff0c\u4ee3\u7801\u5199\u5165\u548c\u672c\u673a\u547d\u4ee4\u5c06\u76f4\u63a5\u6267\u884c\u3002"),
 				false,
 				true,
 				"",
@@ -7552,7 +7587,7 @@ void HandleChatToggleAutoAllowUi(HWND hWnd, ChatDialogContext* ctx)
 		else {
 			g_session.messages.push_back(SessionMessage{
 				SessionRole::System,
-				LocalFromWide(L"\u5df2\u5207\u56de\u9ed8\u8ba4\u8be2\u95ee\u6a21\u5f0f\uff0c\u4ee3\u7801\u5199\u5165\u524d\u9700\u8981\u6279\u51c6\u3002"),
+				LocalFromWide(L"\u5df2\u5207\u56de\u9ed8\u8ba4\u8be2\u95ee\u6a21\u5f0f\uff0c\u4ee3\u7801\u5199\u5165\u548c\u672c\u673a\u547d\u4ee4\u6267\u884c\u524d\u9700\u8981\u6279\u51c6\u3002"),
 				false,
 				true,
 				"",
@@ -8799,7 +8834,7 @@ void CompletePendingToolApproval(
 			SavePersistedAutoAllowWrites(g_session.autoAllowWrites);
 			g_session.messages.push_back(SessionMessage{
 				SessionRole::System,
-				LocalFromWide(L"\u5df2\u5f00\u542f\u81ea\u52a8\u5141\u8bb8\u6a21\u5f0f\uff0c\u540e\u7eed\u4ee3\u7801\u5199\u5165\u5c06\u76f4\u63a5\u6267\u884c\u3002"),
+				LocalFromWide(L"\u5df2\u5f00\u542f\u81ea\u52a8\u5141\u8bb8\u6a21\u5f0f\uff0c\u540e\u7eed\u4ee3\u7801\u5199\u5165\u548c\u672c\u673a\u547d\u4ee4\u5c06\u76f4\u63a5\u6267\u884c\u3002"),
 				false,
 				true,
 				"",
@@ -8818,6 +8853,14 @@ void CompletePendingToolApproval(
 			pending.request,
 			false,
 			BuildToolApprovalDeniedResult(pending.toolName));
+		PostRefreshDialog();
+		return;
+	}
+	if (pending.request->approvalOnly) {
+		FinishToolExecutionRequest(
+			pending.request,
+			true,
+			R"({"ok":true,"approved":true})");
 		PostRefreshDialog();
 		return;
 	}
@@ -8880,9 +8923,17 @@ bool BeginToolApprovalRequest(const std::shared_ptr<ToolExecutionRequest>& reque
 			return true;
 		}
 		if (action == AIPreviewAction::PrimaryConfirm) {
-			bool ok = false;
-			const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, effectiveArgumentsJson, ok);
-			FinishToolExecutionRequest(request, ok, resultJson);
+			if (request->approvalOnly) {
+				FinishToolExecutionRequest(
+					request,
+					true,
+					R"({"ok":true,"approved":true})");
+			}
+			else {
+				bool ok = false;
+				const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, effectiveArgumentsJson, ok);
+				FinishToolExecutionRequest(request, ok, resultJson);
+			}
 		}
 		else {
 			FinishToolExecutionRequest(request, false, BuildToolApprovalDeniedResult(request->toolName));
@@ -8913,7 +8964,7 @@ bool BeginToolApprovalRequest(const std::shared_ptr<ToolExecutionRequest>& reque
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		if (g_session.requestInFlight && g_session.activeRequestId != 0) {
 			g_session.agentActivityLines.push_back(
-				LocalFromWide(L"\u7b49\u5f85\u6279\u51c6\u5199\u5165\u64cd\u4f5c\uff1a") +
+				LocalFromWide(L"\u7b49\u5f85\u6279\u51c6\u5de5\u5177\u64cd\u4f5c\uff1a") +
 				(request->toolName.empty() ? std::string("<unknown>") : request->toolName));
 		}
 	}
@@ -8997,10 +9048,18 @@ bool HandleToolExecRequest(LPARAM lParam)
 		return true;
 	}
 
-	if (!request->bypassInteractiveApproval &&
-		IsToolRequiringWriteApproval(request->toolName) &&
-		!IsAutoAllowWritesEnabled()) {
+	if (ShouldRequestInteractiveApproval(
+			request->toolName,
+			request->bypassInteractiveApproval,
+			IsAutoAllowWritesEnabled())) {
 		return BeginToolApprovalRequest(request);
+	}
+	if (request->approvalOnly) {
+		FinishToolExecutionRequest(
+			request,
+			true,
+			R"({"ok":true,"approved":true})");
+		return true;
 	}
 
 	const std::string effectiveArgumentsJson = AppendAutoWriteDiffMessageForTool(
@@ -10170,14 +10229,33 @@ std::string BuildPlanModeSelfTestJson()
 		stepUiHtml.find("data-plan-user-input-action=\"next\">") != std::string::npos &&
 		stepUiHtml.find("data-plan-user-input-action=\"submit\" hidden>") != std::string::npos;
 
+	const nlohmann::json execApprovalPayload = BuildToolApprovalPayloadUtf8(
+		0,
+		"exec_command",
+		R"({"cmd":"Get-Date","shell":"powershell.exe","workdir":"D:\\project","yield_time_ms":1500})");
+	const std::string execApprovalPreview = execApprovalPayload.value("preview_text", std::string());
+	const bool execApprovalOk =
+		IsToolRequiringInteractiveApproval("exec_command") &&
+		!IsToolRequiringInteractiveApproval("read_file") &&
+		ShouldRequestInteractiveApproval("exec_command", false, false) &&
+		!ShouldRequestInteractiveApproval("exec_command", false, true) &&
+		!ShouldRequestInteractiveApproval("exec_command", true, false) &&
+		execApprovalPayload.value("preview_kind", std::string()) == "command" &&
+		execApprovalPayload.value("preview_ok", false) &&
+		execApprovalPreview.find("Get-Date") != std::string::npos &&
+		execApprovalPreview.find("powershell.exe") != std::string::npos &&
+		execApprovalPreview.find("D:\\project") != std::string::npos &&
+		execApprovalPreview.find("1500 ms") != std::string::npos;
+
 	return nlohmann::json({
 		{"name", "plan-mode-approval-compat"},
-		{"ok", explicitOk && toolPlanOk && plainPlanOk && userInputOk && stepUiOk},
+		{"ok", explicitOk && toolPlanOk && plainPlanOk && userInputOk && stepUiOk && execApprovalOk},
 		{"explicit_plan", explicitOk},
 		{"update_plan_fallback", toolPlanOk},
 		{"plain_text_fallback", plainPlanOk},
 		{"user_input_protocol", userInputCheck},
-		{"user_input_step_ui", stepUiOk}
+		{"user_input_step_ui", stepUiOk},
+		{"exec_command_approval", execApprovalOk}
 	}).dump();
 }
 

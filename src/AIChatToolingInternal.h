@@ -16,6 +16,7 @@ struct ToolExecutionRequest {
 	std::string argumentsJson;
 	std::string resultJson;
 	bool bypassInteractiveApproval = false; // 19207 外部 MCP 调用不弹出交互审批。
+	bool approvalOnly = false;              // 仅通过 AI 对话完成审批，实际操作仍由请求线程执行。
 	bool ok = false;
 	bool done = false;
 	bool cancelled = false;

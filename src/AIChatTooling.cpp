@@ -26,15 +26,10 @@
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <unordered_set>
 
 #include "..\\thirdparty\\json.hpp"
 
 namespace {
-
-// 命令执行自动允许仅在同一内部聊天会话内生效。
-std::mutex g_psApprovalScopeMutex;
-std::unordered_set<std::string> g_psAllowedScopes;
 
 std::string TrimAsciiCopy(const std::string& text)
 {
@@ -524,7 +519,8 @@ bool RequestToolExecutionFromMainThread(
 	const std::string& argumentsJson,
 	std::string& outResultJson,
 	bool& outOk,
-	bool bypassInteractiveApproval = false)
+	bool bypassInteractiveApproval = false,
+	bool approvalOnly = false)
 {
 	outResultJson.clear();
 	outOk = false;
@@ -538,10 +534,15 @@ bool RequestToolExecutionFromMainThread(
 	request->toolName = toolName;
 	request->argumentsJson = argumentsJson;
 	request->bypassInteractiveApproval = bypassInteractiveApproval;
+	request->approvalOnly = approvalOnly;
 
 	const auto dispatchStart = std::chrono::steady_clock::now();
 	const DWORD mainThreadId = GetWindowThreadProcessId(mainWindow, nullptr);
 	if (mainThreadId != 0 && mainThreadId == GetCurrentThreadId()) {
+		if (approvalOnly) {
+			outResultJson = R"({"ok":false,"error":"interactive approval cannot block the AI chat UI thread"})";
+			return false;
+		}
 		outResultJson = ExecuteToolCallOnMainThread(toolName, argumentsJson, outOk);
 		return true;
 	}
@@ -753,38 +754,31 @@ std::string ExecuteToolCallImpl(
 		}
 		request.workingDirectoryUtf8 = LocalToUtf8Text(workdir.lexically_normal().string());
 
-		const std::string effectiveApprovalScope = "internal-chat:" + ownerSessionId;
-		bool skipConfirm = false;
-		{
-			std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
-			skipConfirm = g_psAllowedScopes.contains(effectiveApprovalScope);
+		nlohmann::json approvalArgs = args;
+		approvalArgs["shell"] = request.shellUtf8.empty() ? "powershell.exe" : request.shellUtf8;
+		approvalArgs["workdir"] = request.workingDirectoryUtf8;
+		approvalArgs["login"] = request.loginShell;
+		approvalArgs["tty"] = request.tty;
+		approvalArgs["yield_time_ms"] = request.yieldTimeMs;
+		std::string approvalResult;
+		bool approved = false;
+		if (!RequestToolExecutionFromMainThread(
+				"exec_command",
+				approvalArgs.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace),
+				approvalResult,
+				approved,
+				false,
+				true)) {
+			outOk = false;
+			return approvalResult.empty()
+				? Utf8ToLocalText("exec_command approval transport failed")
+				: approvalResult;
 		}
-		if (!skipConfirm) {
-			const std::string shellDisplay = request.shellUtf8.empty() ? "powershell.exe" : request.shellUtf8;
-			const std::string confirmationText =
-				std::string("即将执行 exec_command：\r\n\r\n") +
-				Utf8ToLocalText(request.commandUtf8) +
-				"\r\n\r\nShell：\r\n" + Utf8ToLocalText(shellDisplay) +
-				"\r\n\r\n工作目录：\r\n" + Utf8ToLocalText(request.workingDirectoryUtf8) +
-				"\r\n\r\n首次等待：\r\n" + std::to_string(request.yieldTimeMs) +
-				" ms\r\n\r\n请确认该命令不会造成你不希望的本机副作用。";
-			bool accepted = false;
-			bool secondaryAccepted = false;
-			if (!RequestConfirmationForTooling(
-					LocalFromWide(L"AI exec_command 执行确认"),
-					confirmationText,
-					LocalFromWide(L"执行"),
-					LocalFromWide(L"当前会话全允许并执行"),
-					accepted,
-					secondaryAccepted) ||
-				(!accepted && !secondaryAccepted)) {
-				outOk = false;
-				return Utf8ToLocalText("user cancelled exec_command execution");
-			}
-			if (secondaryAccepted) {
-				std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
-				g_psAllowedScopes.insert(effectiveApprovalScope);
-			}
+		if (!approved) {
+			outOk = false;
+			return approvalResult.empty()
+				? Utf8ToLocalText("exec_command execution denied by user")
+				: approvalResult;
 		}
 
 		const ExecCommandResult result = ExecCommandSessionManager::Instance().Execute(request, cancelCallback);
@@ -1118,36 +1112,17 @@ std::string ExecuteToolCall(
 	return result;
 }
 
-void ClearToolApprovalScope(const std::string& approvalScope)
-{
-	if (approvalScope.empty()) {
-		return;
-	}
-	std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
-	g_psAllowedScopes.erase(approvalScope);
-}
-
 void CloseInternalExecSession(const std::string& sessionId)
 {
 	if (sessionId.empty()) {
 		return;
 	}
 	ExecCommandSessionManager::Instance().TerminateOwnerSession(sessionId);
-	ClearToolApprovalScope("internal-chat:" + sessionId);
 }
 
 void ShutdownInternalExecSessions()
 {
 	ExecCommandSessionManager::Instance().TerminateAll();
-	std::lock_guard<std::mutex> guard(g_psApprovalScopeMutex);
-	for (auto it = g_psAllowedScopes.begin(); it != g_psAllowedScopes.end();) {
-		if (it->rfind("internal-chat:", 0) == 0) {
-			it = g_psAllowedScopes.erase(it);
-		}
-		else {
-			++it;
-		}
-	}
 }
 
 bool ShouldBypassToolApprovalForScope(const std::string& approvalScope)

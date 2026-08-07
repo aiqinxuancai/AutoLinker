@@ -38,7 +38,7 @@ struct AIChatStoredSession {
 	std::string rollingSummaryLocal;
 	std::string planModeState;      // 计划模式状态：normal / planning / awaiting_approval / approved。
 	std::string pendingPlanLocal;   // 待批准的计划正文。
-	bool autoAllowWrites = false;   // 自动允许写入模式。
+	bool autoAllowWrites = false;   // 自动允许写入和命令执行模式（保留旧字段名以兼容会话数据）。
 	AIChatGoalState goal;           // 当前 Goal 状态。
 	bool hasRunCheckpoint = false;  // 是否存在待确认恢复的长期任务。
 	AIChatRunCheckpoint runCheckpoint;
