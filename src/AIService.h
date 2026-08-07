@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include "AIImageAttachment.h"
+
 class AIJsonConfig;
 class ConfigManager;
 class HttpRequestCancellation;
@@ -42,6 +44,13 @@ enum class AISourceEditMode {
 	MirrorSourceBase = 1
 };
 
+// AI 图片输入能力覆盖模式。
+enum class AIImageInputMode {
+	Auto = 0,
+	Enabled = 1,
+	Disabled = 2
+};
+
 // AI 设置。
 struct AISettings {
 	AIProtocolType protocolType = AIProtocolType::OpenAI;
@@ -56,6 +65,7 @@ struct AISettings {
 	int timeoutMs = 120000;
 	double temperature = 0.2;
 	int contextWindowTokens = 0; // 0 = 未设置，回落到模型表/默认
+	AIImageInputMode imageInputMode = AIImageInputMode::Auto;
 };
 
 // AI 单次任务结果。
@@ -72,6 +82,7 @@ struct AIChatMessage {
 	std::string content;
 	std::string reasoningContent;
 	std::string rawMessageJsonUtf8;
+	std::vector<AIImageAttachment> attachments;
 };
 
 // AI 工具调用事件。
@@ -127,7 +138,7 @@ struct AIChatRunOptions {
 	// 仅在活动 Goal 中公开查询和结束 Goal 的工具。
 	bool enableGoalTools = false;
 	// 在模型请求之间的安全边界取出新用户输入；参数为刚完成的助手回复。
-	std::function<std::vector<std::string>(const std::string& completedAssistantContent)> takePendingUserInputsCallback;
+	std::function<std::vector<AIChatMessage>(const std::string& completedAssistantContent)> takePendingUserInputsCallback;
 };
 
 // AI 对话结果。
@@ -173,6 +184,11 @@ public:
 	static AISourceEditMode ParseSourceEditMode(const std::string& text);
 	static std::string SourceEditModeToString(AISourceEditMode mode);
 	static std::string SourceEditModeDisplayName(AISourceEditMode mode);
+	static AIImageInputMode ParseImageInputMode(const std::string& text);
+	static std::string ImageInputModeToString(AIImageInputMode mode);
+	static std::string ImageInputModeDisplayName(AIImageInputMode mode);
+	// 结合协议、内置模型能力表和用户覆盖，判断当前配置是否允许图片输入。
+	static bool SupportsImageInput(const AISettings& settings);
 	// 校验自定义请求头多行文本格式。
 	static bool ValidateCustomHeadersText(const std::string& headerText, std::string& outError);
 	// 测试当前 AI 配置的接口连通性。
@@ -193,6 +209,8 @@ public:
 	static std::string BuildExternalMcpInstructions();
 	// 构建 Agent 工具优化与 Responses 流式解析的内部自测报告。
 	static std::string BuildAgentOptimizationSelfTestJson();
+	// 构建四种协议图片消息序列化与能力判断的内部自测报告。
+	static std::string BuildImageInputSelfTestJson();
 	static std::string NormalizeModelOutputToCode(const std::string& modelText);
 	static std::string Trim(const std::string& text);
 

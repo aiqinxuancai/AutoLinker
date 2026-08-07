@@ -15,6 +15,7 @@ struct AIChatStoredMessage {
 	bool visibleInHistory = true;
 	std::string reasoningContentUtf8;
 	std::string rawMessageJsonUtf8;
+	std::vector<AIImageAttachment> attachments;
 };
 
 // 尚未传入模型的用户输入。
@@ -22,11 +23,12 @@ struct AIChatStoredPendingInput {
 	unsigned long long id = 0;
 	std::string contentLocal;
 	long long queuedAtUnixMs = 0;
+	std::vector<AIImageAttachment> attachments;
 };
 
 // AI 对话会话存储数据。
 struct AIChatStoredSession {
-	int schemaVersion = 6;
+	int schemaVersion = 7;
 	std::string sessionId;
 	std::string sourceFileNameLocal;
 	std::string sourceFilePathHintLocal;
@@ -66,6 +68,9 @@ std::filesystem::path GetAIChatSessionDirectoryPathForSourceFile(const std::stri
 std::filesystem::path ResolveAIChatSessionFilePath(
 	const std::string& sourceFilePathLocal,
 	const std::string& sessionId);
+
+// 获取指定会话的图片等旁路资源目录。
+std::filesystem::path GetAIChatSessionAssetDirectoryPath(const std::filesystem::path& sessionFilePath);
 
 // 保存 AI 对话会话到磁盘。
 bool SaveAIChatStoredSession(const AIChatStoredSession& session, std::string* outError = nullptr);

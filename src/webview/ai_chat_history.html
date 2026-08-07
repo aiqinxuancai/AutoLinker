@@ -204,26 +204,50 @@ html:not(.autolinker-page-visible) *::after {
 	flex: 0 0 auto;
 	border-top: 1px solid #d7dbe3;
 	background: #e6e9ef;
-	padding: 12px 12px 14px 12px;
+	padding: 8px 12px 10px;
 	box-sizing: border-box;
 	position: relative;
 }
 
-.actions {
+.composer-surface {
+	position: relative;
+	border: 1px solid #d4d9e3;
+	border-radius: 7px;
+	background: #fff;
+	box-shadow: 0 1px 2px rgba(76, 79, 105, .06);
+	transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.composer-surface:focus-within {
+	border-color: #1e66f5;
+	box-shadow: 0 0 0 2px rgba(30, 102, 245, .1);
+}
+
+.composer-toolbar {
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
-	gap: 8px;
+	min-height: 36px;
+	gap: 10px;
+	padding: 3px 6px;
+	border-top: 1px solid #e1e5ec;
+	box-sizing: border-box;
 }
 
-.left-actions,
-.right-actions {
+.composer-toolbar-left,
+.composer-toolbar-right {
 	display: flex;
 	align-items: center;
-	gap: 8px;
+	gap: 5px;
+	min-width: 0;
 }
 
-.right-actions {
+.composer-toolbar-left {
+	flex: 1 1 auto;
+}
+
+.composer-toolbar-right {
+	flex: 0 0 auto;
 	margin-left: auto;
 }
 
@@ -235,28 +259,34 @@ html:not(.autolinker-page-visible) *::after {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	height: 18px;
-	padding: 0 7px;
-	border: 1px solid #ccd3dd;
-	border-radius: 5px;
-	background: #fff;
-	color: #4c4f69;
-	font: 700 10px/1 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+	gap: 4px;
+	height: 28px;
+	padding: 0 4px;
+	border: 0;
+	background: transparent;
+	color: #7b8190;
+	font: 600 10px/1 "Segoe UI", "Microsoft YaHei UI", sans-serif;
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 	box-sizing: border-box;
 }
 
+.session-status svg {
+	width: 13px;
+	height: 13px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.7;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
 .session-status.working {
-	border-color: rgba(30, 102, 245, .32);
-	background: rgba(30, 102, 245, .08);
 	color: #1e66f5;
 }
 
 .session-status.done {
-	border-color: rgba(46, 125, 50, .28);
-	background: rgba(46, 125, 50, .08);
-	color: #2e7d32;
+	color: #7b8190;
 }
 
 .input-wrap {
@@ -357,8 +387,107 @@ html:not(.autolinker-page-visible) *::after {
 
 .input-area {
 	position: relative;
-	margin-top: 2px;
 }
+
+.attachment-strip {
+	display: flex;
+	align-items: stretch;
+	gap: 8px;
+	margin-bottom: 8px;
+	overflow-x: auto;
+	padding: 1px 1px 4px;
+}
+
+.attachment-strip[hidden] { display: none; }
+
+.attachment-item {
+	position: relative;
+	flex: 0 0 128px;
+	height: 58px;
+	display: grid;
+	grid-template-columns: 48px minmax(0, 1fr);
+	align-items: center;
+	gap: 8px;
+	padding: 5px;
+	border: 1px solid var(--al-soft-border, #d4d9e3);
+	border-radius: 6px;
+	background: var(--al-input-bg, #fff);
+	box-sizing: border-box;
+}
+
+.attachment-thumb {
+	width: 48px;
+	height: 46px;
+	object-fit: cover;
+	border-radius: 4px;
+	background: var(--al-panel-bg, #eef1f6);
+}
+
+.attachment-meta { min-width: 0; padding-right: 14px; }
+.attachment-name {
+	font-size: 10px;
+	line-height: 1.35;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.attachment-size { color: var(--al-subtle-text, #8c8fa1); font-size: 9px; }
+
+.attachment-remove {
+	position: absolute;
+	top: 3px;
+	right: 3px;
+	width: 18px;
+	height: 18px;
+	border: 0;
+	padding: 0;
+	background: rgba(255, 255, 255, .88);
+	color: var(--al-danger, #d20f39);
+	font: 15px/17px "Segoe UI", sans-serif;
+	cursor: pointer;
+}
+
+.attach-icon-btn {
+	width: 28px;
+	height: 28px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--al-subtle-text, #6c7086);
+	padding: 0;
+	cursor: pointer;
+	transition: color .15s ease, background-color .15s ease;
+}
+.attach-icon-btn:hover {
+	color: var(--al-primary, #1e66f5);
+	background: var(--al-button-hover-bg, #eef1f6);
+}
+.attach-icon-btn:focus-visible {
+	outline: 2px solid rgba(30, 102, 245, .35);
+	outline-offset: 2px;
+}
+.attach-icon-btn:disabled { opacity: .45; cursor: default; }
+.attach-icon-btn svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+
+.drop-overlay {
+	position: absolute;
+	inset: 6px;
+	z-index: 30;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: 2px dashed var(--al-primary, #1e66f5);
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--al-composer-bg, #e6e9ef) 90%, transparent);
+	color: var(--al-primary, #1e66f5);
+	font-size: 12px;
+	font-weight: 700;
+	pointer-events: none;
+}
+.drop-overlay[hidden] { display: none; }
 
 .pending-inputs {
 	margin: 0 0 8px;
@@ -418,50 +547,57 @@ html:not(.autolinker-page-visible) *::after {
 	stroke-linejoin: round;
 }
 
-.mode-bar {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	min-width: 0;
-}
-
-.mode-chip {
+.toolbar-text-btn {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	height: 18px;
+	gap: 5px;
+	height: 28px;
+	min-width: 0;
 	padding: 0 7px;
 	border: 1px solid transparent;
 	border-radius: 5px;
 	background: transparent;
-	color: #9aa0b0;
-	font: 700 10px/1 "Segoe UI", "Microsoft YaHei UI", sans-serif;
+	color: #5d6475;
+	font: 600 10px/1 "Segoe UI", "Microsoft YaHei UI", sans-serif;
 	white-space: nowrap;
 	box-sizing: border-box;
 	cursor: pointer;
 	transition: border-color .15s ease, background-color .15s ease, color .15s ease;
 }
 
-.mode-chip:hover {
-	color: #5d6475;
-}
-
-.mode-chip.active {
-	border-color: rgba(30, 102, 245, .32);
-	background: rgba(30, 102, 245, .08);
+.toolbar-text-btn:hover {
+	background: #eef1f6;
 	color: #1e66f5;
 }
 
-.mode-chip.auto.active {
-	border-color: rgba(46, 125, 50, .3);
-	background: rgba(46, 125, 50, .08);
-	color: #2e7d32;
+.toolbar-text-btn:focus-visible {
+	outline: 2px solid rgba(30, 102, 245, .35);
+	outline-offset: 1px;
 }
 
-.mode-chip.goal.active { color: #1e66f5; }
-.mode-chip.goal.paused { color: #8a5a00; border-color: rgba(138, 90, 0, .35); background: rgba(138, 90, 0, .08); }
-.mode-chip.goal.blocked { color: #b42318; border-color: rgba(180, 35, 24, .32); background: rgba(180, 35, 24, .08); }
-.mode-chip.goal.complete { color: #2e7d32; border-color: rgba(46, 125, 50, .3); background: rgba(46, 125, 50, .08); }
+.toolbar-text-btn:disabled {
+	opacity: .5;
+	cursor: default;
+}
+
+.toolbar-text-btn svg {
+	flex: 0 0 auto;
+	width: 14px;
+	height: 14px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.7;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.toolbar-btn-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
 
 .api-profile-switcher {
 	position: relative;
@@ -470,11 +606,11 @@ html:not(.autolinker-page-visible) *::after {
 }
 
 .api-profile-chip {
-	max-width: 90px;
+	max-width: 124px;
 	min-width: 0;
 }
 
-.api-profile-chip .mode-label {
+.api-profile-chip .toolbar-btn-label {
 	display: block;
 	min-width: 0;
 	overflow: hidden;
@@ -537,6 +673,126 @@ html:not(.autolinker-page-visible) *::after {
 	font-weight: 700;
 }
 
+.mode-switcher {
+	position: relative;
+	display: inline-flex;
+}
+
+.mode-trigger {
+	max-width: 104px;
+}
+
+.mode-trigger.active {
+	background: rgba(30, 102, 245, .08);
+	color: #1e66f5;
+}
+
+.mode-trigger-chevron {
+	width: 11px !important;
+	height: 11px !important;
+	transition: transform .15s ease;
+}
+
+.mode-trigger[aria-expanded="true"] .mode-trigger-chevron {
+	transform: rotate(180deg);
+}
+
+.mode-menu {
+	position: absolute;
+	right: 0;
+	bottom: calc(100% + 7px);
+	z-index: 24;
+	width: 304px;
+	padding: 5px;
+	border: 1px solid #ccd3dd;
+	border-radius: 7px;
+	background: #fff;
+	box-shadow: 0 8px 24px rgba(30, 38, 58, .18);
+	box-sizing: border-box;
+}
+
+.mode-menu[hidden] { display: none; }
+
+.mode-menu-title {
+	padding: 4px 7px 5px;
+	color: #7b8190;
+	font: 600 10px/1.2 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+}
+
+.mode-menu-item {
+	display: grid;
+	grid-template-columns: 24px minmax(0, 1fr) 18px;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	min-height: 48px;
+	padding: 6px 8px;
+	border: 0;
+	border-radius: 5px;
+	background: transparent;
+	color: #4c4f69;
+	text-align: left;
+	cursor: pointer;
+	box-sizing: border-box;
+}
+
+.mode-menu-item:hover,
+.mode-menu-item:focus-visible {
+	background: #eef1f6;
+	outline: none;
+}
+
+.mode-menu-item:disabled {
+	opacity: .46;
+	cursor: default;
+}
+
+.mode-menu-item-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	color: #5d6475;
+}
+
+.mode-menu-item-icon svg {
+	width: 18px;
+	height: 18px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.6;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.mode-menu-item-copy {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.mode-menu-item-title {
+	font: 600 11px/1.25 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+}
+
+.mode-menu-item-description {
+	color: #7b8190;
+	font: 10px/1.35 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+}
+
+.mode-menu-item-state {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	color: #1e66f5;
+	font: 700 13px/1 "Segoe UI", sans-serif;
+}
+
+.mode-menu-item.goal-active .mode-menu-item-state { color: #1e66f5; }
+.mode-menu-item.goal-paused .mode-menu-item-state { color: #8a5a00; }
+.mode-menu-item.goal-blocked .mode-menu-item-state { color: #b42318; }
+.mode-menu-item.goal-complete .mode-menu-item-state { color: #2e7d32; }
+
 .goal-panel {
 	margin-bottom: 8px;
 	padding: 9px 0;
@@ -580,32 +836,21 @@ html:not(.autolinker-page-visible) *::after {
 }
 .goal-panel-actions { justify-content: flex-end; margin-top: 8px; }
 
-.mode-chip:focus-visible {
-	outline: 2px solid rgba(30, 102, 245, .35);
-	outline-offset: 2px;
-}
-
-.mode-chip:disabled {
-	opacity: .5;
-	cursor: default;
-}
-
 #chat-input {
 	width: 100%;
-	min-height: 60px;
+	min-height: 40px;
 	max-height: 220px;
 	resize: none;
 	box-sizing: border-box;
-	border: 1px solid #d4d9e3;
-	border-radius: 6px;
-	padding: 11px 44px 11px 12px;
+	border: 0;
+	border-radius: 7px 7px 0 0;
+	padding: 10px 12px;
 	font: 13px/1.5 "Microsoft YaHei UI", "Segoe UI", sans-serif;
 	color: #4c4f69;
 	outline: none;
 	background: #fff;
 	overflow: hidden;
-	box-shadow: 0 1px 2px rgba(76, 79, 105, .05);
-	transition: border-color .15s ease, box-shadow .15s ease;
+	display: block;
 }
 
 #chat-input::placeholder {
@@ -613,8 +858,7 @@ html:not(.autolinker-page-visible) *::after {
 }
 
 #chat-input:focus {
-	border-color: #1e66f5;
-	box-shadow: 0 0 0 3px rgba(30, 102, 245, .12), 0 1px 3px rgba(30, 102, 245, .08);
+	box-shadow: none;
 }
 
 .btn {
@@ -645,9 +889,6 @@ html:not(.autolinker-page-visible) *::after {
 }
 
 .send-icon-btn {
-	position: absolute;
-	right: 8px;
-	bottom: 8px;
 	width: 28px;
 	height: 28px;
 	display: inline-flex;
@@ -655,15 +896,16 @@ html:not(.autolinker-page-visible) *::after {
 	justify-content: center;
 	border: 0;
 	border-radius: 6px;
-	background: transparent;
-	color: #1e66f5;
+	background: #1e66f5;
+	color: #fff;
 	padding: 0;
 	cursor: pointer;
 	transition: color .15s ease, transform .1s ease;
 }
 
 .send-icon-btn:hover {
-	color: #1554d1;
+	background: #1554d1;
+	color: #fff;
 }
 
 .send-icon-btn:active {
@@ -676,7 +918,8 @@ html:not(.autolinker-page-visible) *::after {
 }
 
 .send-icon-btn:disabled {
-	color: #b9bfca;
+	background: #c6cbd5;
+	color: #fff;
 	cursor: default;
 }
 
@@ -692,9 +935,7 @@ html:not(.autolinker-page-visible) *::after {
 }
 
 .stop-icon-btn {
-	position: absolute;
-	right: 8px;
-	bottom: 8px;
+	position: relative;
 	width: 28px;
 	height: 28px;
 	display: inline-flex;
@@ -818,6 +1059,33 @@ html:not(.autolinker-page-visible) *::after {
 	word-break: break-word;
 	color: #4c4f69;
 }
+
+.message-images {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(132px, 220px));
+	gap: 8px;
+	margin-top: 8px;
+}
+.message-image { margin: 0; min-width: 0; }
+.message-image img {
+	display: block;
+	width: 100%;
+	max-height: 220px;
+	object-fit: contain;
+	border: 1px solid var(--al-soft-border, #d4d9e3);
+	border-radius: 6px;
+	background: var(--al-panel-bg, #eef1f6);
+}
+.message-image figcaption {
+	margin-top: 3px;
+	color: var(--al-subtle-text, #8c8fa1);
+	font-size: 9px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.message-image figcaption span { opacity: .8; }
+.message-image-missing { color: var(--al-danger, #d20f39); font-size: 10px; }
 
 .body p,
 .body ul,
@@ -1619,38 +1887,26 @@ body,
 .body,
 .page-msgbox,
 .session-menu { color: var(--al-text); }
-.mode-chip,
 .muted,
 .session-item-time,
 .session-empty,
 .tool-approval-meta { color: var(--al-muted-text); }
 .top-action:hover,
-.send-icon-btn,
 .stop-icon-btn,
 .body a,
 .empty-state-links a,
 .news-config-text-title { color: var(--al-link-text); }
 .top-action.active,
-.mode-chip.active,
-.session-status.working,
 .plan-status {
 	background: var(--al-chip-bg);
 	color: var(--al-primary);
 }
 .top-action:focus-visible,
-.mode-chip:focus-visible,
+.toolbar-text-btn:focus-visible,
+.attach-icon-btn:focus-visible,
 .send-icon-btn:focus-visible,
 .stop-icon-btn:focus-visible {
 	outline-color: var(--al-primary);
-}
-.mode-chip:hover { color: var(--al-muted-text); }
-.mode-chip.active,
-.session-status.working {
-	border-color: var(--al-primary);
-}
-.session-status.done {
-	background: var(--al-chip-bg);
-	border-color: var(--al-success);
 }
 .news-config-text {
 	background: var(--al-panel-bg);
@@ -1670,16 +1926,32 @@ body,
 	background: var(--al-composer-bg);
 	border-top-color: var(--al-border);
 }
-#chat-input {
+.composer-surface {
 	background: var(--al-input-bg);
 	border-color: var(--al-input-border);
+}
+.composer-surface:focus-within {
+	border-color: var(--al-primary);
+	box-shadow: 0 0 0 2px var(--al-chip-bg);
+}
+.composer-toolbar { border-top-color: var(--al-soft-border); }
+#chat-input {
+	background: var(--al-input-bg);
 	color: var(--al-text);
 }
 #chat-input::placeholder { color: var(--al-placeholder); }
-#chat-input:focus {
-	border-color: var(--al-primary);
-	box-shadow: 0 0 0 1px var(--al-primary);
+.toolbar-text-btn { color: var(--al-muted-text); }
+.toolbar-text-btn:hover {
+	background: var(--al-button-hover-bg);
+	color: var(--al-primary);
 }
+.mode-trigger.active {
+	background: var(--al-chip-bg);
+	color: var(--al-primary);
+}
+.session-status { color: var(--al-subtle-text); }
+.session-status.working { color: var(--al-primary); }
+.session-status.done { color: var(--al-muted-text); }
 .btn {
 	background: var(--al-button-bg);
 	border-color: var(--al-soft-border);
@@ -1708,9 +1980,19 @@ body,
 	border-color: var(--al-danger);
 	filter: brightness(.92);
 }
-.send-icon-btn:hover,
+.send-icon-btn {
+	background: var(--al-primary);
+	color: var(--al-panel-bg);
+}
+.send-icon-btn:hover {
+	background: var(--al-primary-hover);
+	color: var(--al-panel-bg);
+}
+.send-icon-btn:disabled {
+	background: var(--al-soft-border);
+	color: var(--al-panel-bg);
+}
 .stop-icon-btn:hover { color: var(--al-primary-hover); }
-.send-icon-btn:disabled,
 .stop-icon-btn:disabled { color: var(--al-subtle-text); }
 .stop-icon-btn::before {
 	border-color: var(--al-chip-bg);
@@ -1857,8 +2139,8 @@ body,
 	color: var(--al-plan-text);
 }
 .tool-approval,
-.session-status,
-.api-profile-menu {
+.api-profile-menu,
+.mode-menu {
 	background: var(--al-approval-bg);
 	color: var(--al-text);
 	border-color: var(--al-soft-border);
@@ -1897,6 +2179,13 @@ body,
 .api-profile-item:hover,
 .api-profile-item:focus-visible { background: var(--al-button-hover-bg); }
 .api-profile-check { color: var(--al-primary); }
+.mode-menu-title,
+.mode-menu-item-description { color: var(--al-muted-text); }
+.mode-menu-item { color: var(--al-text); }
+.mode-menu-item:hover,
+.mode-menu-item:focus-visible { background: var(--al-button-hover-bg); }
+.mode-menu-item-icon { color: var(--al-muted-text); }
+.mode-menu-item-state { color: var(--al-primary); }
 .session-item-title,
 .page-msgbox-title {
 	color: var(--al-plan-text);
@@ -1904,8 +2193,6 @@ body,
 .page-msgbox-text {
 	color: var(--al-text);
 }
-.session-status.done,
-.mode-chip.auto.active { color: var(--al-success); }
 </style>
 </head>
 <body>
@@ -1947,51 +2234,79 @@ body,
 		<div id="latest-user-float" class="latest-user-float" aria-hidden="true" hidden></div>
 	</div>
 	<div class="composer">
+		<div id="drop-overlay" class="drop-overlay" hidden>&#x91CA;&#x653E;&#x4EE5;&#x6DFB;&#x52A0;&#x56FE;&#x7247;</div>
 		<div class="input-wrap">
 			<div id="tool-approval" class="tool-approval" hidden></div>
 			<div id="pending-inputs" class="pending-inputs" hidden></div>
 			<div id="goal-panel" class="goal-panel" hidden></div>
-			<div class="input-area">
-				<textarea id="chat-input" placeholder="&#x8F93;&#x5165;&#x6D88;&#x606F;&#xFF0C;Enter &#x53D1;&#x9001;&#xFF0C;Shift/Ctrl+Enter &#x6362;&#x884C;"></textarea>
-				<button id="send-btn" class="send-icon-btn" type="button" title="&#x53D1;&#x9001;" aria-label="&#x53D1;&#x9001;">
-					<svg viewBox="0 0 24 24" aria-hidden="true">
-						<path d="M22 2 11 13"></path>
-						<path d="m22 2-7 20-4-9-9-4Z"></path>
-					</svg>
-				</button>
-				<button id="stop-btn" class="stop-icon-btn" type="button" title="&#x505C;&#x6B62;" aria-label="&#x505C;&#x6B62;" style="display:none;">
-					<svg viewBox="0 0 24 24" aria-hidden="true">
-						<rect x="4" y="4" width="16" height="16" rx="3"></rect>
-					</svg>
-				</button>
+			<div id="attachment-strip" class="attachment-strip" aria-label="&#x56FE;&#x7247;&#x9644;&#x4EF6;" hidden></div>
+			<div class="composer-surface">
+				<div class="input-area">
+					<textarea id="chat-input" rows="1" placeholder="&#x8F93;&#x5165;&#x6D88;&#x606F;&#xFF0C;Enter &#x53D1;&#x9001;&#xFF0C;Shift/Ctrl+Enter &#x6362;&#x884C;"></textarea>
+				</div>
+				<div class="composer-toolbar">
+					<div class="composer-toolbar-left">
+						<input id="image-file-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp,image/bmp,image/tiff" multiple hidden>
+						<button id="attach-btn" class="attach-icon-btn" type="button" title="&#x6DFB;&#x52A0;&#x56FE;&#x7247;" aria-label="&#x6DFB;&#x52A0;&#x56FE;&#x7247;">
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m21.4 11.6-8.9 8.9a6 6 0 0 1-8.5-8.5l9.6-9.6a4 4 0 0 1 5.7 5.7l-9.6 9.6a2 2 0 0 1-2.8-2.8l8.9-8.9"></path></svg>
+						</button>
+						<div class="api-profile-switcher">
+							<button id="api-profile-btn" class="toolbar-text-btn api-profile-chip" type="button" title="&#x5F53;&#x524D; API&#xFF1A;&#x672A;&#x914D;&#x7F6E;" aria-label="&#x5207;&#x6362; API &#x914D;&#x7F6E;" aria-haspopup="menu" aria-expanded="false">
+								<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1"></path><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1"></path></svg>
+								<span class="toolbar-btn-label">&#x672A;&#x914D;&#x7F6E;</span>
+							</button>
+							<div id="api-profile-menu" class="api-profile-menu" role="menu" hidden></div>
+						</div>
+					</div>
+					<div class="composer-toolbar-right">
+						<span id="session-status" class="session-status done" title="&#x4E0A;&#x4E0B;&#x6587;&#x7528;&#x91CF;&#x4E0D;&#x53EF;&#x7528;" hidden>
+							<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>
+							<span class="session-status-value">0m 00s</span>
+						</span>
+						<div class="mode-switcher">
+							<button id="mode-trigger" class="toolbar-text-btn mode-trigger" type="button" title="&#x5BF9;&#x8BDD;&#x6A21;&#x5F0F;" aria-label="&#x9009;&#x62E9;&#x5BF9;&#x8BDD;&#x6A21;&#x5F0F;" aria-haspopup="menu" aria-expanded="false">
+								<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 11V7a2 2 0 0 1 4 0v4"></path><path d="M12 10V5a2 2 0 0 1 4 0v6"></path><path d="M16 10V7a2 2 0 0 1 4 0v7c0 4-3 7-7 7h-1c-3 0-5-1-7-4l-2-3a2 2 0 0 1 3-2l2 2"></path></svg>
+								<span id="mode-trigger-label" class="toolbar-btn-label">&#x624B;&#x52A8;</span>
+								<svg class="mode-trigger-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"></path></svg>
+							</button>
+							<div id="mode-menu" class="mode-menu" role="menu" aria-label="&#x5BF9;&#x8BDD;&#x6A21;&#x5F0F;" hidden>
+								<div class="mode-menu-title">&#x6A21;&#x5F0F;</div>
+								<button id="manual-mode-item" class="mode-menu-item" type="button" role="menuitemcheckbox" aria-checked="true" data-mode-action="manual">
+									<span class="mode-menu-item-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 11V7a2 2 0 0 1 4 0v4"></path><path d="M12 10V5a2 2 0 0 1 4 0v6"></path><path d="M16 10V7a2 2 0 0 1 4 0v7c0 4-3 7-7 7h-1c-3 0-5-1-7-4l-2-3a2 2 0 0 1 3-2l2 2"></path></svg></span>
+									<span class="mode-menu-item-copy"><span class="mode-menu-item-title">&#x624B;&#x52A8;</span><span class="mode-menu-item-description">&#x5199;&#x5165;&#x64CD;&#x4F5C;&#x524D;&#x8BF7;&#x6C42;&#x6279;&#x51C6;</span></span>
+									<span class="mode-menu-item-state" aria-hidden="true">&#x2713;</span>
+								</button>
+								<button id="goal-mode-btn" class="mode-menu-item" type="button" role="menuitemcheckbox" aria-checked="false" data-mode-action="goal">
+									<span class="mode-menu-item-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"></circle><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path></svg></span>
+									<span class="mode-menu-item-copy"><span class="mode-menu-item-title">&#x76EE;&#x6807;</span><span id="goal-mode-description" class="mode-menu-item-description">&#x521B;&#x5EFA;&#x6216;&#x7BA1;&#x7406;&#x957F;&#x671F;&#x4EFB;&#x52A1;</span></span>
+									<span class="mode-menu-item-state" aria-hidden="true"></span>
+								</button>
+								<button id="plan-mode-btn" class="mode-menu-item" type="button" role="menuitemcheckbox" aria-checked="false" data-mode-action="plan">
+									<span class="mode-menu-item-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18H6z"></path><path d="M9 7h6M9 11h6M9 15h4"></path></svg></span>
+									<span class="mode-menu-item-copy"><span class="mode-menu-item-title">&#x8BA1;&#x5212;</span><span class="mode-menu-item-description">&#x5148;&#x63A2;&#x7D22;&#x5E76;&#x63D0;&#x4EA4;&#x8BA1;&#x5212;&#xFF0C;&#x6279;&#x51C6;&#x540E;&#x6267;&#x884C;</span></span>
+									<span class="mode-menu-item-state" aria-hidden="true"></span>
+								</button>
+								<button id="auto-allow-btn" class="mode-menu-item" type="button" role="menuitemcheckbox" aria-checked="false" data-mode-action="auto">
+									<span class="mode-menu-item-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 2-9 12h7l-1 8 9-12h-7z"></path></svg></span>
+									<span class="mode-menu-item-copy"><span class="mode-menu-item-title">&#x81EA;&#x52A8;&#x5141;&#x8BB8;</span><span class="mode-menu-item-description">&#x5199;&#x5165;&#x548C;&#x672C;&#x673A;&#x547D;&#x4EE4;&#x65E0;&#x9700;&#x9010;&#x6B21;&#x6279;&#x51C6;</span></span>
+									<span class="mode-menu-item-state" aria-hidden="true"></span>
+								</button>
+							</div>
+						</div>
+						<button id="stop-btn" class="stop-icon-btn" type="button" title="&#x505C;&#x6B62;" aria-label="&#x505C;&#x6B62;" style="display:none;">
+							<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"></rect></svg>
+						</button>
+						<button id="send-btn" class="send-icon-btn" type="button" title="&#x53D1;&#x9001;" aria-label="&#x53D1;&#x9001;">
+							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2 11 13"></path><path d="m22 2-7 20-4-9-9-4Z"></path></svg>
+						</button>
+					</div>
+				</div>
 			</div>
 			<div id="clear-confirm" class="clear-confirm" hidden>
 				<div class="clear-confirm-text">&#x5F53;&#x524D; AI &#x5BF9;&#x8BDD;&#x5C06;&#x4FDD;&#x5B58;&#x5230;&#x5386;&#x53F2;&#xFF0C;&#x5E76;&#x5F00;&#x542F;&#x65B0;&#x4F1A;&#x8BDD;&#x3002;</div>
 				<div class="clear-confirm-actions">
 					<button id="clear-confirm-btn" class="btn danger" type="button">&#x65B0;&#x5EFA;</button>
 					<button id="clear-cancel-btn" class="btn" type="button">&#x53D6;&#x6D88;</button>
-				</div>
-			</div>
-			<div class="actions">
-				<div class="mode-bar">
-					<button id="goal-mode-btn" class="mode-chip goal" type="button" title="&#x76EE;&#x6807;" aria-label="&#x76EE;&#x6807;">
-						<span class="mode-label">&#x76EE;&#x6807;</span>
-					</button>
-					<button id="plan-mode-btn" class="mode-chip" type="button" title="&#x8FDB;&#x5165;&#x8BA1;&#x5212;&#x6A21;&#x5F0F;" aria-label="&#x8BA1;&#x5212;&#x6A21;&#x5F0F;">
-						<span class="mode-label">&#x8BA1;&#x5212;</span>
-					</button>
-					<button id="auto-allow-btn" class="mode-chip auto" type="button" title="&#x9ED8;&#x8BA4;&#x8BE2;&#x95EE;&#x5199;&#x5165;&#x64CD;&#x4F5C;" aria-label="&#x81EA;&#x52A8;&#x5141;&#x8BB8;">
-						<span class="mode-label">&#x81EA;&#x52A8;&#x5141;&#x8BB8;</span>
-					</button>
-					<div class="api-profile-switcher">
-						<button id="api-profile-btn" class="mode-chip api-profile-chip" type="button" title="&#x5F53;&#x524D; API&#xFF1A;&#x672A;&#x914D;&#x7F6E;" aria-label="&#x5207;&#x6362; API &#x914D;&#x7F6E;" aria-haspopup="menu" aria-expanded="false">
-							<span class="mode-label">&#x672A;&#x914D;&#x7F6E;</span>
-						</button>
-						<div id="api-profile-menu" class="api-profile-menu" role="menu" hidden></div>
-					</div>
-				</div>
-				<div class="right-actions">
-					<span id="session-status" class="session-status done" title="&#x4E0A;&#x4E0B;&#x6587;&#x7528;&#x91CF;&#x4E0D;&#x53EF;&#x7528;" hidden>0m 00s</span>
 				</div>
 			</div>
 			<div id="restore-confirm" class="page-msgbox" role="alertdialog" aria-labelledby="restore-confirm-title" aria-describedby="restore-confirm-text" hidden>
@@ -2013,6 +2328,8 @@ window.autolinkerGoalState = { status: "none", objective: "", tokensUsed: 0, ela
 window.autolinkerGoalPanelOpen = false;
 window.autolinkerApiProfiles = { activeProfileId: "", activeProfileName: "\u672A\u914D\u7F6E", profiles: [], pendingForNextRequest: false };
 window.autolinkerContextUsageTitle = "\u4E0A\u4E0B\u6587\u7528\u91CF\u4E0D\u53EF\u7528";
+window.autolinkerAttachments = [];
+window.autolinkerAttachmentSequence = 1;
 
 window.autolinkerSetPageVisible = function(visible) {
 	document.documentElement.classList.toggle("autolinker-page-visible", !!visible);
@@ -2243,40 +2560,71 @@ window.autolinkerSetUpdateTag = function(show) {
 	}
 };
 
+window.autolinkerRenderModeControl = function() {
+	var planState = window.autolinkerPlanState || "normal";
+	var planActive = planState !== "normal";
+	var autoActive = !!window.autolinkerAutoAllow;
+	var manualActive = !planActive && !autoActive;
+	var trigger = document.getElementById("mode-trigger");
+	var triggerLabel = document.getElementById("mode-trigger-label");
+	var manualItem = document.getElementById("manual-mode-item");
+	var planItem = document.getElementById("plan-mode-btn");
+	var autoItem = document.getElementById("auto-allow-btn");
+	var goalItem = document.getElementById("goal-mode-btn");
+	var goalDescription = document.getElementById("goal-mode-description");
+	var summary = planActive && autoActive
+		? "\u8BA1\u5212 + \u81EA\u52A8"
+		: (planActive ? "\u8BA1\u5212" : (autoActive ? "\u81EA\u52A8" : "\u624B\u52A8"));
+	if (triggerLabel) triggerLabel.textContent = summary;
+	if (trigger) {
+		trigger.classList.toggle("active", !manualActive);
+		trigger.title = "\u5F53\u524D\u6A21\u5F0F\uFF1A" + summary;
+		trigger.setAttribute("aria-label", "\u9009\u62E9\u5BF9\u8BDD\u6A21\u5F0F\uFF0C\u5F53\u524D\u4E3A " + summary);
+	}
+	function setChecked(item, checked) {
+		if (!item) return;
+		item.setAttribute("aria-checked", checked ? "true" : "false");
+		var state = item.querySelector ? item.querySelector(".mode-menu-item-state") : null;
+		if (state) state.textContent = checked ? "\u2713" : "";
+	}
+	setChecked(manualItem, manualActive);
+	setChecked(planItem, planActive);
+	setChecked(autoItem, autoActive);
+	if (planItem) planItem.disabled = !!window.autolinkerBusy;
+	if (manualItem) manualItem.disabled = !!window.autolinkerBusy && planActive;
+
+	var goal = window.autolinkerGoalState || {};
+	var goalStatus = goal.status || "none";
+	if (goalItem) {
+		goalItem.classList.remove("goal-active", "goal-paused", "goal-blocked", "goal-complete");
+		if (goalStatus !== "none") goalItem.classList.add("goal-" + goalStatus);
+		goalItem.setAttribute("aria-checked", goalStatus !== "none" ? "true" : "false");
+		var goalState = goalItem.querySelector ? goalItem.querySelector(".mode-menu-item-state") : null;
+		if (goalState) goalState.textContent = goalStatus === "none" ? "" : "\u2022";
+	}
+	if (goalDescription) {
+		var goalText = "\u521B\u5EFA\u6216\u7BA1\u7406\u957F\u671F\u4EFB\u52A1";
+		if (goalStatus === "active") goalText = "\u8FDB\u884C\u4E2D\u00B7" + (goal.elapsedLabel || "0m 0s");
+		else if (goalStatus === "paused") goalText = "\u5DF2\u6682\u505C\uFF0C\u53EF\u5728\u76EE\u6807\u9762\u677F\u6062\u590D";
+		else if (goalStatus === "blocked") goalText = "\u5DF2\u963B\u585E\uFF0C\u9700\u8981\u5904\u7406\u540E\u6062\u590D";
+		else if (goalStatus === "complete") goalText = "\u5DF2\u5B8C\u6210\uFF0C\u53EF\u67E5\u770B\u6216\u6E05\u9664";
+		goalDescription.textContent = goalText;
+	}
+};
+
 window.autolinkerSetPlanMode = function(state, label, title) {
 	var normalized = state || "normal";
 	window.autolinkerPlanState = normalized;
-	var active = normalized === "planning" || normalized === "awaiting_approval";
-	var btn = document.getElementById("plan-mode-btn");
-	if (btn) {
-		var text = btn.querySelector ? btn.querySelector(".mode-label") : null;
-		if (text) {
-			text.textContent = "\u8BA1\u5212";
-		}
-		btn.classList.toggle("active", active);
-		btn.title = title || (active ? "\u9000\u51FA\u8BA1\u5212\u6A21\u5F0F" : "\u8FDB\u5165\u8BA1\u5212\u6A21\u5F0F");
-		btn.setAttribute("aria-label", btn.title);
-	}
 	if (window.autolinkerApplyGoalButtonState) {
 		window.autolinkerApplyGoalButtonState();
 	}
+	window.autolinkerRenderModeControl();
 	window.autolinkerRenderGoalPanel();
 };
 
 window.autolinkerSetAutoAllowMode = function(enabled, label, title) {
-	var active = !!enabled;
-	window.autolinkerAutoAllow = active;
-	var btn = document.getElementById("auto-allow-btn");
-	if (!btn) {
-		return;
-	}
-	var text = btn.querySelector ? btn.querySelector(".mode-label") : null;
-	if (text) {
-		text.textContent = "\u81EA\u52A8\u5141\u8BB8";
-	}
-	btn.classList.toggle("active", active);
-	btn.title = title || (active ? "\u81EA\u52A8\u5141\u8BB8\u5199\u5165" : "\u9ED8\u8BA4\u8BE2\u95EE\u5199\u5165");
-	btn.setAttribute("aria-label", btn.title);
+	window.autolinkerAutoAllow = !!enabled;
+	window.autolinkerRenderModeControl();
 };
 
 window.autolinkerRenderApiProfiles = function() {
@@ -2286,7 +2634,7 @@ window.autolinkerRenderApiProfiles = function() {
 	var btn = document.getElementById("api-profile-btn");
 	var menu = document.getElementById("api-profile-menu");
 	if (btn) {
-		var label = btn.querySelector ? btn.querySelector(".mode-label") : null;
+		var label = btn.querySelector ? btn.querySelector(".toolbar-btn-label") : null;
 		if (label) label.textContent = activeName;
 		btn.title = "\u5F53\u524D API\uFF1A" + activeName + (data.pendingForNextRequest ? "\uFF08\u4E0B\u6B21\u8BF7\u6C42\u751F\u6548\uFF09" : "");
 		btn.setAttribute("aria-label", profiles.length ? "\u5207\u6362 API \u914D\u7F6E\uFF0C\u5F53\u524D\u4E3A " + activeName : "\u6253\u5F00 AI \u670D\u52A1\u8BBE\u7F6E");
@@ -2351,18 +2699,7 @@ window.autolinkerApplyGoalButtonState = function() {
 	var suspendedByPlan = status === "active" &&
 		(planState === "planning" || planState === "awaiting_approval");
 	data.suspendedByPlan = suspendedByPlan;
-	var btn = document.getElementById("goal-mode-btn");
-	if (!btn) return;
-	var text = btn.querySelector ? btn.querySelector(".mode-label") : null;
-	if (text) text.textContent = suspendedByPlan ? "\u76EE\u6807" : (data.label || "\u76EE\u6807");
-	btn.classList.toggle("active", !suspendedByPlan && status === "active");
-	btn.classList.toggle("paused", !suspendedByPlan && status === "paused");
-	btn.classList.toggle("blocked", !suspendedByPlan && status === "blocked");
-	btn.classList.toggle("complete", !suspendedByPlan && status === "complete");
-	btn.title = suspendedByPlan
-		? "Goal \u5DF2\u5728\u8BA1\u5212\u6A21\u5F0F\u4E2D\u6682\u6302"
-		: (data.objective || data.label || "\u76EE\u6807");
-	btn.setAttribute("aria-label", suspendedByPlan ? "\u76EE\u6807" : (data.label || "\u76EE\u6807"));
+	window.autolinkerRenderModeControl();
 };
 
 window.autolinkerSetGoalState = function(payload) {
@@ -2374,15 +2711,13 @@ window.autolinkerSetGoalState = function(payload) {
 
 window.autolinkerSetBusy = function(busy, stopRequested) {
 	var send = document.getElementById("send-btn");
+	var attach = document.getElementById("attach-btn");
 	var stop = document.getElementById("stop-btn");
 	var newSession = document.getElementById("new-session-btn");
 	var restore = document.getElementById("restore-btn");
 	var settings = document.getElementById("settings-btn");
 	var mcpSettings = document.getElementById("mcp-settings-btn");
 	var skillSettings = document.getElementById("skill-settings-btn");
-	var planMode = document.getElementById("plan-mode-btn");
-	var autoAllow = document.getElementById("auto-allow-btn");
-	var goalMode = document.getElementById("goal-mode-btn");
 	var clearConfirm = document.getElementById("clear-confirm");
 	var restoreConfirm = document.getElementById("restore-confirm");
 	var input = document.getElementById("chat-input");
@@ -2394,7 +2729,9 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	if (send) {
 		send.disabled = waitingForPlanInput;
 		send.style.display = "";
-		send.style.right = isBusy ? "42px" : "8px";
+	}
+	if (attach) {
+		attach.disabled = waitingForPlanInput;
 	}
 	if (stop) {
 		stop.disabled = !isBusy || isStopping;
@@ -2416,19 +2753,10 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	if (skillSettings) {
 		skillSettings.disabled = isBusy;
 	}
-	if (planMode) {
-		planMode.disabled = isBusy;
-	}
-	if (autoAllow) {
-		autoAllow.disabled = false;
-	}
-	if (goalMode) {
-		goalMode.disabled = false;
-	}
 	if (input) {
 		input.disabled = waitingForPlanInput;
-		input.style.paddingRight = isBusy ? "76px" : "44px";
 	}
+	window.autolinkerRenderModeControl();
 	var planButtons = document.querySelectorAll ? document.querySelectorAll(".plan-action") : [];
 	for (var i = 0; i < planButtons.length; i++) {
 		planButtons[i].disabled = isBusy;
@@ -2453,7 +2781,8 @@ window.autolinkerSetSessionTiming = function(elapsedLabel, working, visible) {
 	var shouldShow = !!visible;
 	if (status) {
 		status.hidden = !shouldShow;
-		status.textContent = elapsedLabel || "0m 00s";
+		var value = status.querySelector ? status.querySelector(".session-status-value") : null;
+		if (value) value.textContent = elapsedLabel || "0m 00s";
 		status.title = window.autolinkerContextUsageTitle || "\u4E0A\u4E0B\u6587\u7528\u91CF\u4E0D\u53EF\u7528";
 		status.classList.toggle("working", isWorking);
 		status.classList.toggle("done", !isWorking);
@@ -2472,14 +2801,88 @@ window.autolinkerResizeChatInput = function(input) {
 		return;
 	}
 	var maxHeight = 220;
-	var minHeight = 60;
+	var minHeight = 40;
 	input.style.height = "auto";
 	var nextHeight = Math.max(minHeight, Math.min(input.scrollHeight, maxHeight));
 	input.style.height = nextHeight + "px";
 	input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
 };
 
+window.autolinkerFormatBytes = function(bytes) {
+	var value = Number(bytes || 0);
+	if (value < 1024) return value + " B";
+	if (value < 1024 * 1024) return Math.round(value / 1024) + " KB";
+	return (value / (1024 * 1024)).toFixed(1) + " MB";
+};
+
+window.autolinkerRenderAttachments = function() {
+	var strip = document.getElementById("attachment-strip");
+	if (!strip) return;
+	var items = window.autolinkerAttachments || [];
+	if (!items.length) {
+		strip.innerHTML = "";
+		strip.hidden = true;
+		return;
+	}
+	var html = "";
+	for (var i = 0; i < items.length; i++) {
+		var item = items[i] || {};
+		html += '<div class="attachment-item">';
+		html += '<img class="attachment-thumb" src="' + window.autolinkerEscapeHtml(item.dataUrl || "") + '" alt="">';
+		html += '<div class="attachment-meta"><div class="attachment-name" title="' + window.autolinkerEscapeHtml(item.name || "image") + '">' + window.autolinkerEscapeHtml(item.name || "image") + '</div>';
+		html += '<div class="attachment-size">' + window.autolinkerFormatBytes(item.size) + '</div></div>';
+		html += '<button class="attachment-remove" type="button" data-attachment-id="' + window.autolinkerEscapeHtml(item.id || "") + '" title="\u79FB\u9664\u9644\u4EF6" aria-label="\u79FB\u9664\u9644\u4EF6">\u00D7</button></div>';
+	}
+	strip.innerHTML = html;
+	strip.hidden = false;
+};
+
+window.autolinkerSetAttachments = function(items) {
+	window.autolinkerAttachments = [];
+	var values = Array.isArray(items) ? items : [];
+	for (var i = 0; i < values.length && i < 10; i++) {
+		var item = values[i] || {};
+		if (!item.dataUrl) continue;
+		window.autolinkerAttachments.push({
+			id: "image-" + (window.autolinkerAttachmentSequence++),
+			name: item.name || "image.png",
+			mimeType: item.mimeType || "image/png",
+			size: Number(item.size || 0),
+			dataUrl: item.dataUrl,
+			detail: item.detail || "auto"
+		});
+	}
+	window.autolinkerRenderAttachments();
+};
+
+window.autolinkerAddImageFiles = function(fileList) {
+	var files = fileList ? Array.prototype.slice.call(fileList) : [];
+	for (var i = 0; i < files.length; i++) {
+		if (window.autolinkerAttachments.length >= 10) break;
+		var file = files[i];
+		if (!file || String(file.type || "").indexOf("image/") !== 0 || Number(file.size || 0) <= 0 || Number(file.size || 0) > 20 * 1024 * 1024) continue;
+		(function(imageFile) {
+			var reader = new FileReader();
+			reader.onload = function() {
+				if (window.autolinkerAttachments.length >= 10 || typeof reader.result !== "string") return;
+				window.autolinkerAttachments.push({
+					id: "image-" + (window.autolinkerAttachmentSequence++),
+					name: imageFile.name || "image.png",
+					mimeType: imageFile.type || "image/png",
+					size: Number(imageFile.size || 0),
+					dataUrl: reader.result,
+					detail: "auto"
+				});
+				window.autolinkerRenderAttachments();
+			};
+			reader.readAsDataURL(imageFile);
+		})(file);
+	}
+};
+
 window.autolinkerClearInput = function() {
+	window.autolinkerAttachments = [];
+	window.autolinkerRenderAttachments();
 	var input = document.getElementById("chat-input");
 	if (input) {
 		input.value = "";
@@ -2514,7 +2917,11 @@ window.autolinkerSetPendingInputs = function(items) {
 	html += '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"></path><path d="M4 9h10a6 6 0 0 1 6 6v1"></path></svg></button></div>';
 	html += '<div class="pending-inputs-list">';
 	for (var i = 0; i < rows.length; i++) {
-		html += '<div class="pending-input-item"><span class="pending-input-order">' + (i + 1) + '.</span><span class="pending-input-text">' + window.autolinkerEscapeHtml(rows[i].text || "") + '</span></div>';
+		var pendingText = rows[i].text || "";
+		if (Number(rows[i].attachmentCount || 0) > 0) {
+			pendingText += (pendingText ? "  " : "") + "[\u56FE\u7247 x" + Number(rows[i].attachmentCount || 0) + "]";
+		}
+		html += '<div class="pending-input-item"><span class="pending-input-order">' + (i + 1) + '.</span><span class="pending-input-text">' + window.autolinkerEscapeHtml(pendingText) + '</span></div>';
 	}
 	html += '</div>';
 	panel.innerHTML = html;
@@ -2605,6 +3012,11 @@ window.autolinkerHideToolApproval = function() {
 
 (function() {
 	var input = document.getElementById("chat-input");
+	var composer = document.querySelector ? document.querySelector(".composer") : null;
+	var attach = document.getElementById("attach-btn");
+	var imageFileInput = document.getElementById("image-file-input");
+	var attachmentStrip = document.getElementById("attachment-strip");
+	var dropOverlay = document.getElementById("drop-overlay");
 	var send = document.getElementById("send-btn");
 	var stop = document.getElementById("stop-btn");
 	var newSession = document.getElementById("new-session-btn");
@@ -2614,6 +3026,9 @@ window.autolinkerHideToolApproval = function() {
 	var skillSettings = document.getElementById("skill-settings-btn");
 	var planMode = document.getElementById("plan-mode-btn");
 	var autoAllow = document.getElementById("auto-allow-btn");
+	var manualMode = document.getElementById("manual-mode-item");
+	var modeTrigger = document.getElementById("mode-trigger");
+	var modeMenu = document.getElementById("mode-menu");
 	var apiProfile = document.getElementById("api-profile-btn");
 	var apiProfileMenu = document.getElementById("api-profile-menu");
 	var goalMode = document.getElementById("goal-mode-btn");
@@ -2686,6 +3101,11 @@ window.autolinkerHideToolApproval = function() {
 		if (apiProfile) apiProfile.setAttribute("aria-expanded", "false");
 	}
 
+	function hideModeMenu() {
+		if (modeMenu) modeMenu.hidden = true;
+		if (modeTrigger) modeTrigger.setAttribute("aria-expanded", "false");
+	}
+
 	function hideClearConfirm() {
 		if (clearConfirm) {
 			clearConfirm.hidden = true;
@@ -2705,6 +3125,7 @@ window.autolinkerHideToolApproval = function() {
 	function showClearConfirm() {
 		hideSessionMenu();
 		hideApiProfileMenu();
+		hideModeMenu();
 		hideRestoreConfirm();
 		if (!clearConfirm) {
 			return;
@@ -2718,6 +3139,7 @@ window.autolinkerHideToolApproval = function() {
 	function showRestoreConfirm() {
 		hideSessionMenu();
 		hideApiProfileMenu();
+		hideModeMenu();
 		hideClearConfirm();
 		if (!restoreConfirm) {
 			return;
@@ -2754,6 +3176,7 @@ window.autolinkerHideToolApproval = function() {
 	window.autolinkerShowRestoreConfirm = showRestoreConfirm;
 	window.autolinkerShowSessionMenu = function(items) {
 		hideApiProfileMenu();
+		hideModeMenu();
 		hideClearConfirm();
 		hideRestoreConfirm();
 		recentSessions = Array.isArray(items) ? items : [];
@@ -2767,9 +3190,24 @@ window.autolinkerHideToolApproval = function() {
 		if (!input || input.disabled) {
 			return;
 		}
+		if (!String(input.value || "").trim() && !(window.autolinkerAttachments || []).length) {
+			return;
+		}
 		hideClearConfirm();
 		hideRestoreConfirm();
-		post({ action: "submit", text: input.value || "" });
+		hideModeMenu();
+		post({
+			action: "submit",
+			text: input.value || "",
+			attachments: (window.autolinkerAttachments || []).map(function(item) {
+				return {
+					name: item.name || "image.png",
+					mimeType: item.mimeType || "image/png",
+					dataUrl: item.dataUrl || "",
+					detail: item.detail || "auto"
+				};
+			})
+		});
 	}
 
 	function doStop() {
@@ -2778,6 +3216,66 @@ window.autolinkerHideToolApproval = function() {
 
 	if (send) {
 		send.addEventListener("click", doSend);
+	}
+	if (attach && imageFileInput) {
+		attach.addEventListener("click", function() {
+			if (!attach.disabled) imageFileInput.click();
+		});
+		imageFileInput.addEventListener("change", function() {
+			window.autolinkerAddImageFiles(imageFileInput.files);
+			imageFileInput.value = "";
+		});
+	}
+	if (attachmentStrip) {
+		attachmentStrip.addEventListener("click", function(e) {
+			var button = e.target && e.target.closest ? e.target.closest("[data-attachment-id]") : null;
+			if (!button) return;
+			var id = button.getAttribute("data-attachment-id") || "";
+			window.autolinkerAttachments = (window.autolinkerAttachments || []).filter(function(item) {
+				return String(item.id || "") !== id;
+			});
+			window.autolinkerRenderAttachments();
+			if (input) input.focus();
+		});
+	}
+	if (input) {
+		input.addEventListener("paste", function(e) {
+			var items = e.clipboardData && e.clipboardData.items ? e.clipboardData.items : [];
+			var images = [];
+			for (var i = 0; i < items.length; i++) {
+				if (items[i].kind === "file" && String(items[i].type || "").indexOf("image/") === 0) {
+					var file = items[i].getAsFile();
+					if (file) images.push(file);
+				}
+			}
+			if (images.length) {
+				e.preventDefault();
+				window.autolinkerAddImageFiles(images);
+			}
+		});
+	}
+	if (composer) {
+		var dragDepth = 0;
+		composer.addEventListener("dragenter", function(e) {
+			e.preventDefault();
+			dragDepth++;
+			if (dropOverlay) dropOverlay.hidden = false;
+		});
+		composer.addEventListener("dragover", function(e) {
+			e.preventDefault();
+			if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+		});
+		composer.addEventListener("dragleave", function(e) {
+			e.preventDefault();
+			dragDepth = Math.max(0, dragDepth - 1);
+			if (!dragDepth && dropOverlay) dropOverlay.hidden = true;
+		});
+		composer.addEventListener("drop", function(e) {
+			e.preventDefault();
+			dragDepth = 0;
+			if (dropOverlay) dropOverlay.hidden = true;
+			window.autolinkerAddImageFiles(e.dataTransfer ? e.dataTransfer.files : null);
+		});
 	}
 	if (stop) {
 		stop.addEventListener("click", doStop);
@@ -2857,12 +3355,49 @@ window.autolinkerHideToolApproval = function() {
 			post({ action: "open_skill_settings" });
 		});
 	}
+	if (modeTrigger && modeMenu) {
+		modeTrigger.addEventListener("click", function() {
+			hideSessionMenu();
+			hideApiProfileMenu();
+			hideClearConfirm();
+			hideRestoreConfirm();
+			var show = !!modeMenu.hidden;
+			modeMenu.hidden = !show;
+			modeTrigger.setAttribute("aria-expanded", show ? "true" : "false");
+			if (show) {
+				window.autolinkerRenderModeControl();
+				var selected = modeMenu.querySelector ? modeMenu.querySelector('[aria-checked="true"]:not(:disabled)') : null;
+				if (selected) selected.focus();
+			}
+		});
+		modeMenu.addEventListener("keydown", function(e) {
+			if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+			var items = modeMenu.querySelectorAll ? Array.prototype.slice.call(modeMenu.querySelectorAll(".mode-menu-item:not(:disabled)")) : [];
+			if (!items.length) return;
+			e.preventDefault();
+			var current = items.indexOf(document.activeElement);
+			if (e.key === "Home") current = 0;
+			else if (e.key === "End") current = items.length - 1;
+			else if (e.key === "ArrowDown") current = (current + 1 + items.length) % items.length;
+			else current = (current - 1 + items.length) % items.length;
+			items[current].focus();
+		});
+	}
+	if (manualMode) {
+		manualMode.addEventListener("click", function() {
+			if (manualMode.disabled) return;
+			hideModeMenu();
+			post({ action: "select_manual_mode" });
+		});
+	}
 	if (planMode) {
 		planMode.addEventListener("click", function() {
+			if (planMode.disabled) return;
 			hideSessionMenu();
 			hideClearConfirm();
 			hideRestoreConfirm();
-			if (window.autolinkerPlanState === "planning" || window.autolinkerPlanState === "awaiting_approval") {
+			hideModeMenu();
+			if (window.autolinkerPlanState !== "normal") {
 				post({ action: "exit_plan_mode" });
 			} else {
 				post({ action: "enter_plan_mode" });
@@ -2874,6 +3409,7 @@ window.autolinkerHideToolApproval = function() {
 			hideSessionMenu();
 			hideClearConfirm();
 			hideRestoreConfirm();
+			hideModeMenu();
 			post({ action: "toggle_auto_allow" });
 		});
 	}
@@ -2883,6 +3419,7 @@ window.autolinkerHideToolApproval = function() {
 			hideSessionMenu();
 			hideClearConfirm();
 			hideRestoreConfirm();
+			hideModeMenu();
 			var profiles = window.autolinkerApiProfiles && Array.isArray(window.autolinkerApiProfiles.profiles)
 				? window.autolinkerApiProfiles.profiles
 				: [];
@@ -2905,6 +3442,7 @@ window.autolinkerHideToolApproval = function() {
 			hideSessionMenu();
 			hideClearConfirm();
 			hideRestoreConfirm();
+			hideModeMenu();
 			window.autolinkerGoalPanelOpen = !window.autolinkerGoalPanelOpen;
 			window.autolinkerRenderGoalPanel();
 		});
@@ -3151,10 +3689,20 @@ window.autolinkerHideToolApproval = function() {
 			var onApiProfile = apiProfile && apiProfile.contains && apiProfile.contains(e.target);
 			if (!insideApiMenu && !onApiProfile) hideApiProfileMenu();
 		}
+		if (modeMenu && !modeMenu.hidden) {
+			var insideModeMenu = modeMenu.contains(e.target);
+			var onModeTrigger = modeTrigger && modeTrigger.contains && modeTrigger.contains(e.target);
+			if (!insideModeMenu && !onModeTrigger) hideModeMenu();
+		}
 	});
 
 	document.addEventListener("keydown", function(e) {
 		if (e.key === "Escape") {
+			if (modeMenu && !modeMenu.hidden) {
+				hideModeMenu();
+				if (modeTrigger) modeTrigger.focus();
+				return;
+			}
 			if (apiProfileMenu && !apiProfileMenu.hidden) {
 				hideApiProfileMenu();
 				if (apiProfile) apiProfile.focus();
@@ -3191,6 +3739,7 @@ window.autolinkerHideToolApproval = function() {
 			}
 		});
 		setTimeout(function() {
+			window.autolinkerRenderModeControl();
 			window.autolinkerResizeChatInput(input);
 			if (document.documentElement.classList.contains("autolinker-page-visible")) {
 				input.focus();

@@ -1719,6 +1719,43 @@ int RunOpenAIIntegrationCommand(
 	}
 }
 
+int RunOpenAIImageIntegrationCommand(int argc, char* argv[])
+{
+	if (argc < 6 || argc > 7) {
+		PrintUsage();
+		return EXIT_FAILURE;
+	}
+
+	const char* apiKey = argv[2];
+	const char* model = argv[3];
+	const std::filesystem::path imagePath = MakePathFromText(argv[4]);
+	const std::string imagePathUtf8 = WideToUtf8(imagePath.wstring());
+	const char* expectedText = argv[5];
+	const char* baseUrl = argc == 7 ? argv[6] : "https://api.openai.com/v1";
+	std::vector<char> buffer(2 * 1024 * 1024, '\0');
+	const int result = AutoLinkerTest_RunOpenAIImageIntegrationTest(
+		apiKey,
+		model,
+		baseUrl,
+		imagePathUtf8.c_str(),
+		expectedText,
+		buffer.data(),
+		static_cast<int>(buffer.size()));
+	if (result < 0) {
+		return PrintStringResult("openai-image-test", result, buffer.data());
+	}
+
+	const std::string text(buffer.data(), static_cast<size_t>(result));
+	std::cout << text << std::endl;
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(text);
+		return parsed.value("ok", false) ? EXIT_SUCCESS : EXIT_FAILURE;
+	}
+	catch (...) {
+		return EXIT_FAILURE;
+	}
+}
+
 int RunGeminiIntegrationCommand(int argc, char* argv[])
 {
 	if (argc < 4) {
@@ -1888,6 +1925,7 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest deepseek-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest openai-chat-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest openai-responses-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
+	std::cout << "  AutoLinkerTest openai-image-test <api-key> <model> <image-path> <expected-text> [base-url]" << std::endl;
 	std::cout << "  AutoLinkerTest gemini-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest claude-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest headless-compile <e.exe> <input.e> <output> [--target auto|win_exe|win_console_exe|win_dll|ecom] [--static] [--result path] [--timeout seconds]" << std::endl;
@@ -1916,6 +1954,9 @@ int main(int argc, char* argv[])
 	}
 	if (commandName == "openai-responses-test") {
 		return RunOpenAIIntegrationCommand(argc, argv, true);
+	}
+	if (commandName == "openai-image-test") {
+		return RunOpenAIImageIntegrationCommand(argc, argv);
 	}
 	if (commandName == "gemini-model-test") {
 		return RunGeminiIntegrationCommand(argc, argv);

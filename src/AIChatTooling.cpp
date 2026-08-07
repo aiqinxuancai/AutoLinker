@@ -1,6 +1,7 @@
 ﻿#include "AIChatTooling.h"
 #include "AIChatToolingInternal.h"
 #include "AIChatMcpClient.h"
+#include "AIImageAttachment.h"
 #include "AIService.h"
 #include "AISkillManager.h"
 #include "ConfigManager.h"
@@ -9,6 +10,7 @@
 #include "IdeCompileDialogGuard.h"
 #include "Logger.h"
 #include "TavilyClient.h"
+#include "UnicodeTextCodec.h"
 #include "WebDocumentClient.h"
 #include "WebDocumentExtractor.h"
 #include "WorkspaceFileTools.h"
@@ -143,24 +145,12 @@ std::string ConvertCodePage(const std::string& text, UINT fromCodePage, UINT toC
 
 std::string LocalToUtf8Text(const std::string& text)
 {
-	if (text.empty()) {
-		return std::string();
-	}
-	if (IsValidUtf8Text(text)) {
-		return text;
-	}
-	return ConvertCodePage(text, CP_ACP, CP_UTF8, 0);
+	return UnicodeTextCodec::LocalToUtf8RestoringUnicode(text);
 }
 
 std::string Utf8ToLocalText(const std::string& text)
 {
-	if (text.empty()) {
-		return std::string();
-	}
-	if (!IsValidUtf8Text(text)) {
-		return text;
-	}
-	return ConvertCodePage(text, CP_UTF8, CP_ACP, MB_ERR_INVALID_CHARS);
+	return UnicodeTextCodec::Utf8ToLocalPreservingUnicode(text);
 }
 
 void NormalizeJsonStringsToUtf8(nlohmann::json& value)
@@ -306,6 +296,24 @@ std::string WideToUtf8(const std::wstring& text)
 		return std::string();
 	}
 	return utf8;
+}
+
+std::filesystem::path Utf8TextToPath(const std::string& text)
+{
+	std::wstring wide;
+	return TryDecodeTextToWide(text, wide) && !wide.empty()
+		? std::filesystem::path(wide)
+		: std::filesystem::path(text);
+}
+
+std::filesystem::path LocalTextToPath(const std::string& text)
+{
+	return Utf8TextToPath(LocalToUtf8Text(text));
+}
+
+std::string PathToLocalText(const std::filesystem::path& path)
+{
+	return Utf8ToLocalText(WideToUtf8(path.wstring()));
 }
 
 std::string ConvertUtf8ToGbkText(const std::string& text)
@@ -671,6 +679,108 @@ std::string ExecuteToolCallImpl(
 		const std::string resultUtf8 = AISkillManager::ExecuteReadSkillResourceTool(
 			normalizedArgs.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), outOk);
 		return Utf8ToLocalText(resultUtf8);
+	}
+
+	if (toolName == "view_image") {
+		if (approvalScope != "internal-chat") {
+			return Utf8ToLocalText(R"({"ok":false,"error":"view_image is available only to internal AI chat"})");
+		}
+		nlohmann::json args = nlohmann::json::parse(argumentsJson, nullptr, false);
+		if (!args.is_object()) {
+			return Utf8ToLocalText(R"({"ok":false,"error":"invalid arguments json"})");
+		}
+		const std::string pathUtf8 = args.contains("path") && args["path"].is_string()
+			? TrimAsciiCopy(args["path"].get<std::string>())
+			: std::string();
+		std::string detail = args.contains("detail") && args["detail"].is_string()
+			? ToLowerAsciiCopyLocal(TrimAsciiCopy(args["detail"].get<std::string>()))
+			: std::string("auto");
+		if (pathUtf8.empty()) {
+			return Utf8ToLocalText(R"({"ok":false,"error":"view_image requires path"})");
+		}
+		if (detail != "auto" && detail != "low" && detail != "high") {
+			return Utf8ToLocalText(R"({"ok":false,"error":"detail must be auto, low, or high"})");
+		}
+
+		std::string assetDirectoryLocal;
+		std::string projectDirectoryLocal;
+		if (!GetAIChatImageContextForTooling(assetDirectoryLocal, projectDirectoryLocal)) {
+			return Utf8ToLocalText(R"({"ok":false,"error":"view_image requires an active chat session"})");
+		}
+		std::filesystem::path imagePath = Utf8TextToPath(pathUtf8);
+		if (imagePath.is_relative()) {
+			imagePath = projectDirectoryLocal.empty()
+				? std::filesystem::absolute(imagePath)
+				: LocalTextToPath(projectDirectoryLocal) / imagePath;
+		}
+		imagePath = imagePath.lexically_normal();
+		if (!AIImageAttachmentManager::IsSupportedImagePath(imagePath)) {
+			nlohmann::json r = {
+				{"ok", false},
+				{"error", "unsupported image extension"},
+				{"path", PathToLocalText(imagePath)}
+			};
+			return JsonToLocalText(r);
+		}
+
+		nlohmann::json approvalArgs = args;
+		approvalArgs["path"] = WideToUtf8(imagePath.wstring());
+		approvalArgs["detail"] = detail;
+		std::string approvalResult;
+		bool approved = false;
+		if (!RequestToolExecutionFromMainThread(
+				"view_image",
+				approvalArgs.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace),
+				approvalResult,
+				approved,
+				false,
+				true)) {
+			return approvalResult.empty()
+				? Utf8ToLocalText(R"({"ok":false,"error":"view_image approval transport failed"})")
+				: approvalResult;
+		}
+		if (!approved) {
+			return approvalResult.empty()
+				? Utf8ToLocalText(R"({"ok":false,"error":"view_image access denied by user"})")
+				: approvalResult;
+		}
+
+		const AIImagePrepareResult prepared = AIImageAttachmentManager::PrepareFile(
+			imagePath,
+			LocalTextToPath(assetDirectoryLocal),
+			detail);
+		if (!prepared.ok) {
+			nlohmann::json r = {
+				{"ok", false},
+				{"error", prepared.errorLocal},
+				{"path", PathToLocalText(imagePath)}
+			};
+			return JsonToLocalText(r);
+		}
+
+		const AIImageAttachment& attachment = prepared.attachment;
+		nlohmann::json metadata = {
+			{"id", attachment.id},
+			{"file_name", attachment.fileNameLocal},
+			{"mime_type", attachment.mimeType},
+			{"asset_path", attachment.assetPathLocal},
+			{"source_path", attachment.sourcePathLocal},
+			{"detail", attachment.detail},
+			{"byte_size", attachment.byteSize},
+			{"width", attachment.width},
+			{"height", attachment.height}
+		};
+		nlohmann::json r = {
+			{"ok", true},
+			{"path", PathToLocalText(imagePath)},
+			{"mime_type", attachment.mimeType},
+			{"width", attachment.width},
+			{"height", attachment.height},
+			{"byte_size", attachment.byteSize},
+			{"_ai_image_attachments", nlohmann::json::array({metadata})}
+		};
+		outOk = true;
+		return JsonToLocalText(r);
 	}
 
 	if (toolName == "exec_command" || toolName == "write_stdin") {

@@ -25,6 +25,7 @@
 #include "AIChatRunController.h"
 #include "AIChatSessionStore.h"
 #include "AIChatToolPolicy.h"
+#include "AIImageAttachment.h"
 #include "AIService.h"
 #include "AutoLinkerVersion.h"
 #include "AutoLinkerSettingsDialog.h"
@@ -38,6 +39,7 @@
 #include "PathHelper.h"
 #include "PowerShellToolRunner.h"
 #include "RealPageCodeToolSupport.h"
+#include "UnicodeTextCodec.h"
 #include "Version.h"
 #include "WebDocumentClient.h"
 #include "WebDocumentExtractor.h"
@@ -405,7 +407,8 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	bool legacyV1 = false;
 	bool legacyV3 = false;
 	bool legacyV4 = false;
-	bool schemaV5RoundTrip = false;
+	bool legacyV6 = false;
+	bool schemaV7RoundTrip = false;
 	bool atomicReplace = false;
 	bool completedCheckpointIgnored = false;
 	if (!fileEc) {
@@ -430,36 +433,61 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		loadLegacy(1, legacyV1);
 		loadLegacy(3, legacyV3);
 		loadLegacy(4, legacyV4);
+		loadLegacy(6, legacyV6);
 
 		AIChatStoredSession stored;
-		stored.schemaVersion = 5;
-		stored.sessionId = "schema-v5";
-		stored.sessionFilePath = tempRoot / "schema-v5.json";
+		stored.schemaVersion = 7;
+		stored.sessionId = "schema-v7";
+		stored.sessionFilePath = tempRoot / "schema-v7.json";
 		stored.rollingSummaryLocal = "before";
-		stored.messages.push_back(AIChatStoredMessage{"user", "long task"});
+		AIImageAttachment storedAttachment;
+		storedAttachment.id = "image-1";
+		storedAttachment.fileNameLocal = "image.png";
+		storedAttachment.mimeType = "image/png";
+		storedAttachment.assetPathLocal =
+			(GetAIChatSessionAssetDirectoryPath(stored.sessionFilePath) / "image.png").string();
+		storedAttachment.detail = "high";
+		storedAttachment.byteSize = 3;
+		storedAttachment.width = 1;
+		storedAttachment.height = 1;
+		AIChatStoredMessage storedMessage{"user", "long task"};
+		storedMessage.attachments.push_back(storedAttachment);
+		stored.messages.push_back(std::move(storedMessage));
+		AIChatStoredPendingInput firstPending{7, "first queued input", 1000};
+		firstPending.attachments.push_back(storedAttachment);
 		stored.pendingInputs = {
-			AIChatStoredPendingInput{7, "first queued input", 1000},
+			std::move(firstPending),
 			AIChatStoredPendingInput{8, "second queued input", 2000}
 		};
 		stored.hasRunCheckpoint = true;
 		stored.runCheckpoint = interruptedCheckpoint;
 		stored.runCheckpoint.state = "running";
+		if (!stored.runCheckpoint.contextMessages.empty()) {
+			stored.runCheckpoint.contextMessages.front().attachments.push_back(storedAttachment);
+		}
 		const bool firstSave = SaveAIChatStoredSession(stored, nullptr);
 		stored.rollingSummaryLocal = "after";
 		const bool secondSave = SaveAIChatStoredSession(stored, nullptr);
 		AIChatStoredSession loaded;
-		schemaV5RoundTrip = firstSave && secondSave &&
+		schemaV7RoundTrip = firstSave && secondSave &&
 			LoadAIChatStoredSession(stored.sessionFilePath, loaded, nullptr) &&
-			loaded.schemaVersion == 5 &&
+			loaded.schemaVersion == 7 &&
 			loaded.rollingSummaryLocal == "after" &&
+			loaded.messages.size() == 1 && loaded.messages[0].attachments.size() == 1 &&
+			loaded.messages[0].attachments[0].assetPathLocal == storedAttachment.assetPathLocal &&
 			loaded.pendingInputs.size() == 2 &&
 			loaded.pendingInputs[0].id == 7 &&
 			loaded.pendingInputs[0].contentLocal == "first queued input" &&
+			loaded.pendingInputs[0].attachments.size() == 1 &&
+			loaded.pendingInputs[0].attachments[0].assetPathLocal == storedAttachment.assetPathLocal &&
 			loaded.pendingInputs[1].id == 8 &&
 			loaded.pendingInputs[1].contentLocal == "second queued input" &&
 			loaded.hasRunCheckpoint &&
 			loaded.runCheckpoint.state == "paused" &&
-			loaded.runCheckpoint.toolCalls.size() == 1;
+			loaded.runCheckpoint.toolCalls.size() == 1 &&
+			!loaded.runCheckpoint.contextMessages.empty() &&
+			loaded.runCheckpoint.contextMessages.front().attachments.size() == 1 &&
+			loaded.runCheckpoint.contextMessages.front().attachments[0].assetPathLocal == storedAttachment.assetPathLocal;
 
 		atomicReplace = firstSave && secondSave;
 		for (std::filesystem::directory_iterator it(tempRoot, fileEc), end;
@@ -497,7 +525,8 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		legacyV1 &&
 		legacyV3 &&
 		legacyV4 &&
-		schemaV5RoundTrip &&
+		legacyV6 &&
+		schemaV7RoundTrip &&
 		atomicReplace &&
 		completedCheckpointIgnored;
 	outCheck["ok"] = ok;
@@ -516,7 +545,8 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	outCheck["legacy_v1"] = legacyV1;
 	outCheck["legacy_v3"] = legacyV3;
 	outCheck["legacy_v4"] = legacyV4;
-	outCheck["schema_v5_round_trip"] = schemaV5RoundTrip;
+	outCheck["legacy_v6"] = legacyV6;
+	outCheck["schema_v7_round_trip"] = schemaV7RoundTrip;
 	outCheck["atomic_replace"] = atomicReplace;
 	outCheck["completed_checkpoint_ignored"] = completedCheckpointIgnored;
 	return ok;
@@ -1722,6 +1752,126 @@ int RunOpenAIIntegrationTestInternal(
 	}
 }
 
+int RunOpenAIImageIntegrationTestInternal(
+	const char* apiKey,
+	const char* model,
+	const char* baseUrl,
+	const char* imagePath,
+	const char* expectedText,
+	char* buffer,
+	int bufferSize)
+{
+	if (apiKey == nullptr || model == nullptr || imagePath == nullptr || expectedText == nullptr) {
+		return AUTOLINKER_TEST_STRING_INVALID_ARGUMENT;
+	}
+
+	const char* defaultBaseUrl = "https://api.openai.com/v1";
+	const std::filesystem::path tempRoot = std::filesystem::temp_directory_path() /
+		std::format("autolinker_openai_image_test_{}_{}", GetCurrentProcessId(), GetTickCount64());
+	struct TempDirectoryCleanup {
+		std::filesystem::path path;
+		~TempDirectoryCleanup()
+		{
+			std::error_code ignored;
+			std::filesystem::remove_all(path, ignored);
+		}
+	} cleanup{tempRoot};
+
+	std::string step = "prepare_image";
+	try {
+		const std::filesystem::path sourcePath = std::filesystem::u8path(imagePath);
+		nlohmann::json report = {
+			{"provider", "openai"},
+			{"protocol", "openai_responses"},
+			{"model", model},
+			{"base_url", (baseUrl != nullptr && baseUrl[0] != '\0') ? baseUrl : defaultBaseUrl},
+			{"image_path", imagePath},
+			{"step", step},
+			{"ok", false}
+		};
+
+		const AIImagePrepareResult prepared = AIImageAttachmentManager::PrepareFile(
+			sourcePath,
+			tempRoot / "assets",
+			"auto");
+		if (!prepared.ok) {
+			report["error"] = UnicodeTextCodec::LocalToUtf8RestoringUnicode(prepared.errorLocal);
+			return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
+		}
+
+		AISettings settings = {};
+		settings.protocolType = AIProtocolType::OpenAIResponses;
+		settings.thinkingLevel = AIThinkingLevel::High;
+		settings.imageInputMode = AIImageInputMode::Enabled;
+		settings.baseUrl = (baseUrl != nullptr && baseUrl[0] != '\0') ? baseUrl : defaultBaseUrl;
+		settings.apiKey = apiKey;
+		settings.model = model;
+		settings.timeoutMs = 300000;
+		settings.temperature = 0;
+
+		const std::vector<AIChatMessage> messages = {
+			AIChatMessage{
+				"user",
+				"Inspect the attached image. Transcribe the large identifier exactly, then briefly describe the colored shapes. Do not call tools.",
+				"",
+				"",
+				{prepared.attachment}
+			}
+		};
+		step = "request";
+		report["step"] = step;
+		const AIChatResult result = AIService::ExecuteChatWithTools(
+			messages,
+			settings,
+			[](const std::string&, const std::string&, bool& outOk) {
+				outOk = false;
+				return std::string(R"({"ok":false,"error":"tools disabled for image integration test"})");
+			});
+		const std::string contentUtf8 = UnicodeTextCodec::LocalToUtf8RestoringUnicode(result.content);
+		const std::string errorUtf8 = UnicodeTextCodec::LocalToUtf8RestoringUnicode(result.error);
+		const bool recognized = expectedText[0] != '\0' && contentUtf8.find(expectedText) != std::string::npos;
+		report["http_status"] = result.httpStatus;
+		report["request_ok"] = result.ok;
+		report["recognized_expected_text"] = recognized;
+		report["image"] = {
+			{"mime_type", prepared.attachment.mimeType},
+			{"width", prepared.attachment.width},
+			{"height", prepared.attachment.height},
+			{"byte_size", prepared.attachment.byteSize}
+		};
+		report["content"] = contentUtf8;
+		if (!errorUtf8.empty()) report["error"] = errorUtf8;
+		report["ok"] = result.ok && recognized;
+		return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
+	}
+	catch (const std::exception& ex) {
+		nlohmann::json report = {
+			{"ok", false},
+			{"provider", "openai"},
+			{"protocol", "openai_responses"},
+			{"model", model},
+			{"base_url", (baseUrl != nullptr && baseUrl[0] != '\0') ? baseUrl : defaultBaseUrl},
+			{"image_path", imagePath},
+			{"step", step},
+			{"error", std::string("exception: ") + ex.what()}
+		};
+		return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
+	}
+	catch (...) {
+		nlohmann::json report = {
+			{"ok", false},
+			{"provider", "openai"},
+			{"protocol", "openai_responses"},
+			{"model", model},
+			{"base_url", (baseUrl != nullptr && baseUrl[0] != '\0') ? baseUrl : defaultBaseUrl},
+			{"image_path", imagePath},
+			{"step", step},
+			{"error", "unknown exception"}
+		};
+		return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
+	}
+}
+
 int RunGeminiIntegrationTestInternal(
 	const char* apiKey,
 	const char* model,
@@ -2915,6 +3065,8 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 
 	for (const std::string& settingsSelfTest : {
 			BuildAutoLinkerSettingsSelfTestJson(),
+			AIImageAttachmentManager::BuildSelfTestJson(),
+			AIService::BuildImageInputSelfTestJson(),
 			AISkillManager::BuildSelfTestJson(),
 			IdeCompileOutputCapture::BuildSelfTestJson(),
 			IdeLogViewer::BuildSelfTestJson() }) {
@@ -3200,6 +3352,25 @@ extern "C" int AutoLinkerTest_RunOpenAIResponsesIntegrationTest(
 		apiKey,
 		model,
 		baseUrl,
+		buffer,
+		bufferSize);
+}
+
+extern "C" int AutoLinkerTest_RunOpenAIImageIntegrationTest(
+	const char* apiKey,
+	const char* model,
+	const char* baseUrl,
+	const char* imagePath,
+	const char* expectedText,
+	char* buffer,
+	int bufferSize)
+{
+	return RunOpenAIImageIntegrationTestInternal(
+		apiKey,
+		model,
+		baseUrl,
+		imagePath,
+		expectedText,
 		buffer,
 		bufferSize);
 }

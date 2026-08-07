@@ -143,6 +143,9 @@
     <ClCompile Include="src\MouseBack.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+	<ClCompile Include="src\AIImageAttachment.cpp">
+	  <Filter>AI</Filter>
+	</ClCompile>
     <ClCompile Include="src\AIConfigDialog.cpp">
       <Filter>AI</Filter>
     </ClCompile>
@@ -354,6 +357,9 @@
     <ClInclude Include="src\AIService.h">
       <Filter>AI</Filter>
     </ClInclude>
+	<ClInclude Include="src\AIImageAttachment.h">
+	  <Filter>AI</Filter>
+	</ClInclude>
     <ClInclude Include="src\AIJsonConfig.h">
       <Filter>AI</Filter>
     </ClInclude>

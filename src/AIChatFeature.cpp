@@ -38,6 +38,7 @@
 #include "AIChatGoalManager.h"
 #include "AIChatMarkdownTableRenderer.h"
 #include "AIChatSessionStore.h"
+#include "AIImageAttachment.h"
 #include "AIChatThemeManager.h"
 #include "AIChatToolRegistry.h"
 #include "AIChatUserInputRequest.h"
@@ -185,6 +186,7 @@ struct SessionMessage {
 	bool visibleInHistory = true;
 	std::string reasoningContent;
 	std::string rawMessageJsonUtf8;
+	std::vector<AIImageAttachment> attachments;
 };
 
 struct AIChatRequestCancellation {
@@ -298,6 +300,7 @@ struct AIChatAsyncRequest {
 	AIChatRequestOrigin origin = AIChatRequestOrigin::User;
 	bool hasResumeCheckpoint = false;
 	AIChatRunCheckpoint resumeCheckpoint;
+	std::vector<AIImageAttachment> initialAttachments;
 };
 
 struct AIChatAsyncResult {
@@ -438,7 +441,7 @@ void RefreshChatDialog(HWND hWnd);
 void SaveChatSessionSnapshotNow();
 void RequestClearChatHistoryAsync();
 void ClearChatHistory();
-void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text);
+void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text, const std::vector<AIImageAttachment>& attachments = {});
 void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatClearConfirmedUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatClearCancelUi(HWND hWnd, ChatDialogContext* ctx);
@@ -453,6 +456,7 @@ void HandleChatRestoreSessionConfirmedUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatRestoreSessionCancelUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatEnterPlanModeUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatExitPlanModeUi(HWND hWnd, ChatDialogContext* ctx);
+void HandleChatSelectManualModeUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatApprovePlanUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatRevisePlanUi(HWND hWnd, ChatDialogContext* ctx, const std::string& feedback);
 void HandleChatToggleAutoAllowUi(HWND hWnd, ChatDialogContext* ctx);
@@ -494,7 +498,8 @@ std::wstring WideFromUtf8Text(const std::string& text);
 bool StartChatRequest(
 	const std::string& userInput,
 	const AIChatRunCheckpoint* resumeCheckpoint = nullptr,
-	AIChatRequestOrigin origin = AIChatRequestOrigin::User);
+	AIChatRequestOrigin origin = AIChatRequestOrigin::User,
+	const std::vector<AIImageAttachment>& attachments = {});
 bool StartNextPendingInputRequest();
 bool StartGoalContinuationRequest();
 void ScheduleNextChatWork();
@@ -1086,24 +1091,23 @@ std::string ConvertCodePage(const std::string& text, UINT fromCodePage, UINT toC
 
 std::string LocalToUtf8Text(const std::string& text)
 {
-	if (text.empty()) {
-		return std::string();
-	}
-	if (IsValidUtf8Text(text)) {
-		return text;
-	}
-	return ConvertCodePage(text, CP_ACP, CP_UTF8, 0);
+	return UnicodeTextCodec::LocalToUtf8RestoringUnicode(text);
 }
 
 std::string Utf8ToLocalText(const std::string& text)
 {
-	if (text.empty()) {
-		return std::string();
-	}
-	if (!IsValidUtf8Text(text)) {
-		return text;
-	}
-	return ConvertCodePage(text, CP_UTF8, CP_ACP, MB_ERR_INVALID_CHARS);
+	return UnicodeTextCodec::Utf8ToLocalPreservingUnicode(text);
+}
+
+std::filesystem::path LocalTextToPathForChat(const std::string& text)
+{
+	const std::wstring wide = WideFromUtf8Text(LocalToUtf8Text(text));
+	return wide.empty() ? std::filesystem::path(text) : std::filesystem::path(wide);
+}
+
+std::string PathToLocalTextForChat(const std::filesystem::path& path)
+{
+	return Utf8ToLocalText(Utf8FromWide(path.c_str()));
 }
 
 long long GetCurrentUnixTimeMsForChat()
@@ -1441,7 +1445,8 @@ bool IsToolRequiringInteractiveApproval(const std::string& toolName)
 		_stricmp(toolName.c_str(), "add_module_to_project") == 0 ||
 		_stricmp(toolName.c_str(), "remove_module_from_project") == 0 ||
 		_stricmp(toolName.c_str(), "add_support_library_to_project") == 0 ||
-		_stricmp(toolName.c_str(), "exec_command") == 0;
+		_stricmp(toolName.c_str(), "exec_command") == 0 ||
+		_stricmp(toolName.c_str(), "view_image") == 0;
 }
 
 bool ShouldRequestInteractiveApproval(
@@ -1559,6 +1564,9 @@ std::string ToolApprovalTitleLocal(const std::string& toolName)
 	if (_stricmp(toolName.c_str(), "exec_command") == 0) {
 		return LocalFromWide(L"\u6279\u51c6\u6267\u884c\u672c\u673a\u547d\u4ee4");
 	}
+	if (_stricmp(toolName.c_str(), "view_image") == 0) {
+		return LocalFromWide(L"\u6279\u51c6\u8bfb\u53d6\u672c\u5730\u56fe\u7247");
+	}
 	return LocalFromWide(L"\u6279\u51c6\u5199\u5165\u64cd\u4f5c");
 }
 
@@ -1616,9 +1624,20 @@ nlohmann::json BuildToolApprovalPayloadUtf8(
 		return payload;
 	}
 
-	const std::string filePathUtf8 = GetJsonStringArgumentUtf8(args, "file_path");
+	std::string filePathUtf8 = GetJsonStringArgumentUtf8(args, "file_path");
+	if (filePathUtf8.empty() && _stricmp(toolName.c_str(), "view_image") == 0) {
+		filePathUtf8 = GetJsonStringArgumentUtf8(args, "path");
+	}
 	if (!filePathUtf8.empty()) {
 		payload["file_path"] = filePathUtf8;
+	}
+	if (_stricmp(toolName.c_str(), "view_image") == 0) {
+		payload["summary"] = LocalToUtf8Text(LocalFromWide(
+			L"AI \u8bf7\u6c42\u8bfb\u53d6\u5e76\u5206\u6790\u6b64\u672c\u5730\u56fe\u7247\u3002\u6279\u51c6\u540e\u4f1a\u521b\u5efa\u53d7\u63a7\u7684\u4f1a\u8bdd\u56fe\u7247\u5feb\u7167\u3002"));
+		payload["preview_kind"] = "image_path";
+		payload["preview_ok"] = !filePathUtf8.empty();
+		payload["preview_text"] = filePathUtf8;
+		return payload;
 	}
 
 	if (_stricmp(toolName.c_str(), "exec_command") == 0) {
@@ -2171,7 +2190,7 @@ AIChatStoredSession BuildStoredSessionFromLockedState(const AIChatSessionState& 
 {
 	AIChatStoredSession stored = {};
 	const long long nowMs = GetCurrentUnixTimeMsForChat();
-	stored.schemaVersion = 6;
+	stored.schemaVersion = 7;
 	stored.sessionId = state.activeSessionId;
 	stored.sourceFileNameLocal = state.sourceFileNameLocal;
 	stored.sourceFilePathHintLocal = state.sourceFilePathLocal;
@@ -2215,6 +2234,7 @@ AIChatStoredSession BuildStoredSessionFromLockedState(const AIChatSessionState& 
 		row.visibleInHistory = message.visibleInHistory;
 		row.reasoningContentUtf8 = message.reasoningContent;
 		row.rawMessageJsonUtf8 = message.rawMessageJsonUtf8;
+		row.attachments = message.attachments;
 		stored.messages.push_back(std::move(row));
 	}
 	return stored;
@@ -2373,7 +2393,8 @@ bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
 				row.includeInContext,
 				row.visibleInHistory,
 				row.reasoningContentUtf8,
-				row.rawMessageJsonUtf8
+				row.rawMessageJsonUtf8,
+				row.attachments
 			});
 		}
 		if (hasLegacyPendingExecCall) {
@@ -3475,9 +3496,146 @@ void ClearWebViewInput(ChatDialogContext* ctx)
 void SetWebViewInput(ChatDialogContext* ctx, const std::string& text)
 {
 	std::wstring script = L"window.autolinkerSetInput('";
-	script += EscapeJsSingleQuotedWide(WideFromLocal(text));
+	script += EscapeJsSingleQuotedWide(WideFromUtf8Text(LocalToUtf8Text(text)));
 	script += L"');";
 	ExecuteWebViewScript(ctx, script);
+}
+
+void SetWebViewAttachments(ChatDialogContext* ctx, const std::vector<AIImageAttachment>& attachments)
+{
+	nlohmann::json values = nlohmann::json::array();
+	for (const AIImageAttachment& attachment : attachments) {
+		std::string dataUrl;
+		std::string error;
+		if (!AIImageAttachmentManager::BuildDataUrl(attachment, dataUrl, error)) {
+			continue;
+		}
+		values.push_back({
+			{"name", LocalToUtf8Text(attachment.fileNameLocal)},
+			{"mimeType", attachment.mimeType},
+			{"size", attachment.byteSize},
+			{"dataUrl", dataUrl},
+			{"detail", attachment.detail}
+		});
+	}
+	std::wstring script = L"window.autolinkerSetAttachments(";
+	script += WideFromUtf8Text(values.dump());
+	script += L");";
+	ExecuteWebViewScript(ctx, script);
+}
+
+std::filesystem::path GetActiveChatAssetDirectoryForUi()
+{
+	std::lock_guard<std::mutex> guard(g_session.mutex);
+	g_session.sourceFilePathLocal = GetCurrentChatSourceFilePathLocal();
+	g_session.sourceFileNameLocal = GetCurrentChatSourceFileNameLocal();
+	EnsureChatSessionBindingLocked(g_session);
+	return GetAIChatSessionAssetDirectoryPath(g_session.activeSessionFilePath);
+}
+
+void AppendImageInputError(const std::string& errorLocal)
+{
+	if (TrimAsciiCopy(errorLocal).empty()) {
+		return;
+	}
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		g_session.messages.push_back(SessionMessage{
+			SessionRole::System,
+			errorLocal,
+			false,
+			true,
+			"",
+			""
+		});
+	}
+	SaveChatSessionSnapshotNow();
+	PostRefreshDialog();
+}
+
+bool PrepareWebViewImageAttachments(
+	const nlohmann::json& values,
+	std::vector<AIImageAttachment>& outAttachments,
+	std::string& outErrorLocal)
+{
+	outAttachments.clear();
+	outErrorLocal.clear();
+	if (!values.is_array() || values.empty()) {
+		return true;
+	}
+	if (values.size() > AIImageAttachmentManager::kMaxAttachmentCount) {
+		outErrorLocal = LocalFromWide(L"\u6bcf\u6761\u6d88\u606f\u6700\u591a\u9644\u52a0 10 \u5f20\u56fe\u7247\u3002");
+		return false;
+	}
+	AISettings settings;
+	if (!QueryChatSettingsState(settings) || !AIService::SupportsImageInput(settings)) {
+		outErrorLocal = LocalFromWide(L"\u5f53\u524d\u6a21\u578b\u914d\u7f6e\u5df2\u7981\u7528\u56fe\u7247\u8f93\u5165\u3002");
+		return false;
+	}
+	const std::filesystem::path assetDirectory = GetActiveChatAssetDirectoryForUi();
+	for (const auto& value : values) {
+		if (!value.is_object()) {
+			outErrorLocal = LocalFromWide(L"\u56fe\u7247\u9644\u4ef6\u6570\u636e\u65e0\u6548\u3002");
+			return false;
+		}
+		const std::string dataUrl = value.value("dataUrl", std::string());
+		const std::string name = value.value("name", std::string("image.png"));
+		const std::string detail = value.value("detail", std::string("auto"));
+		const AIImagePrepareResult prepared = AIImageAttachmentManager::PrepareDataUrl(
+			dataUrl,
+			name,
+			assetDirectory,
+			detail);
+		if (!prepared.ok) {
+			outErrorLocal = prepared.errorLocal;
+			return false;
+		}
+		outAttachments.push_back(prepared.attachment);
+	}
+	return true;
+}
+
+bool TryPrepareExactImagePath(
+	const std::string& textLocal,
+	std::vector<AIImageAttachment>& outAttachments,
+	std::string& outErrorLocal)
+{
+	outErrorLocal.clear();
+	std::string candidate = TrimAsciiCopy(textLocal);
+	if (candidate.size() >= 2 &&
+		((candidate.front() == '"' && candidate.back() == '"') ||
+		 (candidate.front() == '\'' && candidate.back() == '\''))) {
+		candidate = TrimAsciiCopy(candidate.substr(1, candidate.size() - 2));
+	}
+	if (candidate.empty()) {
+		return false;
+	}
+	std::filesystem::path imagePath = LocalTextToPathForChat(candidate);
+	if (imagePath.is_relative()) {
+		const std::string sourcePathLocal = GetCurrentChatSourceFilePathLocal();
+		if (!sourcePathLocal.empty()) {
+			imagePath = LocalTextToPathForChat(sourcePathLocal).parent_path() / imagePath;
+		}
+	}
+	std::error_code ec;
+	if (!AIImageAttachmentManager::IsSupportedImagePath(imagePath) ||
+		!std::filesystem::is_regular_file(imagePath, ec) || ec) {
+		return false;
+	}
+	AISettings settings;
+	if (!QueryChatSettingsState(settings) || !AIService::SupportsImageInput(settings)) {
+		outErrorLocal = LocalFromWide(L"\u5f53\u524d\u6a21\u578b\u914d\u7f6e\u5df2\u7981\u7528\u56fe\u7247\u8f93\u5165\u3002");
+		return true;
+	}
+	const AIImagePrepareResult prepared = AIImageAttachmentManager::PrepareFile(
+		imagePath,
+		GetActiveChatAssetDirectoryForUi());
+	if (!prepared.ok) {
+		outErrorLocal = prepared.errorLocal;
+		return true;
+	}
+	outAttachments.push_back(prepared.attachment);
+	return true;
 }
 
 void UpdateWebViewPendingInputs(
@@ -3491,7 +3649,8 @@ void UpdateWebViewPendingInputs(
 	for (const auto& pending : pendingInputs) {
 		items.push_back({
 			{"id", pending.id},
-			{"text", LocalToUtf8Text(pending.contentLocal)}
+			{"text", LocalToUtf8Text(pending.contentLocal)},
+			{"attachmentCount", pending.attachments.size()}
 		});
 	}
 	std::wstring script = L"window.autolinkerSetPendingInputs(";
@@ -3516,6 +3675,10 @@ void UpdateNativePendingInputs(
 		return;
 	}
 	std::string preview = pendingInputs.front().contentLocal;
+	if (preview.empty() && !pendingInputs.front().attachments.empty()) {
+		preview = LocalFromWide(L"\u56fe\u7247\u9644\u4ef6") + " x" +
+			std::to_string(pendingInputs.front().attachments.size());
+	}
 	std::replace(preview.begin(), preview.end(), '\r', ' ');
 	std::replace(preview.begin(), preview.end(), '\n', ' ');
 	if (preview.size() > 100) {
@@ -3795,11 +3958,21 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												const std::string action = payload.contains("action") && payload["action"].is_string()
 													? payload["action"].get<std::string>()
 													: std::string();
-												if (action == "submit") {
-													const std::string text = payload.contains("text") && payload["text"].is_string()
-														? Utf8ToLocalText(payload["text"].get<std::string>())
-														: std::string();
-													HandleChatSubmitUi(hWnd, msgCtx, text);
+											if (action == "submit") {
+												const std::string text = payload.contains("text") && payload["text"].is_string()
+													? Utf8ToLocalText(payload["text"].get<std::string>())
+													: std::string();
+												std::vector<AIImageAttachment> attachments;
+												std::string attachmentError;
+												const nlohmann::json attachmentValues = payload.contains("attachments")
+													? payload["attachments"]
+													: nlohmann::json::array();
+												if (!PrepareWebViewImageAttachments(attachmentValues, attachments, attachmentError)) {
+													AppendImageInputError(attachmentError);
+												}
+												else {
+													HandleChatSubmitUi(hWnd, msgCtx, text, attachments);
+												}
 												}
 												else if (action == "new_session") {
 													HandleChatClearConfirmedUi(hWnd, msgCtx);
@@ -3848,6 +4021,9 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												}
 												else if (action == "exit_plan_mode") {
 													HandleChatExitPlanModeUi(hWnd, msgCtx);
+												}
+												else if (action == "select_manual_mode") {
+													HandleChatSelectManualModeUi(hWnd, msgCtx);
 												}
 												else if (action == "approve_plan") {
 													HandleChatApprovePlanUi(hWnd, msgCtx);
@@ -4799,7 +4975,7 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 		else if (msg.role == SessionRole::Tool) {
 			role = "tool";
 		}
-		out.push_back(AIChatMessage{ role, msg.content, msg.reasoningContent, msg.rawMessageJsonUtf8 });
+		out.push_back(AIChatMessage{ role, msg.content, msg.reasoningContent, msg.rawMessageJsonUtf8, msg.attachments });
 	}
 	return out;
 }
@@ -5252,6 +5428,39 @@ std::string BuildActivePlanUserInputHtml()
 	return RenderPlanUserInputCardHtml(payload);
 }
 
+std::string RenderImageAttachmentsHtml(const std::vector<AIImageAttachment>& attachments)
+{
+	if (attachments.empty()) {
+		return {};
+	}
+	std::string html = "<div class=\"message-images\">";
+	for (const AIImageAttachment& attachment : attachments) {
+		std::string dataUrl;
+		std::string error;
+		if (!AIImageAttachmentManager::BuildDataUrl(attachment, dataUrl, error)) {
+			html += "<div class=\"message-image-missing\">";
+			html += EscapeHtml(attachment.fileNameLocal + ": " + error);
+			html += "</div>";
+			continue;
+		}
+		html += "<figure class=\"message-image\"><img src=\"";
+		html += EscapeHtmlAttribute(dataUrl);
+		html += "\" alt=\"";
+		html += EscapeHtmlAttribute(attachment.fileNameLocal);
+		html += "\" title=\"";
+		html += EscapeHtmlAttribute(attachment.fileNameLocal);
+		html += "\"><figcaption>";
+		html += EscapeHtml(attachment.fileNameLocal);
+		if (attachment.width > 0 && attachment.height > 0) {
+			html += " <span>" + std::to_string(attachment.width) + "x" +
+				std::to_string(attachment.height) + "</span>";
+		}
+		html += "</figcaption></figure>";
+	}
+	html += "</div>";
+	return html;
+}
+
 std::string BuildHistoryHtmlLocked(
 	const AIChatSessionState& state,
 	bool settingsReady,
@@ -5297,7 +5506,13 @@ std::string BuildHistoryHtmlLocked(
 		}
 		html += "</div></div></section>";
 	};
-	auto appendMessageCard = [&appendPlanCard](std::string& html, SessionRole role, const std::string& roleText, const std::string& content, bool renderMarkdown) {
+	auto appendMessageCard = [&appendPlanCard](
+		std::string& html,
+		SessionRole role,
+		const std::string& roleText,
+		const std::string& content,
+		bool renderMarkdown,
+		const std::vector<AIImageAttachment>& attachments) {
 		nlohmann::json userInputPayload;
 		if (role == SessionRole::Assistant &&
 			ExtractPlanUserInputHistoryPayload(content, userInputPayload)) {
@@ -5354,6 +5569,7 @@ std::string BuildHistoryHtmlLocked(
 		html += EscapeHtml(roleText);
 		html += "</div><div class=\"body\">";
 		html += renderMarkdown ? RenderMarkdownToHtml(content) : RenderPlainTextToHtml(content);
+		html += RenderImageAttachmentsHtml(attachments);
 		html += "</div></section>";
 	};
 	auto appendRawCard = [](std::string& html, SessionRole role, const std::string& roleText, const std::string& bodyHtml) {
@@ -5399,13 +5615,14 @@ std::string BuildHistoryHtmlLocked(
 			msg.role,
 			RoleLabel(msg.role),
 			msg.content,
-			msg.role == SessionRole::Assistant);
+			msg.role == SessionRole::Assistant,
+			msg.attachments);
 	}
 
 	if (state.requestInFlight) {
 		const std::string preview = TrimAsciiCopy(state.streamingAssistantPreview);
 		if (!preview.empty()) {
-			appendMessageCard(body, SessionRole::Assistant, "AI", state.streamingAssistantPreview, true);
+			appendMessageCard(body, SessionRole::Assistant, "AI", state.streamingAssistantPreview, true, {});
 		}
 	}
 	const std::string activeUserInputHtml = BuildActivePlanUserInputHtml();
@@ -6019,10 +6236,12 @@ bool FlushStreamingAssistantPreviewToHistory(unsigned long long requestId)
 	return flushed;
 }
 
-bool EnqueuePendingUserInput(const std::string& text)
+bool EnqueuePendingUserInput(
+	const std::string& text,
+	const std::vector<AIImageAttachment>& attachments = {})
 {
 	const std::string trimmed = TrimAsciiCopy(text);
-	if (trimmed.empty()) {
+	if (trimmed.empty() && attachments.empty()) {
 		return false;
 	}
 	{
@@ -6031,7 +6250,8 @@ bool EnqueuePendingUserInput(const std::string& text)
 		g_session.pendingInputs.push_back(AIChatStoredPendingInput{
 			g_session.nextPendingInputId++,
 			trimmed,
-			GetCurrentUnixTimeMsForChat()
+			GetCurrentUnixTimeMsForChat(),
+			attachments
 		});
 	}
 	PostRefreshDialog();
@@ -6039,11 +6259,11 @@ bool EnqueuePendingUserInput(const std::string& text)
 	return true;
 }
 
-std::vector<std::string> TakePendingUserInputsAtSafePoint(
+std::vector<AIChatMessage> TakePendingUserInputsAtSafePoint(
 	unsigned long long requestId,
 	const std::string& completedAssistantContent)
 {
-	std::vector<std::string> inputs;
+	std::vector<AIChatMessage> inputs;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		if (!g_session.requestInFlight || g_session.activeRequestId != requestId ||
@@ -6071,14 +6291,21 @@ std::vector<std::string> TakePendingUserInputsAtSafePoint(
 		while (!g_session.pendingInputs.empty()) {
 			AIChatStoredPendingInput pending = std::move(g_session.pendingInputs.front());
 			g_session.pendingInputs.pop_front();
-			inputs.push_back(pending.contentLocal);
+			inputs.push_back(AIChatMessage{
+				"user",
+				pending.contentLocal,
+				"",
+				"",
+				pending.attachments
+			});
 			g_session.messages.push_back(SessionMessage{
 				SessionRole::User,
 				pending.contentLocal,
 				false,
 				true,
 				"",
-				""
+				"",
+				pending.attachments
 			});
 		}
 	}
@@ -6087,15 +6314,15 @@ std::vector<std::string> TakePendingUserInputsAtSafePoint(
 	return inputs;
 }
 
-bool RecallLastPendingUserInput(std::string& outText)
+bool RecallLastPendingUserInput(AIChatStoredPendingInput& outPending)
 {
-	outText.clear();
+	outPending = {};
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		if (g_session.pendingInputs.empty()) {
 			return false;
 		}
-		outText = std::move(g_session.pendingInputs.back().contentLocal);
+		outPending = std::move(g_session.pendingInputs.back());
 		g_session.pendingInputs.pop_back();
 	}
 	PostRefreshDialog();
@@ -6467,6 +6694,7 @@ bool TryBuildRunCheckpointForRequest(
 	const AIChatRunCheckpoint* explicitCheckpoint,
 	const AIChatRunCheckpoint* pendingCheckpoint,
 	const std::string& userInput,
+	const std::vector<AIImageAttachment>& attachments,
 	AIChatRunCheckpoint& outCheckpoint,
 	bool& outUsedPendingCheckpoint)
 {
@@ -6484,12 +6712,13 @@ bool TryBuildRunCheckpointForRequest(
 	outCheckpoint = *source;
 	outCheckpoint.state = "running";
 	const std::string trimmedInput = TrimAsciiCopy(userInput);
-	if (!trimmedInput.empty()) {
+	if (!trimmedInput.empty() || !attachments.empty()) {
 		outCheckpoint.contextMessages.push_back(AIChatMessage{
 			"user",
 			trimmedInput,
 			"",
-			""
+			"",
+			attachments
 		});
 	}
 	return true;
@@ -6498,11 +6727,12 @@ bool TryBuildRunCheckpointForRequest(
 bool StartChatRequest(
 	const std::string& userInput,
 	const AIChatRunCheckpoint* resumeCheckpoint,
-	AIChatRequestOrigin origin)
+	AIChatRequestOrigin origin,
+	const std::vector<AIImageAttachment>& attachments)
 {
 	const std::string trimmed = TrimAsciiCopy(userInput);
 	const bool explicitResume = resumeCheckpoint != nullptr;
-	if (trimmed.empty() && !explicitResume) {
+	if (trimmed.empty() && attachments.empty() && !explicitResume) {
 		return false;
 	}
 	// 提交发生在 IDE UI 线程，在创建后台任务前完成所有当前工程探测。
@@ -6546,14 +6776,15 @@ bool StartChatRequest(
 		g_session.sourceFilePathLocal = GetCurrentChatSourceFilePathLocal();
 		g_session.sourceFileNameLocal = GetCurrentChatSourceFileNameLocal();
 		EnsureChatSessionBindingLocked(g_session);
-		if (!trimmed.empty()) {
+		if (!trimmed.empty() || !attachments.empty()) {
 			g_session.messages.push_back(SessionMessage{
 				SessionRole::User,
 				trimmed,
 				true,
 				origin != AIChatRequestOrigin::GoalContinuation,
 				"",
-				""
+				"",
+				attachments
 			});
 		}
 		g_session.effectiveContextWindow = AIService::ResolveContextWindowTokens(settings);
@@ -6570,6 +6801,7 @@ bool StartChatRequest(
 			g_session.goal,
 			IsPlanModeActive(g_session.planModeState));
 		request->origin = origin;
+		request->initialAttachments = attachments;
 		const AIChatRunCheckpoint* pendingCheckpoint = g_session.hasPendingRunCheckpoint
 			? &g_session.pendingRunCheckpoint
 			: nullptr;
@@ -6577,6 +6809,7 @@ bool StartChatRequest(
 				resumeCheckpoint,
 				pendingCheckpoint,
 				trimmed,
+				attachments,
 				request->resumeCheckpoint,
 				usedPendingCheckpoint)) {
 			request->hasResumeCheckpoint = true;
@@ -6647,7 +6880,7 @@ bool StartNextPendingInputRequest()
 		g_session.pendingInputs.pop_front();
 	}
 
-	if (StartChatRequest(pending.contentLocal)) {
+	if (StartChatRequest(pending.contentLocal, nullptr, AIChatRequestOrigin::User, pending.attachments)) {
 		SaveChatSessionSnapshotNow();
 		return true;
 	}
@@ -6703,7 +6936,11 @@ void ScheduleNextChatWork()
 	}
 }
 
-void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text)
+void HandleChatSubmitUi(
+	HWND hWnd,
+	ChatDialogContext* ctx,
+	const std::string& text,
+	const std::vector<AIImageAttachment>& attachments)
 {
 	if (ctx == nullptr) {
 		return;
@@ -6713,11 +6950,23 @@ void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& te
 	LayoutAIChatDialog(hWnd, ctx);
 
 	const std::string trimmed = TrimAsciiCopy(text);
-	if (trimmed.empty()) {
+	std::vector<AIImageAttachment> effectiveAttachments = attachments;
+	std::string pathAttachmentError;
+	if (effectiveAttachments.empty() && !trimmed.empty()) {
+		TryPrepareExactImagePath(trimmed, effectiveAttachments, pathAttachmentError);
+	}
+	if (!pathAttachmentError.empty()) {
+		AppendImageInputError(pathAttachmentError);
 		FocusChatComposerInput(ctx);
 		return;
 	}
-	if (!ctx->webViewContentReady && TrySubmitNativePlanUserInput(hWnd, ctx, trimmed)) {
+	if (trimmed.empty() && effectiveAttachments.empty()) {
+		FocusChatComposerInput(ctx);
+		return;
+	}
+	if (effectiveAttachments.empty() &&
+		!ctx->webViewContentReady &&
+		TrySubmitNativePlanUserInput(hWnd, ctx, trimmed)) {
 		if (ctx->hInput != nullptr) {
 			SetWindowTextA(ctx->hInput, "");
 			ctx->inputRowsVisible = 1;
@@ -6751,16 +7000,16 @@ void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& te
 
 	bool accepted = false;
 	if (inFlight) {
-		accepted = EnqueuePendingUserInput(trimmed);
+		accepted = EnqueuePendingUserInput(trimmed, effectiveAttachments);
 	}
 	else if (hasPending) {
-		accepted = EnqueuePendingUserInput(trimmed);
+		accepted = EnqueuePendingUserInput(trimmed, effectiveAttachments);
 		if (accepted) {
 			StartNextPendingInputRequest();
 		}
 	}
 	else {
-		accepted = StartChatRequest(trimmed);
+		accepted = StartChatRequest(trimmed, nullptr, AIChatRequestOrigin::User, effectiveAttachments);
 	}
 	if (!accepted) {
 		RefreshChatDialog(hWnd);
@@ -6918,12 +7167,15 @@ void HandleChatRecallPendingUi(HWND hWnd, ChatDialogContext* ctx)
 		return;
 	}
 	std::string text;
-	if (!RecallLastPendingUserInput(text)) {
+	AIChatStoredPendingInput pending;
+	if (!RecallLastPendingUserInput(pending)) {
 		FocusChatComposerInput(ctx);
 		return;
 	}
+	text = pending.contentLocal;
 	if (ctx->webViewDesired && ctx->webViewContentReady) {
 		SetWebViewInput(ctx, text);
+		SetWebViewAttachments(ctx, pending.attachments);
 	}
 	else if (ctx->hInput != nullptr) {
 		SetWindowTextA(ctx->hInput, text.c_str());
@@ -7474,6 +7726,68 @@ void HandleChatExitPlanModeUi(HWND hWnd, ChatDialogContext* ctx)
 		SaveChatSessionSnapshotNow();
 		RefreshChatDialog(hWnd);
 		ScheduleNextChatWork();
+	}
+	FocusChatComposerInput(ctx);
+}
+
+void HandleChatSelectManualModeUi(HWND hWnd, ChatDialogContext* ctx)
+{
+	if (ctx != nullptr) {
+		HideChatConfirmInPage(ctx);
+		LayoutAIChatDialog(hWnd, ctx);
+	}
+
+	bool changed = false;
+	bool exitedPlan = false;
+	bool rejected = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		const bool hasPlanState = g_session.planModeState != PlanModeState::Normal ||
+			!g_session.pendingPlan.empty();
+		if (g_session.requestInFlight && hasPlanState) {
+			rejected = true;
+		}
+		else if (hasPlanState) {
+			g_session.planModeState = PlanModeState::Normal;
+			g_session.pendingPlan.clear();
+			AIChatGoalManager::ResumeActiveTiming(g_session.goal, GetCurrentUnixTimeMsForChat());
+			g_session.messages.push_back(SessionMessage{
+				SessionRole::System,
+				LocalFromWide(L"\u5df2\u9000\u51fa\u8ba1\u5212\u6a21\u5f0f\u3002"),
+				false,
+				true,
+				"",
+				""
+			});
+			changed = true;
+			exitedPlan = true;
+		}
+
+		if (!rejected && g_session.autoAllowWrites) {
+			g_session.autoAllowWrites = false;
+			SavePersistedAutoAllowWrites(false);
+			g_session.messages.push_back(SessionMessage{
+				SessionRole::System,
+				LocalFromWide(L"\u5df2\u5207\u56de\u624b\u52a8\u6a21\u5f0f\uff0c\u4ee3\u7801\u5199\u5165\u548c\u672c\u673a\u547d\u4ee4\u6267\u884c\u524d\u9700\u8981\u6279\u51c6\u3002"),
+				false,
+				true,
+				"",
+				""
+			});
+			changed = true;
+		}
+	}
+	if (rejected) {
+		FocusChatComposerInput(ctx);
+		return;
+	}
+
+	if (changed) {
+		SaveChatSessionSnapshotNow();
+		RefreshChatDialog(hWnd);
+		if (exitedPlan) {
+			ScheduleNextChatWork();
+		}
 	}
 	FocusChatComposerInput(ctx);
 }
@@ -9102,9 +9416,33 @@ bool GetAIChatExecContextForTooling(std::string& outSessionId, std::string& outP
 		? GetCurrentChatSourceFilePathLocal()
 		: g_session.sourceFilePathLocal;
 	if (!sourcePath.empty()) {
-		outProjectDirectoryLocal = std::filesystem::path(sourcePath).parent_path().string();
+		outProjectDirectoryLocal = PathToLocalTextForChat(
+			LocalTextToPathForChat(sourcePath).parent_path());
 	}
 	return !outProjectDirectoryLocal.empty();
+}
+
+bool GetAIChatImageContextForTooling(
+	std::string& outAssetDirectoryLocal,
+	std::string& outProjectDirectoryLocal)
+{
+	outAssetDirectoryLocal.clear();
+	outProjectDirectoryLocal.clear();
+	std::lock_guard<std::mutex> guard(g_session.mutex);
+	if (g_session.activeSessionId.empty() || g_session.activeSessionFilePath.empty()) {
+		return false;
+	}
+
+	outAssetDirectoryLocal = PathToLocalTextForChat(
+		GetAIChatSessionAssetDirectoryPath(g_session.activeSessionFilePath));
+	const std::string sourcePath = g_session.sourceFilePathLocal.empty()
+		? GetCurrentChatSourceFilePathLocal()
+		: g_session.sourceFilePathLocal;
+	if (!sourcePath.empty()) {
+		outProjectDirectoryLocal = PathToLocalTextForChat(
+			LocalTextToPathForChat(sourcePath).parent_path());
+	}
+	return !outAssetDirectoryLocal.empty();
 }
 
 UINT GetAIChatToolExecMessageForTooling()
@@ -9154,7 +9492,7 @@ std::string GetChatTabCaption()
 void LogChatTab(const std::string& text);
 void RefreshChatDialog(HWND hWnd);
 void RequestClearChatHistoryAsync();
-void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text);
+void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text, const std::vector<AIImageAttachment>& attachments);
 void HandleChatClearUi(HWND hWnd, ChatDialogContext* ctx);
 
 std::string GetLeftWorkAreaTabCaption()
@@ -10296,6 +10634,7 @@ std::string BuildCheckpointResumeSelfTestJson()
 		nullptr,
 		&pending,
 		"你刚才都做了什么",
+		{},
 		resumed,
 		usedPending);
 	const bool priorContextPreserved = pendingSelected &&
@@ -10322,6 +10661,7 @@ std::string BuildCheckpointResumeSelfTestJson()
 		&explicitCheckpoint,
 		&pending,
 		"",
+		{},
 		explicitResult,
 		explicitUsedPending) &&
 		!explicitUsedPending &&
@@ -10333,6 +10673,7 @@ std::string BuildCheckpointResumeSelfTestJson()
 		nullptr,
 		nullptr,
 		"继续",
+		{},
 		emptyResult,
 		emptyUsedPending);
 	const bool ok = priorContextPreserved &&

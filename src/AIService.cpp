@@ -28,6 +28,11 @@
 #include "WinINetUtil.h"
 #include <chrono>
 
+nlohmann::json BuildOpenAIChatMessage(const AIChatMessage& message);
+nlohmann::json BuildClaudeMessage(const AIChatMessage& message);
+nlohmann::json BuildGeminiContent(const AIChatMessage& message);
+nlohmann::json BuildResponsesMessage(const AIChatMessage& message);
+
 namespace {
 using PerfClock = std::chrono::steady_clock;
 
@@ -1312,6 +1317,39 @@ std::string Utf8ToLocal(const std::string& text)
 	return UnicodeTextCodec::Utf8ToLocalPreservingUnicode(text);
 }
 
+std::string PathToLocalText(const std::filesystem::path& path)
+{
+	const std::wstring wide = path.wstring();
+	if (wide.empty()) {
+		return {};
+	}
+	const int length = WideCharToMultiByte(
+		CP_UTF8,
+		0,
+		wide.data(),
+		static_cast<int>(wide.size()),
+		nullptr,
+		0,
+		nullptr,
+		nullptr);
+	if (length <= 0) {
+		return path.string();
+	}
+	std::string utf8(static_cast<size_t>(length), '\0');
+	if (WideCharToMultiByte(
+			CP_UTF8,
+			0,
+			wide.data(),
+			static_cast<int>(wide.size()),
+			utf8.data(),
+			length,
+			nullptr,
+			nullptr) <= 0) {
+		return path.string();
+	}
+	return Utf8ToLocal(utf8);
+}
+
 using ChatToolCallback = std::function<std::string(
 	const std::string& toolName,
 	const std::string& argumentsJson,
@@ -1320,7 +1358,41 @@ using ChatToolCallback = std::function<std::string(
 struct ChatToolExecutionResult {
 	std::string resultLocal;
 	bool ok = false;
+	std::vector<AIImageAttachment> attachments;
 };
+
+std::vector<AIImageAttachment> ExtractToolImageAttachments(const std::string& resultLocal)
+{
+	std::vector<AIImageAttachment> attachments;
+	try {
+		const nlohmann::json result = nlohmann::json::parse(LocalToUtf8(resultLocal));
+		if (!result.is_object() || !result.contains("_ai_image_attachments") ||
+			!result["_ai_image_attachments"].is_array()) {
+			return attachments;
+		}
+		for (const auto& value : result["_ai_image_attachments"]) {
+			if (!value.is_object()) {
+				continue;
+			}
+			AIImageAttachment attachment;
+			attachment.id = value.value("id", std::string());
+			attachment.fileNameLocal = Utf8ToLocal(value.value("file_name", std::string()));
+			attachment.mimeType = value.value("mime_type", std::string());
+			attachment.assetPathLocal = Utf8ToLocal(value.value("asset_path", std::string()));
+			attachment.sourcePathLocal = Utf8ToLocal(value.value("source_path", std::string()));
+			attachment.detail = value.value("detail", std::string("auto"));
+			attachment.byteSize = value.value("byte_size", static_cast<std::uint64_t>(0));
+			attachment.width = value.value("width", 0u);
+			attachment.height = value.value("height", 0u);
+			if (!attachment.assetPathLocal.empty()) {
+				attachments.push_back(std::move(attachment));
+			}
+		}
+	}
+	catch (...) {
+	}
+	return attachments;
+}
 
 std::string AppendToolPolicyNotice(
 	const std::string& resultLocal,
@@ -1366,6 +1438,7 @@ ChatToolExecutionResult ExecuteChatToolWithPolicy(
 	else {
 		execution.resultLocal = R"({"ok":false,"error":"tool callback not set"})";
 	}
+	execution.attachments = ExtractToolImageAttachments(execution.resultLocal);
 	const std::string notice = policy.AfterToolCall(
 		toolName,
 		argumentsJsonUtf8,
@@ -2701,12 +2774,32 @@ nlohmann::json BuildUpdateGoalToolDefinition()
 	};
 }
 
+nlohmann::json BuildViewImageToolDefinition()
+{
+	return {
+		{"name", "view_image"},
+		{"description", "Load and analyze an image from an arbitrary local disk path. Use this for screenshots created by PowerShell or when the user provides an image path. The user may be asked to approve access."},
+		{"inputSchema", {
+			{"type", "object"},
+			{"properties", {
+				{"path", {{"type", "string"}, {"description", "Absolute image path, or a path relative to the current project directory."}}},
+				{"detail", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "low", "high"})}}}
+			}},
+			{"required", nlohmann::json::array({"path"})},
+			{"additionalProperties", false}
+		}}
+	};
+}
+
 nlohmann::json BuildInternalToolCatalog(
 	const AISettings& settings,
 	bool enablePlanUserInput,
 	bool enableGoalTools)
 {
 	nlohmann::json catalog = BuildConfiguredToolCatalog(settings);
+	if (AIService::SupportsImageInput(settings)) {
+		catalog.push_back(BuildViewImageToolDefinition());
+	}
 	if (enablePlanUserInput) {
 		catalog.push_back(BuildRequestUserInputToolDefinition());
 	}
@@ -3919,34 +4012,53 @@ void CompactLongTaskIfNeeded(
 	SyncLongTaskResult(result, controller);
 }
 
-std::vector<std::string> TakePendingUserInputs(
+std::vector<AIChatMessage> TakePendingUserInputs(
 	const AIChatRunOptions& runOptions,
 	const std::string& completedAssistantContent)
 {
 	if (!runOptions.takePendingUserInputsCallback) {
 		return {};
 	}
-	std::vector<std::string> pending =
+	std::vector<AIChatMessage> pending =
 		runOptions.takePendingUserInputsCallback(completedAssistantContent);
 	pending.erase(
 		std::remove_if(
 			pending.begin(),
 			pending.end(),
-			[](const std::string& text) { return AIService::Trim(text).empty(); }),
+			[](const AIChatMessage& message) {
+				return AIService::Trim(message.content).empty() && message.attachments.empty();
+			}),
 		pending.end());
 	return pending;
 }
 
 void AppendPendingUserInputsToController(
 	AIChatRunController& controller,
-	const std::vector<std::string>& pending)
+	const std::vector<AIChatMessage>& pending)
 {
-	for (const std::string& text : pending) {
-		controller.AppendContextMessage(AIChatMessage{"user", text, "", ""});
+	for (const AIChatMessage& message : pending) {
+		controller.AppendContextMessage(message);
 	}
 	if (!pending.empty()) {
 		controller.PublishCheckpoint();
 	}
+}
+
+void AppendToolImagesToController(
+	AIChatRunController& controller,
+	const std::string& toolName,
+	const std::vector<AIImageAttachment>& attachments)
+{
+	if (attachments.empty()) {
+		return;
+	}
+	controller.AppendContextMessage(AIChatMessage{
+		"user",
+		"Image returned by " + (toolName.empty() ? std::string("view_image") : toolName) + ".",
+		"",
+		"",
+		attachments
+	});
 }
 
 AIChatResult ExecuteChatWithToolsClaude(
@@ -3985,6 +4097,11 @@ AIChatResult ExecuteChatWithToolsClaude(
 			continue;
 		}
 
+		if (role == "user" && !msg.attachments.empty()) {
+			messages.push_back(BuildClaudeMessage(msg));
+			continue;
+		}
+
 		nlohmann::json rawMessage;
 		if (TryParseRawChatMessageJson(msg.rawMessageJsonUtf8, rawMessage)) {
 			std::string rawRole;
@@ -4008,12 +4125,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 		if (role != "user" && role != "assistant") {
 			continue;
 		}
-		messages.push_back({
-			{"role", role},
-			{"content", nlohmann::json::array({
-				{{"type", "text"}, {"text", LocalToUtf8(msg.content)}}
-			})}
-		});
+		messages.push_back(BuildClaudeMessage(msg));
 	}
 
 	AIChatToolPolicy::Session toolPolicy;
@@ -4120,15 +4232,10 @@ AIChatResult ExecuteChatWithToolsClaude(
 						{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
 					});
 				});
-			const std::vector<std::string> pending = TakePendingUserInputs(runOptions, contentLocal);
+			const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, contentLocal);
 			if (!pending.empty()) {
-				for (const std::string& text : pending) {
-					messages.push_back({
-						{"role", "user"},
-						{"content", nlohmann::json::array({
-							{{"type", "text"}, {"text", LocalToUtf8(text)}}
-						})}
-					});
+				for (const AIChatMessage& message : pending) {
+					messages.push_back(BuildClaudeMessage(message));
 				}
 				AppendPendingUserInputsToController(runController, pending);
 				SyncLongTaskResult(result, runController);
@@ -4210,6 +4317,16 @@ AIChatResult ExecuteChatWithToolsClaude(
 					{"content", compactPayload.textUtf8}
 				}
 			});
+			if (!toolExecution.attachments.empty()) {
+				const nlohmann::json imageMessage = BuildClaudeMessage(AIChatMessage{
+					"user", "", "", "", toolExecution.attachments
+				});
+				if (imageMessage.contains("content") && imageMessage["content"].is_array()) {
+					for (const auto& block : imageMessage["content"]) {
+						toolResultContent.push_back(block);
+					}
+				}
+			}
 			nlohmann::json rawToolMessage = {
 				{"role", "tool"},
 				{"content", toolResultContent}
@@ -4224,6 +4341,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 				toolResultLocal,
 				toolOk,
 				BuildRawCheckpointMessage("tool", toolResultLocal, rawToolMessage));
+			AppendToolImagesToController(runController, call.name, toolExecution.attachments);
 			messages.push_back({
 				{"role", "user"},
 				{"content", std::move(toolResultContent)}
@@ -4254,14 +4372,9 @@ AIChatResult ExecuteChatWithToolsClaude(
 					{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
 				});
 			});
-		const std::vector<std::string> pending = TakePendingUserInputs(runOptions, "");
-		for (const std::string& text : pending) {
-			messages.push_back({
-				{"role", "user"},
-				{"content", nlohmann::json::array({
-					{{"type", "text"}, {"text", LocalToUtf8(text)}}
-				})}
-			});
+		const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, "");
+		for (const AIChatMessage& message : pending) {
+			messages.push_back(BuildClaudeMessage(message));
 		}
 		AppendPendingUserInputsToController(runController, pending);
 		SyncLongTaskResult(result, runController);
@@ -4307,6 +4420,10 @@ AIChatResult ExecuteChatWithToolsGemini(
 			systemUtf8 += LocalToUtf8(msg.content);
 			continue;
 		}
+		if (role == "user" && !msg.attachments.empty()) {
+			contents.push_back(BuildGeminiContent(msg));
+			continue;
+		}
 		nlohmann::json rawContent;
 		if (TryParseRawChatMessageJson(msg.rawMessageJsonUtf8, rawContent) &&
 			rawContent.contains("role") && rawContent.contains("parts")) {
@@ -4316,12 +4433,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 		if (role != "user" && role != "assistant") {
 			continue;
 		}
-		contents.push_back({
-			{"role", role == "assistant" ? "model" : "user"},
-			{"parts", nlohmann::json::array({
-				{{"text", LocalToUtf8(msg.content)}}
-			})}
-		});
+		contents.push_back(BuildGeminiContent(msg));
 	}
 
 	AIChatToolPolicy::Session toolPolicy;
@@ -4452,13 +4564,10 @@ AIChatResult ExecuteChatWithToolsGemini(
 						})}}
 					});
 				});
-			const std::vector<std::string> pending = TakePendingUserInputs(runOptions, contentLocal);
+			const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, contentLocal);
 			if (!pending.empty()) {
-				for (const std::string& text : pending) {
-					contents.push_back({
-						{"role", "user"},
-						{"parts", nlohmann::json::array({{{"text", LocalToUtf8(text)}}})}
-					});
+				for (const AIChatMessage& message : pending) {
+					contents.push_back(BuildGeminiContent(message));
 				}
 				AppendPendingUserInputsToController(runController, pending);
 				SyncLongTaskResult(result, runController);
@@ -4524,12 +4633,23 @@ AIChatResult ExecuteChatWithToolsGemini(
 					}
 				})}
 			};
+			if (!toolExecution.attachments.empty()) {
+				const nlohmann::json imageContent = BuildGeminiContent(AIChatMessage{
+					"user", "", "", "", toolExecution.attachments
+				});
+				if (imageContent.contains("parts") && imageContent["parts"].is_array()) {
+					for (const auto& part : imageContent["parts"]) {
+						toolResponseContent["parts"].push_back(part);
+					}
+				}
+			}
 			contents.push_back(toolResponseContent);
 			runController.CompleteToolCall(
 				i,
 				toolResultLocal,
 				toolOk,
 				BuildRawCheckpointMessage("tool", toolResultLocal, toolResponseContent));
+			AppendToolImagesToController(runController, call.name, toolExecution.attachments);
 		}
 		if (runController.IsStalled()) {
 			result.paused = true;
@@ -4561,12 +4681,9 @@ AIChatResult ExecuteChatWithToolsGemini(
 					})}}
 				});
 			});
-		const std::vector<std::string> pending = TakePendingUserInputs(runOptions, "");
-		for (const std::string& text : pending) {
-			contents.push_back({
-				{"role", "user"},
-				{"parts", nlohmann::json::array({{{"text", LocalToUtf8(text)}}})}
-			});
+		const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, "");
+		for (const AIChatMessage& message : pending) {
+			contents.push_back(BuildGeminiContent(message));
 		}
 		AppendPendingUserInputsToController(runController, pending);
 		SyncLongTaskResult(result, runController);
@@ -4615,7 +4732,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		if (role != "user" && role != "assistant") {
 			continue;
 		}
-		input.push_back(BuildResponsesTextMessage(role, LocalToUtf8(msg.content)));
+		input.push_back(BuildResponsesMessage(msg));
 	}
 
 	const std::string skillPromptLocal = BuildSkillRuntimePrompt(runController.ContextMessages());
@@ -4762,10 +4879,10 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 						BuildResponsesTextMessage("user", LocalToUtf8("请从检查点继续执行原任务。"))
 					});
 				});
-			const std::vector<std::string> pending = TakePendingUserInputs(runOptions, contentLocal);
+			const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, contentLocal);
 			if (!pending.empty()) {
-				for (const std::string& text : pending) {
-					input.push_back(BuildResponsesTextMessage("user", LocalToUtf8(text)));
+				for (const AIChatMessage& message : pending) {
+					input.push_back(BuildResponsesMessage(message));
 				}
 				AppendPendingUserInputsToController(runController, pending);
 				SyncLongTaskResult(result, runController);
@@ -4848,6 +4965,11 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 				{"output", compactPayload.textUtf8}
 			};
 			input.push_back(toolOutputItem);
+			if (!toolExecution.attachments.empty()) {
+				input.push_back(BuildResponsesMessage(AIChatMessage{
+					"user", "Image returned by " + call.name + ".", "", "", toolExecution.attachments
+				}));
+			}
 			try {
 				result.contextPrefixRawMessagesUtf8.push_back(toolOutputItem.dump());
 			}
@@ -4858,6 +4980,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 				toolResultLocal,
 				toolOk,
 				BuildRawCheckpointMessage("tool", toolResultLocal, toolOutputItem));
+			AppendToolImagesToController(runController, call.name, toolExecution.attachments);
 		}
 		if (runController.IsStalled()) {
 			result.paused = true;
@@ -4884,9 +5007,9 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 					BuildResponsesTextMessage("user", LocalToUtf8("请从检查点继续执行原任务。"))
 				});
 			});
-		const std::vector<std::string> pending = TakePendingUserInputs(runOptions, "");
-		for (const std::string& text : pending) {
-			input.push_back(BuildResponsesTextMessage("user", LocalToUtf8(text)));
+		const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, "");
+		for (const AIChatMessage& message : pending) {
+			input.push_back(BuildResponsesMessage(message));
 		}
 		AppendPendingUserInputsToController(runController, pending);
 		SyncLongTaskResult(result, runController);
@@ -4943,6 +5066,7 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 	outSettings.protocolType     = ParseProtocolType(jsonConfig.getValue("protocol_type"));
 	outSettings.thinkingLevel    = ParseThinkingLevel(jsonConfig.getValue("thinking_level"));
 	outSettings.sourceEditMode   = ParseSourceEditMode(jsonConfig.getGlobalValue("source_edit_mode"));
+	outSettings.imageInputMode   = ParseImageInputMode(jsonConfig.getValue("image_input_mode"));
 	outSettings.baseUrl          = jsonConfig.getValueLocal("base_url");
 	outSettings.apiKey           = jsonConfig.getValueLocal("api_key");
 	outSettings.model            = jsonConfig.getValueLocal("model");
@@ -4996,6 +5120,7 @@ void AIService::SaveSettings(AIJsonConfig& jsonConfig, const AISettings& setting
 		{ "timeout_ms",          std::to_string(settings.timeoutMs)          },
 		{ "temperature",         std::format("{:.2f}", settings.temperature) },
 		{ "context_window",      std::to_string(settings.contextWindowTokens) },
+		{ "image_input_mode",    ImageInputModeToString(settings.imageInputMode) },
 	});
 	jsonConfig.removeValues({
 		"source_edit_mode",
@@ -5317,6 +5442,339 @@ std::string AIService::SourceEditModeDisplayName(AISourceEditMode mode)
 	default:
 		return "真实页优先";
 	}
+}
+
+struct EncodedImageAttachment {
+	std::string dataUrlUtf8;
+	std::string base64Utf8;
+	std::string mimeType;
+	std::string detail;
+	std::string errorUtf8;
+};
+
+EncodedImageAttachment EncodeImageAttachment(const AIImageAttachment& attachment)
+{
+	EncodedImageAttachment encoded;
+	std::string errorLocal;
+	if (!AIImageAttachmentManager::BuildDataUrl(attachment, encoded.dataUrlUtf8, errorLocal)) {
+		encoded.errorUtf8 = LocalToUtf8(
+			"[无法读取图片附件 " + attachment.fileNameLocal + "：" + errorLocal + "]");
+		return encoded;
+	}
+	const size_t separator = encoded.dataUrlUtf8.find(',');
+	if (separator == std::string::npos) {
+		encoded.errorUtf8 = LocalToUtf8("[图片附件编码无效：" + attachment.fileNameLocal + "]");
+		encoded.dataUrlUtf8.clear();
+		return encoded;
+	}
+	encoded.base64Utf8 = encoded.dataUrlUtf8.substr(separator + 1);
+	encoded.mimeType = attachment.mimeType.empty() ? "image/png" : attachment.mimeType;
+	encoded.detail = ToLowerAsciiCopy(AIService::Trim(attachment.detail));
+	if (encoded.detail != "low" && encoded.detail != "high") {
+		encoded.detail = "auto";
+	}
+	return encoded;
+}
+
+nlohmann::json BuildOpenAIChatMessage(const AIChatMessage& message)
+{
+	const std::string role = ToLowerAsciiCopy(AIService::Trim(message.role));
+	if (role != "user" || message.attachments.empty()) {
+		return {{"role", role}, {"content", LocalToUtf8(message.content)}};
+	}
+	nlohmann::json content = nlohmann::json::array();
+	if (!message.content.empty()) {
+		content.push_back({{"type", "text"}, {"text", LocalToUtf8(message.content)}});
+	}
+	for (const AIImageAttachment& attachment : message.attachments) {
+		const EncodedImageAttachment encoded = EncodeImageAttachment(attachment);
+		if (!encoded.errorUtf8.empty()) {
+			content.push_back({{"type", "text"}, {"text", encoded.errorUtf8}});
+			continue;
+		}
+		content.push_back({
+			{"type", "image_url"},
+			{"image_url", {{"url", encoded.dataUrlUtf8}, {"detail", encoded.detail}}}
+		});
+	}
+	if (content.empty()) {
+		content.push_back({{"type", "text"}, {"text", "[图片附件为空]"}});
+	}
+	return {{"role", "user"}, {"content", std::move(content)}};
+}
+
+nlohmann::json BuildClaudeMessage(const AIChatMessage& message)
+{
+	const std::string role = ToLowerAsciiCopy(AIService::Trim(message.role));
+	nlohmann::json content = nlohmann::json::array();
+	if (!message.content.empty()) {
+		content.push_back({{"type", "text"}, {"text", LocalToUtf8(message.content)}});
+	}
+	if (role == "user") {
+		for (const AIImageAttachment& attachment : message.attachments) {
+			const EncodedImageAttachment encoded = EncodeImageAttachment(attachment);
+			if (!encoded.errorUtf8.empty()) {
+				content.push_back({{"type", "text"}, {"text", encoded.errorUtf8}});
+				continue;
+			}
+			content.push_back({
+				{"type", "image"},
+				{"source", {
+					{"type", "base64"},
+					{"media_type", encoded.mimeType},
+					{"data", encoded.base64Utf8}
+				}}
+			});
+		}
+	}
+	if (content.empty()) {
+		content.push_back({{"type", "text"}, {"text", ""}});
+	}
+	return {{"role", role}, {"content", std::move(content)}};
+}
+
+nlohmann::json BuildGeminiContent(const AIChatMessage& message)
+{
+	const std::string role = ToLowerAsciiCopy(AIService::Trim(message.role));
+	nlohmann::json parts = nlohmann::json::array();
+	if (!message.content.empty()) {
+		parts.push_back({{"text", LocalToUtf8(message.content)}});
+	}
+	if (role == "user") {
+		for (const AIImageAttachment& attachment : message.attachments) {
+			const EncodedImageAttachment encoded = EncodeImageAttachment(attachment);
+			if (!encoded.errorUtf8.empty()) {
+				parts.push_back({{"text", encoded.errorUtf8}});
+				continue;
+			}
+			parts.push_back({{"inlineData", {
+				{"mimeType", encoded.mimeType},
+				{"data", encoded.base64Utf8}
+			}}});
+		}
+	}
+	if (parts.empty()) {
+		parts.push_back({{"text", ""}});
+	}
+	return {{"role", role == "assistant" ? "model" : "user"}, {"parts", std::move(parts)}};
+}
+
+nlohmann::json BuildResponsesMessage(const AIChatMessage& message)
+{
+	const std::string role = ToLowerAsciiCopy(AIService::Trim(message.role));
+	if (role != "user" || message.attachments.empty()) {
+		return BuildResponsesTextMessage(role, LocalToUtf8(message.content));
+	}
+	nlohmann::json content = nlohmann::json::array();
+	if (!message.content.empty()) {
+		content.push_back({{"type", "input_text"}, {"text", LocalToUtf8(message.content)}});
+	}
+	for (const AIImageAttachment& attachment : message.attachments) {
+		const EncodedImageAttachment encoded = EncodeImageAttachment(attachment);
+		if (!encoded.errorUtf8.empty()) {
+			content.push_back({{"type", "input_text"}, {"text", encoded.errorUtf8}});
+			continue;
+		}
+		content.push_back({
+			{"type", "input_image"},
+			{"image_url", encoded.dataUrlUtf8},
+			{"detail", encoded.detail}
+		});
+	}
+	if (content.empty()) {
+		content.push_back({{"type", "input_text"}, {"text", "[图片附件为空]"}});
+	}
+	return {{"role", "user"}, {"content", std::move(content)}};
+}
+
+AIImageInputMode AIService::ParseImageInputMode(const std::string& text)
+{
+	const std::string value = ToLowerAsciiCopy(Trim(text));
+	if (value == "enabled" || value == "enable" || value == "on" || value == "true") {
+		return AIImageInputMode::Enabled;
+	}
+	if (value == "disabled" || value == "disable" || value == "off" || value == "false") {
+		return AIImageInputMode::Disabled;
+	}
+	return AIImageInputMode::Auto;
+}
+
+std::string AIService::ImageInputModeToString(AIImageInputMode mode)
+{
+	switch (mode) {
+	case AIImageInputMode::Enabled:
+		return "enabled";
+	case AIImageInputMode::Disabled:
+		return "disabled";
+	case AIImageInputMode::Auto:
+	default:
+		return "auto";
+	}
+}
+
+std::string AIService::ImageInputModeDisplayName(AIImageInputMode mode)
+{
+	switch (mode) {
+	case AIImageInputMode::Enabled:
+		return "启用";
+	case AIImageInputMode::Disabled:
+		return "禁用";
+	case AIImageInputMode::Auto:
+	default:
+		return "自动";
+	}
+}
+
+bool AIService::SupportsImageInput(const AISettings& settings)
+{
+	if (settings.imageInputMode == AIImageInputMode::Enabled) {
+		return true;
+	}
+	if (settings.imageInputMode == AIImageInputMode::Disabled) {
+		return false;
+	}
+
+	const std::string model = ToLowerAsciiCopy(Trim(settings.model));
+	static const std::array<const char*, 14> kKnownTextOnlyMarkers = {
+		"gpt-3.5", "text-", "deepseek", "kimi-k2.7-code", "kimi-k3",
+		"moonshot-v1", "qwen3-coder", "qwen3.7", "minimax-m", "glm-5",
+		"doubao-seed-2.0-code", "grok-code", "grok-build", "coder"
+	};
+	for (const char* marker : kKnownTextOnlyMarkers) {
+		if (!model.empty() && model.find(marker) != std::string::npos) {
+			return false;
+		}
+	}
+
+	// 四种已支持协议都能承载图片。未知自定义模型按协议尝试，失败时可在配置中手动禁用。
+	return settings.protocolType == AIProtocolType::OpenAI ||
+		settings.protocolType == AIProtocolType::OpenAIResponses ||
+		settings.protocolType == AIProtocolType::Claude ||
+		settings.protocolType == AIProtocolType::Gemini;
+}
+
+std::string AIService::BuildImageInputSelfTestJson()
+{
+	nlohmann::json report = {
+		{"name", "ai-image-provider-serialization"},
+		{"ok", false},
+		{"checks", nlohmann::json::object()}
+	};
+	const std::filesystem::path tempRoot = std::filesystem::temp_directory_path() /
+		(L"AutoLinker-\u591a\u6a21\u6001\u81ea\u68c0-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+	const std::filesystem::path firstPath = tempRoot / L"\u56fe\u7247-a.png";
+	const std::filesystem::path secondPath = tempRoot / L"image-b.png";
+	std::error_code ec;
+	std::filesystem::create_directories(tempRoot, ec);
+	const auto writeBytes = [](const std::filesystem::path& path, std::string_view bytes) {
+		std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+		stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+		return stream.good();
+	};
+	const bool filesWritten = !ec && writeBytes(firstPath, "abc") && writeBytes(secondPath, "def");
+
+	AIImageAttachment first;
+	first.fileNameLocal = "image-a.png";
+	first.mimeType = "image/png";
+	first.assetPathLocal = PathToLocalText(firstPath);
+	first.detail = "high";
+	AIImageAttachment second;
+	second.fileNameLocal = "image-b.png";
+	second.mimeType = "image/jpeg";
+	second.assetPathLocal = PathToLocalText(secondPath);
+	second.detail = "low";
+	const AIChatMessage withText{"user", "inspect", "", "", {first, second}};
+	const AIChatMessage imageOnly{"user", "", "", "", {first, second}};
+	const std::string firstDataUrl = "data:image/png;base64,YWJj";
+	const std::string secondDataUrl = "data:image/jpeg;base64,ZGVm";
+
+	const nlohmann::json openAIChat = BuildOpenAIChatMessage(withText);
+	const nlohmann::json expectedOpenAIChat = {
+		{"role", "user"},
+		{"content", nlohmann::json::array({
+			{{"type", "text"}, {"text", "inspect"}},
+			{{"type", "image_url"}, {"image_url", {{"url", firstDataUrl}, {"detail", "high"}}}},
+			{{"type", "image_url"}, {"image_url", {{"url", secondDataUrl}, {"detail", "low"}}}}
+		})}
+	};
+	const nlohmann::json responses = BuildResponsesMessage(withText);
+	const nlohmann::json expectedResponses = {
+		{"role", "user"},
+		{"content", nlohmann::json::array({
+			{{"type", "input_text"}, {"text", "inspect"}},
+			{{"type", "input_image"}, {"image_url", firstDataUrl}, {"detail", "high"}},
+			{{"type", "input_image"}, {"image_url", secondDataUrl}, {"detail", "low"}}
+		})}
+	};
+	const nlohmann::json claude = BuildClaudeMessage(withText);
+	const nlohmann::json expectedClaude = {
+		{"role", "user"},
+		{"content", nlohmann::json::array({
+			{{"type", "text"}, {"text", "inspect"}},
+			{{"type", "image"}, {"source", {{"type", "base64"}, {"media_type", "image/png"}, {"data", "YWJj"}}}},
+			{{"type", "image"}, {"source", {{"type", "base64"}, {"media_type", "image/jpeg"}, {"data", "ZGVm"}}}}
+		})}
+	};
+	const nlohmann::json gemini = BuildGeminiContent(withText);
+	const nlohmann::json expectedGemini = {
+		{"role", "user"},
+		{"parts", nlohmann::json::array({
+			{{"text", "inspect"}},
+			{{"inlineData", {{"mimeType", "image/png"}, {"data", "YWJj"}}}},
+			{{"inlineData", {{"mimeType", "image/jpeg"}, {"data", "ZGVm"}}}}
+		})}
+	};
+
+	const nlohmann::json openAIImageOnly = BuildOpenAIChatMessage(imageOnly);
+	const nlohmann::json responsesImageOnly = BuildResponsesMessage(imageOnly);
+	const nlohmann::json claudeImageOnly = BuildClaudeMessage(imageOnly);
+	const nlohmann::json geminiImageOnly = BuildGeminiContent(imageOnly);
+	const bool imageOnlyOk =
+		openAIImageOnly["content"].size() == 2 &&
+		responsesImageOnly["content"].size() == 2 &&
+		claudeImageOnly["content"].size() == 2 &&
+		geminiImageOnly["parts"].size() == 2;
+
+	AIImageAttachment missing = first;
+	missing.assetPathLocal = PathToLocalText(tempRoot / L"missing.png");
+	const nlohmann::json missingMessage = BuildOpenAIChatMessage(AIChatMessage{"user", "", "", "", {missing}});
+	const bool missingOk = missingMessage.contains("content") &&
+		missingMessage["content"].is_array() &&
+		missingMessage["content"].size() == 1 &&
+		missingMessage["content"][0].value("type", std::string()) == "text";
+
+	AISettings autoTextOnly;
+	autoTextOnly.protocolType = AIProtocolType::OpenAI;
+	autoTextOnly.model = "deepseek-v4-pro";
+	AISettings autoVision = autoTextOnly;
+	autoVision.model = "grok-2-vision-latest";
+	AISettings explicitEnabled = autoTextOnly;
+	explicitEnabled.imageInputMode = AIImageInputMode::Enabled;
+	AISettings explicitDisabled = autoVision;
+	explicitDisabled.imageInputMode = AIImageInputMode::Disabled;
+	const bool capabilityOverrideOk =
+		!SupportsImageInput(autoTextOnly) &&
+		SupportsImageInput(autoVision) &&
+		SupportsImageInput(explicitEnabled) &&
+		!SupportsImageInput(explicitDisabled);
+
+	report["checks"]["unicode_asset_read"] = filesWritten && openAIChat == expectedOpenAIChat;
+	report["checks"]["openai_chat"] = openAIChat == expectedOpenAIChat;
+	report["checks"]["openai_responses"] = responses == expectedResponses;
+	report["checks"]["claude"] = claude == expectedClaude;
+	report["checks"]["gemini"] = gemini == expectedGemini;
+	report["checks"]["multiple_images"] = openAIChat["content"].size() == 3 &&
+		responses["content"].size() == 3 && claude["content"].size() == 3 && gemini["parts"].size() == 3;
+	report["checks"]["image_only"] = imageOnlyOk;
+	report["checks"]["missing_asset"] = missingOk;
+	report["checks"]["capability_override"] = capabilityOverrideOk;
+	bool allOk = true;
+	for (const auto& item : report["checks"].items()) {
+		allOk = allOk && item.value().is_boolean() && item.value().get<bool>();
+	}
+	report["ok"] = allOk;
+	std::filesystem::remove_all(tempRoot, ec);
+	return report.dump();
 }
 
 bool AIService::ValidateCustomHeadersText(const std::string& headerText, std::string& outError)
@@ -5677,10 +6135,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 			}
 		}
 		else {
-			requestMessage = {
-				{"role", role},
-				{"content", LocalToUtf8(msg.content)}
-			};
+			requestMessage = BuildOpenAIChatMessage(msg);
 			if (role == "assistant" && !msg.reasoningContent.empty()) {
 				requestMessage["reasoning_content"] = msg.reasoningContent;
 			}
@@ -5917,6 +6372,12 @@ AIChatResult AIService::ExecuteChatWithTools(
 					toolOk,
 					BuildRawCheckpointMessage("tool", toolResultLocal, toolMessage));
 				requestMessages.push_back(std::move(toolMessage));
+				if (!toolExecution.attachments.empty()) {
+					requestMessages.push_back(BuildOpenAIChatMessage(AIChatMessage{
+						"user", "Image returned by " + toolName + ".", "", "", toolExecution.attachments
+					}));
+				}
+				AppendToolImagesToController(runController, toolName, toolExecution.attachments);
 				++toolCallIndex;
 			}
 			if (runController.IsStalled()) {
@@ -5944,9 +6405,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 						{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
 					});
 				});
-			const std::vector<std::string> pending = TakePendingUserInputs(runOptions, "");
-			for (const std::string& text : pending) {
-				requestMessages.push_back({{"role", "user"}, {"content", LocalToUtf8(text)}});
+			const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, "");
+			for (const AIChatMessage& message : pending) {
+				requestMessages.push_back(BuildOpenAIChatMessage(message));
 			}
 			AppendPendingUserInputsToController(runController, pending);
 			SyncLongTaskResult(result, runController);
@@ -5985,10 +6446,10 @@ AIChatResult AIService::ExecuteChatWithTools(
 					{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
 				});
 			});
-		const std::vector<std::string> pending = TakePendingUserInputs(runOptions, contentLocal);
+		const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, contentLocal);
 		if (!pending.empty()) {
-			for (const std::string& text : pending) {
-				requestMessages.push_back({{"role", "user"}, {"content", LocalToUtf8(text)}});
+			for (const AIChatMessage& message : pending) {
+				requestMessages.push_back(BuildOpenAIChatMessage(message));
 			}
 			AppendPendingUserInputsToController(runController, pending);
 			SyncLongTaskResult(result, runController);

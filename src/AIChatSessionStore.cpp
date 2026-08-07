@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <ctime>
 #include <format>
@@ -12,99 +13,74 @@
 #include "..\\thirdparty\\json.hpp"
 
 #include "PathHelper.h"
+#include "UnicodeTextCodec.h"
 
 namespace {
 
-bool IsValidUtf8TextForSessionStore(const std::string& text)
-{
-	if (text.empty()) {
-		return true;
-	}
-	return MultiByteToWideChar(
-		CP_UTF8,
-		MB_ERR_INVALID_CHARS,
-		text.data(),
-		static_cast<int>(text.size()),
-		nullptr,
-		0) > 0;
-}
-
-std::string ConvertCodePageForSessionStore(const std::string& text, UINT fromCodePage, UINT toCodePage, DWORD fromFlags = 0)
-{
-	if (text.empty()) {
-		return std::string();
-	}
-
-	const int wideLen = MultiByteToWideChar(
-		fromCodePage,
-		fromFlags,
-		text.data(),
-		static_cast<int>(text.size()),
-		nullptr,
-		0);
-	if (wideLen <= 0) {
-		return text;
-	}
-
-	std::wstring wide(static_cast<size_t>(wideLen), L'\0');
-	if (MultiByteToWideChar(
-		fromCodePage,
-		fromFlags,
-		text.data(),
-		static_cast<int>(text.size()),
-		wide.data(),
-		wideLen) <= 0) {
-		return text;
-	}
-
-	const int outLen = WideCharToMultiByte(
-		toCodePage,
-		0,
-		wide.data(),
-		wideLen,
-		nullptr,
-		0,
-		nullptr,
-		nullptr);
-	if (outLen <= 0) {
-		return text;
-	}
-
-	std::string out(static_cast<size_t>(outLen), '\0');
-	if (WideCharToMultiByte(
-		toCodePage,
-		0,
-		wide.data(),
-		wideLen,
-		out.data(),
-		outLen,
-		nullptr,
-		nullptr) <= 0) {
-		return text;
-	}
-	return out;
-}
-
 std::string LocalToUtf8TextForSessionStore(const std::string& text)
 {
-	if (text.empty()) {
-		return std::string();
-	}
-	if (IsValidUtf8TextForSessionStore(text)) {
-		return text;
-	}
-	return ConvertCodePageForSessionStore(text, CP_ACP, CP_UTF8, 0);
+	return UnicodeTextCodec::LocalToUtf8RestoringUnicode(text);
 }
 
 std::string Utf8ToLocalTextForSessionStore(const std::string& text)
 {
-	if (text.empty()) {
-		return std::string();
+	return UnicodeTextCodec::Utf8ToLocalPreservingUnicode(text);
+}
+
+std::filesystem::path LocalTextToPathForSessionStore(const std::string& text)
+{
+	const std::string utf8 = LocalToUtf8TextForSessionStore(text);
+	const int length = MultiByteToWideChar(
+		CP_UTF8,
+		MB_ERR_INVALID_CHARS,
+		utf8.data(),
+		static_cast<int>(utf8.size()),
+		nullptr,
+		0);
+	if (length <= 0) {
+		return std::filesystem::path(text);
 	}
-	if (!IsValidUtf8TextForSessionStore(text)) {
-		return text;
+	std::wstring wide(static_cast<size_t>(length), L'\0');
+	if (MultiByteToWideChar(
+			CP_UTF8,
+			MB_ERR_INVALID_CHARS,
+			utf8.data(),
+			static_cast<int>(utf8.size()),
+			wide.data(),
+			length) <= 0) {
+		return std::filesystem::path(text);
 	}
-	return ConvertCodePageForSessionStore(text, CP_UTF8, CP_ACP, MB_ERR_INVALID_CHARS);
+	return std::filesystem::path(wide);
+}
+
+std::string PathToLocalTextForSessionStore(const std::filesystem::path& path)
+{
+	const std::wstring wide = path.wstring();
+	const int length = WideCharToMultiByte(
+		CP_UTF8,
+		0,
+		wide.data(),
+		static_cast<int>(wide.size()),
+		nullptr,
+		0,
+		nullptr,
+		nullptr);
+	if (length <= 0) {
+		return path.string();
+	}
+	std::string utf8(static_cast<size_t>(length), '\0');
+	if (WideCharToMultiByte(
+			CP_UTF8,
+			0,
+			wide.data(),
+			static_cast<int>(wide.size()),
+			utf8.data(),
+			length,
+			nullptr,
+			nullptr) <= 0) {
+		return path.string();
+	}
+	return Utf8ToLocalTextForSessionStore(utf8);
 }
 
 std::string GetJsonStringAsLocalText(const nlohmann::json& row, const char* key)
@@ -231,7 +207,79 @@ std::string BuildSessionTitleLocal(const AIChatStoredSession& session)
 		: ("[" + session.sourceFileNameLocal + "] 会话");
 }
 
-nlohmann::json SerializeRunCheckpoint(const AIChatRunCheckpoint& checkpoint)
+nlohmann::json SerializeImageAttachments(
+	const std::vector<AIImageAttachment>& attachments,
+	const std::filesystem::path& sessionFilePath)
+{
+	nlohmann::json values = nlohmann::json::array();
+	const std::filesystem::path sessionDirectory = sessionFilePath.parent_path();
+	for (const AIImageAttachment& attachment : attachments) {
+		std::filesystem::path storedPath = LocalTextToPathForSessionStore(attachment.assetPathLocal);
+		if (!sessionDirectory.empty()) {
+			std::error_code ec;
+			const std::filesystem::path relative = std::filesystem::relative(storedPath, sessionDirectory, ec);
+			if (!ec && !relative.empty()) {
+				storedPath = relative;
+			}
+		}
+		values.push_back({
+			{"id", attachment.id},
+			{"file_name", LocalToUtf8TextForSessionStore(attachment.fileNameLocal)},
+			{"mime_type", attachment.mimeType},
+			{"asset_path", LocalToUtf8TextForSessionStore(PathToLocalTextForSessionStore(storedPath))},
+			{"source_path", LocalToUtf8TextForSessionStore(attachment.sourcePathLocal)},
+			{"detail", attachment.detail},
+			{"byte_size", attachment.byteSize},
+			{"width", attachment.width},
+			{"height", attachment.height}
+		});
+	}
+	return values;
+}
+
+std::vector<AIImageAttachment> DeserializeImageAttachments(
+	const nlohmann::json& owner,
+	const std::filesystem::path& sessionFilePath)
+{
+	std::vector<AIImageAttachment> attachments;
+	if (!owner.is_object() || !owner.contains("attachments") || !owner["attachments"].is_array()) {
+		return attachments;
+	}
+	for (const auto& value : owner["attachments"]) {
+		if (!value.is_object()) {
+			continue;
+		}
+		AIImageAttachment attachment;
+		attachment.id = GetJsonStringUtf8(value, "id");
+		attachment.fileNameLocal = GetJsonStringAsLocalText(value, "file_name");
+		attachment.mimeType = GetJsonStringUtf8(value, "mime_type");
+		attachment.assetPathLocal = GetJsonStringAsLocalText(value, "asset_path");
+		attachment.sourcePathLocal = GetJsonStringAsLocalText(value, "source_path");
+		attachment.detail = GetJsonStringUtf8(value, "detail");
+		std::transform(attachment.detail.begin(), attachment.detail.end(), attachment.detail.begin(), [](unsigned char ch) {
+			return static_cast<char>(std::tolower(ch));
+		});
+		attachment.byteSize = static_cast<std::uint64_t>((std::max)(0LL, GetJsonInt64(value, "byte_size", 0)));
+		attachment.width = static_cast<unsigned int>((std::max)(0LL, GetJsonInt64(value, "width", 0)));
+		attachment.height = static_cast<unsigned int>((std::max)(0LL, GetJsonInt64(value, "height", 0)));
+		if (attachment.detail != "low" && attachment.detail != "high") {
+			attachment.detail = "auto";
+		}
+		if (!attachment.assetPathLocal.empty()) {
+			std::filesystem::path assetPath = LocalTextToPathForSessionStore(attachment.assetPathLocal);
+			if (assetPath.is_relative() && !sessionFilePath.empty()) {
+				assetPath = (sessionFilePath.parent_path() / assetPath).lexically_normal();
+				attachment.assetPathLocal = PathToLocalTextForSessionStore(assetPath);
+			}
+		}
+		attachments.push_back(std::move(attachment));
+	}
+	return attachments;
+}
+
+nlohmann::json SerializeRunCheckpoint(
+	const AIChatRunCheckpoint& checkpoint,
+	const std::filesystem::path& sessionFilePath)
 {
 	nlohmann::json value = {
 		{"schema_version", checkpoint.schemaVersion},
@@ -248,12 +296,14 @@ nlohmann::json SerializeRunCheckpoint(const AIChatRunCheckpoint& checkpoint)
 		{"tool_calls", nlohmann::json::array()}
 	};
 	for (const AIChatMessage& message : checkpoint.contextMessages) {
-		value["context_messages"].push_back({
+		nlohmann::json row = {
 			{"role", message.role},
 			{"content", LocalToUtf8TextForSessionStore(message.content)},
 			{"reasoning_content", message.reasoningContent},
 			{"raw_message_json_utf8", message.rawMessageJsonUtf8}
-		});
+		};
+		row["attachments"] = SerializeImageAttachments(message.attachments, sessionFilePath);
+		value["context_messages"].push_back(std::move(row));
 	}
 	for (const AIChatCheckpointToolCall& call : checkpoint.toolCalls) {
 		value["tool_calls"].push_back({
@@ -289,12 +339,14 @@ bool DeserializeRunCheckpoint(const nlohmann::json& value, AIChatRunCheckpoint& 
 			if (!row.is_object()) {
 				continue;
 			}
-			checkpoint.contextMessages.push_back(AIChatMessage{
+			AIChatMessage message{
 				GetJsonStringUtf8(row, "role"),
 				GetJsonStringAsLocalText(row, "content"),
 				GetJsonStringUtf8(row, "reasoning_content"),
 				GetJsonStringUtf8(row, "raw_message_json_utf8")
-			});
+			};
+			message.attachments = DeserializeImageAttachments(row, {});
+			checkpoint.contextMessages.push_back(std::move(message));
 		}
 	}
 	if (value.contains("tool_calls") && value["tool_calls"].is_array()) {
@@ -343,15 +395,17 @@ bool SerializeSession(const AIChatStoredSession& session, nlohmann::json& outJso
 			};
 		}
 		if (session.hasRunCheckpoint) {
-			outJson["run_checkpoint"] = SerializeRunCheckpoint(session.runCheckpoint);
+			outJson["run_checkpoint"] = SerializeRunCheckpoint(session.runCheckpoint, session.sessionFilePath);
 		}
 		outJson["pending_inputs"] = nlohmann::json::array();
 		for (const auto& pending : session.pendingInputs) {
-			outJson["pending_inputs"].push_back({
+			nlohmann::json row = {
 				{"id", pending.id},
 				{"content", LocalToUtf8TextForSessionStore(pending.contentLocal)},
 				{"queued_at_unix_ms", pending.queuedAtUnixMs}
-			});
+			};
+			row["attachments"] = SerializeImageAttachments(pending.attachments, session.sessionFilePath);
+			outJson["pending_inputs"].push_back(std::move(row));
 		}
 		outJson["messages"] = nlohmann::json::array();
 
@@ -363,6 +417,7 @@ bool SerializeSession(const AIChatStoredSession& session, nlohmann::json& outJso
 			row["visible_in_history"] = message.visibleInHistory;
 			row["reasoning_content"] = message.reasoningContentUtf8;
 			row["raw_message_json_utf8"] = message.rawMessageJsonUtf8;
+			row["attachments"] = SerializeImageAttachments(message.attachments, session.sessionFilePath);
 			outJson["messages"].push_back(std::move(row));
 		}
 		return true;
@@ -436,7 +491,8 @@ bool DeserializeSession(const nlohmann::json& jsonValue, AIChatStoredSession& ou
 			pending.id = storedId > 0 ? static_cast<unsigned long long>(storedId) : 0;
 			pending.contentLocal = GetJsonStringAsLocalText(row, "content");
 			pending.queuedAtUnixMs = GetJsonInt64(row, "queued_at_unix_ms", 0);
-			if (!pending.contentLocal.empty()) {
+			pending.attachments = DeserializeImageAttachments(row, {});
+			if (!pending.contentLocal.empty() || !pending.attachments.empty()) {
 				outSession.pendingInputs.push_back(std::move(pending));
 			}
 		}
@@ -464,6 +520,7 @@ bool DeserializeSession(const nlohmann::json& jsonValue, AIChatStoredSession& ou
 		message.visibleInHistory = GetJsonBool(row, "visible_in_history", true);
 		message.reasoningContentUtf8 = GetJsonStringUtf8(row, "reasoning_content");
 		message.rawMessageJsonUtf8 = GetJsonStringUtf8(row, "raw_message_json_utf8");
+		message.attachments = DeserializeImageAttachments(row, {});
 		outSession.messages.push_back(std::move(message));
 	}
 	return true;
@@ -504,6 +561,14 @@ std::filesystem::path ResolveAIChatSessionFilePath(
 {
 	return GetAIChatSessionDirectoryPathForSourceFile(sourceFilePathLocal) /
 		(SanitizeSessionIdFileName(sessionId) + ".json");
+}
+
+std::filesystem::path GetAIChatSessionAssetDirectoryPath(const std::filesystem::path& sessionFilePath)
+{
+	if (sessionFilePath.empty()) {
+		return {};
+	}
+	return sessionFilePath.parent_path() / (sessionFilePath.stem().wstring() + L".assets");
 }
 
 bool SaveAIChatStoredSession(const AIChatStoredSession& session, std::string* outError)
@@ -629,6 +694,33 @@ bool LoadAIChatStoredSession(
 		return false;
 	}
 	outSession.sessionFilePath = sessionFilePath;
+	for (auto& message : outSession.messages) {
+		for (auto& attachment : message.attachments) {
+			std::filesystem::path path = LocalTextToPathForSessionStore(attachment.assetPathLocal);
+			if (path.is_relative()) {
+				attachment.assetPathLocal = PathToLocalTextForSessionStore(
+					(sessionFilePath.parent_path() / path).lexically_normal());
+			}
+		}
+	}
+	for (auto& pending : outSession.pendingInputs) {
+		for (auto& attachment : pending.attachments) {
+			std::filesystem::path path = LocalTextToPathForSessionStore(attachment.assetPathLocal);
+			if (path.is_relative()) {
+				attachment.assetPathLocal = PathToLocalTextForSessionStore(
+					(sessionFilePath.parent_path() / path).lexically_normal());
+			}
+		}
+	}
+	for (auto& message : outSession.runCheckpoint.contextMessages) {
+		for (auto& attachment : message.attachments) {
+			std::filesystem::path path = LocalTextToPathForSessionStore(attachment.assetPathLocal);
+			if (path.is_relative()) {
+				attachment.assetPathLocal = PathToLocalTextForSessionStore(
+					(sessionFilePath.parent_path() / path).lexically_normal());
+			}
+		}
+	}
 	return true;
 }
 

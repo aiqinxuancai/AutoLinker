@@ -447,6 +447,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+	<ClInclude Include="src\AIImageAttachment.h" />
     <ResourceCompile Include="src\AutoLinker.rc" />
   </ItemGroup>
   <ItemGroup>
@@ -534,6 +535,9 @@
     <ClCompile Include="src\MemFind.cpp" />
     <ClCompile Include="src\ModelManager.cpp" />
     <ClCompile Include="src\MouseBack.cpp" />
+	<ClCompile Include="src\AIImageAttachment.cpp">
+	  <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+	</ClCompile>
     <ClCompile Include="src\AIConfigDialog.cpp" />
     <ClCompile Include="src\AIChatFeature.cpp" />
     <ClCompile Include="src\AIChatMarkdownTableRenderer.cpp" />

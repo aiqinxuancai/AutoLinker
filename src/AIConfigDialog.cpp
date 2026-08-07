@@ -57,6 +57,7 @@ constexpr int IDC_CFG_PROFILE_RENAME = 1014;
 constexpr int IDC_CFG_PROFILE_DELETE = 1015;
 constexpr int IDC_CFG_PROFILE_ADD_PRESET = 1016;
 constexpr int IDC_CFG_SOURCE_EDIT_MODE = 1017;
+constexpr int IDC_CFG_IMAGE_INPUT_MODE = 1018;
 constexpr int IDC_CFG_SAVE = 1;
 constexpr int IDC_CFG_CANCEL = 2;
 constexpr UINT kAIConfigNativePresetMenuBase = 30000;
@@ -495,6 +496,7 @@ struct AIConfigDialogContext {
 	HWND hModel = nullptr;
 	HWND hThinkingLevel = nullptr;
 	HWND hSourceEditMode = nullptr;
+	HWND hImageInputMode = nullptr;
 	HWND hTavilyApiKey = nullptr;
 	HWND hExtraPrompt = nullptr;
 	HWND hCustomHeaders = nullptr;
@@ -667,6 +669,44 @@ AISourceEditMode GetSelectedSourceEditMode(HWND hCombo)
 		: AISourceEditMode::RealPageFirst;
 }
 
+void PopulateImageInputModeCombo(HWND hCombo, AIImageInputMode selected)
+{
+	if (hCombo == nullptr) {
+		return;
+	}
+	SendMessageA(hCombo, CB_RESETCONTENT, 0, 0);
+	for (const AIImageInputMode mode : {
+		AIImageInputMode::Auto,
+		AIImageInputMode::Enabled,
+		AIImageInputMode::Disabled }) {
+		const std::string label = Utf8ToLocalText(AIService::ImageInputModeDisplayName(mode));
+		const int index = static_cast<int>(SendMessageA(
+			hCombo,
+			CB_ADDSTRING,
+			0,
+			reinterpret_cast<LPARAM>(label.c_str())));
+		SendMessageA(hCombo, CB_SETITEMDATA, index, static_cast<LPARAM>(mode));
+		if (mode == selected) {
+			SendMessageA(hCombo, CB_SETCURSEL, index, 0);
+		}
+	}
+}
+
+AIImageInputMode GetSelectedImageInputMode(HWND hCombo)
+{
+	if (hCombo == nullptr) {
+		return AIImageInputMode::Auto;
+	}
+	const int selected = static_cast<int>(SendMessageA(hCombo, CB_GETCURSEL, 0, 0));
+	if (selected == CB_ERR) {
+		return AIImageInputMode::Auto;
+	}
+	const auto mode = static_cast<AIImageInputMode>(SendMessageA(hCombo, CB_GETITEMDATA, selected, 0));
+	return mode == AIImageInputMode::Enabled || mode == AIImageInputMode::Disabled
+		? mode
+		: AIImageInputMode::Auto;
+}
+
 void ApplyProfileValuesToSettings(const std::map<std::string, std::string>& values, AISettings& settings)
 {
 	settings.protocolType = AIService::ParseProtocolType([&]() {
@@ -676,6 +716,10 @@ void ApplyProfileValuesToSettings(const std::map<std::string, std::string>& valu
 	settings.thinkingLevel = AIService::ParseThinkingLevel([&]() {
 		const auto it = values.find("thinking_level");
 		return it != values.end() ? it->second : AIService::ThinkingLevelToString(settings.thinkingLevel);
+	}());
+	settings.imageInputMode = AIService::ParseImageInputMode([&]() {
+		const auto it = values.find("image_input_mode");
+		return it != values.end() ? it->second : AIService::ImageInputModeToString(settings.imageInputMode);
 	}());
 	if (const auto it = values.find("base_url"); it != values.end()) settings.baseUrl = it->second;
 	if (const auto it = values.find("api_key"); it != values.end()) settings.apiKey = it->second;
@@ -698,6 +742,7 @@ std::map<std::string, std::string> BuildProfileValuesFromSettings(const AISettin
 	return {
 		{ "protocol_type", AIService::ProtocolTypeToString(settings.protocolType) },
 		{ "thinking_level", AIService::ThinkingLevelToString(settings.thinkingLevel) },
+		{ "image_input_mode", AIService::ImageInputModeToString(settings.imageInputMode) },
 		{ "base_url", settings.baseUrl },
 		{ "api_key", settings.apiKey },
 		{ "model", settings.model },
@@ -890,6 +935,7 @@ AISettings ReadAISettingsFromNativeDialog(AIConfigDialogContext* ctx)
 	next.protocolType = GetSelectedProtocol(ctx->hProtocol);
 	next.thinkingLevel = GetSelectedThinkingLevel(ctx->hThinkingLevel);
 	next.sourceEditMode = GetSelectedSourceEditMode(ctx->hSourceEditMode);
+	next.imageInputMode = GetSelectedImageInputMode(ctx->hImageInputMode);
 	next.baseUrl = GetEditTextA(ctx->hBaseUrl);
 	next.apiKey = GetEditTextA(ctx->hApiKey);
 	next.model = GetEditTextA(ctx->hModel);
@@ -907,6 +953,7 @@ void ApplyAISettingsToNativeDialog(AIConfigDialogContext* ctx, const AISettings&
 	PopulateProtocolCombo(ctx->hProtocol, settings.protocolType);
 	PopulateThinkingLevelCombo(ctx->hThinkingLevel, settings.thinkingLevel);
 	PopulateSourceEditModeCombo(ctx->hSourceEditMode, settings.sourceEditMode);
+	PopulateImageInputModeCombo(ctx->hImageInputMode, settings.imageInputMode);
 	SetEditTextA(ctx->hBaseUrl, settings.baseUrl);
 	SetEditTextA(ctx->hApiKey, settings.apiKey);
 	SetEditTextA(ctx->hModel, settings.model);
@@ -943,20 +990,38 @@ struct AIConfigPresetSite {
 
 constexpr const char* kRightPresetModels[] = { "gpt-5.5", "gpt-5.4", "gpt-5.4-mini" };
 constexpr const char* kDeepseekPresetModels[] = { "deepseek-v4-flash", "deepseek-v4-pro" };
-constexpr const char* kZhipuPresetModels[] = { "glm-5.2", "glm-5-turbo", "glm-4.7", "glm-4.5-air" };
-constexpr const char* kQwenPresetModels[] = { "qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash", "qwen3-coder-next", "qwen3-coder-plus" };
+constexpr const char* kZhipuPresetModels[] = {
+	"glm-5.2", "glm-5-turbo", "glm-4.7", "glm-4.5-air",
+	"glm-4.5v", "glm-4v-plus-0111"
+};
+constexpr const char* kQwenPresetModels[] = {
+	"qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash", "qwen3-coder-next", "qwen3-coder-plus",
+	"qwen3-vl-plus", "qwen3-vl-flash", "qwen-vl-max-latest", "qwen-vl-plus-latest"
+};
 constexpr const char* kKimiPresetModels[] = { "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5" };
 constexpr const char* kDoubaoPresetModels[] = { "doubao-seed-2.0-pro", "doubao-seed-2.0-code", "doubao-seed-2.0-lite", "doubao-seed-1.8" };
 constexpr const char* kMiniMaxPresetModels[] = { "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5" };
 constexpr const char* kAihubmixPresetModels[] = { "gpt-5.5", "claude-opus-4-8", "claude-sonnet-4-6", "deepseek-v4-pro", "deepseek-v4-flash", "gemini-3.1-pro-preview" };
-constexpr const char* kSiliconFlowPresetModels[] = { "deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro", "Pro/zai-org/GLM-5", "zai-org/GLM-5.1", "Qwen/Qwen3.5-397B-A17B" };
-constexpr const char* kXaiPresetModels[] = { "grok-4.5", "grok-4.5-latest", "grok-build-latest" };
+constexpr const char* kSiliconFlowPresetModels[] = {
+	"deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro", "Pro/zai-org/GLM-5",
+	"zai-org/GLM-5.1", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen2.5-VL-72B-Instruct",
+	"Pro/Qwen/Qwen2.5-VL-7B-Instruct"
+};
+constexpr const char* kXaiPresetModels[] = {
+	"grok-4.5", "grok-4.5-latest", "grok-build-latest",
+	"grok-2-vision-latest", "grok-2-vision-1212"
+};
 constexpr const char* kOpenAIPresetModels[] = {
 	"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-	"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"
+	"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex",
+	"gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"
 };
 constexpr const char* kClaudePresetModels[] = { "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5" };
-constexpr const char* kGeminiPresetModels[] = { "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-pro" };
+constexpr const char* kGeminiPresetModels[] = {
+	"gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.5-flash",
+	"gemini-3.1-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash",
+	"gemini-2.5-flash-lite", "gemini-2.0-flash"
+};
 
 #define AI_PRESET_MODELS(name) name, std::size(name)
 
@@ -1523,6 +1588,7 @@ std::string BuildAIConfigWebViewSettingsJson(
 		item["name"] = LocalToUtf8Text(profile.name);
 		item["protocolType"] = AIService::ProtocolTypeToString(profile.settings.protocolType);
 		item["thinkingLevel"] = AIService::ThinkingLevelToString(profile.settings.thinkingLevel);
+		item["imageInputMode"] = AIService::ImageInputModeToString(profile.settings.imageInputMode);
 		item["baseUrl"] = LocalToUtf8Text(profile.settings.baseUrl);
 		item["apiKey"] = LocalToUtf8Text(profile.settings.apiKey);
 		item["model"] = LocalToUtf8Text(profile.settings.model);
@@ -1642,6 +1708,13 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			120, 216, 180, 220, hWnd, reinterpret_cast<HMENU>(IDC_CFG_SOURCE_EDIT_MODE), nullptr, nullptr);
 		PopulateSourceEditModeCombo(ctx->hSourceEditMode, ctx->settings->sourceEditMode);
 
+		HWND hImageInputModeLabel = CreateWindowW(L"STATIC", L"\u56fe\u7247\u8f93\u5165:", WS_CHILD | WS_VISIBLE,
+			330, 218, 80, 20, hWnd, nullptr, nullptr, nullptr);
+		ctx->hImageInputMode = CreateWindowExA(0, "COMBOBOX", "",
+			WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST,
+			420, 216, 200, 220, hWnd, reinterpret_cast<HMENU>(IDC_CFG_IMAGE_INPUT_MODE), nullptr, nullptr);
+		PopulateImageInputModeCombo(ctx->hImageInputMode, ctx->settings->imageInputMode);
+
 		const std::wstring getKeyLinkText =
 			L"<a href=\"https://www.rightapi.ai/register?aff=3dc87885\">从转发平台获取Key</a>";
 		HWND hGetKeyLink = CreateWindowExW(0, L"SysLink",
@@ -1701,6 +1774,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			hModelLabel,
 			hThinkingLabel,
 			hSourceEditModeLabel,
+			hImageInputModeLabel,
 			hTavilyApiKeyLabel,
 			ctx->hGetKeyLink,
 			hExtraPromptLabel,
@@ -1710,6 +1784,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			ctx->hModel,
 			ctx->hThinkingLevel,
 			ctx->hSourceEditMode,
+			ctx->hImageInputMode,
 			ctx->hTavilyApiKey,
 			ctx->hExtraPrompt,
 			ctx->hCustomHeaders,
@@ -1936,6 +2011,9 @@ AISettings ReadAISettingsFromWebProfilePayload(const AISettings& current, const 
 	AISettings next = current;
 	next.protocolType = AIService::ParseProtocolType(data.value("protocolType", AIService::ProtocolTypeToString(next.protocolType)));
 	next.thinkingLevel = AIService::ParseThinkingLevel(data.value("thinkingLevel", AIService::ThinkingLevelToString(next.thinkingLevel)));
+	next.imageInputMode = AIService::ParseImageInputMode(data.value(
+		"imageInputMode",
+		AIService::ImageInputModeToString(next.imageInputMode)));
 	next.baseUrl = Utf8ToLocalText(data.value("baseUrl", ""));
 	next.apiKey = Utf8ToLocalText(data.value("apiKey", ""));
 	next.model = Utf8ToLocalText(data.value("model", ""));

@@ -84,6 +84,15 @@
 				</div>
 
 				<div>
+					<label for="imageInputMode" class="ui-label">图片输入</label>
+					<select id="imageInputMode" class="ui-select">
+						<option value="auto">自动识别模型能力</option>
+						<option value="enabled">启用</option>
+						<option value="disabled">禁用</option>
+					</select>
+				</div>
+
+				<div>
 					<label for="thinkingLevel" class="ui-label">思考等级</label>
 					<select id="thinkingLevel" class="ui-select">
 						<option value="off">关闭</option>
@@ -171,6 +180,7 @@ const initialSettings = {
 		name: "\u9ED8\u8BA4",
 		protocolType: "openai",
 		thinkingLevel: "off",
+		imageInputMode: "auto",
 		baseUrl: "",
 		apiKey: "",
 		model: "",
@@ -500,6 +510,7 @@ function cloneProfile(profile) {
 		name: profile.name,
 		protocolType: profile.protocolType || "openai",
 		thinkingLevel: profile.thinkingLevel || "off",
+		imageInputMode: profile.imageInputMode || "auto",
 		baseUrl: profile.baseUrl || "",
 		apiKey: profile.apiKey || "",
 		model: profile.model || "",
@@ -525,6 +536,7 @@ function saveCurrentFormToActiveProfile() {
 	}
 	current.protocolType = $("protocol").value || "openai";
 	current.thinkingLevel = $("thinkingLevel").value || "off";
+	current.imageInputMode = $("imageInputMode").value || "auto";
 	current.baseUrl = $("baseUrl").value || "";
 	current.apiKey = $("apiKey").value || "";
 	current.model = $("model").value || "";
@@ -563,6 +575,7 @@ function applyProfileToForm(profile) {
 	}
 	setField("protocol", profile.protocolType);
 	setField("thinkingLevel", profile.thinkingLevel);
+	setField("imageInputMode", profile.imageInputMode);
 	setField("baseUrl", profile.baseUrl);
 	setField("apiKey", profile.apiKey);
 	setField("model", profile.model);
@@ -724,6 +737,7 @@ $("addProfileBtn").addEventListener("click", function() {
 		name: name,
 		protocolType: "openai",
 		thinkingLevel: "off",
+		imageInputMode: "auto",
 		baseUrl: "",
 		apiKey: "",
 		model: "",
@@ -773,19 +787,19 @@ var _modelOptions = [];
 var _fetchingModels = false;
 
 var PRESET_SITES = [
-	{ id: "right", label: "Right", protocolType: "openai", baseUrl: "https://www.rightapi.ai/codex", website: "https://www.rightapi.ai/register?aff=3dc87885", models: ["gpt-5.3-codex", "gpt-5.2"] },
+	{ id: "right", label: "Right", protocolType: "openai", baseUrl: "https://www.rightapi.ai/codex", website: "https://www.rightapi.ai/register?aff=3dc87885", models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"] },
 	{ id: "deepseek", label: "Deepseek", protocolType: "openai", defaultThinkingLevel: "high", baseUrl: "https://api.deepseek.com", website: "https://platform.deepseek.com", models: ["deepseek-v4-flash", "deepseek-v4-pro"] },
-	{ id: "zhipu", label: "\u667A\u8C31", protocolType: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4", website: "https://open.bigmodel.cn", models: ["glm-5.2", "glm-5-turbo", "glm-4.7", "glm-4.5-air"] },
-	{ id: "qwen", label: "\u5343\u95EE", protocolType: "openai", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", website: "https://dashscope.console.aliyun.com", models: ["qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash", "qwen3-coder-next", "qwen3-coder-plus"] },
+	{ id: "zhipu", label: "\u667A\u8C31", protocolType: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4", website: "https://open.bigmodel.cn", models: ["glm-5.2", "glm-5-turbo", "glm-4.7", "glm-4.5-air", "glm-4.5v", "glm-4v-plus-0111"] },
+	{ id: "qwen", label: "\u5343\u95EE", protocolType: "openai", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", website: "https://dashscope.console.aliyun.com", models: ["qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash", "qwen3-coder-next", "qwen3-coder-plus", "qwen3-vl-plus", "qwen3-vl-flash", "qwen-vl-max-latest", "qwen-vl-plus-latest"] },
 	{ id: "kimi", label: "Kimi", protocolType: "openai", defaultThinkingLevel: "max", baseUrl: "https://api.moonshot.cn/v1", website: "https://platform.moonshot.cn", models: ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"] },
 	{ id: "doubao", label: "\u8C46\u5305", protocolType: "openai", baseUrl: "https://ark.cn-beijing.volces.com/api/v3", website: "https://console.volcengine.com/ark", models: ["doubao-seed-2.0-pro", "doubao-seed-2.0-code", "doubao-seed-2.0-lite", "doubao-seed-1.8"] },
 	{ id: "minimax", label: "MiniMax", protocolType: "openai", baseUrl: "https://api.minimax.chat/v1", website: "https://platform.minimax.chat", models: ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5"] },
 	{ id: "aihubmix", label: "aihubmix", protocolType: "openai", baseUrl: "https://aihubmix.com/v1", website: "https://aihubmix.com/?aff=eeX5", models: ["gpt-5.5", "claude-opus-4-8", "claude-sonnet-4-6", "deepseek-v4-pro", "deepseek-v4-flash", "gemini-3.1-pro-preview"] },
-	{ id: "siliconflow", label: "\u7845\u57FA\u6D41\u52A8", protocolType: "openai", baseUrl: "https://api.siliconflow.cn/v1", website: "https://cloud.siliconflow.cn/i/Oezhkra7", models: ["deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro", "Pro/zai-org/GLM-5", "zai-org/GLM-5.1", "Qwen/Qwen3.5-397B-A17B"] },
-	{ id: "xai", label: "xAI", protocolType: "openai", defaultThinkingLevel: "high", baseUrl: "https://api.x.ai/v1", website: "https://console.x.ai", models: ["grok-4.5", "grok-4.5-latest", "grok-build-latest"] },
-	{ id: "openai", label: "OpenAI", protocolType: "openai_responses", baseUrl: "https://api.openai.com/v1", website: "https://platform.openai.com", models: ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"] },
+	{ id: "siliconflow", label: "\u7845\u57FA\u6D41\u52A8", protocolType: "openai", baseUrl: "https://api.siliconflow.cn/v1", website: "https://cloud.siliconflow.cn/i/Oezhkra7", models: ["deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro", "Pro/zai-org/GLM-5", "zai-org/GLM-5.1", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen2.5-VL-72B-Instruct", "Pro/Qwen/Qwen2.5-VL-7B-Instruct"] },
+	{ id: "xai", label: "xAI", protocolType: "openai", defaultThinkingLevel: "high", baseUrl: "https://api.x.ai/v1", website: "https://console.x.ai", models: ["grok-4.5", "grok-4.5-latest", "grok-build-latest", "grok-2-vision-latest", "grok-2-vision-1212"] },
+	{ id: "openai", label: "OpenAI", protocolType: "openai_responses", baseUrl: "https://api.openai.com/v1", website: "https://platform.openai.com", models: ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"] },
 	{ id: "claude", label: "Claude", protocolType: "claude", baseUrl: "https://api.anthropic.com", website: "https://console.anthropic.com", models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"] },
-	{ id: "gemini", label: "Gemini", protocolType: "gemini", baseUrl: "https://generativelanguage.googleapis.com", website: "https://aistudio.google.com", models: ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-pro"] }
+	{ id: "gemini", label: "Gemini", protocolType: "gemini", baseUrl: "https://generativelanguage.googleapis.com", website: "https://aistudio.google.com", models: ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"] }
 ];
 
 function normalizeBaseUrlForMatch(baseUrl) {
@@ -895,6 +909,7 @@ function currentFormProfilePayload() {
 		name: (findProfile(_activeProfileId) || {}).name || "\u914D\u7F6E",
 		protocolType: $("protocol").value || "openai",
 		thinkingLevel: $("thinkingLevel").value || "off",
+		imageInputMode: $("imageInputMode").value || "auto",
 		baseUrl: $("baseUrl").value || "",
 		apiKey: $("apiKey").value || "",
 		model: $("model").value || "",
@@ -978,6 +993,7 @@ function createProfileFromPreset(site, model) {
 		name: name,
 		protocolType: site.protocolType || "openai",
 		thinkingLevel: site.defaultThinkingLevel || "off",
+		imageInputMode: "auto",
 		baseUrl: site.baseUrl || getDefaultProfileBaseUrl(site.protocolType || "openai"),
 		apiKey: "",
 		model: model,
