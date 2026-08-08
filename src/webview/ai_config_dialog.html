@@ -307,6 +307,7 @@ function showPresetMenu(){var menu=$("presetMenu");menu.innerHTML="";PRESET_SITE
 
 function validateHeaders(text){var lines=String(text||"").split(/\r?\n/);for(var i=0;i<lines.length;i++){var line=trimText(lines[i]);if(line&&line.indexOf(":")<=0){alert("自定义请求头第 "+(i+1)+" 行格式无效。");return false;}}return true;}
 function collect(){if(!_settingsLoaded)return {activeTarget:{type:"",id:""},endpoints:[],groups:[]};saveEndpointForm();return {activeTarget:{type:_activeTarget.type,id:_activeTarget.id},endpoints:_endpoints.map(cloneEndpoint),groups:_groups.map(cloneGroup)};}
+function collectTestData(){var data=collect();data.activeTarget=_selectionType==="group"?{type:"group",id:_selectedGroupId}:{type:"endpoint",id:_selectedEndpointId};return data;}
 function validate(data){
 	if(!data.endpoints.length){alert("至少需要一个 API 端点。");return false;}var ids={};for(var i=0;i<data.endpoints.length;i++){var endpoint=data.endpoints[i];if(!trimText(endpoint.name)||ids[endpoint.id]){alert("API 端点名称或 ID 无效。");return false;}ids[endpoint.id]=true;endpoint.retryCount=clampInt(endpoint.retryCount,0,20,5);}
 	var activeEndpoints=[];if(data.activeTarget.type==="endpoint"){var target=findEndpoint(data.activeTarget.id);if(!target){alert("当前启用的 API 端点无效。");return false;}activeEndpoints=[target];}else{var group=findGroup(data.activeTarget.id);if(!group||!group.endpointIds.length){alert("当前启用的端点分组无效或没有成员。");return false;}activeEndpoints=group.endpointIds.map(findEndpoint);}
@@ -332,7 +333,7 @@ $("addGroupMemberBtn").onclick=function(){var group=findGroup(_selectedGroupId),
 $("toggleApiKey").onclick=function(){toggleSecret("apiKey","toggleApiKey");};$("protocol").onchange=updateEndpointPreview;$("baseUrl").oninput=function(){updateEndpointPreview();updateModelMenu(presetModels(this.value));};
 $("modelArrow").onclick=function(event){event.stopPropagation();_modelMenuOpen?hideModelMenu():showModelMenu();};$("modelArrow").onmousedown=function(event){event.preventDefault();};$("model").onfocus=showModelMenu;$("model").onblur=function(){setTimeout(hideModelMenu,150);};$("modelFetchBtn").onclick=requestModels;
 $("presetBtn").onclick=function(event){event.stopPropagation();_presetMenuOpen?hidePresetMenu():showPresetMenu();};document.addEventListener("click",function(event){if(!$("modelCmb").contains(event.target))hideModelMenu();if(!$("presetMenuAnchor").contains(event.target))hidePresetMenu();});
-$("cancelBtn").onclick=function(){post({action:"cancel"});};$("testBtn").onclick=function(){var data=collect();if(validate(data))post({action:"test_connection",data:data});};$("saveBtn").onclick=function(){var data=collect();if(validate(data))post({action:"save",data:data});};
+$("cancelBtn").onclick=function(){post({action:"cancel"});};$("testBtn").onclick=function(){var data=collectTestData();if(validate(data))post({action:"test_connection",data:data});};$("saveBtn").onclick=function(){var data=collect();if(validate(data))post({action:"save",data:data});};
 if(!(window.chrome&&window.chrome.webview))applyInitial({});
 </script>
 </body>
