@@ -103,7 +103,7 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 }
 
 constexpr int kAiRequestRetryCount = 5;
-constexpr int kAiChatRequestRetryCount = 4; // 首次调用加四次重试，总共最多调用五次。
+constexpr int kAiMaxRequestRetryCount = 20;
 constexpr int kAiChatRequestTimeoutMs = 60000;
 constexpr int kAiConnectionTestExtraTimeoutMs = 20000;
 constexpr int kAiRequestCancelledHttpStatus = 499;
@@ -186,6 +186,14 @@ bool ShouldRetryAiHttpRequest(int statusCode, const std::string& responseBody)
 	}
 	if (statusCode == 0) {
 		return responseBody.empty() || ContainsRetryableTransportHint(responseBody);
+	}
+	return IsRetryableHttpStatus(statusCode);
+}
+
+bool ShouldFailOverToNextEndpoint(int statusCode, const std::string& error)
+{
+	if (statusCode == 0) {
+		return error.empty() || error.rfind("HTTP 0:", 0) == 0 || ContainsRetryableTransportHint(error);
 	}
 	return IsRetryableHttpStatus(statusCode);
 }
@@ -299,7 +307,7 @@ std::pair<std::string, int> PerformPostRequestWithRetry(
 	int* outAttemptCount = nullptr)
 {
 	std::pair<std::string, int> lastResult;
-	const int boundedRetryCount = (std::clamp)(maxRetryCount, 0, kAiRequestRetryCount);
+	const int boundedRetryCount = (std::clamp)(maxRetryCount, 0, kAiMaxRequestRetryCount);
 	if (outAttemptCount != nullptr) {
 		*outAttemptCount = 0;
 	}
@@ -343,12 +351,16 @@ std::pair<std::string, int> PerformPostRequestStreamingWithRetry(
 	const std::function<bool()>& cancelCallback = {},
 	HttpRequestCancellation* cancelContext = nullptr,
 	int maxRetryCount = kAiRequestRetryCount,
-	int* outAttemptCount = nullptr)
+	int* outAttemptCount = nullptr,
+	bool* outSawResponseChunk = nullptr)
 {
 	std::pair<std::string, int> lastResult;
-	const int boundedRetryCount = (std::clamp)(maxRetryCount, 0, kAiRequestRetryCount);
+	const int boundedRetryCount = (std::clamp)(maxRetryCount, 0, kAiMaxRequestRetryCount);
 	if (outAttemptCount != nullptr) {
 		*outAttemptCount = 0;
+	}
+	if (outSawResponseChunk != nullptr) {
+		*outSawResponseChunk = false;
 	}
 	for (int attempt = 0; attempt <= boundedRetryCount; ++attempt) {
 		if (outAttemptCount != nullptr) {
@@ -361,12 +373,15 @@ std::pair<std::string, int> PerformPostRequestStreamingWithRetry(
 		lastResult = PerformPostRequestStreaming(
 			url,
 			postData,
-			[&onChunk, &sawChunk, &cancelCallback, cancelContext](const std::string& chunk) -> bool {
+			[&onChunk, &sawChunk, &cancelCallback, cancelContext, outSawResponseChunk](const std::string& chunk) -> bool {
 				if (IsCancelRequested(cancelCallback, cancelContext)) {
 					return false;
 				}
 				if (!chunk.empty()) {
 					sawChunk = true;
+					if (outSawResponseChunk != nullptr) {
+						*outSawResponseChunk = true;
+					}
 				}
 				return onChunk ? onChunk(chunk) : true;
 			},
@@ -378,8 +393,8 @@ std::pair<std::string, int> PerformPostRequestStreamingWithRetry(
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return std::make_pair(std::string("Request cancelled"), kAiRequestCancelledHttpStatus);
 		}
-		const bool streamAccepted = sawChunk && IsSuccessfulHttpStatus(lastResult.second);
-		if (streamAccepted || !ShouldRetryAiHttpRequest(lastResult.second, lastResult.first) || attempt >= boundedRetryCount) {
+		// 收到任意流数据后不得重放请求，否则可能重复输出或重复产生工具副作用。
+		if (sawChunk || !ShouldRetryAiHttpRequest(lastResult.second, lastResult.first) || attempt >= boundedRetryCount) {
 			return lastResult;
 		}
 
@@ -3677,6 +3692,7 @@ AIResult ExecuteTaskClaude(
 		nullptr,
 		maxRetryCount);
 	result.httpStatus = statusCode;
+	result.endpointEstablished = IsSuccessfulHttpStatus(statusCode);
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("claude-task", statusCode, responseBody);
 		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
@@ -3746,6 +3762,7 @@ AIResult ExecuteTaskGemini(
 		nullptr,
 		maxRetryCount);
 	result.httpStatus = statusCode;
+	result.endpointEstablished = IsSuccessfulHttpStatus(statusCode);
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("gemini-task", statusCode, responseBody);
 		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
@@ -3812,6 +3829,7 @@ AIResult ExecuteTaskOpenAIResponses(
 		nullptr,
 		maxRetryCount);
 	result.httpStatus = statusCode;
+	result.endpointEstablished = IsSuccessfulHttpStatus(statusCode);
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("openai-responses-task", statusCode, responseBody);
 		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
@@ -3879,8 +3897,9 @@ AIResult ExecuteTaskOpenAIWithPrompt(
 		"openai-compaction",
 		{},
 		nullptr,
-		kAiChatRequestRetryCount);
+		settings.retryCount);
 	result.httpStatus = statusCode;
+	result.endpointEstablished = IsSuccessfulHttpStatus(statusCode);
 	if (statusCode < 200 || statusCode >= 300) {
 		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
 		return result;
@@ -3936,13 +3955,13 @@ std::string GenerateLongTaskSummary(
 	const std::string input = BuildLongTaskCompactionInput(controller);
 	AIResult compactResult;
 	if (settings.protocolType == AIProtocolType::Claude) {
-		compactResult = ExecuteTaskClaude(systemPrompt, input, compactSettings, 1);
+		compactResult = ExecuteTaskClaude(systemPrompt, input, compactSettings, compactSettings.retryCount);
 	}
 	else if (settings.protocolType == AIProtocolType::Gemini) {
-		compactResult = ExecuteTaskGemini(systemPrompt, input, compactSettings);
+		compactResult = ExecuteTaskGemini(systemPrompt, input, compactSettings, compactSettings.retryCount);
 	}
 	else if (settings.protocolType == AIProtocolType::OpenAIResponses) {
-		compactResult = ExecuteTaskOpenAIResponses(systemPrompt, input, compactSettings, 1);
+		compactResult = ExecuteTaskOpenAIResponses(systemPrompt, input, compactSettings, compactSettings.retryCount);
 	}
 	else {
 		compactResult = ExecuteTaskOpenAIWithPrompt(systemPrompt, input, compactSettings);
@@ -4161,7 +4180,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 			"claude-chat",
 			cancelCallback,
 			cancelContext,
-			kAiChatRequestRetryCount,
+			settings.retryCount,
 			&attemptCount);
 		LogChatRoundMetrics(
 			"claude-chat",
@@ -4172,6 +4191,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 			attemptCount,
 			toolPolicy.ExplorationCalls());
 		result.httpStatus = statusCode;
+		result.endpointEstablished = result.endpointEstablished || IsSuccessfulHttpStatus(statusCode);
 		if (IsCancelRequested(cancelCallback, cancelContext) || statusCode == kAiRequestCancelledHttpStatus) {
 			return MarkChatResultCancelled(std::move(result));
 		}
@@ -4469,7 +4489,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 			"gemini-chat",
 			cancelCallback,
 			cancelContext,
-			kAiChatRequestRetryCount,
+			settings.retryCount,
 			&attemptCount);
 		LogChatRoundMetrics(
 			"gemini-chat",
@@ -4480,6 +4500,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 			attemptCount,
 			toolPolicy.ExplorationCalls());
 		result.httpStatus = statusCode;
+		result.endpointEstablished = result.endpointEstablished || IsSuccessfulHttpStatus(statusCode);
 		if (IsCancelRequested(cancelCallback, cancelContext) || statusCode == kAiRequestCancelledHttpStatus) {
 			return MarkChatResultCancelled(std::move(result));
 		}
@@ -4763,6 +4784,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		const std::string requestBodyText = requestBody.dump();
 		ResponsesStreamParseState streamState;
 		int attemptCount = 0;
+		bool sawResponseChunk = false;
 		const auto roundStart = PerfClock::now();
 		const auto [responseBody, statusCode] = PerformPostRequestStreamingWithRetry(
 			endpoint,
@@ -4777,8 +4799,9 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			"openai-responses-chat",
 			cancelCallback,
 			cancelContext,
-			kAiChatRequestRetryCount,
-			&attemptCount);
+			settings.retryCount,
+			&attemptCount,
+			&sawResponseChunk);
 		LogChatRoundMetrics(
 			"openai-responses-chat",
 			round,
@@ -4788,6 +4811,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			attemptCount,
 			toolPolicy.ExplorationCalls());
 		result.httpStatus = statusCode;
+		result.endpointEstablished = result.endpointEstablished || sawResponseChunk || IsSuccessfulHttpStatus(statusCode);
 		if (IsCancelRequested(cancelCallback, cancelContext) || statusCode == kAiRequestCancelledHttpStatus) {
 			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(streamState.mergedTextUtf8));
 		}
@@ -5017,6 +5041,68 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 }
 } // namespace
 
+namespace {
+
+void ApplyEndpointValues(
+	const std::map<std::string, std::string>& values,
+	AIEndpointSettings& endpoint)
+{
+	auto get = [&values](const char* key) -> std::string {
+		const auto it = values.find(key);
+		return it == values.end() ? std::string() : it->second;
+	};
+	if (const std::string value = get("protocol_type"); !value.empty()) endpoint.protocolType = AIService::ParseProtocolType(value);
+	if (const std::string value = get("thinking_level"); !value.empty()) endpoint.thinkingLevel = AIService::ParseThinkingLevel(value);
+	if (const std::string value = get("image_input_mode"); !value.empty()) endpoint.imageInputMode = AIService::ParseImageInputMode(value);
+	endpoint.baseUrl = get("base_url");
+	endpoint.apiKey = get("api_key");
+	endpoint.model = get("model");
+	endpoint.extraSystemPrompt = get("system_prompt_extra");
+	endpoint.customHeadersText = get("custom_headers");
+	if (const std::string value = get("timeout_ms"); !value.empty()) {
+		try { endpoint.timeoutMs = (std::max)(1000, std::stoi(value)); }
+		catch (...) { endpoint.timeoutMs = 120000; }
+	}
+	if (const std::string value = get("temperature"); !value.empty()) {
+		try { endpoint.temperature = std::stod(value); }
+		catch (...) { endpoint.temperature = 0.2; }
+	}
+	if (const std::string value = get("context_window"); !value.empty()) {
+		try { endpoint.contextWindowTokens = (std::max)(0, std::stoi(value)); }
+		catch (...) { endpoint.contextWindowTokens = 0; }
+	}
+	if (const std::string value = get("retry_count"); !value.empty()) {
+		try { endpoint.retryCount = (std::clamp)(std::stoi(value), 0, kAiMaxRequestRetryCount); }
+		catch (...) { endpoint.retryCount = kAiRequestRetryCount; }
+	}
+}
+
+AISettings BuildSettingsForEndpoint(const AISettings& shared, const AIEndpointSettings& endpoint)
+{
+	AISettings result = shared;
+	static_cast<AIEndpointSettings&>(result) = endpoint;
+	result.endpointCandidates.clear();
+	return result;
+}
+
+std::vector<AISettings> ResolveEndpointCandidates(const AISettings& settings)
+{
+	std::vector<AISettings> result;
+	if (settings.endpointCandidates.empty()) {
+		AISettings single = settings;
+		single.endpointCandidates.clear();
+		result.push_back(std::move(single));
+		return result;
+	}
+	result.reserve(settings.endpointCandidates.size());
+	for (const AIEndpointSettings& endpoint : settings.endpointCandidates) {
+		result.push_back(BuildSettingsForEndpoint(settings, endpoint));
+	}
+	return result;
+}
+
+} // namespace
+
 bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig, AISettings& outSettings)
 {
 	outSettings = {};
@@ -5062,46 +5148,42 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 		}
 	}
 
-	// 从 JSON 读取设置（getValueLocal 将 UTF-8 转换为本地编码供 AISettings 使用）
-	outSettings.protocolType     = ParseProtocolType(jsonConfig.getValue("protocol_type"));
-	outSettings.thinkingLevel    = ParseThinkingLevel(jsonConfig.getValue("thinking_level"));
-	outSettings.sourceEditMode   = ParseSourceEditMode(jsonConfig.getGlobalValue("source_edit_mode"));
-	outSettings.imageInputMode   = ParseImageInputMode(jsonConfig.getValue("image_input_mode"));
-	outSettings.baseUrl          = jsonConfig.getValueLocal("base_url");
-	outSettings.apiKey           = jsonConfig.getValueLocal("api_key");
-	outSettings.model            = jsonConfig.getValueLocal("model");
-	outSettings.extraSystemPrompt= jsonConfig.getValueLocal("system_prompt_extra");
-	outSettings.customHeadersText= jsonConfig.getValueLocal("custom_headers");
-	outSettings.tavilyApiKey     = jsonConfig.getGlobalValueLocal("tavily_api_key");
-
-	const std::string timeoutValue = jsonConfig.getValue("timeout_ms");
-	if (!timeoutValue.empty()) {
-		try {
-			outSettings.timeoutMs = (std::max)(1000, std::stoi(timeoutValue));
-		}
-		catch (...) {
-			outSettings.timeoutMs = 120000;
-		}
+	outSettings.sourceEditMode = ParseSourceEditMode(jsonConfig.getGlobalValue("source_edit_mode"));
+	outSettings.tavilyApiKey = jsonConfig.getGlobalValueLocal("tavily_api_key");
+	const auto endpointSnapshots = jsonConfig.getEndpointsLocal();
+	std::map<std::string, AIEndpointSettings> endpointsById;
+	for (const auto& snapshot : endpointSnapshots) {
+		AIEndpointSettings endpoint;
+		endpoint.endpointId = snapshot.id;
+		endpoint.endpointName = snapshot.name;
+		ApplyEndpointValues(snapshot.values, endpoint);
+		endpointsById[endpoint.endpointId] = std::move(endpoint);
 	}
 
-	const std::string temperatureValue = jsonConfig.getValue("temperature");
-	if (!temperatureValue.empty()) {
-		try {
-			outSettings.temperature = std::stod(temperatureValue);
-		}
-		catch (...) {
-			outSettings.temperature = 0.2;
+	const AIJsonConfigActiveTargetSnapshot target = jsonConfig.getActiveTargetLocal();
+	outSettings.activeTargetType = target.type;
+	outSettings.activeTargetId = target.id;
+	if (target.type == "group") {
+		for (const auto& group : jsonConfig.getEndpointGroupsLocal()) {
+			if (group.id != target.id) continue;
+			for (const std::string& endpointId : group.endpointIds) {
+				if (const auto it = endpointsById.find(endpointId); it != endpointsById.end()) {
+					outSettings.endpointCandidates.push_back(it->second);
+				}
+			}
+			break;
 		}
 	}
-
-	const std::string ctxWindowValue = jsonConfig.getValue("context_window");
-	if (!ctxWindowValue.empty()) {
-		try {
-			outSettings.contextWindowTokens = (std::max)(0, std::stoi(ctxWindowValue));
-		}
-		catch (...) {
-			outSettings.contextWindowTokens = 0;
-		}
+	else if (const auto it = endpointsById.find(target.id); it != endpointsById.end()) {
+		outSettings.endpointCandidates.push_back(it->second);
+	}
+	if (outSettings.endpointCandidates.empty() && !endpointsById.empty()) {
+		outSettings.endpointCandidates.push_back(endpointsById.begin()->second);
+		outSettings.activeTargetType = "endpoint";
+		outSettings.activeTargetId = outSettings.endpointCandidates.front().endpointId;
+	}
+	if (!outSettings.endpointCandidates.empty()) {
+		static_cast<AIEndpointSettings&>(outSettings) = outSettings.endpointCandidates.front();
 	}
 
 	return true;
@@ -5121,6 +5203,7 @@ void AIService::SaveSettings(AIJsonConfig& jsonConfig, const AISettings& setting
 		{ "temperature",         std::format("{:.2f}", settings.temperature) },
 		{ "context_window",      std::to_string(settings.contextWindowTokens) },
 		{ "image_input_mode",    ImageInputModeToString(settings.imageInputMode) },
+		{ "retry_count",         std::to_string((std::clamp)(settings.retryCount, 0, kAiMaxRequestRetryCount)) },
 	});
 	jsonConfig.removeValues({
 		"source_edit_mode",
@@ -5134,17 +5217,20 @@ void AIService::SaveSettings(AIJsonConfig& jsonConfig, const AISettings& setting
 
 bool AIService::HasRequiredSettings(const AISettings& settings, std::string& outMissingField)
 {
-	if (Trim(settings.baseUrl).empty()) {
-		outMissingField = "baseUrl";
-		return false;
-	}
-	if (Trim(settings.apiKey).empty()) {
-		outMissingField = "apiKey";
-		return false;
-	}
-	if (Trim(settings.model).empty()) {
-		outMissingField = "model";
-		return false;
+	const std::vector<AISettings> candidates = ResolveEndpointCandidates(settings);
+	for (const AISettings& candidate : candidates) {
+		if (Trim(candidate.baseUrl).empty()) {
+			outMissingField = "baseUrl";
+			return false;
+		}
+		if (Trim(candidate.apiKey).empty()) {
+			outMissingField = "apiKey";
+			return false;
+		}
+		if (Trim(candidate.model).empty()) {
+			outMissingField = "model";
+			return false;
+		}
 	}
 	outMissingField.clear();
 	return true;
@@ -5236,6 +5322,13 @@ bool ResolveGpt5Window(const std::string& model, int& outWindow)
 
 int AIService::ResolveContextWindowTokens(const AISettings& settings)
 {
+	if (!settings.endpointCandidates.empty()) {
+		int minimumWindow = (std::numeric_limits<int>::max)();
+		for (const AIEndpointSettings& endpoint : settings.endpointCandidates) {
+			minimumWindow = (std::min)(minimumWindow, ResolveContextWindowTokens(BuildSettingsForEndpoint(settings, endpoint)));
+		}
+		if (minimumWindow != (std::numeric_limits<int>::max)()) return minimumWindow;
+	}
 	if (settings.contextWindowTokens > 0) {
 		return settings.contextWindowTokens; // P1: 用户配置
 	}
@@ -5627,6 +5720,14 @@ std::string AIService::ImageInputModeDisplayName(AIImageInputMode mode)
 
 bool AIService::SupportsImageInput(const AISettings& settings)
 {
+	if (!settings.endpointCandidates.empty()) {
+		return std::all_of(
+			settings.endpointCandidates.begin(),
+			settings.endpointCandidates.end(),
+			[&settings](const AIEndpointSettings& endpoint) {
+				return SupportsImageInput(BuildSettingsForEndpoint(settings, endpoint));
+			});
+	}
 	if (settings.imageInputMode == AIImageInputMode::Enabled) {
 		return true;
 	}
@@ -5777,6 +5878,168 @@ std::string AIService::BuildImageInputSelfTestJson()
 	return report.dump();
 }
 
+std::string AIService::BuildEndpointConfigSelfTestJson()
+{
+	nlohmann::json report = {
+		{ "name", "ai-endpoint-config" },
+		{ "ok", false },
+		{ "checks", nlohmann::json::object() }
+	};
+	std::error_code error;
+	const std::filesystem::path tempRoot = std::filesystem::temp_directory_path(error) /
+		std::format("autolinker_endpoint_config_{}_{}", GetCurrentProcessId(), GetTickCount64());
+	const std::filesystem::path configPath = tempRoot / "AIConfig.json";
+	std::filesystem::create_directories(tempRoot, error);
+	if (error) {
+		report["error"] = error.message();
+		return report.dump();
+	}
+
+	try {
+		const nlohmann::json flatLegacy = {
+			{ "base_url", "https://legacy.example/v1" },
+			{ "api_key", "legacy-key" },
+			{ "model", "legacy-model" },
+			{ "source_edit_mode", "mirror_source_base" },
+			{ "tavily_api_key", "tavily-key" }
+		};
+		{
+			std::ofstream file(configPath, std::ios::binary | std::ios::trunc);
+			file << flatLegacy.dump(2);
+		}
+		AIJsonConfig flatMigrated(configPath);
+		const auto flatEndpoints = flatMigrated.getEndpointsLocal();
+		report["checks"]["flat_legacy_scope_preserved"] =
+			flatEndpoints.size() == 1 &&
+			flatEndpoints[0].values.contains("base_url") &&
+			flatEndpoints[0].values.contains("api_key") &&
+			!flatEndpoints[0].values.contains("source_edit_mode") &&
+			flatMigrated.getGlobalValue("base_url").empty() &&
+			flatMigrated.getGlobalValue("source_edit_mode") == "mirror_source_base" &&
+			flatMigrated.getGlobalValue("tavily_api_key") == "tavily-key";
+
+		const nlohmann::json legacy = {
+			{ "active_profile_id", "second" },
+			{ "source_edit_mode", "mirror_source_base" },
+			{ "profiles", nlohmann::json::array({
+				{
+					{ "id", "first" },
+					{ "name", "First" },
+					{ "values", {
+						{ "base_url", "https://first.example/v1" },
+						{ "api_key", "key-first" },
+						{ "model", "model-first" },
+						{ "context_window", "1000" }
+					} }
+				},
+				{
+					{ "id", "second" },
+					{ "name", "Second" },
+					{ "values", {
+						{ "base_url", "https://second.example/v1" },
+						{ "api_key", "key-second" },
+						{ "model", "model-second" },
+						{ "context_window", "2000" }
+					} }
+				}
+			}) }
+		};
+		{
+			std::ofstream file(configPath, std::ios::binary | std::ios::trunc);
+			file << legacy.dump(2);
+		}
+
+		AIJsonConfig migrated(configPath);
+		const auto migratedEndpoints = migrated.getEndpointsLocal();
+		const auto migratedTarget = migrated.getActiveTargetLocal();
+		AISettings migratedSettings;
+		LoadSettings(migrated, nullptr, migratedSettings);
+		report["checks"]["legacy_profiles_migrated"] =
+			migratedEndpoints.size() == 2 && migratedEndpoints[0].id == "first" && migratedEndpoints[1].id == "second";
+		report["checks"]["legacy_active_target_migrated"] =
+			migratedTarget.type == "endpoint" && migratedTarget.id == "second";
+		report["checks"]["retry_default_five"] =
+			migratedSettings.retryCount == 5 && migratedSettings.endpointCandidates.size() == 1;
+
+		auto endpoints = migratedEndpoints;
+		endpoints[0].values["retry_count"] = "-4";
+		endpoints[1].values["retry_count"] = "44";
+		AIJsonConfigEndpointGroupSnapshot group;
+		group.id = "ordered";
+		group.name = "Ordered";
+		group.endpointIds = { "second", "first" };
+		const bool topologySaved = migrated.replaceEndpointConfiguration(
+			endpoints,
+			{ group },
+			{ "group", "ordered" });
+
+		AIJsonConfigEndpointGroupSnapshot duplicateGroup = group;
+		duplicateGroup.endpointIds = { "second", "second" };
+		const bool duplicateRejected = !migrated.replaceEndpointConfiguration(
+			endpoints,
+			{ duplicateGroup },
+			{ "group", "ordered" });
+
+		AIJsonConfig reloaded(configPath);
+		AISettings groupedSettings;
+		LoadSettings(reloaded, nullptr, groupedSettings);
+		const auto reloadedGroups = reloaded.getEndpointGroupsLocal();
+		const auto reloadedEndpoints = reloaded.getEndpointsLocal();
+		const auto reloadedTarget = reloaded.getActiveTargetLocal();
+		report["checks"]["group_order_preserved"] = topologySaved &&
+			groupedSettings.endpointCandidates.size() == 2 &&
+			groupedSettings.endpointCandidates[0].endpointId == "second" &&
+			groupedSettings.endpointCandidates[1].endpointId == "first" &&
+			reloadedGroups.size() == 1 && reloadedGroups[0].endpointIds == group.endpointIds;
+		report["checks"]["retry_clamped_zero_to_twenty"] =
+			groupedSettings.endpointCandidates.size() == 2 &&
+			groupedSettings.endpointCandidates[0].retryCount == 20 &&
+			groupedSettings.endpointCandidates[1].retryCount == 0;
+		report["checks"]["duplicate_member_rejected"] = duplicateRejected;
+		report["checks"]["active_group_reloaded"] =
+			reloadedTarget.type == "group" && reloadedTarget.id == "ordered";
+		const auto secondReloaded = std::find_if(
+			reloadedEndpoints.begin(),
+			reloadedEndpoints.end(),
+			[](const auto& endpoint) { return endpoint.id == "second"; });
+		report["checks"]["endpoint_values_preserved"] =
+			secondReloaded != reloadedEndpoints.end() &&
+			secondReloaded->values.contains("base_url") &&
+			secondReloaded->values.at("base_url") == "https://second.example/v1" &&
+			secondReloaded->values.contains("api_key") &&
+			secondReloaded->values.at("api_key") == "key-second" &&
+			secondReloaded->values.contains("model") &&
+			secondReloaded->values.at("model") == "model-second";
+		const bool endpointTargetSelected = reloaded.setActiveTargetLocal({ "endpoint", "first" });
+		const bool invalidTargetRejected = !reloaded.setActiveTargetLocal({ "group", "missing" });
+		const bool groupTargetRestored = reloaded.setActiveTargetLocal({ "group", "ordered" });
+		report["checks"]["active_target_switch"] =
+			endpointTargetSelected && invalidTargetRejected && groupTargetRestored;
+		report["checks"]["group_context_uses_minimum"] = ResolveContextWindowTokens(groupedSettings) == 1000;
+
+		std::ifstream savedFile(configPath, std::ios::binary);
+		const nlohmann::json saved = nlohmann::json::parse(savedFile, nullptr, false);
+		report["checks"]["schema_v2_saved"] = !saved.is_discarded() &&
+			saved.value("schema_version", 0) == 2 && saved.contains("endpoints") &&
+			saved.contains("endpoint_groups") && saved.contains("active_target") &&
+			!saved.contains("profiles") && !saved.contains("active_profile_id");
+	}
+	catch (const std::exception& ex) {
+		report["error"] = ex.what();
+	}
+	catch (...) {
+		report["error"] = "unknown exception";
+	}
+
+	bool allOk = true;
+	for (const auto& item : report["checks"].items()) {
+		allOk = allOk && item.value().is_boolean() && item.value().get<bool>();
+	}
+	report["ok"] = allOk && !report.contains("error");
+	std::filesystem::remove_all(tempRoot, error);
+	return report.dump();
+}
+
 bool AIService::ValidateCustomHeadersText(const std::string& headerText, std::string& outError)
 {
 	std::vector<HttpHeaderEntry> headers;
@@ -5849,6 +6112,26 @@ std::string AIService::BuildTaskDisplayName(AITaskKind kind)
 
 AIResult AIService::TestConnection(const AISettings& settings)
 {
+	AIResult lastResult = {};
+	const std::vector<AISettings> candidates = ResolveEndpointCandidates(settings);
+	for (size_t index = 0; index < candidates.size(); ++index) {
+		const AISettings& candidate = candidates[index];
+		lastResult = TestConnectionSingle(candidate);
+		lastResult.endpointId = candidate.endpointId;
+		lastResult.endpointName = candidate.endpointName;
+		if (lastResult.ok || lastResult.endpointEstablished ||
+			!ShouldFailOverToNextEndpoint(lastResult.httpStatus, lastResult.error) || index + 1 >= candidates.size()) {
+			return lastResult;
+		}
+		Logger::Instance().Write(
+			"AI",
+			std::format("[AI Endpoint Group] test failed over from '{}' http={}", candidate.endpointName, lastResult.httpStatus));
+	}
+	return lastResult;
+}
+
+AIResult AIService::TestConnectionSingle(const AISettings& settings)
+{
 	AIResult result = {};
 	std::string validationError;
 	if (!ValidateRequestSettings(settings, validationError)) {
@@ -5862,13 +6145,13 @@ AIResult AIService::TestConnection(const AISettings& settings)
 	const std::string systemPrompt = "你是一个 API 连通性测试助手。请只返回 OK。";
 	const std::string inputText = "请只返回 OK。";
 	if (settings.protocolType == AIProtocolType::Claude) {
-		return ExecuteTaskClaude(systemPrompt, inputText, connectionSettings, 0);
+		return ExecuteTaskClaude(systemPrompt, inputText, connectionSettings, settings.retryCount);
 	}
 	if (settings.protocolType == AIProtocolType::Gemini) {
-		return ExecuteTaskGemini(systemPrompt, inputText, connectionSettings, 0);
+		return ExecuteTaskGemini(systemPrompt, inputText, connectionSettings, settings.retryCount);
 	}
 	if (settings.protocolType == AIProtocolType::OpenAIResponses) {
-		return ExecuteTaskOpenAIResponses(systemPrompt, inputText, connectionSettings, 0);
+		return ExecuteTaskOpenAIResponses(systemPrompt, inputText, connectionSettings, settings.retryCount);
 	}
 
 	const std::string modelUtf8 = LocalToUtf8(settings.model);
@@ -5915,8 +6198,9 @@ AIResult AIService::TestConnection(const AISettings& settings)
 			"openai-test",
 			{},
 			nullptr,
-			0);
+			settings.retryCount);
 	result.httpStatus = statusCode;
+	result.endpointEstablished = IsSuccessfulHttpStatus(statusCode);
 
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("openai-test", statusCode, responseBody);
@@ -5970,6 +6254,26 @@ AIResult AIService::TestConnection(const AISettings& settings)
 
 AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, const AISettings& settings)
 {
+	AIResult lastResult = {};
+	const std::vector<AISettings> candidates = ResolveEndpointCandidates(settings);
+	for (size_t index = 0; index < candidates.size(); ++index) {
+		const AISettings& candidate = candidates[index];
+		lastResult = ExecuteTaskSingle(kind, inputText, candidate);
+		lastResult.endpointId = candidate.endpointId;
+		lastResult.endpointName = candidate.endpointName;
+		if (lastResult.ok || lastResult.endpointEstablished ||
+			!ShouldFailOverToNextEndpoint(lastResult.httpStatus, lastResult.error) || index + 1 >= candidates.size()) {
+			return lastResult;
+		}
+		Logger::Instance().Write(
+			"AI",
+			std::format("[AI Endpoint Group] task failed over from '{}' http={}", candidate.endpointName, lastResult.httpStatus));
+	}
+	return lastResult;
+}
+
+AIResult AIService::ExecuteTaskSingle(AITaskKind kind, const std::string& inputText, const AISettings& settings)
+{
 	AIResult result = {};
 	std::string validationError;
 	if (!ValidateRequestSettings(settings, validationError)) {
@@ -5979,13 +6283,13 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 
 	const std::string systemPrompt = BuildSystemPrompt(kind, settings);
 	if (settings.protocolType == AIProtocolType::Claude) {
-		return ExecuteTaskClaude(systemPrompt, inputText, settings);
+		return ExecuteTaskClaude(systemPrompt, inputText, settings, settings.retryCount);
 	}
 	if (settings.protocolType == AIProtocolType::Gemini) {
-		return ExecuteTaskGemini(systemPrompt, inputText, settings);
+		return ExecuteTaskGemini(systemPrompt, inputText, settings, settings.retryCount);
 	}
 	if (settings.protocolType == AIProtocolType::OpenAIResponses) {
-		return ExecuteTaskOpenAIResponses(systemPrompt, inputText, settings);
+		return ExecuteTaskOpenAIResponses(systemPrompt, inputText, settings, settings.retryCount);
 	}
 
 	const std::string modelUtf8 = LocalToUtf8(settings.model);
@@ -6022,8 +6326,19 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 	}
 
 	const auto [responseBody, statusCode] =
-		PerformPostRequestWithRetry(endpoint, requestBodyText, headers, settings.timeoutMs, false, false, "openai-task");
+		PerformPostRequestWithRetry(
+			endpoint,
+			requestBodyText,
+			headers,
+			settings.timeoutMs,
+			false,
+			false,
+			"openai-task",
+			{},
+			nullptr,
+			settings.retryCount);
 	result.httpStatus = statusCode;
+	result.endpointEstablished = IsSuccessfulHttpStatus(statusCode);
 
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("openai-task", statusCode, responseBody);
@@ -6076,6 +6391,41 @@ AIResult AIService::ExecuteTask(AITaskKind kind, const std::string& inputText, c
 }
 
 AIChatResult AIService::ExecuteChatWithTools(
+	const std::vector<AIChatMessage>& contextMessages,
+	const AISettings& settings,
+	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
+	const std::function<void(const std::string& deltaText)>& streamCallback,
+	const std::function<bool()>& cancelCallback,
+	HttpRequestCancellation* cancelContext,
+	const AIChatRunOptions& runOptions)
+{
+	AIChatResult lastResult = {};
+	const std::vector<AISettings> candidates = ResolveEndpointCandidates(settings);
+	for (size_t index = 0; index < candidates.size(); ++index) {
+		const AISettings& candidate = candidates[index];
+		lastResult = ExecuteChatWithToolsSingle(
+			contextMessages,
+			candidate,
+			toolCallback,
+			streamCallback,
+			cancelCallback,
+			cancelContext,
+			runOptions);
+		lastResult.endpointId = candidate.endpointId;
+		lastResult.endpointName = candidate.endpointName;
+		const bool sideEffectsStarted = lastResult.endpointEstablished || !lastResult.toolEvents.empty();
+		if (lastResult.ok || lastResult.cancelled || sideEffectsStarted ||
+			!ShouldFailOverToNextEndpoint(lastResult.httpStatus, lastResult.error) || index + 1 >= candidates.size()) {
+			return lastResult;
+		}
+		Logger::Instance().Write(
+			"AI",
+			std::format("[AI Endpoint Group] chat failed over from '{}' http={}", candidate.endpointName, lastResult.httpStatus));
+	}
+	return lastResult;
+}
+
+AIChatResult AIService::ExecuteChatWithToolsSingle(
 	const std::vector<AIChatMessage>& contextMessages,
 	const AISettings& settings,
 	const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
@@ -6195,6 +6545,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 
 		ChatStreamParseState streamState;
 		int attemptCount = 0;
+		bool sawResponseChunk = false;
 		const auto networkStart = PerfClock::now();
 		const auto [responseBody, statusCode] =
 			PerformPostRequestStreamingWithRetry(
@@ -6210,8 +6561,9 @@ AIChatResult AIService::ExecuteChatWithTools(
 				"openai-chat",
 				cancelCallback,
 				cancelContext,
-				kAiChatRequestRetryCount,
-				&attemptCount);
+				settings.retryCount,
+				&attemptCount,
+				&sawResponseChunk);
 		LogAIPerfCost(
 			traceId,
 			"AIService.ExecuteChat.network_total",
@@ -6226,6 +6578,7 @@ AIChatResult AIService::ExecuteChatWithTools(
 			attemptCount,
 			toolPolicy.ExplorationCalls());
 		result.httpStatus = statusCode;
+		result.endpointEstablished = result.endpointEstablished || sawResponseChunk || IsSuccessfulHttpStatus(statusCode);
 		if (IsCancelRequested(cancelCallback, cancelContext) || statusCode == kAiRequestCancelledHttpStatus) {
 			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(streamState.mergedUtf8));
 		}

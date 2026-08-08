@@ -342,14 +342,18 @@ struct SessionTimingSnapshot {
 };
 
 struct ApiProfileUiItem {
+	std::string typeLocal;
 	std::string idLocal;
 	std::string nameLocal;
+	int memberCount = 0;
 };
 
 struct ApiProfilesUiSnapshot {
 	std::vector<ApiProfileUiItem> profiles;
+	std::string activeTargetTypeLocal;
 	std::string activeProfileIdLocal;
 	std::string activeProfileNameLocal;
+	std::string activeTargetKeyLocal;
 };
 
 struct GoalUiSnapshot {
@@ -461,7 +465,11 @@ void HandleChatApprovePlanUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatRevisePlanUi(HWND hWnd, ChatDialogContext* ctx, const std::string& feedback);
 void HandleChatToggleAutoAllowUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleChatApiProfileMenuUi(HWND hWnd, ChatDialogContext* ctx);
-void HandleChatSwitchApiProfileUi(HWND hWnd, ChatDialogContext* ctx, const std::string& profileIdLocal);
+void HandleChatSwitchApiProfileUi(
+	HWND hWnd,
+	ChatDialogContext* ctx,
+	const std::string& targetTypeLocal,
+	const std::string& profileIdLocal);
 void HandleGoalModeUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleGoalCreateUi(HWND hWnd, ChatDialogContext* ctx, const std::string& objectiveLocal);
 void HandleGoalPauseUi(HWND hWnd, ChatDialogContext* ctx);
@@ -1250,14 +1258,31 @@ ApiProfilesUiSnapshot BuildApiProfilesUiSnapshot()
 		return snapshot;
 	}
 
-	snapshot.activeProfileIdLocal = g_aiJsonConfig->getActiveProfileId();
-	for (const auto& profile : g_aiJsonConfig->getProfilesLocal()) {
-		if (profile.id.empty() || profile.name.empty()) {
+	const AIJsonConfigActiveTargetSnapshot activeTarget = g_aiJsonConfig->getActiveTargetLocal();
+	snapshot.activeTargetTypeLocal = activeTarget.type;
+	snapshot.activeProfileIdLocal = activeTarget.id;
+	snapshot.activeTargetKeyLocal = activeTarget.type + ":" + activeTarget.id;
+	for (const auto& endpoint : g_aiJsonConfig->getEndpointsLocal()) {
+		if (endpoint.id.empty() || endpoint.name.empty()) {
 			continue;
 		}
-		snapshot.profiles.push_back({ profile.id, profile.name });
-		if (profile.id == snapshot.activeProfileIdLocal) {
-			snapshot.activeProfileNameLocal = profile.name;
+		snapshot.profiles.push_back({ "endpoint", endpoint.id, endpoint.name, 0 });
+		if (activeTarget.type == "endpoint" && endpoint.id == activeTarget.id) {
+			snapshot.activeProfileNameLocal = endpoint.name;
+		}
+	}
+	for (const auto& group : g_aiJsonConfig->getEndpointGroupsLocal()) {
+		if (group.id.empty() || group.name.empty() || group.endpointIds.empty()) {
+			continue;
+		}
+		snapshot.profiles.push_back({
+			"group",
+			group.id,
+			group.name,
+			static_cast<int>(group.endpointIds.size())
+		});
+		if (activeTarget.type == "group" && group.id == activeTarget.id) {
+			snapshot.activeProfileNameLocal = group.name;
 		}
 	}
 	if (snapshot.activeProfileNameLocal.empty()) {
@@ -3238,6 +3263,7 @@ void UpdateWebViewApiProfiles(
 		return;
 	}
 	nlohmann::json payload = {
+		{ "activeTargetType", snapshot.activeTargetTypeLocal },
 		{ "activeProfileId", LocalToUtf8Text(snapshot.activeProfileIdLocal) },
 		{ "activeProfileName", LocalToUtf8Text(snapshot.activeProfileNameLocal) },
 		{ "pendingForNextRequest", pendingForNextRequest },
@@ -3245,8 +3271,10 @@ void UpdateWebViewApiProfiles(
 	};
 	for (const auto& profile : snapshot.profiles) {
 		payload["profiles"].push_back({
+			{ "type", profile.typeLocal },
 			{ "id", LocalToUtf8Text(profile.idLocal) },
-			{ "name", LocalToUtf8Text(profile.nameLocal) }
+			{ "name", LocalToUtf8Text(profile.nameLocal) },
+			{ "memberCount", profile.memberCount }
 		});
 	}
 	std::wstring script = L"window.autolinkerSetApiProfiles(";
@@ -3440,9 +3468,13 @@ void UpdateNativeApiProfiles(
 	if (ctx == nullptr || ctx->hApiProfile == nullptr) {
 		return;
 	}
-	SetWindowTextW(ctx->hApiProfile, WideFromLocal(snapshot.activeProfileNameLocal).c_str());
+	const std::wstring targetLabel = snapshot.activeTargetTypeLocal == "group"
+		? L"分组 · " + WideFromLocal(snapshot.activeProfileNameLocal)
+		: WideFromLocal(snapshot.activeProfileNameLocal);
+	SetWindowTextW(ctx->hApiProfile, targetLabel.c_str());
 	ctx->apiProfileTooltip = std::format(
-		L"\u5f53\u524d API\uff1a{}{}",
+		L"\u5f53\u524d{}\uff1a{}{}",
+		snapshot.activeTargetTypeLocal == "group" ? L"端点分组" : L"API 端点",
 		WideFromLocal(snapshot.activeProfileNameLocal),
 		pendingForNextRequest ? L"\uff08\u4e0b\u6b21\u8bf7\u6c42\u751f\u6548\uff09" : L"");
 	if (ctx->hTooltip != nullptr) {
@@ -4061,10 +4093,13 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 													HandleChatToggleAutoAllowUi(hWnd, msgCtx);
 												}
 												else if (action == "switch_api_profile") {
+													const std::string targetType = payload.contains("targetType") && payload["targetType"].is_string()
+														? payload["targetType"].get<std::string>()
+														: std::string("endpoint");
 													const std::string profileId = payload.contains("profileId") && payload["profileId"].is_string()
 														? Utf8ToLocalText(payload["profileId"].get<std::string>())
 														: std::string();
-													HandleChatSwitchApiProfileUi(hWnd, msgCtx, profileId);
+													HandleChatSwitchApiProfileUi(hWnd, msgCtx, targetType, profileId);
 												}
 												else if (action == "create_goal") {
 													const std::string objective = payload.contains("objective") && payload["objective"].is_string()
@@ -4163,9 +4198,9 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 															: 200000;
 													std::lock_guard<std::mutex> guard(g_session.mutex);
 													inFlight = g_session.requestInFlight;
-													apiProfilePendingForNextRequest = inFlight &&
-														!g_session.activeRequestProfileIdLocal.empty() &&
-														apiProfilesSnapshot.activeProfileIdLocal != g_session.activeRequestProfileIdLocal;
+											apiProfilePendingForNextRequest = inFlight &&
+												!g_session.activeRequestProfileIdLocal.empty() &&
+												apiProfilesSnapshot.activeTargetKeyLocal != g_session.activeRequestProfileIdLocal;
 													stopRequested = IsStopRequestedLocked(g_session);
 													planModeState = g_session.planModeState;
 													autoAllowWrites = g_session.autoAllowWrites;
@@ -6743,9 +6778,12 @@ bool StartChatRequest(
 	if (!EnsureChatSettingsReady(settings)) {
 		return false;
 	}
-	const std::string requestProfileIdLocal = g_aiJsonConfig != nullptr
-		? g_aiJsonConfig->getActiveProfileId()
-		: std::string();
+	const AIJsonConfigActiveTargetSnapshot requestTarget = g_aiJsonConfig != nullptr
+		? g_aiJsonConfig->getActiveTargetLocal()
+		: AIJsonConfigActiveTargetSnapshot{};
+	const std::string requestProfileIdLocal = requestTarget.type.empty()
+		? std::string()
+		: requestTarget.type + ":" + requestTarget.id;
 
 	std::unique_ptr<AIChatAsyncRequest> request(new (std::nothrow) AIChatAsyncRequest());
 	if (!request) {
@@ -7539,18 +7577,20 @@ void HandleChatOpenSettingsUi(HWND hWnd, ChatDialogContext* ctx)
 void HandleChatSwitchApiProfileUi(
 	HWND hWnd,
 	ChatDialogContext* ctx,
+	const std::string& targetTypeLocal,
 	const std::string& profileIdLocal)
 {
-	if (g_aiJsonConfig == nullptr || profileIdLocal.empty()) {
+	if (g_aiJsonConfig == nullptr || profileIdLocal.empty() ||
+		(targetTypeLocal != "endpoint" && targetTypeLocal != "group")) {
 		return;
 	}
-	if (!g_aiJsonConfig->setActiveProfileId(profileIdLocal)) {
-		OutputStringToELog("[AI Chat][UI] switch_api_profile rejected: profile not found");
+	if (!g_aiJsonConfig->setActiveTargetLocal({ targetTypeLocal, profileIdLocal })) {
+		OutputStringToELog("[AI Chat][UI] switch_api_profile rejected: target not found or unavailable");
 		RefreshChatDialog(hWnd);
 		return;
 	}
 
-	OutputStringToELog("[AI Chat][UI] active API profile switched");
+	OutputStringToELog("[AI Chat][UI] active API target switched");
 	RefreshChatDialog(hWnd);
 	if (ctx != nullptr) {
 		if (ctx->webViewDesired) {
@@ -7575,10 +7615,23 @@ void HandleChatApiProfileMenuUi(HWND hWnd, ChatDialogContext* ctx)
 		return;
 	}
 	const size_t menuItemCount = (std::min<size_t>)(snapshot.profiles.size(), 1000);
+	std::string previousType;
 	for (size_t i = 0; i < menuItemCount; ++i) {
 		const auto& profile = snapshot.profiles[i];
+		if (profile.typeLocal != previousType) {
+			if (!previousType.empty()) {
+				AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+			}
+			AppendMenuW(
+				menu,
+				MF_STRING | MF_DISABLED,
+				0,
+				profile.typeLocal == "group" ? L"端点分组" : L"API 端点");
+			previousType = profile.typeLocal;
+		}
 		UINT flags = MF_STRING;
-		if (profile.idLocal == snapshot.activeProfileIdLocal) {
+		if (profile.typeLocal == snapshot.activeTargetTypeLocal &&
+			profile.idLocal == snapshot.activeProfileIdLocal) {
 			flags |= MF_CHECKED;
 		}
 		AppendMenuW(
@@ -7610,7 +7663,11 @@ void HandleChatApiProfileMenuUi(HWND hWnd, ChatDialogContext* ctx)
 
 	if (command >= kApiProfileMenuBase && command < kApiProfileMenuBase + menuItemCount) {
 		const size_t selectedIndex = static_cast<size_t>(command - kApiProfileMenuBase);
-		HandleChatSwitchApiProfileUi(hWnd, ctx, snapshot.profiles[selectedIndex].idLocal);
+		HandleChatSwitchApiProfileUi(
+			hWnd,
+			ctx,
+			snapshot.profiles[selectedIndex].typeLocal,
+			snapshot.profiles[selectedIndex].idLocal);
 	}
 }
 
@@ -8469,7 +8526,7 @@ void RefreshChatDialog(HWND hWnd)
 		inFlight = g_session.requestInFlight;
 		apiProfilePendingForNextRequest = inFlight &&
 			!g_session.activeRequestProfileIdLocal.empty() &&
-			apiProfilesSnapshot.activeProfileIdLocal != g_session.activeRequestProfileIdLocal;
+			apiProfilesSnapshot.activeTargetKeyLocal != g_session.activeRequestProfileIdLocal;
 		stopRequested = IsStopRequestedLocked(g_session);
 		planModeState = g_session.planModeState;
 		autoAllowWrites = g_session.autoAllowWrites;

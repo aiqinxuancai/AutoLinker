@@ -510,6 +510,8 @@ struct AIConfigWebViewDialogContext {
 	AISettings ownedSettings;
 	std::vector<AIConfigProfileEntry> profiles;
 	std::string activeProfileId;
+	std::vector<AIJsonConfigEndpointGroupSnapshot> groups;
+	AIJsonConfigActiveTargetSnapshot activeTarget;
 	bool accepted = false;
 	bool fallbackRequested = false;
 	bool webViewReady = false;
@@ -735,6 +737,9 @@ void ApplyProfileValuesToSettings(const std::map<std::string, std::string>& valu
 	if (const auto it = values.find("context_window"); it != values.end()) {
 		try { settings.contextWindowTokens = (std::max)(0, std::stoi(it->second)); } catch (...) {}
 	}
+	if (const auto it = values.find("retry_count"); it != values.end()) {
+		try { settings.retryCount = (std::clamp)(std::stoi(it->second), 0, 20); } catch (...) { settings.retryCount = 5; }
+	}
 }
 
 std::map<std::string, std::string> BuildProfileValuesFromSettings(const AISettings& settings)
@@ -750,7 +755,8 @@ std::map<std::string, std::string> BuildProfileValuesFromSettings(const AISettin
 		{ "custom_headers", settings.customHeadersText },
 		{ "timeout_ms", std::to_string(settings.timeoutMs) },
 		{ "temperature", std::format("{:.2f}", settings.temperature) },
-		{ "context_window", std::to_string(settings.contextWindowTokens) }
+		{ "context_window", std::to_string(settings.contextWindowTokens) },
+		{ "retry_count", std::to_string((std::clamp)(settings.retryCount, 0, 20)) }
 	};
 }
 
@@ -759,8 +765,9 @@ std::vector<AIConfigProfileEntry> LoadProfileEntriesFromJsonConfig(AIJsonConfig&
 	std::vector<AIConfigProfileEntry> entries;
 	const std::vector<AIJsonConfigProfileSnapshot> snapshots = jsonConfig.getProfilesLocal();
 	outActiveProfileId = jsonConfig.getActiveProfileId();
-	const AISourceEditMode globalSourceEditMode = ioSettings.sourceEditMode;
-	const std::string globalTavilyApiKey = ioSettings.tavilyApiKey;
+	const AISettings runtimeSettings = ioSettings;
+	const AISourceEditMode globalSourceEditMode = runtimeSettings.sourceEditMode;
+	const std::string globalTavilyApiKey = runtimeSettings.tavilyApiKey;
 
 	for (const auto& snapshot : snapshots) {
 		AIConfigProfileEntry entry;
@@ -785,18 +792,22 @@ std::vector<AIConfigProfileEntry> LoadProfileEntriesFromJsonConfig(AIJsonConfig&
 	bool foundActive = false;
 	for (const auto& entry : entries) {
 		if (entry.id == outActiveProfileId) {
-			ioSettings = entry.settings;
-			ioSettings.sourceEditMode = globalSourceEditMode;
-			ioSettings.tavilyApiKey = globalTavilyApiKey;
+			if (runtimeSettings.endpointCandidates.empty()) {
+				ioSettings = entry.settings;
+				ioSettings.sourceEditMode = globalSourceEditMode;
+				ioSettings.tavilyApiKey = globalTavilyApiKey;
+			}
 			foundActive = true;
 			break;
 		}
 	}
 	if (!foundActive) {
 		outActiveProfileId = entries.front().id;
-		ioSettings = entries.front().settings;
-		ioSettings.sourceEditMode = globalSourceEditMode;
-		ioSettings.tavilyApiKey = globalTavilyApiKey;
+		if (runtimeSettings.endpointCandidates.empty()) {
+			ioSettings = entries.front().settings;
+			ioSettings.sourceEditMode = globalSourceEditMode;
+			ioSettings.tavilyApiKey = globalTavilyApiKey;
+		}
 	}
 	return entries;
 }
@@ -1155,6 +1166,9 @@ std::string BuildAIConnectionTestMessage(const AIResult& result, long long elaps
 {
 	if (result.ok) {
 		std::string message = "连通性测试成功。";
+		if (!result.endpointName.empty()) {
+			message += "\n成功端点：" + result.endpointName;
+		}
 		message += "\n用时：" + std::to_string(elapsedMs) + " 毫秒";
 		if (result.httpStatus > 0) {
 			message += "\nHTTP: " + std::to_string(result.httpStatus);
@@ -1573,29 +1587,45 @@ bool StartAIConfigModelListFetch(HWND hWnd, const AISettings& settings)
 }
 
 std::string BuildAIConfigWebViewSettingsJson(
-	const std::vector<AIConfigProfileEntry>& profiles,
-	const std::string& activeProfileId,
-	const AISettings& globalSettings)
+	const std::vector<AIConfigProfileEntry>& endpoints,
+	const std::vector<AIJsonConfigEndpointGroupSnapshot>& groups,
+	const AIJsonConfigActiveTargetSnapshot& activeTarget)
 {
 	nlohmann::json initialSettings;
-	initialSettings["activeProfileId"] = LocalToUtf8Text(activeProfileId);
-	initialSettings["sourceEditMode"] = AIService::SourceEditModeToString(globalSettings.sourceEditMode);
-	initialSettings["tavilyApiKey"] = LocalToUtf8Text(globalSettings.tavilyApiKey);
-	initialSettings["profiles"] = nlohmann::json::array();
-	for (const auto& profile : profiles) {
+	initialSettings["activeTarget"] = {
+		{ "type", activeTarget.type },
+		{ "id", LocalToUtf8Text(activeTarget.id) }
+	};
+	initialSettings["endpoints"] = nlohmann::json::array();
+	for (const auto& endpoint : endpoints) {
 		nlohmann::json item;
-		item["id"] = LocalToUtf8Text(profile.id);
-		item["name"] = LocalToUtf8Text(profile.name);
-		item["protocolType"] = AIService::ProtocolTypeToString(profile.settings.protocolType);
-		item["thinkingLevel"] = AIService::ThinkingLevelToString(profile.settings.thinkingLevel);
-		item["imageInputMode"] = AIService::ImageInputModeToString(profile.settings.imageInputMode);
-		item["baseUrl"] = LocalToUtf8Text(profile.settings.baseUrl);
-		item["apiKey"] = LocalToUtf8Text(profile.settings.apiKey);
-		item["model"] = LocalToUtf8Text(profile.settings.model);
-		item["extraPrompt"] = LocalToUtf8Text(profile.settings.extraSystemPrompt);
-		item["customHeaders"] = LocalToUtf8Text(profile.settings.customHeadersText);
-		item["contextWindow"] = profile.settings.contextWindowTokens;
-		initialSettings["profiles"].push_back(std::move(item));
+		item["id"] = LocalToUtf8Text(endpoint.id);
+		item["name"] = LocalToUtf8Text(endpoint.name);
+		item["protocolType"] = AIService::ProtocolTypeToString(endpoint.settings.protocolType);
+		item["thinkingLevel"] = AIService::ThinkingLevelToString(endpoint.settings.thinkingLevel);
+		item["imageInputMode"] = AIService::ImageInputModeToString(endpoint.settings.imageInputMode);
+		item["baseUrl"] = LocalToUtf8Text(endpoint.settings.baseUrl);
+		item["apiKey"] = LocalToUtf8Text(endpoint.settings.apiKey);
+		item["model"] = LocalToUtf8Text(endpoint.settings.model);
+		item["extraPrompt"] = LocalToUtf8Text(endpoint.settings.extraSystemPrompt);
+		item["customHeaders"] = LocalToUtf8Text(endpoint.settings.customHeadersText);
+		item["timeoutMs"] = endpoint.settings.timeoutMs;
+		item["temperature"] = endpoint.settings.temperature;
+		item["contextWindow"] = endpoint.settings.contextWindowTokens;
+		item["retryCount"] = endpoint.settings.retryCount;
+		initialSettings["endpoints"].push_back(std::move(item));
+	}
+	initialSettings["groups"] = nlohmann::json::array();
+	for (const auto& group : groups) {
+		nlohmann::json item = {
+			{ "id", LocalToUtf8Text(group.id) },
+			{ "name", LocalToUtf8Text(group.name) },
+			{ "endpointIds", nlohmann::json::array() }
+		};
+		for (const std::string& endpointId : group.endpointIds) {
+			item["endpointIds"].push_back(LocalToUtf8Text(endpointId));
+		}
+		initialSettings["groups"].push_back(std::move(item));
 	}
 	return initialSettings.dump();
 }
@@ -1920,8 +1950,11 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 				MessageBoxA(hWnd, "保存 AI 配置组失败。", "AI Config", MB_ICONERROR | MB_OK);
 				return 0;
 			}
-			AIService::SaveSettings(*ctx->jsonConfig, next);
-			*ctx->settings = next;
+			ctx->jsonConfig->setGlobalValues({
+				{ "source_edit_mode", AIService::SourceEditModeToString(next.sourceEditMode) },
+				{ "tavily_api_key", next.tavilyApiKey }
+			});
+			AIService::LoadSettings(*ctx->jsonConfig, nullptr, *ctx->settings);
 			ctx->accepted = true;
 			DestroyWindow(hWnd);
 			return 0;
@@ -2009,6 +2042,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 AISettings ReadAISettingsFromWebProfilePayload(const AISettings& current, const nlohmann::json& data)
 {
 	AISettings next = current;
+	next.endpointCandidates.clear();
 	next.protocolType = AIService::ParseProtocolType(data.value("protocolType", AIService::ProtocolTypeToString(next.protocolType)));
 	next.thinkingLevel = AIService::ParseThinkingLevel(data.value("thinkingLevel", AIService::ThinkingLevelToString(next.thinkingLevel)));
 	next.imageInputMode = AIService::ParseImageInputMode(data.value(
@@ -2019,8 +2053,149 @@ AISettings ReadAISettingsFromWebProfilePayload(const AISettings& current, const 
 	next.model = Utf8ToLocalText(data.value("model", ""));
 	next.extraSystemPrompt = Utf8ToLocalText(data.value("extraPrompt", ""));
 	next.customHeadersText = Utf8ToLocalText(data.value("customHeaders", ""));
+	next.timeoutMs = (std::max)(1000, data.value("timeoutMs", next.timeoutMs));
+	next.temperature = data.value("temperature", next.temperature);
 	next.contextWindowTokens = (std::max)(0, data.value("contextWindow", 0));
+	next.retryCount = (std::clamp)(data.value("retryCount", 5), 0, 20);
 	return next;
+}
+
+bool TryBuildAISettingsFromWebPayload(
+	const nlohmann::json& data,
+	const AISettings& current,
+	std::vector<AIConfigProfileEntry>& outEndpoints,
+	std::vector<AIJsonConfigEndpointGroupSnapshot>& outGroups,
+	AIJsonConfigActiveTargetSnapshot& outActiveTarget,
+	AISettings& outRuntimeSettings,
+	std::string& outError)
+{
+	outEndpoints.clear();
+	outGroups.clear();
+	outActiveTarget = {};
+	outRuntimeSettings = current;
+	outRuntimeSettings.endpointCandidates.clear();
+	if (!data.contains("endpoints") || !data["endpoints"].is_array() || data["endpoints"].empty()) {
+		outError = "至少需要一个 API 端点。";
+		return false;
+	}
+
+	AISettings globals = current;
+	globals.endpointCandidates.clear();
+
+	std::set<std::string> endpointIds;
+	std::map<std::string, size_t> endpointIndexes;
+	for (const auto& item : data["endpoints"]) {
+		if (!item.is_object()) {
+			outError = "API 端点数据无效。";
+			return false;
+		}
+		AIConfigProfileEntry entry;
+		entry.id = Utf8ToLocalText(item.value("id", ""));
+		entry.name = AIService::Trim(Utf8ToLocalText(item.value("name", "")));
+		entry.settings = ReadAISettingsFromWebProfilePayload(globals, item);
+		entry.settings.endpointId = entry.id;
+		entry.settings.endpointName = entry.name;
+		if (entry.id.empty() || entry.name.empty() || !endpointIds.insert(entry.id).second) {
+			outError = "API 端点 ID 或名称无效，或者存在重复 ID。";
+			return false;
+		}
+		endpointIndexes[entry.id] = outEndpoints.size();
+		outEndpoints.push_back(std::move(entry));
+	}
+
+	std::set<std::string> groupIds;
+	if (data.contains("groups")) {
+		if (!data["groups"].is_array()) {
+			outError = "端点分组数据无效。";
+			return false;
+		}
+		for (const auto& item : data["groups"]) {
+			if (!item.is_object()) {
+				outError = "端点分组数据无效。";
+				return false;
+			}
+			AIJsonConfigEndpointGroupSnapshot group;
+			group.id = Utf8ToLocalText(item.value("id", ""));
+			group.name = AIService::Trim(Utf8ToLocalText(item.value("name", "")));
+			if (group.id.empty() || group.name.empty() || !groupIds.insert(group.id).second ||
+				!item.contains("endpointIds") || !item["endpointIds"].is_array()) {
+				outError = "端点分组 ID、名称或成员数据无效。";
+				return false;
+			}
+			std::set<std::string> memberIds;
+			for (const auto& idValue : item["endpointIds"]) {
+				if (!idValue.is_string()) {
+					outError = "端点分组成员引用无效。";
+					return false;
+				}
+				const std::string endpointId = Utf8ToLocalText(idValue.get<std::string>());
+				if (!endpointIds.contains(endpointId) || !memberIds.insert(endpointId).second) {
+					outError = "端点分组包含不存在或重复的端点。";
+					return false;
+				}
+				group.endpointIds.push_back(endpointId);
+			}
+			outGroups.push_back(std::move(group));
+		}
+	}
+
+	if (!data.contains("activeTarget") || !data["activeTarget"].is_object()) {
+		outError = "当前启用目标无效。";
+		return false;
+	}
+	outActiveTarget.type = data["activeTarget"].value("type", "");
+	outActiveTarget.id = Utf8ToLocalText(data["activeTarget"].value("id", ""));
+	std::vector<size_t> activeEndpointIndexes;
+	if (outActiveTarget.type == "endpoint") {
+		const auto it = endpointIndexes.find(outActiveTarget.id);
+		if (it == endpointIndexes.end()) {
+			outError = "当前启用的 API 端点不存在。";
+			return false;
+		}
+		activeEndpointIndexes.push_back(it->second);
+	}
+	else if (outActiveTarget.type == "group") {
+		const auto groupIt = std::find_if(outGroups.begin(), outGroups.end(), [&outActiveTarget](const auto& group) {
+			return group.id == outActiveTarget.id;
+		});
+		if (groupIt == outGroups.end() || groupIt->endpointIds.empty()) {
+			outError = "当前启用的端点分组不存在或没有成员。";
+			return false;
+		}
+		for (const std::string& endpointId : groupIt->endpointIds) {
+			activeEndpointIndexes.push_back(endpointIndexes.at(endpointId));
+		}
+	}
+	else {
+		outError = "当前启用目标类型无效。";
+		return false;
+	}
+
+	for (const size_t index : activeEndpointIndexes) {
+		const AIConfigProfileEntry& endpoint = outEndpoints[index];
+		if (AIService::Trim(endpoint.settings.baseUrl).empty() ||
+			AIService::Trim(endpoint.settings.apiKey).empty() ||
+			AIService::Trim(endpoint.settings.model).empty()) {
+			outError = "启用目标中的端点“" + endpoint.name + "”缺少接口地址、API 密钥或模型。";
+			return false;
+		}
+		std::string headerError;
+		if (!AIService::ValidateCustomHeadersText(endpoint.settings.customHeadersText, headerError)) {
+			outError = "端点“" + endpoint.name + "”的" + headerError;
+			return false;
+		}
+	}
+
+	outRuntimeSettings = globals;
+	outRuntimeSettings.activeTargetType = outActiveTarget.type;
+	outRuntimeSettings.activeTargetId = outActiveTarget.id;
+	for (const size_t index : activeEndpointIndexes) {
+		outRuntimeSettings.endpointCandidates.push_back(
+			static_cast<const AIEndpointSettings&>(outEndpoints[index].settings));
+	}
+	static_cast<AIEndpointSettings&>(outRuntimeSettings) = outRuntimeSettings.endpointCandidates.front();
+	outError.clear();
+	return true;
 }
 
 bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* ctx, const nlohmann::json& data)
@@ -2029,64 +2204,68 @@ bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* c
 		return false;
 	}
 
-	if (!data.contains("profiles") || !data["profiles"].is_array()) {
+	std::vector<AIConfigProfileEntry> nextEndpoints;
+	std::vector<AIJsonConfigEndpointGroupSnapshot> nextGroups;
+	AIJsonConfigActiveTargetSnapshot nextTarget;
+	AISettings runtimeSettings;
+	std::string error;
+	if (!TryBuildAISettingsFromWebPayload(
+		data, *ctx->settings, nextEndpoints, nextGroups, nextTarget, runtimeSettings, error)) {
+		MessageBoxA(hWnd, error.c_str(), "AI Config", MB_ICONWARNING | MB_OK);
 		return false;
 	}
 
-	const std::string activeProfileId = Utf8ToLocalText(data.value("activeProfileId", ""));
-	AISettings globalSettings = *ctx->settings;
-	globalSettings.sourceEditMode = AIService::ParseSourceEditMode(data.value(
-		"sourceEditMode",
-		AIService::SourceEditModeToString(globalSettings.sourceEditMode)));
-	globalSettings.tavilyApiKey = Utf8ToLocalText(data.value("tavilyApiKey", ""));
-
-	std::vector<AIConfigProfileEntry> nextProfiles;
-	nextProfiles.reserve(data["profiles"].size());
-	bool activeProfileFound = false;
-	AISettings activeSettings = {};
-	for (const auto& item : data["profiles"]) {
-		if (!item.is_object()) {
+	for (const AIConfigProfileEntry& nextEndpoint : nextEndpoints) {
+		const auto previousIt = std::find_if(
+			ctx->profiles.begin(),
+			ctx->profiles.end(),
+			[&nextEndpoint](const AIConfigProfileEntry& previousEndpoint) {
+				return previousEndpoint.id == nextEndpoint.id;
+			});
+		if (previousIt == ctx->profiles.end()) {
+			continue;
+		}
+		const bool previouslyConfigured =
+			!AIService::Trim(previousIt->settings.baseUrl).empty() ||
+			!AIService::Trim(previousIt->settings.apiKey).empty() ||
+			!AIService::Trim(previousIt->settings.model).empty();
+		const bool unexpectedlyCleared =
+			AIService::Trim(nextEndpoint.settings.baseUrl).empty() &&
+			AIService::Trim(nextEndpoint.settings.apiKey).empty() &&
+			AIService::Trim(nextEndpoint.settings.model).empty();
+		if (previouslyConfigured && unexpectedlyCleared) {
+			MessageBoxA(
+				hWnd,
+				("检测到端点“" + nextEndpoint.name +
+					"”的地址、密钥和模型被同时清空，已拒绝保存以保护原配置。").c_str(),
+				"AI Config",
+				MB_ICONWARNING | MB_OK);
 			return false;
 		}
-		AIConfigProfileEntry entry;
-		entry.id = Utf8ToLocalText(item.value("id", ""));
-		entry.name = Utf8ToLocalText(item.value("name", ""));
-		entry.settings = ReadAISettingsFromWebProfilePayload(globalSettings, item);
-		if (entry.id.empty() || entry.name.empty()) {
-			return false;
-		}
-		if (entry.id == activeProfileId) {
-			activeProfileFound = true;
-			activeSettings = entry.settings;
-		}
-		nextProfiles.push_back(std::move(entry));
 	}
 
-	if (nextProfiles.empty()) {
+	const auto endpointSnapshots = BuildProfileSnapshotsForSave(nextEndpoints);
+	if (!ctx->jsonConfig->replaceEndpointConfiguration(endpointSnapshots, nextGroups, nextTarget)) {
+		MessageBoxA(hWnd, "保存 API 端点和分组失败。", "AI Config", MB_ICONERROR | MB_OK);
 		return false;
 	}
-	if (activeProfileId.empty() || !activeProfileFound) {
-		MessageBoxA(hWnd, "当前配置组无效。", "AI Config", MB_ICONWARNING | MB_OK);
-		return false;
-	}
-	if (!ValidateAISettingsForConnection(hWnd, activeSettings)) {
-		return false;
-	}
+	AIService::LoadSettings(*ctx->jsonConfig, nullptr, runtimeSettings);
 
-	const std::vector<AIJsonConfigProfileSnapshot> snapshots = BuildProfileSnapshotsForSave(nextProfiles);
-	if (!ctx->jsonConfig->replaceProfiles(snapshots, activeProfileId)) {
-		MessageBoxA(hWnd, "保存 AI 配置组失败。", "AI Config", MB_ICONERROR | MB_OK);
-		return false;
-	}
-	AIService::SaveSettings(*ctx->jsonConfig, activeSettings);
-
-	ctx->profiles = nextProfiles;
-	ctx->activeProfileId = activeProfileId;
-	*ctx->settings = activeSettings;
+	ctx->profiles = std::move(nextEndpoints);
+	ctx->groups = std::move(nextGroups);
+	ctx->activeTarget = nextTarget;
+	ctx->activeProfileId = runtimeSettings.endpointCandidates.empty()
+		? std::string()
+		: runtimeSettings.endpointCandidates.front().endpointId;
+	*ctx->settings = std::move(runtimeSettings);
 	ctx->accepted = true;
 	if (ctx->embedded) {
 		OutputStringToELog("AI配置已保存");
-		PostMessageW(GetParent(hWnd), WM_AUTOLINKER_SETTINGS_PAGE_SAVED, 0, 0);
+		PostMessageW(
+			GetParent(hWnd),
+			WM_AUTOLINKER_SETTINGS_PAGE_SAVED,
+			static_cast<WPARAM>(AutoLinkerSettingsPageId::AiService),
+			0);
 	}
 	else {
 		DestroyWindow(hWnd);
@@ -2169,7 +2348,10 @@ void ApplyAIConfigWebViewSettings(AIConfigWebViewDialogContext* ctx)
 		return;
 	}
 
-	const std::string settingsJsonUtf8 = BuildAIConfigWebViewSettingsJson(ctx->profiles, ctx->activeProfileId, *ctx->settings);
+	const std::string settingsJsonUtf8 = BuildAIConfigWebViewSettingsJson(
+		ctx->profiles,
+		ctx->groups,
+		ctx->activeTarget);
 	const std::wstring settingsJsonWide = Utf8ToWide(settingsJsonUtf8);
 	if (settingsJsonWide.empty()) {
 		OutputStringToELog("[AI Config][WebView2] settings json conversion failed");
@@ -2262,26 +2444,16 @@ void StartAIConfigWebView(HWND hWnd, AIConfigWebViewDialogContext* ctx)
 											else if (action == "test_connection" && payload.contains("data") && payload["data"].is_object()) {
 												if (!messageCtx->testInFlight) {
 													const auto& data = payload["data"];
-													const std::string activeProfileId = Utf8ToLocalText(data.value("activeProfileId", ""));
-													AISettings next = *messageCtx->settings;
-													if (data.contains("profiles") && data["profiles"].is_array()) {
-														for (const auto& item : data["profiles"]) {
-															if (!item.is_object()) {
-																continue;
-															}
-															if (Utf8ToLocalText(item.value("id", "")) != activeProfileId) {
-																continue;
-															}
-															next = ReadAISettingsFromWebProfilePayload(*messageCtx->settings, item);
-															break;
-														}
+													std::vector<AIConfigProfileEntry> endpoints;
+													std::vector<AIJsonConfigEndpointGroupSnapshot> groups;
+													AIJsonConfigActiveTargetSnapshot target;
+													AISettings next;
+													std::string error;
+													if (!TryBuildAISettingsFromWebPayload(
+														data, *messageCtx->settings, endpoints, groups, target, next, error)) {
+														MessageBoxA(hWnd, error.c_str(), "AI Config", MB_ICONWARNING | MB_OK);
 													}
-													next.sourceEditMode = AIService::ParseSourceEditMode(data.value(
-														"sourceEditMode",
-														AIService::SourceEditModeToString(next.sourceEditMode)));
-													next.tavilyApiKey = Utf8ToLocalText(data.value("tavilyApiKey", ""));
-													if (ValidateAISettingsForConnection(hWnd, next) &&
-														StartAIConfigConnectionTest(hWnd, next, true)) {
+													else if (StartAIConfigConnectionTest(hWnd, next, true)) {
 														SetAIConfigWebViewTestBusy(messageCtx, true);
 													}
 												}
@@ -3256,6 +3428,8 @@ AIConfigDialogRunResult ShowAIConfigDialogWebView(HWND owner, AIJsonConfig& json
 	ctx.jsonConfig = &jsonConfig;
 	ctx.settings = &ioSettings;
 	ctx.profiles = LoadProfileEntriesFromJsonConfig(jsonConfig, ioSettings, ctx.activeProfileId);
+	ctx.groups = jsonConfig.getEndpointGroupsLocal();
+	ctx.activeTarget = jsonConfig.getActiveTargetLocal();
 
 	HWND hDialog = CreateWindowExA(
 		WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
@@ -3314,6 +3488,8 @@ HWND CreateAIConfigSettingsPage(HWND parent)
 		g_aiJsonConfig,
 		ctx->ownedSettings,
 		ctx->activeProfileId);
+	ctx->groups = g_aiJsonConfig.getEndpointGroupsLocal();
+	ctx->activeTarget = g_aiJsonConfig.getActiveTargetLocal();
 	ctx->embedded = true;
 	ctx->ownsContext = true;
 	HWND page = CreateWindowExA(

@@ -50,6 +50,9 @@ AUTOLINKER_TEST_API int AutoLinkerTest_RunPlanModeSelfTest(char* buffer, int buf
 // 执行 Goal 模式状态机自检，并输出 JSON 结果。
 AUTOLINKER_TEST_API int AutoLinkerTest_RunGoalModeSelfTest(char* buffer, int bufferSize);
 
+// 执行 AI API 端点配置迁移与分组拓扑自检，并输出 JSON 结果。
+AUTOLINKER_TEST_API int AutoLinkerTest_RunAIEndpointConfigSelfTest(char* buffer, int bufferSize);
+
 // 对指定 DeepSeek 模型执行连通性、普通对话、thinking、多轮工具调用集成测试，并输出 JSON 结果。
 AUTOLINKER_TEST_API int AutoLinkerTest_RunDeepSeekModelIntegrationTest(
 	const char* apiKey,

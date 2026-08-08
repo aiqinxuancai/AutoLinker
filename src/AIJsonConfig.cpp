@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <set>
 #include <Windows.h>
 
 #include "..\\thirdparty\\json.hpp"
@@ -10,373 +11,508 @@
 
 namespace {
 
+constexpr int kAIConfigSchemaVersion = 2;
+
 bool IsReservedRootKey(const std::string& key)
 {
-    return key == "active_profile_id" || key == "profiles";
+	return key == "schema_version" || key == "active_target" || key == "endpoints" ||
+		key == "endpoint_groups" || key == "active_profile_id" || key == "profiles";
 }
 
-// 检查字符串是否为合法 UTF-8 编码
-bool IsValidUtf8(const std::string& s)
+bool IsLegacyGlobalRootKey(const std::string& key)
 {
-    const auto* p = reinterpret_cast<const unsigned char*>(s.data());
-    const auto* end = p + s.size();
-    while (p < end) {
-        unsigned char c = *p++;
-        int extra = 0;
-        if      (c < 0x80)  extra = 0;
-        else if (c < 0xC0)  return false;
-        else if (c < 0xE0)  extra = 1;
-        else if (c < 0xF0)  extra = 2;
-        else if (c < 0xF8)  extra = 3;
-        else                return false;
-        for (int i = 0; i < extra; ++i) {
-            if (p >= end || (*p & 0xC0) != 0x80) return false;
-            ++p;
-        }
-    }
-    return true;
+	return key == "source_edit_mode" || key == "tavily_api_key";
 }
 
-// 将本地编码（ANSI/GBK）字符串转为 UTF-8
-std::string LocalToUtf8(const std::string& s)
+bool IsValidUtf8(const std::string& text)
 {
-    if (s.empty() || IsValidUtf8(s)) return s;
-    const int wlen = MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, nullptr, 0);
-    if (wlen <= 0) return s;
-    std::wstring ws(wlen - 1, L'\0');
-    MultiByteToWideChar(CP_ACP, 0, s.c_str(), -1, ws.data(), wlen);
-    const int ulen = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (ulen <= 0) return s;
-    std::string u(ulen - 1, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, u.data(), ulen, nullptr, nullptr);
-    return u;
+	const auto* cursor = reinterpret_cast<const unsigned char*>(text.data());
+	const auto* end = cursor + text.size();
+	while (cursor < end) {
+		const unsigned char ch = *cursor++;
+		int extra = 0;
+		if (ch < 0x80) extra = 0;
+		else if (ch < 0xC0) return false;
+		else if (ch < 0xE0) extra = 1;
+		else if (ch < 0xF0) extra = 2;
+		else if (ch < 0xF8) extra = 3;
+		else return false;
+		for (int i = 0; i < extra; ++i) {
+			if (cursor >= end || (*cursor & 0xC0) != 0x80) return false;
+			++cursor;
+		}
+	}
+	return true;
 }
 
-// 将 UTF-8 字符串转为本地编码（ANSI/GBK）
-std::string Utf8ToLocal(const std::string& s)
+std::string LocalToUtf8(const std::string& text)
 {
-    if (s.empty() || !IsValidUtf8(s)) return s;
-    const int wlen = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-    if (wlen <= 0) return s;
-    std::wstring ws(wlen - 1, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, ws.data(), wlen);
-    const int alen = WideCharToMultiByte(CP_ACP, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
-    if (alen <= 0) return s;
-    std::string a(alen - 1, '\0');
-    WideCharToMultiByte(CP_ACP, 0, ws.c_str(), -1, a.data(), alen, nullptr, nullptr);
-    return a;
+	if (text.empty() || IsValidUtf8(text)) return text;
+	const int wideLength = MultiByteToWideChar(CP_ACP, 0, text.c_str(), -1, nullptr, 0);
+	if (wideLength <= 0) return text;
+	std::wstring wide(static_cast<size_t>(wideLength), L'\0');
+	if (MultiByteToWideChar(CP_ACP, 0, text.c_str(), -1, wide.data(), wideLength) <= 0) return text;
+	const int utf8Length = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	if (utf8Length <= 0) return text;
+	std::string utf8(static_cast<size_t>(utf8Length), '\0');
+	if (WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, utf8.data(), utf8Length, nullptr, nullptr) <= 0) return text;
+	utf8.pop_back();
+	return utf8;
+}
+
+std::string Utf8ToLocal(const std::string& text)
+{
+	if (text.empty() || !IsValidUtf8(text)) return text;
+	const int wideLength = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
+	if (wideLength <= 0) return text;
+	std::wstring wide(static_cast<size_t>(wideLength), L'\0');
+	if (MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, wide.data(), wideLength) <= 0) return text;
+	const int localLength = WideCharToMultiByte(CP_ACP, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+	if (localLength <= 0) return text;
+	std::string local(static_cast<size_t>(localLength), '\0');
+	if (WideCharToMultiByte(CP_ACP, 0, wide.c_str(), -1, local.data(), localLength, nullptr, nullptr) <= 0) return text;
+	local.pop_back();
+	return local;
+}
+
+std::string JsonScalarToString(const nlohmann::json& value)
+{
+	return value.is_string() ? value.get<std::string>() : value.dump();
 }
 
 } // namespace
 
 AIJsonConfig::AIJsonConfig()
 {
-    std::filesystem::path basePath = GetBasePath();
-    std::filesystem::path autoLinkerPath = basePath / "AutoLinker";
-    if (!std::filesystem::exists(autoLinkerPath)) {
-        std::filesystem::create_directory(autoLinkerPath);
-    }
-    m_filePath = autoLinkerPath / "AIConfig.json";
-    load();
+	const std::filesystem::path directory = std::filesystem::path(GetBasePath()) / "AutoLinker";
+	std::error_code error;
+	std::filesystem::create_directories(directory, error);
+	m_filePath = directory / "AIConfig.json";
+	load();
 }
 
-AIJsonConfig::StoredProfile* AIJsonConfig::findActiveProfile()
+AIJsonConfig::AIJsonConfig(const std::filesystem::path& filePath)
+	: m_filePath(filePath)
 {
-    for (auto& profile : m_profiles) {
-        if (profile.id == m_activeProfileId) {
-            return &profile;
-        }
-    }
-    return nullptr;
+	load();
 }
 
-const AIJsonConfig::StoredProfile* AIJsonConfig::findActiveProfile() const
+AIJsonConfig::StoredEndpoint* AIJsonConfig::findEndpoint(const std::string& id)
 {
-    for (const auto& profile : m_profiles) {
-        if (profile.id == m_activeProfileId) {
-            return &profile;
-        }
-    }
-    return nullptr;
+	const auto it = std::find_if(m_endpoints.begin(), m_endpoints.end(), [&id](const StoredEndpoint& endpoint) {
+		return endpoint.id == id;
+	});
+	return it == m_endpoints.end() ? nullptr : &*it;
 }
 
-void AIJsonConfig::ensureWritableProfile()
+const AIJsonConfig::StoredEndpoint* AIJsonConfig::findEndpoint(const std::string& id) const
 {
-    if (findActiveProfile() != nullptr) {
-        return;
-    }
+	const auto it = std::find_if(m_endpoints.begin(), m_endpoints.end(), [&id](const StoredEndpoint& endpoint) {
+		return endpoint.id == id;
+	});
+	return it == m_endpoints.end() ? nullptr : &*it;
+}
 
-    StoredProfile profile;
-    profile.id = "default";
-    profile.name = "默认";
-    m_profiles.push_back(profile);
-    m_activeProfileId = profile.id;
+AIJsonConfig::StoredEndpointGroup* AIJsonConfig::findGroup(const std::string& id)
+{
+	const auto it = std::find_if(m_groups.begin(), m_groups.end(), [&id](const StoredEndpointGroup& group) {
+		return group.id == id;
+	});
+	return it == m_groups.end() ? nullptr : &*it;
+}
+
+const AIJsonConfig::StoredEndpointGroup* AIJsonConfig::findGroup(const std::string& id) const
+{
+	const auto it = std::find_if(m_groups.begin(), m_groups.end(), [&id](const StoredEndpointGroup& group) {
+		return group.id == id;
+	});
+	return it == m_groups.end() ? nullptr : &*it;
+}
+
+AIJsonConfig::StoredEndpoint* AIJsonConfig::findActiveEndpoint()
+{
+	if (m_activeTargetType == "endpoint") return findEndpoint(m_activeTargetId);
+	if (m_activeTargetType == "group") {
+		const StoredEndpointGroup* group = findGroup(m_activeTargetId);
+		if (group != nullptr && !group->endpointIds.empty()) return findEndpoint(group->endpointIds.front());
+	}
+	return nullptr;
+}
+
+const AIJsonConfig::StoredEndpoint* AIJsonConfig::findActiveEndpoint() const
+{
+	if (m_activeTargetType == "endpoint") return findEndpoint(m_activeTargetId);
+	if (m_activeTargetType == "group") {
+		const StoredEndpointGroup* group = findGroup(m_activeTargetId);
+		if (group != nullptr && !group->endpointIds.empty()) return findEndpoint(group->endpointIds.front());
+	}
+	return nullptr;
+}
+
+void AIJsonConfig::ensureWritableEndpoint()
+{
+	if (findActiveEndpoint() != nullptr) return;
+	StoredEndpoint endpoint;
+	endpoint.id = "default";
+	endpoint.name = "默认";
+	m_endpoints.push_back(endpoint);
+	m_activeTargetType = "endpoint";
+	m_activeTargetId = endpoint.id;
 }
 
 std::string AIJsonConfig::getValue(const std::string& key) const
 {
-    const StoredProfile* active = findActiveProfile();
-    if (active == nullptr) {
-        return std::string();
-    }
-    const auto it = active->values.find(key);
-    return it != active->values.end() ? it->second : std::string();
+	const StoredEndpoint* active = findActiveEndpoint();
+	if (active == nullptr) return {};
+	const auto it = active->values.find(key);
+	return it == active->values.end() ? std::string() : it->second;
 }
 
 std::string AIJsonConfig::getValueLocal(const std::string& key) const
 {
-    return Utf8ToLocal(getValue(key));
+	return Utf8ToLocal(getValue(key));
 }
 
 std::string AIJsonConfig::getGlobalValue(const std::string& key) const
 {
-    const auto it = m_globalValues.find(key);
-    return it != m_globalValues.end() ? it->second : std::string();
+	const auto it = m_globalValues.find(key);
+	return it == m_globalValues.end() ? std::string() : it->second;
 }
 
 std::string AIJsonConfig::getGlobalValueLocal(const std::string& key) const
 {
-    return Utf8ToLocal(getGlobalValue(key));
+	return Utf8ToLocal(getGlobalValue(key));
 }
 
 void AIJsonConfig::setValue(const std::string& key, const std::string& localValue)
 {
-    ensureWritableProfile();
-    StoredProfile* active = findActiveProfile();
-    if (active == nullptr) {
-        return;
-    }
-    active->values[key] = LocalToUtf8(localValue);
-    save();
+	setValues({ { key, localValue } });
 }
 
 void AIJsonConfig::setValues(const std::map<std::string, std::string>& localPairs)
 {
-    ensureWritableProfile();
-    StoredProfile* active = findActiveProfile();
-    if (active == nullptr) {
-        return;
-    }
-    for (const auto& [k, v] : localPairs) {
-        active->values[k] = LocalToUtf8(v);
-    }
-    save();
+	ensureWritableEndpoint();
+	StoredEndpoint* active = findActiveEndpoint();
+	if (active == nullptr) return;
+	for (const auto& [key, value] : localPairs) active->values[key] = LocalToUtf8(value);
+	save();
 }
 
 void AIJsonConfig::removeValues(const std::vector<std::string>& keys)
 {
-    StoredProfile* active = findActiveProfile();
-    if (active == nullptr) {
-        return;
-    }
-    for (const auto& key : keys) {
-        active->values.erase(key);
-    }
-    save();
+	StoredEndpoint* active = findActiveEndpoint();
+	if (active == nullptr) return;
+	for (const std::string& key : keys) active->values.erase(key);
+	save();
 }
 
 void AIJsonConfig::setGlobalValues(const std::map<std::string, std::string>& localPairs)
 {
-    for (const auto& [k, v] : localPairs) {
-        if (IsReservedRootKey(k)) {
-            continue;
-        }
-        m_globalValues[k] = LocalToUtf8(v);
-    }
-    save();
+	for (const auto& [key, value] : localPairs) {
+		if (!IsReservedRootKey(key)) m_globalValues[key] = LocalToUtf8(value);
+	}
+	save();
 }
 
 bool AIJsonConfig::hasAnyData() const
 {
-    const StoredProfile* active = findActiveProfile();
-    return !m_globalValues.empty() || (active != nullptr && !active->values.empty());
+	const StoredEndpoint* active = findActiveEndpoint();
+	return !m_globalValues.empty() || (active != nullptr && !active->values.empty());
 }
 
 bool AIJsonConfig::hasKey(const std::string& key) const
 {
-    const StoredProfile* active = findActiveProfile();
-    return active != nullptr && active->values.count(key) > 0;
+	const StoredEndpoint* active = findActiveEndpoint();
+	return active != nullptr && active->values.contains(key);
+}
+
+std::vector<AIJsonConfigEndpointSnapshot> AIJsonConfig::getEndpointsLocal() const
+{
+	std::vector<AIJsonConfigEndpointSnapshot> result;
+	result.reserve(m_endpoints.size());
+	for (const StoredEndpoint& endpoint : m_endpoints) {
+		AIJsonConfigEndpointSnapshot snapshot;
+		snapshot.id = Utf8ToLocal(endpoint.id);
+		snapshot.name = Utf8ToLocal(endpoint.name);
+		for (const auto& [key, value] : endpoint.values) snapshot.values[key] = Utf8ToLocal(value);
+		result.push_back(std::move(snapshot));
+	}
+	return result;
+}
+
+std::vector<AIJsonConfigEndpointGroupSnapshot> AIJsonConfig::getEndpointGroupsLocal() const
+{
+	std::vector<AIJsonConfigEndpointGroupSnapshot> result;
+	result.reserve(m_groups.size());
+	for (const StoredEndpointGroup& group : m_groups) {
+		AIJsonConfigEndpointGroupSnapshot snapshot;
+		snapshot.id = Utf8ToLocal(group.id);
+		snapshot.name = Utf8ToLocal(group.name);
+		for (const std::string& endpointId : group.endpointIds) snapshot.endpointIds.push_back(Utf8ToLocal(endpointId));
+		result.push_back(std::move(snapshot));
+	}
+	return result;
+}
+
+AIJsonConfigActiveTargetSnapshot AIJsonConfig::getActiveTargetLocal() const
+{
+	return { m_activeTargetType, Utf8ToLocal(m_activeTargetId) };
+}
+
+bool AIJsonConfig::setActiveTargetLocal(const AIJsonConfigActiveTargetSnapshot& activeTarget)
+{
+	const std::string id = LocalToUtf8(activeTarget.id);
+	if (activeTarget.type == "endpoint") {
+		if (findEndpoint(id) == nullptr) return false;
+	}
+	else if (activeTarget.type == "group") {
+		const StoredEndpointGroup* group = findGroup(id);
+		if (group == nullptr || group->endpointIds.empty()) return false;
+	}
+	else {
+		return false;
+	}
+	m_activeTargetType = activeTarget.type;
+	m_activeTargetId = id;
+	save();
+	return true;
+}
+
+bool AIJsonConfig::replaceEndpointConfiguration(
+	const std::vector<AIJsonConfigEndpointSnapshot>& endpoints,
+	const std::vector<AIJsonConfigEndpointGroupSnapshot>& groups,
+	const AIJsonConfigActiveTargetSnapshot& activeTarget)
+{
+	std::vector<StoredEndpoint> nextEndpoints;
+	std::vector<StoredEndpointGroup> nextGroups;
+	std::set<std::string> endpointIds;
+	std::set<std::string> groupIds;
+	nextEndpoints.reserve(endpoints.size());
+	nextGroups.reserve(groups.size());
+
+	for (const AIJsonConfigEndpointSnapshot& endpoint : endpoints) {
+		StoredEndpoint stored;
+		stored.id = LocalToUtf8(endpoint.id);
+		stored.name = LocalToUtf8(endpoint.name);
+		if (stored.id.empty() || stored.name.empty() || !endpointIds.insert(stored.id).second) return false;
+		for (const auto& [key, value] : endpoint.values) stored.values[key] = LocalToUtf8(value);
+		nextEndpoints.push_back(std::move(stored));
+	}
+	if (nextEndpoints.empty()) return false;
+
+	for (const AIJsonConfigEndpointGroupSnapshot& group : groups) {
+		StoredEndpointGroup stored;
+		stored.id = LocalToUtf8(group.id);
+		stored.name = LocalToUtf8(group.name);
+		if (stored.id.empty() || stored.name.empty() || !groupIds.insert(stored.id).second) return false;
+		std::set<std::string> memberIds;
+		for (const std::string& localId : group.endpointIds) {
+			const std::string id = LocalToUtf8(localId);
+			if (!endpointIds.contains(id) || !memberIds.insert(id).second) return false;
+			stored.endpointIds.push_back(id);
+		}
+		nextGroups.push_back(std::move(stored));
+	}
+
+	const std::string targetType = activeTarget.type;
+	const std::string targetId = LocalToUtf8(activeTarget.id);
+	if (targetType == "endpoint") {
+		if (!endpointIds.contains(targetId)) return false;
+	}
+	else if (targetType == "group") {
+		const auto it = std::find_if(nextGroups.begin(), nextGroups.end(), [&targetId](const StoredEndpointGroup& group) {
+			return group.id == targetId;
+		});
+		if (it == nextGroups.end() || it->endpointIds.empty()) return false;
+	}
+	else {
+		return false;
+	}
+
+	m_endpoints = std::move(nextEndpoints);
+	m_groups = std::move(nextGroups);
+	m_activeTargetType = targetType;
+	m_activeTargetId = targetId;
+	save();
+	return true;
 }
 
 std::vector<AIJsonConfigProfileSnapshot> AIJsonConfig::getProfilesLocal() const
 {
-    std::vector<AIJsonConfigProfileSnapshot> snapshots;
-    snapshots.reserve(m_profiles.size());
-    for (const auto& profile : m_profiles) {
-        AIJsonConfigProfileSnapshot snapshot;
-        snapshot.id = Utf8ToLocal(profile.id);
-        snapshot.name = Utf8ToLocal(profile.name);
-        for (const auto& [key, value] : profile.values) {
-            snapshot.values[key] = Utf8ToLocal(value);
-        }
-        snapshots.push_back(std::move(snapshot));
-    }
-    return snapshots;
+	return getEndpointsLocal();
 }
 
 std::string AIJsonConfig::getActiveProfileId() const
 {
-    return Utf8ToLocal(m_activeProfileId);
+	const StoredEndpoint* active = findActiveEndpoint();
+	return active == nullptr ? std::string() : Utf8ToLocal(active->id);
 }
 
 bool AIJsonConfig::setActiveProfileId(const std::string& activeProfileId)
 {
-    const std::string activeProfileIdUtf8 = LocalToUtf8(activeProfileId);
-    const auto it = std::find_if(
-        m_profiles.begin(),
-        m_profiles.end(),
-        [&activeProfileIdUtf8](const StoredProfile& profile) {
-            return profile.id == activeProfileIdUtf8;
-        });
-    if (it == m_profiles.end()) {
-        return false;
-    }
-    if (m_activeProfileId == activeProfileIdUtf8) {
-        return true;
-    }
-
-    m_activeProfileId = activeProfileIdUtf8;
-    save();
-    return true;
+	return setActiveTargetLocal({ "endpoint", activeProfileId });
 }
 
-bool AIJsonConfig::replaceProfiles(const std::vector<AIJsonConfigProfileSnapshot>& profiles, const std::string& activeProfileId)
+bool AIJsonConfig::replaceProfiles(
+	const std::vector<AIJsonConfigProfileSnapshot>& profiles,
+	const std::string& activeProfileId)
 {
-    std::vector<StoredProfile> nextProfiles;
-    nextProfiles.reserve(profiles.size());
-    bool foundActive = false;
-    for (const auto& profile : profiles) {
-        const std::string idUtf8 = LocalToUtf8(profile.id);
-        const std::string nameUtf8 = LocalToUtf8(profile.name);
-        if (idUtf8.empty() || nameUtf8.empty()) {
-            return false;
-        }
-
-        StoredProfile stored;
-        stored.id = idUtf8;
-        stored.name = nameUtf8;
-        for (const auto& [key, value] : profile.values) {
-            stored.values[key] = LocalToUtf8(value);
-        }
-        if (idUtf8 == LocalToUtf8(activeProfileId)) {
-            foundActive = true;
-        }
-        nextProfiles.push_back(std::move(stored));
-    }
-
-    if (nextProfiles.empty() || !foundActive) {
-        return false;
-    }
-
-    m_profiles = std::move(nextProfiles);
-    m_activeProfileId = LocalToUtf8(activeProfileId);
-    save();
-    return true;
+	auto groups = getEndpointGroupsLocal();
+	std::set<std::string> retainedIds;
+	for (const auto& profile : profiles) retainedIds.insert(profile.id);
+	for (auto& group : groups) {
+		group.endpointIds.erase(
+			std::remove_if(group.endpointIds.begin(), group.endpointIds.end(), [&retainedIds](const std::string& id) {
+				return !retainedIds.contains(id);
+			}),
+			group.endpointIds.end());
+	}
+	AIJsonConfigActiveTargetSnapshot target = getActiveTargetLocal();
+	if (target.type != "group") target = { "endpoint", activeProfileId };
+	return replaceEndpointConfiguration(profiles, groups, target);
 }
 
 void AIJsonConfig::load()
 {
-    m_profiles.clear();
-    m_activeProfileId.clear();
-    m_globalValues.clear();
-    if (!std::filesystem::exists(m_filePath)) {
-        return;
-    }
+	m_endpoints.clear();
+	m_groups.clear();
+	m_activeTargetType.clear();
+	m_activeTargetId.clear();
+	m_globalValues.clear();
+	if (!std::filesystem::exists(m_filePath)) return;
 
-    try {
-        std::ifstream f(m_filePath);
-        if (!f.is_open()) {
-            return;
-        }
-        const nlohmann::json j = nlohmann::json::parse(f, nullptr, /*allow_exceptions=*/false);
-        if (j.is_discarded() || !j.is_object()) {
-            return;
-        }
+	try {
+		std::ifstream file(m_filePath, std::ios::binary);
+		if (!file.is_open()) return;
+		const nlohmann::json root = nlohmann::json::parse(file, nullptr, false);
+		if (root.is_discarded() || !root.is_object()) return;
 
-        if (j.contains("profiles") && j["profiles"].is_array()) {
-            for (const auto& [key, val] : j.items()) {
-                if (IsReservedRootKey(key)) {
-                    continue;
-                }
-                m_globalValues[key] = val.is_string() ? val.get<std::string>() : val.dump();
-            }
+		const auto loadStructuredGlobals = [this, &root]() {
+			for (const auto& [key, value] : root.items()) {
+				if (!IsReservedRootKey(key)) m_globalValues[key] = JsonScalarToString(value);
+			}
+		};
 
-            for (const auto& item : j["profiles"]) {
-                if (!item.is_object()) {
-                    continue;
-                }
+		if (root.contains("endpoints") && root["endpoints"].is_array()) {
+			loadStructuredGlobals();
+			for (const auto& item : root["endpoints"]) {
+				if (!item.is_object()) continue;
+				StoredEndpoint endpoint;
+				endpoint.id = item.value("id", "");
+				endpoint.name = item.value("name", "");
+				if (item.contains("values") && item["values"].is_object()) {
+					for (const auto& [key, value] : item["values"].items()) endpoint.values[key] = JsonScalarToString(value);
+				}
+				if (!endpoint.id.empty() && !endpoint.name.empty() && findEndpoint(endpoint.id) == nullptr) {
+					m_endpoints.push_back(std::move(endpoint));
+				}
+			}
+			if (root.contains("endpoint_groups") && root["endpoint_groups"].is_array()) {
+				for (const auto& item : root["endpoint_groups"]) {
+					if (!item.is_object()) continue;
+					StoredEndpointGroup group;
+					group.id = item.value("id", "");
+					group.name = item.value("name", "");
+					std::set<std::string> memberIds;
+					if (item.contains("endpoint_ids") && item["endpoint_ids"].is_array()) {
+						for (const auto& idValue : item["endpoint_ids"]) {
+							if (!idValue.is_string()) continue;
+							const std::string id = idValue.get<std::string>();
+							if (findEndpoint(id) != nullptr && memberIds.insert(id).second) group.endpointIds.push_back(id);
+						}
+					}
+					if (!group.id.empty() && !group.name.empty() && findGroup(group.id) == nullptr) {
+						m_groups.push_back(std::move(group));
+					}
+				}
+			}
+			if (root.contains("active_target") && root["active_target"].is_object()) {
+				m_activeTargetType = root["active_target"].value("type", "");
+				m_activeTargetId = root["active_target"].value("id", "");
+			}
+		}
+		else if (root.contains("profiles") && root["profiles"].is_array()) {
+			loadStructuredGlobals();
+			// v1 配置在内存中迁移为端点，等用户保存后再写成 v2。
+			for (const auto& item : root["profiles"]) {
+				if (!item.is_object()) continue;
+				StoredEndpoint endpoint;
+				endpoint.id = item.value("id", "");
+				endpoint.name = item.value("name", "");
+				if (item.contains("values") && item["values"].is_object()) {
+					for (const auto& [key, value] : item["values"].items()) endpoint.values[key] = JsonScalarToString(value);
+				}
+				if (!endpoint.id.empty() && !endpoint.name.empty() && findEndpoint(endpoint.id) == nullptr) {
+					m_endpoints.push_back(std::move(endpoint));
+				}
+			}
+			m_activeTargetType = "endpoint";
+			m_activeTargetId = root.value("active_profile_id", "");
+		}
+		else {
+			StoredEndpoint endpoint;
+			endpoint.id = "default";
+			endpoint.name = "默认";
+			for (const auto& [key, value] : root.items()) {
+				if (IsLegacyGlobalRootKey(key)) m_globalValues[key] = JsonScalarToString(value);
+				else endpoint.values[key] = JsonScalarToString(value);
+			}
+			m_endpoints.push_back(std::move(endpoint));
+			m_activeTargetType = "endpoint";
+			m_activeTargetId = "default";
+		}
 
-                StoredProfile profile;
-                if (item.contains("id") && item["id"].is_string()) {
-                    profile.id = item["id"].get<std::string>();
-                }
-                if (item.contains("name") && item["name"].is_string()) {
-                    profile.name = item["name"].get<std::string>();
-                }
-                if (item.contains("values") && item["values"].is_object()) {
-                    for (const auto& [key, val] : item["values"].items()) {
-                        profile.values[key] = val.is_string() ? val.get<std::string>() : val.dump();
-                    }
-                }
-                if (!profile.id.empty() && !profile.name.empty()) {
-                    m_profiles.push_back(std::move(profile));
-                }
-            }
-            if (j.contains("active_profile_id") && j["active_profile_id"].is_string()) {
-                m_activeProfileId = j["active_profile_id"].get<std::string>();
-            }
-            if (findActiveProfile() == nullptr && !m_profiles.empty()) {
-                m_activeProfileId = m_profiles.front().id;
-            }
-            return;
-        }
-
-        StoredProfile legacyProfile;
-        legacyProfile.id = "default";
-        legacyProfile.name = "默认";
-        for (const auto& [key, val] : j.items()) {
-            if (val.is_string()) {
-                legacyProfile.values[key] = val.get<std::string>();
-            } else {
-                legacyProfile.values[key] = val.dump();
-            }
-        }
-        m_profiles.push_back(std::move(legacyProfile));
-        m_activeProfileId = "default";
-    } catch (...) {
-        // 忽略解析错误，保持空数据
-    }
+		const bool targetValid =
+			(m_activeTargetType == "endpoint" && findEndpoint(m_activeTargetId) != nullptr) ||
+			(m_activeTargetType == "group" && findGroup(m_activeTargetId) != nullptr && !findGroup(m_activeTargetId)->endpointIds.empty());
+		if (!targetValid && !m_endpoints.empty()) {
+			m_activeTargetType = "endpoint";
+			m_activeTargetId = m_endpoints.front().id;
+		}
+	}
+	catch (...) {
+		m_endpoints.clear();
+		m_groups.clear();
+		m_activeTargetType.clear();
+		m_activeTargetId.clear();
+		m_globalValues.clear();
+	}
 }
 
 void AIJsonConfig::save() const
 {
-    try {
-        nlohmann::json j = nlohmann::json::object();
-        for (const auto& [key, value] : m_globalValues) {
-            if (!IsReservedRootKey(key)) {
-                j[key] = value;
-            }
-        }
-        j["active_profile_id"] = m_activeProfileId;
-        j["profiles"] = nlohmann::json::array();
-        for (const auto& profile : m_profiles) {
-            nlohmann::json item = nlohmann::json::object();
-            item["id"] = profile.id;
-            item["name"] = profile.name;
-            item["values"] = nlohmann::json::object();
-            for (const auto& [key, value] : profile.values) {
-                item["values"][key] = value;
-            }
-            j["profiles"].push_back(std::move(item));
-        }
-        // 先生成序列化内容，再打开文件，避免 dump 失败时留下空文件
-        const std::string dumped = j.dump(4);
-        std::ofstream f(m_filePath);
-        if (f.is_open()) {
-            f << dumped;
-        }
-    } catch (...) {
-        // 忽略写入错误
-    }
-}
+	try {
+		nlohmann::json root = nlohmann::json::object();
+		for (const auto& [key, value] : m_globalValues) {
+			if (!IsReservedRootKey(key)) root[key] = value;
+		}
+		root["schema_version"] = kAIConfigSchemaVersion;
+		root["active_target"] = { { "type", m_activeTargetType }, { "id", m_activeTargetId } };
+		root["endpoints"] = nlohmann::json::array();
+		for (const StoredEndpoint& endpoint : m_endpoints) {
+			nlohmann::json item = {
+				{ "id", endpoint.id },
+				{ "name", endpoint.name },
+				{ "values", nlohmann::json::object() }
+			};
+			for (const auto& [key, value] : endpoint.values) item["values"][key] = value;
+			root["endpoints"].push_back(std::move(item));
+		}
+		root["endpoint_groups"] = nlohmann::json::array();
+		for (const StoredEndpointGroup& group : m_groups) {
+			root["endpoint_groups"].push_back({
+				{ "id", group.id },
+				{ "name", group.name },
+				{ "endpoint_ids", group.endpointIds }
+			});
+		}
 
+		const std::string dumped = root.dump(4);
+		std::error_code error;
+		if (!m_filePath.parent_path().empty()) std::filesystem::create_directories(m_filePath.parent_path(), error);
+		std::ofstream file(m_filePath, std::ios::binary | std::ios::trunc);
+		if (file.is_open()) file << dumped;
+	}
+	catch (...) {
+	}
+}

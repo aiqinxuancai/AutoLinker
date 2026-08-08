@@ -51,28 +51,41 @@ enum class AIImageInputMode {
 	Disabled = 2
 };
 
-// AI 设置。
-struct AISettings {
+// 单个 AI API 端点设置。
+struct AIEndpointSettings {
+	std::string endpointId;
+	std::string endpointName;
 	AIProtocolType protocolType = AIProtocolType::OpenAI;
 	AIThinkingLevel thinkingLevel = AIThinkingLevel::Off;
-	AISourceEditMode sourceEditMode = AISourceEditMode::RealPageFirst;
 	std::string baseUrl;
 	std::string apiKey;
 	std::string model;
 	std::string extraSystemPrompt;
 	std::string customHeadersText;
-	std::string tavilyApiKey;
 	int timeoutMs = 120000;
 	double temperature = 0.2;
 	int contextWindowTokens = 0; // 0 = 未设置，回落到模型表/默认
 	AIImageInputMode imageInputMode = AIImageInputMode::Auto;
+	int retryCount = 5; // 首次请求之外的额外重试次数
+};
+
+// AI 设置，包含全局选项和当前活动目标解析出的有序端点。
+struct AISettings : AIEndpointSettings {
+	AISourceEditMode sourceEditMode = AISourceEditMode::RealPageFirst;
+	std::string tavilyApiKey;
+	std::vector<AIEndpointSettings> endpointCandidates;
+	std::string activeTargetType = "endpoint";
+	std::string activeTargetId;
 };
 
 // AI 单次任务结果。
 struct AIResult {
 	bool ok = false;
+	bool endpointEstablished = false;
 	std::string content;
 	std::string error;
+	std::string endpointId;
+	std::string endpointName;
 	int httpStatus = 0;
 };
 
@@ -145,6 +158,7 @@ struct AIChatRunOptions {
 struct AIChatResult {
 	bool ok = false;
 	bool cancelled = false;
+	bool endpointEstablished = false;
 	// 兼容旧调试接口；长期任务不再按固定工具轮数终止。
 	bool toolRoundsExceeded = false;
 	bool paused = false;
@@ -152,6 +166,8 @@ struct AIChatResult {
 	std::string content;
 	std::string reasoningContent;
 	std::string error;
+	std::string endpointId;
+	std::string endpointName;
 	int httpStatus = 0;
 	std::vector<AIChatToolEvent> toolEvents;
 	std::vector<std::string> contextPrefixRawMessagesUtf8;
@@ -211,10 +227,22 @@ public:
 	static std::string BuildAgentOptimizationSelfTestJson();
 	// 构建四种协议图片消息序列化与能力判断的内部自测报告。
 	static std::string BuildImageInputSelfTestJson();
+	// 构建 API 端点配置迁移、分组顺序与重试范围的内部自测报告。
+	static std::string BuildEndpointConfigSelfTestJson();
 	static std::string NormalizeModelOutputToCode(const std::string& modelText);
 	static std::string Trim(const std::string& text);
 
 private:
+	static AIResult TestConnectionSingle(const AISettings& settings);
+	static AIResult ExecuteTaskSingle(AITaskKind kind, const std::string& inputText, const AISettings& settings);
+	static AIChatResult ExecuteChatWithToolsSingle(
+		const std::vector<AIChatMessage>& contextMessages,
+		const AISettings& settings,
+		const std::function<std::string(const std::string& toolName, const std::string& argumentsJson, bool& outOk)>& toolCallback,
+		const std::function<void(const std::string& deltaText)>& streamCallback,
+		const std::function<bool()>& cancelCallback,
+		HttpRequestCancellation* cancelContext,
+		const AIChatRunOptions& runOptions);
 	static std::string BuildEndpoint(const std::string& baseUrl);
 	static std::string BuildSystemPrompt(AITaskKind kind, const AISettings& settings);
 };

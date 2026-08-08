@@ -5,1104 +5,320 @@
 <meta name="color-scheme" content="light only">
 <style>
 /*__AUTOLINKER_AI_CONFIG_CSS__*/
+.config-list-item { display:flex; width:100%; min-height:38px; align-items:center; gap:8px; border-left:3px solid transparent; padding:8px 10px; text-align:left; color:#334155; }
+.config-list-item:hover { background:#f8fafc; }
+.config-list-item.active { border-left-color:#2563eb; background:#eff6ff; color:#1d4ed8; }
+.config-list-name { min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.active-dot { width:7px; height:7px; flex:none; border-radius:999px; background:#16a34a; }
+.member-row { display:grid; grid-template-columns:minmax(0, 1fr) auto; min-height:40px; align-items:center; gap:8px; border-bottom:1px solid #e2e8f0; padding:5px 0; }
+.member-row:last-child { border-bottom:0; }
+@media (max-width:720px) {
+	.config-workspace { flex-direction:column; }
+	.config-sidebar { width:100% !important; border-right:0 !important; border-bottom:1px solid #e2e8f0; }
+	.config-list { max-height:200px !important; }
+	.field-grid { grid-template-columns:minmax(0, 1fr) !important; }
+}
 </style>
 </head>
 <body class="font-sans text-[13px]">
-<div class="flex min-h-full flex-col">
+<div class="flex h-full flex-col overflow-hidden bg-white">
 	<header class="shrink-0 border-b border-slate-200 bg-white px-5 py-3">
-		<div class="flex min-h-[46px] items-center justify-between gap-3">
-			<div class="min-w-0">
-				<h1 class="truncate text-lg font-semibold leading-6 text-slate-950">AutoLinker AI 设置</h1>
-				<p class="mt-0.5 min-h-5 truncate text-[12px] leading-5 text-slate-500">管理 AI 服务商、模型与凭据配置。</p>
-			</div>
+		<div class="flex min-h-[42px] items-center justify-between gap-3">
+			<h1 class="truncate text-lg font-semibold leading-6 text-slate-950">AutoLinker AI 模型</h1>
 			<div class="flex shrink-0 items-center gap-2 text-[12px] text-slate-500">
-				<span id="profileCountBadge" class="rounded border border-slate-200 bg-slate-50 px-2 py-1">0 组配置</span>
+				<span id="endpointCountBadge" class="border border-slate-200 bg-slate-50 px-2 py-1">0 个端点</span>
+				<span id="groupCountBadge" class="border border-slate-200 bg-slate-50 px-2 py-1">0 个分组</span>
 			</div>
 		</div>
 	</header>
 
-	<main class="flex flex-1 flex-col bg-white">
-		<section class="min-w-0 p-5">
-			<div class="space-y-4">
-				<section class="rounded-lg border border-slate-200 bg-white p-4">
-					<h2 class="mb-3 text-[12px] font-semibold uppercase tracking-wide text-slate-500">模型服务配置组</h2>
+	<div class="flex min-h-[54px] shrink-0 flex-wrap items-center gap-2 border-b border-slate-200 bg-slate-50 px-5 py-2.5">
+		<button id="newEndpointBtn" class="ui-btn" type="button">新建端点</button>
+		<span id="presetMenuAnchor" class="relative inline-flex shrink-0">
+			<button id="presetBtn" class="ui-btn" type="button" aria-haspopup="menu" aria-expanded="false">使用预设新建</button>
+			<div id="presetMenu" class="ui-menu left-0 top-[calc(100%+6px)] hidden w-[320px]" role="menu"></div>
+		</span>
+		<button id="newGroupBtn" class="ui-btn" type="button">新建分组</button>
+		<button id="renameBtn" class="ui-btn" type="button">重命名</button>
+		<button id="deleteBtn" class="ui-btn" type="button">删除</button>
+	</div>
+
+	<main class="flex min-h-0 flex-1 flex-col">
+		<div class="config-workspace flex min-h-0 flex-1">
+			<aside class="config-sidebar flex w-[220px] shrink-0 flex-col border-r border-slate-200 bg-slate-50">
+				<div class="config-list min-h-[120px] flex-1 overflow-y-auto py-1">
+					<div class="px-3 pb-1 pt-2 text-[11px] font-semibold text-slate-500">API 端点</div>
+					<div id="endpointList"></div>
+					<div class="mt-2 border-t border-slate-200 px-3 pb-1 pt-3 text-[11px] font-semibold text-slate-500">端点分组</div>
+					<div id="groupList"></div>
+				</div>
+			</aside>
+
+			<div class="min-w-0 flex-1 overflow-y-auto">
+				<section id="endpointPanel" class="px-5 py-4">
+					<div class="mb-4 flex min-h-8 items-center justify-between gap-3 border-b border-slate-200 pb-3">
+						<h2 id="endpointTitle" class="min-w-0 truncate text-[15px] font-semibold text-slate-950">API 端点</h2>
+						<label class="flex shrink-0 cursor-pointer items-center gap-2 font-semibold text-slate-700">
+							<input id="endpointEnabled" type="checkbox" class="h-4 w-4 accent-blue-700">启用
+						</label>
+					</div>
+
 					<div class="space-y-4">
-				<div>
-					<label for="profileSelect" class="ui-label">配置组</label>
-					<div class="flex flex-wrap items-center gap-2">
-						<select id="profileSelect" class="ui-select min-w-[200px] flex-1"></select>
-						<button id="addProfileBtn" class="ui-btn" type="button">新建</button>
-						<span id="presetProfileMenuAnchor" class="hs-dropdown relative inline-flex shrink-0 [--auto-close:inside]">
-							<button id="addPresetProfileBtn" class="hs-dropdown-toggle ui-btn" type="button" aria-haspopup="menu" aria-expanded="false">使用预设站点新建</button>
-							<div id="presetProfileMenu" class="hs-dropdown-menu ui-menu left-0 top-[calc(100%+6px)] hidden w-[320px]" role="menu"></div>
-						</span>
-						<button id="renameProfileBtn" class="ui-btn" type="button">重命名</button>
-						<button id="deleteProfileBtn" class="ui-btn" type="button">删除</button>
-					</div>
-				</div>
-
-				<div>
-					<label for="protocol" class="ui-label">接口协议</label>
-					<select id="protocol" class="ui-select">
-						<option value="openai">OpenAI Chat</option>
-						<option value="openai_responses">OpenAI Responses</option>
-						<option value="gemini">Gemini</option>
-						<option value="claude">Claude</option>
-					</select>
-				</div>
-
-				<div>
-					<label for="baseUrl" class="ui-label">接口地址</label>
-					<input id="baseUrl" class="ui-input" placeholder="https://www.rightapi.ai/codex" autocomplete="off">
-					<p id="endpointPreview" class="mt-1.5 text-[12px] leading-5 text-slate-500">最终请求地址：<span class="ui-code">-</span></p>
-				</div>
-
-				<div>
-					<label for="apiKey" class="ui-label">API 密钥</label>
-					<div class="flex gap-2">
-						<input id="apiKey" class="ui-input min-w-0 flex-1" type="password" placeholder="API 密钥" autocomplete="off">
-						<button id="toggleApiKey" class="ui-btn w-16 px-0" type="button">显示</button>
-					</div>
-				</div>
-
-				<div>
-					<label for="model" class="ui-label">模型</label>
-					<div class="flex gap-2">
-						<div id="modelCmb" class="relative min-w-0 flex-1">
-							<input id="model" class="ui-input pr-9" placeholder="例如 gpt-5.3-codex" autocomplete="off">
-							<button id="modelArrow" class="absolute right-0 top-0 flex h-9 w-9 items-center justify-center text-[11px] text-slate-400 hover:text-slate-600" type="button" tabindex="-1" title="显示模型候选" aria-label="显示模型候选">▼</button>
-							<div id="modelMenu" class="ui-menu left-0 right-0 top-[calc(100%+6px)] hidden" role="menu"></div>
+						<div class="field-grid grid grid-cols-2 gap-4">
+							<div>
+								<label for="protocol" class="ui-label">接口协议</label>
+								<select id="protocol" class="ui-select">
+									<option value="openai">OpenAI Chat</option>
+									<option value="openai_responses">OpenAI Responses</option>
+									<option value="gemini">Gemini</option>
+									<option value="claude">Claude</option>
+								</select>
+							</div>
+							<div>
+								<label for="thinkingLevel" class="ui-label">思考等级</label>
+								<select id="thinkingLevel" class="ui-select">
+									<option value="off">关闭</option><option value="low">低</option><option value="medium">中</option>
+									<option value="high">高</option><option value="xhigh">超高</option><option value="max">最大</option><option value="ultra">极限</option>
+								</select>
+							</div>
 						</div>
-						<button id="modelFetchBtn" class="ui-btn ui-icon-btn" type="button" title="获取模型列表" aria-label="获取模型列表">↻</button>
-					</div>
-				</div>
 
-				<div>
-					<label for="contextWindow" class="ui-label">上下文长度</label>
-					<input id="contextWindow" class="ui-input" type="number" min="0" step="1024" placeholder="留空则自动判断" autocomplete="off">
-					<p id="contextWindowHint" class="mt-1.5 text-[12px] text-slate-500">达到上下文长度的 95% 时自动压缩历史。留空时按模型名自动判断。</p>
-				</div>
+						<div>
+							<label for="baseUrl" class="ui-label">接口地址</label>
+							<input id="baseUrl" class="ui-input" placeholder="https://api.openai.com/v1" autocomplete="off">
+							<p id="endpointPreview" class="mt-1.5 text-[12px] leading-5 text-slate-500">最终请求地址：<span class="ui-code">-</span></p>
+						</div>
 
-				<div>
-					<label for="imageInputMode" class="ui-label">图片输入</label>
-					<select id="imageInputMode" class="ui-select">
-						<option value="auto">自动识别模型能力</option>
-						<option value="enabled">启用</option>
-						<option value="disabled">禁用</option>
-					</select>
-				</div>
+						<div>
+							<label for="apiKey" class="ui-label">API 密钥</label>
+							<div class="flex gap-2">
+								<input id="apiKey" class="ui-input min-w-0 flex-1" type="password" autocomplete="off">
+								<button id="toggleApiKey" class="ui-btn w-16 px-0" type="button">显示</button>
+							</div>
+						</div>
 
-				<div>
-					<label for="thinkingLevel" class="ui-label">思考等级</label>
-					<select id="thinkingLevel" class="ui-select">
-						<option value="off">关闭</option>
-						<option value="low">低</option>
-						<option value="medium">中</option>
-						<option value="high">高</option>
-						<option value="xhigh">超高</option>
-						<option value="max">最大</option>
-						<option value="ultra">极限</option>
-					</select>
-				</div>
+						<div>
+							<label for="model" class="ui-label">模型</label>
+							<div class="flex gap-2">
+								<div id="modelCmb" class="relative min-w-0 flex-1">
+									<input id="model" class="ui-input pr-9" autocomplete="off">
+									<button id="modelArrow" class="absolute right-0 top-0 flex h-9 w-9 items-center justify-center text-slate-500" type="button" title="显示模型候选" aria-label="显示模型候选">▼</button>
+									<div id="modelMenu" class="ui-menu left-0 right-0 top-[calc(100%+6px)] hidden" role="menu"></div>
+								</div>
+								<button id="modelFetchBtn" class="ui-btn ui-icon-btn" type="button" title="获取模型列表" aria-label="获取模型列表">↻</button>
+							</div>
+						</div>
 
-				<div>
-					<label for="extraPrompt" class="ui-label">系统提示词</label>
-					<textarea id="extraPrompt" class="ui-textarea min-h-[3.5rem]" placeholder="附加系统提示词。"></textarea>
-				</div>
+						<div class="field-grid grid grid-cols-2 gap-4">
+							<div>
+								<label for="retryCount" class="ui-label">重试次数</label>
+								<input id="retryCount" class="ui-input" type="number" min="0" max="20" step="1" value="5">
+							</div>
+							<div>
+								<label for="timeoutMs" class="ui-label">超时（毫秒）</label>
+								<input id="timeoutMs" class="ui-input" type="number" min="1000" step="1000" value="120000">
+							</div>
+						</div>
 
-				<div>
-					<label for="customHeaders" class="ui-label">自定义请求头</label>
-					<textarea id="customHeaders" class="ui-textarea min-h-[3.5rem]" placeholder="Authorization: Bearer xxx&#10;X-Provider: custom"></textarea>
-					<p class="mt-1.5 text-[12px] text-slate-500">每行一个“请求头名称: 值”，可覆盖内置请求头</p>
-				</div>
+						<div class="field-grid grid grid-cols-2 gap-4">
+							<div>
+								<label for="temperature" class="ui-label">温度</label>
+								<input id="temperature" class="ui-input" type="number" min="0" max="2" step="0.1" value="0.2">
+							</div>
+							<div>
+								<label for="contextWindow" class="ui-label">上下文长度</label>
+								<input id="contextWindow" class="ui-input" type="number" min="0" step="1024" placeholder="自动判断">
+							</div>
+						</div>
+
+						<div>
+							<label for="imageInputMode" class="ui-label">图片输入</label>
+							<select id="imageInputMode" class="ui-select">
+								<option value="auto">自动识别</option><option value="enabled">启用</option><option value="disabled">禁用</option>
+							</select>
+						</div>
+						<div>
+							<label for="extraPrompt" class="ui-label">系统提示词</label>
+							<textarea id="extraPrompt" class="ui-textarea min-h-[76px]"></textarea>
+						</div>
+						<div>
+							<label for="customHeaders" class="ui-label">自定义请求头</label>
+							<textarea id="customHeaders" class="ui-textarea min-h-[76px]" placeholder="X-Provider: custom"></textarea>
+						</div>
 					</div>
 				</section>
 
-				<section class="rounded-lg border border-slate-200 bg-slate-50 p-4">
-					<h2 class="mb-3 text-[12px] font-semibold uppercase tracking-wide text-slate-500">其他设置</h2>
-					<div>
-						<label for="sourceEditMode" class="ui-label">源码编辑模式</label>
-						<select id="sourceEditMode" class="ui-select">
-							<option value="real_page_first">真实页优先</option>
-							<option value="mirror_source_base">解包镜像基准（测试）</option>
-						</select>
-						<p class="mt-1.5 text-[12px] leading-5 text-slate-500">此设置独立于模型服务配置组。真实页优先会在编辑前读取 IDE 页面；解包镜像基准（测试）会按 read_file 的镜像源码匹配并写回页面。</p>
+				<section id="groupPanel" class="hidden px-5 py-4">
+					<div class="mb-4 flex min-h-8 items-center justify-between gap-3 border-b border-slate-200 pb-3">
+						<h2 id="groupTitle" class="min-w-0 truncate text-[15px] font-semibold text-slate-950">端点分组</h2>
+						<label class="flex shrink-0 cursor-pointer items-center gap-2 font-semibold text-slate-700">
+							<input id="groupEnabled" type="checkbox" class="h-4 w-4 accent-blue-700">启用
+						</label>
 					</div>
-
-					<div class="mt-3 border-t border-slate-200">
-						<div class="mt-3">
-							<div class="flex items-center justify-between gap-3">
-								<label for="tavilyApiKey" class="ui-label">Tavily API 密钥</label>
-								<a id="tavilyWebsiteLink" class="mb-1 shrink-0 text-[12px] font-medium text-blue-700 hover:text-slate-600" href="https://tavily.com">Tavily 官网 ↗</a>
-							</div>
-							<div class="flex gap-2">
-								<input id="tavilyApiKey" class="ui-input min-w-0 flex-1" type="password" placeholder="用于 search_web_tavily" autocomplete="off">
-								<button id="toggleTavilyKey" class="ui-btn w-16 px-0" type="button">显示</button>
-							</div>
-						</div>
+					<div class="flex gap-2">
+						<select id="groupEndpointSelect" class="ui-select min-w-0 flex-1"></select>
+						<button id="addGroupMemberBtn" class="ui-btn" type="button">添加</button>
 					</div>
+					<div id="groupMembers" class="mt-4 border-y border-slate-200"></div>
 				</section>
 			</div>
-		</section>
+		</div>
 	</main>
 
-	<footer class="flex flex-col-reverse gap-2 border-t border-slate-200 bg-white px-5 py-3 sm:flex-row sm:items-center sm:justify-end">
+	<footer class="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-slate-200 bg-white px-5 py-3">
 		<button id="testBtn" class="ui-btn ui-btn-accent" type="button">测试连通性</button>
 		<button id="cancelBtn" class="ui-btn" type="button">取消</button>
 		<button id="saveBtn" class="ui-btn ui-btn-primary" type="button">保存并继续</button>
 	</footer>
 </div>
+<script>/*__AUTOLINKER_PRELINE_JS__*/</script>
 <script>
-/*__AUTOLINKER_PRELINE_JS__*/
-</script>
-<script>
-const initialSettings = {
-	activeProfileId: "default",
-	sourceEditMode: "real_page_first",
-	tavilyApiKey: "",
-	profiles: [{
-		id: "default",
-		name: "\u9ED8\u8BA4",
-		protocolType: "openai",
-		thinkingLevel: "off",
-		imageInputMode: "auto",
-		baseUrl: "",
-		apiKey: "",
-		model: "",
-		extraPrompt: "",
-		customHeaders: "",
-		contextWindow: 0
-	}]
-};
-
-var _profiles = [];
-var _activeProfileId = "default";
-
-function $(id) {
-	return document.getElementById(id);
-}
-
-function post(payload) {
-	if (window.chrome && window.chrome.webview) {
-		window.chrome.webview.postMessage(JSON.stringify(payload));
-	}
-}
-
-function setField(id, value) {
-	const el = $(id);
-	if (el) {
-		el.value = value || "";
-	}
-}
-
-function trimText(value) {
-	return (value || "").trim();
-}
-
-function endsWithInsensitive(text, suffix) {
-	return text.toLowerCase().slice(-suffix.length) === suffix.toLowerCase();
-}
-
-function endsWithOpenAIVersionSegment(text) {
-	var slash = text.lastIndexOf("/");
-	if (slash < 0 || slash + 2 >= text.length) {
-		return false;
-	}
-	var marker = text.charAt(slash + 1);
-	if (marker !== "v" && marker !== "V") {
-		return false;
-	}
-	for (var i = slash + 2; i < text.length; i++) {
-		var ch = text.charAt(i);
-		if (!((ch >= "0" && ch <= "9") || ch === ".")) {
-			return false;
-		}
-	}
-	return true;
-}
-
-function replaceSuffixIfPresent(text, suffix, replacement) {
-	if (!suffix) {
-		return text;
-	}
-	if (!endsWithInsensitive(text, suffix)) {
-		return text;
-	}
-	return text.slice(0, text.length - suffix.length) + replacement;
-}
-
-function trimTrailingSlashes(url) {
-	while (url && url.charAt(url.length - 1) === "/") {
-		url = url.slice(0, -1);
-	}
-	return url;
-}
-
-function buildOpenAIChatEndpoint(baseUrl) {
-	var url = trimTrailingSlashes(trimText(baseUrl));
-	url = replaceSuffixIfPresent(url, "/responses", "/chat/completions");
-	if (endsWithInsensitive(url, "/chat/completions")) {
-		return url;
-	}
-	if (endsWithOpenAIVersionSegment(url)) {
-		return url + "/chat/completions";
-	}
-	return url + "/v1/chat/completions";
-}
-
-function buildOpenAIResponsesEndpoint(baseUrl) {
-	var url = trimTrailingSlashes(trimText(baseUrl));
-	url = replaceSuffixIfPresent(url, "/chat/completions", "/responses");
-	if (endsWithInsensitive(url, "/responses")) {
-		return url;
-	}
-	if (endsWithOpenAIVersionSegment(url)) {
-		return url + "/responses";
-	}
-	return url + "/v1/responses";
-}
-
-function buildClaudeEndpoint(baseUrl) {
-	var url = trimTrailingSlashes(trimText(baseUrl));
-	if (endsWithInsensitive(url, "/v1/messages")) {
-		return url;
-	}
-	if (endsWithInsensitive(url, "/v1")) {
-		return url + "/messages";
-	}
-	return url + "/v1/messages";
-}
-
-function buildGeminiEndpoint(baseUrl, model) {
-	var url = trimTrailingSlashes(trimText(baseUrl));
-	var suffix = ":generateContent";
-	var otherSuffix = ":streamGenerateContent";
-	var modelText = trimText(model) || "{model}";
-	url = replaceSuffixIfPresent(url, otherSuffix, suffix);
-	if (endsWithInsensitive(url, suffix)) {
-		return url + "?key=<api-key>";
-	}
-	if (url.indexOf("/models/") >= 0) {
-		return url + suffix + "?key=<api-key>";
-	}
-	if (endsWithInsensitive(url, "/v1beta") || endsWithInsensitive(url, "/v1")) {
-		return url + "/models/" + encodeURIComponent(modelText) + suffix + "?key=<api-key>";
-	}
-	return url + "/v1beta/models/" + encodeURIComponent(modelText) + suffix + "?key=<api-key>";
-}
-
-function buildRequestTargetUrl(protocolType, baseUrl, model) {
-	var url = trimText(baseUrl);
-	if (!url) {
-		return "-";
-	}
-	switch (protocolType) {
-	case "claude":
-		return buildClaudeEndpoint(url);
-	case "gemini":
-		return buildGeminiEndpoint(url, model);
-	case "openai_responses":
-		return buildOpenAIResponsesEndpoint(url);
-	case "openai":
-	default:
-		return buildOpenAIChatEndpoint(url);
-	}
-}
-
-function updateEndpointPreview() {
-	var preview = $("endpointPreview");
-	if (!preview) {
-		return;
-	}
-	var codeEl = preview.querySelector(".ui-code");
-	if (!codeEl) {
-		return;
-	}
-	codeEl.textContent = buildRequestTargetUrl(
-		$("protocol") ? $("protocol").value : "openai",
-		$("baseUrl") ? $("baseUrl").value : "",
-		$("model") ? $("model").value : "");
-}
-
-// 与 C++ 的 AIService::ResolveContextWindowTokens 保持一致：
-// 先处理 GPT-5 特例，再按「版本递增族」carry-forward（未登记的更高小版本继承上一代），
-// 再按子串表，最后回落 200000。
-// 仅用于在「上下文长度」留空时给出占位提示，真正生效的判定仍以 C++ 为准。
-// 版本族：prefix 含主版本号，versions 按 minor 升序。
-var CONTEXT_WINDOW_FAMILIES = [
-	["opus-4",   [[0, 200000], [1, 200000], [6, 1000000], [7, 1000000], [8, 1000000]]],
-	["sonnet-4", [[5, 200000], [6, 1000000]]],
-	["haiku-4",  [[5, 200000]]]
-];
-
-// 不规则命名或非递增族的子串表。更具体的在前。
-var CONTEXT_WINDOW_TABLE = [
-	// xAI 官方 grok-4.5 与两个正式别名均为 500K；后者分别由子串和显式条目命中。
-	["grok-4.5", 500000],
-	["grok-build-latest", 500000],
-	["gpt-4.1", 1047576],
-	["gpt-4o", 128000],
-	["gpt-4-turbo", 128000],
-	["o4", 200000],
-	["o3", 200000],
-	["o1", 200000],
-	["gpt-4", 8192],
-	["gpt-3.5", 16385],
-	["fable-5", 1000000],
-	["mythos-5", 1000000],
-	["sonnet-5", 1000000],
-	["claude", 200000],
-	["gemini-1.5-pro", 2097152],
-	["gemini-1.5", 1048576],
-	["gemini-2.5", 1048576],
-	["gemini-2.0", 1048576],
-	["gemini-3", 1048576],
-	["gemini", 1048576],
-	["deepseek-v4", 1000000],
-	["deepseek-chat", 1000000],
-	["deepseek-reasoner", 1000000],
-	["deepseek-v3.2", 128000],
-	["deepseek-r1", 128000],
-	["deepseek", 128000],
-	["glm-5.2", 1000000],
-	["glm-5.1", 200000],
-	["glm-5-turbo", 200000],
-	["glm-5", 200000],
-	["glm-4.7", 200000],
-	["glm-4.6", 200000],
-	["glm-4.5", 128000],
-	["qwen3.7", 1000000],
-	["qwen3.6", 1000000],
-	["qwen3-coder-plus", 1000000],
-	["qwen3-coder-flash", 1000000],
-	["qwen3-coder-next", 262144],
-	["qwen3-coder", 262144],
-	["qwen3.5", 262144],
-	["qwen-plus", 1000000],
-	["qwen-max", 262144],
-	["kimi-k3", 1000000],
-	["kimi-k2", 262144],
-	["kimi", 262144],
-	["moonshot-v1-128k", 131072],
-	["moonshot-v1-32k", 32768],
-	["moonshot-v1-8k", 8192],
-	["doubao-seed-2.0", 262144],
-	["doubao-seed-1.8", 262144],
-	["minimax-m3", 1000000],
-	["minimax-m2", 196608],
-	["minimax", 196608]
-];
-
-function parseFamilyMinorVersion(model, prefix) {
-	var pos = model.indexOf(prefix);
-	if (pos === -1) {
-		return null;
-	}
-	var i = pos + prefix.length;
-	if (i < model.length && (model[i] === "." || model[i] === "-")) {
-		i++;
-	}
-	var minor = 0;
-	var hasDigit = false;
-	while (i < model.length && model[i] >= "0" && model[i] <= "9") {
-		minor = minor * 10 + (model.charCodeAt(i) - 48);
-		hasDigit = true;
-		i++;
-	}
-	return hasDigit ? minor : 0;
-}
-
-function resolveGpt5Window(model) {
-	var minor = parseFamilyMinorVersion(model, "gpt-5");
-	if (minor === null) {
-		return null;
-	}
-	var compactVariant =
-		model.indexOf("-mini") !== -1 ||
-		model.indexOf("-nano") !== -1 ||
-		model.indexOf("-codex") !== -1;
-	if (compactVariant) {
-		return 400000;
-	}
-	var proVariant = model.indexOf("-pro") !== -1;
-	if (minor >= 6) {
-		return 1050000;
-	}
-	if (minor >= 5) {
-		return proVariant ? 1050000 : 1000000;
-	}
-	return minor >= 4 ? 1050000 : 400000;
-}
-
-function resolveContextWindowForModel(model) {
-	var m = (model || "").toLowerCase();
-	var gpt5Window = resolveGpt5Window(m);
-	if (gpt5Window !== null) {
-		return gpt5Window;
-	}
-	for (var f = 0; f < CONTEXT_WINDOW_FAMILIES.length; f++) {
-		var prefix = CONTEXT_WINDOW_FAMILIES[f][0];
-		var versions = CONTEXT_WINDOW_FAMILIES[f][1];
-		var minor = parseFamilyMinorVersion(m, prefix);
-		if (minor === null) {
-			continue;
-		}
-		var best = -1;
-		for (var k = 0; k < versions.length; k++) {
-			if (versions[k][0] <= minor) {
-				best = versions[k][1];
-			}
-		}
-		if (best >= 0) {
-			return best;
-		}
-	}
-	for (var i = 0; i < CONTEXT_WINDOW_TABLE.length; i++) {
-		if (m.indexOf(CONTEXT_WINDOW_TABLE[i][0]) !== -1) {
-			return CONTEXT_WINDOW_TABLE[i][1];
-		}
-	}
-	return 200000;
-}
-
-function updateContextWindowPlaceholder() {
-	var input = $("contextWindow");
-	if (!input) {
-		return;
-	}
-	var model = $("model") ? $("model").value : "";
-	var resolved = resolveContextWindowForModel(model);
-	input.placeholder = "留空则自动判断（当前模型约 " + resolved.toLocaleString("en-US") + "）";
-}
-
-function getDefaultProfileBaseUrl(protocolType) {
-	switch (protocolType) {
-	case "claude":
-		return "https://api.anthropic.com";
-	case "gemini":
-		return "https://generativelanguage.googleapis.com";
-	case "openai_responses":
-		return "https://api.openai.com/v1";
-	case "openai":
-	default:
-		return "https://api.openai.com/v1";
-	}
-}
-
-function cloneProfile(profile) {
-	return {
-		id: profile.id,
-		name: profile.name,
-		protocolType: profile.protocolType || "openai",
-		thinkingLevel: profile.thinkingLevel || "off",
-		imageInputMode: profile.imageInputMode || "auto",
-		baseUrl: profile.baseUrl || "",
-		apiKey: profile.apiKey || "",
-		model: profile.model || "",
-		extraPrompt: profile.extraPrompt || "",
-		customHeaders: profile.customHeaders || "",
-		contextWindow: profile.contextWindow || 0
-	};
-}
-
-function findProfile(id) {
-	for (var i = 0; i < _profiles.length; ++i) {
-		if (_profiles[i].id === id) {
-			return _profiles[i];
-		}
-	}
-	return null;
-}
-
-function saveCurrentFormToActiveProfile() {
-	var current = findProfile(_activeProfileId);
-	if (!current) {
-		return;
-	}
-	current.protocolType = $("protocol").value || "openai";
-	current.thinkingLevel = $("thinkingLevel").value || "off";
-	current.imageInputMode = $("imageInputMode").value || "auto";
-	current.baseUrl = $("baseUrl").value || "";
-	current.apiKey = $("apiKey").value || "";
-	current.model = $("model").value || "";
-	current.extraPrompt = $("extraPrompt").value || "";
-	current.customHeaders = $("customHeaders").value || "";
-	current.contextWindow = parseInt($("contextWindow").value, 10) || 0;
-}
-
-function renderProfileSelect() {
-	var select = $("profileSelect");
-	if (!select) {
-		return;
-	}
-	select.innerHTML = "";
-	_profiles.forEach(function(profile) {
-		var opt = document.createElement("option");
-		opt.value = profile.id;
-		opt.textContent = profile.name;
-		select.appendChild(opt);
-	});
-	select.value = _activeProfileId;
-	if (!select.value && _profiles.length) {
-		_activeProfileId = _profiles[0].id;
-		select.value = _activeProfileId;
-	}
-	$("deleteProfileBtn").disabled = _profiles.length <= 1;
-	$("renameProfileBtn").disabled = !_profiles.length;
-	if ($("profileCountBadge")) {
-		$("profileCountBadge").textContent = _profiles.length + " 组配置";
-	}
-}
-
-function applyProfileToForm(profile) {
-	if (!profile) {
-		return;
-	}
-	setField("protocol", profile.protocolType);
-	setField("thinkingLevel", profile.thinkingLevel);
-	setField("imageInputMode", profile.imageInputMode);
-	setField("baseUrl", profile.baseUrl);
-	setField("apiKey", profile.apiKey);
-	setField("model", profile.model);
-	setField("extraPrompt", profile.extraPrompt);
-	setField("customHeaders", profile.customHeaders);
-	if ($("contextWindow")) {
-		$("contextWindow").value = profile.contextWindow ? String(profile.contextWindow) : "";
-	}
-	updateModelMenu(getPresetModelsForBaseUrl(profile.baseUrl));
-	updateEndpointPreview();
-	updateContextWindowPlaceholder();
-}
-
-function buildPayload() {
-	saveCurrentFormToActiveProfile();
-	return {
-		activeProfileId: _activeProfileId,
-		sourceEditMode: $("sourceEditMode").value || "real_page_first",
-		tavilyApiKey: $("tavilyApiKey").value || "",
-		profiles: _profiles.map(function(profile) { return cloneProfile(profile); })
-	};
-}
-
-function toggleSecret(id, btnId) {
-	const input = $(id);
-	const btn = $(btnId);
-	if (!input || !btn) {
-		return;
-	}
-	const next = input.type === "password" ? "text" : "password";
-	input.type = next;
-	btn.textContent = next === "password" ? "\u663E\u793A" : "\u9690\u85CF";
-}
-
-function collect() {
-	return buildPayload();
-}
-
-function validateCustomHeaders(headerText) {
-	var lines = (headerText || "").split(/\r?\n/);
-	for (var i = 0; i < lines.length; ++i) {
-		var line = lines[i].trim();
-		if (!line) {
-			continue;
-		}
-		var colon = line.indexOf(":");
-		if (colon <= 0) {
-			alert("自定义请求头第 " + (i + 1) + " 行格式无效，需要“请求头名称: 值”。");
-			return false;
-		}
-	}
-	return true;
-}
-
-function validate(data) {
-	if (!data || !data.profiles || !data.profiles.length) {
-		alert("\u81F3\u5C11\u9700\u8981\u4E00\u4E2A\u914D\u7F6E\u7EC4\u3002");
-		return false;
-	}
-	var current = null;
-	data.profiles.forEach(function(profile) {
-		if (profile.id === data.activeProfileId) {
-			current = profile;
-		}
-	});
-	if (!current) {
-		alert("\u5F53\u524D\u914D\u7F6E\u7EC4\u65E0\u6548\u3002");
-		return false;
-	}
-	if (!current.baseUrl.trim() || !current.apiKey.trim() || !current.model.trim()) {
-		alert("接口地址、API 密钥和模型不能为空。");
-		return false;
-	}
-	if (!validateCustomHeaders(current.customHeaders || "")) {
-		return false;
-	}
-	return true;
-}
-
-function applyInitial(settings) {
-	const next = settings || initialSettings;
-	_profiles = (next.profiles || initialSettings.profiles).map(cloneProfile);
-	_activeProfileId = next.activeProfileId || (_profiles.length ? _profiles[0].id : "default");
-	if (!_profiles.length) {
-		_profiles = initialSettings.profiles.map(cloneProfile);
-		_activeProfileId = _profiles[0].id;
-	}
-	setField("sourceEditMode", next.sourceEditMode || "real_page_first");
-	setField("tavilyApiKey", next.tavilyApiKey || "");
-	renderProfileSelect();
-	applyProfileToForm(findProfile(_activeProfileId));
-}
-
-function setTestBusy(isBusy) {
-	var btn = $("testBtn");
-	if (!btn) {
-		return;
-	}
-	btn.disabled = !!isBusy;
-	btn.textContent = isBusy ? "测试中..." : "测试连通性";
-}
-
-window.autolinkerApplySettings = function(settings) {
-	applyInitial(settings);
-};
-
-window.autolinkerSetTestBusy = function(isBusy) {
-	setTestBusy(!!isBusy);
-};
-
-window.autolinkerShowTestResult = function(payload) {
-	if (!payload) {
-		return;
-	}
-	alert(payload.message || (payload.ok ? "连通性测试成功。" : "连通性测试失败。"));
-};
-
-window.autolinkerFocusPrimary = function() {
-	if ($("baseUrl")) {
-		$("baseUrl").focus();
-	}
-};
-
-$("toggleApiKey").addEventListener("click", function() {
-	toggleSecret("apiKey", "toggleApiKey");
-});
-
-$("toggleTavilyKey").addEventListener("click", function() {
-	toggleSecret("tavilyApiKey", "toggleTavilyKey");
-});
-
-$("tavilyWebsiteLink").addEventListener("click", function(event) {
-	event.preventDefault();
-	post({ action: "open_url", url: this.href });
-});
-
-$("protocol").addEventListener("change", updateEndpointPreview);
-$("baseUrl").addEventListener("input", updateEndpointPreview);
-$("model").addEventListener("input", function() {
-	updateEndpointPreview();
-	updateContextWindowPlaceholder();
-});
-
-$("profileSelect").addEventListener("change", function() {
-	saveCurrentFormToActiveProfile();
-	_activeProfileId = $("profileSelect").value || _activeProfileId;
-	applyProfileToForm(findProfile(_activeProfileId));
-});
-
-$("addProfileBtn").addEventListener("click", function() {
-	var name = prompt("\u8BF7\u8F93\u5165\u65B0\u914D\u7F6E\u7EC4\u540D\u79F0", "\u65B0\u914D\u7F6E");
-	if (!name) {
-		return;
-	}
-	saveCurrentFormToActiveProfile();
-	var id = "profile_" + Date.now();
-	_profiles.push({
-		id: id,
-		name: name,
-		protocolType: "openai",
-		thinkingLevel: "off",
-		imageInputMode: "auto",
-		baseUrl: "",
-		apiKey: "",
-		model: "",
-		extraPrompt: "",
-		customHeaders: "",
-		contextWindow: 0
-	});
-	_activeProfileId = id;
-	renderProfileSelect();
-	applyProfileToForm(findProfile(_activeProfileId));
-});
-
-$("renameProfileBtn").addEventListener("click", function() {
-	var current = findProfile(_activeProfileId);
-	if (!current) {
-		return;
-	}
-	var name = prompt("\u8BF7\u8F93\u5165\u65B0\u7684\u914D\u7F6E\u7EC4\u540D\u79F0", current.name || "");
-	if (!name) {
-		return;
-	}
-	current.name = name;
-	renderProfileSelect();
-});
-
-$("deleteProfileBtn").addEventListener("click", function() {
-	if (_profiles.length <= 1) {
-		alert("\u81F3\u5C11\u4FDD\u7559\u4E00\u4E2A\u914D\u7F6E\u7EC4\u3002");
-		return;
-	}
-	var current = findProfile(_activeProfileId);
-	if (!current) {
-		return;
-	}
-	if (!confirm("\u786E\u5B9A\u5220\u9664\u914D\u7F6E\u7EC4\uFF1A" + current.name + " \u5417\uFF1F")) {
-		return;
-	}
-	_profiles = _profiles.filter(function(profile) { return profile.id !== _activeProfileId; });
-	_activeProfileId = _profiles[0].id;
-	renderProfileSelect();
-	applyProfileToForm(findProfile(_activeProfileId));
-});
-
+var _endpoints = [];
+var _groups = [];
+var _activeTarget = { type:"endpoint", id:"default" };
+var _selectionType = "endpoint";
+var _selectedEndpointId = "default";
+var _selectedGroupId = "";
+var _settingsLoaded = false;
+var _modelOptions = [];
 var _modelMenuOpen = false;
 var _presetMenuOpen = false;
-var _modelOptions = [];
 var _fetchingModels = false;
 
+function $(id) { return document.getElementById(id); }
+function post(payload) { if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage(JSON.stringify(payload)); }
+function trimText(value) { return String(value || "").trim(); }
+function clampInt(value, min, max, fallback) { var n=parseInt(value,10); return isNaN(n)?fallback:Math.max(min,Math.min(max,n)); }
+function numberValue(id, fallback) { var n=parseFloat($(id).value); return isNaN(n)?fallback:n; }
+function uniqueId(prefix) { return prefix + "_" + Date.now() + "_" + Math.floor(Math.random()*10000); }
+function findEndpoint(id) { for(var i=0;i<_endpoints.length;i++) if(_endpoints[i].id===id) return _endpoints[i]; return null; }
+function findGroup(id) { for(var i=0;i<_groups.length;i++) if(_groups[i].id===id) return _groups[i]; return null; }
+function endpointName(id) { var endpoint=findEndpoint(id); return endpoint?endpoint.name:id; }
+function cloneEndpoint(item) {
+	return { id:item.id, name:item.name, protocolType:item.protocolType||"openai", thinkingLevel:item.thinkingLevel||"off", imageInputMode:item.imageInputMode||"auto", baseUrl:item.baseUrl||"", apiKey:item.apiKey||"", model:item.model||"", extraPrompt:item.extraPrompt||"", customHeaders:item.customHeaders||"", timeoutMs:clampInt(item.timeoutMs,1000,2147483647,120000), temperature:typeof item.temperature==="number"?item.temperature:0.2, contextWindow:clampInt(item.contextWindow,0,2147483647,0), retryCount:clampInt(item.retryCount,0,20,5) };
+}
+function defaultEndpoint() { return cloneEndpoint({ id:"default", name:"默认" }); }
+function cloneGroup(item) { return { id:item.id, name:item.name, endpointIds:(item.endpointIds||[]).slice() }; }
+
 var PRESET_SITES = [
-	{ id: "right", label: "Right", protocolType: "openai", baseUrl: "https://www.rightapi.ai/codex", website: "https://www.rightapi.ai/register?aff=3dc87885", models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"] },
-	{ id: "deepseek", label: "Deepseek", protocolType: "openai", defaultThinkingLevel: "high", baseUrl: "https://api.deepseek.com", website: "https://platform.deepseek.com", models: ["deepseek-v4-flash", "deepseek-v4-pro"] },
-	{ id: "zhipu", label: "\u667A\u8C31", protocolType: "openai", baseUrl: "https://open.bigmodel.cn/api/paas/v4", website: "https://open.bigmodel.cn", models: ["glm-5.2", "glm-5-turbo", "glm-4.7", "glm-4.5-air", "glm-4.5v", "glm-4v-plus-0111"] },
-	{ id: "qwen", label: "\u5343\u95EE", protocolType: "openai", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", website: "https://dashscope.console.aliyun.com", models: ["qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash", "qwen3-coder-next", "qwen3-coder-plus", "qwen3-vl-plus", "qwen3-vl-flash", "qwen-vl-max-latest", "qwen-vl-plus-latest"] },
-	{ id: "kimi", label: "Kimi", protocolType: "openai", defaultThinkingLevel: "max", baseUrl: "https://api.moonshot.cn/v1", website: "https://platform.moonshot.cn", models: ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5"] },
-	{ id: "doubao", label: "\u8C46\u5305", protocolType: "openai", baseUrl: "https://ark.cn-beijing.volces.com/api/v3", website: "https://console.volcengine.com/ark", models: ["doubao-seed-2.0-pro", "doubao-seed-2.0-code", "doubao-seed-2.0-lite", "doubao-seed-1.8"] },
-	{ id: "minimax", label: "MiniMax", protocolType: "openai", baseUrl: "https://api.minimax.chat/v1", website: "https://platform.minimax.chat", models: ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5"] },
-	{ id: "aihubmix", label: "aihubmix", protocolType: "openai", baseUrl: "https://aihubmix.com/v1", website: "https://aihubmix.com/?aff=eeX5", models: ["gpt-5.5", "claude-opus-4-8", "claude-sonnet-4-6", "deepseek-v4-pro", "deepseek-v4-flash", "gemini-3.1-pro-preview"] },
-	{ id: "siliconflow", label: "\u7845\u57FA\u6D41\u52A8", protocolType: "openai", baseUrl: "https://api.siliconflow.cn/v1", website: "https://cloud.siliconflow.cn/i/Oezhkra7", models: ["deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro", "Pro/zai-org/GLM-5", "zai-org/GLM-5.1", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen2.5-VL-72B-Instruct", "Pro/Qwen/Qwen2.5-VL-7B-Instruct"] },
-	{ id: "xai", label: "xAI", protocolType: "openai", defaultThinkingLevel: "high", baseUrl: "https://api.x.ai/v1", website: "https://console.x.ai", models: ["grok-4.5", "grok-4.5-latest", "grok-build-latest", "grok-2-vision-latest", "grok-2-vision-1212"] },
-	{ id: "openai", label: "OpenAI", protocolType: "openai_responses", baseUrl: "https://api.openai.com/v1", website: "https://platform.openai.com", models: ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"] },
-	{ id: "claude", label: "Claude", protocolType: "claude", baseUrl: "https://api.anthropic.com", website: "https://console.anthropic.com", models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"] },
-	{ id: "gemini", label: "Gemini", protocolType: "gemini", baseUrl: "https://generativelanguage.googleapis.com", website: "https://aistudio.google.com", models: ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"] }
+	{label:"Right",protocolType:"openai",baseUrl:"https://www.rightapi.ai/codex",models:["gpt-5.5","gpt-5.4","gpt-5.4-mini"]},
+	{label:"DeepSeek",protocolType:"openai",thinkingLevel:"high",baseUrl:"https://api.deepseek.com",models:["deepseek-v4-flash","deepseek-v4-pro"]},
+	{label:"智谱",protocolType:"openai",baseUrl:"https://open.bigmodel.cn/api/paas/v4",models:["glm-5.2","glm-5-turbo","glm-4.7","glm-4.5v"]},
+	{label:"千问",protocolType:"openai",baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1",models:["qwen3.7-plus","qwen3.7-max","qwen3-coder-next","qwen3-vl-plus"]},
+	{label:"Kimi",protocolType:"openai",thinkingLevel:"max",baseUrl:"https://api.moonshot.cn/v1",models:["kimi-k3","kimi-k2.7-code","kimi-k2.6","kimi-k2.5"]},
+	{label:"豆包",protocolType:"openai",baseUrl:"https://ark.cn-beijing.volces.com/api/v3",models:["doubao-seed-2.0-pro","doubao-seed-2.0-code","doubao-seed-2.0-lite"]},
+	{label:"MiniMax",protocolType:"openai",baseUrl:"https://api.minimax.chat/v1",models:["MiniMax-M3","MiniMax-M2.7","MiniMax-M2.5"]},
+	{label:"OpenAI",protocolType:"openai_responses",baseUrl:"https://api.openai.com/v1",models:["gpt-5.6","gpt-5.6-sol","gpt-5.6-terra","gpt-5.5","gpt-5.4","gpt-4.1","gpt-4o"]},
+	{label:"Claude",protocolType:"claude",baseUrl:"https://api.anthropic.com",models:["claude-opus-4-8","claude-sonnet-4-6","claude-haiku-4-5"]},
+	{label:"Gemini",protocolType:"gemini",baseUrl:"https://generativelanguage.googleapis.com",models:["gemini-3.1-pro-preview","gemini-3.5-flash","gemini-2.5-pro","gemini-2.5-flash"]}
 ];
 
-function normalizeBaseUrlForMatch(baseUrl) {
-	return trimTrailingSlashes(trimText(baseUrl)).toLowerCase();
+function endsWithInsensitive(text,suffix){return text.toLowerCase().slice(-suffix.length)===suffix.toLowerCase();}
+function trimSlashes(text){while(text.length&&text.charAt(text.length-1)==="/")text=text.slice(0,-1);return text;}
+function endsWithVersion(text){return /\/v[0-9.]+$/i.test(text);}
+function buildEndpointPreview(baseUrl,protocol){
+	var endpoint=trimSlashes(trimText(baseUrl)); if(!endpoint)return "-";
+	if(protocol==="claude"){if(endsWithInsensitive(endpoint,"/v1/messages"))return endpoint;return endpoint+(endsWithInsensitive(endpoint,"/v1")?"/messages":"/v1/messages");}
+	if(protocol==="gemini"){return endpoint+"/v1beta/models/{model}:generateContent";}
+	if(protocol==="openai_responses"){if(endsWithInsensitive(endpoint,"/responses"))return endpoint;return endpoint+(endsWithVersion(endpoint)?"/responses":"/v1/responses");}
+	if(endsWithInsensitive(endpoint,"/chat/completions"))return endpoint;
+	return endpoint+(endsWithVersion(endpoint)?"/chat/completions":"/v1/chat/completions");
+}
+function updateEndpointPreview(){var span=$("endpointPreview").querySelector("span");span.textContent=buildEndpointPreview($("baseUrl").value,$("protocol").value);}
+
+function saveEndpointForm(){
+	if(!_settingsLoaded)return;var item=findEndpoint(_selectedEndpointId); if(!item||_selectionType!=="endpoint")return;
+	item.protocolType=$("protocol").value||"openai"; item.thinkingLevel=$("thinkingLevel").value||"off"; item.imageInputMode=$("imageInputMode").value||"auto";
+	item.baseUrl=$("baseUrl").value||""; item.apiKey=$("apiKey").value||""; item.model=$("model").value||""; item.extraPrompt=$("extraPrompt").value||""; item.customHeaders=$("customHeaders").value||"";
+	item.timeoutMs=clampInt($("timeoutMs").value,1000,2147483647,120000); item.temperature=numberValue("temperature",0.2); item.contextWindow=clampInt($("contextWindow").value,0,2147483647,0); item.retryCount=clampInt($("retryCount").value,0,20,5);
+}
+function applyEndpointForm(item){
+	if(!item)return; $("endpointTitle").textContent=item.name; $("protocol").value=item.protocolType; $("thinkingLevel").value=item.thinkingLevel; $("imageInputMode").value=item.imageInputMode;
+	$("baseUrl").value=item.baseUrl; $("apiKey").value=item.apiKey; $("model").value=item.model; $("extraPrompt").value=item.extraPrompt; $("customHeaders").value=item.customHeaders;
+	$("timeoutMs").value=String(item.timeoutMs); $("temperature").value=String(item.temperature); $("contextWindow").value=item.contextWindow?String(item.contextWindow):""; $("retryCount").value=String(item.retryCount);
+	$("endpointEnabled").checked=_activeTarget.type==="endpoint"&&_activeTarget.id===item.id; updateEndpointPreview(); updateModelMenu(presetModels(item.baseUrl));
 }
 
-function getPresetSiteForBaseUrl(baseUrl) {
-	var normalized = normalizeBaseUrlForMatch(baseUrl);
-	if (!normalized) {
-		return null;
-	}
-	for (var i = 0; i < PRESET_SITES.length; ++i) {
-		if (normalizeBaseUrlForMatch(PRESET_SITES[i].baseUrl) === normalized) {
-			return PRESET_SITES[i];
-		}
-	}
-	return null;
+function selectItem(type,id){
+	if(!_settingsLoaded)return;saveEndpointForm();_selectionType=type;if(type==="endpoint")_selectedEndpointId=id;else _selectedGroupId=id;renderList();renderSelected();
+}
+function renderListSection(listId,items,type,selectedId){
+	var list=$(listId);list.innerHTML="";
+	if(!items.length){var empty=document.createElement("div");empty.className="px-3 py-2 text-[12px] text-slate-400";empty.textContent="暂无";list.appendChild(empty);return;}
+	items.forEach(function(item){var button=document.createElement("button");button.type="button";button.className="config-list-item"+(_selectionType===type&&item.id===selectedId?" active":"");
+		var active=_activeTarget.type===type&&_activeTarget.id===item.id;if(active){var dot=document.createElement("span");dot.className="active-dot";button.appendChild(dot);}var name=document.createElement("span");name.className="config-list-name";name.textContent=item.name;button.appendChild(name);button.onclick=function(){selectItem(type,item.id);};list.appendChild(button);});
+}
+function renderList(){
+	renderListSection("endpointList",_endpoints,"endpoint",_selectedEndpointId);renderListSection("groupList",_groups,"group",_selectedGroupId);
+	$("endpointCountBadge").textContent=_endpoints.length+" 个端点";$("groupCountBadge").textContent=_groups.length+" 个分组";
+	var selected=_selectionType==="endpoint"?findEndpoint(_selectedEndpointId):findGroup(_selectedGroupId);$("renameBtn").disabled=!selected;$("deleteBtn").disabled=!selected||(_selectionType==="endpoint"&&_endpoints.length<=1);
+}
+function renderSelected(){
+	$("endpointPanel").classList.toggle("hidden",_selectionType!=="endpoint");$("groupPanel").classList.toggle("hidden",_selectionType!=="group");
+	if(_selectionType==="endpoint")applyEndpointForm(findEndpoint(_selectedEndpointId));else renderGroup();
 }
 
-function getPresetModelsForBaseUrl(baseUrl) {
-	var site = getPresetSiteForBaseUrl(baseUrl);
-	return site ? site.models : [];
+function renderGroup(){
+	var group=findGroup(_selectedGroupId); if(!group){$("groupTitle").textContent="端点分组";$("groupEnabled").checked=false;$("groupEnabled").disabled=true;$("groupEndpointSelect").innerHTML="";$("addGroupMemberBtn").disabled=true;$("groupMembers").innerHTML="";return;} $("groupEnabled").disabled=false;$("groupTitle").textContent=group.name; $("groupEnabled").checked=_activeTarget.type==="group"&&_activeTarget.id===group.id;
+	var select=$("groupEndpointSelect");select.innerHTML="";_endpoints.forEach(function(endpoint){if(group.endpointIds.indexOf(endpoint.id)>=0)return;var option=document.createElement("option");option.value=endpoint.id;option.textContent=endpoint.name;select.appendChild(option);});
+	$("addGroupMemberBtn").disabled=!select.options.length;
+	var members=$("groupMembers");members.innerHTML="";if(!group.endpointIds.length){var empty=document.createElement("div");empty.className="py-5 text-center text-slate-500";empty.textContent="暂无成员";members.appendChild(empty);return;}
+	group.endpointIds.forEach(function(id,index){var row=document.createElement("div");row.className="member-row";var name=document.createElement("div");name.className="min-w-0 truncate font-medium text-slate-800";name.textContent=endpointName(id);row.appendChild(name);
+		var actions=document.createElement("div");actions.className="flex gap-1";[["↑","上移",-1],["↓","下移",1],["×","移除",0]].forEach(function(def){var button=document.createElement("button");button.type="button";button.className="ui-btn ui-icon-btn h-8 w-8";button.textContent=def[0];button.title=def[1];button.setAttribute("aria-label",def[1]);button.disabled=(def[2]===-1&&index===0)||(def[2]===1&&index===group.endpointIds.length-1);button.onclick=function(){if(def[2]===0){if(_activeTarget.type==="group"&&_activeTarget.id===group.id&&group.endpointIds.length===1){alert("已启用的端点分组必须保留至少一个成员。");return;}group.endpointIds.splice(index,1);}else{var other=index+def[2],tmp=group.endpointIds[index];group.endpointIds[index]=group.endpointIds[other];group.endpointIds[other]=tmp;}renderGroup();};actions.appendChild(button);});row.appendChild(actions);members.appendChild(row);});
 }
 
-function dedupeModels(models) {
-	var result = [];
-	var seen = {};
-	(models || []).forEach(function(name) {
-		var model = trimText(name);
-		if (!model || seen[model]) {
-			return;
-		}
-		seen[model] = true;
-		result.push(model);
-	});
-	return result;
+function setActiveTarget(type,id,checkbox){if(!checkbox.checked){checkbox.checked=true;alert("必须保留一个启用的 API 端点或端点分组。");return;}if(type==="group"&&findGroup(id).endpointIds.length===0){checkbox.checked=false;alert("端点分组至少需要一个成员后才能启用。");return;}_activeTarget={type:type,id:id};renderList();renderSelected();}
+function newEndpoint(){if(!_settingsLoaded)return;var name=prompt("API 端点名称","新端点");if(!trimText(name))return;saveEndpointForm();var item=cloneEndpoint({id:uniqueId("endpoint"),name:trimText(name)});_endpoints.push(item);_selectionType="endpoint";_selectedEndpointId=item.id;renderList();renderSelected();}
+function newGroup(){if(!_settingsLoaded)return;var name=prompt("端点分组名称","新分组");if(!trimText(name))return;saveEndpointForm();var group={id:uniqueId("group"),name:trimText(name),endpointIds:[]};_groups.push(group);_selectionType="group";_selectedGroupId=group.id;renderList();renderSelected();}
+function renameItem(){var item=_selectionType==="endpoint"?findEndpoint(_selectedEndpointId):findGroup(_selectedGroupId);if(!item)return;var name=prompt("新名称",item.name);if(!trimText(name))return;item.name=trimText(name);renderList();renderSelected();}
+function deleteItem(){
+	if(_selectionType==="endpoint"){var endpoint=findEndpoint(_selectedEndpointId);if(!endpoint)return;if(_endpoints.length<=1){alert("至少保留一个 API 端点。");return;}if(_activeTarget.type==="endpoint"&&_activeTarget.id===endpoint.id){alert("已启用的 API 端点不能删除。");return;}var activeGroup=_activeTarget.type==="group"?findGroup(_activeTarget.id):null;if(activeGroup&&activeGroup.endpointIds.length===1&&activeGroup.endpointIds[0]===endpoint.id){alert("该端点是已启用分组的唯一成员，不能删除。");return;}if(!confirm("确定删除 API 端点："+endpoint.name+"？"))return;_endpoints=_endpoints.filter(function(item){return item.id!==endpoint.id;});_groups.forEach(function(group){group.endpointIds=group.endpointIds.filter(function(id){return id!==endpoint.id;});});_selectedEndpointId=_endpoints[0].id;}
+	else{var group=findGroup(_selectedGroupId);if(!group)return;if(_activeTarget.type==="group"&&_activeTarget.id===group.id){alert("已启用的端点分组不能删除。");return;}if(!confirm("确定删除端点分组："+group.name+"？"))return;_groups=_groups.filter(function(item){return item.id!==group.id;});_selectedGroupId=_groups.length?_groups[0].id:"";if(!_selectedGroupId)_selectionType="endpoint";}
+	renderList();renderSelected();
 }
 
-function hideModelMenu() {
-	var m = $("modelMenu");
-	if (m) {
-		m.classList.add("hidden");
-	}
-	_modelMenuOpen = false;
+function normalizeUrl(url){return trimSlashes(trimText(url)).toLowerCase();}
+function presetForUrl(url){var normalized=normalizeUrl(url);for(var i=0;i<PRESET_SITES.length;i++)if(normalizeUrl(PRESET_SITES[i].baseUrl)===normalized)return PRESET_SITES[i];return null;}
+function presetModels(url){var site=presetForUrl(url);return site?site.models:[];}
+function dedupe(values){var seen={},result=[];(values||[]).forEach(function(value){value=trimText(value);if(value&&!seen[value]){seen[value]=true;result.push(value);}});return result;}
+function hideModelMenu(){$("modelMenu").classList.add("hidden");_modelMenuOpen=false;}
+function showModelMenu(){if($("modelMenu").children.length){$("modelMenu").classList.remove("hidden");_modelMenuOpen=true;}}
+function updateModelMenu(models){_modelOptions=dedupe(models);var menu=$("modelMenu");menu.innerHTML="";_modelOptions.forEach(function(model){var item=document.createElement("div");item.className="ui-menu-item";item.textContent=model;item.onmousedown=function(event){event.preventDefault();$("model").value=model;hideModelMenu();};menu.appendChild(item);});$("modelArrow").disabled=!_modelOptions.length;if(!_modelOptions.length)hideModelMenu();}
+function endpointPayloadFromForm(){saveEndpointForm();return cloneEndpoint(findEndpoint(_selectedEndpointId));}
+function requestModels(){var payload=endpointPayloadFromForm();if(!trimText(payload.baseUrl)||!trimText(payload.apiKey)){alert("接口地址和 API 密钥不能为空。");return;}if(!validateHeaders(payload.customHeaders))return;setModelFetchBusy(true);post({action:"fetch_models",data:payload});}
+function setModelFetchBusy(busy){_fetchingModels=!!busy;$("modelFetchBtn").disabled=_fetchingModels;$("modelFetchBtn").textContent=_fetchingModels?"…":"↻";}
+function hidePresetMenu(){$("presetMenu").classList.add("hidden");$("presetBtn").setAttribute("aria-expanded","false");_presetMenuOpen=false;}
+function showPresetMenu(){var menu=$("presetMenu");menu.innerHTML="";PRESET_SITES.forEach(function(site){site.models.forEach(function(model){var item=document.createElement("div");item.className="ui-menu-item";item.textContent=site.label+" ("+model+")";item.onmousedown=function(event){event.preventDefault();saveEndpointForm();var endpoint=cloneEndpoint({id:uniqueId("endpoint"),name:site.label+" ("+model+")",protocolType:site.protocolType,thinkingLevel:site.thinkingLevel||"off",baseUrl:site.baseUrl,model:model});_endpoints.push(endpoint);_selectionType="endpoint";_selectedEndpointId=endpoint.id;hidePresetMenu();renderList();renderSelected();$("apiKey").focus();};menu.appendChild(item);});});menu.classList.remove("hidden");$("presetBtn").setAttribute("aria-expanded","true");_presetMenuOpen=true;}
+
+function validateHeaders(text){var lines=String(text||"").split(/\r?\n/);for(var i=0;i<lines.length;i++){var line=trimText(lines[i]);if(line&&line.indexOf(":")<=0){alert("自定义请求头第 "+(i+1)+" 行格式无效。");return false;}}return true;}
+function collect(){if(!_settingsLoaded)return {activeTarget:{type:"",id:""},endpoints:[],groups:[]};saveEndpointForm();return {activeTarget:{type:_activeTarget.type,id:_activeTarget.id},endpoints:_endpoints.map(cloneEndpoint),groups:_groups.map(cloneGroup)};}
+function validate(data){
+	if(!data.endpoints.length){alert("至少需要一个 API 端点。");return false;}var ids={};for(var i=0;i<data.endpoints.length;i++){var endpoint=data.endpoints[i];if(!trimText(endpoint.name)||ids[endpoint.id]){alert("API 端点名称或 ID 无效。");return false;}ids[endpoint.id]=true;endpoint.retryCount=clampInt(endpoint.retryCount,0,20,5);}
+	var activeEndpoints=[];if(data.activeTarget.type==="endpoint"){var target=findEndpoint(data.activeTarget.id);if(!target){alert("当前启用的 API 端点无效。");return false;}activeEndpoints=[target];}else{var group=findGroup(data.activeTarget.id);if(!group||!group.endpointIds.length){alert("当前启用的端点分组无效或没有成员。");return false;}activeEndpoints=group.endpointIds.map(findEndpoint);}
+	for(var j=0;j<activeEndpoints.length;j++){var active=activeEndpoints[j];if(!active||!trimText(active.baseUrl)||!trimText(active.apiKey)||!trimText(active.model)){alert("启用目标中的端点配置不完整。");return false;}if(!validateHeaders(active.customHeaders))return false;}return true;
 }
-
-function showModelMenu() {
-	var m = $("modelMenu");
-	if (!m || !m.children.length) {
-		return;
-	}
-	m.classList.remove("hidden");
-	_modelMenuOpen = true;
+function applyInitial(settings){
+	_settingsLoaded=false;var next=settings||{};_endpoints=(next.endpoints||[]).map(cloneEndpoint);if(!_endpoints.length)_endpoints=[defaultEndpoint()];_groups=(next.groups||[]).map(cloneGroup);_activeTarget=next.activeTarget||{type:"endpoint",id:_endpoints[0].id};
+	if(_activeTarget.type==="endpoint"&&!findEndpoint(_activeTarget.id))_activeTarget={type:"endpoint",id:_endpoints[0].id};if(_activeTarget.type==="group"&&!findGroup(_activeTarget.id))_activeTarget={type:"endpoint",id:_endpoints[0].id};
+	_selectedEndpointId=_activeTarget.type==="endpoint"?_activeTarget.id:_endpoints[0].id;_selectedGroupId=_activeTarget.type==="group"?_activeTarget.id:(_groups.length?_groups[0].id:"");_selectionType=_activeTarget.type==="group"?"group":"endpoint";_settingsLoaded=true;renderList();renderSelected();
 }
+function toggleSecret(inputId,buttonId){var input=$(inputId),button=$(buttonId);input.type=input.type==="password"?"text":"password";button.textContent=input.type==="password"?"显示":"隐藏";}
 
+window.autolinkerApplySettings=applyInitial;
+window.autolinkerSetTestBusy=function(busy){$("testBtn").disabled=!!busy;$("testBtn").textContent=busy?"测试中…":"测试连通性";};
+window.autolinkerShowTestResult=function(payload){if(payload)alert(payload.message||(payload.ok?"连通性测试成功。":"连通性测试失败。"));};
+window.autolinkerFocusPrimary=function(){if(_selectionType==="endpoint")$("baseUrl").focus();else $("groupEndpointSelect").focus();};
+window.autolinkerSetModelFetchBusy=setModelFetchBusy;
+window.autolinkerShowModelListResult=function(payload){setModelFetchBusy(false);if(!payload)return;if(!payload.ok){alert("获取模型列表失败："+(payload.error||"未知错误"));return;}var models=dedupe(payload.models||[]);if(!models.length){alert("模型列表为空。");return;}updateModelMenu(_modelOptions.concat(models));if(!trimText($("model").value))$("model").value=models[0];showModelMenu();};
 
-function updateModelMenu(models) {
-	var m = $("modelMenu");
-	if (!m) {
-		return;
-	}
-	_modelOptions = dedupeModels(models);
-	m.innerHTML = "";
-	if (!_modelOptions.length) {
-		hideModelMenu();
-		if ($("modelArrow")) {
-			$("modelArrow").disabled = true;
-		}
-		return;
-	}
-	if ($("modelArrow")) {
-		$("modelArrow").disabled = false;
-	}
-	_modelOptions.forEach(function(name) {
-		var d = document.createElement("div");
-		d.className = "ui-menu-item";
-		d.textContent = name;
-		d.addEventListener("mousedown", function(e) {
-			e.preventDefault();
-			$("model").value = name;
-			hideModelMenu();
-			updateEndpointPreview();
-			updateContextWindowPlaceholder();
-		});
-		m.appendChild(d);
-	});
-}
-
-function buildPresetModelLabel(siteLabel, model) {
-	return siteLabel + "(" + model + ")";
-}
-
-function setModelFetchBusy(isBusy) {
-	_fetchingModels = !!isBusy;
-	var btn = $("modelFetchBtn");
-	if (!btn) {
-		return;
-	}
-	btn.disabled = _fetchingModels;
-	btn.textContent = _fetchingModels ? "..." : "\u21BB";
-	btn.title = _fetchingModels ? "\u6B63\u5728\u83B7\u53D6\u6A21\u578B\u5217\u8868" : "\u83B7\u53D6\u6A21\u578B\u5217\u8868";
-}
-
-function currentFormProfilePayload() {
-	return {
-		id: _activeProfileId || "preview",
-		name: (findProfile(_activeProfileId) || {}).name || "\u914D\u7F6E",
-		protocolType: $("protocol").value || "openai",
-		thinkingLevel: $("thinkingLevel").value || "off",
-		imageInputMode: $("imageInputMode").value || "auto",
-		baseUrl: $("baseUrl").value || "",
-		apiKey: $("apiKey").value || "",
-		model: $("model").value || "",
-		extraPrompt: $("extraPrompt").value || "",
-		customHeaders: $("customHeaders").value || "",
-		contextWindow: parseInt($("contextWindow").value, 10) || 0
-	};
-}
-
-function requestModelList() {
-	if (_fetchingModels) {
-		return;
-	}
-	var payload = currentFormProfilePayload();
-	if (!trimText(payload.baseUrl)) {
-		alert("请输入接口地址后再获取模型列表。");
-		return;
-	}
-	if (!trimText(payload.apiKey)) {
-		alert("请输入 API 密钥后再获取模型列表。");
-		return;
-	}
-	if (!validateCustomHeaders(payload.customHeaders || "")) {
-		return;
-	}
-	setModelFetchBusy(true);
-	post({ action: "fetch_models", data: payload });
-}
-
-window.autolinkerShowModelListResult = function(payload) {
-	setModelFetchBusy(false);
-	if (!payload) {
-		return;
-	}
-	if (!payload.ok) {
-		alert("\u83B7\u53D6\u6A21\u578B\u5217\u8868\u5931\u8D25\uFF1A" + (payload.error || "未知错误"));
-		return;
-	}
-	var models = dedupeModels(payload.models || []);
-	if (!models.length) {
-		alert("\u6A21\u578B\u5217\u8868\u4E3A\u7A7A\u3002");
-		return;
-	}
-	updateModelMenu(_modelOptions.concat(models));
-	if (!trimText($("model").value)) {
-		$("model").value = models[0];
-		updateEndpointPreview();
-		updateContextWindowPlaceholder();
-	}
-	showModelMenu();
-	alert("\u5DF2\u83B7\u53D6 " + models.length + " \u4E2A\u6A21\u578B\u3002");
-};
-
-window.autolinkerSetModelFetchBusy = function(isBusy) {
-	setModelFetchBusy(!!isBusy);
-};
-
-function hidePresetProfileMenu() {
-	var anchor = $("presetProfileMenuAnchor");
-	var m = $("presetProfileMenu");
-	if (window.HSDropdown && anchor) {
-		window.HSDropdown.close(anchor);
-	} else if (m) {
-		m.classList.add("hidden");
-	}
-	if ($("addPresetProfileBtn")) {
-		$("addPresetProfileBtn").setAttribute("aria-expanded", "false");
-	}
-	_presetMenuOpen = false;
-}
-
-function createProfileFromPreset(site, model) {
-	if (!site || !model) {
-		return;
-	}
-	saveCurrentFormToActiveProfile();
-	var id = "profile_" + Date.now() + "_" + Math.floor(Math.random() * 10000);
-	var name = buildPresetModelLabel(site.label, model);
-	var profile = {
-		id: id,
-		name: name,
-		protocolType: site.protocolType || "openai",
-		thinkingLevel: site.defaultThinkingLevel || "off",
-		imageInputMode: "auto",
-		baseUrl: site.baseUrl || getDefaultProfileBaseUrl(site.protocolType || "openai"),
-		apiKey: "",
-		model: model,
-		extraPrompt: "",
-		customHeaders: "",
-		contextWindow: 0
-	};
-	_profiles.push(profile);
-	_activeProfileId = id;
-	renderProfileSelect();
-	applyProfileToForm(profile);
-	updateModelMenu(site.models || [model]);
-	hidePresetProfileMenu();
-	if ($("apiKey")) {
-		$("apiKey").focus();
-	}
-}
-
-function showPresetProfileMenu() {
-	var m = $("presetProfileMenu");
-	if (!m) {
-		return;
-	}
-	m.innerHTML = "";
-	PRESET_SITES.forEach(function(site) {
-		var models = site.models || [];
-		if (!models.length) {
-			return;
-		}
-		models.forEach(function(model) {
-			var d = document.createElement("div");
-			d.className = "ui-menu-item";
-			d.setAttribute("role", "menuitem");
-			d.textContent = buildPresetModelLabel(site.label, model);
-			d.addEventListener("mousedown", function(e) {
-				e.preventDefault();
-				createProfileFromPreset(site, model);
-			});
-			m.appendChild(d);
-		});
-	});
-	if (!m.children.length) {
-		return;
-	}
-	if (window.HSDropdown) {
-		window.HSDropdown.autoInit();
-		window.HSDropdown.open($("presetProfileMenuAnchor"));
-	} else {
-		m.classList.remove("hidden");
-	}
-	if ($("addPresetProfileBtn")) {
-		$("addPresetProfileBtn").setAttribute("aria-expanded", "true");
-	}
-	_presetMenuOpen = true;
-}
-
-$("modelArrow").addEventListener("mousedown", function(e) {
-	e.preventDefault();
-});
-
-$("modelArrow").addEventListener("click", function(e) {
-	e.stopPropagation();
-	if (_modelMenuOpen) {
-		hideModelMenu();
-	} else {
-		showModelMenu();
-	}
-});
-
-$("modelFetchBtn").addEventListener("click", requestModelList);
-
-$("model").addEventListener("focus", function() {
-	showModelMenu();
-});
-
-$("model").addEventListener("blur", function() {
-	setTimeout(hideModelMenu, 150);
-});
-
-document.addEventListener("click", function(e) {
-	var c = $("modelCmb");
-	if (c && !c.contains(e.target)) {
-		hideModelMenu();
-	}
-	var a = $("presetProfileMenuAnchor");
-	if (a && !a.contains(e.target)) {
-		hidePresetProfileMenu();
-	}
-});
-
-$("addPresetProfileBtn").addEventListener("click", function(e) {
-	e.preventDefault();
-	e.stopPropagation();
-	if (e.stopImmediatePropagation) {
-		e.stopImmediatePropagation();
-	}
-	if (_presetMenuOpen) {
-		hidePresetProfileMenu();
-	} else {
-		showPresetProfileMenu();
-	}
-});
-
-$("cancelBtn").addEventListener("click", function() {
-	post({ action: "cancel" });
-});
-
-$("testBtn").addEventListener("click", function() {
-	const data = collect();
-	if (!validate(data)) {
-		return;
-	}
-	post({ action: "test_connection", data: data });
-});
-
-$("saveBtn").addEventListener("click", function() {
-	const data = collect();
-	if (!validate(data)) {
-		return;
-	}
-	post({ action: "save", data: data });
-});
-
-applyInitial(initialSettings);
+$("newEndpointBtn").onclick=newEndpoint;$("newGroupBtn").onclick=newGroup;$("renameBtn").onclick=renameItem;$("deleteBtn").onclick=deleteItem;
+$("endpointEnabled").onchange=function(){setActiveTarget("endpoint",_selectedEndpointId,this);};$("groupEnabled").onchange=function(){setActiveTarget("group",_selectedGroupId,this);};
+$("addGroupMemberBtn").onclick=function(){var group=findGroup(_selectedGroupId),id=$("groupEndpointSelect").value;if(group&&id&&group.endpointIds.indexOf(id)<0){group.endpointIds.push(id);renderGroup();}};
+$("toggleApiKey").onclick=function(){toggleSecret("apiKey","toggleApiKey");};$("protocol").onchange=updateEndpointPreview;$("baseUrl").oninput=function(){updateEndpointPreview();updateModelMenu(presetModels(this.value));};
+$("modelArrow").onclick=function(event){event.stopPropagation();_modelMenuOpen?hideModelMenu():showModelMenu();};$("modelArrow").onmousedown=function(event){event.preventDefault();};$("model").onfocus=showModelMenu;$("model").onblur=function(){setTimeout(hideModelMenu,150);};$("modelFetchBtn").onclick=requestModels;
+$("presetBtn").onclick=function(event){event.stopPropagation();_presetMenuOpen?hidePresetMenu():showPresetMenu();};document.addEventListener("click",function(event){if(!$("modelCmb").contains(event.target))hideModelMenu();if(!$("presetMenuAnchor").contains(event.target))hidePresetMenu();});
+$("cancelBtn").onclick=function(){post({action:"cancel"});};$("testBtn").onclick=function(){var data=collect();if(validate(data))post({action:"test_connection",data:data});};$("saveBtn").onclick=function(){var data=collect();if(validate(data))post({action:"save",data:data});};
+if(!(window.chrome&&window.chrome.webview))applyInitial({});
 </script>
 </body>
 </html>

@@ -55,6 +55,7 @@ constexpr UINT_PTR kSettingsWebViewInitTimerId = 0xAC08;
 constexpr UINT kSettingsWebViewInitTimeoutMs = 12000;
 
 enum class SettingsWebViewPageKind {
+	AiOther,
 	LogOptimization,
 	About
 };
@@ -85,9 +86,10 @@ struct SettingsWindowContext {
 };
 
 constexpr std::array<const wchar_t*, static_cast<size_t>(AutoLinkerSettingsPageId::Count)> kPageTitles = {
-	L"AI 接口",
+	L"AI 模型",
+	L"AI 其他设置",
 	L"MCP 服务",
-	L"AI SKILL",
+	L"SKILL",
 	L"AI 对话配色",
 	L"当前项目 AGENTS.md",
 	L"链接器",
@@ -95,6 +97,20 @@ constexpr std::array<const wchar_t*, static_cast<size_t>(AutoLinkerSettingsPageI
 	L"核心库函数重写",
 	L"日志优化",
 	L"关于"
+};
+
+constexpr std::array<const char*, static_cast<size_t>(AutoLinkerSettingsPageId::Count)> kPageConfigIds = {
+	"ai_service",
+	"ai_other",
+	"mcp",
+	"skills",
+	"chat_theme",
+	"project_agents",
+	"linker",
+	"ec_switch",
+	"force_link_lib",
+	"log_optimization",
+	"about"
 };
 
 HMODULE GetCurrentModuleHandle()
@@ -371,6 +387,22 @@ std::string BuildAboutPayload()
 	return DumpWebViewJson(payload);
 }
 
+std::string BuildAiOtherSettingsPayload(
+	const std::string& notice = {},
+	bool noticeIsError = false)
+{
+	std::string sourceEditMode = g_aiJsonConfig.getGlobalValue("source_edit_mode");
+	if (sourceEditMode != "mirror_source_base") {
+		sourceEditMode = "real_page_first";
+	}
+	return DumpWebViewJson({
+		{"sourceEditMode", sourceEditMode},
+		{"tavilyApiKey", g_aiJsonConfig.getGlobalValue("tavily_api_key")},
+		{"notice", notice},
+		{"noticeIsError", noticeIsError}
+	});
+}
+
 void ExecuteSettingsWebViewScript(
 	SettingsWebViewPageContext* context,
 	const wchar_t* functionName,
@@ -397,7 +429,13 @@ void ApplySettingsWebViewData(
 		return;
 	}
 	try {
-		if (context->kind == SettingsWebViewPageKind::LogOptimization) {
+		if (context->kind == SettingsWebViewPageKind::AiOther) {
+			ExecuteSettingsWebViewScript(
+				context,
+				L"autolinkerApplyAiOtherSettings",
+				BuildAiOtherSettingsPayload(notice, noticeIsError));
+		}
+		else if (context->kind == SettingsWebViewPageKind::LogOptimization) {
 			ExecuteSettingsWebViewScript(
 				context,
 				L"autolinkerApplyLogOptimization",
@@ -503,6 +541,32 @@ void HandleSettingsWebViewMessage(
 		ApplySettingsWebViewData(context);
 		return;
 	}
+	if (context->kind == SettingsWebViewPageKind::AiOther) {
+		if (action == "open_tavily") {
+			ShellExecuteW(page, L"open", L"https://tavily.com", nullptr, nullptr, SW_SHOWNORMAL);
+			return;
+		}
+		if (action != "save") {
+			return;
+		}
+		const auto data = payload.value("data", nlohmann::json::object());
+		const std::string sourceEditMode = data.value("sourceEditMode", "real_page_first");
+		if (sourceEditMode != "real_page_first" && sourceEditMode != "mirror_source_base") {
+			ApplySettingsWebViewData(context, "源码编辑模式无效。", true);
+			return;
+		}
+		g_aiJsonConfig.setGlobalValues({
+			{"source_edit_mode", sourceEditMode},
+			{"tavily_api_key", data.value("tavilyApiKey", std::string())}
+		});
+		PostMessageW(
+			GetParent(page),
+			WM_AUTOLINKER_SETTINGS_PAGE_SAVED,
+			static_cast<WPARAM>(AutoLinkerSettingsPageId::AiOther),
+			0);
+		ApplySettingsWebViewData(context, "AI 其他设置已保存。", false);
+		return;
+	}
 	if (context->kind == SettingsWebViewPageKind::LogOptimization) {
 		HandleLogOptimizationAction(context, action, payload.value("enabled", false));
 		return;
@@ -561,10 +625,12 @@ void ShowSettingsWebViewFailure(SettingsWebViewPageContext* context, const wchar
 
 std::string LoadSettingsWebViewHtml(SettingsWebViewPageKind kind)
 {
-	return LoadUtf8HtmlResourceText(
-		kind == SettingsWebViewPageKind::LogOptimization
-			? IDR_HTML_LOG_OPTIMIZATION_SETTINGS
-			: IDR_HTML_ABOUT_SETTINGS);
+	if (kind == SettingsWebViewPageKind::AiOther) {
+		return LoadUtf8HtmlResourceText(IDR_HTML_AI_OTHER_SETTINGS);
+	}
+	return LoadUtf8HtmlResourceText(kind == SettingsWebViewPageKind::LogOptimization
+		? IDR_HTML_LOG_OPTIMIZATION_SETTINGS
+		: IDR_HTML_ABOUT_SETTINGS);
 }
 
 HRESULT OnSettingsWebViewControllerCreated(
@@ -883,10 +949,17 @@ AutoLinkerSettingsPageId NormalizePageId(AutoLinkerSettingsPageId requested)
 			return requested;
 		}
 	}
+	const std::string storedValue = g_configManager.getValue(kLastPageConfigKey);
+	for (size_t index = 0; index < kPageConfigIds.size(); ++index) {
+		if (storedValue == kPageConfigIds[index]) {
+			return static_cast<AutoLinkerSettingsPageId>(index);
+		}
+	}
 	try {
-		const int stored = std::stoi(g_configManager.getValue(kLastPageConfigKey));
-		if (stored >= 0 && stored < static_cast<int>(AutoLinkerSettingsPageId::Count)) {
-			return static_cast<AutoLinkerSettingsPageId>(stored);
+		const int legacyIndex = std::stoi(storedValue);
+		// 旧版顺序中没有 AiOther；从 MCP 开始的索引统一后移一位。
+		if (legacyIndex >= 0 && legacyIndex < static_cast<int>(AutoLinkerSettingsPageId::Count) - 1) {
+			return static_cast<AutoLinkerSettingsPageId>(legacyIndex == 0 ? 0 : legacyIndex + 1);
 		}
 	}
 	catch (...) {
@@ -899,6 +972,8 @@ HWND CreateSettingsPage(HWND window, AutoLinkerSettingsPageId pageId)
 	switch (pageId) {
 	case AutoLinkerSettingsPageId::AiService:
 		return CreateAIConfigSettingsPage(window);
+	case AutoLinkerSettingsPageId::AiOther:
+		return CreateSettingsWebViewPage(window, SettingsWebViewPageKind::AiOther);
 	case AutoLinkerSettingsPageId::Mcp:
 		return CreateAIChatMcpConfigSettingsPage(window);
 	case AutoLinkerSettingsPageId::Skills:
@@ -980,7 +1055,7 @@ void SelectSettingsPage(HWND window, SettingsWindowContext* context, AutoLinkerS
 		}
 	}
 	context->currentPage = pageId;
-	g_configManager.setValue(kLastPageConfigKey, std::to_string(pageIndex));
+	g_configManager.setValue(kLastPageConfigKey, kPageConfigIds[static_cast<size_t>(pageIndex)]);
 	LayoutSettingsWindow(window, context);
 	if (page != nullptr) {
 		ShowWindow(page, SW_SHOW);
@@ -1100,7 +1175,8 @@ LRESULT CALLBACK SettingsWindowProc(HWND window, UINT message, WPARAM wParam, LP
 		return TRUE;
 	case WM_AUTOLINKER_SETTINGS_PAGE_SAVED:
 		if (context != nullptr) {
-			if (wParam == static_cast<WPARAM>(AutoLinkerSettingsPageId::AiService)) {
+			if (wParam == static_cast<WPARAM>(AutoLinkerSettingsPageId::AiService) ||
+				wParam == static_cast<WPARAM>(AutoLinkerSettingsPageId::AiOther)) {
 				context->result.aiSettingsSaved = true;
 			}
 			else if (wParam == static_cast<WPARAM>(AutoLinkerSettingsPageId::Mcp)) {
@@ -1248,7 +1324,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 {
 	using nlohmann::json;
 	const json pages = {
-		"ai_service", "mcp", "skills", "chat_theme", "project_agents", "linker",
+		"ai_service", "ai_other", "mcp", "skills", "chat_theme", "project_agents", "linker",
 		"ec_switch", "force_link_lib", "log_optimization", "about"
 	};
 	const json links = {
@@ -1262,9 +1338,11 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		!IdeCompileOutputCapture::IsDebugOutputOptimizationEnabled() ||
 		IdeCompileOutputCapture::IsCaptureHookEnabled();
 	const std::string logOptimizationHtml = LoadUtf8HtmlResourceText(IDR_HTML_LOG_OPTIMIZATION_SETTINGS);
+	const std::string aiOtherHtml = LoadUtf8HtmlResourceText(IDR_HTML_AI_OTHER_SETTINGS);
 	const std::string aboutHtml = LoadUtf8HtmlResourceText(IDR_HTML_ABOUT_SETTINGS);
 	const std::string aboutIconDataUrl = LoadAboutIconDataUrl();
 	const bool webViewResourcesValid =
+		aiOtherHtml.find("autolinkerApplyAiOtherSettings") != std::string::npos &&
 		logOptimizationHtml.find("autolinkerApplyLogOptimization") != std::string::npos &&
 		aboutHtml.find("autolinkerApplyAbout") != std::string::npos &&
 		!aboutIconDataUrl.empty();
@@ -1294,6 +1372,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		{"compile_hook_default_enabled", false},
 		{"debug_optimization_requires_compile_hook", hookDependencyValid},
 		{"log_optimization_webview2", !logOptimizationHtml.empty()},
+		{"ai_other_webview2", !aiOtherHtml.empty()},
 		{"about_webview2", !aboutHtml.empty()},
 		{"about_icon_resource", !aboutIconDataUrl.empty()},
 		{"e_packager_two_step_update", ePackagerTwoStepUpdateValid},

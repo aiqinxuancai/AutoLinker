@@ -640,7 +640,7 @@ html:not(.autolinker-page-visible) *::after {
 
 .api-profile-item {
 	display: grid;
-	grid-template-columns: 16px minmax(0, 1fr);
+	grid-template-columns: 16px minmax(0, 1fr) auto;
 	align-items: center;
 	gap: 5px;
 	width: 100%;
@@ -654,6 +654,18 @@ html:not(.autolinker-page-visible) *::after {
 	text-align: left;
 	cursor: pointer;
 	box-sizing: border-box;
+}
+
+.api-profile-menu-title {
+	padding: 5px 7px 3px;
+	color: #7a8492;
+	font: 600 10px/1.3 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+}
+
+.api-profile-menu-title:not(:first-child) {
+	margin-top: 4px;
+	border-top: 1px solid #e1e5eb;
+	padding-top: 7px;
 }
 
 .api-profile-item:hover,
@@ -671,6 +683,22 @@ html:not(.autolinker-page-visible) *::after {
 .api-profile-check {
 	color: #1e66f5;
 	font-weight: 700;
+}
+
+.api-profile-item-type {
+	border: 1px solid #d7dce4;
+	border-radius: 3px;
+	padding: 1px 4px;
+	color: #6b7280;
+	font-size: 9px;
+	line-height: 14px;
+	white-space: nowrap;
+}
+
+.api-profile-item-type.group {
+	border-color: #93c5fd;
+	background: #eff6ff;
+	color: #1d4ed8;
 }
 
 .mode-switcher {
@@ -2180,6 +2208,9 @@ body,
 .api-profile-item:hover,
 .api-profile-item:focus-visible { background: var(--al-button-hover-bg); }
 .api-profile-check { color: var(--al-primary); }
+.api-profile-menu-title { color: var(--al-muted-text); border-color: var(--al-soft-border); }
+.api-profile-item-type { color: var(--al-muted-text); border-color: var(--al-soft-border); }
+.api-profile-item-type.group { color: var(--al-primary); border-color: var(--al-primary); background: var(--al-chip-bg); }
 .mode-menu-title,
 .mode-menu-item-description { color: var(--al-muted-text); }
 .mode-menu-item { color: var(--al-text); }
@@ -2217,14 +2248,14 @@ body,
 					<path d="M12 7v5l3 2"></path>
 				</svg>
 			</button>
-			<button id="settings-btn" class="top-action" type="button" title="AI Key &#x8BBE;&#x7F6E;" aria-label="AI Key &#x8BBE;&#x7F6E;">
+			<button id="settings-btn" class="top-action" type="button" title="AI &#x6A21;&#x578B;&#x8BBE;&#x7F6E;" aria-label="AI &#x6A21;&#x578B;&#x8BBE;&#x7F6E;">
 				<svg viewBox="0 0 24 24" aria-hidden="true">
 					<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.08a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.08a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.08a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
 					<circle cx="12" cy="12" r="3"></circle>
 				</svg>
 			</button>
 			<button id="mcp-settings-btn" class="top-action mcp-action" type="button" title="&#x5916;&#x90E8; MCP &#x670D;&#x52A1;&#x5668;" aria-label="&#x5916;&#x90E8; MCP &#x670D;&#x52A1;&#x5668;">MCP</button>
-			<button id="skill-settings-btn" class="top-action mcp-action" type="button" title="AI SKILL" aria-label="AI SKILL">SKILL</button>
+			<button id="skill-settings-btn" class="top-action mcp-action" type="button" title="SKILL" aria-label="SKILL">SKILL</button>
 		</div>
 		<div id="session-menu" class="session-menu" hidden></div>
 	</div>
@@ -2327,7 +2358,7 @@ window.autolinkerPlanState = "normal";
 window.autolinkerAutoAllow = false;
 window.autolinkerGoalState = { status: "none", objective: "", tokensUsed: 0, elapsedLabel: "0m 0s", label: "\u76EE\u6807" };
 window.autolinkerGoalPanelOpen = false;
-window.autolinkerApiProfiles = { activeProfileId: "", activeProfileName: "\u672A\u914D\u7F6E", profiles: [], pendingForNextRequest: false };
+window.autolinkerApiProfiles = { activeTargetType: "endpoint", activeProfileId: "", activeProfileName: "\u672A\u914D\u7F6E", profiles: [], pendingForNextRequest: false };
 window.autolinkerContextUsageTitle = "\u4E0A\u4E0B\u6587\u7528\u91CF\u4E0D\u53EF\u7528";
 window.autolinkerAttachments = [];
 window.autolinkerAttachmentSequence = 1;
@@ -2632,28 +2663,40 @@ window.autolinkerRenderApiProfiles = function() {
 	var data = window.autolinkerApiProfiles || {};
 	var profiles = Array.isArray(data.profiles) ? data.profiles : [];
 	var activeName = data.activeProfileName || "\u672A\u914D\u7F6E";
+	var activeType = data.activeTargetType === "group" ? "group" : "endpoint";
 	var btn = document.getElementById("api-profile-btn");
 	var menu = document.getElementById("api-profile-menu");
 	if (btn) {
 		var label = btn.querySelector ? btn.querySelector(".toolbar-btn-label") : null;
-		if (label) label.textContent = activeName;
-		btn.title = "\u5F53\u524D API\uFF1A" + activeName + (data.pendingForNextRequest ? "\uFF08\u4E0B\u6B21\u8BF7\u6C42\u751F\u6548\uFF09" : "");
-		btn.setAttribute("aria-label", profiles.length ? "\u5207\u6362 API \u914D\u7F6E\uFF0C\u5F53\u524D\u4E3A " + activeName : "\u6253\u5F00 AI \u670D\u52A1\u8BBE\u7F6E");
+		if (label) label.textContent = (activeType === "group" ? "\u5206\u7EC4 \u00B7 " : "") + activeName;
+		var activeTypeLabel = activeType === "group" ? "\u7AEF\u70B9\u5206\u7EC4" : "API \u7AEF\u70B9";
+		btn.title = "\u5F53\u524D" + activeTypeLabel + "\uFF1A" + activeName + (data.pendingForNextRequest ? "\uFF08\u4E0B\u6B21\u8BF7\u6C42\u751F\u6548\uFF09" : "");
+		btn.setAttribute("aria-label", profiles.length ? "\u5207\u6362 AI \u6A21\u578B\u76EE\u6807\uFF0C\u5F53\u524D\u4E3A " + activeTypeLabel + " " + activeName : "\u6253\u5F00 AI \u6A21\u578B\u8BBE\u7F6E");
 	}
 	if (!menu) return;
 	var html = "";
-	for (var i = 0; i < profiles.length; i++) {
-		var profile = profiles[i] || {};
-		var selected = String(profile.id || "") === String(data.activeProfileId || "");
-		html += '<button class="api-profile-item" type="button" role="menuitemradio" aria-checked="' + (selected ? "true" : "false") + '" data-api-profile-id="' + window.autolinkerEscapeHtml(profile.id || "") + '" title="' + window.autolinkerEscapeHtml(profile.name || "") + '">';
-		html += '<span class="api-profile-check">' + (selected ? "\u2713" : "") + '</span>';
-		html += '<span class="api-profile-item-name">' + window.autolinkerEscapeHtml(profile.name || "") + '</span></button>';
+	var sections = [{type:"endpoint",title:"API \u7AEF\u70B9"},{type:"group",title:"\u7AEF\u70B9\u5206\u7EC4"}];
+	for (var sectionIndex = 0; sectionIndex < sections.length; sectionIndex++) {
+		var section = sections[sectionIndex];
+		var sectionItems = profiles.filter(function(profile){return (profile&&profile.type||"endpoint")===section.type;});
+		if (!sectionItems.length) continue;
+		html += '<div class="api-profile-menu-title">' + section.title + '</div>';
+		for (var i = 0; i < sectionItems.length; i++) {
+			var profile = sectionItems[i] || {};
+			var profileType = profile.type === "group" ? "group" : "endpoint";
+			var selected = profileType === activeType && String(profile.id || "") === String(data.activeProfileId || "");
+			var typeText = profileType === "group" ? "\u5206\u7EC4 \u00B7 " + String(profile.memberCount || 0) : "\u7AEF\u70B9";
+			html += '<button class="api-profile-item" type="button" role="menuitemradio" aria-checked="' + (selected ? "true" : "false") + '" data-api-profile-id="' + window.autolinkerEscapeHtml(profile.id || "") + '" data-api-target-type="' + profileType + '" title="' + window.autolinkerEscapeHtml(profile.name || "") + '">';
+			html += '<span class="api-profile-check">' + (selected ? "\u2713" : "") + '</span>';
+			html += '<span class="api-profile-item-name">' + window.autolinkerEscapeHtml(profile.name || "") + '</span>';
+			html += '<span class="api-profile-item-type' + (profileType === "group" ? " group" : "") + '">' + typeText + '</span></button>';
+		}
 	}
 	menu.innerHTML = html;
 };
 
 window.autolinkerSetApiProfiles = function(payload) {
-	window.autolinkerApiProfiles = payload || { activeProfileId: "", activeProfileName: "\u672A\u914D\u7F6E", profiles: [], pendingForNextRequest: false };
+	window.autolinkerApiProfiles = payload || { activeTargetType: "endpoint", activeProfileId: "", activeProfileName: "\u672A\u914D\u7F6E", profiles: [], pendingForNextRequest: false };
 	window.autolinkerRenderApiProfiles();
 };
 
@@ -3501,8 +3544,9 @@ window.autolinkerHideToolApproval = function() {
 		if (apiProfileItem) {
 			e.preventDefault();
 			var profileId = apiProfileItem.getAttribute("data-api-profile-id") || "";
+			var targetType = apiProfileItem.getAttribute("data-api-target-type") || "endpoint";
 			hideApiProfileMenu();
-			if (profileId) post({ action: "switch_api_profile", profileId: profileId });
+			if (profileId) post({ action: "switch_api_profile", targetType: targetType, profileId: profileId });
 			return;
 		}
 		var goalAction = e.target && e.target.closest ? e.target.closest("[data-goal-action]") : null;

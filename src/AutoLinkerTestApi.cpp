@@ -2365,6 +2365,11 @@ extern "C" int AutoLinkerTest_RunGoalModeSelfTest(char* buffer, int bufferSize)
 	return CopyStringToBuffer(report.dump(), buffer, bufferSize);
 }
 
+extern "C" int AutoLinkerTest_RunAIEndpointConfigSelfTest(char* buffer, int bufferSize)
+{
+	return CopyStringToBuffer(AIService::BuildEndpointConfigSelfTestJson(), buffer, bufferSize);
+}
+
 extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 {
 	nlohmann::json report = nlohmann::json::parse(AIChatMcpClient::BuildSelfTestReportJson(), nullptr, false);
