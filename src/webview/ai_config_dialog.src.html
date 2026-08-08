@@ -12,6 +12,10 @@
 .active-dot { width:7px; height:7px; flex:none; border-radius:999px; background:#16a34a; }
 .member-row { display:grid; grid-template-columns:minmax(0, 1fr) auto; min-height:40px; align-items:center; gap:8px; border-bottom:1px solid #e2e8f0; padding:5px 0; }
 .member-row:last-child { border-bottom:0; }
+.endpoint-picker-row { display:grid; grid-template-columns:auto minmax(0, 1fr); min-height:48px; cursor:pointer; align-items:center; gap:10px; border-bottom:1px solid #e2e8f0; padding:7px 10px; }
+.endpoint-picker-row:last-child { border-bottom:0; }
+.endpoint-picker-row:hover { background:#f8fafc; }
+.endpoint-picker-row.selected { background:#eff6ff; }
 @media (max-width:720px) {
 	.config-workspace { flex-direction:column; }
 	.config-sidebar { width:100% !important; border-right:0 !important; border-bottom:1px solid #e2e8f0; }
@@ -155,11 +159,11 @@
 							<input id="groupEnabled" type="checkbox" class="h-4 w-4 accent-blue-700">启用
 						</label>
 					</div>
-					<div class="flex gap-2">
-						<select id="groupEndpointSelect" class="ui-select min-w-0 flex-1"></select>
-						<button id="addGroupMemberBtn" class="ui-btn" type="button">添加</button>
+					<div class="flex min-h-9 items-center justify-between gap-3">
+						<div class="font-semibold text-slate-700">分组成员</div>
+						<button id="addGroupMemberBtn" class="ui-btn" type="button" aria-haspopup="dialog">添加端点</button>
 					</div>
-					<div id="groupMembers" class="mt-4 border-y border-slate-200"></div>
+					<div id="groupMembers" class="mt-3 border-y border-slate-200"></div>
 				</section>
 			</div>
 		</div>
@@ -170,6 +174,24 @@
 		<button id="cancelBtn" class="ui-btn" type="button">取消</button>
 		<button id="saveBtn" class="ui-btn ui-btn-primary" type="button">保存并继续</button>
 	</footer>
+</div>
+
+<div id="endpointPickerDialog" class="fixed inset-0 z-[60] hidden items-center justify-center bg-slate-950/40 px-4 py-6" role="dialog" aria-modal="true" aria-labelledby="endpointPickerTitle" aria-hidden="true">
+	<div class="flex max-h-full w-full max-w-[520px] flex-col overflow-hidden rounded-md border border-slate-300 bg-white shadow-xl">
+		<div class="flex min-h-[54px] shrink-0 items-center justify-between gap-3 border-b border-slate-200 px-4">
+			<h3 id="endpointPickerTitle" class="min-w-0 truncate text-[15px] font-semibold text-slate-950">添加端点</h3>
+			<button id="closeEndpointPickerBtn" class="ui-btn ui-icon-btn h-8 w-8" type="button" title="关闭" aria-label="关闭">×</button>
+		</div>
+		<div class="min-h-0 flex-1 p-4">
+			<label for="endpointPickerSearch" class="ui-label">搜索端点</label>
+			<input id="endpointPickerSearch" class="ui-input" autocomplete="off" placeholder="输入端点名称或模型">
+			<div id="endpointPickerList" class="mt-3 max-h-[360px] overflow-y-auto border-y border-slate-200"></div>
+		</div>
+		<div class="flex min-h-[58px] shrink-0 items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-4">
+			<button id="cancelEndpointPickerBtn" class="ui-btn" type="button">取消</button>
+			<button id="confirmEndpointPickerBtn" class="ui-btn ui-btn-primary min-w-[88px]" type="button" disabled>确认添加</button>
+		</div>
+	</div>
 </div>
 <script>/*__AUTOLINKER_PRELINE_JS__*/</script>
 <script>
@@ -184,6 +206,7 @@ var _modelOptions = [];
 var _modelMenuOpen = false;
 var _presetMenuOpen = false;
 var _fetchingModels = false;
+var _endpointPickerSelectedIds = [];
 
 function $(id) { return document.getElementById(id); }
 function post(payload) { if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage(JSON.stringify(payload)); }
@@ -259,13 +282,24 @@ function renderSelected(){
 }
 
 function renderGroup(){
-	var group=findGroup(_selectedGroupId); if(!group){$("groupTitle").textContent="端点分组";$("groupEnabled").checked=false;$("groupEnabled").disabled=true;$("groupEndpointSelect").innerHTML="";$("addGroupMemberBtn").disabled=true;$("groupMembers").innerHTML="";return;} $("groupEnabled").disabled=false;$("groupTitle").textContent=group.name; $("groupEnabled").checked=_activeTarget.type==="group"&&_activeTarget.id===group.id;
-	var select=$("groupEndpointSelect");select.innerHTML="";_endpoints.forEach(function(endpoint){if(group.endpointIds.indexOf(endpoint.id)>=0)return;var option=document.createElement("option");option.value=endpoint.id;option.textContent=endpoint.name;select.appendChild(option);});
-	$("addGroupMemberBtn").disabled=!select.options.length;
+	var group=findGroup(_selectedGroupId); if(!group){$("groupTitle").textContent="端点分组";$("groupEnabled").checked=false;$("groupEnabled").disabled=true;$("addGroupMemberBtn").disabled=true;$("groupMembers").innerHTML="";return;} $("groupEnabled").disabled=false;$("groupTitle").textContent=group.name; $("groupEnabled").checked=_activeTarget.type==="group"&&_activeTarget.id===group.id;
+	$("addGroupMemberBtn").disabled=!availableGroupEndpoints(group).length;
 	var members=$("groupMembers");members.innerHTML="";if(!group.endpointIds.length){var empty=document.createElement("div");empty.className="py-5 text-center text-slate-500";empty.textContent="暂无成员";members.appendChild(empty);return;}
 	group.endpointIds.forEach(function(id,index){var row=document.createElement("div");row.className="member-row";var name=document.createElement("div");name.className="min-w-0 truncate font-medium text-slate-800";name.textContent=endpointName(id);row.appendChild(name);
 		var actions=document.createElement("div");actions.className="flex gap-1";[["↑","上移",-1],["↓","下移",1],["×","移除",0]].forEach(function(def){var button=document.createElement("button");button.type="button";button.className="ui-btn ui-icon-btn h-8 w-8";button.textContent=def[0];button.title=def[1];button.setAttribute("aria-label",def[1]);button.disabled=(def[2]===-1&&index===0)||(def[2]===1&&index===group.endpointIds.length-1);button.onclick=function(){if(def[2]===0){if(_activeTarget.type==="group"&&_activeTarget.id===group.id&&group.endpointIds.length===1){alert("已启用的端点分组必须保留至少一个成员。");return;}group.endpointIds.splice(index,1);}else{var other=index+def[2],tmp=group.endpointIds[index];group.endpointIds[index]=group.endpointIds[other];group.endpointIds[other]=tmp;}renderGroup();};actions.appendChild(button);});row.appendChild(actions);members.appendChild(row);});
 }
+
+function availableGroupEndpoints(group){return group?_endpoints.filter(function(endpoint){return group.endpointIds.indexOf(endpoint.id)<0;}):[];}
+function renderEndpointPicker(){
+	var group=findGroup(_selectedGroupId),query=trimText($("endpointPickerSearch").value).toLowerCase(),list=$("endpointPickerList");list.innerHTML="";
+	var candidates=availableGroupEndpoints(group).filter(function(endpoint){return !query||(endpoint.name+" "+endpoint.model).toLowerCase().indexOf(query)>=0;});
+	if(!candidates.length){var empty=document.createElement("div");empty.className="py-8 text-center text-slate-500";empty.textContent=query?"没有匹配的端点":"没有可添加的端点";list.appendChild(empty);}
+	candidates.forEach(function(endpoint){var row=document.createElement("label"),checkbox=document.createElement("input"),content=document.createElement("div"),name=document.createElement("div"),model=document.createElement("div");var selected=_endpointPickerSelectedIds.indexOf(endpoint.id)>=0;row.className="endpoint-picker-row"+(selected?" selected":"");checkbox.type="checkbox";checkbox.className="h-4 w-4 accent-blue-700";checkbox.checked=selected;checkbox.onchange=function(){var index=_endpointPickerSelectedIds.indexOf(endpoint.id);if(this.checked&&index<0)_endpointPickerSelectedIds.push(endpoint.id);else if(!this.checked&&index>=0)_endpointPickerSelectedIds.splice(index,1);renderEndpointPicker();};content.className="min-w-0";name.className="truncate font-medium text-slate-900";name.textContent=endpoint.name;model.className="mt-0.5 truncate text-[12px] text-slate-500";model.textContent=endpoint.model||"未设置模型";content.appendChild(name);content.appendChild(model);row.appendChild(checkbox);row.appendChild(content);list.appendChild(row);});
+	var count=_endpointPickerSelectedIds.length;$("confirmEndpointPickerBtn").disabled=!count;$("confirmEndpointPickerBtn").textContent=count?"确认添加 ("+count+")":"确认添加";
+}
+function openEndpointPicker(){var group=findGroup(_selectedGroupId);if(!group||!availableGroupEndpoints(group).length)return;_endpointPickerSelectedIds=[];$("endpointPickerSearch").value="";$("endpointPickerTitle").textContent="添加端点到 "+group.name;$("endpointPickerDialog").classList.remove("hidden");$("endpointPickerDialog").classList.add("flex");$("endpointPickerDialog").setAttribute("aria-hidden","false");renderEndpointPicker();setTimeout(function(){$("endpointPickerSearch").focus();},0);}
+function closeEndpointPicker(){$("endpointPickerDialog").classList.add("hidden");$("endpointPickerDialog").classList.remove("flex");$("endpointPickerDialog").setAttribute("aria-hidden","true");_endpointPickerSelectedIds=[];$("addGroupMemberBtn").focus();}
+function confirmEndpointPicker(){var group=findGroup(_selectedGroupId);if(!group)return closeEndpointPicker();availableGroupEndpoints(group).forEach(function(endpoint){if(_endpointPickerSelectedIds.indexOf(endpoint.id)>=0)group.endpointIds.push(endpoint.id);});closeEndpointPicker();renderGroup();}
 
 function setActiveTarget(type,id,checkbox){if(!checkbox.checked){checkbox.checked=true;alert("必须保留一个启用的 API 端点或端点分组。");return;}if(type==="group"&&findGroup(id).endpointIds.length===0){checkbox.checked=false;alert("端点分组至少需要一个成员后才能启用。");return;}_activeTarget={type:type,id:id};renderList();renderSelected();}
 function newEndpoint(){if(!_settingsLoaded)return;var name=prompt("API 端点名称","新端点");if(!trimText(name))return;saveEndpointForm();var item=cloneEndpoint({id:uniqueId("endpoint"),name:trimText(name)});_endpoints.push(item);_selectionType="endpoint";_selectedEndpointId=item.id;renderList();renderSelected();}
@@ -308,16 +342,17 @@ function toggleSecret(inputId,buttonId){var input=$(inputId),button=$(buttonId);
 window.autolinkerApplySettings=applyInitial;
 window.autolinkerSetTestBusy=function(busy){$("testBtn").disabled=!!busy;$("testBtn").textContent=busy?"测试中…":"测试连通性";};
 window.autolinkerShowTestResult=function(payload){if(payload)alert(payload.message||(payload.ok?"连通性测试成功。":"连通性测试失败。"));};
-window.autolinkerFocusPrimary=function(){if(_selectionType==="endpoint")$("baseUrl").focus();else $("groupEndpointSelect").focus();};
+window.autolinkerFocusPrimary=function(){if(_selectionType==="endpoint")$("baseUrl").focus();else $("addGroupMemberBtn").focus();};
 window.autolinkerSetModelFetchBusy=setModelFetchBusy;
 window.autolinkerShowModelListResult=function(payload){setModelFetchBusy(false);if(!payload)return;if(!payload.ok){alert("获取模型列表失败："+(payload.error||"未知错误"));return;}var models=dedupe(payload.models||[]);if(!models.length){alert("模型列表为空。");return;}updateModelMenu(_modelOptions.concat(models));if(!trimText($("model").value))$("model").value=models[0];showModelMenu();};
 
 $("newEndpointBtn").onclick=newEndpoint;$("newGroupBtn").onclick=newGroup;$("renameBtn").onclick=renameItem;$("deleteBtn").onclick=deleteItem;
 $("endpointEnabled").onchange=function(){setActiveTarget("endpoint",_selectedEndpointId,this);};$("groupEnabled").onchange=function(){setActiveTarget("group",_selectedGroupId,this);};
-$("addGroupMemberBtn").onclick=function(){var group=findGroup(_selectedGroupId),id=$("groupEndpointSelect").value;if(group&&id&&group.endpointIds.indexOf(id)<0){group.endpointIds.push(id);renderGroup();}};
+$("addGroupMemberBtn").onclick=openEndpointPicker;$("closeEndpointPickerBtn").onclick=closeEndpointPicker;$("cancelEndpointPickerBtn").onclick=closeEndpointPicker;$("confirmEndpointPickerBtn").onclick=confirmEndpointPicker;$("endpointPickerSearch").oninput=renderEndpointPicker;$("endpointPickerDialog").onclick=function(event){if(event.target===this)closeEndpointPicker();};
 $("toggleApiKey").onclick=function(){toggleSecret("apiKey","toggleApiKey");};$("protocol").onchange=updateEndpointPreview;$("baseUrl").oninput=function(){updateEndpointPreview();updateModelMenu(presetModels(this.value));};
 $("modelArrow").onclick=function(event){event.stopPropagation();_modelMenuOpen?hideModelMenu():showModelMenu();};$("modelArrow").onmousedown=function(event){event.preventDefault();};$("model").onfocus=showModelMenu;$("model").onblur=function(){setTimeout(hideModelMenu,150);};$("modelFetchBtn").onclick=requestModels;
 $("presetBtn").onclick=function(event){event.stopPropagation();_presetMenuOpen?hidePresetMenu():showPresetMenu();};document.addEventListener("click",function(event){if(!$("modelCmb").contains(event.target))hideModelMenu();if(!$("presetMenuAnchor").contains(event.target))hidePresetMenu();});
+document.addEventListener("keydown",function(event){if(event.key==="Escape"&&$("endpointPickerDialog").getAttribute("aria-hidden")==="false")closeEndpointPicker();});
 $("cancelBtn").onclick=function(){post({action:"cancel"});};$("testBtn").onclick=function(){var data=collectTestData();if(validate(data))post({action:"test_connection",data:data});};$("saveBtn").onclick=function(){var data=collect();if(validate(data))post({action:"save",data:data});};
 if(!(window.chrome&&window.chrome.webview))applyInitial({});
 </script>
