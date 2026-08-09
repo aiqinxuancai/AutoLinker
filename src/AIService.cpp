@@ -2884,14 +2884,18 @@ std::string BuildEideDeclarationPromptRules()
 {
 	return
 		"易语言声明字段分割（逗号分隔的是固定槽位；只可省略行尾未使用槽位，不能省略中间空槽）：\n"
+		"- `.程序集`：完整格式有 4 个槽位、3 个结构逗号：`名称, 基类, 公开属性, 备注`。公开属性只能写 `公开` 或留空；无基类、非公开但有备注时必须写 `.程序集 String, , , 这里是备注`。\n"
 		"- `.程序集变量`：完整格式有 5 个槽位、4 个结构逗号：`名称, 类型, 固定保留空槽, 数组维数, 备注`。类型与数组维数之间的第 3 槽必须为空；它不是静态属性。即使 IDE 界面中的可填写项都已填满，导出文本仍必须保留这个空槽。数组示例：`.程序集变量 m_int, 整数型, , \"0\", 这里是备注`；无数组但有备注：`.程序集变量 m_text, 文本型, , , 这里是备注`。禁止写成 `.程序集变量 m_int, 整数型, \"0\", 这里是备注`。\n"
+		"- `.子程序`：完整格式有 4 个槽位、3 个结构逗号：`名称, 返回值类型, 公开属性, 备注`。公开属性只能写 `公开` 或留空；私有、无返回值但有备注时必须写 `.子程序 方法1, , , 这里是备注`，不能写成 `.子程序 方法1, , 这里是备注`。\n"
+		"- `.参数`：完整格式有 4 个槽位、3 个结构逗号：`名称, 类型, 参数属性, 备注`。普通子程序参数属性可由 `参考`、`可空`、`数组` 按需用空格组合；示例：`.参数 p1, 整数型, 参考 可空 数组, 这里是备注`。DLL 命令下的参数使用导出格式 `传址`、`数组`，例如 `.参数 buffer, 字节型, 传址 数组, 输出缓冲区`。无属性但有备注时写 `.参数 p2, 整数型, , 这里是备注`。\n"
 		"- `.局部变量`（普通变量）：完整格式有 5 个槽位、4 个结构逗号：`名称, 类型, 静态属性, 数组维数, 备注`。静态属性只能按需写 `静态` 或留空；示例：`.局部变量 v1, 文本型, 静态, \"10\", 这里是备注`。无静态、无数组但有备注时写 `.局部变量 v2, 文本型, , , 这里是备注`。\n"
 		"- `.全局变量`：完整格式有 5 个槽位、4 个结构逗号：`名称, 类型, 公开属性, 数组维数, 备注`。公开属性只能写 `公开` 或留空；示例：`.全局变量 g1, 整数型, 公开, \"10\", 这里是备注`。无公开、无数组但有备注时写 `.全局变量 g2, 整数型, , , 这里是备注`。\n"
-		"- `.参数`：完整格式有 4 个槽位、3 个结构逗号：`名称, 类型, 参数属性, 备注`。参数属性可由 `参考`、`可空`、`数组` 按需用空格组合；示例：`.参数 p1, 整数型, 参考 可空 数组, 这里是备注`。无属性但有备注时写 `.参数 p2, 整数型, , 这里是备注`。\n"
+		"- `.数据类型`：完整格式有 3 个槽位、2 个结构逗号：`名称, 公开属性, 备注`。公开属性只能写 `公开` 或留空；非公开但有备注时写 `.数据类型 POINT_EX, , 坐标结构`。其后连续的 `.成员` 属于该数据类型。\n"
+		"- `.成员`：完整格式有 5 个槽位、4 个结构逗号：`名称, 类型, 传址属性, 数组维数, 备注`。传址属性只能按需写 `传址` 或留空；无传址、无数组但有备注时写 `.成员 x, 整数型, , , X 坐标`，数组成员示例为 `.成员 buffer, 字节型, , \"16\", 固定缓冲区`。不要重排成员，结构顺序会影响 DLL 互操作的内存布局。\n"
+		"- `.DLL命令`：完整格式有 6 个槽位、5 个结构逗号：`名称, 返回值类型, DLL 文件名, DLL 入口名, 公开属性, 备注`。DLL 文件名和入口名非空时使用引号，公开属性只能写 `公开` 或留空；示例：`.DLL命令 MessageBoxW, 整数型, \"user32.dll\", \"MessageBoxW\", 公开, 显示消息框`。省略入口名但填写公开属性或备注时也必须保留第 4 槽，例如 `.DLL命令 Foo, 整数型, \"foo.dll\", , 公开, 说明`；其后连续的 `.参数` 属于该 DLL 命令。\n"
+		"- `.常量`：规范格式有 4 个槽位、3 个结构逗号：`名称, 值, 公开属性, 备注`。值按真实导出文本保留引号，公开属性只能写 `公开` 或留空；非公开但有备注时写 `.常量 RETRY_COUNT, \"3\", , 重试次数`。旧工程可能出现兼容的 5 槽格式，读取时可以保留，但新增或重写时使用上述 4 槽格式。图片、声音、长文本和任意二进制资源可能由资源索引管理，不能只改 `.常量` 文本声明。\n"
 		"- 子程序需要向调用方返回数组时，不要把数组声明为子程序返回值，也不要 `返回 (局部数组)`；必须增加数组输出参数并填写 `参考 数组` 属性，例如 `.参数 result, 文本型, 参考 数组, 输出结果`。在子程序实现中直接对 `result` 重定义数组并写入各数组成员，调用方将通过该参数取得结果；子程序自身可不设返回值，或按需要返回结果数量/成功状态。\n"
-		"- `.子程序`：完整格式有 4 个槽位、3 个结构逗号：`名称, 返回值类型, 公开属性, 备注`。公开属性只能写 `公开` 或留空；私有、无返回值但有备注时必须写 `.子程序 方法1, , , 这里是备注`，不能写成 `.子程序 方法1, , 这里是备注`。\n"
-		"- `.程序集`：完整格式有 4 个槽位、3 个结构逗号：`名称, 基类, 公开属性, 备注`。公开属性只能写 `公开` 或留空；无基类、非公开但有备注时必须写 `.程序集 String, , , 这里是备注`。\n"
-		"- 数组维数如 `\"0\"`、`\"10\"`、`\"2,3\"` 是一个完整槽位；引号内的逗号不是结构分隔符。备注前的数组维数槽不得被备注占用，`静态`、参数属性和数组维数也都不能在改写时丢失。\n";
+		"- 数组维数如 `\"0\"`、`\"10\"`、`\"2,3\"` 是一个完整槽位；引号内的逗号不是结构分隔符。备注前的数组维数槽不得被备注占用，`静态`、参数属性和数组维数也都不能在改写时丢失。每种声明只把备注前列出的逗号视为结构逗号；进入最后的备注槽后，剩余逗号均属于备注文字。\n";
 }
 
 std::string BuildEideEntryPointPromptRules()
@@ -2970,7 +2974,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"易语言基础约定：\n"
 			"- 以 # 开头的标识通常表示常量；图片/音频等二进制资源也按常量资源引用，例如 #启动画面。\n"
 			"- 以 & 开头通常表示对子程序取址，用于回调或传递函数地址，例如 到整数 (&枚举窗口过程)。\n"
-			"- 以 . 开头的是易语言系统指令/关键字，例如 .版本、.程序集、.程序集变量、.子程序、.参数、.局部变量、.全局变量、.常量、.DLL声明、.数据类型、.成员、.如果、.如果真、.否则、.返回；编辑时不要删掉前导的 .，也不要改成 C/C++/JS 风格。\n"
+			"- 以 . 开头的是易语言系统指令/关键字，例如 .版本、.程序集、.程序集变量、.子程序、.参数、.局部变量、.全局变量、.常量、.DLL命令、.数据类型、.成员、.如果、.如果真、.否则、.返回；编辑时不要删掉前导的 .，也不要改成 C/C++/JS 风格。\n"
 			"- `.子程序` 的固定字段顺序是 `.子程序 名称, 返回值, 公开属性, 说明文字`：第 2 字段是返回值，第 3 字段只能为空或 `公开`，第 4 字段才是说明。只可省略行尾未使用字段；填写说明时必须保留前三个结构逗号，例如私有无返回值应写 `.子程序 Foo, , , 说明`，禁止写成 `.子程序 Foo, , 说明`。\n"
 			"- 在类模块中，子程序第 3 字段只有填写 `公开` 才能被类外部调用；第 3 字段留空时就是私有方法，只能在类内部使用。作为类对外接口的方法必须添加 `公开`，仅供内部实现使用的辅助方法应保持私有，不要把所有方法一律公开。\n"
 			"- `.程序集` 的固定字段顺序是 `.程序集 名称, 基类, 公开属性, 说明文字`：第 2 字段是基类，第 3 字段只能为空或 `公开`，第 4 字段才是说明。填写说明时同样必须保留中间空字段和前三个结构逗号，例如 `.程序集 Foo, , , 说明`。\n"
@@ -7502,11 +7506,9 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 		const std::string controlFlowRules = BuildEideControlFlowPromptRules();
 		const std::string declarationRules = BuildEideDeclarationPromptRules();
 		const std::string entryPointRules = BuildEideEntryPointPromptRules();
-		const auto containsExistingSharedRules = [&](const std::string& prompt) {
+		const auto containsControlFlowRules = [&](const std::string& prompt) {
 			return !controlFlowRules.empty() &&
-				!declarationRules.empty() &&
-				prompt.find(controlFlowRules) != std::string::npos &&
-				prompt.find(declarationRules) != std::string::npos;
+				prompt.find(controlFlowRules) != std::string::npos;
 		};
 		const std::string chatPrompt = BuildChatSystemPrompt(promptSettings);
 		const std::string geminiPrompt = BuildGeminiChatSystemPrompt(promptSettings, true);
@@ -7514,18 +7516,46 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			AITaskKind::OptimizeFunction,
 			promptSettings);
 		const std::string externalMcpPrompt = BuildExternalMcpInstructions();
-		const bool chatPromptOk = containsExistingSharedRules(chatPrompt);
-		const bool geminiPromptOk = containsExistingSharedRules(geminiPrompt);
-		const bool generationPromptOk = containsExistingSharedRules(generationPrompt);
-		const bool existingRulesOk = chatPromptOk && geminiPromptOk && generationPromptOk;
+		const bool chatPromptOk = containsControlFlowRules(chatPrompt);
+		const bool geminiPromptOk = containsControlFlowRules(geminiPrompt);
+		const bool generationPromptOk = containsControlFlowRules(generationPrompt);
+		const bool controlFlowRulesOk = chatPromptOk && geminiPromptOk && generationPromptOk;
 		checks.push_back({
 			{"name", "eide_control_flow_system_prompts"},
-			{"ok", existingRulesOk},
+			{"ok", controlFlowRulesOk},
 			{"chat_prompt", chatPromptOk},
 			{"gemini_prompt", geminiPromptOk},
 			{"generation_prompt", generationPromptOk}
 		});
-		allOk = allOk && existingRulesOk;
+		allOk = allOk && controlFlowRulesOk;
+
+		const bool declarationCoverageOk =
+			declarationRules.find("`.DLL命令`：完整格式有 6 个槽位、5 个结构逗号") != std::string::npos &&
+			declarationRules.find("`.数据类型`：完整格式有 3 个槽位、2 个结构逗号") != std::string::npos &&
+			declarationRules.find("`.成员`：完整格式有 5 个槽位、4 个结构逗号") != std::string::npos &&
+			declarationRules.find("`.常量`：规范格式有 4 个槽位、3 个结构逗号") != std::string::npos;
+		const bool chatDeclarationOk =
+			!declarationRules.empty() && chatPrompt.find(declarationRules) != std::string::npos;
+		const bool geminiDeclarationOk =
+			!declarationRules.empty() && geminiPrompt.find(declarationRules) != std::string::npos;
+		const bool generationDeclarationOk =
+			!declarationRules.empty() && generationPrompt.find(declarationRules) != std::string::npos;
+		const bool externalMcpDeclarationOk =
+			!declarationRules.empty() &&
+			externalMcpPrompt.find(LocalToUtf8(declarationRules)) != std::string::npos;
+		const bool declarationRulesOk =
+			declarationCoverageOk && chatDeclarationOk && geminiDeclarationOk &&
+			generationDeclarationOk && externalMcpDeclarationOk;
+		checks.push_back({
+			{"name", "eide_declaration_system_prompts"},
+			{"ok", declarationRulesOk},
+			{"complete_declaration_coverage", declarationCoverageOk},
+			{"chat_prompt", chatDeclarationOk},
+			{"gemini_prompt", geminiDeclarationOk},
+			{"generation_prompt", generationDeclarationOk},
+			{"external_mcp_prompt", externalMcpDeclarationOk}
+		});
+		allOk = allOk && declarationRulesOk;
 
 		const bool chatEntryPointOk =
 			!entryPointRules.empty() && chatPrompt.find(entryPointRules) != std::string::npos;
