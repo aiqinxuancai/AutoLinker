@@ -275,6 +275,7 @@ window.autolinkerForceLinkLibSaveResult = function (result) {
 		_initialSnapshot = snapshot();
 		recomputeDirty();
 		setStatus(result.message || "已保存");
+		window.autolinkerShowSettingsToast({ message: "设置已保存" });
 	} else {
 		$("saveBtn").disabled = false;
 		setStatus((result && result.message) ? result.message : "保存失败");

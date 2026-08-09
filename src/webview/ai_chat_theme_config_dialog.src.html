@@ -670,6 +670,7 @@ window.autolinkerThemeSaveResult = function(result) {
 	if (data.ok) {
 		_initialSnapshot = snapshot();
 		recomputeDirty();
+		window.autolinkerShowSettingsToast({ message: "设置已保存" });
 	} else if (data.message) {
 		window.alert(data.message);
 	}

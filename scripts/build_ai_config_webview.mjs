@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const inputCssPath = path.join(root, "src", "webview", "ai_config_dialog.tailwind.css");
 const tempCssPath = path.join(os.tmpdir(), `autolinker-webview-${process.pid}.css`);
 const prelinePath = path.join(root, "node_modules", "preline", "dist", "dropdown.js");
+const settingsToastPath = path.join(root, "src", "webview", "settings_toast.partial.html");
 
 // Templates that share the same inlined Tailwind CSS + Preline bundle.
 const templates = [
@@ -18,7 +19,8 @@ const templates = [
 	{ src: "project_agents_config_dialog.src.html", out: "project_agents_config_dialog.html" },
 	{ src: "ai_chat_theme_config_dialog.src.html", out: "ai_chat_theme_config_dialog.html" },
 	{ src: "ai_chat_mcp_config_dialog.src.html", out: "ai_chat_mcp_config_dialog.html" },
-	{ src: "ai_skill_config_dialog.src.html", out: "ai_skill_config_dialog.html" }
+	{ src: "ai_skill_config_dialog.src.html", out: "ai_skill_config_dialog.html" },
+	{ src: "ai_other_settings.src.html", out: "ai_other_settings.html" }
 ];
 
 execFileSync(process.execPath, [
@@ -35,6 +37,7 @@ execFileSync(process.execPath, [
 const css = fs.readFileSync(tempCssPath, "utf8");
 const preline = fs.existsSync(prelinePath) ? fs.readFileSync(prelinePath, "utf8") : "";
 const stripBom = (text) => text.replace(/^\uFEFF+/, "");
+const settingsToast = stripBom(fs.readFileSync(settingsToastPath, "utf8")).trim();
 
 for (const entry of templates) {
 	const templatePath = path.join(root, "src", "webview", entry.src);
@@ -46,6 +49,10 @@ for (const entry of templates) {
 	let html = template
 		.replace("/*__AUTOLINKER_AI_CONFIG_CSS__*/", css)
 		.replace("/*__AUTOLINKER_PRELINE_JS__*/", preline);
+	if (!/<\/body>/i.test(html)) {
+		throw new Error(`Missing </body> in ${entry.src}`);
+	}
+	html = html.replace(/<\/body>/i, `${settingsToast}\n</body>`);
 	html = html.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n/g, "\r\n");
 	fs.writeFileSync(outputHtmlPath, `\uFEFF${stripBom(html)}`, "utf8");
 }

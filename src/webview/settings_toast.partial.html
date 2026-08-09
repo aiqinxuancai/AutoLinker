@@ -1,0 +1,54 @@
+﻿<div id="autolinkerSettingsToastRegion" class="pointer-events-none fixed inset-x-[16px] top-[16px] z-[100] flex justify-center sm:inset-x-auto sm:right-[20px] sm:top-[20px] sm:block" aria-live="polite" aria-atomic="true">
+	<div id="autolinkerSettingsToast" class="invisible flex w-full max-w-[384px] -translate-y-2 items-center gap-[12px] overflow-hidden rounded-[8px] border border-emerald-200 bg-white px-[16px] py-[12px] text-slate-800 opacity-0 shadow-xl shadow-slate-900/10 transition-[opacity,transform] duration-300 ease-out motion-reduce:transition-none sm:w-[320px]" role="status" aria-hidden="true">
+		<span class="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-full bg-emerald-50 text-emerald-600" aria-hidden="true">
+			<svg class="h-4 w-4" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+				<path d="M5.75 10.25 8.5 13l5.75-6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+			</svg>
+		</span>
+		<div class="min-w-0 flex-1">
+			<p id="autolinkerSettingsToastMessage" class="m-0 break-words text-[13px] font-semibold leading-5 text-slate-800">设置已保存</p>
+		</div>
+	</div>
+</div>
+<script>
+(function () {
+	var toast = document.getElementById("autolinkerSettingsToast");
+	var message = document.getElementById("autolinkerSettingsToastMessage");
+	var hideTimer = 0;
+	var settleTimer = 0;
+
+	function clearTimers() {
+		window.clearTimeout(hideTimer);
+		window.clearTimeout(settleTimer);
+	}
+
+	function hideToast() {
+		toast.classList.remove("translate-y-0", "opacity-100");
+		toast.classList.add("-translate-y-2", "opacity-0");
+		toast.setAttribute("aria-hidden", "true");
+		settleTimer = window.setTimeout(function () {
+			toast.classList.add("invisible");
+		}, 300);
+	}
+
+	window.autolinkerShowSettingsToast = function (options) {
+		var text = typeof options === "string" ? options : options && options.message;
+		message.textContent = text || "设置已保存";
+		clearTimers();
+		toast.classList.remove("invisible");
+		toast.setAttribute("aria-hidden", "false");
+		window.requestAnimationFrame(function () {
+			window.requestAnimationFrame(function () {
+				toast.classList.remove("-translate-y-2", "opacity-0");
+				toast.classList.add("translate-y-0", "opacity-100");
+			});
+		});
+		hideTimer = window.setTimeout(hideToast, 2600);
+	};
+
+	window.autolinkerHideSettingsToast = function () {
+		clearTimers();
+		hideToast();
+	};
+})();
+</script>

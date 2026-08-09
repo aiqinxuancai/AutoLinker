@@ -370,7 +370,16 @@ bool TrySaveWebConfig(HWND hWnd, McpWebViewDialogContext* ctx, const nlohmann::j
 	ctx->done = true;
 	if (ctx->embedded) {
 		OutputStringToELog("MCP配置已保存");
-		PostMessageW(GetParent(hWnd), WM_AUTOLINKER_SETTINGS_PAGE_SAVED, 1, 0);
+		if (ctx->webView != nullptr) {
+			ctx->webView->ExecuteScript(
+				L"if (window.autolinkerShowSettingsToast) { window.autolinkerShowSettingsToast({ message: '设置已保存' }); }",
+				nullptr);
+		}
+		PostMessageW(
+			GetParent(hWnd),
+			WM_AUTOLINKER_SETTINGS_PAGE_SAVED,
+			static_cast<WPARAM>(AutoLinkerSettingsPageId::Mcp),
+			0);
 	}
 	else {
 		DestroyWindow(hWnd);

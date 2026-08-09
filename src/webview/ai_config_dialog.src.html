@@ -16,11 +16,13 @@
 .endpoint-picker-row:last-child { border-bottom:0; }
 .endpoint-picker-row:hover { background:#f8fafc; }
 .endpoint-picker-row.selected { background:#eff6ff; }
+.model-thinking-grid { display:grid; grid-template-columns:minmax(0, 2fr) minmax(160px, 1fr); align-items:end; gap:16px; }
 @media (max-width:720px) {
 	.config-workspace { flex-direction:column; }
 	.config-sidebar { width:100% !important; border-right:0 !important; border-bottom:1px solid #e2e8f0; }
 	.config-list { max-height:200px !important; }
 	.field-grid { grid-template-columns:minmax(0, 1fr) !important; }
+	.model-thinking-grid { grid-template-columns:minmax(0, 1fr); }
 }
 </style>
 </head>
@@ -68,23 +70,14 @@
 					</div>
 
 					<div class="space-y-4">
-						<div class="field-grid grid grid-cols-2 gap-4">
-							<div>
-								<label for="protocol" class="ui-label">接口协议</label>
-								<select id="protocol" class="ui-select">
-									<option value="openai">OpenAI Chat</option>
-									<option value="openai_responses">OpenAI Responses</option>
-									<option value="gemini">Gemini</option>
-									<option value="claude">Claude</option>
-								</select>
-							</div>
-							<div>
-								<label for="thinkingLevel" class="ui-label">思考等级</label>
-								<select id="thinkingLevel" class="ui-select">
-									<option value="off">关闭</option><option value="low">低</option><option value="medium">中</option>
-									<option value="high">高</option><option value="xhigh">超高</option><option value="max">最大</option><option value="ultra">极限</option>
-								</select>
-							</div>
+						<div>
+							<label for="protocol" class="ui-label">接口协议</label>
+							<select id="protocol" class="ui-select">
+								<option value="openai">OpenAI Chat</option>
+								<option value="openai_responses">OpenAI Responses</option>
+								<option value="gemini">Gemini</option>
+								<option value="claude">Claude</option>
+							</select>
 						</div>
 
 						<div>
@@ -101,15 +94,24 @@
 							</div>
 						</div>
 
-						<div>
-							<label for="model" class="ui-label">模型</label>
-							<div class="flex gap-2">
-								<div id="modelCmb" class="relative min-w-0 flex-1">
-									<input id="model" class="ui-input pr-9" autocomplete="off">
-									<button id="modelArrow" class="absolute right-0 top-0 flex h-9 w-9 items-center justify-center text-slate-500" type="button" title="显示模型候选" aria-label="显示模型候选">▼</button>
-									<div id="modelMenu" class="ui-menu left-0 right-0 top-[calc(100%+6px)] hidden" role="menu"></div>
+						<div class="model-thinking-grid">
+							<div>
+								<label for="model" class="ui-label">模型</label>
+								<div class="flex gap-2">
+									<div id="modelCmb" class="relative min-w-0 flex-1">
+										<input id="model" class="ui-input pr-9" autocomplete="off">
+										<button id="modelArrow" class="absolute right-0 top-0 flex h-9 w-9 items-center justify-center text-slate-500" type="button" title="显示模型候选" aria-label="显示模型候选">▼</button>
+										<div id="modelMenu" class="ui-menu left-0 right-0 top-[calc(100%+6px)] hidden" role="menu"></div>
+									</div>
+									<button id="modelFetchBtn" class="ui-btn ui-icon-btn" type="button" title="获取模型列表" aria-label="获取模型列表">↻</button>
 								</div>
-								<button id="modelFetchBtn" class="ui-btn ui-icon-btn" type="button" title="获取模型列表" aria-label="获取模型列表">↻</button>
+							</div>
+							<div>
+								<label for="thinkingLevel" class="ui-label">思考等级</label>
+								<select id="thinkingLevel" class="ui-select">
+									<option value="off">关闭</option><option value="low">低</option><option value="medium">中</option>
+									<option value="high">高</option><option value="xhigh">超高</option><option value="max">最大</option><option value="ultra">极限</option>
+								</select>
 							</div>
 						</div>
 

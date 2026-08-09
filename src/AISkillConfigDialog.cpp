@@ -304,9 +304,11 @@ void HandleMessage(HWND window, SkillPageContext* context, const json& payload)
 		const bool ok = AISkillManager::SetSkillEnabled(
 			payload.value("skill_file", std::string()), payload.value("enabled", true), error);
 		SendWebPayload(context, action, json({{"ok", ok}, {"error", error}}).dump());
-		PostMessageW(
-			GetParent(window), WM_AUTOLINKER_SETTINGS_PAGE_SAVED,
-			static_cast<WPARAM>(AutoLinkerSettingsPageId::Skills), 0);
+		if (ok) {
+			PostMessageW(
+				GetParent(window), WM_AUTOLINKER_SETTINGS_PAGE_SAVED,
+				static_cast<WPARAM>(AutoLinkerSettingsPageId::Skills), 0);
+		}
 		SendState(context);
 		return;
 	}

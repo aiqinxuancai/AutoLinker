@@ -2261,6 +2261,11 @@ bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* c
 	ctx->accepted = true;
 	if (ctx->embedded) {
 		OutputStringToELog("AI配置已保存");
+		if (ctx->webView != nullptr) {
+			ctx->webView->ExecuteScript(
+				L"if (window.autolinkerShowSettingsToast) { window.autolinkerShowSettingsToast({ message: '设置已保存' }); }",
+				nullptr);
+		}
 		PostMessageW(
 			GetParent(hWnd),
 			WM_AUTOLINKER_SETTINGS_PAGE_SAVED,
@@ -3979,6 +3984,12 @@ void NotifyLinkerSaveResult(LinkerConfigWebViewDialogContext* ctx, bool ok, cons
 	script += EscapeJsSingleQuotedWide(Utf8ToWide(result.dump()));
 	script += L"'));";
 	ExecuteLinkerWebViewScript(ctx, script);
+	if (ok && ctx != nullptr && ctx->embedded && ctx->hHost != nullptr) {
+		const HWND page = GetParent(ctx->hHost);
+		PostMessageW(
+			GetParent(page), WM_AUTOLINKER_SETTINGS_PAGE_SAVED,
+			static_cast<WPARAM>(AutoLinkerSettingsPageId::Linker), 0);
+	}
 }
 
 void LayoutLinkerConfigWebViewDialog(HWND hWnd, LinkerConfigWebViewDialogContext* ctx)
@@ -4438,6 +4449,12 @@ void NotifyAIChatThemeConfigSaveResult(AIChatThemeConfigWebViewDialogContext* ct
 	script += EscapeJsSingleQuotedWide(Utf8ToWide(result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)));
 	script += L"'));";
 	ExecuteAIChatThemeConfigWebViewScript(ctx, script);
+	if (ok && ctx != nullptr && ctx->embedded && ctx->hHost != nullptr) {
+		const HWND page = GetParent(ctx->hHost);
+		PostMessageW(
+			GetParent(page), WM_AUTOLINKER_SETTINGS_PAGE_SAVED,
+			static_cast<WPARAM>(AutoLinkerSettingsPageId::ChatTheme), 0);
+	}
 }
 
 void LayoutAIChatThemeConfigWebViewDialog(HWND hWnd, AIChatThemeConfigWebViewDialogContext* ctx)

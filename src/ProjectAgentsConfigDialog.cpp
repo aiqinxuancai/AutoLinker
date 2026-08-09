@@ -466,6 +466,12 @@ void NotifyProjectAgentsSaveResult(ProjectAgentsConfigWebViewDialogContext* ctx,
 	script += EscapeJsSingleQuotedWideLocal(Utf8ToWideLocal(result.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)));
 	script += L"'));";
 	ExecuteProjectAgentsWebViewScript(ctx, script);
+	if (ok && ctx->embedded && ctx->hHost != nullptr) {
+		const HWND page = GetParent(ctx->hHost);
+		PostMessageW(
+			GetParent(page), WM_AUTOLINKER_SETTINGS_PAGE_SAVED,
+			static_cast<WPARAM>(AutoLinkerSettingsPageId::ProjectAgents), 0);
+	}
 }
 
 void HandleProjectAgentsWebViewSave(ProjectAgentsConfigWebViewDialogContext* ctx, const nlohmann::json& data)

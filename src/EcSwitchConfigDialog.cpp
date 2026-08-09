@@ -416,6 +416,12 @@ void NotifyEcSwitchSaveResult(EcSwitchConfigWebViewDialogContext* ctx, bool ok, 
 	script += EscapeJsSingleQuotedWideLocal(Utf8ToWideLocal(result.dump()));
 	script += L"'));";
 	ExecuteEcSwitchWebViewScript(ctx, script);
+	if (ok && ctx != nullptr && ctx->embedded && ctx->hHost != nullptr) {
+		const HWND page = GetParent(ctx->hHost);
+		PostMessageW(
+			GetParent(page), WM_AUTOLINKER_SETTINGS_PAGE_SAVED,
+			static_cast<WPARAM>(AutoLinkerSettingsPageId::EcSwitch), 0);
+	}
 }
 
 bool BuildRulesFromWebPayload(const nlohmann::json& data, std::map<std::string, std::string>& outValues, std::string& errorMessage)

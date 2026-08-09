@@ -1,0 +1,56 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="light only">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+/*__AUTOLINKER_AI_CONFIG_CSS__*/
+:root{font-family:"Microsoft YaHei UI","Segoe UI",Arial,sans-serif;color:#20252b;background:#fff;font-size:13px}*{box-sizing:border-box}html,body{height:100%;margin:0}body{overflow:hidden;background:#fff}button,input,select{font:inherit}.page{display:flex;height:100%;min-height:0;flex-direction:column}.page-header{flex:none;border-bottom:1px solid #e2e8f0;padding:12px 20px}.page-title{margin:0;color:#020617;font-size:18px;font-weight:600;line-height:46px}.content{min-height:0;flex:1;overflow:auto;padding:0 20px}.settings{max-width:900px}.setting{display:grid;grid-template-columns:210px minmax(260px,1fr);align-items:center;gap:28px;border-bottom:1px solid #e7eaee;padding:24px 0}.setting-label{color:#1f2937;font-size:14px;font-weight:600}.control{width:100%;height:36px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;padding:0 10px;color:#0f172a;outline:none}.control:focus{border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.12)}.secret-row{display:flex;gap:8px}.secret-row .control{min-width:0;flex:1}.button{height:36px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;padding:0 14px;color:#334155;cursor:pointer}.button:hover{background:#f8fafc}.button.primary{border-color:#1d4ed8;background:#1d4ed8;color:#fff}.button.primary:hover{background:#1e40af}.link{margin-left:10px;color:#1d4ed8;font-size:12px;text-decoration:none}.footer{display:flex;min-height:61px;flex:none;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid #e2e8f0;padding:12px 20px}.status{min-width:0;color:#15803d;font-size:12px}.status.error{color:#b91c1c}@media(max-width:720px){.setting{grid-template-columns:minmax(0,1fr);gap:10px}.page-title{line-height:34px}}
+</style>
+</head>
+<body>
+<main class="page">
+  <header class="page-header"><h1 class="page-title">AI 其他设置</h1></header>
+  <div class="content">
+    <section class="settings" aria-label="AI 其他设置">
+      <div class="setting">
+        <label class="setting-label" for="sourceEditMode">源码编辑模式</label>
+        <select id="sourceEditMode" class="control">
+          <option value="real_page_first">真实页优先</option>
+          <option value="mirror_source_base">解包镜像基准（测试）</option>
+        </select>
+      </div>
+      <div class="setting">
+        <div><label class="setting-label" for="tavilyApiKey">Tavily API 密钥</label><a id="tavilyLink" class="link" href="https://tavily.com">官网</a></div>
+        <div class="secret-row">
+          <input id="tavilyApiKey" class="control" type="password" autocomplete="off">
+          <button id="toggleKey" class="button" type="button">显示</button>
+        </div>
+      </div>
+    </section>
+  </div>
+  <footer class="footer">
+    <span id="status" class="status" role="status"></span>
+    <button id="saveBtn" class="button primary" type="button">保存</button>
+  </footer>
+</main>
+<script>/*__AUTOLINKER_PRELINE_JS__*/</script>
+<script>
+function $(id){return document.getElementById(id)}
+function post(payload){if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage(JSON.stringify(payload))}}
+window.autolinkerApplyAiOtherSettings=function(payload){
+  var data=payload||{};
+  $("sourceEditMode").value=data.sourceEditMode==="mirror_source_base"?"mirror_source_base":"real_page_first";
+  $("tavilyApiKey").value=data.tavilyApiKey||"";
+  $("status").textContent=data.notice||"";
+  $("status").className="status"+(data.noticeIsError?" error":"");
+  if(data.notice&&!data.noticeIsError&&window.autolinkerShowSettingsToast){window.autolinkerShowSettingsToast({message:"设置已保存"})}
+};
+$("toggleKey").addEventListener("click",function(){var input=$("tavilyApiKey");input.type=input.type==="password"?"text":"password";this.textContent=input.type==="password"?"显示":"隐藏"});
+$("tavilyLink").addEventListener("click",function(event){event.preventDefault();post({action:"open_tavily"})});
+$("saveBtn").addEventListener("click",function(){post({action:"save",data:{sourceEditMode:$("sourceEditMode").value,tavilyApiKey:$("tavilyApiKey").value||""}})});
+document.addEventListener("DOMContentLoaded",function(){post({action:"ready"})});
+</script>
+</body>
+</html>

@@ -353,6 +353,12 @@ void NotifyForceLinkLibSaveResult(ForceLinkLibConfigWebViewDialogContext* ctx, b
 	script += EscapeJsSingleQuotedWideLocal(Utf8ToWideLocal(result.dump()));
 	script += L"'));";
 	ExecuteForceLinkLibWebViewScript(ctx, script);
+	if (ok && ctx != nullptr && ctx->embedded && ctx->hHost != nullptr) {
+		const HWND page = GetParent(ctx->hHost);
+		PostMessageW(
+			GetParent(page), WM_AUTOLINKER_SETTINGS_PAGE_SAVED,
+			static_cast<WPARAM>(AutoLinkerSettingsPageId::ForceLinkLib), 0);
+	}
 }
 
 bool BuildRulesFromWebPayload(const nlohmann::json& data, std::vector<ForceLinkLibRule>& outRules, std::string& errorMessage)

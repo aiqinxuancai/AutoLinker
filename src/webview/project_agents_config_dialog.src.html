@@ -96,6 +96,7 @@ window.autolinkerProjectAgentsSaveResult = function(result) {
 		_initialContent = (typeof data.content === "string") ? data.content : $("agentsContent").value;
 		$("agentsContent").value = _initialContent;
 		recomputeDirty();
+		window.autolinkerShowSettingsToast({ message: "设置已保存" });
 	} else if (data.message) {
 		window.alert(data.message);
 		recomputeDirty();
