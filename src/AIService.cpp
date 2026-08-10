@@ -2932,7 +2932,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 		? "4) 已知子程序/代码项名称时优先用 read_code_item；未知位置时优先批量 search_code，再用 read_files 批量读取必要文件。若结果仍缺少影响正确性的范围，可继续读取明确缺失的部分。写入工具以 read_files/read_code_item 的镜像文本和哈希为基准。\n"
 		: "4) 已知子程序/代码项名称时优先用 read_code_item；未知位置时优先批量 search_code，再用 read_files 批量读取必要镜像。若结果仍缺少影响正确性的范围，可继续读取明确缺失的部分；编辑当前工程源码前，再用 read_real_file 读取同一 file_path 的 IDE 真实页文本。\n";
 	const std::string workspaceRefreshRule = sourceOpen
-		? "2) 每轮内部 AI 请求开始前已用 mode=full 自动刷新工程镜像，通常无需重复调用 refresh_workspace_mirror；如果工具返回 workspace_refresh_required，或确需重新获取 IDE 最新内存状态，再调用该工具后重试。\n"
+		? "2) 每轮内部 AI 请求开始前已用 mode=full 自动刷新工程镜像，通常无需重复调用 refresh_workspace_mirror；如果工具返回 workspace_refresh_required/workspace_refresh_failed，或确需重新获取 IDE 最新内存状态，再调用该工具并根据错误结果修正后重试。\n"
 		: "2) 当前未打开任何源码，不得调用工程读写、页面、依赖变更或编译工具；需要确认状态时调用 get_current_eide_info。\n";
 	{
 		std::string prompt =
@@ -3024,7 +3024,7 @@ std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal
 		"回答要直接、准确，优先使用已提供的工具获取工程上下文。\n"
 		"不要臆测当前页面、模块、支持库或源码内容。\n"
 		+ std::string(sourceOpen
-			? "每轮请求开始前已用 mode=full 自动刷新工程镜像；收到 workspace_refresh_required 或确需重新获取 IDE 最新内存状态时，再调用 refresh_workspace_mirror。已知代码项优先 read_code_item，多个文件使用 read_files，不要重复读取相同范围。\n"
+			? "每轮请求开始前已用 mode=full 自动刷新工程镜像；收到 workspace_refresh_required/workspace_refresh_failed 或确需重新获取 IDE 最新内存状态时，再调用 refresh_workspace_mirror。已知代码项优先 read_code_item，多个文件使用 read_files，不要重复读取相同范围。\n"
 			: "当前不得调用工程读写、页面、依赖变更或编译工具；需要确认状态时调用 get_current_eide_info。\n") +
 		"仅复杂、多文件或明确要求计划时使用 update_plan；写入 verified=true 后不要为了确认而复读源码。\n"
 		"如果需要读取网页或文档，优先调用 extract_web_document；需要原始响应时调用 fetch_url。\n"

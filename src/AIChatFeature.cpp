@@ -2564,6 +2564,7 @@ bool PrepareWorkspaceMirrorForChat(
 }
 
 bool EnsureWorkspaceMirrorForInternalSourceTool(
+	unsigned long long requestId,
 	const std::string& toolName,
 	std::string& outBlockedResultLocal)
 {
@@ -2580,23 +2581,59 @@ bool EnsureWorkspaceMirrorForInternalSourceTool(
 		return true;
 	}
 
-	const std::uint64_t currentGeneration = WorkspaceMirror::GetGeneration();
+	bool refreshWasPrepared = false;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
-		if (g_session.workspaceMirrorRefreshed &&
-			g_session.workspaceMirrorGeneration == currentGeneration) {
-			return true;
+		refreshWasPrepared = g_session.workspaceMirrorRefreshed;
+	}
+
+	// generation 会在增量写入、映射解析和其他合法刷新路径中变化；只要快照仍有效，
+	// 就同步最新代次，不应把正常的镜像更新误判成“未刷新”。
+	WorkspaceMirror::FileAccessSnapshot snapshot;
+	std::string snapshotError;
+	if (refreshWasPrepared &&
+		WorkspaceMirror::GetPreparedFileAccessSnapshot(snapshot, snapshotError)) {
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		g_session.workspaceMirrorRefreshed = true;
+		g_session.workspaceMirrorGeneration = snapshot.generation;
+		return true;
+	}
+
+	// 会话准备失败、镜像被清理或目录失效时由内置聊天自动恢复一次，
+	// 避免把可恢复的状态错误交给模型后反复重放同一个写入调用。
+	std::string refreshError;
+	std::string refreshMode;
+	if (WorkspaceMirror::RefreshMirror(
+		refreshError,
+		&refreshMode,
+		WorkspaceMirror::RefreshMode::Full)) {
+		const std::uint64_t refreshedGeneration = WorkspaceMirror::GetGeneration();
+		{
+			std::lock_guard<std::mutex> guard(g_session.mutex);
+			g_session.workspaceMirrorRefreshed = true;
+			g_session.workspaceMirrorGeneration = refreshedGeneration;
 		}
+		OutputStringToELog(
+			"[WorkspaceMirror] internal source tool gate recovered by refresh: " +
+			(refreshMode.empty() ? std::string("full") : refreshMode));
+		AppendAgentActivity(
+			requestId,
+			LocalFromWide(L"检测到工程镜像已变化，已自动刷新后继续工具调用"));
+		return true;
+	}
+
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
 		g_session.workspaceMirrorRefreshed = false;
 		g_session.workspaceMirrorGeneration = 0;
 	}
-
 	nlohmann::json blocked = {
 		{"ok", false},
-		{"error", "workspace_refresh_required"},
+		{"error", "workspace_refresh_failed"},
 		{"tool", toolName},
 		{"required_tool", "refresh_workspace_mirror"},
-		{"hint", "Call refresh_workspace_mirror successfully before source read/edit tools in this internal chat session. Refresh again if the workspace generation changes."}
+		{"refresh_error", refreshError.empty() ? snapshotError : refreshError},
+		{"hint", "Internal chat retried a full workspace refresh but it failed. Call refresh_workspace_mirror once, inspect its error, then retry with corrected arguments or content."}
 	};
 	outBlockedResultLocal = Utf8ToLocalText(DumpJsonUtf8(blocked));
 	return false;
@@ -6670,6 +6707,7 @@ void RunAIChatWorker(void* pParams)
 						}
 						std::string workspaceMirrorBlockedResult;
 						if (!EnsureWorkspaceMirrorForInternalSourceTool(
+							requestId,
 							toolName,
 							workspaceMirrorBlockedResult)) {
 							outOk = false;
