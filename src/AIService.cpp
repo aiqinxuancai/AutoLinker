@@ -3,10 +3,13 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <limits>
+#include <optional>
+#include <random>
 #include <string_view>
 #include <unordered_set>
 #include <Windows.h>
@@ -173,6 +176,7 @@ bool ContainsRetryableTransportHint(const std::string& responseBody)
 		lower.find("error in internetconnect") != std::string::npos ||
 		lower.find("error in httpopenrequest") != std::string::npos ||
 		lower.find("error in httpsendrequest") != std::string::npos ||
+		lower.find("internetreadfile failed") != std::string::npos ||
 		lower.find("timeout") != std::string::npos ||
 		lower.find("timed out") != std::string::npos ||
 		lower.find("cannot connect") != std::string::npos ||
@@ -1816,17 +1820,26 @@ nlohmann::json BuildAssistantMessageFromStreamState(const ChatStreamParseState& 
 
 struct ResponsesStreamParseState {
 	bool sawSseEvent = false;
+	bool sawCompletedEvent = false;
 	std::string pendingLine;
 	std::string eventName;
 	std::string eventData;
 	std::string mergedTextUtf8;
 	std::string parseError;
+	std::string failureEventType;
+	std::string failureCode;
 	nlohmann::json completedResponse = nlohmann::json::object();
 	nlohmann::json outputItems = nlohmann::json::array();
 };
 
-std::string ExtractResponsesStreamError(const nlohmann::json& packet)
+struct ResponsesStreamFailureDetails {
+	std::string code;
+	std::string message;
+};
+
+ResponsesStreamFailureDetails ExtractResponsesStreamFailure(const nlohmann::json& packet)
 {
+	ResponsesStreamFailureDetails details;
 	const nlohmann::json* error = nullptr;
 	if (packet.contains("error") && packet["error"].is_object()) {
 		error = &packet["error"];
@@ -1835,10 +1848,47 @@ std::string ExtractResponsesStreamError(const nlohmann::json& packet)
 		packet["response"].contains("error") && packet["response"]["error"].is_object()) {
 		error = &packet["response"]["error"];
 	}
-	if (error != nullptr && error->contains("message") && (*error)["message"].is_string()) {
-		return Utf8ToLocal((*error)["message"].get<std::string>());
+	if (error != nullptr) {
+		if (error->contains("code") && (*error)["code"].is_string()) {
+			details.code = (*error)["code"].get<std::string>();
+		}
+		if (error->contains("message") && (*error)["message"].is_string()) {
+			details.message = Utf8ToLocal((*error)["message"].get<std::string>());
+		}
 	}
-	return "Responses streaming request failed";
+	if (details.code.empty() && packet.contains("code") && packet["code"].is_string()) {
+		details.code = packet["code"].get<std::string>();
+	}
+	if (details.message.empty() && packet.contains("message") && packet["message"].is_string()) {
+		details.message = Utf8ToLocal(packet["message"].get<std::string>());
+	}
+	return details;
+}
+
+bool IsRetryableResponsesStreamFailure(const ResponsesStreamParseState& state)
+{
+	if (state.failureEventType == "response.incomplete" || state.failureEventType == "error") {
+		return true;
+	}
+	if (state.failureEventType != "response.failed") {
+		return false;
+	}
+
+	// 与 Codex Responses 事件分类一致：仅这些语义错误不可重试，其余失败均可重试。
+	constexpr std::array<std::string_view, 8> nonRetryableCodes = {{
+		"context_length_exceeded",
+		"insufficient_quota",
+		"usage_not_included",
+		"cyber_policy",
+		"invalid_prompt",
+		"bio_policy",
+		"server_is_overloaded",
+		"slow_down",
+	}};
+	return std::find(
+		nonRetryableCodes.begin(),
+		nonRetryableCodes.end(),
+		state.failureCode) == nonRetryableCodes.end();
 }
 
 void AddResponsesOutputItemUnique(ResponsesStreamParseState& state, const nlohmann::json& item)
@@ -1901,13 +1951,37 @@ bool ProcessResponsesStreamEvent(
 		return true;
 	}
 	if (type == "response.completed") {
+		state.sawCompletedEvent = true;
 		if (packet.contains("response") && packet["response"].is_object()) {
 			state.completedResponse = packet["response"];
 		}
 		return true;
 	}
 	if (type == "response.failed" || type == "response.incomplete" || type == "error") {
-		state.parseError = ExtractResponsesStreamError(packet);
+		const ResponsesStreamFailureDetails failure = ExtractResponsesStreamFailure(packet);
+		state.failureEventType = type;
+		state.failureCode = failure.code;
+		if (type == "response.incomplete") {
+			std::string reason = "unknown";
+			if (packet.contains("response") && packet["response"].is_object()) {
+				const nlohmann::json& response = packet["response"];
+				if (response.contains("incomplete_details") && response["incomplete_details"].is_object()) {
+					const nlohmann::json& details = response["incomplete_details"];
+					if (details.contains("reason") && details["reason"].is_string()) {
+						reason = Utf8ToLocal(details["reason"].get<std::string>());
+					}
+				}
+			}
+			state.parseError = "Incomplete response returned, reason: " + reason;
+		}
+		else if (!failure.message.empty()) {
+			state.parseError = failure.message;
+		}
+		else {
+			state.parseError = type == "response.failed"
+				? "response.failed event received"
+				: "Responses streaming request failed";
+		}
 		return false;
 	}
 	return true;
@@ -1974,6 +2048,222 @@ bool FlushResponsesStreamState(
 		}
 	}
 	return ProcessResponsesStreamEvent(state, streamCallback);
+}
+
+bool ShouldRetryOpenAIResponsesStreamAttempt(
+	const ResponsesStreamParseState& state,
+	int statusCode,
+	const std::string& responseBody)
+{
+	if (!IsSuccessfulHttpStatus(statusCode)) {
+		return ShouldRetryAiHttpRequest(statusCode, responseBody);
+	}
+	if (state.sawCompletedEvent) {
+		return false;
+	}
+	if (!state.failureEventType.empty()) {
+		return IsRetryableResponsesStreamFailure(state);
+	}
+	if (state.sawSseEvent) {
+		return true;
+	}
+
+	// 保留部分兼容端点的非 SSE JSON 响应；空响应或非法响应按断流处理。
+	try {
+		return responseBody.empty() || !nlohmann::json::parse(responseBody).is_object();
+	}
+	catch (...) {
+		return true;
+	}
+}
+
+std::string BuildOpenAIResponsesRetryReason(
+	const ResponsesStreamParseState& state,
+	int statusCode,
+	const std::string& responseBody)
+{
+	if (!IsSuccessfulHttpStatus(statusCode)) {
+		return responseBody;
+	}
+	if (!state.failureCode.empty() && state.failureCode != state.parseError) {
+		return state.failureCode + ": " + state.parseError;
+	}
+	if (!state.parseError.empty()) {
+		return state.parseError;
+	}
+	return "stream ended before response.completed";
+}
+
+std::optional<DWORD> TryParseOpenAIResponsesRetryDelayMs(
+	const ResponsesStreamParseState& state)
+{
+	if (state.failureCode != "rate_limit_exceeded") {
+		return std::nullopt;
+	}
+
+	const std::string lower = ToLowerAsciiCopy(state.parseError);
+	constexpr std::string_view marker = "try again in";
+	size_t valueStart = lower.find(marker);
+	if (valueStart == std::string::npos) {
+		return std::nullopt;
+	}
+	valueStart += marker.size();
+	while (valueStart < lower.size() &&
+		std::isspace(static_cast<unsigned char>(lower[valueStart])) != 0) {
+		++valueStart;
+	}
+
+	size_t valueEnd = valueStart;
+	while (valueEnd < lower.size() &&
+		std::isdigit(static_cast<unsigned char>(lower[valueEnd])) != 0) {
+		++valueEnd;
+	}
+	if (valueEnd < lower.size() && lower[valueEnd] == '.') {
+		const size_t fractionStart = ++valueEnd;
+		while (valueEnd < lower.size() &&
+			std::isdigit(static_cast<unsigned char>(lower[valueEnd])) != 0) {
+			++valueEnd;
+		}
+		if (valueEnd == fractionStart) {
+			return std::nullopt;
+		}
+	}
+	if (valueEnd == valueStart) {
+		return std::nullopt;
+	}
+
+	double value = 0.0;
+	try {
+		value = std::stod(lower.substr(valueStart, valueEnd - valueStart));
+	}
+	catch (...) {
+		return std::nullopt;
+	}
+	if (!std::isfinite(value) || value < 0.0) {
+		return std::nullopt;
+	}
+
+	while (valueEnd < lower.size() &&
+		std::isspace(static_cast<unsigned char>(lower[valueEnd])) != 0) {
+		++valueEnd;
+	}
+	const bool milliseconds = lower.compare(valueEnd, 2, "ms") == 0;
+	const bool seconds = lower.compare(valueEnd, 1, "s") == 0;
+	if (!milliseconds && !seconds) {
+		return std::nullopt;
+	}
+	const double delayMs = milliseconds ? value : value * 1000.0;
+	const double maxDelayMs = static_cast<double>((std::numeric_limits<DWORD>::max)());
+	return static_cast<DWORD>(std::llround((std::min)(delayMs, maxDelayMs)));
+}
+
+DWORD ComputeOpenAIResponsesRetryDelayMs(
+	const ResponsesStreamParseState& state,
+	int retryCount)
+{
+	if (const std::optional<DWORD> serverDelay = TryParseOpenAIResponsesRetryDelayMs(state)) {
+		return *serverDelay;
+	}
+
+	const int exponent = (std::max)(0, retryCount - 1);
+	const double baseDelayMs = 200.0 * std::pow(2.0, static_cast<double>(exponent));
+	thread_local std::mt19937 generator(static_cast<unsigned int>(
+		::GetTickCount64() ^ static_cast<ULONGLONG>(::GetCurrentThreadId())));
+	std::uniform_real_distribution<double> jitter(0.9, 1.1);
+	const double delayMs = baseDelayMs * jitter(generator);
+	const double maxDelayMs = static_cast<double>((std::numeric_limits<DWORD>::max)());
+	return static_cast<DWORD>((std::min)(delayMs, maxDelayMs));
+}
+
+struct OpenAIResponsesStreamRequestResult {
+	std::string responseBody;
+	int statusCode = 0;
+	int attemptCount = 0;
+	bool sawResponseChunk = false;
+	ResponsesStreamParseState streamState;
+};
+
+OpenAIResponsesStreamRequestResult PerformOpenAIResponsesStreamRequestWithRetry(
+	const std::string& url,
+	const std::string& postData,
+	const std::string& customHeaders,
+	int timeout,
+	int maxRetryCount,
+	const std::function<void(const std::string& deltaText)>& streamCallback,
+	const std::function<void()>& streamRetryCallback,
+	const std::function<bool()>& cancelCallback,
+	HttpRequestCancellation* cancelContext)
+{
+	OpenAIResponsesStreamRequestResult result;
+	const int boundedRetryCount = (std::clamp)(maxRetryCount, 0, kAiMaxRequestRetryCount);
+	for (int attempt = 0; attempt <= boundedRetryCount; ++attempt) {
+		result.attemptCount = attempt + 1;
+		result.streamState = ResponsesStreamParseState{};
+		if (IsCancelRequested(cancelCallback, cancelContext)) {
+			result.responseBody = "Request cancelled";
+			result.statusCode = kAiRequestCancelledHttpStatus;
+			return result;
+		}
+
+		const auto response = PerformPostRequestStreaming(
+			url,
+			postData,
+			[&result, &streamCallback, &cancelCallback, cancelContext](
+				const std::string& chunk) -> bool {
+				if (IsCancelRequested(cancelCallback, cancelContext)) {
+					return false;
+				}
+				if (!chunk.empty()) {
+					result.sawResponseChunk = true;
+				}
+				return ConsumeResponsesStreamChunk(chunk, result.streamState, streamCallback);
+			},
+			customHeaders,
+			timeout,
+			false,
+			false,
+			cancelContext);
+		result.responseBody = response.first;
+		result.statusCode = response.second;
+		if (IsCancelRequested(cancelCallback, cancelContext) ||
+			result.statusCode == kAiRequestCancelledHttpStatus) {
+			result.responseBody = "Request cancelled";
+			result.statusCode = kAiRequestCancelledHttpStatus;
+			return result;
+		}
+		if (IsSuccessfulHttpStatus(result.statusCode)) {
+			FlushResponsesStreamState(result.streamState, streamCallback);
+		}
+		if (!ShouldRetryOpenAIResponsesStreamAttempt(
+				result.streamState,
+				result.statusCode,
+				result.responseBody) ||
+			attempt >= boundedRetryCount) {
+			return result;
+		}
+
+		LogAiRetryAttempt(
+			"openai-responses-chat",
+			attempt + 2,
+			boundedRetryCount + 1,
+			result.statusCode,
+			BuildOpenAIResponsesRetryReason(
+				result.streamState,
+				result.statusCode,
+				result.responseBody));
+		if (streamRetryCallback) {
+			streamRetryCallback();
+		}
+		if (!SleepForRetryWithCancel(
+				ComputeOpenAIResponsesRetryDelayMs(result.streamState, attempt + 1),
+				cancelCallback,
+				cancelContext)) {
+			result.responseBody = "Request cancelled";
+			result.statusCode = kAiRequestCancelledHttpStatus;
+			return result;
+		}
+	}
+	return result;
 }
 
 nlohmann::json BuildResponsesParsedFromStream(const ResponsesStreamParseState& state)
@@ -4786,36 +5076,33 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		const std::string requestBodyText = requestBody.dump();
-		ResponsesStreamParseState streamState;
-		int attemptCount = 0;
-		bool sawResponseChunk = false;
 		const auto roundStart = PerfClock::now();
-		const auto [responseBody, statusCode] = PerformPostRequestStreamingWithRetry(
+		OpenAIResponsesStreamRequestResult streamRequest =
+			PerformOpenAIResponsesStreamRequestWithRetry(
 			endpoint,
 			requestBodyText,
-			[&streamState, &streamCallback](const std::string& chunk) -> bool {
-				return ConsumeResponsesStreamChunk(chunk, streamState, streamCallback);
-			},
 			BuildOpenAIHeaders(settings),
 			GetChatRequestTimeoutMs(settings),
-			false,
-			false,
-			"openai-responses-chat",
-			cancelCallback,
-			cancelContext,
 			settings.retryCount,
-			&attemptCount,
-			&sawResponseChunk);
+			streamCallback,
+			runOptions.streamRetryCallback,
+			cancelCallback,
+			cancelContext);
+		ResponsesStreamParseState& streamState = streamRequest.streamState;
+		const std::string& responseBody = streamRequest.responseBody;
+		const int statusCode = streamRequest.statusCode;
 		LogChatRoundMetrics(
 			"openai-responses-chat",
 			round,
 			requestBodyText.size(),
 			ElapsedMs(roundStart),
 			statusCode,
-			attemptCount,
+			streamRequest.attemptCount,
 			toolPolicy.ExplorationCalls());
 		result.httpStatus = statusCode;
-		result.endpointEstablished = result.endpointEstablished || sawResponseChunk || IsSuccessfulHttpStatus(statusCode);
+		result.endpointEstablished = result.endpointEstablished ||
+			streamRequest.sawResponseChunk ||
+			IsSuccessfulHttpStatus(statusCode);
 		if (IsCancelRequested(cancelCallback, cancelContext) || statusCode == kAiRequestCancelledHttpStatus) {
 			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(streamState.mergedTextUtf8));
 		}
@@ -7310,6 +7597,185 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"tool_calls", calls.size()},
 			{"text", state.mergedTextUtf8},
 			{"error", state.parseError}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		ResponsesStreamParseState streamReadState;
+		const std::string streamReadSse =
+			"event: response.failed\n"
+			"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"stream_read_error\"}}}\n\n";
+		ConsumeResponsesStreamChunk(streamReadSse, streamReadState, {});
+
+		ResponsesStreamParseState upstreamState;
+		const std::string upstreamSse =
+			"event: error\n"
+			"data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"Upstream request failed\"}\n\n";
+		ConsumeResponsesStreamChunk(upstreamSse, upstreamState, {});
+
+		ResponsesStreamParseState unknownFailureState;
+		const std::string unknownFailureSse =
+			"event: response.failed\n"
+			"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"future_error_code\",\"message\":\"opaque failure\"}}}\n\n";
+		ConsumeResponsesStreamChunk(unknownFailureSse, unknownFailureState, {});
+
+		constexpr std::array<std::string_view, 8> fatalCodes = {{
+			"context_length_exceeded",
+			"insufficient_quota",
+			"usage_not_included",
+			"cyber_policy",
+			"invalid_prompt",
+			"bio_policy",
+			"server_is_overloaded",
+			"slow_down",
+		}};
+		bool allFatalCodesRejected = true;
+		for (const std::string_view code : fatalCodes) {
+			ResponsesStreamParseState fatalState;
+			fatalState.sawSseEvent = true;
+			fatalState.failureEventType = "response.failed";
+			fatalState.failureCode = std::string(code);
+			allFatalCodesRejected = allFatalCodesRejected &&
+				!ShouldRetryOpenAIResponsesStreamAttempt(fatalState, 200, std::string());
+		}
+
+		ResponsesStreamParseState visibleTextState;
+		const std::string visibleTextSse =
+			"event: response.output_text.delta\n"
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"
+			"event: response.failed\n"
+			"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\",\"message\":\"stream_read_error\"}}}\n\n";
+		ConsumeResponsesStreamChunk(visibleTextSse, visibleTextState, {});
+
+		ResponsesStreamParseState disconnectedState;
+		const std::string disconnectedSse =
+			"event: response.created\n"
+			"data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_retry\"}}\n\n";
+		ConsumeResponsesStreamChunk(disconnectedSse, disconnectedState, {});
+
+		ResponsesStreamParseState incompleteState;
+		const std::string incompleteSse =
+			"event: response.incomplete\n"
+			"data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"content_filter\"}}}\n\n";
+		ConsumeResponsesStreamChunk(incompleteSse, incompleteState, {});
+
+		ResponsesStreamParseState malformedState;
+		ConsumeResponsesStreamChunk(
+			"event: response.output_text.delta\n"
+			"data: {not-json}\n\n",
+			malformedState,
+			{});
+
+		ResponsesStreamParseState missingErrorState;
+		ConsumeResponsesStreamChunk(
+			"event: response.failed\n"
+			"data: {\"type\":\"response.failed\",\"response\":{}}\n\n",
+			missingErrorState,
+			{});
+
+		ResponsesStreamParseState completedState;
+		ConsumeResponsesStreamChunk(
+			"event: response.completed\n"
+			"data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n",
+			completedState,
+			{});
+
+		ResponsesStreamParseState rateLimitMsState;
+		rateLimitMsState.failureCode = "rate_limit_exceeded";
+		rateLimitMsState.parseError = "Please try again in 28ms.";
+		ResponsesStreamParseState rateLimitSecondsState;
+		rateLimitSecondsState.failureCode = "rate_limit_exceeded";
+		rateLimitSecondsState.parseError = "Rate limit exceeded. Try again in 1.898s.";
+		ResponsesStreamParseState rateLimitLongSecondsState;
+		rateLimitLongSecondsState.failureCode = "rate_limit_exceeded";
+		rateLimitLongSecondsState.parseError = "Rate limit exceeded. Try again in 35 seconds.";
+
+		const bool streamReadRetry =
+			streamReadState.failureCode == "server_error" &&
+			streamReadState.parseError == "stream_read_error" &&
+			ShouldRetryOpenAIResponsesStreamAttempt(streamReadState, 200, std::string());
+		const bool upstreamRetry =
+			upstreamState.failureCode == "server_error" &&
+			upstreamState.parseError == "Upstream request failed" &&
+			ShouldRetryOpenAIResponsesStreamAttempt(upstreamState, 200, std::string());
+		const bool unknownFailureRetry =
+			ShouldRetryOpenAIResponsesStreamAttempt(unknownFailureState, 200, std::string());
+		const bool visibleTextRetry =
+			ShouldRetryOpenAIResponsesStreamAttempt(visibleTextState, 200, std::string());
+		const bool disconnectedRetry =
+			ShouldRetryOpenAIResponsesStreamAttempt(disconnectedState, 200, std::string());
+		const bool incompleteRetry =
+			incompleteState.parseError == "Incomplete response returned, reason: content_filter" &&
+			ShouldRetryOpenAIResponsesStreamAttempt(incompleteState, 200, std::string());
+		const bool malformedRetry =
+			!malformedState.parseError.empty() &&
+			ShouldRetryOpenAIResponsesStreamAttempt(malformedState, 200, std::string());
+		const bool missingErrorRetry =
+			missingErrorState.parseError == "response.failed event received" &&
+			ShouldRetryOpenAIResponsesStreamAttempt(missingErrorState, 200, std::string());
+		const bool completedAccepted =
+			!ShouldRetryOpenAIResponsesStreamAttempt(completedState, 200, std::string());
+		const bool emptyStreamRetry = ShouldRetryOpenAIResponsesStreamAttempt(
+			ResponsesStreamParseState{},
+			200,
+			std::string());
+		const bool malformedBodyRetry = ShouldRetryOpenAIResponsesStreamAttempt(
+			ResponsesStreamParseState{},
+			200,
+			"not-json");
+		const bool jsonCompatibilityAccepted = !ShouldRetryOpenAIResponsesStreamAttempt(
+			ResponsesStreamParseState{},
+			200,
+			R"({"output":[]})");
+		const bool readFailureRetry = ShouldRetryOpenAIResponsesStreamAttempt(
+			ResponsesStreamParseState{},
+			0,
+			"InternetReadFile failed, wininet_error=12030 ERROR_INTERNET_CONNECTION_ABORTED");
+		const bool rateLimitDelayParsed =
+			TryParseOpenAIResponsesRetryDelayMs(rateLimitMsState) == std::optional<DWORD>(28) &&
+			TryParseOpenAIResponsesRetryDelayMs(rateLimitSecondsState) == std::optional<DWORD>(1898) &&
+			TryParseOpenAIResponsesRetryDelayMs(rateLimitLongSecondsState) == std::optional<DWORD>(35000);
+		const DWORD firstBackoffMs = ComputeOpenAIResponsesRetryDelayMs(ResponsesStreamParseState{}, 1);
+		const DWORD secondBackoffMs = ComputeOpenAIResponsesRetryDelayMs(ResponsesStreamParseState{}, 2);
+		const bool codexBackoffRange =
+			firstBackoffMs >= 180 && firstBackoffMs < 220 &&
+			secondBackoffMs >= 360 && secondBackoffMs < 440;
+		const bool ok = streamReadRetry &&
+			upstreamRetry &&
+			unknownFailureRetry &&
+			allFatalCodesRejected &&
+			visibleTextRetry &&
+			disconnectedRetry &&
+			incompleteRetry &&
+			malformedRetry &&
+			missingErrorRetry &&
+			completedAccepted &&
+			emptyStreamRetry &&
+			malformedBodyRetry &&
+			jsonCompatibilityAccepted &&
+			readFailureRetry &&
+			rateLimitDelayParsed &&
+			codexBackoffRange;
+		checks.push_back({
+			{"name", "responses_stream_retry_classification"},
+			{"ok", ok},
+			{"stream_read_retry", streamReadRetry},
+			{"upstream_retry", upstreamRetry},
+			{"unknown_failure_retry", unknownFailureRetry},
+			{"all_fatal_codes_rejected", allFatalCodesRejected},
+			{"visible_text_retry", visibleTextRetry},
+			{"disconnected_retry", disconnectedRetry},
+			{"incomplete_retry", incompleteRetry},
+			{"malformed_retry", malformedRetry},
+			{"missing_error_retry", missingErrorRetry},
+			{"completed_accepted", completedAccepted},
+			{"empty_stream_retry", emptyStreamRetry},
+			{"malformed_body_retry", malformedBodyRetry},
+			{"json_compatibility_accepted", jsonCompatibilityAccepted},
+			{"read_failure_retry", readFailureRetry},
+			{"rate_limit_delay_parsed", rateLimitDelayParsed},
+			{"codex_backoff_range", codexBackoffRange}
 		});
 		allOk = allOk && ok;
 	}

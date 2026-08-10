@@ -6440,6 +6440,18 @@ void AppendStreamingAssistantDelta(unsigned long long requestId, const std::stri
 	PostRefreshDialog();
 }
 
+void ResetStreamingAssistantPreviewForRetry(unsigned long long requestId)
+{
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		if (!g_session.requestInFlight || g_session.activeRequestId != requestId) {
+			return;
+		}
+		g_session.streamingAssistantPreview.clear();
+	}
+	PostRefreshDialog();
+}
+
 bool EnsureChatSettingsReady(AISettings& settings)
 {
 	std::string missing;
@@ -6667,6 +6679,9 @@ void RunAIChatWorker(void* pParams)
 				runOptions.takePendingUserInputsCallback = [requestId = request->requestId](
 					const std::string& completedAssistantContent) {
 					return TakePendingUserInputsAtSafePoint(requestId, completedAssistantContent);
+				};
+				runOptions.streamRetryCallback = [requestId = request->requestId]() {
+					ResetStreamingAssistantPreviewForRetry(requestId);
 				};
 				result->chatResult = AIService::ExecuteChatWithTools(
 					request->contextMessages,

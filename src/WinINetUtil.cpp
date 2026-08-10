@@ -480,10 +480,12 @@ HttpResponseDetails PerformPostRequestCore(
             return cancelledResult();
         }
         if (!InternetReadFile(hRequest, buffer, sizeof(buffer), &bytesRead)) {
+            const DWORD error = GetLastError();
             if (cancellation != nullptr && cancellation->IsCancelled()) {
                 return cancelledResult();
             }
-            break;
+            cleanupAll();
+            return errorResult(FormatInternetFailure("InternetReadFile", error));
         }
         if (bytesRead == 0) {
             break;

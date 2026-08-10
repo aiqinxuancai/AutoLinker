@@ -152,6 +152,8 @@ struct AIChatRunOptions {
 	bool enableGoalTools = false;
 	// 在模型请求之间的安全边界取出新用户输入；参数为刚完成的助手回复。
 	std::function<std::vector<AIChatMessage>(const std::string& completedAssistantContent)> takePendingUserInputsCallback;
+	// Responses 流重连前清理当前未完成的界面预览，避免重放增量造成重复显示。
+	std::function<void()> streamRetryCallback;
 };
 
 // AI 对话结果。
