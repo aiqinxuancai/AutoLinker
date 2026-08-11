@@ -202,7 +202,7 @@ bool LoadMcpWriteHiddenGenericTypeEnabled()
 {
 	const std::string value = ToLowerAsciiCopy(TrimAsciiCopy(
 		g_configManager.getValue(kMcpWriteHiddenGenericTypeConfigKey)));
-	return value.empty() || value == "1" || value == "true" || value == "yes" || value == "on";
+	return value == "1" || value == "true" || value == "yes" || value == "on";
 }
 
 bool LoadFullHiddenGenericTypeEnabled()

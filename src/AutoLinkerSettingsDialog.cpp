@@ -1420,7 +1420,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		{"pages", pages},
 		{"about_fixed_links", links},
 		{"compile_hook_default_enabled", false},
-		{"mcp_generic_type_default_enabled", true},
+		{"mcp_generic_type_default_enabled", false},
 		{"full_generic_type_default_enabled", false},
 		{"debug_optimization_requires_compile_hook", hookDependencyValid},
 		{"log_optimization_webview2", !logOptimizationHtml.empty()},

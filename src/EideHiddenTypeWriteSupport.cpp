@@ -29,7 +29,7 @@ struct HiddenTypeResolutionContext {
 
 std::mutex g_hookMutex;
 thread_local HiddenTypeResolutionContext* g_resolutionContext = nullptr;
-std::atomic<bool> g_mcpWriteHiddenGenericTypeEnabled{true};
+std::atomic<bool> g_mcpWriteHiddenGenericTypeEnabled{false};
 std::atomic<bool> g_fullHiddenGenericTypeEnabled{false};
 std::atomic<bool> g_fullHiddenGenericTypeHookInstalled{false};
 bool g_fullHiddenGenericTypeHookAttachQueued = false;
