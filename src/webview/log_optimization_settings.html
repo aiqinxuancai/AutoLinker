@@ -13,13 +13,13 @@
   <header class="page-header">
     <div class="page-header-inner">
       <div class="page-heading">
-        <h1 class="page-title">日志优化</h1>
-        <p class="page-subtitle">集中管理日志查看、编译阶段内部日志捕获和调试输出快速路径。</p>
+        <h1 class="page-title">IDE 增强</h1>
+        <p class="page-subtitle">集中管理日志、内部 Hook 和易语言 IDE 类型解析增强。</p>
       </div>
     </div>
   </header>
 
-  <section class="settings" aria-label="日志优化设置">
+  <section class="settings" aria-label="IDE 增强设置">
     <div class="setting">
       <div>
         <div class="setting-title">日志中心</div>
@@ -28,6 +28,30 @@
       </div>
       <label class="toggle" title="日志中心">
         <input id="logCenterToggle" type="checkbox">
+        <span class="track"></span>
+      </label>
+    </div>
+
+    <div class="setting">
+      <div>
+        <div class="setting-title">MCP 写入支持“通用型”</div>
+        <p class="description">仅在 AutoLinker 通过 MCP 整页写入源码时解析隐藏的“通用型”；Hook 生命周期随单次写入结束。</p>
+        <div id="mcpGenericStatus" class="status"></div>
+      </div>
+      <label class="toggle" title="MCP 写入支持通用型">
+        <input id="mcpGenericToggle" type="checkbox">
+        <span class="track"></span>
+      </label>
+    </div>
+
+    <div class="setting">
+      <div>
+        <div class="setting-title">完全支持“通用型” <span class="experimental">试验</span></div>
+        <p class="description">在 IDE 的全部类型名称解析路径中启用隐藏的“通用型”，包括手工输入和纯文本粘贴。首次开启后需重启 IDE 安装常驻 Hook。</p>
+        <div id="fullGenericStatus" class="status"></div>
+      </div>
+      <label class="toggle" title="完全支持通用型">
+        <input id="fullGenericToggle" type="checkbox">
         <span class="track"></span>
       </label>
     </div>
@@ -68,6 +92,8 @@ window.autolinkerApplyLogOptimization=function(payload){
   $("logCenterToggle").checked=!!data.logCenterOpen;
   $("compileHookToggle").checked=!!data.compileHookEnabled;
   $("debugToggle").checked=!!data.debugOptimizationEnabled;
+  $("mcpGenericToggle").checked=!!data.mcpGenericEnabled;
+  $("fullGenericToggle").checked=!!data.fullGenericEnabled;
   $("debugToggle").disabled=!data.compileHookEnabled;
   $("logCenterStatus").textContent=data.logCenterOpen?"当前已打开":"当前已关闭";
   $("logCenterStatus").className="status "+(data.logCenterOpen?"positive":"");
@@ -75,11 +101,17 @@ window.autolinkerApplyLogOptimization=function(payload){
   $("hookStatus").className="status "+(data.hookAvailable?"positive":(data.compileHookEnabled?"warning":""));
   $("debugStatus").textContent=data.debugStatus||"";
   $("debugStatus").className="status "+(data.debugOptimizationEnabled?"positive":(!data.compileHookEnabled?"warning":""));
+  $("mcpGenericStatus").textContent=data.mcpGenericStatus||"";
+  $("mcpGenericStatus").className="status "+(data.mcpGenericEnabled?"positive":"");
+  $("fullGenericStatus").textContent=data.fullGenericStatus||"";
+  $("fullGenericStatus").className="status "+(data.fullGenericEnabled&&data.fullGenericHookInstalled?"positive":(data.fullGenericEnabled?"warning":""));
   setNotice(data.notice||"",!!data.noticeIsError);
 };
 $("logCenterToggle").addEventListener("change",function(){post("set_log_center",this.checked)});
 $("compileHookToggle").addEventListener("change",function(){post("set_compile_hook",this.checked)});
 $("debugToggle").addEventListener("change",function(){post("set_debug_optimization",this.checked)});
+$("mcpGenericToggle").addEventListener("change",function(){post("set_mcp_generic_type",this.checked)});
+$("fullGenericToggle").addEventListener("change",function(){post("set_full_generic_type",this.checked)});
 document.addEventListener("DOMContentLoaded",function(){post("ready",false)});
 </script>
 </body>

@@ -171,7 +171,8 @@ bool IsRetryableHttpStatus(int statusCode)
 bool ContainsRetryableTransportHint(const std::string& responseBody)
 {
 	const std::string lower = ToLowerAsciiCopy(responseBody);
-	return lower.find("error in internetopen") != std::string::npos ||
+	return lower.find("wininet_error=") != std::string::npos ||
+		lower.find("error in internetopen") != std::string::npos ||
 		lower.find("error in internetcrackurl") != std::string::npos ||
 		lower.find("error in internetconnect") != std::string::npos ||
 		lower.find("error in httpopenrequest") != std::string::npos ||
@@ -7732,6 +7733,10 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			ResponsesStreamParseState{},
 			0,
 			"InternetReadFile failed, wininet_error=12030 ERROR_INTERNET_CONNECTION_ABORTED");
+		const bool connectFailureRetry = ShouldRetryOpenAIResponsesStreamAttempt(
+			ResponsesStreamParseState{},
+			0,
+			"HttpSendRequest failed, wininet_error=12029 ERROR_INTERNET_CANNOT_CONNECT");
 		const bool rateLimitDelayParsed =
 			TryParseOpenAIResponsesRetryDelayMs(rateLimitMsState) == std::optional<DWORD>(28) &&
 			TryParseOpenAIResponsesRetryDelayMs(rateLimitSecondsState) == std::optional<DWORD>(1898) &&
@@ -7755,6 +7760,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			malformedBodyRetry &&
 			jsonCompatibilityAccepted &&
 			readFailureRetry &&
+			connectFailureRetry &&
 			rateLimitDelayParsed &&
 			codexBackoffRange;
 		checks.push_back({
@@ -7774,6 +7780,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"malformed_body_retry", malformedBodyRetry},
 			{"json_compatibility_accepted", jsonCompatibilityAccepted},
 			{"read_failure_retry", readFailureRetry},
+			{"connect_failure_retry", connectFailureRetry},
 			{"rate_limit_delay_parsed", rateLimitDelayParsed},
 			{"codex_backoff_range", codexBackoffRange}
 		});

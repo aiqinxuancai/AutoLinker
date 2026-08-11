@@ -387,7 +387,7 @@ struct DrainedOutput {
 	size_t originalBytes = 0;
 };
 
-struct Session : std::enable_shared_from_this<Session> {
+struct Session {
 	~Session()
 	{
 		Terminate(125);
@@ -481,7 +481,7 @@ struct Session : std::enable_shared_from_this<Session> {
 	std::chrono::steady_clock::time_point lastUsed = std::chrono::steady_clock::now();
 };
 
-void ReadSessionOutput(const std::shared_ptr<Session>& session)
+void ReadSessionOutput(Session* session)
 {
 	std::array<char, 8192> buffer = {};
 	DWORD bytesRead = 0;
@@ -500,7 +500,7 @@ void ReadSessionOutput(const std::shared_ptr<Session>& session)
 	session->cv.notify_all();
 }
 
-void WatchSessionProcess(const std::shared_ptr<Session>& session)
+void WatchSessionProcess(Session* session)
 {
 	WaitForSingleObject(session->process, INFINITE);
 	DWORD exitCode = 0;
@@ -518,7 +518,7 @@ void WatchSessionProcess(const std::shared_ptr<Session>& session)
 
 bool StartSessionProcess(
 	const ExecCommandRequest& request,
-	const std::shared_ptr<Session>& session,
+	Session& session,
 	std::string& outError)
 {
 	std::wstring executable;
@@ -665,27 +665,29 @@ bool StartSessionProcess(
 		return false;
 	}
 
-	session->job = job;
-	session->process = processInfo.hProcess;
-	session->readPipe = readPipe;
+	session.job = job;
+	session.process = processInfo.hProcess;
+	session.readPipe = readPipe;
 	if (ResumeThread(processInfo.hThread) == static_cast<DWORD>(-1)) {
 		CloseHandle(processInfo.hThread);
-		session->Terminate(126);
+		session.Terminate(126);
 		outError = "ResumeThread command process failed";
 		return false;
 	}
 	CloseHandle(processInfo.hThread);
 	try {
-		session->reader = std::thread(ReadSessionOutput, session);
-		session->watcher = std::thread(WatchSessionProcess, session);
+		// Session owns and joins both workers. Workers only borrow its address so
+		// the final strong reference can never be released from a worker thread.
+		session.reader = std::thread(ReadSessionOutput, &session);
+		session.watcher = std::thread(WatchSessionProcess, &session);
 	}
 	catch (const std::system_error& ex) {
-		session->Terminate(126);
-		if (session->watcher.joinable()) {
-			session->watcher.join();
+		session.Terminate(126);
+		if (session.watcher.joinable()) {
+			session.watcher.join();
 		}
-		if (session->reader.joinable()) {
-			session->reader.join();
+		if (session.reader.joinable()) {
+			session.reader.join();
 		}
 		outError = std::string("start command monitor thread failed: ") + ex.what();
 		return false;
@@ -700,13 +702,13 @@ struct WaitSnapshot {
 };
 
 WaitSnapshot WaitAndCollect(
-	const std::shared_ptr<Session>& session,
+	Session& session,
 	unsigned int yieldTimeMs,
 	const std::function<bool()>& cancelCallback)
 {
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(yieldTimeMs);
-	std::unique_lock<std::mutex> lock(session->mutex);
-	while (!(session->outputClosed && session->processExited) &&
+	std::unique_lock<std::mutex> lock(session.mutex);
+	while (!(session.outputClosed && session.processExited) &&
 		std::chrono::steady_clock::now() < deadline) {
 		if (cancelCallback && cancelCallback()) {
 			break;
@@ -716,13 +718,13 @@ WaitSnapshot WaitAndCollect(
 			remaining,
 			std::chrono::duration_cast<std::chrono::steady_clock::duration>(
 				std::chrono::milliseconds(50)));
-		session->cv.wait_for(lock, slice);
+		session.cv.wait_for(lock, slice);
 	}
 	WaitSnapshot snapshot;
-	snapshot.exited = session->processExited;
-	snapshot.exitCode = session->exitCode;
+	snapshot.exited = session.processExited;
+	snapshot.exitCode = session.exitCode;
 	lock.unlock();
-	snapshot.output = session->DrainOutput();
+	snapshot.output = session.DrainOutput();
 	return snapshot;
 }
 
@@ -874,13 +876,13 @@ ExecCommandResult ExecCommandSessionManager::Execute(
 
 	auto session = std::make_shared<Session>();
 	session->ownerSessionId = request.ownerSessionId;
-	if (!StartSessionProcess(request, session, result.error)) {
+	if (!StartSessionProcess(request, *session, result.error)) {
 		return result;
 	}
 	m_impl->Store(session);
 
 	const auto start = std::chrono::steady_clock::now();
-	const WaitSnapshot snapshot = WaitAndCollect(session, ClampInitialYield(request.yieldTimeMs), cancelCallback);
+	const WaitSnapshot snapshot = WaitAndCollect(*session, ClampInitialYield(request.yieldTimeMs), cancelCallback);
 	const double wallTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 	result.responseUtf8 = FormatResponse(snapshot, session->sessionId, request.maxOutputTokens, wallTime);
 	result.ok = true;
@@ -910,7 +912,7 @@ ExecCommandResult ExecCommandSessionManager::WriteStdin(
 
 	const auto start = std::chrono::steady_clock::now();
 	const WaitSnapshot snapshot = WaitAndCollect(
-		session,
+		*session,
 		ClampWriteYield(request.yieldTimeMs, request.charsUtf8.empty()),
 		cancelCallback);
 	const double wallTime = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
@@ -983,6 +985,22 @@ std::string ExecCommandSessionManager::BuildSelfTestJson()
 		shortResult.responseUtf8.find("Process exited with code 7") != std::string::npos &&
 		shortResult.responseUtf8.find("short-ok") != std::string::npos;
 
+	ExecCommandRequest rapidRequest = shortRequest;
+	rapidRequest.shellUtf8 = "cmd.exe";
+	rapidRequest.commandUtf8 = "echo rapid-ok";
+	bool rapidCompletionOk = true;
+	constexpr int kRapidCompletionIterations = 64;
+	for (int index = 0; index < kRapidCompletionIterations; ++index) {
+		const ExecCommandResult rapidResult = Execute(rapidRequest);
+		rapidCompletionOk = rapidCompletionOk &&
+			rapidResult.ok &&
+			rapidResult.responseUtf8.find("Process exited with code 0") != std::string::npos &&
+			rapidResult.responseUtf8.find("rapid-ok") != std::string::npos;
+		if (!rapidCompletionOk) {
+			break;
+		}
+	}
+
 	ExecCommandRequest longRequest = shortRequest;
 	longRequest.commandUtf8 = "Write-Output 'begin'; Start-Sleep -Milliseconds 2600; Write-Output 'end'";
 	const ExecCommandResult first = Execute(longRequest);
@@ -1025,8 +1043,12 @@ std::string ExecCommandSessionManager::BuildSelfTestJson()
 
 	TerminateOwnerSession(owner);
 	report["short_command"] = {{"ok", shortOk}};
+	report["rapid_completion_lifecycle"] = {
+		{"ok", rapidCompletionOk},
+		{"iterations", kRapidCompletionIterations}
+	};
 	report["background_poll"] = {{"ok", sessionOk}, {"session_id", sessionId}};
 	report["interrupt"] = {{"ok", interruptOk}, {"session_id", cancelSessionId}};
-	report["ok"] = shortOk && sessionOk && interruptOk;
+	report["ok"] = shortOk && rapidCompletionOk && sessionOk && interruptOk;
 	return report.dump();
 }

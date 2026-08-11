@@ -23,6 +23,7 @@
 #include "AutoLinkerVersion.h"
 #include "EcSwitchConfigDialog.h"
 #include "EPackagerIntegration.h"
+#include "EideHiddenTypeWriteSupport.h"
 #include "ForceLinkLibConfigDialog.h"
 #include "Global.h"
 #include "IdeCompileOutputCapture.h"
@@ -42,6 +43,8 @@ constexpr wchar_t kWebViewPageWindowClass[] = L"AutoLinker.UnifiedSettings.WebVi
 constexpr char kLastPageConfigKey[] = "ui.settings.last_page";
 constexpr char kDebugOutputOptimizationConfigKey[] = "debug.output_optimization.enabled";
 constexpr char kCompileOutputCaptureHookConfigKey[] = "ide.compile_output_capture_hook.enabled";
+constexpr char kMcpWriteHiddenGenericTypeConfigKey[] = "ide.hidden_generic_type.mcp_write.enabled";
+constexpr char kFullHiddenGenericTypeConfigKey[] = "ide.hidden_generic_type.full.enabled";
 constexpr char kDebugOutputOptimizationEnabledMessage[] =
 	"开启后输出调试文本等调试输出函数的性能大幅提升，减少调试与界面更新在同一线程造成的延时";
 
@@ -95,7 +98,7 @@ constexpr std::array<const wchar_t*, static_cast<size_t>(AutoLinkerSettingsPageI
 	L"链接器",
 	L"EC 模块切换",
 	L"核心库函数重写",
-	L"日志优化",
+	L"IDE 增强",
 	L"关于"
 };
 
@@ -336,6 +339,9 @@ std::string BuildLogOptimizationPayload(
 	const bool hookEnabled = IdeCompileOutputCapture::IsCaptureHookEnabled();
 	const bool hookAvailable = IdeCompileOutputCapture::IsHookAvailable();
 	const bool debugEnabled = IdeCompileOutputCapture::IsDebugOutputOptimizationEnabled();
+	const bool mcpGenericEnabled = e571::IsMcpWriteHiddenGenericTypeEnabled();
+	const bool fullGenericEnabled = e571::IsFullHiddenGenericTypeEnabled();
+	const bool fullGenericHookInstalled = e571::IsFullHiddenGenericTypeHookInstalled();
 	std::string hookStatus;
 	if (!hookEnabled) {
 		hookStatus = "当前已旁路；下次启动不会安装该 Hook。";
@@ -359,13 +365,40 @@ std::string BuildLogOptimizationPayload(
 	else {
 		debugStatus = "设置已保存；重启 IDE 后启用快速路径";
 	}
+	std::string mcpGenericStatus;
+	if (mcpGenericEnabled) {
+		mcpGenericStatus = "当前已启用；MCP 整页写入时会把“通用型”解析为内部类型。";
+	}
+	else if (fullGenericEnabled && fullGenericHookInstalled) {
+		mcpGenericStatus = "当前开关已关闭，但“完全支持通用型”仍覆盖 MCP 写入路径。";
+	}
+	else {
+		mcpGenericStatus = "当前已关闭；含“通用型”的 MCP 文本写入会在修改页面前被拒绝。";
+	}
+	std::string fullGenericStatus;
+	if (!fullGenericEnabled) {
+		fullGenericStatus = fullGenericHookInstalled
+			? "当前已旁路；常驻入口仍安全直通原函数。"
+			: "当前已关闭；下次启动不会安装常驻类型解析 Hook。";
+	}
+	else if (fullGenericHookInstalled) {
+		fullGenericStatus = "当前常驻 Hook 已安装，手工输入和纯文本粘贴均支持“通用型”。";
+	}
+	else {
+		fullGenericStatus = "设置已保存；重启 IDE 后尝试安装常驻类型解析 Hook。";
+	}
 	nlohmann::json payload = {
 		{"logCenterOpen", IdeLogViewer::IsOpen()},
 		{"compileHookEnabled", hookEnabled},
 		{"hookAvailable", hookAvailable},
 		{"debugOptimizationEnabled", debugEnabled},
+		{"mcpGenericEnabled", mcpGenericEnabled},
+		{"fullGenericEnabled", fullGenericEnabled},
+		{"fullGenericHookInstalled", fullGenericHookInstalled},
 		{"hookStatus", hookStatus},
 		{"debugStatus", debugStatus},
+		{"mcpGenericStatus", mcpGenericStatus},
+		{"fullGenericStatus", fullGenericStatus},
 		{"notice", notice},
 		{"noticeIsError", noticeIsError}
 	};
@@ -522,6 +555,21 @@ void HandleLogOptimizationAction(
 					notice = "设置已保存，重启 IDE 后启用调试输出快速路径。";
 				}
 			}
+		}
+	}
+	else if (action == "set_mcp_generic_type") {
+		WriteBoolConfig(kMcpWriteHiddenGenericTypeConfigKey, enabled);
+		e571::SetMcpWriteHiddenGenericTypeEnabled(enabled);
+		if (!enabled && e571::IsFullHiddenGenericTypeEnabled() &&
+			e571::IsFullHiddenGenericTypeHookInstalled()) {
+			notice = "MCP 专用开关已关闭；当前仍由“完全支持通用型”覆盖 MCP 写入路径。";
+		}
+	}
+	else if (action == "set_full_generic_type") {
+		WriteBoolConfig(kFullHiddenGenericTypeConfigKey, enabled);
+		e571::SetFullHiddenGenericTypeEnabled(enabled);
+		if (enabled && !e571::IsFullHiddenGenericTypeHookInstalled()) {
+			notice = "设置已保存，重启 IDE 后才会安装完全支持“通用型”的常驻 Hook。";
 		}
 	}
 	ApplySettingsWebViewData(context, notice, noticeIsError);
@@ -837,7 +885,7 @@ LRESULT CALLBACK SettingsWebViewPageProc(HWND page, UINT message, WPARAM wParam,
 		context->loadingLabel = CreateLabel(
 			page,
 			context->kind == SettingsWebViewPageKind::LogOptimization
-				? L"正在初始化 WebView2 日志优化页面..."
+				? L"正在初始化 WebView2 IDE 增强页面..."
 				: L"正在初始化 WebView2 关于页面...",
 			SS_LEFT, 20, 18, 600, 28,
 			reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
@@ -1344,6 +1392,8 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 	const bool webViewResourcesValid =
 		aiOtherHtml.find("autolinkerApplyAiOtherSettings") != std::string::npos &&
 		logOptimizationHtml.find("autolinkerApplyLogOptimization") != std::string::npos &&
+		logOptimizationHtml.find("mcpGenericToggle") != std::string::npos &&
+		logOptimizationHtml.find("fullGenericToggle") != std::string::npos &&
 		aboutHtml.find("autolinkerApplyAbout") != std::string::npos &&
 		!aboutIconDataUrl.empty();
 	const bool ePackagerTwoStepUpdateValid =
@@ -1370,6 +1420,8 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		{"pages", pages},
 		{"about_fixed_links", links},
 		{"compile_hook_default_enabled", false},
+		{"mcp_generic_type_default_enabled", true},
+		{"full_generic_type_default_enabled", false},
 		{"debug_optimization_requires_compile_hook", hookDependencyValid},
 		{"log_optimization_webview2", !logOptimizationHtml.empty()},
 		{"ai_other_webview2", !aiOtherHtml.empty()},
@@ -1379,7 +1431,9 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		{"webview_invalid_utf8_payload_safe", invalidUtf8PayloadSafe},
 		{"log_center_config_key", "ui.log_center.open"},
 		{"compile_hook_config_key", kCompileOutputCaptureHookConfigKey},
-		{"debug_optimization_config_key", kDebugOutputOptimizationConfigKey}
+		{"debug_optimization_config_key", kDebugOutputOptimizationConfigKey},
+		{"mcp_generic_type_config_key", kMcpWriteHiddenGenericTypeConfigKey},
+		{"full_generic_type_config_key", kFullHiddenGenericTypeConfigKey}
 	};
 	return report.dump();
 }

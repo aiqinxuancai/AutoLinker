@@ -30,6 +30,7 @@
 #include "AutoLinkerVersion.h"
 #include "AutoLinkerSettingsDialog.h"
 #include "ExecCommandSessionManager.h"
+#include "EideHiddenTypeWriteSupport.h"
 #include "GameAnalyticsClient.h"
 #include "IdeCompileOutputCapture.h"
 #include "IdeLogViewer.h"
@@ -2533,6 +2534,39 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		};
 	}
 	report["checks"].push_back(std::move(compileFingerprintCheck));
+
+	const std::string genericTypeGbk = "\xCD\xA8\xD3\xC3\xD0\xCD";
+	const std::string genericTypeUtf8 = "\xE9\x80\x9A\xE7\x94\xA8\xE5\x9E\x8B";
+	const std::string genericParameterGbk =
+		".subroutine Demo\r\n.parameter value, " + genericTypeGbk + ", reference\r\n";
+	const std::string genericReturnTypeUtf8 =
+		".subroutine Demo, " + genericTypeUtf8 + "\r\n";
+	const std::string genericOnlyInComment =
+		"' .parameter value, " + genericTypeGbk + ", reference\r\n";
+	const std::string genericOnlyInDescription =
+		".parameter value, integer, reference, accepts " + genericTypeUtf8 + "\r\n";
+	const std::string ordinaryParameter =
+		".subroutine Demo\r\n.parameter value, integer\r\n";
+	const bool genericParameterDetected =
+		e571::ContainsHiddenGenericTypeDeclaration(genericParameterGbk);
+	const bool genericReturnTypeDetected =
+		e571::ContainsHiddenGenericTypeDeclaration(genericReturnTypeUtf8);
+	const bool genericCommentIgnored =
+		!e571::ContainsHiddenGenericTypeDeclaration(genericOnlyInComment);
+	const bool genericDescriptionIgnored =
+		!e571::ContainsHiddenGenericTypeDeclaration(genericOnlyInDescription);
+	const bool ordinaryParameterIgnored =
+		!e571::ContainsHiddenGenericTypeDeclaration(ordinaryParameter);
+	report["checks"].push_back({
+		{"name", "eide-hidden-generic-type-declaration-detection"},
+		{"ok", genericParameterDetected && genericReturnTypeDetected &&
+			genericCommentIgnored && genericDescriptionIgnored && ordinaryParameterIgnored},
+		{"gbk_parameter_detected", genericParameterDetected},
+		{"utf8_return_type_detected", genericReturnTypeDetected},
+		{"comment_ignored", genericCommentIgnored},
+		{"description_ignored", genericDescriptionIgnored},
+		{"ordinary_type_ignored", ordinaryParameterIgnored}
+	});
 
 	const std::string bareProgramUnitHeader =
 		NormalizeRealPageAssemblyVariableAliasesForCompare(

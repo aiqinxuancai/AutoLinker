@@ -15,6 +15,7 @@
 #include <detours.h>
 
 #include "ECOMEx.h"
+#include "EideHiddenTypeWriteSupport.h"
 #include "EideProjectBinarySerializer.h"
 #include "ForceLinkLibManager.h"
 #include "Global.h"
@@ -691,12 +692,33 @@ void StartHookCreateFileA()
 	}
 #endif
 
+	// 隐藏类型 Hook 仅在“完全支持通用型”开启时常驻安装。
+	const bool fullHiddenTypeHookRequested = e571::IsFullHiddenGenericTypeEnabled();
+	std::string hiddenTypeAttachTrace;
+	bool hiddenTypeAttachQueued = false;
+	if (fullHiddenTypeHookRequested) {
+		const std::uintptr_t moduleBase = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+		hiddenTypeAttachQueued = e571::AttachFullHiddenGenericTypeHookToCurrentDetourTransaction(
+			moduleBase,
+			&hiddenTypeAttachTrace);
+		if (!hiddenTypeAttachQueued) {
+			OutputStringToELog("[HiddenTypeResolver] " + hiddenTypeAttachTrace);
+		}
+	}
+
 	// 编译输出 Hook 是可选能力：关闭时不解析地址、不附加 Detour。
 	if (IdeCompileOutputCapture::IsCaptureHookEnabled()) {
 		IdeCompileOutputCapture::AttachToCurrentDetourTransaction();
 	}
 
 	const LONG error = DetourTransactionCommit();
+	std::string hiddenTypeCompleteTrace;
+	e571::CompleteFullHiddenGenericTypeHookInstallation(
+		error == NO_ERROR,
+		&hiddenTypeCompleteTrace);
+	if (fullHiddenTypeHookRequested && hiddenTypeAttachQueued) {
+		OutputStringToELog("[HiddenTypeResolver] " + hiddenTypeCompleteTrace);
+	}
 	IdeCompileOutputCapture::CompleteHookInstallation(error == NO_ERROR);
 	if (error == NO_ERROR) {
 		g_fullHookInstalled = true;

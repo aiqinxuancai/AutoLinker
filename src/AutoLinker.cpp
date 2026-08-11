@@ -21,6 +21,7 @@
 #include "EcSwitchConfigDialog.h"
 #include "ECOMEx.h"
 #include "EPackagerIntegration.h"
+#include "EideHiddenTypeWriteSupport.h"
 #include "ForceLinkLibConfigDialog.h"
 #include "GameAnalyticsClient.h"
 #include "Global.h"
@@ -49,6 +50,8 @@ std::mutex g_initTraceMutex;
 
 constexpr char kDebugOutputOptimizationConfigKey[] = "debug.output_optimization.enabled";
 constexpr char kCompileOutputCaptureHookConfigKey[] = "ide.compile_output_capture_hook.enabled";
+constexpr char kMcpWriteHiddenGenericTypeConfigKey[] = "ide.hidden_generic_type.mcp_write.enabled";
+constexpr char kFullHiddenGenericTypeConfigKey[] = "ide.hidden_generic_type.full.enabled";
 constexpr char kDebugOutputOptimizationEnabledMessage[] =
 	"开启后输出调试文本等调试输出函数的性能大幅提升，减少调试与界面更新在同一线程造成的延时";
 
@@ -147,7 +150,7 @@ const auto& GetAddInMenuEntries()
 		{ "打开项目目录", "这是个用作测试的辅助工具功能。", &OpenProjectDirectoryAddIn },
 		{ "打开 AutoLinker 配置目录", "打开 AutoLinker 的本地配置目录。", &OpenAutoLinkerConfigDirectoryAddIn },
 		{ "打开易语言目录", "打开当前易语言 IDE 所在目录。", &OpenELanguageDirectoryAddIn },
-		{ "AutoLinker 设置", "统一管理 AI、MCP、链接器、日志优化与组件更新。", &ShowSettingsAddIn },
+		{ "AutoLinker 设置", "统一管理 AI、MCP、链接器、IDE 增强与组件更新。", &ShowSettingsAddIn },
 	} };
 	return kEntries;
 }
@@ -192,6 +195,20 @@ bool LoadCompileOutputCaptureHookEnabled()
 {
 	const std::string value = ToLowerAsciiCopy(TrimAsciiCopy(
 		g_configManager.getValue(kCompileOutputCaptureHookConfigKey)));
+	return value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
+bool LoadMcpWriteHiddenGenericTypeEnabled()
+{
+	const std::string value = ToLowerAsciiCopy(TrimAsciiCopy(
+		g_configManager.getValue(kMcpWriteHiddenGenericTypeConfigKey)));
+	return value.empty() || value == "1" || value == "true" || value == "yes" || value == "on";
+}
+
+bool LoadFullHiddenGenericTypeEnabled()
+{
+	const std::string value = ToLowerAsciiCopy(TrimAsciiCopy(
+		g_configManager.getValue(kFullHiddenGenericTypeConfigKey)));
 	return value == "1" || value == "true" || value == "yes" || value == "on";
 }
 
@@ -396,6 +413,14 @@ bool FneInit()
 	const bool debugOutputOptimizationEnabled =
 		compileOutputCaptureHookEnabled && LoadDebugOutputOptimizationEnabled();
 	IdeCompileOutputCapture::SetDebugOutputOptimizationEnabled(debugOutputOptimizationEnabled);
+	const bool mcpWriteHiddenGenericTypeEnabled = LoadMcpWriteHiddenGenericTypeEnabled();
+	const bool fullHiddenGenericTypeEnabled = LoadFullHiddenGenericTypeEnabled();
+	e571::SetMcpWriteHiddenGenericTypeEnabled(mcpWriteHiddenGenericTypeEnabled);
+	e571::SetFullHiddenGenericTypeEnabled(fullHiddenGenericTypeEnabled);
+	TraceInitStep(std::format(
+		"隐藏通用型 Hook 配置 mcp_write={} full={}",
+		mcpWriteHiddenGenericTypeEnabled ? 1 : 0,
+		fullHiddenGenericTypeEnabled ? 1 : 0));
 	if (!compileOutputCaptureHookEnabled && LoadDebugOutputOptimizationEnabled()) {
 		g_configManager.setValue(kDebugOutputOptimizationConfigKey, "0");
 	}

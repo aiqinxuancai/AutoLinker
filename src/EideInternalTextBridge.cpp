@@ -22,6 +22,7 @@
 #include "RealPageCodeToolSupport.h"
 #include "WindowHelper.h"
 #include "EideEditorObjectResolver.h"
+#include "EideHiddenTypeWriteSupport.h"
 
 namespace e571 {
 namespace {
@@ -6558,6 +6559,16 @@ bool ReplaceWholePageByInternalClipboardObject(
 		}
 		return false;
 	}
+	const std::string preparedPageCode =
+		PrepareAssemblyVariablesForRealPageWrite(NormalizeLineBreakToCrLf(pageCode));
+	std::string hiddenTypeTrace;
+	ScopedHiddenTypeResolverHook hiddenTypeHook(moduleBase, preparedPageCode, &hiddenTypeTrace);
+	if (!hiddenTypeHook.IsReady()) {
+		if (outTrace != nullptr) {
+			*outTrace = "internal_clipboard_hidden_type_unavailable|" + hiddenTypeTrace;
+		}
+		return false;
+	}
 
 	std::string selectTrace;
 	if (!InvokeEditorCommand(
@@ -6596,8 +6607,6 @@ bool ReplaceWholePageByInternalClipboardObject(
 		deleteTrace = "delete_skipped|selection_replace";
 	}
 
-	const std::string preparedPageCode =
-		PrepareAssemblyVariablesForRealPageWrite(NormalizeLineBreakToCrLf(pageCode));
 	std::string pasteTrace;
 	if (!PasteParsedTextObjectByEditor(editorObject, moduleBase, preparedPageCode, nullptr, &pasteTrace)) {
 		if (outTrace != nullptr) {
@@ -6615,7 +6624,11 @@ bool ReplaceWholePageByInternalClipboardObject(
 			"|" +
 			pasteTrace +
 			"|" +
-			interopTrace;
+			interopTrace +
+			(hiddenTypeHook.IsRequired()
+				? "|" + hiddenTypeTrace + "|hidden_type_replacements=" +
+					std::to_string(hiddenTypeHook.ReplacementCount())
+				: std::string());
 	}
 	return true;
 }
@@ -6633,6 +6646,16 @@ bool ReplaceWholePageByE595DirectTextPackage(
 	if (editorObject == 0 || moduleBase == 0 || pageCode.empty()) {
 		if (outTrace != nullptr) {
 			*outTrace = "e595_direct_replace_invalid_argument";
+		}
+		return false;
+	}
+	const std::string preparedPageCode =
+		PrepareAssemblyVariablesForRealPageWrite(NormalizeLineBreakToCrLf(pageCode));
+	std::string hiddenTypeTrace;
+	ScopedHiddenTypeResolverHook hiddenTypeHook(moduleBase, preparedPageCode, &hiddenTypeTrace);
+	if (!hiddenTypeHook.IsReady()) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_direct_hidden_type_unavailable|" + hiddenTypeTrace;
 		}
 		return false;
 	}
@@ -6689,7 +6712,11 @@ bool ReplaceWholePageByE595DirectTextPackage(
 			"|" +
 			deleteTrace +
 			"|" +
-			pasteTrace;
+			pasteTrace +
+			(hiddenTypeHook.IsRequired()
+				? "|" + hiddenTypeTrace + "|hidden_type_replacements=" +
+					std::to_string(hiddenTypeHook.ReplacementCount())
+				: std::string());
 	}
 	return true;
 }
@@ -6712,6 +6739,14 @@ bool ReplaceWholePageByTextPaste(
 	}
 
 	const std::string preparedPageCode = PrepareAssemblyVariablesForRealPageWrite(pageCode);
+	std::string hiddenTypeTrace;
+	ScopedHiddenTypeResolverHook hiddenTypeHook(moduleBase, preparedPageCode, &hiddenTypeTrace);
+	if (!hiddenTypeHook.IsReady()) {
+		if (outTrace != nullptr) {
+			*outTrace = "text_paste_hidden_type_unavailable|" + hiddenTypeTrace;
+		}
+		return false;
+	}
 
 	std::string selectTrace;
 	if (!InvokeEditorCommandWithFallback(
@@ -6751,7 +6786,12 @@ bool ReplaceWholePageByTextPaste(
 	}
 
 	if (outTrace != nullptr) {
-		*outTrace = selectTrace + "|" + deleteTrace + "|" + pasteTrace;
+		*outTrace =
+			selectTrace + "|" + deleteTrace + "|" + pasteTrace +
+			(hiddenTypeHook.IsRequired()
+				? "|" + hiddenTypeTrace + "|hidden_type_replacements=" +
+					std::to_string(hiddenTypeHook.ReplacementCount())
+				: std::string());
 	}
 	return true;
 }
