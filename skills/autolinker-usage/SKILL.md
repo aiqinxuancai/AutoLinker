@@ -44,8 +44,28 @@ https://github.com/aiqinxuancai/AutoLinker/releases
 检查和更新 AutoLinker 或 e-packager，不必重新执行首次安装流程。AutoLinker 更新需要
 退出当前 IDE 后替换正在加载的 `AutoLinker.fne`；按页面提示完成即可。
 
-配置文件位于 `{易语言安装目录}\AutoLinker\AIConfig.json`，日志位于
-`{易语言安装目录}\AutoLinker\Log`。
+AutoLinker 的持久化运行目录是 `{易语言安装目录}\AutoLinker\`；其中“易语言安装目录”
+指当前易语言 IDE 主程序（例如 `e5.95.exe`）所在的目录，而不是工程 `.e` 文件所在目录。
+该运行目录及其内部所需的配置、日志、会话、配色和全局 SKILL 等目录与文件，
+**完全由 AutoLinker 在启动或首次使用相应功能时按需自动创建**。用户只需安装
+`{易语言安装目录}\lib\AutoLinker.fne`，无需提前手工新建 `{易语言安装目录}\AutoLinker\`
+或复制任何初始配置文件；目录暂时不存在属于正常情况。
+
+常用路径如下：
+
+| 用途 | 路径 |
+| --- | --- |
+| AutoLinker 持久化运行根目录 | `{易语言安装目录}\AutoLinker\` |
+| AI 配置 | `{易语言安装目录}\AutoLinker\AIConfig.json` |
+| 日志 | `{易语言安装目录}\AutoLinker\Log\` |
+| 全局 SKILL | `{易语言安装目录}\AutoLinker\Skills\` |
+| 其他功能配置 | `{易语言安装目录}\AutoLinker\Config\` |
+| 临时缓存 | `%TEMP%\AutoLinker\Cache\` |
+| 临时工作区镜像 | `%TEMP%\AutoLinker\workspace-mirror\` |
+
+`%TEMP%\AutoLinker\` 下的临时目录同样由 AutoLinker 自动创建和管理，不应作为用户配置
+目录，也无需手工准备。工程级文件是例外：`{文件名}.AGENTS.md` 位于 `.e` 文件旁，工程级
+SKILL 位于 `<工程目录>\.agents\skills\`；它们只在用户通过对应功能创建或安装时出现。
 
 ## 功能概览
 
