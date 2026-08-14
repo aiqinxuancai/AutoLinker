@@ -999,45 +999,37 @@ struct AIConfigPresetSite {
 	AIThinkingLevel defaultThinkingLevel = AIThinkingLevel::Off;
 };
 
-constexpr const char* kRightPresetModels[] = { "gpt-5.5", "gpt-5.4", "gpt-5.4-mini" };
+constexpr const char* kRightCodexPresetModels[] = { "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna" };
+constexpr const char* kRightGrokPresetModels[] = { "grok-4.6" };
+constexpr const char* kRightClaudeAwsPresetModels[] = { "claude-sonnet-5" };
 constexpr const char* kDeepseekPresetModels[] = { "deepseek-v4-flash", "deepseek-v4-pro" };
-constexpr const char* kZhipuPresetModels[] = {
-	"glm-5.2", "glm-5-turbo", "glm-4.7", "glm-4.5-air",
-	"glm-4.5v", "glm-4v-plus-0111"
-};
+constexpr const char* kZhipuPresetModels[] = { "glm-5.2" };
 constexpr const char* kQwenPresetModels[] = {
-	"qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash", "qwen3-coder-next", "qwen3-coder-plus",
-	"qwen3-vl-plus", "qwen3-vl-flash", "qwen-vl-max-latest", "qwen-vl-plus-latest"
+	"qwen3.7-plus", "qwen3.7-max", "qwen3-coder-next", "qwen3-vl-plus"
 };
-constexpr const char* kKimiPresetModels[] = { "kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-k2.5" };
-constexpr const char* kDoubaoPresetModels[] = { "doubao-seed-2.0-pro", "doubao-seed-2.0-code", "doubao-seed-2.0-lite", "doubao-seed-1.8" };
-constexpr const char* kMiniMaxPresetModels[] = { "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5" };
-constexpr const char* kAihubmixPresetModels[] = { "gpt-5.5", "claude-opus-4-8", "claude-sonnet-4-6", "deepseek-v4-pro", "deepseek-v4-flash", "gemini-3.1-pro-preview" };
+constexpr const char* kKimiPresetModels[] = { "kimi-k3" };
+constexpr const char* kDoubaoPresetModels[] = { "doubao-seed-2.0-pro", "doubao-seed-2.0-code", "doubao-seed-2.0-lite" };
+constexpr const char* kMiniMaxPresetModels[] = { "MiniMax-M3" };
+constexpr const char* kAihubmixPresetModels[] = { "gpt-5.6-sol", "claude-sonnet-5", "deepseek-v4-pro", "deepseek-v4-flash", "gemini-3.5-flash" };
 constexpr const char* kSiliconFlowPresetModels[] = {
-	"deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro", "Pro/zai-org/GLM-5",
-	"zai-org/GLM-5.1", "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen2.5-VL-72B-Instruct",
-	"Pro/Qwen/Qwen2.5-VL-7B-Instruct"
+	"deepseek-ai/DeepSeek-V4-Flash", "deepseek-ai/DeepSeek-V4-Pro"
 };
-constexpr const char* kXaiPresetModels[] = {
-	"grok-4.5", "grok-4.5-latest", "grok-build-latest",
-	"grok-2-vision-latest", "grok-2-vision-1212"
-};
+constexpr const char* kXaiPresetModels[] = { "grok-4.6" };
 constexpr const char* kOpenAIPresetModels[] = {
-	"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-	"gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex",
-	"gpt-4.1", "gpt-4.1-mini", "gpt-4o", "gpt-4o-mini"
+	"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"
 };
-constexpr const char* kClaudePresetModels[] = { "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5" };
+constexpr const char* kClaudePresetModels[] = { "claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5" };
 constexpr const char* kGeminiPresetModels[] = {
 	"gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.5-flash",
-	"gemini-3.1-flash-lite", "gemini-2.5-pro", "gemini-2.5-flash",
-	"gemini-2.5-flash-lite", "gemini-2.0-flash"
+	"gemini-3.1-flash-lite"
 };
 
 #define AI_PRESET_MODELS(name) name, std::size(name)
 
 constexpr AIConfigPresetSite kAIConfigPresetSites[] = {
-	{ L"Right",            "https://www.rightapi.ai/codex",                    AI_PRESET_MODELS(kRightPresetModels),        AIProtocolType::OpenAI },
+	{ L"Right Codex",      "https://www.rightapi.ai/codex",                    AI_PRESET_MODELS(kRightCodexPresetModels),       AIProtocolType::OpenAI },
+	{ L"Right Grok",       "https://www.rightapi.ai/grok",                     AI_PRESET_MODELS(kRightGrokPresetModels),        AIProtocolType::OpenAI, AIThinkingLevel::High },
+	{ L"Right Claude AWS", "https://www.rightapi.ai/claude-aws",               AI_PRESET_MODELS(kRightClaudeAwsPresetModels),   AIProtocolType::Claude },
 	{ L"Deepseek",         "https://api.deepseek.com",                          AI_PRESET_MODELS(kDeepseekPresetModels),     AIProtocolType::OpenAI, AIThinkingLevel::High },
 	{ L"\u667A\u8C31",     "https://open.bigmodel.cn/api/paas/v4",              AI_PRESET_MODELS(kZhipuPresetModels),        AIProtocolType::OpenAI },
 	{ L"\u5343\u95EE",     "https://dashscope.aliyuncs.com/compatible-mode/v1", AI_PRESET_MODELS(kQwenPresetModels),         AIProtocolType::OpenAI },

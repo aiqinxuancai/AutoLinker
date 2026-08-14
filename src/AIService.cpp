@@ -974,6 +974,7 @@ bool IsClaudeMythosPreviewModel(std::string_view model)
 bool IsClaudeAdaptiveThinkingModel(std::string_view model)
 {
 	return IsClaudeMythosPreviewModel(model) ||
+		ContainsAsciiInsensitive(model, "claude-sonnet-5") ||
 		ContainsAsciiInsensitive(model, "claude-opus-4-7") ||
 		ContainsAsciiInsensitive(model, "claude-opus-4-6") ||
 		ContainsAsciiInsensitive(model, "claude-sonnet-4-6");
@@ -984,9 +985,10 @@ bool IsOpenAIGpt5Model(std::string_view model)
 	return ContainsAsciiInsensitive(model, "gpt-5");
 }
 
-bool IsGrok45Model(std::string_view model)
+bool IsGrokReasoningModel(std::string_view model)
 {
-	return ContainsAsciiInsensitive(model, "grok-4.5") ||
+	return ContainsAsciiInsensitive(model, "grok-4.6") ||
+		ContainsAsciiInsensitive(model, "grok-4.5") ||
 		ContainsAsciiInsensitive(model, "grok-build-latest");
 }
 
@@ -1072,7 +1074,7 @@ std::string GetDeepSeekReasoningEffort(const AISettings& settings)
 	}
 }
 
-std::string GetGrok45ReasoningEffort(AIThinkingLevel level)
+std::string GetGrokReasoningEffort(AIThinkingLevel level)
 {
 	switch (level) {
 	case AIThinkingLevel::Low:
@@ -1086,7 +1088,7 @@ std::string GetGrok45ReasoningEffort(AIThinkingLevel level)
 		return "high";
 	case AIThinkingLevel::Off:
 	default:
-		// Grok 4.5 不允许关闭推理；省略参数即可采用官方默认 high。
+		// Grok 4.5/4.6 不允许关闭推理；省略参数即可采用服务端默认值。
 		return std::string();
 	}
 }
@@ -1221,8 +1223,8 @@ void ApplyThinkingConfigToOpenAIChatRequest(nlohmann::json& requestBody, const A
 		requestBody["reasoning_effort"] = GetDeepSeekReasoningEffort(settings);
 		return;
 	}
-	if (IsGrok45Model(settings.model)) {
-		const std::string effort = GetGrok45ReasoningEffort(settings.thinkingLevel);
+	if (IsGrokReasoningModel(settings.model)) {
+		const std::string effort = GetGrokReasoningEffort(settings.thinkingLevel);
 		if (!effort.empty()) {
 			requestBody["reasoning_effort"] = effort;
 		}
@@ -1240,8 +1242,8 @@ void ApplyThinkingConfigToOpenAIResponsesRequest(nlohmann::json& requestBody, co
 		};
 		return;
 	}
-	if (IsGrok45Model(settings.model)) {
-		const std::string effort = GetGrok45ReasoningEffort(settings.thinkingLevel);
+	if (IsGrokReasoningModel(settings.model)) {
+		const std::string effort = GetGrokReasoningEffort(settings.thinkingLevel);
 		if (!effort.empty()) {
 			requestBody["reasoning"] = {
 				{"effort", effort}
@@ -2444,7 +2446,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "update_plan"},
-		{"description", "Update the visible task plan only for genuinely complex, multi-file, or explicitly planned work. Do not use it for a localized single-file change. It does not modify source code and does not replace the <proposed_plan> approval flow in plan mode."},
+		{"description", "Update the visible task plan for routine work whenever it has two or more meaningful steps or progress tracking would help. Prefer it for everyday implementation, diagnosis, and verification; skip only trivial one-step actions. It does not modify source code and does not replace the <proposed_plan> approval flow in plan mode."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -3253,7 +3255,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"14) 只有用户要求编译验证时，才调用 compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type、project_supported_compile_targets 和可用编译模式。对 win_exe、win_console_exe、win_dll 默认使用 static_compile=true；只有用户明确要求动态编译或不使用静态编译时才设为 false。当 project_type=ecom 且目的是编译验证/调试测试时，默认使用 target=win_console_exe 和 static_compile=true 生成静态控制台程序；只有用户明确要求发布/生成 .ec 模块时才使用 target=ecom 和 static_compile=false。\n"
 			"15) 除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用 refresh_dependency_catalog、search_available_modules、search_available_support_libraries、list_imported_modules、add_module_to_project、remove_module_from_project、add_support_library_to_project。\n\n"
 			"其他工具：\n"
-			"- 仅复杂、多文件或用户明确要求计划时使用 update_plan；局部单文件修改不要创建计划卡片。\n"
+			"- 日常开发、排错和验证均可使用 update_plan；任务包含两个及以上有意义步骤，或展示进度有帮助时优先创建计划卡片，仅明显的一步式小操作可省略。\n"
 			"- 需要确认当前页名/页类型时用 get_current_page_info，不要臆测当前页。\n"
 			"- 涉及联网、查文档、搜最新资料时用 search_web_tavily 搜索、extract_web_document 取正文、fetch_url 取原始响应。\n"
 			"- 需要本地命令时用 exec_command（会经用户确认后执行）；长命令返回 session_id 后用 write_stdin 轮询。\n\n"
@@ -3317,7 +3319,7 @@ std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal
 		+ std::string(sourceOpen
 			? "每轮请求开始前已用 mode=full 自动刷新工程镜像；收到 workspace_refresh_required/workspace_refresh_failed 或确需重新获取 IDE 最新内存状态时，再调用 refresh_workspace_mirror。已知代码项优先 read_code_item，多个文件使用 read_files，不要重复读取相同范围。\n"
 			: "当前不得调用工程读写、页面、依赖变更或编译工具；需要确认状态时调用 get_current_eide_info。\n") +
-		"仅复杂、多文件或明确要求计划时使用 update_plan；写入 verified=true 后不要为了确认而复读源码。\n"
+		"日常开发、排错和验证均可使用 update_plan；有两个及以上有意义步骤或展示进度有帮助时优先创建计划，仅明显的一步式小操作可省略。写入 verified=true 后不要为了确认而复读源码。\n"
 		"如果需要读取网页或文档，优先调用 extract_web_document；需要原始响应时调用 fetch_url。\n"
 		"除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用依赖管理工具。\n"
 		"如果工具不可用或调用失败，说明限制并基于已有信息继续。\n"
@@ -5654,7 +5656,8 @@ int AIService::ResolveContextWindowTokens(const AISettings& settings)
 	// P2c: 子串表 —— 不规则命名或非递增族。更具体的在前。
 	struct Entry { const char* key; int window; };
 	static const Entry kTable[] = {
-		// xAI Grok（官方文档核实于 2026-07；grok-4.5-latest 会命中 grok-4.5）
+		// xAI Grok：4.6 暂按已知 4.5 窗口保守处理，避免默认窗口过小。
+		{ "grok-4.6",        500000 },
 		{ "grok-4.5",        500000 },
 		{ "grok-build-latest", 500000 },
 		// OpenAI（gpt-5 系由上面的版本族处理）
@@ -7251,8 +7254,8 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 	}
 
 	{
-		const std::array<const char*, 4> models = {
-			"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"
+		const std::array<const char*, 3> models = {
+			"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"
 		};
 		bool ok = true;
 		for (const char* model : models) {
@@ -7327,8 +7330,8 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 	}
 
 	{
-		const std::array<const char*, 3> models = {
-			"grok-4.5", "grok-4.5-latest", "grok-build-latest"
+		const std::array<const char*, 4> models = {
+			"grok-4.6", "grok-4.5", "grok-4.5-latest", "grok-build-latest"
 		};
 		bool contextOk = true;
 		for (const char* model : models) {
@@ -7338,7 +7341,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 		}
 
 		AISettings offSettings = {};
-		offSettings.model = "grok-4.5";
+		offSettings.model = "grok-4.6";
 		offSettings.thinkingLevel = AIThinkingLevel::Off;
 		nlohmann::json offChatRequest;
 		ApplyThinkingConfigToOpenAIChatRequest(offChatRequest, offSettings);
@@ -7359,7 +7362,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 		}};
 		for (const auto& [level, expected] : efforts) {
 			AISettings settings = {};
-			settings.model = "grok-4.5";
+			settings.model = "grok-4.6";
 			settings.thinkingLevel = level;
 			nlohmann::json chatRequest;
 			ApplyThinkingConfigToOpenAIChatRequest(chatRequest, settings);
@@ -7372,7 +7375,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 		}
 		const bool ok = contextOk && offUsesProviderDefault && effortMappingOk;
 		checks.push_back({
-			{"name", "grok_4_5_model_defaults"},
+			{"name", "grok_reasoning_model_defaults"},
 			{"ok", ok},
 			{"context_window", 500000},
 			{"off_uses_provider_default_high", offUsesProviderDefault},

@@ -64,9 +64,12 @@
 				<section id="endpointPanel" class="px-5 py-4">
 					<div class="mb-4 flex min-h-8 items-center justify-between gap-3 border-b border-slate-200 pb-3">
 						<h2 id="endpointTitle" class="min-w-0 truncate text-[15px] font-semibold text-slate-950">API 端点</h2>
-						<label class="flex shrink-0 cursor-pointer items-center gap-2 font-semibold text-slate-700">
-							<input id="endpointEnabled" type="checkbox" class="h-4 w-4 accent-blue-700">启用
-						</label>
+						<div class="flex shrink-0 items-center gap-3">
+							<a id="providerSiteLink" class="hidden whitespace-nowrap text-[13px] font-semibold text-blue-700 hover:text-blue-800 hover:underline" href="#"></a>
+							<label class="flex cursor-pointer items-center gap-2 font-semibold text-slate-700">
+								<input id="endpointEnabled" type="checkbox" class="h-4 w-4 accent-blue-700">启用
+							</label>
+						</div>
 					</div>
 
 					<div class="space-y-4">
@@ -226,16 +229,18 @@ function defaultEndpoint() { return cloneEndpoint({ id:"default", name:"默认" 
 function cloneGroup(item) { return { id:item.id, name:item.name, endpointIds:(item.endpointIds||[]).slice() }; }
 
 var PRESET_SITES = [
-	{label:"Right",protocolType:"openai",baseUrl:"https://www.rightapi.ai/codex",models:["gpt-5.5","gpt-5.4","gpt-5.4-mini"]},
-	{label:"DeepSeek",protocolType:"openai",thinkingLevel:"high",baseUrl:"https://api.deepseek.com",models:["deepseek-v4-flash","deepseek-v4-pro"]},
-	{label:"智谱",protocolType:"openai",baseUrl:"https://open.bigmodel.cn/api/paas/v4",models:["glm-5.2","glm-5-turbo","glm-4.7","glm-4.5v"]},
-	{label:"千问",protocolType:"openai",baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1",models:["qwen3.7-plus","qwen3.7-max","qwen3-coder-next","qwen3-vl-plus"]},
-	{label:"Kimi",protocolType:"openai",thinkingLevel:"max",baseUrl:"https://api.moonshot.cn/v1",models:["kimi-k3","kimi-k2.7-code","kimi-k2.6","kimi-k2.5"]},
-	{label:"豆包",protocolType:"openai",baseUrl:"https://ark.cn-beijing.volces.com/api/v3",models:["doubao-seed-2.0-pro","doubao-seed-2.0-code","doubao-seed-2.0-lite"]},
-	{label:"MiniMax",protocolType:"openai",baseUrl:"https://api.minimax.chat/v1",models:["MiniMax-M3","MiniMax-M2.7","MiniMax-M2.5"]},
-	{label:"OpenAI",protocolType:"openai_responses",baseUrl:"https://api.openai.com/v1",models:["gpt-5.6","gpt-5.6-sol","gpt-5.6-terra","gpt-5.5","gpt-5.4","gpt-4.1","gpt-4o"]},
-	{label:"Claude",protocolType:"claude",baseUrl:"https://api.anthropic.com",models:["claude-opus-4-8","claude-sonnet-4-6","claude-haiku-4-5"]},
-	{label:"Gemini",protocolType:"gemini",baseUrl:"https://generativelanguage.googleapis.com",models:["gemini-3.1-pro-preview","gemini-3.5-flash","gemini-2.5-pro","gemini-2.5-flash"]}
+	{label:"Right Codex",providerLabel:"Right",providerUrl:"https://www.rightapi.ai",protocolType:"openai",baseUrl:"https://www.rightapi.ai/codex",models:["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"]},
+	{label:"Right Grok",providerLabel:"Right",providerUrl:"https://www.rightapi.ai",protocolType:"openai",thinkingLevel:"high",baseUrl:"https://www.rightapi.ai/grok",models:["grok-4.6"]},
+	{label:"Right Claude AWS",providerLabel:"Right",providerUrl:"https://www.rightapi.ai",protocolType:"claude",baseUrl:"https://www.rightapi.ai/claude-aws",models:["claude-sonnet-5"]},
+	{label:"DeepSeek",providerLabel:"DeepSeek",providerUrl:"https://platform.deepseek.com",protocolType:"openai",thinkingLevel:"high",baseUrl:"https://api.deepseek.com",models:["deepseek-v4-flash","deepseek-v4-pro"]},
+	{label:"智谱",providerLabel:"智谱",providerUrl:"https://open.bigmodel.cn",protocolType:"openai",baseUrl:"https://open.bigmodel.cn/api/paas/v4",models:["glm-5.2"]},
+	{label:"千问",providerLabel:"千问",providerUrl:"https://dashscope.console.aliyun.com",protocolType:"openai",baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1",models:["qwen3.7-plus","qwen3.7-max","qwen3-coder-next","qwen3-vl-plus"]},
+	{label:"Kimi",providerLabel:"Kimi",providerUrl:"https://platform.moonshot.cn",protocolType:"openai",thinkingLevel:"max",baseUrl:"https://api.moonshot.cn/v1",models:["kimi-k3"]},
+	{label:"豆包",providerLabel:"豆包",providerUrl:"https://console.volcengine.com/ark",protocolType:"openai",baseUrl:"https://ark.cn-beijing.volces.com/api/v3",models:["doubao-seed-2.0-pro","doubao-seed-2.0-code","doubao-seed-2.0-lite"]},
+	{label:"MiniMax",providerLabel:"MiniMax",providerUrl:"https://platform.minimaxi.com",protocolType:"openai",baseUrl:"https://api.minimax.chat/v1",models:["MiniMax-M3"]},
+	{label:"OpenAI",providerLabel:"OpenAI",providerUrl:"https://platform.openai.com",protocolType:"openai_responses",baseUrl:"https://api.openai.com/v1",models:["gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"]},
+	{label:"Claude",providerLabel:"Claude",providerUrl:"https://console.anthropic.com",protocolType:"claude",baseUrl:"https://api.anthropic.com",models:["claude-sonnet-5","claude-opus-4-8","claude-haiku-4-5"]},
+	{label:"Gemini",providerLabel:"Gemini",providerUrl:"https://aistudio.google.com",protocolType:"gemini",baseUrl:"https://generativelanguage.googleapis.com",models:["gemini-3.1-pro-preview","gemini-3.5-flash","gemini-3.1-flash-lite"]}
 ];
 
 function endsWithInsensitive(text,suffix){return text.toLowerCase().slice(-suffix.length)===suffix.toLowerCase();}
@@ -261,7 +266,7 @@ function applyEndpointForm(item){
 	if(!item)return; $("endpointTitle").textContent=item.name; $("protocol").value=item.protocolType; $("thinkingLevel").value=item.thinkingLevel; $("imageInputMode").value=item.imageInputMode;
 	$("baseUrl").value=item.baseUrl; $("apiKey").value=item.apiKey; $("model").value=item.model; $("extraPrompt").value=item.extraPrompt; $("customHeaders").value=item.customHeaders;
 	$("timeoutMs").value=String(item.timeoutMs); $("temperature").value=String(item.temperature); $("contextWindow").value=item.contextWindow?String(item.contextWindow):""; $("retryCount").value=String(item.retryCount);
-	$("endpointEnabled").checked=_activeTarget.type==="endpoint"&&_activeTarget.id===item.id; updateEndpointPreview(); updateModelMenu(presetModels(item.baseUrl));
+	$("endpointEnabled").checked=_activeTarget.type==="endpoint"&&_activeTarget.id===item.id; updateEndpointPreview(); updateProviderSiteLink(item.baseUrl); updateModelMenu(presetModels(item.baseUrl));
 }
 
 function selectItem(type,id){
@@ -316,6 +321,7 @@ function deleteItem(){
 function normalizeUrl(url){return trimSlashes(trimText(url)).toLowerCase();}
 function presetForUrl(url){var normalized=normalizeUrl(url);for(var i=0;i<PRESET_SITES.length;i++)if(normalizeUrl(PRESET_SITES[i].baseUrl)===normalized)return PRESET_SITES[i];return null;}
 function presetModels(url){var site=presetForUrl(url);return site?site.models:[];}
+function updateProviderSiteLink(url){var site=presetForUrl(url),link=$("providerSiteLink");if(!site||!site.providerUrl){link.classList.add("hidden");link.removeAttribute("href");link.removeAttribute("data-url");link.textContent="";return;}link.textContent="前往"+site.providerLabel+"官网";link.setAttribute("href",site.providerUrl);link.setAttribute("data-url",site.providerUrl);link.classList.remove("hidden");}
 function dedupe(values){var seen={},result=[];(values||[]).forEach(function(value){value=trimText(value);if(value&&!seen[value]){seen[value]=true;result.push(value);}});return result;}
 function hideModelMenu(){$("modelMenu").classList.add("hidden");_modelMenuOpen=false;}
 function showModelMenu(){if($("modelMenu").children.length){$("modelMenu").classList.remove("hidden");_modelMenuOpen=true;}}
@@ -351,7 +357,8 @@ window.autolinkerShowModelListResult=function(payload){setModelFetchBusy(false);
 $("newEndpointBtn").onclick=newEndpoint;$("newGroupBtn").onclick=newGroup;$("renameBtn").onclick=renameItem;$("deleteBtn").onclick=deleteItem;
 $("endpointEnabled").onchange=function(){setActiveTarget("endpoint",_selectedEndpointId,this);};$("groupEnabled").onchange=function(){setActiveTarget("group",_selectedGroupId,this);};
 $("addGroupMemberBtn").onclick=openEndpointPicker;$("closeEndpointPickerBtn").onclick=closeEndpointPicker;$("cancelEndpointPickerBtn").onclick=closeEndpointPicker;$("confirmEndpointPickerBtn").onclick=confirmEndpointPicker;$("endpointPickerSearch").oninput=renderEndpointPicker;$("endpointPickerDialog").onclick=function(event){if(event.target===this)closeEndpointPicker();};
-$("toggleApiKey").onclick=function(){toggleSecret("apiKey","toggleApiKey");};$("protocol").onchange=updateEndpointPreview;$("baseUrl").oninput=function(){updateEndpointPreview();updateModelMenu(presetModels(this.value));};
+$("providerSiteLink").onclick=function(event){event.preventDefault();var url=this.getAttribute("data-url");if(url)post({action:"open_url",url:url});};
+$("toggleApiKey").onclick=function(){toggleSecret("apiKey","toggleApiKey");};$("protocol").onchange=updateEndpointPreview;$("baseUrl").oninput=function(){updateEndpointPreview();updateProviderSiteLink(this.value);updateModelMenu(presetModels(this.value));};
 $("modelArrow").onclick=function(event){event.stopPropagation();_modelMenuOpen?hideModelMenu():showModelMenu();};$("modelArrow").onmousedown=function(event){event.preventDefault();};$("model").onfocus=showModelMenu;$("model").onblur=function(){setTimeout(hideModelMenu,150);};$("modelFetchBtn").onclick=requestModels;
 $("presetBtn").onclick=function(event){event.stopPropagation();_presetMenuOpen?hidePresetMenu():showPresetMenu();};document.addEventListener("click",function(event){if(!$("modelCmb").contains(event.target))hideModelMenu();if(!$("presetMenuAnchor").contains(event.target))hidePresetMenu();});
 document.addEventListener("keydown",function(event){if(event.key==="Escape"&&$("endpointPickerDialog").getAttribute("aria-hidden")==="false")closeEndpointPicker();});

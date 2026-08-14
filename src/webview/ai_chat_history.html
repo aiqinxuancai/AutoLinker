@@ -821,11 +821,170 @@ html:not(.autolinker-page-visible) *::after {
 .mode-menu-item.goal-blocked .mode-menu-item-state { color: #b42318; }
 .mode-menu-item.goal-complete .mode-menu-item-state { color: #2e7d32; }
 
+.activity-dock {
+	display: grid;
+	gap: 6px;
+}
+
+.activity-dock[hidden],
+.activity-panel[hidden] {
+	display: none;
+}
+
+.activity-panel {
+	min-width: 0;
+	border: 1px solid var(--al-soft-border, #d4d9e3);
+	border-radius: 7px;
+	background: var(--al-panel-bg, #eff1f5);
+	box-shadow: 0 1px 2px rgba(76, 79, 105, .06);
+	overflow: hidden;
+}
+
+.activity-summary {
+	display: flex;
+	align-items: center;
+	min-width: 0;
+	min-height: 34px;
+	padding: 3px 5px 3px 9px;
+	box-sizing: border-box;
+}
+
+.activity-summary-main {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	min-height: 28px;
+	flex: 1 1 auto;
+	border: 0;
+	background: transparent;
+	color: var(--al-text, #4c4f69);
+	padding: 0;
+	text-align: left;
+	cursor: default;
+}
+
+.activity-summary-main[data-activity-action] { cursor: pointer; }
+
+.activity-summary-main:focus-visible,
+.activity-icon-btn:focus-visible {
+	outline: 2px solid color-mix(in srgb, var(--al-primary, #1e66f5) 40%, transparent);
+	outline-offset: 1px;
+}
+
+.activity-summary-icon,
+.activity-chevron,
+.activity-icon-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+}
+
+.activity-summary-icon {
+	width: 16px;
+	height: 16px;
+	color: var(--al-muted-text, #6c7086);
+}
+
+.activity-summary-icon svg,
+.activity-chevron svg,
+.activity-icon-btn svg {
+	width: 15px;
+	height: 15px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.7;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	pointer-events: none;
+}
+
+.activity-summary-label {
+	flex: 0 0 auto;
+	color: var(--al-plan-text, #374151);
+	font-size: 11px;
+	font-weight: 700;
+	white-space: nowrap;
+}
+
+.activity-summary-text {
+	min-width: 0;
+	flex: 1 1 auto;
+	overflow: hidden;
+	color: var(--al-muted-text, #6c7086);
+	font-size: 11px;
+	line-height: 1.35;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.activity-summary-actions {
+	display: flex;
+	align-items: center;
+	gap: 1px;
+	flex: 0 0 auto;
+	margin-left: 4px;
+}
+
+.activity-icon-btn {
+	width: 26px;
+	height: 26px;
+	border: 0;
+	border-radius: 5px;
+	background: transparent;
+	color: var(--al-subtle-text, #8c8fa1);
+	padding: 0;
+	cursor: pointer;
+}
+
+.activity-icon-btn:hover {
+	background: var(--al-button-hover-bg, #e8ebf1);
+	color: var(--al-primary, #1e66f5);
+}
+
+.activity-icon-btn.danger:hover {
+	color: var(--al-danger, #d20f39);
+}
+
+.activity-chevron {
+	width: 22px;
+	height: 26px;
+	margin-left: 2px;
+	color: var(--al-subtle-text, #8c8fa1);
+}
+
+.activity-chevron svg {
+	transition: transform .15s ease;
+}
+
+.activity-panel.expanded .activity-chevron svg {
+	transform: rotate(180deg);
+}
+
+.activity-details {
+	max-height: min(42vh, 360px);
+	overflow: auto;
+	border-top: 1px solid var(--al-soft-border, #d4d9e3);
+	background: var(--al-composer-bg, #e6e9ef);
+}
+
+.activity-plan-details .plan-card {
+	border: 0;
+	border-radius: 0;
+	background: transparent;
+}
+
+.activity-panel.goal-active .activity-summary-icon { color: var(--al-primary, #1e66f5); }
+.activity-panel.goal-paused .activity-summary-icon { color: var(--al-warning, #df8e1d); }
+.activity-panel.goal-blocked .activity-summary-icon { color: var(--al-danger, #d20f39); }
+.activity-panel.goal-complete .activity-summary-icon { color: var(--al-success, #40a02b); }
+
 .goal-panel {
-	margin-bottom: 8px;
-	padding: 9px 0;
-	border-top: 1px solid var(--al-soft-border, #d7dbe3);
-	border-bottom: 1px solid var(--al-soft-border, #d7dbe3);
+	padding: 10px;
+	border: 1px solid var(--al-soft-border, #d7dbe3);
+	border-radius: 7px;
+	background: var(--al-composer-bg, #e6e9ef);
 }
 
 .goal-panel[hidden] { display: none; }
@@ -852,17 +1011,15 @@ html:not(.autolinker-page-visible) *::after {
 	color: var(--al-text, #4c4f69);
 	font: 12px/1.5 "Microsoft YaHei UI", "Segoe UI", sans-serif;
 }
-.goal-objective-view {
-	max-height: 100px;
-	overflow: auto;
-	white-space: pre-wrap;
-	overflow-wrap: anywhere;
-	color: var(--al-text, #4c4f69);
-	font-size: 12px;
-	line-height: 1.55;
-	margin-bottom: 8px;
-}
 .goal-panel-actions { justify-content: flex-end; margin-top: 8px; }
+
+@media (max-width: 560px) {
+	.activity-summary { padding-left: 7px; }
+	.activity-summary-label { font-size: 10px; }
+	.activity-summary-text { font-size: 10px; }
+	.activity-summary-actions { gap: 0; margin-left: 1px; }
+	.activity-icon-btn { width: 24px; height: 26px; }
+}
 
 #chat-input {
 	width: 100%;
@@ -2270,7 +2427,11 @@ body,
 		<div class="input-wrap">
 			<div id="tool-approval" class="tool-approval" hidden></div>
 			<div id="pending-inputs" class="pending-inputs" hidden></div>
-			<div id="goal-panel" class="goal-panel" hidden></div>
+			<div id="activity-dock" class="activity-dock" hidden>
+				<section id="active-plan-panel" class="activity-panel" aria-label="&#x6B63;&#x5728;&#x6267;&#x884C;&#x7684;&#x8BA1;&#x5212;" hidden></section>
+				<section id="active-goal-panel" class="activity-panel" aria-label="&#x5F53;&#x524D;&#x76EE;&#x6807;" hidden></section>
+				<div id="goal-panel" class="goal-panel" hidden></div>
+			</div>
 			<div id="attachment-strip" class="attachment-strip" aria-label="&#x56FE;&#x7247;&#x9644;&#x4EF6;" hidden></div>
 			<div class="composer-surface">
 				<div class="input-area">
@@ -2358,6 +2519,8 @@ window.autolinkerPlanState = "normal";
 window.autolinkerAutoAllow = false;
 window.autolinkerGoalState = { status: "none", objective: "", tokensUsed: 0, elapsedLabel: "0m 0s", label: "\u76EE\u6807" };
 window.autolinkerGoalPanelOpen = false;
+window.autolinkerGoalEditing = false;
+window.autolinkerPlanDockExpanded = false;
 window.autolinkerApiProfiles = { activeTargetType: "endpoint", activeProfileId: "", activeProfileName: "\u672A\u914D\u7F6E", profiles: [], pendingForNextRequest: false };
 window.autolinkerContextUsageTitle = "\u4E0A\u4E0B\u6587\u7528\u91CF\u4E0D\u53EF\u7528";
 window.autolinkerAttachments = [];
@@ -2564,6 +2727,112 @@ window.autolinkerInitializePlanUserInputCards = function(root) {
 	}
 };
 
+window.autolinkerUpdateActivityDockVisibility = function() {
+	var dock = document.getElementById("activity-dock");
+	var plan = document.getElementById("active-plan-panel");
+	var goal = document.getElementById("active-goal-panel");
+	var goalDetails = document.getElementById("goal-panel");
+	if (!dock) return;
+	dock.hidden = (!plan || plan.hidden) && (!goal || goal.hidden) && (!goalDetails || goalDetails.hidden);
+};
+
+window.autolinkerRenderActivePlan = function(root) {
+	var chatRoot = root || document.getElementById("chat-root");
+	var panel = document.getElementById("active-plan-panel");
+	if (!chatRoot || !panel || !chatRoot.querySelectorAll) return;
+	var messages = chatRoot.querySelectorAll(".plan-message");
+	for (var messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+		messages[messageIndex].hidden = false;
+	}
+	var source = messages.length ? messages[messages.length - 1] : null;
+	var card = source && source.querySelector ? source.querySelector(".plan-card") : null;
+	if (!card) {
+		panel.hidden = true;
+		panel.innerHTML = "";
+		window.autolinkerUpdateActivityDockVisibility();
+		return;
+	}
+
+	var steps = card.querySelectorAll ? card.querySelectorAll(".plan-step") : [];
+	var completed = 0;
+	var inProgress = 0;
+	var pending = 0;
+	for (var stepIndex = 0; stepIndex < steps.length; stepIndex++) {
+		if (steps[stepIndex].classList.contains("completed")) completed++;
+		else if (steps[stepIndex].classList.contains("in-progress")) inProgress++;
+		else pending++;
+	}
+	var planModeActive = (window.autolinkerPlanState || "normal") !== "normal";
+	var active = steps.length ? (inProgress + pending > 0) : planModeActive;
+	if (!active) {
+		panel.hidden = true;
+		panel.innerHTML = "";
+		window.autolinkerUpdateActivityDockVisibility();
+		return;
+	}
+
+	source.hidden = true;
+	var summary = steps.length
+		? completed + " \u5df2\u5b8c\u6210 \u00b7 " + inProgress + " \u8fdb\u884c\u4e2d \u00b7 " + pending + " \u5f85\u5904\u7406"
+		: String((card.querySelector(".plan-status") || {}).textContent || "\u6b63\u5728\u6267\u884c").trim();
+	var expanded = !!window.autolinkerPlanDockExpanded;
+	panel.classList.toggle("expanded", expanded);
+	panel.innerHTML = '<div class="activity-summary"><button class="activity-summary-main" type="button" data-activity-action="toggle-plan" aria-expanded="' + (expanded ? "true" : "false") + '" title="' + (expanded ? "\u6536\u8d77\u8ba1\u5212" : "\u5c55\u5f00\u8ba1\u5212") + '">' +
+		'<span class="activity-summary-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"></path><circle cx="4" cy="6" r="1"></circle><path d="m3 12 1 1 2-2"></path><circle cx="4" cy="18" r="1"></circle></svg></span>' +
+		'<span class="activity-summary-label">\u4efb\u52a1</span><span class="activity-summary-text">' + window.autolinkerEscapeHtml(summary) + '</span>' +
+		'<span class="activity-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m7 14 5-5 5 5"></path></svg></span></button></div>' +
+		'<div class="activity-details activity-plan-details"' + (expanded ? "" : " hidden") + '></div>';
+	var details = panel.querySelector(".activity-plan-details");
+	if (details) {
+		details.appendChild(card.cloneNode(true));
+		var planButtons = details.querySelectorAll ? details.querySelectorAll(".plan-action") : [];
+		for (var buttonIndex = 0; buttonIndex < planButtons.length; buttonIndex++) {
+			planButtons[buttonIndex].disabled = !!window.autolinkerBusy;
+		}
+	}
+	panel.hidden = false;
+	window.autolinkerUpdateActivityDockVisibility();
+};
+
+window.autolinkerRenderActiveGoal = function() {
+	var panel = document.getElementById("active-goal-panel");
+	if (!panel) return;
+	var data = window.autolinkerGoalState || {};
+	var status = data.status || "none";
+	if (status === "none") {
+		panel.hidden = true;
+		panel.innerHTML = "";
+		window.autolinkerUpdateActivityDockVisibility();
+		return;
+	}
+
+	var labels = {
+		active: "\u8fdb\u884c\u4e2d\u7684\u76ee\u6807",
+		paused: "\u5df2\u6682\u505c\u7684\u76ee\u6807",
+		blocked: "\u53d7\u963b\u7684\u76ee\u6807",
+		complete: "\u5df2\u5b8c\u6210\u7684\u76ee\u6807"
+	};
+	var objective = String(data.objective || "");
+	var title = objective + "\n" + String(data.elapsedLabel || "0m 0s") + " \u00b7 " + Number(data.tokensUsed || 0) + " tokens";
+	if (data.suspendedByPlan) title += "\n\u8ba1\u5212\u6a21\u5f0f\u4e2d\u5df2\u6682\u6302";
+	var actionHtml = "";
+	if (status === "active") {
+		actionHtml += '<button class="activity-icon-btn" type="button" data-goal-action="pause" title="\u6682\u505c\u76ee\u6807" aria-label="\u6682\u505c\u76ee\u6807"><svg viewBox="0 0 24 24"><path d="M9 5v14M15 5v14"></path></svg></button>';
+	} else if (status === "paused" || status === "blocked") {
+		actionHtml += '<button class="activity-icon-btn" type="button" data-goal-action="resume" title="\u6062\u590d\u76ee\u6807" aria-label="\u6062\u590d\u76ee\u6807"><svg viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"></path></svg></button>';
+	}
+	actionHtml += '<button class="activity-icon-btn" type="button" data-goal-action="edit" title="\u7f16\u8f91\u76ee\u6807" aria-label="\u7f16\u8f91\u76ee\u6807"><svg viewBox="0 0 24 24"><path d="M12 20h9"></path><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"></path></svg></button>';
+	actionHtml += '<button class="activity-icon-btn danger" type="button" data-goal-action="clear" title="\u6e05\u9664\u76ee\u6807" aria-label="\u6e05\u9664\u76ee\u6807"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"></path></svg></button>';
+	panel.className = "activity-panel goal-" + status;
+	panel.innerHTML = '<div class="activity-summary"><div class="activity-summary-main" title="' + window.autolinkerEscapeHtml(title) + '">' +
+		'<span class="activity-summary-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path></svg></span>' +
+		'<span class="activity-summary-label">' + (labels[status] || "\u76ee\u6807") + '</span><span class="activity-summary-text">' + window.autolinkerEscapeHtml(objective) + '</span>' +
+		'</div>' +
+		'<div class="activity-summary-actions">' + actionHtml + '</div></div>';
+	panel.hidden = false;
+	window.autolinkerUpdateActivityDockVisibility();
+};
+
 window.autolinkerSetChatHtml = function(html) {
 	var root = document.getElementById("chat-root");
 	var scroll = document.getElementById("history-scroll");
@@ -2574,6 +2843,7 @@ window.autolinkerSetChatHtml = function(html) {
 			planButtons[i].disabled = !!window.autolinkerBusy;
 		}
 		window.autolinkerInitializePlanUserInputCards(root);
+		window.autolinkerRenderActivePlan(root);
 		window.autolinkerAwaitingPlanUserInput = !!(root.querySelector && root.querySelector(".plan-user-input-card.active"));
 		if (typeof window.autolinkerSetBusy === "function") {
 			window.autolinkerSetBusy(!!window.autolinkerBusy, !!window.autolinkerStopRequested);
@@ -2652,6 +2922,7 @@ window.autolinkerSetPlanMode = function(state, label, title) {
 	}
 	window.autolinkerRenderModeControl();
 	window.autolinkerRenderGoalPanel();
+	window.autolinkerRenderActivePlan();
 };
 
 window.autolinkerSetAutoAllowMode = function(enabled, label, title) {
@@ -2703,13 +2974,16 @@ window.autolinkerSetApiProfiles = function(payload) {
 window.autolinkerRenderGoalPanel = function() {
 	var panel = document.getElementById("goal-panel");
 	if (!panel) return;
-	if (!window.autolinkerGoalPanelOpen) {
-		panel.hidden = true;
-		panel.innerHTML = "";
-		return;
-	}
 	var data = window.autolinkerGoalState || {};
 	var status = data.status || "none";
+	var formVisible = status === "none" || !!window.autolinkerGoalEditing;
+	if (!window.autolinkerGoalPanelOpen || !formVisible) {
+		if (!formVisible) window.autolinkerGoalPanelOpen = false;
+		panel.hidden = true;
+		panel.innerHTML = "";
+		window.autolinkerUpdateActivityDockVisibility();
+		return;
+	}
 	var html = '<div class="goal-panel-head"><div class="goal-panel-title">' + window.autolinkerEscapeHtml(data.label || "\u76EE\u6807") + '</div>';
 	if (status !== "none") {
 		html += '<div class="goal-panel-meta">';
@@ -2721,18 +2995,18 @@ window.autolinkerRenderGoalPanel = function() {
 		html += '<textarea id="goal-objective" class="goal-objective" maxlength="8000" placeholder="\u76EE\u6807"></textarea>';
 		html += '<div class="goal-panel-actions"><button class="btn" type="button" data-goal-action="cancel">\u53D6\u6D88</button><button class="btn primary" type="button" data-goal-action="create">\u5F00\u542F</button></div>';
 	} else {
-		html += '<div class="goal-objective-view">' + window.autolinkerEscapeHtml(data.objective || "") + '</div>';
-		html += '<div class="goal-panel-actions">';
-		if (status === "active") html += '<button class="btn" type="button" data-goal-action="pause">\u6682\u505C</button>';
-		if (status === "paused" || status === "blocked") html += '<button class="btn primary" type="button" data-goal-action="resume">\u6062\u590D</button>';
-		if (status !== "complete") html += '<button class="btn" type="button" data-goal-action="complete">\u6807\u8BB0\u5B8C\u6210</button>';
-		html += '<button class="btn danger" type="button" data-goal-action="clear">\u6E05\u9664</button></div>';
+		html += '<textarea id="goal-objective-edit" class="goal-objective" maxlength="8000">' + window.autolinkerEscapeHtml(data.objective || "") + '</textarea>';
+		html += '<div class="goal-panel-actions"><button class="btn" type="button" data-goal-action="cancel_edit">\u53D6\u6D88</button><button class="btn primary" type="button" data-goal-action="save_edit">\u4FDD\u5B58</button></div>';
 	}
 	panel.innerHTML = html;
 	panel.hidden = false;
-	if (status === "none") {
-		var objective = document.getElementById("goal-objective");
-		if (objective) objective.focus();
+	window.autolinkerUpdateActivityDockVisibility();
+	if (status === "none" || window.autolinkerGoalEditing) {
+		var objective = document.getElementById(status === "none" ? "goal-objective" : "goal-objective-edit");
+		if (objective) {
+			objective.focus();
+			if (window.autolinkerGoalEditing) objective.setSelectionRange(objective.value.length, objective.value.length);
+		}
 	}
 };
 
@@ -2744,6 +3018,7 @@ window.autolinkerApplyGoalButtonState = function() {
 		(planState === "planning" || planState === "awaiting_approval");
 	data.suspendedByPlan = suspendedByPlan;
 	window.autolinkerRenderModeControl();
+	window.autolinkerRenderActiveGoal();
 };
 
 window.autolinkerSetGoalState = function(payload) {
@@ -3487,8 +3762,11 @@ window.autolinkerHideToolApproval = function() {
 			hideClearConfirm();
 			hideRestoreConfirm();
 			hideModeMenu();
-			window.autolinkerGoalPanelOpen = !window.autolinkerGoalPanelOpen;
+			var goalStatus = (window.autolinkerGoalState || {}).status || "none";
+			window.autolinkerGoalPanelOpen = goalStatus === "none" && !window.autolinkerGoalPanelOpen;
+			window.autolinkerGoalEditing = false;
 			window.autolinkerRenderGoalPanel();
+			window.autolinkerRenderActiveGoal();
 		});
 	}
 
@@ -3540,6 +3818,16 @@ window.autolinkerHideToolApproval = function() {
 	});
 
 	document.addEventListener("click", function(e) {
+		var activityAction = e.target && e.target.closest ? e.target.closest("[data-activity-action]") : null;
+		if (activityAction) {
+			e.preventDefault();
+			var activity = activityAction.getAttribute("data-activity-action") || "";
+			if (activity === "toggle-plan") {
+				window.autolinkerPlanDockExpanded = !window.autolinkerPlanDockExpanded;
+				window.autolinkerRenderActivePlan();
+			}
+			return;
+		}
 		var apiProfileItem = e.target && e.target.closest ? e.target.closest("[data-api-profile-id]") : null;
 		if (apiProfileItem) {
 			e.preventDefault();
@@ -3555,8 +3843,38 @@ window.autolinkerHideToolApproval = function() {
 			var action = goalAction.getAttribute("data-goal-action") || "";
 			if (action === "cancel") {
 				window.autolinkerGoalPanelOpen = false;
+				window.autolinkerGoalEditing = false;
 				window.autolinkerRenderGoalPanel();
+				window.autolinkerRenderActiveGoal();
 				if (input) input.focus();
+				return;
+			}
+			if (action === "edit") {
+				window.autolinkerGoalPanelOpen = true;
+				window.autolinkerGoalEditing = true;
+				window.autolinkerRenderGoalPanel();
+				window.autolinkerRenderActiveGoal();
+				return;
+			}
+			if (action === "cancel_edit") {
+				window.autolinkerGoalEditing = false;
+				window.autolinkerGoalPanelOpen = false;
+				window.autolinkerRenderGoalPanel();
+				window.autolinkerRenderActiveGoal();
+				return;
+			}
+			if (action === "save_edit") {
+				var editedObjective = document.getElementById("goal-objective-edit");
+				var editedObjectiveText = editedObjective ? String(editedObjective.value || "").trim() : "";
+				if (!editedObjectiveText) {
+					if (editedObjective) editedObjective.focus();
+					return;
+				}
+				window.autolinkerGoalEditing = false;
+				window.autolinkerGoalPanelOpen = false;
+				window.autolinkerRenderGoalPanel();
+				window.autolinkerRenderActiveGoal();
+				post({ action: "edit_goal", objective: editedObjectiveText });
 				return;
 			}
 			if (action === "create") {
@@ -3574,6 +3892,7 @@ window.autolinkerHideToolApproval = function() {
 			else if (action === "complete") post({ action: "complete_goal" });
 			else if (action === "clear") {
 				window.autolinkerGoalPanelOpen = false;
+				window.autolinkerGoalEditing = false;
 				post({ action: "clear_goal" });
 			}
 			return;

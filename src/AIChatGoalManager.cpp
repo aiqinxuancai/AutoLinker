@@ -56,6 +56,14 @@ bool AIChatGoalManager::Create(AIChatGoalState& goal, const std::string& objecti
 	return true;
 }
 
+bool AIChatGoalManager::UpdateObjective(AIChatGoalState& goal, const std::string& objectiveLocal, long long nowUnixMs)
+{
+	if (!HasGoal(goal) || objectiveLocal.empty()) return false;
+	goal.objectiveLocal = objectiveLocal;
+	goal.updatedAtUnixMs = nowUnixMs;
+	return true;
+}
+
 bool AIChatGoalManager::Pause(AIChatGoalState& goal, long long nowUnixMs)
 {
 	if (!IsActive(goal)) return false;
@@ -144,6 +152,11 @@ std::string AIChatGoalManager::BuildSelfTestReportJson()
 	const bool duplicateRejected = !Create(goal, "replacement", 1100);
 	const bool activeElapsed = CurrentElapsedMs(goal, 1500) == 500;
 	AddUsage(goal, 42, 1500);
+	const bool objectiveUpdated = UpdateObjective(goal, "ship updated goal mode", 1550) &&
+		goal.objectiveLocal == "ship updated goal mode" &&
+		goal.status == AIChatGoalStatus::Active &&
+		goal.tokensUsed == 42 &&
+		CurrentElapsedMs(goal, 1550) == 550;
 	const bool paused = Pause(goal, 1600) && goal.status == AIChatGoalStatus::Paused && goal.elapsedMs == 600;
 	const bool invalidPauseRejected = !Pause(goal, 1700);
 	const bool resumed = Resume(goal, 2000) && goal.status == AIChatGoalStatus::Active;
@@ -164,13 +177,13 @@ std::string AIChatGoalManager::BuildSelfTestReportJson()
 	const bool timingResumed = ResumeActiveTiming(planGoal, 5200) &&
 		CurrentElapsedMs(planGoal, 5500) == 600;
 	const bool defaultAllowsAdvance = CanAdvance(planGoal, false);
-	const bool ok = created && duplicateRejected && activeElapsed && paused && invalidPauseRejected &&
+	const bool ok = created && duplicateRejected && activeElapsed && objectiveUpdated && paused && invalidPauseRejected &&
 		resumed && blocked && resumedFromBlocked && completed && usageTracked && statusRoundTrip && cleared &&
 		planGoalCreated && timingSuspended && planBlocksAdvance && timingResumed && defaultAllowsAdvance;
 	const auto flag = [](bool value) { return value ? "true" : "false"; };
 	return std::format(
-		R"({{"name":"goal-mode-state-machine","ok":{},"created":{},"duplicate_rejected":{},"active_elapsed":{},"paused":{},"invalid_pause_rejected":{},"resumed":{},"blocked":{},"resumed_from_blocked":{},"completed":{},"usage_tracked":{},"status_round_trip":{},"cleared":{},"plan_goal_created":{},"timing_suspended":{},"plan_blocks_advance":{},"timing_resumed":{},"default_allows_advance":{}}})",
-		flag(ok), flag(created), flag(duplicateRejected), flag(activeElapsed), flag(paused),
+		R"({{"name":"goal-mode-state-machine","ok":{},"created":{},"duplicate_rejected":{},"active_elapsed":{},"objective_updated":{},"paused":{},"invalid_pause_rejected":{},"resumed":{},"blocked":{},"resumed_from_blocked":{},"completed":{},"usage_tracked":{},"status_round_trip":{},"cleared":{},"plan_goal_created":{},"timing_suspended":{},"plan_blocks_advance":{},"timing_resumed":{},"default_allows_advance":{}}})",
+		flag(ok), flag(created), flag(duplicateRejected), flag(activeElapsed), flag(objectiveUpdated), flag(paused),
 		flag(invalidPauseRejected), flag(resumed), flag(blocked), flag(resumedFromBlocked),
 		flag(completed), flag(usageTracked), flag(statusRoundTrip), flag(cleared),
 		flag(planGoalCreated), flag(timingSuspended), flag(planBlocksAdvance),

@@ -472,6 +472,7 @@ void HandleChatSwitchApiProfileUi(
 	const std::string& profileIdLocal);
 void HandleGoalModeUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleGoalCreateUi(HWND hWnd, ChatDialogContext* ctx, const std::string& objectiveLocal);
+void HandleGoalEditUi(HWND hWnd, ChatDialogContext* ctx, const std::string& objectiveLocal);
 void HandleGoalPauseUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleGoalResumeUi(HWND hWnd, ChatDialogContext* ctx);
 void HandleGoalCompleteUi(HWND hWnd, ChatDialogContext* ctx);
@@ -4144,6 +4145,12 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 														: std::string();
 													HandleGoalCreateUi(hWnd, msgCtx, objective);
 												}
+												else if (action == "edit_goal") {
+													const std::string objective = payload.contains("objective") && payload["objective"].is_string()
+														? Utf8ToLocalText(payload["objective"].get<std::string>())
+														: std::string();
+													HandleGoalEditUi(hWnd, msgCtx, objective);
+												}
 												else if (action == "pause_goal") {
 													HandleGoalPauseUi(hWnd, msgCtx);
 												}
@@ -7478,6 +7485,29 @@ void HandleGoalCreateUi(HWND hWnd, ChatDialogContext* ctx, const std::string& ob
 	if (startNow) {
 		ScheduleNextChatWork();
 	}
+}
+
+void HandleGoalEditUi(HWND hWnd, ChatDialogContext* ctx, const std::string& objectiveLocal)
+{
+	std::string objective = TrimAsciiCopy(objectiveLocal);
+	if (objective.size() > 8000) {
+		objective.resize(8000);
+	}
+	bool changed = false;
+	{
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		changed = AIChatGoalManager::UpdateObjective(
+			g_session.goal,
+			objective,
+			GetCurrentUnixTimeMsForChat());
+	}
+	if (!changed) {
+		MessageBoxA(hWnd, LocalFromWide(L"目标内容不能为空。").c_str(), "Goal", MB_OK | MB_ICONWARNING);
+		return;
+	}
+	SaveChatSessionSnapshotNow();
+	RefreshChatDialog(hWnd);
+	FocusChatComposerInput(ctx);
 }
 
 void HandleGoalPauseUi(HWND hWnd, ChatDialogContext* ctx)

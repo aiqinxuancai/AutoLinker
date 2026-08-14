@@ -30,6 +30,7 @@ public:
 	static bool CanAdvance(const AIChatGoalState& goal, bool planModeActive);
 
 	static bool Create(AIChatGoalState& goal, const std::string& objectiveLocal, long long nowUnixMs);
+	static bool UpdateObjective(AIChatGoalState& goal, const std::string& objectiveLocal, long long nowUnixMs);
 	static bool Pause(AIChatGoalState& goal, long long nowUnixMs);
 	static bool Resume(AIChatGoalState& goal, long long nowUnixMs);
 	static bool SuspendActiveTiming(AIChatGoalState& goal, long long nowUnixMs);
