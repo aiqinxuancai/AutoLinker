@@ -109,10 +109,11 @@
 - **简介：** 国内直连，聚合多平台模型
 - **官网：** https://www.rightapi.ai/register
 - **预设：**
-  - Right(gpt-5.6-sol) — 代码任务
-  - Right(gpt-5.6) — 通用任务
-- **地址：** `https://www.rightapi.ai/codex`（自动填写）
-- **协议：** `OpenAI Chat`（自动填写）
+  - Right Codex：`gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`
+  - Right Grok：`grok-4.6`
+  - Right Claude AWS：`claude-sonnet-5`
+- **地址：** Codex 使用 `https://www.rightapi.ai/codex`，Grok 使用 `https://www.rightapi.ai/grok`，Claude AWS 使用 `https://www.rightapi.ai/claude-aws`（均自动填写）
+- **协议：** Codex/Grok 使用 `OpenAI Chat`，Claude AWS 使用 `Claude`（自动填写）
 
 ### 🇨🇳 DeepSeek（性价比高）
 - **简介：** 国内领先，价格优势明显
@@ -125,7 +126,7 @@
 - **简介：** 中文理解能力强
 - **官网：** https://open.bigmodel.cn
 - **地址：** `https://open.bigmodel.cn/api/paas/v4`
-- **预设模型：** glm-5.2 / glm-5-turbo / glm-4.7 / glm-4.5-air
+- **预设模型：** glm-5.2
 
 ### 🌊 千问 / 通义（阿里云）
 - **简介：** 国内直连，模型丰富
@@ -137,13 +138,13 @@
 - **简介：** 支持超长上下文，长文档分析
 - **官网：** https://platform.moonshot.cn
 - **地址：** `https://api.moonshot.cn/v1`
-- **预设模型：** kimi-k2.7-code / kimi-k2.6
+- **预设模型：** kimi-k3
 
 ### 🔵 MiniMax
 - **简介：** 国内直连
-- **官网：** https://platform.minimax.chat
+- **官网：** https://platform.minimaxi.com
 - **地址：** `https://api.minimax.chat/v1`
-- **预设模型：** MiniMax-M3 / M2.7 / M2.5
+- **预设模型：** MiniMax-M3
 
 > 💡 更多平台（豆包、OpenAI、Claude、Gemini 等）均可通过"使用预设站点新建"选择，或手动填写接口地址与协议。
 
