@@ -1,4 +1,4 @@
----
+﻿---
 name: autolinker-usage
 description: >-
   介绍如何使用 AutoLinker，即易语言 AI Agent 支持库和本地 MCP 服务器。内容涵盖安装、
@@ -208,8 +208,8 @@ VC2022）。
 **使用预设站点新建** → 选择站点/模型 → 填写 API Key → 测试连通性 → 保存。
 
 模型选择时，优先使用对易语言格式和写法较为友好的高能力模型，例如
-`gpt-5.6-sol`、`gpt-5.6-luna`（思考等级设为 `max`）、`grok-4.5` 等；国内模型推荐
-`deepseek-v4-flash-0731`。具体模型名和可用思考等级以服务商实际提供为准。
+`gpt-5.6-sol`、`gpt-5.6-luna`（思考等级设为 `max`）、`grok-4.6`、`claude-sonnet-5` 等；
+国内模型推荐 `deepseek-v4-flash-0731`。具体模型名和可用思考等级以服务商实际提供为准。
 
 | 配置项 | 使用说明 |
 | --- | --- |
