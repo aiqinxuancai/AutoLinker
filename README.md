@@ -116,7 +116,7 @@ url = "http://127.0.0.1:19207/mcp"
 ## 其他功能
 
 ### ⭐ 无头命令行编译
-推荐用 `AutoLinkerTest headless-compile` 启动 e.exe：自动关闭启动期弹窗、隐藏 IDE、调用 `compile_with_output_path`，并把结果 JSON 输出到控制台。
+推荐用 `AutoLinkerTest headless-compile` 启动 e.exe：自动关闭启动期弹窗、隐藏 IDE、调用 `compile_with_output_path`，并把结果 JSON 输出到控制台。该启动器支持多个进程同时调用：同一 `.e` 工程按调用顺序排队，不同工程可并行编译；相同输出路径还会通过跨进程锁避免同时写入。
 
 ```powershell
 .\bin\fne_release\AutoLinkerTest.exe headless-compile `
@@ -124,16 +124,17 @@ url = "http://127.0.0.1:19207/mcp"
   --target auto --static --result "D:\demo\build\compile-result.json" --timeout 120
 ```
 
-`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL。结果默认同时写入 `e\AutoLinker\Log\headless_compile_last.json`。
+`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL。省略 `--result` 时，每次调用生成独立的 `<输出文件>.headless.<invocation-id>.json`，并原子更新兼容文件 `<输出文件>.headless.json`。`e\AutoLinker\Log\headless_compile_last.json` 也是原子更新的“最近一次结果”，并发调用方不应依赖它区分各自结果。显式传入 `--result` 时，并发调用方应分别使用不同路径。
 
-也可直接启动主程序（仅负责无头编译，早期弹窗仍建议用启动器）：
+也可直接启动主程序（仅负责无头编译，早期弹窗和同一工程的并发启动协调仍建议用启动器）：
 
 ```powershell
 "C:\path\to\e571.exe" "D:\demo\demo.e" `
   --autolinker-headless-compile `
   --autolinker-output "D:\demo\build\demo.exe" `
   --autolinker-target auto `
-  --autolinker-result "D:\demo\build\compile-result.json"
+  --autolinker-result "D:\demo\build\compile-result.json" `
+  --autolinker-invocation-id "compile-001"
 ```
 
 ### ⭐ 重写核心库函数
