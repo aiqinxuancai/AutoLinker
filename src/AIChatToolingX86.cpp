@@ -19,6 +19,7 @@
 #include "AIChatFeature.h"
 #include "AIChatToolRegistry.h"
 #include "ConfigManager.h"
+#include "CompileConcurrencyManager.h"
 #include "DependencyCatalogCache.h"
 #include "IDEFacade.h"
 #include "EideEditorObjectResolver.h"
@@ -5622,6 +5623,11 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 	}
 
 	if (toolName == "compile_with_output_path") {
+		CompileConcurrencyManager::ProcessExecutionGuard processCompileGuard;
+		if (!processCompileGuard.Acquired()) {
+			return R"({"ok":false,"error":"compile execution reentered before the queued request was released"})";
+		}
+
 		nlohmann::json args;
 		try {
 			args = argumentsJson.empty() ? nlohmann::json::object() : nlohmann::json::parse(argumentsJson);
@@ -5697,6 +5703,19 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 				: normalizeDiagnostics;
 			return JsonToLocalTextForAI(r);
 		}
+
+		CompileConcurrencyManager::OutputPathLock outputPathLock;
+		std::string outputLockError;
+		if (!outputPathLock.Acquire(normalizedPath, INFINITE, outputLockError)) {
+			nlohmann::json r;
+			r["ok"] = false;
+			r["error"] = outputLockError.empty()
+				? "acquire compile output lock failed"
+				: outputLockError;
+			r["output_path"] = LocalToUtf8Text(normalizedPath);
+			return JsonToLocalTextForAI(r);
+		}
+		const DWORD outputLockWaitMs = outputPathLock.WaitElapsedMilliseconds();
 		const CompileArtifactFingerprint artifactBefore = CaptureCompileArtifactFingerprint(normalizedPath);
 
 		// 编译前：快照输出窗口文本和产物高精度指纹。
@@ -5745,6 +5764,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			r["output_capture_truncated"] = outputCapture.truncated;
 			r["dependency_write_dialog_suppressed"] =
 				IdeCompileDialogGuard::WasDependencyWriteDialogDismissed();
+			r["compile_output_lock_wait_ms"] = outputLockWaitMs;
 			r["caret_row"] = caretRow;
 			r["caret_line_text"] = LocalToUtf8Text(caretLineText);
 			r["caret_page_name"] = LocalToUtf8Text(caretPageName);
@@ -5857,6 +5877,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["output_capture_truncated"] = outputCapture.truncated;
 		r["dependency_write_dialog_suppressed"] =
 			IdeCompileDialogGuard::WasDependencyWriteDialogDismissed();
+		r["compile_output_lock_wait_ms"] = outputLockWaitMs;
 		r["output_file_exists"] = outputFileExists;
 		r["output_file_modified_after_compile"] = outputFileModifiedAfterCompile;
 		r["output_file_existed_before_compile"] = artifactBefore.exists;
@@ -5998,6 +6019,19 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 			{"error", "invalid self-test json"}
 		};
 	}
+	nlohmann::json compileConcurrencyCheck = nlohmann::json::parse(
+		CompileConcurrencyManager::BuildSelfTestJson(),
+		nullptr,
+		false);
+	const bool compileConcurrencyCheckPassed = compileConcurrencyCheck.is_object() &&
+		compileConcurrencyCheck.value("ok", false);
+	if (!compileConcurrencyCheck.is_object()) {
+		compileConcurrencyCheck = {
+			{"name", "compile-concurrency-manager"},
+			{"ok", false},
+			{"error", "invalid self-test json"}
+		};
+	}
 	std::filesystem::remove(path, error);
 	return nlohmann::json({
 		{"name", "compile-artifact-fingerprint"},
@@ -6005,7 +6039,8 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 			appendedErrorDetected && rewrittenErrorDetected && unchangedHistoricalErrorRejected &&
 			staticCompileDefaultsPassed && autoCompileTargetsPassed &&
 			outputCaptureCheckPassed && dialogGuardCheckPassed &&
-			logStoreCheckPassed && outputControlCaptureCheckPassed && logViewerCheckPassed},
+			logStoreCheckPassed && outputControlCaptureCheckPassed && logViewerCheckPassed &&
+			compileConcurrencyCheckPassed},
 		{"creation_detected", creationDetected},
 		{"unchanged_rejected", unchangedRejected},
 		{"update_detected", updateDetected},
@@ -6018,7 +6053,8 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 		{"compile_dialog_guard", std::move(dialogGuardCheck)},
 		{"ide_log_store", std::move(logStoreCheck)},
 		{"ide_output_control_capture", std::move(outputControlCaptureCheck)},
-		{"ide_log_viewer", std::move(logViewerCheck)}
+		{"ide_log_viewer", std::move(logViewerCheck)},
+		{"compile_concurrency", std::move(compileConcurrencyCheck)}
 	}).dump();
 }
 

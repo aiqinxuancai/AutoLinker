@@ -1,7 +1,9 @@
 ﻿#include <cstdlib>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -36,6 +38,9 @@ struct HeadlessLauncherOptions {
 	bool staticCompile = false;
 	bool hideWindow = true;
 	int timeoutSeconds = 120;
+	bool resultPathExplicit = false;
+	std::string invocationId;
+	std::string legacyResultPath;
 };
 
 struct CapturedDialog {
@@ -102,14 +107,23 @@ std::wstring Utf8ToWide(const std::string& text)
 std::wstring QuoteCommandLineArgWide(const std::wstring& arg)
 {
 	std::wstring quoted = L"\"";
-	for (wchar_t ch : arg) {
+	size_t backslashCount = 0;
+	for (const wchar_t ch : arg) {
+		if (ch == L'\\') {
+			++backslashCount;
+			continue;
+		}
 		if (ch == L'"') {
-			quoted += L"\\\"";
-		}
-		else {
+			quoted.append(backslashCount * 2 + 1, L'\\');
 			quoted.push_back(ch);
+			backslashCount = 0;
+			continue;
 		}
+		quoted.append(backslashCount, L'\\');
+		backslashCount = 0;
+		quoted.push_back(ch);
 	}
+	quoted.append(backslashCount * 2, L'\\');
 	quoted += L"\"";
 	return quoted;
 }
@@ -123,7 +137,31 @@ std::filesystem::path MakePathFromText(const std::string& text)
 	return std::filesystem::path(text);
 }
 
-std::string DefaultHeadlessResultPath(const std::string& outputPath)
+std::string BuildHeadlessInvocationId()
+{
+	return std::format("launcher-{}-{}", GetCurrentProcessId(), GetTickCount64());
+}
+
+std::wstring BuildHeadlessProjectMutexName(const std::string& projectPath)
+{
+	std::wstring normalizedPath = std::filesystem::absolute(MakePathFromText(projectPath))
+		.lexically_normal()
+		.wstring();
+	if (!normalizedPath.empty()) {
+		CharLowerBuffW(normalizedPath.data(), static_cast<DWORD>(normalizedPath.size()));
+	}
+
+	constexpr std::uint64_t kOffsetBasis = 14695981039346656037ull;
+	constexpr std::uint64_t kPrime = 1099511628211ull;
+	std::uint64_t hash = kOffsetBasis;
+	for (const wchar_t ch : normalizedPath) {
+		hash ^= static_cast<std::uint16_t>(ch);
+		hash *= kPrime;
+	}
+	return std::format(L"Local\\AutoLinker.HeadlessProject.{:016X}", hash);
+}
+
+std::string LegacyHeadlessResultPath(const std::string& outputPath)
 {
 	const std::filesystem::path path = MakePathFromText(outputPath);
 	if (path.empty()) {
@@ -132,13 +170,15 @@ std::string DefaultHeadlessResultPath(const std::string& outputPath)
 	return WideToUtf8(path.wstring() + L".headless.json");
 }
 
-std::filesystem::path GetHeadlessRequestPath(const std::string& eExePath)
+std::string InvocationHeadlessResultPath(
+	const std::string& outputPath,
+	const std::string& invocationId)
 {
-	const std::filesystem::path exePath = MakePathFromText(eExePath);
-	const std::filesystem::path basePath = exePath.parent_path().empty()
-		? std::filesystem::current_path()
-		: exePath.parent_path();
-	return basePath / "AutoLinker" / "Log" / "headless_compile_request.json";
+	const std::filesystem::path path = MakePathFromText(outputPath);
+	if (path.empty()) {
+		return "autolinker-headless-result." + invocationId + ".json";
+	}
+	return WideToUtf8(path.wstring() + L".headless." + Utf8ToWide(invocationId) + L".json");
 }
 
 std::wstring GetWindowTextWideLocal(HWND hWnd)
@@ -372,18 +412,39 @@ void CaptureAndDismissProcessDialogs(DWORD processId, std::vector<CapturedDialog
 	EnumWindows(EnumLauncherDialogProc, reinterpret_cast<LPARAM>(&ctx));
 }
 
-bool WriteTextFile(const std::filesystem::path& path, const std::string& text)
+bool WriteTextFileAtomic(const std::filesystem::path& path, const std::string& text)
 {
+	static std::atomic_ullong writeCounter = 1;
 	std::error_code ec;
 	const std::filesystem::path parent = path.parent_path();
 	if (!parent.empty()) {
 		std::filesystem::create_directories(parent, ec);
 	}
-	std::ofstream out(path, std::ios::binary | std::ios::trunc);
+	std::filesystem::path temporaryPath = path;
+	temporaryPath += std::format(
+		".tmp.{}.{}.{}",
+		GetCurrentProcessId(),
+		GetCurrentThreadId(),
+		writeCounter.fetch_add(1));
+	std::ofstream out(temporaryPath, std::ios::binary | std::ios::trunc);
 	if (!out.is_open()) {
 		return false;
 	}
 	out.write(text.data(), static_cast<std::streamsize>(text.size()));
+	out.flush();
+	if (!out.good()) {
+		out.close();
+		std::filesystem::remove(temporaryPath, ec);
+		return false;
+	}
+	out.close();
+	if (MoveFileExW(
+			temporaryPath.c_str(),
+			path.c_str(),
+			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
+		std::filesystem::remove(temporaryPath, ec);
+		return false;
+	}
 	return true;
 }
 
@@ -892,7 +953,9 @@ int RunHeadlessCompile(int argc, char* argv[])
 	options.eExePath = argv[2];
 	options.projectPath = argv[3];
 	options.outputPath = argv[4];
-	options.resultPath = DefaultHeadlessResultPath(options.outputPath);
+	options.invocationId = BuildHeadlessInvocationId();
+	options.legacyResultPath = LegacyHeadlessResultPath(options.outputPath);
+	options.resultPath = InvocationHeadlessResultPath(options.outputPath, options.invocationId);
 
 	for (int i = 5; i < argc; ++i) {
 		const std::string arg = argv[i];
@@ -907,6 +970,7 @@ int RunHeadlessCompile(int argc, char* argv[])
 		}
 		else if (arg == "--result" && i + 1 < argc) {
 			options.resultPath = argv[++i];
+			options.resultPathExplicit = true;
 		}
 		else if (arg == "--timeout" && i + 1 < argc) {
 			options.timeoutSeconds = (std::max)(1, std::atoi(argv[++i]));
@@ -927,14 +991,10 @@ int RunHeadlessCompile(int argc, char* argv[])
 		{"result_path", options.resultPath},
 		{"startup_timeout_seconds", options.timeoutSeconds},
 		{"hide_window", options.hideWindow},
-		{"exit_after_compile", true}
+		{"exit_after_compile", true},
+		{"invocation_id", options.invocationId},
+		{"transport", "command_line"}
 	};
-
-	const std::filesystem::path requestPath = GetHeadlessRequestPath(options.eExePath);
-	if (!WriteTextFile(requestPath, request.dump(2))) {
-		std::cerr << "write headless request failed: " << WideToUtf8(requestPath.wstring()) << std::endl;
-		return EXIT_FAILURE;
-	}
 
 	STARTUPINFOW si = {};
 	si.cb = sizeof(si);
@@ -944,7 +1004,29 @@ int RunHeadlessCompile(int argc, char* argv[])
 
 	const std::wstring exePath = Utf8ToWide(options.eExePath);
 	const std::wstring projectPath = Utf8ToWide(options.projectPath);
-	std::wstring commandLine = QuoteCommandLineArgWide(exePath) + L" " + QuoteCommandLineArgWide(projectPath);
+	std::wstring commandLine;
+	const auto appendCommandLineArg = [&commandLine](const std::wstring& value) {
+		if (!commandLine.empty()) {
+			commandLine.push_back(L' ');
+		}
+		commandLine += QuoteCommandLineArgWide(value);
+	};
+	appendCommandLineArg(exePath);
+	appendCommandLineArg(projectPath);
+	appendCommandLineArg(L"--autolinker-headless-compile");
+	appendCommandLineArg(L"--autolinker-output");
+	appendCommandLineArg(Utf8ToWide(options.outputPath));
+	appendCommandLineArg(L"--autolinker-target");
+	appendCommandLineArg(Utf8ToWide(options.target));
+	appendCommandLineArg(L"--autolinker-result");
+	appendCommandLineArg(Utf8ToWide(options.resultPath));
+	appendCommandLineArg(L"--autolinker-startup-timeout");
+	appendCommandLineArg(std::to_wstring(options.timeoutSeconds));
+	appendCommandLineArg(L"--autolinker-invocation-id");
+	appendCommandLineArg(Utf8ToWide(options.invocationId));
+	appendCommandLineArg(options.staticCompile ? L"--autolinker-static" : L"--autolinker-no-static");
+	appendCommandLineArg(options.hideWindow ? L"--autolinker-hide-window" : L"--autolinker-show-window");
+	appendCommandLineArg(L"--autolinker-exit");
 	const std::filesystem::path projectFsPath = MakePathFromText(options.projectPath);
 	const std::wstring workingDir = projectFsPath.parent_path().empty()
 		? std::filesystem::current_path().wstring()
@@ -952,6 +1034,22 @@ int RunHeadlessCompile(int argc, char* argv[])
 
 	std::vector<wchar_t> mutableCommandLine(commandLine.begin(), commandLine.end());
 	mutableCommandLine.push_back(L'\0');
+	const std::wstring projectMutexName = BuildHeadlessProjectMutexName(options.projectPath);
+	HANDLE projectMutex = CreateMutexW(nullptr, FALSE, projectMutexName.c_str());
+	if (projectMutex == nullptr) {
+		std::cerr << "CreateMutexW for headless project failed, error=" << GetLastError() << std::endl;
+		return EXIT_FAILURE;
+	}
+	const auto projectGateStartedAt = std::chrono::steady_clock::now();
+	const DWORD projectMutexWait = WaitForSingleObject(projectMutex, INFINITE);
+	if (projectMutexWait != WAIT_OBJECT_0 && projectMutexWait != WAIT_ABANDONED) {
+		std::cerr << "wait headless project mutex failed, error=" << GetLastError() << std::endl;
+		CloseHandle(projectMutex);
+		return EXIT_FAILURE;
+	}
+	const DWORD projectGateWaitMs = static_cast<DWORD>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - projectGateStartedAt).count());
 	const BOOL created = CreateProcessW(
 		exePath.c_str(),
 		mutableCommandLine.data(),
@@ -965,9 +1063,10 @@ int RunHeadlessCompile(int argc, char* argv[])
 		&pi);
 
 	if (created == FALSE) {
-		std::error_code ec;
-		std::filesystem::remove(requestPath, ec);
-		std::cerr << "CreateProcessW failed, error=" << GetLastError() << std::endl;
+		const DWORD error = GetLastError();
+		ReleaseMutex(projectMutex);
+		CloseHandle(projectMutex);
+		std::cerr << "CreateProcessW failed, error=" << error << std::endl;
 		return EXIT_FAILURE;
 	}
 
@@ -983,6 +1082,7 @@ int RunHeadlessCompile(int argc, char* argv[])
 		if (std::chrono::steady_clock::now() >= deadline) {
 			timedOut = true;
 			TerminateProcess(pi.hProcess, 5);
+			WaitForSingleObject(pi.hProcess, 5000);
 			break;
 		}
 	}
@@ -991,10 +1091,8 @@ int RunHeadlessCompile(int argc, char* argv[])
 	GetExitCodeProcess(pi.hProcess, &processExitCode);
 	CloseHandle(pi.hThread);
 	CloseHandle(pi.hProcess);
-	{
-		std::error_code ec;
-		std::filesystem::remove(requestPath, ec);
-	}
+	ReleaseMutex(projectMutex);
+	CloseHandle(projectMutex);
 
 	const std::filesystem::path resultPath = MakePathFromText(options.resultPath);
 	nlohmann::json result;
@@ -1019,7 +1117,7 @@ int RunHeadlessCompile(int argc, char* argv[])
 			{"error", timedOut ? "headless_process_timeout" : "headless_result_missing"},
 			{"process_exit_code", processExitCode},
 			{"request", request},
-			{"request_file", WideToUtf8(requestPath.wstring())}
+			{"request_transport", "command_line"}
 		};
 	}
 
@@ -1046,8 +1144,18 @@ int RunHeadlessCompile(int argc, char* argv[])
 	}
 	result["launcher_process_exit_code"] = processExitCode;
 	result["launcher_timed_out"] = timedOut;
-	result["launcher_request_file"] = WideToUtf8(requestPath.wstring());
-	WriteTextFile(resultPath, result.dump(2));
+	result["launcher_request_transport"] = "command_line";
+	result["launcher_project_gate_wait_ms"] = projectGateWaitMs;
+	result["invocation_id"] = options.invocationId;
+	result["result_file"] = options.resultPath;
+	if (!options.resultPathExplicit) {
+		result["launcher_legacy_result_file"] = options.legacyResultPath;
+	}
+	const std::string finalResultText = result.dump(2);
+	WriteTextFileAtomic(resultPath, finalResultText);
+	if (!options.resultPathExplicit) {
+		WriteTextFileAtomic(MakePathFromText(options.legacyResultPath), finalResultText);
+	}
 	PrintHeadlessSummary(result);
 	std::cout << "result: " << options.resultPath << std::endl;
 

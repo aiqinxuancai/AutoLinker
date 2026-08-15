@@ -432,6 +432,9 @@ UINT_PTR g_nextToolDialogRequestId = 1;
 std::mutex g_toolExecutionRequestMutex;
 std::unordered_map<UINT_PTR, std::shared_ptr<ToolExecutionRequest>> g_pendingToolExecutionRequests;
 UINT_PTR g_nextToolExecutionRequestId = 1;
+std::mutex g_compileToolQueueMutex;
+std::deque<std::shared_ptr<ToolExecutionRequest>> g_queuedCompileToolRequests;
+bool g_compileToolExecutionActive = false;
 std::condition_variable g_chatRequestDoneCv;
 unsigned long long g_lastCompletedRequestId = 0;
 AIChatResult g_lastCompletedChatResult = {};
@@ -9487,6 +9490,68 @@ std::string AppendAutoWriteDiffMessageForTool(const std::string& toolName, const
 	return effectiveArgumentsJson;
 }
 
+bool IsCompileToolExecutionRequest(const std::shared_ptr<ToolExecutionRequest>& request)
+{
+	return request != nullptr && _stricmp(request->toolName.c_str(), "compile_with_output_path") == 0;
+}
+
+bool QueueCompileToolExecutionIfActive(const std::shared_ptr<ToolExecutionRequest>& request)
+{
+	std::lock_guard<std::mutex> guard(g_compileToolQueueMutex);
+	if (g_compileToolExecutionActive) {
+		g_queuedCompileToolRequests.push_back(request);
+		return true;
+	}
+	g_compileToolExecutionActive = true;
+	return false;
+}
+
+std::shared_ptr<ToolExecutionRequest> TakeNextQueuedCompileToolExecution()
+{
+	std::lock_guard<std::mutex> guard(g_compileToolQueueMutex);
+	if (g_queuedCompileToolRequests.empty()) {
+		g_compileToolExecutionActive = false;
+		return nullptr;
+	}
+	std::shared_ptr<ToolExecutionRequest> request = std::move(g_queuedCompileToolRequests.front());
+	g_queuedCompileToolRequests.pop_front();
+	return request;
+}
+
+bool HandleCompileToolExecutionRequest(const std::shared_ptr<ToolExecutionRequest>& firstRequest)
+{
+	if (QueueCompileToolExecutionIfActive(firstRequest)) {
+		return true;
+	}
+
+	std::shared_ptr<ToolExecutionRequest> request = firstRequest;
+	while (request != nullptr) {
+		if (IsToolExecutionRequestCancelled(request)) {
+			FinishToolExecutionRequest(
+				request,
+				false,
+				R"({"ok":false,"error":"main thread tool request was cancelled"})");
+		}
+		else if (request->approvalOnly) {
+			FinishToolExecutionRequest(
+				request,
+				true,
+				R"({"ok":true,"approved":true})");
+		}
+		else {
+			PostRefreshDialog();
+			bool ok = false;
+			const std::string resultJson = ExecuteToolCallOnMainThread(
+				request->toolName,
+				request->argumentsJson,
+				ok);
+			FinishToolExecutionRequest(request, ok, resultJson);
+		}
+		request = TakeNextQueuedCompileToolExecution();
+	}
+	return true;
+}
+
 bool HandleToolExecRequest(LPARAM lParam)
 {
 	const UINT_PTR requestId = static_cast<UINT_PTR>(lParam);
@@ -9500,6 +9565,9 @@ bool HandleToolExecRequest(LPARAM lParam)
 			false,
 			R"({"ok":false,"error":"main thread tool request was cancelled"})");
 		return true;
+	}
+	if (IsCompileToolExecutionRequest(request)) {
+		return HandleCompileToolExecutionRequest(request);
 	}
 
 	if (ShouldRequestInteractiveApproval(
@@ -10285,6 +10353,13 @@ void Shutdown()
 			executionRequests.push_back(std::move(request));
 		}
 		g_pendingToolExecutionRequests.clear();
+	}
+	{
+		std::lock_guard<std::mutex> guard(g_compileToolQueueMutex);
+		while (!g_queuedCompileToolRequests.empty()) {
+			executionRequests.push_back(std::move(g_queuedCompileToolRequests.front()));
+			g_queuedCompileToolRequests.pop_front();
+		}
 	}
 	ToolApprovalRequestState pendingApproval = TakePendingToolApproval(0);
 	if (pendingApproval.request != nullptr) {

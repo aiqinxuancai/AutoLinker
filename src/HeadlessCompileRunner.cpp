@@ -42,6 +42,7 @@ struct HeadlessCompileRequest {
 	bool exitAfterCompile = true;
 	int startupTimeoutSeconds = kDefaultStartupTimeoutSeconds;
 	std::string resultPath;
+	std::string invocationId;
 };
 
 std::once_flag g_parseOnce;
@@ -480,6 +481,7 @@ void ApplyJsonRequest(const nlohmann::json& json, HeadlessCompileRequest& reques
 		1,
 		kMaxStartupTimeoutSeconds);
 	request.resultPath = GetJsonString(json, "result_path", request.resultPath);
+	request.invocationId = GetJsonString(json, "invocation_id", request.invocationId);
 }
 
 void ApplyEnvironmentRequest(HeadlessCompileRequest& request)
@@ -537,6 +539,7 @@ void ApplyEnvironmentRequest(HeadlessCompileRequest& request)
 	applyStringEnv(L"AL_HEADLESS_OUTPUT_PATH", request.outputPath);
 	applyStringEnv(L"AL_HEADLESS_RESULT", request.resultPath);
 	applyStringEnv(L"AL_HEADLESS_RESULT_PATH", request.resultPath);
+	applyStringEnv(L"AL_HEADLESS_INVOCATION_ID", request.invocationId);
 	applyBoolEnv(L"AL_HEADLESS_STATIC", request.staticCompile);
 	applyBoolEnv(L"AL_HEADLESS_STATIC_COMPILE", request.staticCompile);
 	applyBoolEnv(L"AL_HEADLESS_HIDE_WINDOW", request.hideWindow);
@@ -547,6 +550,7 @@ void ApplyEnvironmentRequest(HeadlessCompileRequest& request)
 	applyStringEnv(L"AUTOLINKER_HEADLESS_OUTPUT_PATH", request.outputPath);
 	applyStringEnv(L"AUTOLINKER_HEADLESS_RESULT", request.resultPath);
 	applyStringEnv(L"AUTOLINKER_HEADLESS_RESULT_PATH", request.resultPath);
+	applyStringEnv(L"AUTOLINKER_HEADLESS_INVOCATION_ID", request.invocationId);
 	applyBoolEnv(L"AUTOLINKER_HEADLESS_STATIC", request.staticCompile);
 	applyBoolEnv(L"AUTOLINKER_HEADLESS_STATIC_COMPILE", request.staticCompile);
 	applyBoolEnv(L"AUTOLINKER_HEADLESS_HIDE_WINDOW", request.hideWindow);
@@ -926,6 +930,10 @@ void ApplyCommandLineRequest(HeadlessCompileRequest& request)
 			request.resultPath = hasValue ? value : ReadNextArgumentValue(args, i);
 			continue;
 		}
+		if (name == "autolinker-invocation-id") {
+			request.invocationId = hasValue ? value : ReadNextArgumentValue(args, i);
+			continue;
+		}
 		if (name == "autolinker-startup-timeout" || name == "autolinker-startup-timeout-seconds") {
 			const std::string raw = hasValue ? value : ReadNextArgumentValue(args, i);
 			try {
@@ -966,16 +974,63 @@ void ApplyCommandLineRequest(HeadlessCompileRequest& request)
 	}
 }
 
+bool HasExplicitCommandLineHeadlessRequest()
+{
+	const std::vector<std::wstring> args = GetCommandLineArguments();
+	for (size_t i = 1; i < args.size(); ++i) {
+		std::string name;
+		std::string value;
+		bool hasValue = false;
+		if (TrySplitInlineOption(args[i], name, value, hasValue) &&
+			(name == "autolinker-headless-compile" || name == "autolinker-compile")) {
+			return true;
+		}
+	}
+	return false;
+}
+
+std::string SanitizeInvocationId(std::string invocationId)
+{
+	for (char& ch : invocationId) {
+		const unsigned char value = static_cast<unsigned char>(ch);
+		if (!(std::isalnum(value) != 0 || ch == '-' || ch == '_')) {
+			ch = '_';
+		}
+	}
+	invocationId = TrimAsciiCopyLocal(invocationId);
+	return invocationId.empty()
+		? std::format("pid-{}-{}", GetCurrentProcessId(), GetTickCount64())
+		: invocationId;
+}
+
+std::string BuildInvocationResultPath(const HeadlessCompileRequest& request)
+{
+	const std::wstring invocationWide = Utf8ToWide(request.invocationId);
+	const std::wstring suffix = L".headless." + invocationWide + L".json";
+	const std::wstring outputWide = Utf8ToWide(request.outputPath);
+	if (!outputWide.empty()) {
+		return WideToUtf8(std::filesystem::path(outputWide).wstring() + suffix);
+	}
+	return WideToUtf8((GetAutoLinkerLogDirectoryPath() /
+		std::filesystem::path(L"headless_compile_" + invocationWide + L".json")).wstring());
+}
+
 void EnsureRequestParsed()
 {
 	std::call_once(g_parseOnce, []() {
 		HeadlessCompileRequest request;
-		ApplyRequestFile(request);
+		if (!HasExplicitCommandLineHeadlessRequest()) {
+			ApplyRequestFile(request);
+		}
 		ApplyEnvironmentRequest(request);
 		ApplyCommandLineRequest(request);
 		request.target = ToLowerAsciiCopyLocal(TrimAsciiCopyLocal(request.target.empty() ? "auto" : request.target));
 		request.outputPath = TrimAsciiCopyLocal(request.outputPath);
 		request.resultPath = TrimAsciiCopyLocal(request.resultPath);
+		request.invocationId = SanitizeInvocationId(request.invocationId);
+		if (request.enabled && request.resultPath.empty()) {
+			request.resultPath = BuildInvocationResultPath(request);
+		}
 		g_request = request;
 	});
 }
@@ -1030,7 +1085,7 @@ std::filesystem::path MakeUtf8Path(const std::string& utf8Path)
 	return std::filesystem::path(utf8Path);
 }
 
-std::filesystem::path GetDefaultResultPath()
+std::filesystem::path GetLatestResultPath()
 {
 	return GetAutoLinkerLogFilePath("headless_compile_last.json");
 }
@@ -1054,15 +1109,23 @@ std::string ReadTextFileUtf8(const std::filesystem::path& path)
 	}
 }
 
-bool WriteTextFileUtf8(const std::filesystem::path& path, const std::string& text, std::string* outError)
+bool WriteTextFileUtf8Atomic(const std::filesystem::path& path, const std::string& text, std::string* outError)
 {
+	static std::atomic_ullong writeCounter = 1;
+	std::filesystem::path temporaryPath;
 	try {
 		const std::filesystem::path parent = path.parent_path();
 		if (!parent.empty()) {
 			std::filesystem::create_directories(parent);
 		}
 
-		std::ofstream out(path, std::ios::binary | std::ios::trunc);
+		temporaryPath = path;
+		temporaryPath += std::format(
+			".tmp.{}.{}.{}",
+			GetCurrentProcessId(),
+			GetCurrentThreadId(),
+			writeCounter.fetch_add(1));
+		std::ofstream out(temporaryPath, std::ios::binary | std::ios::trunc);
 		if (!out.is_open()) {
 			if (outError != nullptr) {
 				*outError = "open_result_file_failed";
@@ -1070,15 +1133,46 @@ bool WriteTextFileUtf8(const std::filesystem::path& path, const std::string& tex
 			return false;
 		}
 		out.write(text.data(), static_cast<std::streamsize>(text.size()));
+		out.flush();
+		if (!out.good()) {
+			out.close();
+			std::error_code removeError;
+			std::filesystem::remove(temporaryPath, removeError);
+			if (outError != nullptr) {
+				*outError = "write_result_file_failed";
+			}
+			return false;
+		}
+		out.close();
+		if (MoveFileExW(
+				temporaryPath.c_str(),
+				path.c_str(),
+				MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
+			const DWORD error = GetLastError();
+			std::error_code removeError;
+			std::filesystem::remove(temporaryPath, removeError);
+			if (outError != nullptr) {
+				*outError = std::format("publish_result_file_failed: {}", error);
+			}
+			return false;
+		}
 		return true;
 	}
 	catch (const std::exception& ex) {
+		if (!temporaryPath.empty()) {
+			std::error_code removeError;
+			std::filesystem::remove(temporaryPath, removeError);
+		}
 		if (outError != nullptr) {
 			*outError = ex.what();
 		}
 		return false;
 	}
 	catch (...) {
+		if (!temporaryPath.empty()) {
+			std::error_code removeError;
+			std::filesystem::remove(temporaryPath, removeError);
+		}
 		if (outError != nullptr) {
 			*outError = "unknown";
 		}
@@ -1140,13 +1234,12 @@ void WriteResultFiles(const HeadlessCompileRequest& request, const nlohmann::jso
 {
 	const std::string text = result.dump(2);
 	std::string error;
-	if (!WriteTextFileUtf8(GetDefaultResultPath(), text, &error)) {
-		OutputStringToELog("[HeadlessCompile] 写入默认结果文件失败: " + error);
-	}
-
 	if (!request.resultPath.empty() &&
-		!WriteTextFileUtf8(MakeUtf8Path(request.resultPath), text, &error)) {
+		!WriteTextFileUtf8Atomic(MakeUtf8Path(request.resultPath), text, &error)) {
 		OutputStringToELog("[HeadlessCompile] 写入指定结果文件失败: " + error);
+	}
+	if (!WriteTextFileUtf8Atomic(GetLatestResultPath(), text, &error)) {
+		OutputStringToELog("[HeadlessCompile] 写入最新结果文件失败: " + error);
 	}
 }
 
@@ -1287,10 +1380,10 @@ void PrintHeadlessResultToConsole(const HeadlessCompileRequest& request, const n
 		}
 	}
 
-	WriteHeadlessConsoleLine("result: " + GetDefaultResultPath().string(), stderrOutput);
 	if (!request.resultPath.empty()) {
-		WriteHeadlessConsoleLine("result_copy: " + request.resultPath, stderrOutput);
+		WriteHeadlessConsoleLine("result: " + request.resultPath, stderrOutput);
 	}
+	WriteHeadlessConsoleLine("latest_result: " + GetLatestResultPath().string(), stderrOutput);
 }
 
 bool CallPublicToolUtf8(
@@ -1412,7 +1505,8 @@ nlohmann::json BuildRequestJson(const HeadlessCompileRequest& request)
 		{"hide_window", request.hideWindow},
 		{"exit_after_compile", request.exitAfterCompile},
 		{"startup_timeout_seconds", request.startupTimeoutSeconds},
-		{"result_path", request.resultPath}
+		{"result_path", request.resultPath},
+		{"invocation_id", request.invocationId}
 	};
 }
 
@@ -1448,9 +1542,11 @@ void HeadlessWorkerMain()
 	nlohmann::json result;
 	result["ok"] = false;
 	result["mode"] = "autolinker_headless_compile";
+	result["invocation_id"] = request.invocationId;
 	result["request"] = BuildRequestJson(request);
 	result["process_id"] = GetCurrentProcessId();
-	result["result_file"] = GetDefaultResultPath().string();
+	result["result_file"] = request.resultPath;
+	result["latest_result_file"] = GetLatestResultPath().string();
 
 	OutputStringToELog("[HeadlessCompile] 已进入无头编译模式");
 

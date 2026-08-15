@@ -567,17 +567,15 @@ bool RequestToolExecutionFromMainThread(
 	{
 		std::unique_lock<std::mutex> lock(request->mutex);
 		const auto dispatchDeadline = std::chrono::steady_clock::now() + std::chrono::minutes(20);
-		bool dependencyDialogDismissed = false;
 		while (!request->done && std::chrono::steady_clock::now() < dispatchDeadline) {
 			if (request->cv.wait_for(lock, std::chrono::milliseconds(50), [&request]() {
 				return request->done;
 			})) {
 				break;
 			}
-			if (toolName == "compile_with_output_path" && !dependencyDialogDismissed) {
+			if (toolName == "compile_with_output_path") {
 				lock.unlock();
-				dependencyDialogDismissed =
-					IdeCompileDialogGuard::TryDismissDependencyWriteDialog();
+				IdeCompileDialogGuard::TryDismissDependencyWriteDialog();
 				lock.lock();
 			}
 		}

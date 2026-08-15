@@ -116,6 +116,9 @@
     <ClCompile Include="src\EideProjectBinarySerializer.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\CompileConcurrencyManager.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\HeadlessCompileRunner.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -307,6 +310,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\ArchiveExtractor.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\CompileConcurrencyManager.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\AIConfigDialog.h">
