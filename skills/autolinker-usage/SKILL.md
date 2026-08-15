@@ -343,7 +343,8 @@ AutoLinker 不直接解析或修改加密的 `.e` 文件。准备完整工作区
 ## 无界面命令行编译
 
 推荐方式：通过 `AutoLinkerTest headless-compile` 启动 `e.exe`。该命令会关闭启动弹窗、
-隐藏 IDE、调用 `compile_with_output_path`，并输出 JSON 结果：
+隐藏 IDE、调用 `compile_with_output_path`，并输出 JSON 结果。启动器支持多个进程同时调用：
+同一 `.e` 工程按调用顺序排队，不同工程可并行编译；相同输出路径通过跨进程锁避免同时写入：
 
 ```powershell
 .\bin\fne_release\AutoLinkerTest.exe headless-compile `
@@ -352,17 +353,21 @@ AutoLinker 不直接解析或修改加密的 `.e` 文件。准备完整工作区
 ```
 
 `--target` 可取 `auto` | `win_exe` | `win_console_exe` | `win_dll` | `ecom`。
-`--static` 仅适用于 EXE/DLL。结果还会写入
-`{易语言目录}\AutoLinker\Log\headless_compile_last.json`。
+`--static` 仅适用于 EXE/DLL。省略 `--result` 时，每次调用生成独立的
+`<输出文件>.headless.<invocation-id>.json`，并原子更新兼容文件
+`<输出文件>.headless.json`。`{易语言目录}\AutoLinker\Log\headless_compile_last.json`
+也是原子更新的最近一次结果，不能用于区分并发调用。显式传入 `--result` 时，各调用必须使用
+不同结果路径。
 
-也可以直接驱动主程序（仅限无界面编译；处理早期弹窗时仍优先使用启动器）：
+也可以直接驱动主程序（仅限无界面编译；处理早期弹窗和同一工程并发启动时仍优先使用启动器）：
 
 ```powershell
 "C:\path\to\e571.exe" "D:\demo\demo.e" `
   --autolinker-headless-compile `
   --autolinker-output "D:\demo\build\demo.exe" `
   --autolinker-target auto `
-  --autolinker-result "D:\demo\build\compile-result.json"
+  --autolinker-result "D:\demo\build\compile-result.json" `
+  --autolinker-invocation-id "compile-001"
 ```
 
 `AutoLinkerTest.exe` 还提供以下服务商测试和自检子命令：
