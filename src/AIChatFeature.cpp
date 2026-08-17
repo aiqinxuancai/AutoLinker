@@ -4957,6 +4957,41 @@ void CompactHistoryLocked(AIChatSessionState& state)
 	cleanupInvisibleContextMessages();
 }
 
+bool RawAssistantMessageContainsToolCall(const SessionMessage& message)
+{
+	if (message.role != SessionRole::Assistant || message.rawMessageJsonUtf8.empty()) {
+		return false;
+	}
+	try {
+		const nlohmann::json raw = nlohmann::json::parse(message.rawMessageJsonUtf8);
+		if (!raw.is_object()) {
+			return false;
+		}
+		if (raw.contains("tool_calls") && raw["tool_calls"].is_array() && !raw["tool_calls"].empty()) {
+			return true;
+		}
+		if (raw.value("type", std::string()) == "function_call") {
+			return true;
+		}
+		for (const char* field : { "parts", "content" }) {
+			if (!raw.contains(field) || !raw[field].is_array()) {
+				continue;
+			}
+			for (const auto& part : raw[field]) {
+				if (part.is_object() &&
+					((part.contains("functionCall") && part["functionCall"].is_object()) ||
+						part.value("type", std::string()) == "tool_use" ||
+						part.value("type", std::string()) == "function_call")) {
+					return true;
+				}
+			}
+		}
+	}
+	catch (...) {
+	}
+	return false;
+}
+
 std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& state)
 {
 	std::vector<AIChatMessage> out;
@@ -5023,26 +5058,15 @@ std::vector<AIChatMessage> BuildContextMessagesLocked(const AIChatSessionState& 
 
 	const size_t keep = (std::min)(contextMsgs.size(), static_cast<size_t>(24));
 	size_t begin = contextMsgs.size() > keep ? (contextMsgs.size() - keep) : 0;
-	if (begin > 0 && contextMsgs[begin].role == SessionRole::Tool) {
-		size_t groupBegin = begin;
-		while (groupBegin > 0 && contextMsgs[groupBegin - 1].role == SessionRole::Tool) {
-			--groupBegin;
+	if (begin > 0 &&
+		(contextMsgs[begin].role == SessionRole::Tool ||
+			RawAssistantMessageContainsToolCall(contextMsgs[begin]))) {
+		size_t transactionBegin = begin;
+		while (transactionBegin > 0 && contextMsgs[transactionBegin].role != SessionRole::User) {
+			--transactionBegin;
 		}
-		if (groupBegin > 0) {
-			const SessionMessage& possibleAssistant = contextMsgs[groupBegin - 1];
-			if (possibleAssistant.role == SessionRole::Assistant) {
-				try {
-					const nlohmann::json rawAssistant = nlohmann::json::parse(possibleAssistant.rawMessageJsonUtf8);
-					if (rawAssistant.is_object() &&
-						rawAssistant.contains("tool_calls") &&
-						rawAssistant["tool_calls"].is_array() &&
-						!rawAssistant["tool_calls"].empty()) {
-						begin = groupBegin - 1;
-					}
-				}
-				catch (...) {
-				}
-			}
+		if (contextMsgs[transactionBegin].role == SessionRole::User) {
+			begin = transactionBegin;
 		}
 	}
 	for (size_t i = begin; i < contextMsgs.size(); ++i) {

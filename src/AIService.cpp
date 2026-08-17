@@ -3764,6 +3764,87 @@ bool IsGeminiFunctionResponseContent(const nlohmann::json& content)
 	});
 }
 
+bool IsGeminiFunctionCallContent(const nlohmann::json& content)
+{
+	if (!content.is_object() ||
+		content.value("role", std::string()) != "model" ||
+		!content.contains("parts") ||
+		!content["parts"].is_array()) {
+		return false;
+	}
+	return std::any_of(content["parts"].begin(), content["parts"].end(), [](const nlohmann::json& part) {
+		return part.is_object() &&
+			part.contains("functionCall") &&
+			part["functionCall"].is_object();
+	});
+}
+
+struct GeminiFunctionHistoryRepairStats {
+	size_t removedContents = 0;
+	size_t mergedContents = 0;
+	size_t removedIncompleteGroups = 0;
+};
+
+bool AppendGeminiContentParts(nlohmann::json& target, const nlohmann::json& source)
+{
+	if (!target.is_object() ||
+		!source.is_object() ||
+		!target.contains("parts") ||
+		!target["parts"].is_array() ||
+		!source.contains("parts") ||
+		!source["parts"].is_array()) {
+		return false;
+	}
+	for (const auto& part : source["parts"]) {
+		target["parts"].push_back(part);
+	}
+	return true;
+}
+
+void CoalesceGeminiContentRoles(
+	const nlohmann::json& source,
+	nlohmann::json& target,
+	GeminiFunctionHistoryRepairStats& stats)
+{
+	target = nlohmann::json::array();
+	if (!source.is_array()) {
+		return;
+	}
+
+	for (const auto& content : source) {
+		if (!content.is_object() ||
+			!content.contains("parts") ||
+			!content["parts"].is_array() ||
+			content["parts"].empty()) {
+			++stats.removedContents;
+			continue;
+		}
+
+		std::string role = ToLowerAsciiCopy(AIService::Trim(content.value("role", std::string())));
+		if (role == "assistant") {
+			role = "model";
+		}
+		if (role != "user" && role != "model") {
+			++stats.removedContents;
+			continue;
+		}
+
+		nlohmann::json normalizedContent = content;
+		normalizedContent["role"] = role;
+		if (target.empty() && role != "user") {
+			++stats.removedContents;
+			continue;
+		}
+		if (!target.empty() && target.back().value("role", std::string()) == role) {
+			if (AppendGeminiContentParts(target.back(), normalizedContent)) {
+				++stats.mergedContents;
+				continue;
+			}
+		}
+		target.push_back(std::move(normalizedContent));
+	}
+}
+
 void RestoreGeminiFunctionResponseIds(
 	const nlohmann::json& modelContent,
 	nlohmann::json& responseContent)
@@ -3820,31 +3901,138 @@ void RestoreGeminiFunctionResponseIds(
 	}
 }
 
-void NormalizeGeminiFunctionCallHistory(nlohmann::json& contents)
+bool IsCompleteGeminiFunctionExchange(
+	const nlohmann::json& callContent,
+	const nlohmann::json& responseContent)
 {
-	if (!contents.is_array() || contents.empty()) {
-		return;
+	if (!IsGeminiFunctionCallContent(callContent) ||
+		!IsGeminiFunctionResponseContent(responseContent)) {
+		return false;
 	}
 
-	nlohmann::json normalized = nlohmann::json::array();
-	for (const auto& content : contents) {
-		if (IsGeminiFunctionResponseContent(content) &&
-			!normalized.empty() &&
-			IsGeminiFunctionResponseContent(normalized.back())) {
-			for (const auto& part : content["parts"]) {
-				normalized.back()["parts"].push_back(part);
+	std::vector<const nlohmann::json*> calls;
+	std::vector<const nlohmann::json*> responses;
+	for (const auto& part : callContent["parts"]) {
+		if (part.is_object() &&
+			part.contains("functionCall") &&
+			part["functionCall"].is_object()) {
+			calls.push_back(&part["functionCall"]);
+		}
+	}
+	for (const auto& part : responseContent["parts"]) {
+		if (part.is_object() &&
+			part.contains("functionResponse") &&
+			part["functionResponse"].is_object()) {
+			responses.push_back(&part["functionResponse"]);
+		}
+	}
+	if (calls.empty() || calls.size() != responses.size()) {
+		return false;
+	}
+
+	std::vector<bool> matched(calls.size(), false);
+	for (const nlohmann::json* response : responses) {
+		const std::string responseId = response->value("id", std::string());
+		const std::string responseName = response->value("name", std::string());
+		size_t match = calls.size();
+		for (size_t i = 0; i < calls.size(); ++i) {
+			if (matched[i]) {
+				continue;
 			}
+			const std::string callId = calls[i]->value("id", std::string());
+			const std::string callName = calls[i]->value("name", std::string());
+			if (!responseId.empty() && !callId.empty()) {
+				if (responseId == callId) {
+					match = i;
+					break;
+				}
+				continue;
+			}
+			if (responseName == callName) {
+				match = i;
+				break;
+			}
+		}
+		if (match == calls.size()) {
+			return false;
+		}
+		matched[match] = true;
+	}
+	return true;
+}
+
+nlohmann::json RemoveGeminiFunctionParts(
+	const nlohmann::json& content,
+	const char* fieldName)
+{
+	nlohmann::json cleaned = content;
+	nlohmann::json parts = nlohmann::json::array();
+	if (!content.is_object() ||
+		!content.contains("parts") ||
+		!content["parts"].is_array()) {
+		return nlohmann::json();
+	}
+	for (const auto& part : content["parts"]) {
+		if (part.is_object() && part.contains(fieldName)) {
 			continue;
 		}
-		normalized.push_back(content);
+		parts.push_back(part);
+	}
+	if (parts.empty()) {
+		return nlohmann::json();
+	}
+	cleaned["parts"] = std::move(parts);
+	return cleaned;
+}
+
+GeminiFunctionHistoryRepairStats NormalizeGeminiFunctionCallHistory(nlohmann::json& contents)
+{
+	GeminiFunctionHistoryRepairStats stats;
+	if (!contents.is_array() || contents.empty()) {
+		return stats;
 	}
 
-	for (size_t i = 1; i < normalized.size(); ++i) {
-		if (IsGeminiFunctionResponseContent(normalized[i])) {
-			RestoreGeminiFunctionResponseIds(normalized[i - 1], normalized[i]);
+	nlohmann::json normalized;
+	CoalesceGeminiContentRoles(contents, normalized, stats);
+	std::vector<bool> validCall(normalized.size(), false);
+	std::vector<bool> validResponse(normalized.size(), false);
+	for (size_t i = 0; i < normalized.size(); ++i) {
+		if (!IsGeminiFunctionCallContent(normalized[i])) {
+			continue;
+		}
+		if (i > 0 &&
+			normalized[i - 1].value("role", std::string()) == "user" &&
+			i + 1 < normalized.size() &&
+			IsCompleteGeminiFunctionExchange(normalized[i], normalized[i + 1])) {
+			RestoreGeminiFunctionResponseIds(normalized[i], normalized[i + 1]);
+			validCall[i] = true;
+			validResponse[i + 1] = true;
+		}
+		else {
+			++stats.removedIncompleteGroups;
 		}
 	}
-	contents = std::move(normalized);
+
+	nlohmann::json repaired = nlohmann::json::array();
+	for (size_t i = 0; i < normalized.size(); ++i) {
+		nlohmann::json content = normalized[i];
+		if (IsGeminiFunctionCallContent(content) && !validCall[i]) {
+			content = RemoveGeminiFunctionParts(content, "functionCall");
+		}
+		if (IsGeminiFunctionResponseContent(content) && !validResponse[i]) {
+			content = RemoveGeminiFunctionParts(content, "functionResponse");
+		}
+		if (content.is_null()) {
+			++stats.removedContents;
+			continue;
+		}
+		repaired.push_back(std::move(content));
+	}
+
+	nlohmann::json finalContents;
+	CoalesceGeminiContentRoles(repaired, finalContents, stats);
+	contents = std::move(finalContents);
+	return stats;
 }
 
 std::vector<ResponsesToolCall> ExtractResponsesToolCalls(const nlohmann::json& parsed)
@@ -4870,13 +5058,24 @@ AIChatResult ExecuteChatWithToolsGemini(
 		}
 		contents.push_back(BuildGeminiContent(msg));
 	}
-	NormalizeGeminiFunctionCallHistory(contents);
-
 	AIChatToolPolicy::Session toolPolicy;
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return MarkChatResultCancelled(std::move(result));
+		}
+		const GeminiFunctionHistoryRepairStats repairStats =
+			NormalizeGeminiFunctionCallHistory(contents);
+		if (repairStats.removedContents > 0 ||
+			repairStats.mergedContents > 0 ||
+			repairStats.removedIncompleteGroups > 0) {
+			Logger::Instance().Write(
+				"AIService",
+				std::format(
+					"repaired Gemini function history removed_contents={} merged_contents={} incomplete_groups={}",
+					repairStats.removedContents,
+					repairStats.mergedContents,
+					repairStats.removedIncompleteGroups));
 		}
 
 		const AISettings roundSettings = BuildChatRoundSettings(settings, toolPolicy);
@@ -8130,16 +8329,77 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			}
 		});
 		NormalizeGeminiFunctionCallHistory(history);
-		const bool ok =
+		const bool parallelOk =
 			history.size() == 3 &&
 			history[1] == originalModelContent &&
 			history[2].value("role", std::string()) == "user" &&
 			history[2]["parts"].size() == 2 &&
 			history[2]["parts"][0]["functionResponse"].value("id", std::string()) == "call_paris" &&
 			history[2]["parts"][1]["functionResponse"].value("id", std::string()) == "call_london";
+
+		nlohmann::json truncatedHistory = nlohmann::json::array({
+			originalModelContent,
+			history[2],
+			{
+				{"role", "user"},
+				{"parts", nlohmann::json::array({{{"text", "Continue after truncation"}}})}
+			}
+		});
+		const GeminiFunctionHistoryRepairStats truncatedStats =
+			NormalizeGeminiFunctionCallHistory(truncatedHistory);
+		const bool truncatedBoundaryOk =
+			truncatedStats.removedContents > 0 &&
+			truncatedHistory.size() == 1 &&
+			truncatedHistory[0].value("role", std::string()) == "user" &&
+			truncatedHistory[0]["parts"].size() == 1 &&
+			truncatedHistory[0]["parts"][0].value("text", std::string()) == "Continue after truncation";
+
+		nlohmann::json repeatedUserTurns = nlohmann::json::array({
+			{
+				{"role", "user"},
+				{"parts", nlohmann::json::array({{{"text", "Check both cities"}}})}
+			},
+			originalModelContent,
+			history[2],
+			{
+				{"role", "user"},
+				{"parts", nlohmann::json::array({{{"text", "Recovery hint"}}})}
+			},
+			{
+				{"role", "model"},
+				{"parts", nlohmann::json::array({{
+					{"functionCall", {
+						{"id", "call_berlin"},
+						{"name", "get_weather"},
+						{"args", {{"city", "Berlin"}}}
+					}}
+				}})}
+			},
+			{
+				{"role", "user"},
+				{"parts", nlohmann::json::array({{
+					{"functionResponse", {
+						{"name", "get_weather"},
+						{"response", {{"temperature", 10}}}
+					}}
+				}})}
+			}
+		});
+		const GeminiFunctionHistoryRepairStats repeatedStats =
+			NormalizeGeminiFunctionCallHistory(repeatedUserTurns);
+		const bool repeatedUserTurnsOk =
+			repeatedStats.mergedContents == 1 &&
+			repeatedUserTurns.size() == 5 &&
+			repeatedUserTurns[2]["parts"].size() == 3 &&
+			repeatedUserTurns[3]["parts"][0]["functionCall"].value("id", std::string()) == "call_berlin" &&
+			repeatedUserTurns[4]["parts"][0]["functionResponse"].value("id", std::string()) == "call_berlin";
+		const bool ok = parallelOk && truncatedBoundaryOk && repeatedUserTurnsOk;
 		checks.push_back({
-			{"name", "gemini_parallel_function_response_history"},
+			{"name", "gemini_function_history_normalization"},
 			{"ok", ok},
+			{"parallel_responses", parallelOk},
+			{"truncated_boundary", truncatedBoundaryOk},
+			{"repeated_user_turns", repeatedUserTurnsOk},
 			{"content_count", history.size()},
 			{"response_part_count", history.size() > 2 ? history[2]["parts"].size() : 0},
 			{"model_content_preserved", history.size() > 1 && history[1] == originalModelContent}

@@ -74,6 +74,11 @@ constexpr std::uintptr_t kE595TextPackageParsedItemDestroyRva = 0x40F4E0;
 constexpr std::uintptr_t kE595TextPackageParsedItemRemoveAtRva = 0x5BB445;
 constexpr std::uintptr_t kE595GlobalSupportLibraryArrayRva = 0x675898;
 constexpr std::uintptr_t kE595SupportLibraryArrayAddUniqueRva = 0x501270;
+constexpr std::uintptr_t kE595ProjectTypeReferencePrepareRva = 0x430380;
+constexpr std::uintptr_t kE595ProjectTypeReferenceRebuildRva = 0x45B630;
+constexpr std::uintptr_t kE595ProjectTypeReferenceStoreRva = 0x4F11C0;
+constexpr std::uintptr_t kE595NameLinkBufferVtableRva = 0x5F7A80;
+constexpr std::uintptr_t kE595TextBufferVtableRva = 0x5F7940;
 constexpr size_t kInternalClipboardObjectSize = 0x340;
 constexpr size_t kInternalGenericArraySize = 0x14;
 constexpr size_t kE595InternalTextPackageSize = 0x400;
@@ -103,6 +108,9 @@ using FnThiscallGenericArrayAssign = void(__thiscall*)(void*, const void*, size_
 using FnThiscallCollectionGetValueByIndex = int(__thiscall*)(void*, int, void**);
 using FnCStringAssignCopy = void(__thiscall*)(void*, int, const char*);
 using FnRefreshProgramTree = void(__thiscall*)(void*);
+using FnE595ProjectTypeReferencePrepare = int(__thiscall*)(void*, int);
+using FnE595ProjectTypeReferenceRebuild = void(__thiscall*)(void*, void*);
+using FnE595ProjectTypeReferenceStore = void(__thiscall*)(void*, void*, void*);
 using FnCdeclCStringArrayAddUnique = int(__cdecl*)(CStringArray*, unsigned char*, int);
 using FnThiscallMergeParsedRange = void(__thiscall*)(void*, void*, int, int);
 using FnThiscallPtrArrayRemoveAt = void*(__thiscall*)(void*, int, int);
@@ -670,6 +678,26 @@ bool IsE595DirectTextPackageWriteSupported(std::string* outTrace = nullptr)
 		0x53, 0x8B, 0x5C, 0x24, 0x08, 0x55, 0x8B, 0x6C,
 		0x24, 0x10, 0x56, 0x8B, 0x74, 0x24, 0x18, 0x57,
 	};
+	static constexpr std::array<std::uint8_t, 16> kSigProjectTypeReferencePrepare = {
+		0x8B, 0x44, 0x24, 0x04, 0x8D, 0x54, 0x24, 0x04,
+		0x50, 0x52, 0x6A, 0x0F, 0x68, 0x70, 0x00, 0x02,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigProjectTypeReferenceRebuild = {
+		0x83, 0xEC, 0x10, 0x53, 0x55, 0x8B, 0x6C, 0x24,
+		0x1C, 0x56, 0x57, 0x8B, 0xF9, 0x33, 0xF6, 0x8D,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigProjectTypeReferenceStore = {
+		0x6A, 0xFF, 0x68, 0xE0, 0x14, 0x5F, 0x00, 0x64,
+		0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigNameLinkBufferVtable = {
+		0xC0, 0x9D, 0x40, 0x00, 0xCF, 0x7E, 0x5D, 0x00,
+		0xC0, 0x89, 0x40, 0x00, 0xB0, 0x8B, 0x40, 0x00,
+	};
+	static constexpr std::array<std::uint8_t, 16> kSigTextBufferVtable = {
+		0x90, 0x9D, 0x40, 0x00, 0x02, 0xD3, 0x5B, 0x00,
+		0x70, 0x9D, 0x40, 0x00, 0x70, 0x5C, 0x48, 0x00,
+	};
 
 	struct ProbeItem {
 		const char* label;
@@ -690,6 +718,11 @@ bool IsE595DirectTextPackageWriteSupported(std::string* outTrace = nullptr)
 		{ "parsed_item_destroy", kE595TextPackageParsedItemDestroyRva, MatchRvaSignature(moduleBase, kE595TextPackageParsedItemDestroyRva, kSigParsedItemDestroy) },
 		{ "parsed_item_remove_at", kE595TextPackageParsedItemRemoveAtRva, MatchRvaSignature(moduleBase, kE595TextPackageParsedItemRemoveAtRva, kSigParsedItemRemoveAt) },
 		{ "support_library_add_unique", kE595SupportLibraryArrayAddUniqueRva, MatchRvaSignature(moduleBase, kE595SupportLibraryArrayAddUniqueRva, kSigSupportLibraryAddUnique) },
+		{ "project_type_reference_prepare", kE595ProjectTypeReferencePrepareRva, MatchRvaSignature(moduleBase, kE595ProjectTypeReferencePrepareRva, kSigProjectTypeReferencePrepare) },
+		{ "project_type_reference_rebuild", kE595ProjectTypeReferenceRebuildRva, MatchRvaSignature(moduleBase, kE595ProjectTypeReferenceRebuildRva, kSigProjectTypeReferenceRebuild) },
+		{ "project_type_reference_store", kE595ProjectTypeReferenceStoreRva, MatchRvaSignature(moduleBase, kE595ProjectTypeReferenceStoreRva, kSigProjectTypeReferenceStore) },
+		{ "name_link_buffer_vtable", kE595NameLinkBufferVtableRva, MatchRvaSignature(moduleBase, kE595NameLinkBufferVtableRva, kSigNameLinkBufferVtable) },
+		{ "text_buffer_vtable", kE595TextBufferVtableRva, MatchRvaSignature(moduleBase, kE595TextBufferVtableRva, kSigTextBufferVtable) },
 	};
 
 	bool supported = true;
@@ -739,6 +772,8 @@ struct EditorDispatchTargetInfo {
 	std::uintptr_t innerObject = 0;
 	unsigned int pageType = 0;
 };
+
+bool TryResolveInnerEditorObject(std::uintptr_t rawObject, EditorDispatchTargetInfo* outInfo);
 
 struct FakeClipboardContext {
 	bool opened = false;
@@ -1949,6 +1984,38 @@ int CallThiscallIntSafe(FnThiscallInt fn, void* thisPtr)
 	}
 }
 
+bool CallE595ProjectTypeReferenceRebuildSafe(
+	FnE595ProjectTypeReferencePrepare prepareFn,
+	FnE595ProjectTypeReferenceRebuild rebuildFn,
+	FnE595ProjectTypeReferenceStore storeFn,
+	void* mainObject,
+	void* projectOwner,
+	void* referenceStore,
+	void* nameLinkBuffer)
+{
+	if (prepareFn == nullptr ||
+		rebuildFn == nullptr ||
+		storeFn == nullptr ||
+		mainObject == nullptr ||
+		projectOwner == nullptr ||
+		referenceStore == nullptr ||
+		nameLinkBuffer == nullptr) {
+		return false;
+	}
+
+	__try {
+		if (prepareFn(mainObject, 0) == 0) {
+			return false;
+		}
+		rebuildFn(projectOwner, nameLinkBuffer);
+		storeFn(referenceStore, referenceStore, nameLinkBuffer);
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
 bool CopyMemoryToStringSafe(const void* source, size_t bytes, std::string* outText)
 {
 	if (source == nullptr || bytes == 0 || outText == nullptr) {
@@ -2478,6 +2545,27 @@ public:
 		return m_initialized ? m_storage.data() : nullptr;
 	}
 
+	bool PrepareForNameLinking()
+	{
+		if (!m_initialized) {
+			return false;
+		}
+		const std::uintptr_t vtable = ResolveInternalPointer(
+			m_moduleBase,
+			kE595NameLinkBufferVtableRva);
+		if (vtable == 0) {
+			return false;
+		}
+		__try {
+			*reinterpret_cast<std::uintptr_t*>(m_storage.data()) = vtable;
+			m_nameLinking = true;
+			return true;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) {
+			return false;
+		}
+	}
+
 private:
 	void Initialize()
 	{
@@ -2513,16 +2601,22 @@ private:
 			kE595TextBufferDestroyRva);
 		if (destroyFn != nullptr) {
 			__try {
+				if (m_nameLinking) {
+					*reinterpret_cast<std::uintptr_t*>(m_storage.data()) =
+						ResolveInternalPointer(m_moduleBase, kE595TextBufferVtableRva);
+				}
 				destroyFn(m_storage.data());
 			}
 			__except (EXCEPTION_EXECUTE_HANDLER) {
 			}
 		}
 		m_initialized = false;
+		m_nameLinking = false;
 	}
 
 	std::uintptr_t m_moduleBase = 0;
 	bool m_initialized = false;
+	bool m_nameLinking = false;
 	std::array<std::byte, kInternalGenericArraySize> m_storage{};
 };
 
@@ -2654,6 +2748,94 @@ private:
 	bool m_initialized = false;
 	mutable std::array<std::byte, kE595InternalTextPackageSize> m_storage{};
 };
+
+bool RebuildE595ProjectTypeReferencesByEditor(
+	std::uintptr_t editorObject,
+	std::uintptr_t moduleBase,
+	std::string* outTrace)
+{
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+
+	EditorDispatchTargetInfo targetInfo{};
+	if (!TryResolveInnerEditorObject(editorObject, &targetInfo) ||
+		targetInfo.pageType != 1 ||
+		targetInfo.innerObject == 0) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_type_reference_inner_object_unavailable";
+		}
+		return false;
+	}
+
+	constexpr std::uintptr_t kProgramUnitOwnerOffset = 0x50;
+	constexpr std::uintptr_t kMainObjectProjectOffset = 0xC0;
+	constexpr std::uintptr_t kMainObjectTypeReferenceStoreOffset = 0x3B4;
+	if (!IsReadableAddressRange(
+			targetInfo.innerObject + kProgramUnitOwnerOffset,
+			sizeof(std::uintptr_t))) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_type_reference_project_owner_unreadable";
+		}
+		return false;
+	}
+
+	const std::uintptr_t projectOwner = *reinterpret_cast<const std::uintptr_t*>(
+		targetInfo.innerObject + kProgramUnitOwnerOffset);
+	if (projectOwner <= kMainObjectProjectOffset) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_type_reference_project_owner_invalid";
+		}
+		return false;
+	}
+	const std::uintptr_t mainObject = projectOwner - kMainObjectProjectOffset;
+	const std::uintptr_t referenceStore = mainObject + kMainObjectTypeReferenceStoreOffset;
+	if (!IsReadableAddressRange(referenceStore, 0x20)) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_type_reference_store_unreadable";
+		}
+		return false;
+	}
+
+	const auto prepareFn = ResolveInternalAddress<FnE595ProjectTypeReferencePrepare>(
+		moduleBase,
+		kE595ProjectTypeReferencePrepareRva);
+	const auto rebuildFn = ResolveInternalAddress<FnE595ProjectTypeReferenceRebuild>(
+		moduleBase,
+		kE595ProjectTypeReferenceRebuildRva);
+	const auto storeFn = ResolveInternalAddress<FnE595ProjectTypeReferenceStore>(
+		moduleBase,
+		kE595ProjectTypeReferenceStoreRva);
+	E595InternalTextBuffer nameLinkBuffer(moduleBase);
+	if (prepareFn == nullptr ||
+		rebuildFn == nullptr ||
+		storeFn == nullptr ||
+		!nameLinkBuffer.PrepareForNameLinking()) {
+		if (outTrace != nullptr) {
+			*outTrace = "e595_type_reference_functions_unavailable";
+		}
+		return false;
+	}
+
+	const bool ok = CallE595ProjectTypeReferenceRebuildSafe(
+		prepareFn,
+		rebuildFn,
+		storeFn,
+		reinterpret_cast<void*>(mainObject),
+		reinterpret_cast<void*>(projectOwner),
+		reinterpret_cast<void*>(referenceStore),
+		nameLinkBuffer.Data());
+	if (outTrace != nullptr) {
+		*outTrace =
+			std::string(ok
+				? "e595_type_reference_rebuild_ok"
+				: "e595_type_reference_rebuild_exception") +
+			"|project_owner=" + std::to_string(projectOwner) +
+			"|main=" + std::to_string(mainObject) +
+			"|store=" + std::to_string(referenceStore);
+	}
+	return ok;
+}
 
 class InternalClipboardObject {
 public:
@@ -5932,6 +6114,41 @@ bool PasteE595DirectTextPackageByEditor(
 		"|elapsed_ms=" +
 		std::to_string(GetTickCount() - totalStartTick));
 
+	std::string typeReferenceTrace = "e595_type_reference_rebuild_not_required";
+	DWORD typeReferenceElapsed = 0;
+	if (ContainsHiddenGenericTypeDeclaration(preparedPageCode)) {
+		const DWORD typeReferenceStartTick = GetTickCount();
+		if (!RebuildE595ProjectTypeReferencesByEditor(
+				editorObject,
+				moduleBase,
+				&typeReferenceTrace)) {
+			typeReferenceElapsed = GetTickCount() - typeReferenceStartTick;
+			AppendPageEditTraceLine(
+				"PasteE595DirectTextPackageByEditor.type_reference_rebuild_failed|reference_ms=" +
+				std::to_string(typeReferenceElapsed) +
+				"|" +
+				typeReferenceTrace);
+			if (outTrace != nullptr) {
+				*outTrace =
+					"e595_type_reference_rebuild_failed|reference_ms=" +
+					std::to_string(typeReferenceElapsed) +
+					"|" +
+					typeReferenceTrace +
+					"|" +
+					finalizeTrace +
+					"|" +
+					interopTrace;
+			}
+			return false;
+		}
+		typeReferenceElapsed = GetTickCount() - typeReferenceStartTick;
+		AppendPageEditTraceLine(
+			"PasteE595DirectTextPackageByEditor.after_type_reference_rebuild|reference_ms=" +
+			std::to_string(typeReferenceElapsed) +
+			"|" +
+			typeReferenceTrace);
+	}
+
 	const DWORD settleStartTick = GetTickCount();
 	SettleEditorAfterCommand();
 	const DWORD settleElapsed = GetTickCount() - settleStartTick;
@@ -5946,6 +6163,8 @@ bool PasteE595DirectTextPackageByEditor(
 		std::to_string(finalizeElapsed) +
 		"|insert_ms=" +
 		std::to_string(insertElapsed) +
+		"|reference_ms=" +
+		std::to_string(typeReferenceElapsed) +
 		"|settle_ms=" +
 		std::to_string(settleElapsed) +
 		"|total_ms=" +
@@ -5963,12 +6182,16 @@ bool PasteE595DirectTextPackageByEditor(
 			std::to_string(finalizeElapsed) +
 			"|insert_ms=" +
 			std::to_string(insertElapsed) +
+			"|reference_ms=" +
+			std::to_string(typeReferenceElapsed) +
 			"|settle_ms=" +
 			std::to_string(settleElapsed) +
 			"|total_ms=" +
 			std::to_string(GetTickCount() - totalStartTick) +
 			"|" +
 			finalizeTrace +
+			"|" +
+			typeReferenceTrace +
 			"|" +
 			interopTrace;
 	}

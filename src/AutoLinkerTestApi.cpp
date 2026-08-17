@@ -687,6 +687,10 @@ std::vector<AIChatMessage> BuildFollowupMessagesFromChatResult(
 	const std::vector<AIChatMessage>& prefixMessages,
 	const AIChatResult& toolChatResult)
 {
+	if (!toolChatResult.continuationMessages.empty()) {
+		return toolChatResult.continuationMessages;
+	}
+
 	std::vector<AIChatMessage> followupMessages = prefixMessages;
 	for (const auto& rawMessageJsonUtf8 : toolChatResult.contextPrefixRawMessagesUtf8) {
 		nlohmann::json parsed;
@@ -2014,7 +2018,46 @@ int RunGeminiIntegrationTestInternal(
 			{"reasoning_content_present", !followupResult.reasoningContent.empty()},
 			{"reasoning_content_size", followupResult.reasoningContent.size()},
 			{"error", followupResult.error},
-			{"tool_event_count", followupResult.toolEvents.size()}
+			{"tool_event_count", followupResult.toolEvents.size()},
+			{"previous_tool_count_ok", AIService::Trim(followupResult.content) == "2"}
+		};
+
+		step = "truncated_history_chat";
+		report["step"] = step;
+		std::vector<AIChatMessage> truncatedHistoryMessages = {
+			{
+				"assistant",
+				"",
+				"",
+				R"({"role":"model","parts":[{"functionCall":{"id":"orphan_call","name":"fetch_url","args":{"url":"https://ai.google.dev/gemini-api/docs/models/gemini"}}}]})"
+			},
+			{
+				"tool",
+				"",
+				"",
+				R"({"role":"user","parts":[{"functionResponse":{"id":"orphan_call","name":"fetch_url","response":{"ok":true}}}]})"
+			},
+			{
+				"user",
+				"这是一条截断历史后的新消息。只回答：历史修复通过",
+				"",
+				""
+			}
+		};
+		const AIChatResult truncatedHistoryResult = AIService::ExecuteChatWithTools(
+			truncatedHistoryMessages,
+			settings,
+			[](const std::string& toolName, const std::string&, bool& outOk) -> std::string {
+				const std::string actualArgs = BuildGeminiToolArgumentsJson(toolName);
+				return ExecuteToolCall(toolName, actualArgs, outOk, false);
+			});
+		report["truncated_history_chat"] = {
+			{"ok", truncatedHistoryResult.ok},
+			{"cancelled", truncatedHistoryResult.cancelled},
+			{"http_status", truncatedHistoryResult.httpStatus},
+			{"content", truncatedHistoryResult.content},
+			{"error", truncatedHistoryResult.error},
+			{"tool_event_count", truncatedHistoryResult.toolEvents.size()}
 		};
 
 		report["ok"] =
@@ -2022,6 +2065,8 @@ int RunGeminiIntegrationTestInternal(
 			simpleTaskResult.ok &&
 			toolChatResult.ok &&
 			followupResult.ok &&
+			AIService::Trim(followupResult.content) == "2" &&
+			truncatedHistoryResult.ok &&
 			toolChatResult.toolEvents.size() >= 2 &&
 			allToolEventsOk;
 		return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
