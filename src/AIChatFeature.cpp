@@ -10921,4 +10921,9 @@ void ReloadTheme()
 	}
 	ApplyCurrentThemeToWebView(ctx);
 }
+
+void NotifyAISettingsChanged()
+{
+	PostRefreshDialog();
+}
 } // namespace AIChatFeature

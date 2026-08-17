@@ -2828,7 +2828,7 @@ nlohmann::json BuildPublicToolCatalog()
 			{"properties", {
 				{"cmd", {{"type", "string"}, {"description", "Shell command to execute."}}},
 				{"workdir", {{"type", "string"}, {"description", "Working directory. Defaults to the current e-language project directory."}}},
-				{"tty", {{"type", "boolean"}, {"enum", nlohmann::json::array({false})}, {"description", "Only false is supported; AutoLinker does not provide ConPTY."}}},
+				{"tty", {{"type", "boolean"}, {"description", "Only false is supported; AutoLinker does not provide ConPTY."}}},
 				{"yield_time_ms", {{"type", "integer"}, {"description", "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms, with a 2000 ms Windows initial floor."}}},
 				{"max_output_tokens", {{"type", "integer"}, {"description", "Output token budget. Defaults to 10000; larger requests are capped by policy."}}},
 				{"shell", {{"type", "string"}, {"description", "Shell executable. Defaults to powershell.exe."}}},
@@ -2981,8 +2981,26 @@ nlohmann::json SanitizeGeminiSchema(const nlohmann::json& schema)
 	if (schema.contains("description") && schema["description"].is_string()) {
 		out["description"] = TruncateGeminiDescription(schema["description"].get<std::string>());
 	}
-	if (schema.contains("enum") && schema["enum"].is_array()) {
-		out["enum"] = schema["enum"];
+	if (schema.contains("enum") && schema["enum"].is_array() && schema.contains("type")) {
+		const auto isStringType = [](const nlohmann::json& type) {
+			if (type.is_string()) {
+				return ToLowerAsciiCopy(type.get<std::string>()) == "string";
+			}
+			if (!type.is_array()) {
+				return false;
+			}
+			return std::any_of(type.begin(), type.end(), [](const nlohmann::json& item) {
+				return item.is_string() && ToLowerAsciiCopy(item.get<std::string>()) == "string";
+			});
+		};
+		const bool allStringValues = std::all_of(
+			schema["enum"].begin(),
+			schema["enum"].end(),
+			[](const nlohmann::json& item) { return item.is_string(); });
+		// Gemini 原生 Schema 的 enum 仅接受字符串，避免布尔或数值枚举触发上游 400。
+		if (isStringType(schema["type"]) && allStringValues) {
+			out["enum"] = schema["enum"];
+		}
 	}
 	if (schema.contains("required") && schema["required"].is_array()) {
 		out["required"] = schema["required"];
@@ -7945,6 +7963,49 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"plan_user_input_schema", planUserInputSchemaOk},
 			{"real_page_read_visible", contains(realPageCatalog, "read_real_file")},
 			{"mirror_real_page_read_hidden", !contains(mirrorCatalog, "read_real_file")}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		const nlohmann::json sanitized = SanitizeGeminiSchema({
+			{"type", "object"},
+			{"properties", {
+				{"tty", {{"type", "boolean"}, {"enum", nlohmann::json::array({false})}}},
+				{"mode", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "manual"})}}},
+				{"mixed", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", false})}}}
+			}}
+		});
+		const nlohmann::json properties = sanitized.value("properties", nlohmann::json::object());
+
+		bool builtInTtyEnumRemoved = false;
+		const nlohmann::json catalog = BuildPublicToolCatalog();
+		const auto execCommandIt = std::find_if(catalog.begin(), catalog.end(), [](const nlohmann::json& item) {
+			return item.is_object() && item.value("name", std::string()) == "exec_command";
+		});
+		if (execCommandIt != catalog.end()) {
+			const nlohmann::json execProperties = (*execCommandIt)
+				.value("inputSchema", nlohmann::json::object())
+				.value("properties", nlohmann::json::object());
+			builtInTtyEnumRemoved = execProperties.contains("tty") &&
+				execProperties["tty"].value("type", std::string()) == "boolean" &&
+				!execProperties["tty"].contains("enum");
+		}
+
+		const bool ok =
+			properties.contains("tty") && !properties["tty"].contains("enum") &&
+			properties.contains("mode") &&
+			properties["mode"].value("enum", nlohmann::json::array()) ==
+				nlohmann::json::array({"auto", "manual"}) &&
+			properties.contains("mixed") && !properties["mixed"].contains("enum") &&
+			builtInTtyEnumRemoved;
+		checks.push_back({
+			{"name", "gemini_tool_schema_string_enum_compatibility"},
+			{"ok", ok},
+			{"boolean_enum_removed", properties.contains("tty") && !properties["tty"].contains("enum")},
+			{"string_enum_preserved", properties.contains("mode") && properties["mode"].contains("enum")},
+			{"mixed_enum_removed", properties.contains("mixed") && !properties["mixed"].contains("enum")},
+			{"built_in_tty_enum_removed", builtInTtyEnumRemoved}
 		});
 		allOk = allOk && ok;
 	}

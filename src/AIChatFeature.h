@@ -45,5 +45,7 @@ std::string BuildPlanModeSelfTestJson();
 std::string BuildCheckpointResumeSelfTestJson();
 // 重新读取并应用当前 AI 对话配色。
 void ReloadTheme();
+// 通知 AI 对话重新读取模型端点和当前启用目标。
+void NotifyAISettingsChanged();
 
 } // namespace AIChatFeature

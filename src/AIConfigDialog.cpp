@@ -1948,6 +1948,7 @@ LRESULT CALLBACK AIConfigDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM 
 			});
 			AIService::LoadSettings(*ctx->jsonConfig, nullptr, *ctx->settings);
 			ctx->accepted = true;
+			AIChatFeature::NotifyAISettingsChanged();
 			DestroyWindow(hWnd);
 			return 0;
 		}
@@ -2251,6 +2252,7 @@ bool TryApplyAISettingsFromWebPayload(HWND hWnd, AIConfigWebViewDialogContext* c
 		: runtimeSettings.endpointCandidates.front().endpointId;
 	*ctx->settings = std::move(runtimeSettings);
 	ctx->accepted = true;
+	AIChatFeature::NotifyAISettingsChanged();
 	if (ctx->embedded) {
 		OutputStringToELog("AI配置已保存");
 		if (ctx->webView != nullptr) {
