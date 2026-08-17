@@ -15,6 +15,8 @@ AutoLinker 是易语言的 AI Agent 支持库，通过逆向让 AI 全自动编�
 下载 Release 后，将 `AutoLinker.fne` 放入易语言 `lib` 目录并启用该支持库。
 
 > 🔧 [AI / MCP 功能配置指南（API Key、中转站、各平台配置）](./CONFIG.md)
+>
+> 📊 选择模型前，可查看[易语言大模型基准评分](https://e-language-bench.apptest.dev)，对比真实回包与无头编译成绩。
 
 ## 核心功能
 
