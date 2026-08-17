@@ -255,6 +255,74 @@ void LogAiRetryAttempt(
 		TruncateForLog(ideReason, 120)));
 }
 
+class ChatRetryCoordinator {
+public:
+	explicit ChatRetryCoordinator(int configuredRetryCount)
+		: m_maxRetries((std::clamp)(configuredRetryCount, 0, kAiMaxRequestRetryCount))
+	{
+	}
+
+	bool CanRetry() const noexcept
+	{
+		return m_retriesPerformed < m_maxRetries;
+	}
+
+	int AttemptNumber() const noexcept
+	{
+		return m_retriesPerformed + 1;
+	}
+
+	int MaxAttempts() const noexcept
+	{
+		return m_maxRetries + 1;
+	}
+
+	int RetriesPerformed() const noexcept
+	{
+		return m_retriesPerformed;
+	}
+
+	void Reset() noexcept
+	{
+		m_retriesPerformed = 0;
+	}
+
+	bool WaitForRetry(
+		const char* tag,
+		int statusCode,
+		const std::string& reason,
+		const std::function<bool()>& cancelCallback,
+		HttpRequestCancellation* cancelContext,
+		const std::function<void()>& resetStreamingPreview = {},
+		std::optional<DWORD> delayOverrideMs = std::nullopt)
+	{
+		if (!CanRetry()) {
+			return false;
+		}
+
+		LogAiRetryAttempt(
+			tag == nullptr ? "chat" : tag,
+			m_retriesPerformed + 2,
+			MaxAttempts(),
+			statusCode,
+			reason);
+		if (resetStreamingPreview) {
+			resetStreamingPreview();
+		}
+		const DWORD delayMs = delayOverrideMs.value_or(
+			ComputeAiRetryDelayMs(m_retriesPerformed));
+		if (!SleepForRetryWithCancel(delayMs, cancelCallback, cancelContext)) {
+			return false;
+		}
+		++m_retriesPerformed;
+		return true;
+	}
+
+private:
+	int m_maxRetries = 0;
+	int m_retriesPerformed = 0;
+};
+
 void LogAiHttpFailure(const std::string& tag, int statusCode, const std::string& responseBody)
 {
 	// HTTP 响应体可能包含换行和完整错误 JSON；文件日志保留原文，IDE 仅显示摘要。
@@ -1606,9 +1674,13 @@ struct StreamToolCallState {
 
 struct ChatStreamParseState {
 	bool sawDataEvent = false;
+	bool sawDoneEvent = false;
+	bool sawFinishReason = false;
 	std::string pendingLine;
 	std::string mergedUtf8;
 	std::string reasoningContentUtf8;
+	std::string finishReason;
+	std::string failureCode;
 	std::vector<StreamToolCallState> toolCalls;
 	std::string parseError;
 	bool hasUsage = false;
@@ -1634,6 +1706,7 @@ bool ProcessStreamDataPayload(
 	}
 	if (payload == "[DONE]") {
 		state.sawDataEvent = true;
+		state.sawDoneEvent = true;
 		return true;
 	}
 
@@ -1649,6 +1722,9 @@ bool ProcessStreamDataPayload(
 
 	if (packet.contains("error") && packet["error"].is_object()) {
 		const auto& err = packet["error"];
+		if (err.contains("code") && err["code"].is_string()) {
+			state.failureCode = err["code"].get<std::string>();
+		}
 		if (err.contains("message") && err["message"].is_string()) {
 			state.parseError = Utf8ToLocal(err["message"].get<std::string>());
 		}
@@ -1676,6 +1752,10 @@ bool ProcessStreamDataPayload(
 	}
 
 	const auto& choice = packet["choices"][0];
+	if (choice.contains("finish_reason") && choice["finish_reason"].is_string()) {
+		state.finishReason = choice["finish_reason"].get<std::string>();
+		state.sawFinishReason = !state.finishReason.empty();
+	}
 	if (!choice.contains("delta") || !choice["delta"].is_object()) {
 		return true;
 	}
@@ -1783,6 +1863,57 @@ bool FlushStreamParseState(
 	const std::string line = state.pendingLine;
 	state.pendingLine.clear();
 	return ProcessStreamLine(line, state, streamCallback);
+}
+
+bool ShouldRetryOpenAIChatStreamAttempt(
+	const ChatStreamParseState& state,
+	int statusCode,
+	const std::string& responseBody)
+{
+	if (!IsSuccessfulHttpStatus(statusCode)) {
+		return ShouldRetryAiHttpRequest(statusCode, responseBody);
+	}
+	if (!state.parseError.empty()) {
+		return true;
+	}
+	if (state.sawDataEvent) {
+		const std::string finishReason = ToLowerAsciiCopy(state.finishReason);
+		if (finishReason == "length" || finishReason == "content_filter") {
+			return true;
+		}
+		return !state.sawDoneEvent && !state.sawFinishReason;
+	}
+
+	// 兼容以非流式 JSON 回退的 OpenAI 兼容端点；空体或非法 JSON 视为流中断。
+	try {
+		return responseBody.empty() || !nlohmann::json::parse(responseBody).is_object();
+	}
+	catch (...) {
+		return true;
+	}
+}
+
+std::string BuildOpenAIChatRetryReason(
+	const ChatStreamParseState& state,
+	int statusCode,
+	const std::string& responseBody)
+{
+	if (!state.failureCode.empty() && !state.parseError.empty()) {
+		return state.failureCode + ": " + state.parseError;
+	}
+	if (!state.parseError.empty()) {
+		return state.parseError;
+	}
+	if (!IsSuccessfulHttpStatus(statusCode)) {
+		return responseBody;
+	}
+	if (!state.finishReason.empty()) {
+		return "incomplete chat stream, finish_reason=" + state.finishReason;
+	}
+	if (state.sawDataEvent) {
+		return "chat stream ended before finish_reason or [DONE]";
+	}
+	return responseBody.empty() ? "empty chat response body" : "invalid chat response body";
 }
 
 nlohmann::json BuildAssistantMessageFromStreamState(const ChatStreamParseState& state)
@@ -2061,11 +2192,14 @@ bool ShouldRetryOpenAIResponsesStreamAttempt(
 	if (!IsSuccessfulHttpStatus(statusCode)) {
 		return ShouldRetryAiHttpRequest(statusCode, responseBody);
 	}
-	if (state.sawCompletedEvent) {
-		return false;
-	}
 	if (!state.failureEventType.empty()) {
 		return IsRetryableResponsesStreamFailure(state);
+	}
+	if (!state.parseError.empty()) {
+		return true;
+	}
+	if (state.sawCompletedEvent) {
+		return false;
 	}
 	if (state.sawSseEvent) {
 		return true;
@@ -2176,97 +2310,6 @@ DWORD ComputeOpenAIResponsesRetryDelayMs(
 	const double delayMs = baseDelayMs * jitter(generator);
 	const double maxDelayMs = static_cast<double>((std::numeric_limits<DWORD>::max)());
 	return static_cast<DWORD>((std::min)(delayMs, maxDelayMs));
-}
-
-struct OpenAIResponsesStreamRequestResult {
-	std::string responseBody;
-	int statusCode = 0;
-	int attemptCount = 0;
-	bool sawResponseChunk = false;
-	ResponsesStreamParseState streamState;
-};
-
-OpenAIResponsesStreamRequestResult PerformOpenAIResponsesStreamRequestWithRetry(
-	const std::string& url,
-	const std::string& postData,
-	const std::string& customHeaders,
-	int timeout,
-	int maxRetryCount,
-	const std::function<void(const std::string& deltaText)>& streamCallback,
-	const std::function<void()>& streamRetryCallback,
-	const std::function<bool()>& cancelCallback,
-	HttpRequestCancellation* cancelContext)
-{
-	OpenAIResponsesStreamRequestResult result;
-	const int boundedRetryCount = (std::clamp)(maxRetryCount, 0, kAiMaxRequestRetryCount);
-	for (int attempt = 0; attempt <= boundedRetryCount; ++attempt) {
-		result.attemptCount = attempt + 1;
-		result.streamState = ResponsesStreamParseState{};
-		if (IsCancelRequested(cancelCallback, cancelContext)) {
-			result.responseBody = "Request cancelled";
-			result.statusCode = kAiRequestCancelledHttpStatus;
-			return result;
-		}
-
-		const auto response = PerformPostRequestStreaming(
-			url,
-			postData,
-			[&result, &streamCallback, &cancelCallback, cancelContext](
-				const std::string& chunk) -> bool {
-				if (IsCancelRequested(cancelCallback, cancelContext)) {
-					return false;
-				}
-				if (!chunk.empty()) {
-					result.sawResponseChunk = true;
-				}
-				return ConsumeResponsesStreamChunk(chunk, result.streamState, streamCallback);
-			},
-			customHeaders,
-			timeout,
-			false,
-			false,
-			cancelContext);
-		result.responseBody = response.first;
-		result.statusCode = response.second;
-		if (IsCancelRequested(cancelCallback, cancelContext) ||
-			result.statusCode == kAiRequestCancelledHttpStatus) {
-			result.responseBody = "Request cancelled";
-			result.statusCode = kAiRequestCancelledHttpStatus;
-			return result;
-		}
-		if (IsSuccessfulHttpStatus(result.statusCode)) {
-			FlushResponsesStreamState(result.streamState, streamCallback);
-		}
-		if (!ShouldRetryOpenAIResponsesStreamAttempt(
-				result.streamState,
-				result.statusCode,
-				result.responseBody) ||
-			attempt >= boundedRetryCount) {
-			return result;
-		}
-
-		LogAiRetryAttempt(
-			"openai-responses-chat",
-			attempt + 2,
-			boundedRetryCount + 1,
-			result.statusCode,
-			BuildOpenAIResponsesRetryReason(
-				result.streamState,
-				result.statusCode,
-				result.responseBody));
-		if (streamRetryCallback) {
-			streamRetryCallback();
-		}
-		if (!SleepForRetryWithCancel(
-				ComputeOpenAIResponsesRetryDelayMs(result.streamState, attempt + 1),
-				cancelCallback,
-				cancelContext)) {
-			result.responseBody = "Request cancelled";
-			result.statusCode = kAiRequestCancelledHttpStatus;
-			return result;
-		}
-	}
-	return result;
 }
 
 nlohmann::json BuildResponsesParsedFromStream(const ResponsesStreamParseState& state)
@@ -4751,6 +4794,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 	}
 
 	AIChatToolPolicy::Session toolPolicy;
+	ChatRetryCoordinator retry(settings.retryCount);
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
@@ -4771,27 +4815,22 @@ AIChatResult ExecuteChatWithToolsClaude(
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		const std::string requestBodyText = requestBody.dump();
-		int attemptCount = 0;
 		const auto roundStart = PerfClock::now();
-		const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
+		const auto [responseBody, statusCode] = PerformPostRequest(
 			endpoint,
 			requestBodyText,
 			BuildClaudeHeaders(settings),
 			settings.timeoutMs,
 			false,
 			false,
-			"claude-chat",
-			cancelCallback,
-			cancelContext,
-			settings.retryCount,
-			&attemptCount);
+			cancelContext);
 		LogChatRoundMetrics(
 			"claude-chat",
 			round,
 			requestBodyText.size(),
 			ElapsedMs(roundStart),
 			statusCode,
-			attemptCount,
+			retry.AttemptNumber(),
 			toolPolicy.ExplorationCalls());
 		result.httpStatus = statusCode;
 		result.endpointEstablished = result.endpointEstablished || IsSuccessfulHttpStatus(statusCode);
@@ -4799,6 +4838,18 @@ AIChatResult ExecuteChatWithToolsClaude(
 			return MarkChatResultCancelled(std::move(result));
 		}
 		if (statusCode < 200 || statusCode >= 300) {
+			if (ShouldRetryAiHttpRequest(statusCode, responseBody) &&
+				retry.WaitForRetry(
+					"claude-chat",
+					statusCode,
+					responseBody,
+					cancelCallback,
+					cancelContext)) {
+				continue;
+			}
+			if (IsCancelRequested(cancelCallback, cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
 			LogAiHttpFailure("claude-chat", statusCode, responseBody);
 			result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
 			return result;
@@ -4809,7 +4860,19 @@ AIChatResult ExecuteChatWithToolsClaude(
 			parsed = nlohmann::json::parse(responseBody);
 		}
 		catch (const std::exception& ex) {
-			result.error = std::string("Failed to parse Claude response: ") + ex.what();
+			const std::string parseError = std::string("Failed to parse Claude response: ") + ex.what();
+			if (retry.WaitForRetry(
+					"claude-chat",
+					statusCode,
+					parseError,
+					cancelCallback,
+					cancelContext)) {
+				continue;
+			}
+			if (IsCancelRequested(cancelCallback, cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
+			result.error = parseError;
 			return result;
 		}
 
@@ -4829,9 +4892,21 @@ AIChatResult ExecuteChatWithToolsClaude(
 		}
 		if (toolCalls.empty()) {
 			if (textUtf8.empty()) {
+				if (retry.WaitForRetry(
+						"claude-chat",
+						statusCode,
+						"Claude response content is empty",
+						cancelCallback,
+						cancelContext)) {
+					continue;
+				}
+				if (IsCancelRequested(cancelCallback, cancelContext)) {
+					return MarkChatResultCancelled(std::move(result));
+				}
 				result.error = "Claude response content is empty";
 				return result;
 			}
+			retry.Reset();
 			const std::string contentLocal = Utf8ToLocal(textUtf8);
 			if (streamCallback) {
 				streamCallback(contentLocal);
@@ -4872,6 +4947,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 			runController.PublishCheckpoint("completed");
 			return result;
 		}
+		retry.Reset();
 		if (streamCallback && !textUtf8.empty()) {
 			streamCallback(Utf8ToLocal(textUtf8));
 		}
@@ -5059,6 +5135,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 		contents.push_back(BuildGeminiContent(msg));
 	}
 	AIChatToolPolicy::Session toolPolicy;
+	ChatRetryCoordinator retry(settings.retryCount);
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
@@ -5092,27 +5169,22 @@ AIChatResult ExecuteChatWithToolsGemini(
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		const std::string requestBodyText = requestBody.dump();
-		int attemptCount = 0;
 		const auto roundStart = PerfClock::now();
-		const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
+		const auto [responseBody, statusCode] = PerformPostRequest(
 			endpoint,
 			requestBodyText,
 			BuildJsonHeadersOnly(settings),
 			settings.timeoutMs,
 			false,
 			false,
-			"gemini-chat",
-			cancelCallback,
-			cancelContext,
-			settings.retryCount,
-			&attemptCount);
+			cancelContext);
 		LogChatRoundMetrics(
 			"gemini-chat",
 			round,
 			requestBodyText.size(),
 			ElapsedMs(roundStart),
 			statusCode,
-			attemptCount,
+			retry.AttemptNumber(),
 			toolPolicy.ExplorationCalls());
 		result.httpStatus = statusCode;
 		result.endpointEstablished = result.endpointEstablished || IsSuccessfulHttpStatus(statusCode);
@@ -5120,7 +5192,21 @@ AIChatResult ExecuteChatWithToolsGemini(
 			return MarkChatResultCancelled(std::move(result));
 		}
 		if (statusCode < 200 || statusCode >= 300) {
-			if (!degradedRequestMode && IsGeminiResourceExhaustedResponse(statusCode, responseBody)) {
+			const bool resourceExhausted =
+				IsGeminiResourceExhaustedResponse(statusCode, responseBody);
+			if (ShouldRetryAiHttpRequest(statusCode, responseBody) &&
+				retry.WaitForRetry(
+					"gemini-chat",
+					statusCode,
+					responseBody,
+					cancelCallback,
+					cancelContext)) {
+				continue;
+			}
+			if (IsCancelRequested(cancelCallback, cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
+			if (!degradedRequestMode && resourceExhausted) {
 				degradedRequestMode = true;
 				systemUtf8 = LocalToUtf8(
 					BuildGeminiChatSystemPrompt(settings, degradedRequestMode) + skillPromptLocal);
@@ -5130,6 +5216,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 					settings,
 					runOptions.enablePlanUserInput,
 					runOptions.enableGoalTools);
+				retry.Reset();
 				--round;
 				continue;
 			}
@@ -5143,7 +5230,19 @@ AIChatResult ExecuteChatWithToolsGemini(
 			parsed = nlohmann::json::parse(responseBody);
 		}
 		catch (const std::exception& ex) {
-			result.error = std::string("Failed to parse Gemini response: ") + ex.what();
+			const std::string parseError = std::string("Failed to parse Gemini response: ") + ex.what();
+			if (retry.WaitForRetry(
+					"gemini-chat",
+					statusCode,
+					parseError,
+					cancelCallback,
+					cancelContext)) {
+				continue;
+			}
+			if (IsCancelRequested(cancelCallback, cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
+			result.error = parseError;
 			return result;
 		}
 
@@ -5154,12 +5253,34 @@ AIChatResult ExecuteChatWithToolsGemini(
 		}
 
 		if (!parsed.contains("candidates") || !parsed["candidates"].is_array() || parsed["candidates"].empty()) {
+			if (retry.WaitForRetry(
+					"gemini-chat",
+					statusCode,
+					"Gemini response candidates is empty",
+					cancelCallback,
+					cancelContext)) {
+				continue;
+			}
+			if (IsCancelRequested(cancelCallback, cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
 			result.error = "Gemini response candidates is empty";
 			return result;
 		}
 
 		const auto& candidate = parsed["candidates"][0];
 		if (!candidate.contains("content") || !candidate["content"].is_object()) {
+			if (retry.WaitForRetry(
+					"gemini-chat",
+					statusCode,
+					"Gemini response content missing",
+					cancelCallback,
+					cancelContext)) {
+				continue;
+			}
+			if (IsCancelRequested(cancelCallback, cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
 			result.error = "Gemini response content missing";
 			return result;
 		}
@@ -5176,9 +5297,21 @@ AIChatResult ExecuteChatWithToolsGemini(
 		}
 		if (toolCalls.empty()) {
 			if (textUtf8.empty()) {
+				if (retry.WaitForRetry(
+						"gemini-chat",
+						statusCode,
+						"Gemini response content is empty",
+						cancelCallback,
+						cancelContext)) {
+					continue;
+				}
+				if (IsCancelRequested(cancelCallback, cancelContext)) {
+					return MarkChatResultCancelled(std::move(result));
+				}
 				result.error = "Gemini response content is empty";
 				return result;
 			}
+			retry.Reset();
 			const std::string contentLocal = Utf8ToLocal(textUtf8);
 			if (streamCallback) {
 				streamCallback(contentLocal);
@@ -5217,6 +5350,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 			runController.PublishCheckpoint("completed");
 			return result;
 		}
+		retry.Reset();
 		if (streamCallback && !textUtf8.empty()) {
 			streamCallback(Utf8ToLocal(textUtf8));
 		}
@@ -5390,6 +5524,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 	std::string instructionsUtf8 = BuildResponsesInstructions(
 		runController.ContextMessages(), settings, skillPromptLocal);
 	AIChatToolPolicy::Session toolPolicy;
+	ChatRetryCoordinator retry(settings.retryCount);
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
@@ -5412,35 +5547,77 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		const std::string requestBodyText = requestBody.dump();
+		ResponsesStreamParseState streamState;
+		bool sawResponseChunk = false;
 		const auto roundStart = PerfClock::now();
-		OpenAIResponsesStreamRequestResult streamRequest =
-			PerformOpenAIResponsesStreamRequestWithRetry(
+		const auto [responseBody, statusCode] = PerformPostRequestStreaming(
 			endpoint,
 			requestBodyText,
+			[&streamState, &streamCallback, &cancelCallback, cancelContext, &sawResponseChunk](
+				const std::string& chunk) -> bool {
+				if (IsCancelRequested(cancelCallback, cancelContext)) {
+					return false;
+				}
+				if (!chunk.empty()) {
+					sawResponseChunk = true;
+				}
+				return ConsumeResponsesStreamChunk(chunk, streamState, streamCallback);
+			},
 			BuildOpenAIHeaders(settings),
 			GetChatRequestTimeoutMs(settings),
-			settings.retryCount,
-			streamCallback,
-			runOptions.streamRetryCallback,
-			cancelCallback,
+			false,
+			false,
 			cancelContext);
-		ResponsesStreamParseState& streamState = streamRequest.streamState;
-		const std::string& responseBody = streamRequest.responseBody;
-		const int statusCode = streamRequest.statusCode;
+		bool streamFlushed = true;
+		if (IsSuccessfulHttpStatus(statusCode)) {
+			streamFlushed = FlushResponsesStreamState(streamState, streamCallback);
+		}
 		LogChatRoundMetrics(
 			"openai-responses-chat",
 			round,
 			requestBodyText.size(),
 			ElapsedMs(roundStart),
 			statusCode,
-			streamRequest.attemptCount,
+			retry.AttemptNumber(),
 			toolPolicy.ExplorationCalls());
 		result.httpStatus = statusCode;
 		result.endpointEstablished = result.endpointEstablished ||
-			streamRequest.sawResponseChunk ||
+			sawResponseChunk ||
 			IsSuccessfulHttpStatus(statusCode);
 		if (IsCancelRequested(cancelCallback, cancelContext) || statusCode == kAiRequestCancelledHttpStatus) {
 			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(streamState.mergedTextUtf8));
+		}
+		const bool retryableAttempt = ShouldRetryOpenAIResponsesStreamAttempt(
+			streamState,
+			statusCode,
+			responseBody);
+		if (retryableAttempt) {
+			const DWORD retryDelayMs = ComputeOpenAIResponsesRetryDelayMs(
+				streamState,
+				retry.RetriesPerformed() + 1);
+			if (retry.WaitForRetry(
+					"openai-responses-chat",
+					statusCode,
+					BuildOpenAIResponsesRetryReason(streamState, statusCode, responseBody),
+					cancelCallback,
+					cancelContext,
+					runOptions.streamRetryCallback,
+					retryDelayMs)) {
+				continue;
+			}
+			if (IsCancelRequested(cancelCallback, cancelContext)) {
+				return MarkChatResultCancelled(
+					std::move(result),
+					Utf8ToLocal(streamState.mergedTextUtf8));
+			}
+			if (!IsSuccessfulHttpStatus(statusCode)) {
+				LogAiHttpFailure("openai-responses-chat", statusCode, responseBody);
+				result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+			}
+			else {
+				result.error = BuildOpenAIResponsesRetryReason(streamState, statusCode, responseBody);
+			}
+			return result;
 		}
 		if (statusCode < 200 || statusCode >= 300) {
 			LogAiHttpFailure("openai-responses-chat", statusCode, responseBody);
@@ -5448,7 +5625,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			return result;
 		}
 
-		if (!FlushResponsesStreamState(streamState, streamCallback)) {
+		if (!streamFlushed) {
 			result.error = streamState.parseError.empty()
 				? "Failed to parse Responses streaming response"
 				: streamState.parseError;
@@ -5500,9 +5677,24 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		}
 		if (toolCalls.empty()) {
 			if (textUtf8.empty()) {
+				if (retry.WaitForRetry(
+						"openai-responses-chat",
+						statusCode,
+						"Responses API response content is empty",
+						cancelCallback,
+						cancelContext,
+						runOptions.streamRetryCallback)) {
+					continue;
+				}
+				if (IsCancelRequested(cancelCallback, cancelContext)) {
+					return MarkChatResultCancelled(
+						std::move(result),
+						Utf8ToLocal(streamState.mergedTextUtf8));
+				}
 				result.error = "Responses API response content is empty";
 				return result;
 			}
+			retry.Reset();
 			const std::string contentLocal = Utf8ToLocal(textUtf8);
 			if (!streamState.sawSseEvent && streamCallback) {
 				streamCallback(contentLocal);
@@ -5547,6 +5739,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			runController.PublishCheckpoint("completed");
 			return result;
 		}
+		retry.Reset();
 		if (!streamState.sawSseEvent && streamCallback && !textUtf8.empty()) {
 			streamCallback(Utf8ToLocal(textUtf8));
 		}
@@ -7139,6 +7332,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		runOptions.enablePlanUserInput,
 		runOptions.enableGoalTools);
 	AIChatToolPolicy::Session toolPolicy;
+	ChatRetryCoordinator retry(settings.retryCount);
 
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
@@ -7172,26 +7366,31 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		}
 
 		ChatStreamParseState streamState;
-		int attemptCount = 0;
 		bool sawResponseChunk = false;
 		const auto networkStart = PerfClock::now();
 		const auto [responseBody, statusCode] =
-			PerformPostRequestStreamingWithRetry(
+			PerformPostRequestStreaming(
 				endpoint,
 				requestBodyText,
-				[&streamState, &streamCallback](const std::string& chunk) -> bool {
+				[&streamState, &streamCallback, &cancelCallback, cancelContext, &sawResponseChunk](
+					const std::string& chunk) -> bool {
+					if (IsCancelRequested(cancelCallback, cancelContext)) {
+						return false;
+					}
+					if (!chunk.empty()) {
+						sawResponseChunk = true;
+					}
 					return ConsumeStreamChunk(chunk, streamState, streamCallback);
 				},
 				headers,
 				GetChatRequestTimeoutMs(settings),
 				false,
 				false,
-				"openai-chat",
-				cancelCallback,
-				cancelContext,
-				settings.retryCount,
-				&attemptCount,
-				&sawResponseChunk);
+				cancelContext);
+		bool streamFlushed = true;
+		if (IsSuccessfulHttpStatus(statusCode)) {
+			streamFlushed = FlushStreamParseState(streamState, streamCallback);
+		}
 		LogAIPerfCost(
 			traceId,
 			"AIService.ExecuteChat.network_total",
@@ -7203,12 +7402,44 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			requestBodyText.size(),
 			ElapsedMs(networkStart),
 			statusCode,
-			attemptCount,
+			retry.AttemptNumber(),
 			toolPolicy.ExplorationCalls());
 		result.httpStatus = statusCode;
 		result.endpointEstablished = result.endpointEstablished || sawResponseChunk || IsSuccessfulHttpStatus(statusCode);
 		if (IsCancelRequested(cancelCallback, cancelContext) || statusCode == kAiRequestCancelledHttpStatus) {
 			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(streamState.mergedUtf8));
+		}
+		const bool retryableAttempt = ShouldRetryOpenAIChatStreamAttempt(
+			streamState,
+			statusCode,
+			responseBody);
+		if (retryableAttempt) {
+			if (retry.WaitForRetry(
+					"openai-chat",
+					statusCode,
+					BuildOpenAIChatRetryReason(streamState, statusCode, responseBody),
+					cancelCallback,
+					cancelContext,
+					runOptions.streamRetryCallback)) {
+				continue;
+			}
+			if (IsCancelRequested(cancelCallback, cancelContext)) {
+				return MarkChatResultCancelled(
+					std::move(result),
+					Utf8ToLocal(streamState.mergedUtf8));
+			}
+			if (!IsSuccessfulHttpStatus(statusCode)) {
+				LogAiHttpFailure("openai-chat", statusCode, responseBody);
+				result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+			}
+			else {
+				result.error = streamFlushed
+					? BuildOpenAIChatRetryReason(streamState, statusCode, responseBody)
+					: (streamState.parseError.empty()
+						? "Failed to parse AI streaming response"
+						: streamState.parseError);
+			}
+			return result;
 		}
 		if (statusCode < 200 || statusCode >= 300) {
 			LogAiHttpFailure("openai-chat", statusCode, responseBody);
@@ -7216,10 +7447,6 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			return result;
 		}
 
-		if (!FlushStreamParseState(streamState, streamCallback)) {
-			result.error = streamState.parseError.empty() ? "Failed to parse AI streaming response" : streamState.parseError;
-			return result;
-		}
 		runController.RecordUsage(
 			streamState.promptTokens,
 			streamState.totalTokens,
@@ -7242,7 +7469,20 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 				parsed = nlohmann::json::parse(responseBody);
 			}
 			catch (const std::exception& ex) {
-				result.error = std::string("Failed to parse AI response: ") + ex.what();
+				const std::string parseError = std::string("Failed to parse AI response: ") + ex.what();
+				if (retry.WaitForRetry(
+						"openai-chat",
+						statusCode,
+						parseError,
+						cancelCallback,
+						cancelContext,
+						runOptions.streamRetryCallback)) {
+					continue;
+				}
+				if (IsCancelRequested(cancelCallback, cancelContext)) {
+					return MarkChatResultCancelled(std::move(result));
+				}
+				result.error = parseError;
 				return result;
 			}
 
@@ -7251,8 +7491,20 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 				if (parsed.contains("error") && parsed["error"].contains("message") && parsed["error"]["message"].is_string()) {
 					result.error = Utf8ToLocal(parsed["error"]["message"].get<std::string>());
 				}
+				else if (retry.WaitForRetry(
+						"openai-chat",
+						statusCode,
+						parseError.empty() ? "AI response parse failed" : parseError,
+						cancelCallback,
+						cancelContext,
+						runOptions.streamRetryCallback)) {
+					continue;
+				}
 				else {
 					result.error = parseError.empty() ? "AI response parse failed" : parseError;
+				}
+				if (IsCancelRequested(cancelCallback, cancelContext)) {
+					return MarkChatResultCancelled(std::move(result));
 				}
 				return result;
 			}
@@ -7260,6 +7512,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 
 		// Tool-call path.
 		if (message.contains("tool_calls") && message["tool_calls"].is_array() && !message["tool_calls"].empty()) {
+			retry.Reset();
 			const std::string toolIntroUtf8 = MergeMessageContentUtf8(message);
 			if (!streamState.sawDataEvent && streamCallback && !toolIntroUtf8.empty()) {
 				streamCallback(Utf8ToLocal(toolIntroUtf8));
@@ -7401,9 +7654,22 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			streamCallback(Utf8ToLocal(mergedUtf8));
 		}
 		if (mergedUtf8.empty()) {
+			if (retry.WaitForRetry(
+					"openai-chat",
+					statusCode,
+					"AI response content is empty",
+					cancelCallback,
+					cancelContext,
+					runOptions.streamRetryCallback)) {
+				continue;
+			}
+			if (IsCancelRequested(cancelCallback, cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
 			result.error = "AI response content is empty";
 			return result;
 		}
+		retry.Reset();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(mergedUtf8));
 		}
@@ -7513,6 +7779,137 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 {
 	nlohmann::json checks = nlohmann::json::array();
 	bool allOk = true;
+
+	{
+		ChatRetryCoordinator configured(5);
+		ChatRetryCoordinator disabled(0);
+		ChatRetryCoordinator negative(-1);
+		ChatRetryCoordinator upperClamped(99);
+		const bool configuredBudgetOk =
+			configured.CanRetry() &&
+			configured.AttemptNumber() == 1 &&
+			configured.MaxAttempts() == 6 &&
+			configured.RetriesPerformed() == 0;
+		const bool disabledRejected =
+			!disabled.CanRetry() && disabled.MaxAttempts() == 1;
+		const bool negativeClamped =
+			!negative.CanRetry() && negative.MaxAttempts() == 1;
+		const bool upperClampApplied =
+			upperClamped.CanRetry() &&
+			upperClamped.MaxAttempts() == kAiMaxRequestRetryCount + 1;
+		const bool ok =
+			configuredBudgetOk &&
+			disabledRejected &&
+			negativeClamped &&
+			upperClampApplied;
+		checks.push_back({
+			{"name", "chat_retry_coordinator_budget"},
+			{"ok", ok},
+			{"configured_retries", 5},
+			{"total_attempts", 6},
+			{"upper_clamp", kAiMaxRequestRetryCount}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		ChatStreamParseState stopState;
+		ConsumeStreamChunk(
+			"data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n",
+			stopState,
+			{});
+		FlushStreamParseState(stopState, {});
+
+		ChatStreamParseState doneState;
+		ConsumeStreamChunk("data: [DONE]\n\n", doneState, {});
+		FlushStreamParseState(doneState, {});
+
+		ChatStreamParseState disconnectedState;
+		ConsumeStreamChunk(
+			"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+			disconnectedState,
+			{});
+		FlushStreamParseState(disconnectedState, {});
+
+		ChatStreamParseState lengthState;
+		ConsumeStreamChunk(
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
+			lengthState,
+			{});
+		FlushStreamParseState(lengthState, {});
+
+		ChatStreamParseState contentFilterState;
+		ConsumeStreamChunk(
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\n",
+			contentFilterState,
+			{});
+		FlushStreamParseState(contentFilterState, {});
+
+		ChatStreamParseState malformedState;
+		ConsumeStreamChunk("data: {not-json}\n\n", malformedState, {});
+		FlushStreamParseState(malformedState, {});
+
+		const bool stopAccepted =
+			!ShouldRetryOpenAIChatStreamAttempt(stopState, 200, std::string());
+		const bool doneAccepted =
+			!ShouldRetryOpenAIChatStreamAttempt(doneState, 200, std::string());
+		const bool disconnectedRetry =
+			ShouldRetryOpenAIChatStreamAttempt(disconnectedState, 200, std::string());
+		const bool lengthRetry =
+			ShouldRetryOpenAIChatStreamAttempt(lengthState, 200, std::string());
+		const bool contentFilterRetry =
+			ShouldRetryOpenAIChatStreamAttempt(contentFilterState, 200, std::string());
+		const bool malformedRetry =
+			ShouldRetryOpenAIChatStreamAttempt(malformedState, 200, std::string());
+		const bool jsonTransportAccepted = !ShouldRetryOpenAIChatStreamAttempt(
+			ChatStreamParseState{},
+			200,
+			R"({"choices":[{"message":{"role":"assistant","content":"ok"}}]})");
+		const bool emptyBodyRetry = ShouldRetryOpenAIChatStreamAttempt(
+			ChatStreamParseState{},
+			200,
+			std::string());
+		const bool malformedBodyRetry = ShouldRetryOpenAIChatStreamAttempt(
+			ChatStreamParseState{},
+			200,
+			"not-json");
+		const bool retryableHttpAccepted = ShouldRetryOpenAIChatStreamAttempt(
+			ChatStreamParseState{},
+			503,
+			"service unavailable");
+		const bool fatalHttpRejected = !ShouldRetryOpenAIChatStreamAttempt(
+			ChatStreamParseState{},
+			400,
+			"invalid request");
+		const bool ok =
+			stopAccepted &&
+			doneAccepted &&
+			disconnectedRetry &&
+			lengthRetry &&
+			contentFilterRetry &&
+			malformedRetry &&
+			jsonTransportAccepted &&
+			emptyBodyRetry &&
+			malformedBodyRetry &&
+			retryableHttpAccepted &&
+			fatalHttpRejected;
+		checks.push_back({
+			{"name", "openai_chat_stream_retry_classification"},
+			{"ok", ok},
+			{"stop_accepted", stopAccepted},
+			{"done_accepted", doneAccepted},
+			{"disconnected_retry", disconnectedRetry},
+			{"length_retry", lengthRetry},
+			{"content_filter_retry", contentFilterRetry},
+			{"malformed_retry", malformedRetry},
+			{"json_transport_accepted", jsonTransportAccepted},
+			{"empty_body_retry", emptyBodyRetry},
+			{"malformed_body_retry", malformedBodyRetry},
+			{"retryable_http_accepted", retryableHttpAccepted},
+			{"fatal_http_rejected", fatalHttpRejected}
+		});
+		allOk = allOk && ok;
+	}
 
 	{
 		nlohmann::json messages = nlohmann::json::array({
@@ -8051,7 +8448,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 		const bool missingErrorRetry =
 			missingErrorState.parseError == "response.failed event received" &&
 			ShouldRetryOpenAIResponsesStreamAttempt(missingErrorState, 200, std::string());
-		const bool completedAccepted =
+		const bool completedTransportAccepted =
 			!ShouldRetryOpenAIResponsesStreamAttempt(completedState, 200, std::string());
 		const bool emptyStreamRetry = ShouldRetryOpenAIResponsesStreamAttempt(
 			ResponsesStreamParseState{},
@@ -8061,7 +8458,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			ResponsesStreamParseState{},
 			200,
 			"not-json");
-		const bool jsonCompatibilityAccepted = !ShouldRetryOpenAIResponsesStreamAttempt(
+		const bool jsonTransportAccepted = !ShouldRetryOpenAIResponsesStreamAttempt(
 			ResponsesStreamParseState{},
 			200,
 			R"({"output":[]})");
@@ -8091,10 +8488,10 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			incompleteRetry &&
 			malformedRetry &&
 			missingErrorRetry &&
-			completedAccepted &&
+			completedTransportAccepted &&
 			emptyStreamRetry &&
 			malformedBodyRetry &&
-			jsonCompatibilityAccepted &&
+			jsonTransportAccepted &&
 			readFailureRetry &&
 			connectFailureRetry &&
 			rateLimitDelayParsed &&
@@ -8111,10 +8508,10 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"incomplete_retry", incompleteRetry},
 			{"malformed_retry", malformedRetry},
 			{"missing_error_retry", missingErrorRetry},
-			{"completed_accepted", completedAccepted},
+			{"completed_transport_accepted", completedTransportAccepted},
 			{"empty_stream_retry", emptyStreamRetry},
 			{"malformed_body_retry", malformedBodyRetry},
-			{"json_compatibility_accepted", jsonCompatibilityAccepted},
+			{"json_transport_accepted", jsonTransportAccepted},
 			{"read_failure_retry", readFailureRetry},
 			{"connect_failure_retry", connectFailureRetry},
 			{"rate_limit_delay_parsed", rateLimitDelayParsed},

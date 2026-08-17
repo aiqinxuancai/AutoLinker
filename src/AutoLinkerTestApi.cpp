@@ -763,9 +763,14 @@ bool WriteFileBinary(const std::filesystem::path& path, const std::string& text)
 	return output.good();
 }
 
-class MockMcpHttpServer {
+class MockIntegrationHttpServer {
 public:
-	~MockMcpHttpServer()
+	enum class AiScriptMode {
+		EmptyThenSuccess,
+		TransportThenEmptyThenSuccess
+	};
+
+	~MockIntegrationHttpServer()
 	{
 		Stop();
 	}
@@ -832,7 +837,45 @@ public:
 		return "http://127.0.0.1:" + std::to_string(port_) + "/mcp";
 	}
 
+	std::string BaseUrl() const
+	{
+		return "http://127.0.0.1:" + std::to_string(port_);
+	}
+
+	void SetAiScriptMode(AiScriptMode mode)
+	{
+		aiScriptMode_.store(mode);
+		openAiChatRequests_.store(0);
+		openAiResponsesRequests_.store(0);
+		geminiRequests_.store(0);
+		claudeRequests_.store(0);
+	}
+
+	int AiRequestCount(AIProtocolType protocolType) const
+	{
+		switch (protocolType) {
+		case AIProtocolType::OpenAI:
+			return openAiChatRequests_.load();
+		case AIProtocolType::OpenAIResponses:
+			return openAiResponsesRequests_.load();
+		case AIProtocolType::Gemini:
+			return geminiRequests_.load();
+		case AIProtocolType::Claude:
+			return claudeRequests_.load();
+		default:
+			return 0;
+		}
+	}
+
 private:
+	enum class AiRoute {
+		None,
+		OpenAIChat,
+		OpenAIResponses,
+		Gemini,
+		Claude
+	};
+
 	void Run()
 	{
 		while (!stop_.load()) {
@@ -857,7 +900,13 @@ private:
 
 	static std::string BuildHttpResponse(int status, const std::string& body, bool includeSessionHeader)
 	{
-		const char* statusText = status == 202 ? "Accepted" : "OK";
+		const char* statusText = "OK";
+		if (status == 202) {
+			statusText = "Accepted";
+		}
+		else if (status == 503) {
+			statusText = "Service Unavailable";
+		}
 		std::string response = "HTTP/1.1 " + std::to_string(status) + " " + statusText + "\r\n";
 		response += "Connection: close\r\n";
 		response += "Content-Type: application/json\r\n";
@@ -867,6 +916,100 @@ private:
 		response += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
 		response += body;
 		return response;
+	}
+
+	static std::string ExtractRequestTarget(const std::string& headers)
+	{
+		const size_t firstSpace = headers.find(' ');
+		if (firstSpace == std::string::npos) {
+			return std::string();
+		}
+		const size_t secondSpace = headers.find(' ', firstSpace + 1);
+		if (secondSpace == std::string::npos || secondSpace <= firstSpace + 1) {
+			return std::string();
+		}
+		return headers.substr(firstSpace + 1, secondSpace - firstSpace - 1);
+	}
+
+	static AiRoute DetectAiRoute(const std::string& target)
+	{
+		if (target.find("/chat/completions") != std::string::npos) {
+			return AiRoute::OpenAIChat;
+		}
+		if (target.find("/responses") != std::string::npos) {
+			return AiRoute::OpenAIResponses;
+		}
+		if (target.find(":generateContent") != std::string::npos) {
+			return AiRoute::Gemini;
+		}
+		if (target.find("/messages") != std::string::npos) {
+			return AiRoute::Claude;
+		}
+		return AiRoute::None;
+	}
+
+	int IncrementAiRequestCount(AiRoute route)
+	{
+		switch (route) {
+		case AiRoute::OpenAIChat:
+			return ++openAiChatRequests_;
+		case AiRoute::OpenAIResponses:
+			return ++openAiResponsesRequests_;
+		case AiRoute::Gemini:
+			return ++geminiRequests_;
+		case AiRoute::Claude:
+			return ++claudeRequests_;
+		default:
+			return 0;
+		}
+	}
+
+	static std::string BuildEmptyAiResponse(AiRoute route)
+	{
+		switch (route) {
+		case AiRoute::OpenAIChat:
+			return R"({"choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}]})";
+		case AiRoute::OpenAIResponses:
+			return R"({"output":[]})";
+		case AiRoute::Gemini:
+			return R"({"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}]})";
+		case AiRoute::Claude:
+			return R"({"content":[],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":0}})";
+		default:
+			return R"({})";
+		}
+	}
+
+	static std::string BuildSuccessfulAiResponse(AiRoute route)
+	{
+		switch (route) {
+		case AiRoute::OpenAIChat:
+			return R"({"choices":[{"index":0,"message":{"role":"assistant","content":"retry-ok-openai"},"finish_reason":"stop"}]})";
+		case AiRoute::OpenAIResponses:
+			return R"({"output":[{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"output_text","text":"retry-ok-responses"}]}]})";
+		case AiRoute::Gemini:
+			return R"({"candidates":[{"content":{"role":"model","parts":[{"text":"retry-ok-gemini"}]},"finishReason":"STOP"}]})";
+		case AiRoute::Claude:
+			return R"({"content":[{"type":"text","text":"retry-ok-claude"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}})";
+		default:
+			return R"({})";
+		}
+	}
+
+	std::pair<int, std::string> BuildAiResponse(AiRoute route, int attempt) const
+	{
+		if (aiScriptMode_.load() == AiScriptMode::TransportThenEmptyThenSuccess) {
+			if (attempt == 1) {
+				return { 503, R"({"error":{"message":"mock service unavailable"}})" };
+			}
+			if (attempt == 2) {
+				return { 200, BuildEmptyAiResponse(route) };
+			}
+			return { 200, BuildSuccessfulAiResponse(route) };
+		}
+		return attempt == 1
+			? std::make_pair(200, BuildEmptyAiResponse(route))
+			: std::make_pair(200, BuildSuccessfulAiResponse(route));
 	}
 
 	static int ParseContentLength(const std::string& headers)
@@ -973,6 +1116,15 @@ private:
 			requestText.append(buffer, static_cast<size_t>(received));
 		}
 		const std::string body = requestText.substr(headerEnd + 4, static_cast<size_t>(contentLength));
+		const AiRoute aiRoute = DetectAiRoute(ExtractRequestTarget(headers));
+		if (aiRoute != AiRoute::None) {
+			const auto [status, responseBody] = BuildAiResponse(
+				aiRoute,
+				IncrementAiRequestCount(aiRoute));
+			const std::string response = BuildHttpResponse(status, responseBody, false);
+			send(client, response.data(), static_cast<int>(response.size()), 0);
+			return;
+		}
 		const nlohmann::json request = nlohmann::json::parse(body, nullptr, false);
 		if (request.is_discarded()) {
 			const std::string response = BuildHttpResponse(200, R"({"jsonrpc":"2.0","error":{"code":-32700,"message":"parse error"}})", true);
@@ -993,6 +1145,11 @@ private:
 	SOCKET listenSocket_ = INVALID_SOCKET;
 	unsigned short port_ = 0;
 	std::atomic_bool stop_{ false };
+	std::atomic<AiScriptMode> aiScriptMode_{ AiScriptMode::EmptyThenSuccess };
+	std::atomic_int openAiChatRequests_{ 0 };
+	std::atomic_int openAiResponsesRequests_{ 0 };
+	std::atomic_int geminiRequests_{ 0 };
+	std::atomic_int claudeRequests_{ 0 };
 	std::thread thread_;
 };
 
@@ -1030,7 +1187,7 @@ bool RunMcpMockRoundtripSelfTest(nlohmann::json& outCheck)
 	};
 
 	ScopedMcpConfigBackup configBackup;
-	MockMcpHttpServer server;
+	MockIntegrationHttpServer server;
 	std::string error;
 	try {
 		if (!server.Start(error)) {
@@ -1152,6 +1309,128 @@ bool RunMcpMockRoundtripSelfTest(nlohmann::json& outCheck)
 				outCheck["error"] = "mock tools/call or server approval grant failed";
 			}
 		}
+		return outCheck.value("ok", false);
+	}
+	catch (const std::exception& ex) {
+		outCheck["error"] = ex.what();
+		return false;
+	}
+	catch (...) {
+		outCheck["error"] = "unknown exception";
+		return false;
+	}
+}
+
+bool RunAIChatSharedRetryBudgetSelfTest(nlohmann::json& outCheck)
+{
+	outCheck = {
+		{"name", "ai_chat_shared_retry_budget"},
+		{"ok", false},
+		{"protocols", nlohmann::json::array()}
+	};
+
+	struct ProtocolCase {
+		AIProtocolType protocol;
+		const char* name;
+		const char* expectedContent;
+		bool streaming;
+	};
+	const std::vector<ProtocolCase> protocolCases = {
+		{ AIProtocolType::OpenAI, "openai_chat", "retry-ok-openai", true },
+		{ AIProtocolType::OpenAIResponses, "openai_responses", "retry-ok-responses", true },
+		{ AIProtocolType::Gemini, "gemini", "retry-ok-gemini", false },
+		{ AIProtocolType::Claude, "claude", "retry-ok-claude", false }
+	};
+
+	MockIntegrationHttpServer server;
+	std::string error;
+	try {
+		if (!server.Start(error)) {
+			outCheck["error"] = error;
+			return false;
+		}
+
+		bool allOk = true;
+		int toolExecutionCount = 0;
+		for (const ProtocolCase& protocolCase : protocolCases) {
+			AISettings settings = {};
+			settings.protocolType = protocolCase.protocol;
+			settings.baseUrl = server.BaseUrl();
+			settings.apiKey = "mock-key";
+			settings.model = "mock-model";
+			settings.timeoutMs = 10000;
+			settings.retryCount = 1;
+			settings.temperature = 0;
+			const std::vector<AIChatMessage> messages = {
+				{"user", "test shared retry budget", "", ""}
+			};
+
+			auto toolCallback = [&toolExecutionCount](
+				const std::string&,
+				const std::string&,
+				bool& outOk) -> std::string {
+				++toolExecutionCount;
+				outOk = false;
+				return "unexpected tool execution";
+			};
+
+			server.SetAiScriptMode(MockIntegrationHttpServer::AiScriptMode::EmptyThenSuccess);
+			int successPreviewResets = 0;
+			AIChatRunOptions successOptions;
+			successOptions.streamRetryCallback = [&successPreviewResets]() {
+				++successPreviewResets;
+			};
+			const AIChatResult successResult = AIService::ExecuteChatWithTools(
+				messages,
+				settings,
+				toolCallback,
+				{},
+				{},
+				nullptr,
+				successOptions);
+			const int successRequests = server.AiRequestCount(protocolCase.protocol);
+			const bool successOk =
+				successResult.ok &&
+				successResult.content == protocolCase.expectedContent &&
+				successRequests == 2 &&
+				successPreviewResets == (protocolCase.streaming ? 1 : 0);
+
+			server.SetAiScriptMode(
+				MockIntegrationHttpServer::AiScriptMode::TransportThenEmptyThenSuccess);
+			int exhaustedPreviewResets = 0;
+			AIChatRunOptions exhaustedOptions;
+			exhaustedOptions.streamRetryCallback = [&exhaustedPreviewResets]() {
+				++exhaustedPreviewResets;
+			};
+			const AIChatResult exhaustedResult = AIService::ExecuteChatWithTools(
+				messages,
+				settings,
+				toolCallback,
+				{},
+				{},
+				nullptr,
+				exhaustedOptions);
+			const int exhaustedRequests = server.AiRequestCount(protocolCase.protocol);
+			const bool sharedBudgetOk =
+				!exhaustedResult.ok &&
+				exhaustedRequests == 2 &&
+				exhaustedPreviewResets == (protocolCase.streaming ? 1 : 0);
+			const bool protocolOk = successOk && sharedBudgetOk;
+			outCheck["protocols"].push_back({
+				{"name", protocolCase.name},
+				{"ok", protocolOk},
+				{"empty_then_success", successOk},
+				{"success_requests", successRequests},
+				{"success_preview_resets", successPreviewResets},
+				{"transport_then_empty_exhausted", sharedBudgetOk},
+				{"exhausted_requests", exhaustedRequests},
+				{"exhausted_preview_resets", exhaustedPreviewResets},
+				{"exhausted_error", exhaustedResult.error}
+			});
+			allOk = allOk && protocolOk;
+		}
+		outCheck["tool_execution_count"] = toolExecutionCount;
+		outCheck["ok"] = allOk && toolExecutionCount == 0;
 		return outCheck.value("ok", false);
 	}
 	catch (const std::exception& ex) {
@@ -3107,6 +3386,10 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	nlohmann::json mockRoundtripCheck;
 	RunMcpMockRoundtripSelfTest(mockRoundtripCheck);
 	report["checks"].push_back(mockRoundtripCheck);
+
+	nlohmann::json sharedRetryBudgetCheck;
+	RunAIChatSharedRetryBudgetSelfTest(sharedRetryBudgetCheck);
+	report["checks"].push_back(std::move(sharedRetryBudgetCheck));
 
 	nlohmann::json mockStdioRoundtripCheck;
 	RunMcpStdioRoundtripSelfTest(mockStdioRoundtripCheck);
