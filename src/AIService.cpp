@@ -3678,6 +3678,7 @@ struct ClaudeToolCall {
 };
 
 struct GeminiToolCall {
+	std::string id;
 	std::string name;
 	std::string argumentsUtf8;
 };
@@ -3735,6 +3736,7 @@ std::vector<GeminiToolCall> ExtractGeminiToolCalls(const nlohmann::json& parsed)
 		}
 		const auto& fn = part["functionCall"];
 		GeminiToolCall call;
+		call.id = fn.value("id", "");
 		call.name = fn.value("name", "");
 		if (fn.contains("args")) {
 			call.argumentsUtf8 = fn["args"].dump();
@@ -3745,6 +3747,104 @@ std::vector<GeminiToolCall> ExtractGeminiToolCalls(const nlohmann::json& parsed)
 		calls.push_back(std::move(call));
 	}
 	return calls;
+}
+
+bool IsGeminiFunctionResponseContent(const nlohmann::json& content)
+{
+	if (!content.is_object() ||
+		content.value("role", std::string()) != "user" ||
+		!content.contains("parts") ||
+		!content["parts"].is_array()) {
+		return false;
+	}
+	return std::any_of(content["parts"].begin(), content["parts"].end(), [](const nlohmann::json& part) {
+		return part.is_object() &&
+			part.contains("functionResponse") &&
+			part["functionResponse"].is_object();
+	});
+}
+
+void RestoreGeminiFunctionResponseIds(
+	const nlohmann::json& modelContent,
+	nlohmann::json& responseContent)
+{
+	if (!modelContent.is_object() ||
+		!modelContent.contains("parts") ||
+		!modelContent["parts"].is_array() ||
+		!IsGeminiFunctionResponseContent(responseContent)) {
+		return;
+	}
+
+	std::vector<const nlohmann::json*> calls;
+	for (const auto& part : modelContent["parts"]) {
+		if (part.is_object() &&
+			part.contains("functionCall") &&
+			part["functionCall"].is_object()) {
+			calls.push_back(&part["functionCall"]);
+		}
+	}
+	std::vector<bool> matched(calls.size(), false);
+	for (auto& part : responseContent["parts"]) {
+		if (!part.is_object() ||
+			!part.contains("functionResponse") ||
+			!part["functionResponse"].is_object()) {
+			continue;
+		}
+		auto& response = part["functionResponse"];
+		const std::string responseId = response.value("id", "");
+		const std::string responseName = response.value("name", "");
+		size_t match = calls.size();
+		for (size_t i = 0; i < calls.size(); ++i) {
+			if (matched[i]) {
+				continue;
+			}
+			if (!responseId.empty() && (*calls[i]).value("id", "") == responseId) {
+				match = i;
+				break;
+			}
+			if (responseId.empty() && (*calls[i]).value("name", "") == responseName) {
+				match = i;
+				break;
+			}
+		}
+		if (match == calls.size()) {
+			continue;
+		}
+		matched[match] = true;
+		if (responseId.empty()) {
+			const std::string callId = (*calls[match]).value("id", "");
+			if (!callId.empty()) {
+				response["id"] = callId;
+			}
+		}
+	}
+}
+
+void NormalizeGeminiFunctionCallHistory(nlohmann::json& contents)
+{
+	if (!contents.is_array() || contents.empty()) {
+		return;
+	}
+
+	nlohmann::json normalized = nlohmann::json::array();
+	for (const auto& content : contents) {
+		if (IsGeminiFunctionResponseContent(content) &&
+			!normalized.empty() &&
+			IsGeminiFunctionResponseContent(normalized.back())) {
+			for (const auto& part : content["parts"]) {
+				normalized.back()["parts"].push_back(part);
+			}
+			continue;
+		}
+		normalized.push_back(content);
+	}
+
+	for (size_t i = 1; i < normalized.size(); ++i) {
+		if (IsGeminiFunctionResponseContent(normalized[i])) {
+			RestoreGeminiFunctionResponseIds(normalized[i - 1], normalized[i]);
+		}
+	}
+	contents = std::move(normalized);
 }
 
 std::vector<ResponsesToolCall> ExtractResponsesToolCalls(const nlohmann::json& parsed)
@@ -4770,6 +4870,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 		}
 		contents.push_back(BuildGeminiContent(msg));
 	}
+	NormalizeGeminiFunctionCallHistory(contents);
 
 	AIChatToolPolicy::Session toolPolicy;
 	for (int round = 0;; ++round) {
@@ -4930,12 +5031,14 @@ AIChatResult ExecuteChatWithToolsGemini(
 		checkpointCalls.reserve(toolCalls.size());
 		for (const GeminiToolCall& call : toolCalls) {
 			checkpointCalls.push_back(AIChatCheckpointToolCall{
-				"",
+				call.id,
 				call.name,
 				Utf8ToLocal(call.argumentsUtf8)
 			});
 		}
 		runController.BeginToolBatch(std::move(checkpointCalls));
+		nlohmann::json toolResponseParts = nlohmann::json::array();
+		std::string combinedToolResultsLocal;
 
 		for (size_t i = 0; i < toolCalls.size(); ++i) {
 			const GeminiToolCall& call = toolCalls[i];
@@ -4958,34 +5061,47 @@ AIChatResult ExecuteChatWithToolsGemini(
 				return MarkChatResultCancelled(std::move(result));
 			}
 
-			nlohmann::json toolResponseContent = {
-				{"role", "user"},
-				{"parts", nlohmann::json::array({
-					{
-						{"functionResponse", {
-							{"name", call.name},
-							{"response", compactPayload.jsonValue}
-						}}
-					}
-				})}
+			nlohmann::json functionResponse = {
+				{"name", call.name},
+				{"response", compactPayload.jsonValue}
 			};
+			if (!call.id.empty()) {
+				functionResponse["id"] = call.id;
+			}
+			toolResponseParts.push_back({{"functionResponse", std::move(functionResponse)}});
 			if (!toolExecution.attachments.empty()) {
 				const nlohmann::json imageContent = BuildGeminiContent(AIChatMessage{
 					"user", "", "", "", toolExecution.attachments
 				});
 				if (imageContent.contains("parts") && imageContent["parts"].is_array()) {
 					for (const auto& part : imageContent["parts"]) {
-						toolResponseContent["parts"].push_back(part);
+						toolResponseParts.push_back(part);
 					}
 				}
 			}
-			contents.push_back(toolResponseContent);
-			runController.CompleteToolCall(
-				i,
-				toolResultLocal,
-				toolOk,
-				BuildRawCheckpointMessage("tool", toolResultLocal, toolResponseContent));
-			AppendToolImagesToController(runController, call.name, toolExecution.attachments);
+			if (!combinedToolResultsLocal.empty()) {
+				combinedToolResultsLocal += "\n";
+			}
+			combinedToolResultsLocal += "[" + call.name + "] " + toolResultLocal;
+
+			if (i + 1 == toolCalls.size()) {
+				nlohmann::json toolResponseContent = {
+					{"role", "user"},
+					{"parts", std::move(toolResponseParts)}
+				};
+				contents.push_back(toolResponseContent);
+				runController.CompleteToolCall(
+					i,
+					toolResultLocal,
+					toolOk,
+					BuildRawCheckpointMessage(
+						"tool",
+						combinedToolResultsLocal,
+						toolResponseContent));
+			}
+			else {
+				runController.CompleteToolCall(i, toolResultLocal, toolOk);
+			}
 		}
 		if (runController.IsStalled()) {
 			result.paused = true;
@@ -7963,6 +8079,70 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"plan_user_input_schema", planUserInputSchemaOk},
 			{"real_page_read_visible", contains(realPageCatalog, "read_real_file")},
 			{"mirror_real_page_read_hidden", !contains(mirrorCatalog, "read_real_file")}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		const nlohmann::json originalModelContent = {
+			{"role", "model"},
+			{"parts", nlohmann::json::array({
+				{
+					{"functionCall", {
+						{"id", "call_paris"},
+						{"name", "get_weather"},
+						{"args", {{"city", "Paris"}}}
+					}},
+					{"thoughtSignature", "signature"}
+				},
+				{
+					{"functionCall", {
+						{"id", "call_london"},
+						{"name", "get_weather"},
+						{"args", {{"city", "London"}}}
+					}}
+				}
+			})}
+		};
+		nlohmann::json history = nlohmann::json::array({
+			{
+				{"role", "user"},
+				{"parts", nlohmann::json::array({{{"text", "Check both cities"}}})}
+			},
+			originalModelContent,
+			{
+				{"role", "user"},
+				{"parts", nlohmann::json::array({
+					{{"functionResponse", {
+						{"name", "get_weather"},
+						{"response", {{"temperature", 15}}}
+					}}}
+				})}
+			},
+			{
+				{"role", "user"},
+				{"parts", nlohmann::json::array({
+					{{"functionResponse", {
+						{"name", "get_weather"},
+						{"response", {{"temperature", 12}}}
+					}}}
+				})}
+			}
+		});
+		NormalizeGeminiFunctionCallHistory(history);
+		const bool ok =
+			history.size() == 3 &&
+			history[1] == originalModelContent &&
+			history[2].value("role", std::string()) == "user" &&
+			history[2]["parts"].size() == 2 &&
+			history[2]["parts"][0]["functionResponse"].value("id", std::string()) == "call_paris" &&
+			history[2]["parts"][1]["functionResponse"].value("id", std::string()) == "call_london";
+		checks.push_back({
+			{"name", "gemini_parallel_function_response_history"},
+			{"ok", ok},
+			{"content_count", history.size()},
+			{"response_part_count", history.size() > 2 ? history[2]["parts"].size() : 0},
+			{"model_content_preserved", history.size() > 1 && history[1] == originalModelContent}
 		});
 		allOk = allOk && ok;
 	}

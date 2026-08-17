@@ -186,8 +186,25 @@ void AIChatRunController::BeginToolBatch(std::vector<AIChatCheckpointToolCall> c
 void AIChatRunController::CompleteToolCall(
 	size_t index,
 	const std::string& resultJsonLocal,
+	bool ok)
+{
+	CompleteToolCallInternal(index, resultJsonLocal, ok, nullptr);
+}
+
+void AIChatRunController::CompleteToolCall(
+	size_t index,
+	const std::string& resultJsonLocal,
 	bool ok,
 	AIChatMessage contextMessage)
+{
+	CompleteToolCallInternal(index, resultJsonLocal, ok, &contextMessage);
+}
+
+void AIChatRunController::CompleteToolCallInternal(
+	size_t index,
+	const std::string& resultJsonLocal,
+	bool ok,
+	AIChatMessage* contextMessage)
 {
 	std::string toolName;
 	std::string argumentsJson;
@@ -199,7 +216,9 @@ void AIChatRunController::CompleteToolCall(
 		call.completed = true;
 		call.ok = ok;
 	}
-	AppendContextMessage(std::move(contextMessage));
+	if (contextMessage != nullptr) {
+		AppendContextMessage(std::move(*contextMessage));
+	}
 	if (ok) {
 		m_consecutiveFailures = 0;
 		m_recoveryHint.clear();

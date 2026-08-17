@@ -27,6 +27,10 @@ public:
 	void CompleteToolCall(
 		size_t index,
 		const std::string& resultJsonLocal,
+		bool ok);
+	void CompleteToolCall(
+		size_t index,
+		const std::string& resultJsonLocal,
 		bool ok,
 		AIChatMessage contextMessage);
 	std::string TakeRecoveryHint();
@@ -55,6 +59,11 @@ private:
 
 	void ApplyResumeCheckpoint(const AIChatRunCheckpoint& checkpoint);
 	std::string BuildResumeFallbackSummary(const AIChatRunCheckpoint& checkpoint) const;
+	void CompleteToolCallInternal(
+		size_t index,
+		const std::string& resultJsonLocal,
+		bool ok,
+		AIChatMessage* contextMessage);
 
 	AIProtocolType m_protocolType;
 	std::string m_model;
