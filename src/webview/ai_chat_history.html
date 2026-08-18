@@ -838,6 +838,7 @@ html:not(.autolinker-page-visible) *::after {
 	background: var(--al-panel-bg, #eff1f5);
 	box-shadow: 0 1px 2px rgba(76, 79, 105, .06);
 	overflow: hidden;
+	transition: box-shadow .16s ease;
 }
 
 .activity-summary {
@@ -905,6 +906,7 @@ html:not(.autolinker-page-visible) *::after {
 	color: var(--al-plan-text, #374151);
 	font-size: 11px;
 	font-weight: 700;
+	line-height: 16px;
 	white-space: nowrap;
 }
 
@@ -914,7 +916,7 @@ html:not(.autolinker-page-visible) *::after {
 	overflow: hidden;
 	color: var(--al-muted-text, #6c7086);
 	font-size: 11px;
-	line-height: 1.35;
+	line-height: 16px;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
@@ -960,6 +962,12 @@ html:not(.autolinker-page-visible) *::after {
 
 .activity-panel.expanded .activity-chevron svg {
 	transform: rotate(180deg);
+}
+
+.activity-panel.expanded {
+	position: relative;
+	z-index: 1;
+	box-shadow: 0 0 14px rgba(30, 38, 58, .14);
 }
 
 .activity-details {
@@ -1493,7 +1501,15 @@ html:not(.autolinker-page-visible) *::after {
 	color: #374151;
 }
 
-.body .plan-step-list {
+.plan-content p {
+	margin: 0 0 8px;
+}
+
+.plan-content p:last-child {
+	margin-bottom: 0;
+}
+
+.plan-step-list {
 	list-style: none;
 	margin: 0;
 	padding: 0;
