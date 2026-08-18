@@ -21,6 +21,7 @@ public:
 
 	void BeginSampling();
 	void RecordUsage(int promptTokens, int totalTokens, bool hasUsage);
+	void RecordModelRound();
 	bool ShouldCompact() const;
 
 	void BeginToolBatch(std::vector<AIChatCheckpointToolCall> calls);
@@ -47,6 +48,9 @@ public:
 	int CompactionCount() const;
 	int PromptTokens() const;
 	int TotalTokens() const;
+	long long AccumulatedInputTokens() const;
+	long long AccumulatedOutputTokens() const;
+	int CompletedModelRounds() const;
 	bool HasUsage() const;
 
 	static size_t EstimateContextTokens(const std::vector<AIChatMessage>& messages);
@@ -76,6 +80,9 @@ private:
 	int m_compactionCount = 0;
 	int m_promptTokens = 0;
 	int m_totalTokens = 0;
+	long long m_accumulatedInputTokens = 0;
+	long long m_accumulatedOutputTokens = 0;
+	int m_completedModelRounds = 0;
 	bool m_hasUsage = false;
 	size_t m_contextBytesAfterUsage = 0;
 	int m_consecutiveFailures = 0;

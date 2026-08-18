@@ -2027,6 +2027,7 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest between-dashes <text>" << std::endl;
 	std::cout << "  AutoLinkerTest version-text" << std::endl;
 	std::cout << "  AutoLinkerTest gameanalytics-self-test" << std::endl;
+	std::cout << "  AutoLinkerTest gameanalytics-live-test  (reads AUTOLINKER_GA_TEST_GAME_KEY and AUTOLINKER_GA_TEST_SECRET_KEY)" << std::endl;
 	std::cout << "  AutoLinkerTest mcp-self-test" << std::endl;
 	std::cout << "  AutoLinkerTest plan-mode-self-test" << std::endl;
 	std::cout << "  AutoLinkerTest goal-mode-self-test" << std::endl;
@@ -2116,6 +2117,47 @@ int main(int argc, char* argv[])
 		}
 		std::cout << buffer << std::endl;
 		return EXIT_SUCCESS;
+	}
+
+	if (commandName == "gameanalytics-live-test") {
+		if (argc != 2) {
+			PrintUsage();
+			return EXIT_FAILURE;
+		}
+		const auto readEnvironmentValue = [](const char* name) {
+			char* value = nullptr;
+			size_t valueSize = 0;
+			if (_dupenv_s(&value, &valueSize, name) != 0 || value == nullptr) {
+				return std::string();
+			}
+			std::string result(value);
+			std::free(value);
+			return result;
+		};
+		const std::string gameKey = readEnvironmentValue("AUTOLINKER_GA_TEST_GAME_KEY");
+		const std::string secretKey = readEnvironmentValue("AUTOLINKER_GA_TEST_SECRET_KEY");
+		if (gameKey.empty() || secretKey.empty()) {
+			std::cerr << "GameAnalytics live test environment variables are missing." << std::endl;
+			return EXIT_FAILURE;
+		}
+		char buffer[524288] = {};
+		const int result = AutoLinkerTest_RunGameAnalyticsLiveTest(
+			gameKey.c_str(),
+			secretKey.c_str(),
+			buffer,
+			static_cast<int>(sizeof(buffer)));
+		if (result < 0) {
+			return PrintStringResult(commandName.c_str(), result, buffer);
+		}
+		std::cout << buffer << std::endl;
+		try {
+			return nlohmann::json::parse(buffer).value("ok", false)
+				? EXIT_SUCCESS
+				: EXIT_FAILURE;
+		}
+		catch (...) {
+			return EXIT_FAILURE;
+		}
 	}
 
 	if (commandName == "mcp-self-test") {

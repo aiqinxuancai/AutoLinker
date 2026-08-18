@@ -32,6 +32,9 @@ void Shutdown();
 // 判断后台客户端是否正在运行。
 bool IsRunning();
 
+// 异步提交一个带数值的 Design Event；客户端会按数量或时间自动批量发送。
+void QueueDesignEvent(const std::string& eventId, double value);
+
 // 异步刷新 Remote Config。
 void RefreshRemoteConfigsAsync();
 
@@ -43,5 +46,10 @@ std::optional<std::string> GetRemoteConfigValue(const std::string& key);
 
 // 构建不依赖网络的自检报告。
 std::string BuildSelfTestReportJson();
+
+// 使用外部测试凭据执行真实 init 和批量事件提交，不保存凭据。
+std::string BuildLiveBatchTestReportJson(
+	const std::string& gameKey,
+	const std::string& secretKey);
 
 } // namespace GameAnalyticsClient

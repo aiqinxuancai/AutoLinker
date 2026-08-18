@@ -4625,6 +4625,9 @@ void SyncLongTaskResult(AIChatResult& result, const AIChatRunController& control
 	result.hasUsage = controller.HasUsage();
 	result.promptTokens = controller.PromptTokens();
 	result.totalTokens = controller.TotalTokens();
+	result.accumulatedInputTokens = controller.AccumulatedInputTokens();
+	result.accumulatedOutputTokens = controller.AccumulatedOutputTokens();
+	result.completedModelRounds = controller.CompletedModelRounds();
 	result.hasCheckpoint = true;
 	result.checkpoint = controller.BuildCheckpoint(result.ok ? "completed" : "running");
 	result.continuationMessages = controller.ContextMessages();
@@ -4889,6 +4892,9 @@ AIChatResult ExecuteChatWithToolsClaude(
 			const int promptTokens = usage.value("input_tokens", 0);
 			const int outputTokens = usage.value("output_tokens", 0);
 			runController.RecordUsage(promptTokens, promptTokens + outputTokens, true);
+		}
+		if (!toolCalls.empty() || !textUtf8.empty()) {
+			runController.RecordModelRound();
 		}
 		if (toolCalls.empty()) {
 			if (textUtf8.empty()) {
@@ -5295,6 +5301,9 @@ AIChatResult ExecuteChatWithToolsGemini(
 				usage.value("totalTokenCount", 0),
 				true);
 		}
+		if (!toolCalls.empty() || !textUtf8.empty()) {
+			runController.RecordModelRound();
+		}
 		if (toolCalls.empty()) {
 			if (textUtf8.empty()) {
 				if (retry.WaitForRetry(
@@ -5670,10 +5679,15 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			usage = &parsed["usage"];
 		}
 		if (usage != nullptr) {
+			const int inputTokens = usage->value("input_tokens", 0);
+			const int outputTokens = usage->value("output_tokens", 0);
 			runController.RecordUsage(
-				usage->value("input_tokens", 0),
-				usage->value("total_tokens", 0),
+				inputTokens,
+				usage->value("total_tokens", inputTokens + outputTokens),
 				true);
+		}
+		if (!toolCalls.empty() || !textUtf8.empty()) {
+			runController.RecordModelRound();
 		}
 		if (toolCalls.empty()) {
 			if (textUtf8.empty()) {
@@ -7414,6 +7428,10 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			statusCode,
 			responseBody);
 		if (retryableAttempt) {
+			runController.RecordUsage(
+				streamState.promptTokens,
+				streamState.totalTokens,
+				streamState.hasUsage);
 			if (retry.WaitForRetry(
 					"openai-chat",
 					statusCode,
@@ -7485,6 +7503,15 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 				result.error = parseError;
 				return result;
 			}
+			if (parsed.contains("usage") && parsed["usage"].is_object()) {
+				const auto& usage = parsed["usage"];
+				const int promptTokens = usage.value("prompt_tokens", 0);
+				const int completionTokens = usage.value("completion_tokens", 0);
+				runController.RecordUsage(
+					promptTokens,
+					usage.value("total_tokens", promptTokens + completionTokens),
+					true);
+			}
 
 			std::string parseError;
 			if (!ExtractChatResponseMessage(parsed, message, parseError)) {
@@ -7512,6 +7539,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 
 		// Tool-call path.
 		if (message.contains("tool_calls") && message["tool_calls"].is_array() && !message["tool_calls"].empty()) {
+			runController.RecordModelRound();
 			retry.Reset();
 			const std::string toolIntroUtf8 = MergeMessageContentUtf8(message);
 			if (!streamState.sawDataEvent && streamCallback && !toolIntroUtf8.empty()) {
@@ -7669,6 +7697,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			result.error = "AI response content is empty";
 			return result;
 		}
+		runController.RecordModelRound();
 		retry.Reset();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(mergedUtf8));

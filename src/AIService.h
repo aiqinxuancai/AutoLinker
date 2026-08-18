@@ -137,6 +137,9 @@ struct AIChatRunCheckpoint {
 	int compactionCount = 0;
 	int promptTokens = 0;
 	int totalTokens = 0;
+	long long accumulatedInputTokens = 0;
+	long long accumulatedOutputTokens = 0;
+	int completedModelRounds = 0;
 	bool hasUsage = false;
 	std::vector<AIChatMessage> contextMessages;
 	std::vector<AIChatCheckpointToolCall> toolCalls;
@@ -177,6 +180,9 @@ struct AIChatResult {
 	bool hasUsage = false;
 	int promptTokens = 0; // 输入 token —— 衡量「上下文有多满」的关键数
 	int totalTokens = 0;  // prompt+completion，仅日志诊断用
+	long long accumulatedInputTokens = 0; // 本次运行累计输入 token
+	long long accumulatedOutputTokens = 0; // 本次运行累计输出 token
+	int completedModelRounds = 0; // 成功解析的模型轮数，不包含网络重试
 	int samplingRounds = 0;
 	int compactionCount = 0;
 	bool hasCheckpoint = false;

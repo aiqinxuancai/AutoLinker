@@ -162,7 +162,14 @@ void AIChatRunController::RecordUsage(int promptTokens, int totalTokens, bool ha
 	m_hasUsage = true;
 	m_promptTokens = (std::max)(0, promptTokens);
 	m_totalTokens = (std::max)(m_promptTokens, totalTokens);
+	m_accumulatedInputTokens += static_cast<long long>(m_promptTokens);
+	m_accumulatedOutputTokens += static_cast<long long>(m_totalTokens - m_promptTokens);
 	m_contextBytesAfterUsage = 0;
+}
+
+void AIChatRunController::RecordModelRound()
+{
+	++m_completedModelRounds;
 }
 
 bool AIChatRunController::ShouldCompact() const
@@ -336,6 +343,9 @@ AIChatRunCheckpoint AIChatRunController::BuildCheckpoint(const std::string& stat
 	checkpoint.compactionCount = m_compactionCount;
 	checkpoint.promptTokens = m_promptTokens;
 	checkpoint.totalTokens = m_totalTokens;
+	checkpoint.accumulatedInputTokens = m_accumulatedInputTokens;
+	checkpoint.accumulatedOutputTokens = m_accumulatedOutputTokens;
+	checkpoint.completedModelRounds = m_completedModelRounds;
 	checkpoint.hasUsage = m_hasUsage;
 	checkpoint.contextMessages = m_contextMessages;
 	checkpoint.toolCalls = m_toolCalls;
@@ -386,6 +396,21 @@ int AIChatRunController::TotalTokens() const
 	return m_totalTokens;
 }
 
+long long AIChatRunController::AccumulatedInputTokens() const
+{
+	return m_accumulatedInputTokens;
+}
+
+long long AIChatRunController::AccumulatedOutputTokens() const
+{
+	return m_accumulatedOutputTokens;
+}
+
+int AIChatRunController::CompletedModelRounds() const
+{
+	return m_completedModelRounds;
+}
+
 bool AIChatRunController::HasUsage() const
 {
 	return m_hasUsage;
@@ -406,6 +431,9 @@ void AIChatRunController::ApplyResumeCheckpoint(const AIChatRunCheckpoint& check
 	m_compactionCount = (std::max)(0, checkpoint.compactionCount);
 	m_promptTokens = (std::max)(0, checkpoint.promptTokens);
 	m_totalTokens = (std::max)(m_promptTokens, checkpoint.totalTokens);
+	m_accumulatedInputTokens = (std::max)(0LL, checkpoint.accumulatedInputTokens);
+	m_accumulatedOutputTokens = (std::max)(0LL, checkpoint.accumulatedOutputTokens);
+	m_completedModelRounds = (std::max)(0, checkpoint.completedModelRounds);
 	m_hasUsage = checkpoint.hasUsage;
 	m_summary = checkpoint.summary;
 

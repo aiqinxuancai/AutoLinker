@@ -234,10 +234,18 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		roundController.BeginSampling();
 	}
 	const bool roundsBeyondLegacyLimit = roundController.SamplingRounds() == 96;
+	roundController.RecordUsage(100, 140, true);
+	roundController.RecordModelRound();
+	roundController.RecordUsage(150, 210, true);
+	roundController.RecordModelRound();
 	roundController.RecordCompaction("第一次压缩");
 	roundController.RecordCompaction("第二次压缩");
 	const bool multipleCompactions = roundController.CompactionCount() == 2 &&
 		roundController.ContextMessages().size() == 2;
+	const bool cumulativeUsage =
+		roundController.AccumulatedInputTokens() == 250 &&
+		roundController.AccumulatedOutputTokens() == 100 &&
+		roundController.CompletedModelRounds() == 2;
 
 	const std::vector<AIChatToolEvent> fallbackEvents = {
 		{"read_file", R"({"file_path":"src/Test.cpp"})", R"({"ok":false,"error":"test"})", false}
@@ -350,6 +358,12 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	completedCheckpoint.protocolType = AIProtocolType::OpenAI;
 	completedCheckpoint.model = settings.model;
 	completedCheckpoint.state = "paused";
+	completedCheckpoint.hasUsage = true;
+	completedCheckpoint.promptTokens = 150;
+	completedCheckpoint.totalTokens = 210;
+	completedCheckpoint.accumulatedInputTokens = 250;
+	completedCheckpoint.accumulatedOutputTokens = 100;
+	completedCheckpoint.completedModelRounds = 2;
 	completedCheckpoint.contextMessages = {
 		{"user", "完成长期任务", "", ""},
 		{"assistant", "", "", R"({"role":"assistant","tool_calls":[{"id":"call_1","function":{"name":"read_file","arguments":"{}"}}]})"},
@@ -365,6 +379,10 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		exactResumeController.ContextMessages().size() == completedCheckpoint.contextMessages.size() &&
 		exactResumeController.ContextMessages()[1].rawMessageJsonUtf8 ==
 			completedCheckpoint.contextMessages[1].rawMessageJsonUtf8;
+	const bool cumulativeUsageResume =
+		exactResumeController.AccumulatedInputTokens() == 250 &&
+		exactResumeController.AccumulatedOutputTokens() == 100 &&
+		exactResumeController.CompletedModelRounds() == 2;
 
 	AIChatRunCheckpoint interruptedCheckpoint = completedCheckpoint;
 	interruptedCheckpoint.contextMessages.pop_back();
@@ -485,6 +503,9 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 			loaded.pendingInputs[1].contentLocal == "second queued input" &&
 			loaded.hasRunCheckpoint &&
 			loaded.runCheckpoint.state == "paused" &&
+			loaded.runCheckpoint.accumulatedInputTokens == 250 &&
+			loaded.runCheckpoint.accumulatedOutputTokens == 100 &&
+			loaded.runCheckpoint.completedModelRounds == 2 &&
 			loaded.runCheckpoint.toolCalls.size() == 1 &&
 			!loaded.runCheckpoint.contextMessages.empty() &&
 			loaded.runCheckpoint.contextMessages.front().attachments.size() == 1 &&
@@ -513,6 +534,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 
 	const bool ok = roundsBeyondLegacyLimit &&
 		multipleCompactions &&
+		cumulativeUsage &&
 		localCompactionFallback &&
 		recoveryHintAtThree &&
 		stalledAtEight &&
@@ -520,6 +542,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		repeatedWriteHintAtThree &&
 		repeatedWriteStalledAtFive &&
 		sameProviderResume &&
+		cumulativeUsageResume &&
 		interruptedResumeRebuilt &&
 		crossProviderResume &&
 		nearLimitResumeCompacted &&
@@ -533,6 +556,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	outCheck["ok"] = ok;
 	outCheck["rounds_beyond_64"] = roundsBeyondLegacyLimit;
 	outCheck["multiple_compactions"] = multipleCompactions;
+	outCheck["cumulative_usage"] = cumulativeUsage;
 	outCheck["local_compaction_fallback"] = localCompactionFallback;
 	outCheck["recovery_hint_at_3"] = recoveryHintAtThree;
 	outCheck["stalled_at_8"] = stalledAtEight;
@@ -540,6 +564,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	outCheck["repeated_write_hint_at_3"] = repeatedWriteHintAtThree;
 	outCheck["repeated_write_stalled_at_5"] = repeatedWriteStalledAtFive;
 	outCheck["same_provider_resume"] = sameProviderResume;
+	outCheck["cumulative_usage_resume"] = cumulativeUsageResume;
 	outCheck["interrupted_resume_rebuilt"] = interruptedResumeRebuilt;
 	outCheck["cross_provider_resume"] = crossProviderResume;
 	outCheck["near_limit_resume_compacted"] = nearLimitResumeCompacted;
@@ -2633,6 +2658,21 @@ extern "C" int AutoLinkerTest_GetAIChatThemeConfigPayload(char* buffer, int buff
 extern "C" int AutoLinkerTest_RunGameAnalyticsSelfTest(char* buffer, int bufferSize)
 {
 	return CopyStringToBuffer(GameAnalyticsClient::BuildSelfTestReportJson(), buffer, bufferSize);
+}
+
+extern "C" int AutoLinkerTest_RunGameAnalyticsLiveTest(
+	const char* gameKey,
+	const char* secretKey,
+	char* buffer,
+	int bufferSize)
+{
+	if (gameKey == nullptr || secretKey == nullptr) {
+		return AUTOLINKER_TEST_STRING_INVALID_ARGUMENT;
+	}
+	return CopyStringToBuffer(
+		GameAnalyticsClient::BuildLiveBatchTestReportJson(gameKey, secretKey),
+		buffer,
+		bufferSize);
 }
 
 extern "C" int AutoLinkerTest_RunPlanModeSelfTest(char* buffer, int bufferSize)

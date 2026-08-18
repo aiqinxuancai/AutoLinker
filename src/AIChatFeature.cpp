@@ -8389,6 +8389,12 @@ void HandleChatTaskDone(LPARAM lParam)
 			result->chatResult.hasUsage = result->chatResult.checkpoint.hasUsage;
 			result->chatResult.promptTokens = result->chatResult.checkpoint.promptTokens;
 			result->chatResult.totalTokens = result->chatResult.checkpoint.totalTokens;
+			result->chatResult.accumulatedInputTokens =
+				result->chatResult.checkpoint.accumulatedInputTokens;
+			result->chatResult.accumulatedOutputTokens =
+				result->chatResult.checkpoint.accumulatedOutputTokens;
+			result->chatResult.completedModelRounds =
+				result->chatResult.checkpoint.completedModelRounds;
 		}
 		if (result->chatResult.terminationReason == AIChatRunTerminationReason::None) {
 			result->chatResult.terminationReason = result->chatResult.cancelled
@@ -8407,7 +8413,8 @@ void HandleChatTaskDone(LPARAM lParam)
 		if (result->goalProgressTracked && result->chatResult.hasUsage) {
 			AIChatGoalManager::AddUsage(
 				g_session.goal,
-				result->chatResult.totalTokens,
+				result->chatResult.accumulatedInputTokens +
+					result->chatResult.accumulatedOutputTokens,
 				GetCurrentUnixTimeMsForChat());
 		}
 		if (!result->chatResult.ok && !result->chatResult.cancelled && result->goalProgressTracked) {
@@ -8581,6 +8588,23 @@ void HandleChatTaskDone(LPARAM lParam)
 		}
 
 		CompactHistoryLocked(g_session);
+	}
+	if (result->chatResult.ok) {
+		const long long totalTokens =
+			result->chatResult.accumulatedInputTokens +
+			result->chatResult.accumulatedOutputTokens;
+		GameAnalyticsClient::QueueDesignEvent(
+			"AIChat:RunCompleted:ModelRounds",
+			static_cast<double>(result->chatResult.completedModelRounds));
+		GameAnalyticsClient::QueueDesignEvent(
+			"AIChat:RunCompleted:InputTokens",
+			static_cast<double>(result->chatResult.accumulatedInputTokens));
+		GameAnalyticsClient::QueueDesignEvent(
+			"AIChat:RunCompleted:OutputTokens",
+			static_cast<double>(result->chatResult.accumulatedOutputTokens));
+		GameAnalyticsClient::QueueDesignEvent(
+			"AIChat:RunCompleted:TotalTokens",
+			static_cast<double>(totalTokens));
 	}
 
 	g_chatRequestDoneCv.notify_all();
@@ -10331,7 +10355,10 @@ std::string ExecuteDebugRunAIChatTool(const std::string& argumentsJson, bool& ou
 	if (chatResult.hasUsage) {
 		result["prompt_tokens"] = chatResult.promptTokens;
 		result["total_tokens"] = chatResult.totalTokens;
+		result["accumulated_input_tokens"] = chatResult.accumulatedInputTokens;
+		result["accumulated_output_tokens"] = chatResult.accumulatedOutputTokens;
 	}
+	result["completed_model_rounds"] = chatResult.completedModelRounds;
 	outOk = chatResult.ok;
 	return DumpJsonUtf8(result);
 }

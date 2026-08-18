@@ -13,19 +13,23 @@
 #include <chrono>
 #include <condition_variable>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <deque>
 #include <format>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "..\\thirdparty\\json.hpp"
 
 #include "AutoLinkerVersion.h"
 #include "ConfigManager.h"
+#include "GameAnalyticsEventBatcher.h"
 #include "Logger.h"
 #include "WinINetUtil.h"
 
@@ -41,7 +45,10 @@ constexpr const char* kPlatform = "windows";
 constexpr const char* kManufacturer = "microsoft";
 constexpr const char* kDevice = "windows";
 constexpr int kHttpTimeoutMs = 8000;
+constexpr size_t kFlushEventThreshold = 20;
 constexpr size_t kMaxPendingEvents = 128;
+constexpr int kMaxEventSubmitFailures = 3;
+constexpr auto kEventFlushInterval = std::chrono::seconds(30);
 
 constexpr const char* kConfigEnabled = "gameanalytics.enabled";
 constexpr const char* kConfigUserId = "gameanalytics.user_id";
@@ -54,6 +61,17 @@ enum class WorkerTask {
 	FlushEvents,
 	RefreshRemoteConfigs
 };
+
+GameAnalyticsEventBatcher::Policy BuildProductionEventBatchPolicy()
+{
+	return {
+		kFlushEventThreshold,
+		kMaxPendingEvents,
+		kMaxEventSubmitFailures,
+		std::chrono::duration_cast<GameAnalyticsEventBatcher::Duration>(kEventFlushInterval),
+		std::chrono::seconds(1)
+	};
+}
 
 struct ClientState {
 	ConfigManager* configManager = nullptr;
@@ -71,7 +89,8 @@ struct ClientState {
 	std::string sessionId;
 	int sessionNum = 1;
 	std::string osVersion = "windows 10.0.0";
-	std::vector<nlohmann::json> pendingEvents;
+	GameAnalyticsEventBatcher eventBatcher{BuildProductionEventBatchPolicy()};
+	bool flushTaskQueued = false;
 	std::deque<WorkerTask> tasks;
 	GameAnalyticsClient::RemoteConfigSnapshot remoteConfigs;
 	bool startShowIdeValueSeen = false;
@@ -82,6 +101,11 @@ std::mutex g_mutex;
 std::condition_variable g_cv;
 std::thread g_worker;
 ClientState g_state;
+using EventSubmitOverride = std::function<std::pair<std::string, int>(
+	const nlohmann::json&,
+	const std::string&,
+	const std::string&)>;
+EventSubmitOverride g_eventSubmitOverride;
 
 std::string ToLowerAscii(std::string text)
 {
@@ -349,26 +373,32 @@ std::string BuildVersionString()
 	return version;
 }
 
-std::string BuildAuthorizationHeader(const std::string& body)
+std::string BuildAuthorizationHeader(
+	const std::string& body,
+	const std::string& secretKey)
 {
-	const std::string auth = HmacSha256Base64(body, kSecretKey);
+	const std::string auth = HmacSha256Base64(body, secretKey);
 	if (auth.empty()) {
 		return std::string();
 	}
 	return "Authorization: " + auth + "\r\n";
 }
 
-std::string BuildJsonHeaders(const std::string& body)
+std::string BuildJsonHeaders(
+	const std::string& body,
+	const std::string& secretKey = kSecretKey)
 {
 	std::string headers = "Content-Type: application/json\r\n";
-	headers += BuildAuthorizationHeader(body);
+	headers += BuildAuthorizationHeader(body, secretKey);
 	return headers;
 }
 
-std::string BuildGzipJsonHeaders(const std::string& gzippedBody)
+std::string BuildGzipJsonHeaders(
+	const std::string& gzippedBody,
+	const std::string& secretKey = kSecretKey)
 {
 	std::string headers = "Content-Type: application/json\r\nContent-Encoding: gzip\r\n";
-	headers += BuildAuthorizationHeader(gzippedBody);
+	headers += BuildAuthorizationHeader(gzippedBody, secretKey);
 	return headers;
 }
 
@@ -501,23 +531,48 @@ nlohmann::json BuildSessionEndEventLocked()
 	return event;
 }
 
+nlohmann::json BuildDesignEventLocked(const std::string& eventId, double value)
+{
+	nlohmann::json event = BuildSharedAnnotationsLocked();
+	event["category"] = "design";
+	event["event_id"] = eventId;
+	event["value"] = value;
+	return event;
+}
+
 void PushEventLocked(nlohmann::json event)
 {
 	if (!g_state.initialized || !g_state.enabled || g_state.shuttingDown) {
 		return;
 	}
-	if (g_state.pendingEvents.size() >= kMaxPendingEvents) {
-		g_state.pendingEvents.erase(g_state.pendingEvents.begin());
+	const auto enqueueResult = g_state.eventBatcher.Enqueue(
+		std::move(event),
+		GameAnalyticsEventBatcher::Clock::now());
+	if (enqueueResult.droppedOldestEvent) {
+		LogGA("pending events reached capacity; dropped oldest event");
 	}
-	g_state.pendingEvents.push_back(std::move(event));
 }
 
-void QueueTaskLocked(WorkerTask task)
+bool QueueTaskLocked(WorkerTask task)
 {
 	if (!g_worker.joinable() || g_state.shuttingDown) {
-		return;
+		return false;
 	}
 	g_state.tasks.push_back(task);
+	g_cv.notify_one();
+	return true;
+}
+
+void ScheduleEventFlushLocked()
+{
+	if (g_state.eventBatcher.Empty()) {
+		return;
+	}
+	if (g_state.eventBatcher.IsReady(GameAnalyticsEventBatcher::Clock::now()) &&
+		!g_state.flushTaskQueued &&
+		QueueTaskLocked(WorkerTask::FlushEvents)) {
+		g_state.flushTaskQueued = true;
+	}
 	g_cv.notify_one();
 }
 
@@ -733,50 +788,91 @@ void PerformRemoteConfigRefresh()
 	}
 }
 
-void FlushEvents()
+void FlushEvents(bool forceRetry, bool forcePending)
 {
-	std::vector<nlohmann::json> events;
+	GameAnalyticsEventBatcher::Batch batch;
 	{
 		std::lock_guard<std::mutex> lock(g_mutex);
 		if (!g_state.enabled || !g_state.collectorEnabled) {
-			g_state.pendingEvents.clear();
+			g_state.eventBatcher.Clear();
 			return;
 		}
-		events.swap(g_state.pendingEvents);
+		const auto batchMaybe = g_state.eventBatcher.TakeBatch(
+			GameAnalyticsEventBatcher::Clock::now(),
+			forceRetry,
+			forcePending);
+		if (!batchMaybe.has_value()) {
+			return;
+		}
+		batch = std::move(*batchMaybe);
 	}
-	if (events.empty()) {
+	if (batch.events.empty()) {
 		return;
 	}
 
 	nlohmann::json eventArray = nlohmann::json::array();
-	for (auto& event : events) {
-		eventArray.push_back(std::move(event));
+	for (const auto& event : batch.events) {
+		eventArray.push_back(event);
 	}
 
 	const std::string body = eventArray.dump();
 	const std::string gzippedBody = GzipStoredDeflate(body);
 	const std::string headers = BuildGzipJsonHeaders(gzippedBody);
+	std::string responseBody;
+	int responseStatus = 0;
 	if (headers.find("Authorization: ") == std::string::npos) {
-		LogGA("events dropped: hmac failed");
-		return;
-	}
-
-	const auto response = PerformPostRequest(
-		std::format("{}/v2/{}/events", kApiBaseUrl, kGameKey),
-		gzippedBody,
-		headers,
-		kHttpTimeoutMs,
-		true,
-		true);
-	if (response.second == 200) {
-		LogGA(std::format("events submitted count={}", eventArray.size()));
+		responseBody = "hmac failed";
 	}
 	else {
+		const auto response = g_eventSubmitOverride
+			? g_eventSubmitOverride(eventArray, gzippedBody, headers)
+			: PerformPostRequest(
+				std::format("{}/v2/{}/events", kApiBaseUrl, kGameKey),
+				gzippedBody,
+				headers,
+				kHttpTimeoutMs,
+				true,
+				true);
+		responseBody = response.first;
+		responseStatus = response.second;
+	}
+	if (responseStatus == 200) {
 		LogGA(std::format(
-			"events dropped count={} status={} response={}",
+			"events submitted count={} retry_failures={}",
 			eventArray.size(),
-			response.second,
-			response.first.substr(0, 300)));
+			batch.failureCount));
+		std::lock_guard<std::mutex> lock(g_mutex);
+		ScheduleEventFlushLocked();
+	}
+	else {
+		GameAnalyticsEventBatcher::FailureResult failureResult;
+		{
+			std::lock_guard<std::mutex> lock(g_mutex);
+			failureResult = g_state.eventBatcher.CompleteFailure(
+				std::move(batch),
+				GameAnalyticsEventBatcher::Clock::now());
+		}
+		if (failureResult.disposition == GameAnalyticsEventBatcher::FailureDisposition::Dropped) {
+			LogGA(std::format(
+				"events dropped count={} failures={} status={} response={}",
+				eventArray.size(),
+				failureResult.failureCount,
+				responseStatus,
+				responseBody.substr(0, 300)));
+			std::lock_guard<std::mutex> lock(g_mutex);
+			ScheduleEventFlushLocked();
+		}
+		else {
+			LogGA(std::format(
+				"events submit failed count={} failure={} retry_in={}s status={} response={}",
+				eventArray.size(),
+				failureResult.failureCount,
+				std::chrono::duration_cast<std::chrono::seconds>(failureResult.retryDelay).count(),
+				responseStatus,
+				responseBody.substr(0, 300)));
+			std::lock_guard<std::mutex> lock(g_mutex);
+			g_cv.notify_one();
+		}
 	}
 }
 
@@ -798,12 +894,17 @@ void WorkerMain()
 	for (;;) {
 		WorkerTask task = WorkerTask::FlushEvents;
 		bool hasTask = false;
+		bool forceFlush = false;
 		{
 			std::unique_lock<std::mutex> lock(g_mutex);
 			for (;;) {
 				if (!g_state.tasks.empty()) {
 					task = g_state.tasks.front();
 					g_state.tasks.pop_front();
+					if (task == WorkerTask::FlushEvents) {
+						g_state.flushTaskQueued = false;
+					}
+					forceFlush = g_state.shuttingDown;
 					hasTask = true;
 					break;
 				}
@@ -811,9 +912,24 @@ void WorkerMain()
 					break;
 				}
 
-				g_cv.wait(lock, []() {
-					return g_state.shuttingDown || !g_state.tasks.empty();
-				});
+				const auto now = GameAnalyticsEventBatcher::Clock::now();
+				if (g_state.eventBatcher.IsReady(now)) {
+					task = WorkerTask::FlushEvents;
+					hasTask = true;
+					break;
+				}
+
+				const auto deadline = g_state.eventBatcher.NextDeadline();
+				if (deadline.has_value()) {
+					g_cv.wait_until(lock, *deadline);
+				}
+				else {
+					g_cv.wait(lock, []() {
+						return g_state.shuttingDown ||
+							!g_state.tasks.empty() ||
+							!g_state.eventBatcher.Empty();
+					});
+				}
 			}
 		}
 		if (!hasTask) {
@@ -825,14 +941,14 @@ void WorkerMain()
 				PerformCollectorInit();
 				PerformRemoteConfigRefresh();
 				QueueStartupEvents();
-				FlushEvents();
+				FlushEvents(false, true);
 			}
 			else if (task == WorkerTask::RefreshRemoteConfigs) {
 				PerformRemoteConfigRefresh();
-				FlushEvents();
+				FlushEvents(false, true);
 			}
 			else if (task == WorkerTask::FlushEvents) {
-				FlushEvents();
+				FlushEvents(forceFlush, forceFlush);
 			}
 		}
 		catch (const std::exception& ex) {
@@ -843,7 +959,15 @@ void WorkerMain()
 		}
 	}
 
-	FlushEvents();
+	for (;;) {
+		{
+			std::lock_guard<std::mutex> lock(g_mutex);
+			if (g_state.eventBatcher.Empty()) {
+				break;
+			}
+		}
+		FlushEvents(true, true);
+	}
 	LogGA("worker stopped");
 }
 
@@ -965,6 +1089,190 @@ bool StartShowIdeRemoteConfigParseOk()
 	return invalid.empty() && !error.empty();
 }
 
+nlohmann::json BuildEventBatchStateMachineSelfTest()
+{
+	using Batcher = GameAnalyticsEventBatcher;
+	const Batcher::Policy policy = BuildProductionEventBatchPolicy();
+	const Batcher::TimePoint start(Batcher::Duration(100000));
+	const auto makeEvent = [](int sequence) {
+		return nlohmann::json{{"sequence", sequence}};
+	};
+
+	nlohmann::json report;
+	report["policy"] = {
+		{"flush_threshold", policy.flushThreshold},
+		{"max_pending_events", policy.maxPendingEvents},
+		{"max_submit_failures", policy.maxSubmitFailures},
+		{"flush_interval_ms", policy.flushInterval.count()},
+		{"retry_1_ms", Batcher::RetryDelayForFailureCount(policy, 1).count()},
+		{"retry_2_ms", Batcher::RetryDelayForFailureCount(policy, 2).count()}
+	};
+	const bool policyOk =
+		policy.flushThreshold == 20 &&
+		policy.maxPendingEvents == 128 &&
+		policy.maxSubmitFailures == 3 &&
+		policy.flushInterval == std::chrono::seconds(30) &&
+		Batcher::RetryDelayForFailureCount(policy, 1) == std::chrono::seconds(1) &&
+		Batcher::RetryDelayForFailureCount(policy, 2) == std::chrono::seconds(2);
+
+	Batcher thresholdBatcher(policy);
+	for (int i = 0; i < 19; ++i) {
+		thresholdBatcher.Enqueue(makeEvent(i), start);
+	}
+	const bool belowThresholdWaits = !thresholdBatcher.IsReady(start) &&
+		thresholdBatcher.NextDeadline() == start + std::chrono::seconds(30);
+	const auto thresholdEnqueue = thresholdBatcher.Enqueue(makeEvent(19), start);
+	const auto thresholdBatch = thresholdBatcher.TakeBatch(start, false, false);
+	const bool countThresholdOk = thresholdEnqueue.readyForImmediateFlush &&
+		thresholdBatch.has_value() &&
+		thresholdBatch->events.size() == 20 &&
+		thresholdBatcher.Empty();
+
+	Batcher timerBatcher(policy);
+	timerBatcher.Enqueue(makeEvent(1), start);
+	timerBatcher.Enqueue(makeEvent(2), start + std::chrono::seconds(5));
+	const bool timerNotEarly =
+		!timerBatcher.IsReady(start + std::chrono::seconds(29)) &&
+		!timerBatcher.TakeBatch(start + std::chrono::seconds(29), false, false).has_value();
+	const auto timerBatch = timerBatcher.TakeBatch(start + std::chrono::seconds(30), false, false);
+	const bool timeThresholdOk = timerNotEarly &&
+		timerBatch.has_value() &&
+		timerBatch->events.size() == 2;
+
+	Batcher retrySuccessBatcher(policy);
+	for (int i = 0; i < 20; ++i) {
+		retrySuccessBatcher.Enqueue(makeEvent(i), start);
+	}
+	auto retryBatch = retrySuccessBatcher.TakeBatch(start, false, false);
+	bool retryThenSuccessOk = retryBatch.has_value();
+	if (retryBatch.has_value()) {
+		const auto firstFailure = retrySuccessBatcher.CompleteFailure(std::move(*retryBatch), start);
+		retryThenSuccessOk = retryThenSuccessOk &&
+			firstFailure.disposition == Batcher::FailureDisposition::RetryScheduled &&
+			firstFailure.failureCount == 1 &&
+			firstFailure.retryDelay == std::chrono::seconds(1) &&
+			!retrySuccessBatcher.IsReady(start + std::chrono::milliseconds(999));
+		retryBatch = retrySuccessBatcher.TakeBatch(start + std::chrono::seconds(1), false, false);
+		retryThenSuccessOk = retryThenSuccessOk &&
+			retryBatch.has_value() &&
+			retryBatch->failureCount == 1 &&
+			retryBatch->events.size() == 20;
+		if (retryBatch.has_value()) {
+			const auto secondFailure = retrySuccessBatcher.CompleteFailure(
+				std::move(*retryBatch),
+				start + std::chrono::seconds(1));
+			retryThenSuccessOk = retryThenSuccessOk &&
+				secondFailure.disposition == Batcher::FailureDisposition::RetryScheduled &&
+				secondFailure.failureCount == 2 &&
+				secondFailure.retryDelay == std::chrono::seconds(2) &&
+				!retrySuccessBatcher.IsReady(start + std::chrono::milliseconds(2999));
+			retryBatch = retrySuccessBatcher.TakeBatch(start + std::chrono::seconds(3), false, false);
+			retryThenSuccessOk = retryThenSuccessOk &&
+				retryBatch.has_value() &&
+				retryBatch->failureCount == 2 &&
+				retrySuccessBatcher.Empty();
+		}
+	}
+
+	Batcher dropBatcher(policy);
+	for (int i = 0; i < 20; ++i) {
+		dropBatcher.Enqueue(makeEvent(i), start);
+	}
+	auto droppedBatch = dropBatcher.TakeBatch(start, false, false);
+	bool thirdFailureDropsOk = droppedBatch.has_value();
+	for (int failure = 1; failure <= 3 && droppedBatch.has_value(); ++failure) {
+		const auto failureResult = dropBatcher.CompleteFailure(
+			std::move(*droppedBatch),
+			start + std::chrono::seconds(failure == 1 ? 0 : failure == 2 ? 1 : 3));
+		if (failure < 3) {
+			thirdFailureDropsOk = thirdFailureDropsOk &&
+				failureResult.disposition == Batcher::FailureDisposition::RetryScheduled;
+			droppedBatch = dropBatcher.TakeBatch(
+				start + std::chrono::seconds(failure == 1 ? 1 : 3),
+				false,
+				false);
+		}
+		else {
+			thirdFailureDropsOk = thirdFailureDropsOk &&
+				failureResult.disposition == Batcher::FailureDisposition::Dropped &&
+				failureResult.failureCount == 3 &&
+				dropBatcher.Empty();
+		}
+	}
+
+	Batcher isolationBatcher(policy);
+	for (int i = 0; i < 20; ++i) {
+		isolationBatcher.Enqueue(makeEvent(i), start);
+	}
+	auto originalBatch = isolationBatcher.TakeBatch(start, false, false);
+	const auto newEventTime = start + std::chrono::milliseconds(100);
+	isolationBatcher.Enqueue(makeEvent(100), newEventTime);
+	bool isolatedRetryBatchOk = originalBatch.has_value();
+	if (originalBatch.has_value()) {
+		isolationBatcher.CompleteFailure(
+			std::move(*originalBatch),
+			start + std::chrono::milliseconds(200));
+		auto isolatedRetry = isolationBatcher.TakeBatch(
+			start + std::chrono::milliseconds(1200),
+			false,
+			false);
+		isolatedRetryBatchOk = isolatedRetryBatchOk &&
+			isolatedRetry.has_value() &&
+			isolatedRetry->events.size() == 20 &&
+			isolationBatcher.PendingCount() == 1 &&
+			isolationBatcher.NextDeadline() == newEventTime + std::chrono::seconds(30) &&
+			!isolationBatcher.IsReady(newEventTime + std::chrono::seconds(29));
+		const auto isolatedNewBatch = isolationBatcher.TakeBatch(
+			newEventTime + std::chrono::seconds(30),
+			false,
+			false);
+		isolatedRetryBatchOk = isolatedRetryBatchOk &&
+			isolatedNewBatch.has_value() &&
+			isolatedNewBatch->events.size() == 1 &&
+			isolatedNewBatch->events[0].value("sequence", -1) == 100;
+	}
+
+	Batcher capacityBatcher(policy);
+	bool capacityDroppedOldest = false;
+	for (int i = 0; i < 129; ++i) {
+		capacityDroppedOldest = capacityBatcher.Enqueue(makeEvent(i), start).droppedOldestEvent ||
+			capacityDroppedOldest;
+	}
+	const auto capacityBatch = capacityBatcher.TakeBatch(start, false, true);
+	const bool capacityLimitOk = capacityDroppedOldest &&
+		capacityBatch.has_value() &&
+		capacityBatch->events.size() == 128 &&
+		capacityBatch->events.front().value("sequence", -1) == 1 &&
+		capacityBatch->events.back().value("sequence", -1) == 128;
+
+	Batcher shutdownBatcher(policy);
+	shutdownBatcher.Enqueue(makeEvent(7), start);
+	const auto shutdownBatch = shutdownBatcher.TakeBatch(start, true, true);
+	const bool shutdownForceFlushOk = shutdownBatch.has_value() &&
+		shutdownBatch->events.size() == 1 &&
+		shutdownBatch->events[0].value("sequence", -1) == 7;
+
+	report["policy_ok"] = policyOk;
+	report["below_threshold_waits"] = belowThresholdWaits;
+	report["count_threshold_flush"] = countThresholdOk;
+	report["time_threshold_flush"] = timeThresholdOk;
+	report["retry_twice_then_success"] = retryThenSuccessOk;
+	report["third_failure_drops"] = thirdFailureDropsOk;
+	report["retry_batch_isolation"] = isolatedRetryBatchOk;
+	report["capacity_drops_oldest"] = capacityLimitOk;
+	report["shutdown_force_flush"] = shutdownForceFlushOk;
+	report["ok"] = policyOk &&
+		belowThresholdWaits &&
+		countThresholdOk &&
+		timeThresholdOk &&
+		retryThenSuccessOk &&
+		thirdFailureDropsOk &&
+		isolatedRetryBatchOk &&
+		capacityLimitOk &&
+		shutdownForceFlushOk;
+	return report;
+}
+
 bool LifecycleEventFormatOk()
 {
 	std::lock_guard<std::mutex> lock(g_mutex);
@@ -980,6 +1288,9 @@ bool LifecycleEventFormatOk()
 
 	const nlohmann::json startup = BuildStartupEventLocked();
 	const nlohmann::json sessionEnd = BuildSessionEndEventLocked();
+	const nlohmann::json design = BuildDesignEventLocked(
+		"AIChat:RunCompleted:TotalTokens",
+		18640.0);
 	g_state = saved;
 
 	return startup.value("category", "") == "user" &&
@@ -988,7 +1299,10 @@ bool LifecycleEventFormatOk()
 		sessionEnd.value("category", "") == "session_end" &&
 		sessionEnd.contains("length") &&
 		sessionEnd["length"].is_number_integer() &&
-		!sessionEnd.contains("event_id");
+		!sessionEnd.contains("event_id") &&
+		design.value("category", "") == "design" &&
+		design.value("event_id", "") == "AIChat:RunCompleted:TotalTokens" &&
+		design.value("value", 0.0) == 18640.0;
 }
 
 bool ValidateStoredGzipForSelfTest(const std::string& original, const std::string& gzip)
@@ -1115,6 +1429,19 @@ bool IsRunning()
 	return g_worker.joinable() && g_state.initialized && !g_state.shuttingDown;
 }
 
+void QueueDesignEvent(const std::string& eventId, double value)
+{
+	if (eventId.empty() || !std::isfinite(value)) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(g_mutex);
+	if (!g_state.initialized || !g_state.enabled || g_state.shuttingDown) {
+		return;
+	}
+	PushEventLocked(BuildDesignEventLocked(eventId, value));
+	ScheduleEventFlushLocked();
+}
+
 void RefreshRemoteConfigsAsync()
 {
 	std::lock_guard<std::mutex> lock(g_mutex);
@@ -1140,6 +1467,177 @@ std::optional<std::string> GetRemoteConfigValue(const std::string& key)
 	return it->second;
 }
 
+nlohmann::json BuildWorkerIntegrationSelfTest()
+{
+	using Batcher = GameAnalyticsEventBatcher;
+	nlohmann::json report = {{"ok", false}};
+	{
+		std::lock_guard<std::mutex> lock(g_mutex);
+		if (g_worker.joinable()) {
+			report["error"] = "GameAnalytics worker is already running";
+			return report;
+		}
+	}
+
+	std::mutex transportMutex;
+	std::condition_variable transportCv;
+	std::vector<nlohmann::json> submittedBatches;
+	std::vector<Batcher::TimePoint> attemptTimes;
+	const std::vector<int> responseStatuses = {200, 200, 500, 500, 500, 200, 200};
+	bool allPayloadsValid = true;
+	g_eventSubmitOverride = [&](const nlohmann::json& events,
+		const std::string& gzip,
+		const std::string& headers) {
+		std::lock_guard<std::mutex> lock(transportMutex);
+		const size_t attempt = submittedBatches.size();
+		submittedBatches.push_back(events);
+		attemptTimes.push_back(Batcher::Clock::now());
+		allPayloadsValid = allPayloadsValid &&
+			events.is_array() &&
+			ValidateStoredGzipForSelfTest(events.dump(), gzip) &&
+			headers.find("Authorization: ") != std::string::npos &&
+			headers.find("Content-Encoding: gzip") != std::string::npos;
+		transportCv.notify_all();
+		return std::make_pair(
+			std::string("{}"),
+			attempt < responseStatuses.size() ? responseStatuses[attempt] : 200);
+	};
+
+	const Batcher::Policy testPolicy = {
+		3,
+		32,
+		3,
+		std::chrono::milliseconds(120),
+		std::chrono::milliseconds(50)
+	};
+	{
+		std::lock_guard<std::mutex> lock(g_mutex);
+		g_state = ClientState();
+		g_state.enabled = true;
+		g_state.initialized = true;
+		g_state.collectorReady = true;
+		g_state.collectorEnabled = true;
+		g_state.userId = "worker-self-test-user";
+		g_state.deviceId = "worker-self-test-device";
+		g_state.sessionId = GenerateUuidLower();
+		g_state.sessionNum = 1;
+		g_state.osVersion = "windows 10.0.0";
+		g_state.sessionStartUnix = UnixTimeSeconds();
+		g_state.eventBatcher = Batcher(testPolicy);
+		g_worker = std::thread(WorkerMain);
+	}
+
+	const auto waitForAttempts = [&](size_t count, std::chrono::milliseconds timeout) {
+		std::unique_lock<std::mutex> lock(transportMutex);
+		return transportCv.wait_for(lock, timeout, [&]() {
+			return submittedBatches.size() >= count;
+		});
+	};
+	const auto containsEventId = [](const nlohmann::json& batch, const std::string& eventId) {
+		if (!batch.is_array()) {
+			return false;
+		}
+		return std::any_of(batch.begin(), batch.end(), [&](const nlohmann::json& event) {
+			return event.is_object() && event.value("event_id", std::string()) == eventId;
+		});
+	};
+
+	QueueDesignEvent("SelfTest:Threshold:1", 1.0);
+	QueueDesignEvent("SelfTest:Threshold:2", 2.0);
+	QueueDesignEvent("SelfTest:Threshold:3", 3.0);
+	const bool thresholdAttemptArrived = waitForAttempts(1, std::chrono::milliseconds(600));
+
+	const auto timerQueuedAt = Batcher::Clock::now();
+	QueueDesignEvent("SelfTest:Timer", 4.0);
+	const bool timerDidNotFireEarly = !waitForAttempts(2, std::chrono::milliseconds(60));
+	const bool timerAttemptArrived = waitForAttempts(2, std::chrono::milliseconds(600));
+
+	QueueDesignEvent("SelfTest:Retry:1", 5.0);
+	QueueDesignEvent("SelfTest:Retry:2", 6.0);
+	QueueDesignEvent("SelfTest:Retry:3", 7.0);
+	const bool firstFailureArrived = waitForAttempts(3, std::chrono::milliseconds(600));
+	const auto isolatedQueuedAt = Batcher::Clock::now();
+	QueueDesignEvent("SelfTest:Isolated", 8.0);
+	const bool retryAndIsolationArrived = waitForAttempts(6, std::chrono::milliseconds(1200));
+
+	QueueDesignEvent("SelfTest:Shutdown", 9.0);
+	Shutdown();
+	const bool shutdownAttemptArrived = waitForAttempts(7, std::chrono::milliseconds(200));
+	g_eventSubmitOverride = {};
+
+	std::vector<nlohmann::json> batches;
+	std::vector<Batcher::TimePoint> times;
+	bool payloadsValid = false;
+	{
+		std::lock_guard<std::mutex> lock(transportMutex);
+		batches = submittedBatches;
+		times = attemptTimes;
+		payloadsValid = allPayloadsValid;
+	}
+	const auto elapsedMs = [](Batcher::TimePoint from, Batcher::TimePoint to) {
+		return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+	};
+	const long long timerDelayMs = times.size() > 1 ? elapsedMs(timerQueuedAt, times[1]) : -1;
+	const long long retryOneDelayMs = times.size() > 3 ? elapsedMs(times[2], times[3]) : -1;
+	const long long retryTwoDelayMs = times.size() > 4 ? elapsedMs(times[3], times[4]) : -1;
+	const long long isolatedDelayMs = times.size() > 5 ? elapsedMs(isolatedQueuedAt, times[5]) : -1;
+
+	const bool thresholdWorkerOk = thresholdAttemptArrived &&
+		batches.size() > 0 &&
+		batches[0].size() == 3 &&
+		containsEventId(batches[0], "SelfTest:Threshold:1") &&
+		containsEventId(batches[0], "SelfTest:Threshold:3");
+	const bool timerWorkerOk = timerDidNotFireEarly &&
+		timerAttemptArrived &&
+		batches.size() > 1 &&
+		batches[1].size() == 1 &&
+		containsEventId(batches[1], "SelfTest:Timer") &&
+		timerDelayMs >= 90;
+	const bool retryWorkerOk = firstFailureArrived &&
+		retryAndIsolationArrived &&
+		batches.size() > 5 &&
+		batches[2].size() == 3 &&
+		batches[2] == batches[3] &&
+		batches[3] == batches[4] &&
+		retryOneDelayMs >= 35 &&
+		retryTwoDelayMs >= 80;
+	const bool thirdFailureDropWorkerOk = retryWorkerOk &&
+		batches[5].size() == 1 &&
+		containsEventId(batches[5], "SelfTest:Isolated") &&
+		!containsEventId(batches[5], "SelfTest:Retry:1");
+	const bool isolationWorkerOk = thirdFailureDropWorkerOk &&
+		isolatedDelayMs >= 100 &&
+		isolatedDelayMs <= 260;
+	const bool shutdownWorkerOk = shutdownAttemptArrived &&
+		batches.size() == 7 &&
+		batches[6].size() == 3 &&
+		containsEventId(batches[6], "SelfTest:Shutdown") &&
+		std::any_of(batches[6].begin(), batches[6].end(), [](const nlohmann::json& event) {
+			return event.value("category", std::string()) == "session_end";
+		});
+
+	report["threshold_flush"] = thresholdWorkerOk;
+	report["timer_flush"] = timerWorkerOk;
+	report["retry_backoff"] = retryWorkerOk;
+	report["third_failure_drops"] = thirdFailureDropWorkerOk;
+	report["retry_batch_isolation"] = isolationWorkerOk;
+	report["shutdown_force_flush"] = shutdownWorkerOk;
+	report["payload_gzip_hmac"] = payloadsValid;
+	report["attempt_count"] = batches.size();
+	report["timer_delay_ms"] = timerDelayMs;
+	report["retry_1_delay_ms"] = retryOneDelayMs;
+	report["retry_2_delay_ms"] = retryTwoDelayMs;
+	report["isolated_event_delay_ms"] = isolatedDelayMs;
+	report["ok"] = thresholdWorkerOk &&
+		timerWorkerOk &&
+		retryWorkerOk &&
+		thirdFailureDropWorkerOk &&
+		isolationWorkerOk &&
+		shutdownWorkerOk &&
+		payloadsValid;
+	return report;
+}
+
 std::string BuildSelfTestReportJson()
 {
 	nlohmann::json report;
@@ -1162,13 +1660,133 @@ std::string BuildSelfTestReportJson()
 	report["remote_config_request_error_preserved_ok"] = RemoteConfigRequestErrorPreservedOk();
 	report["start_show_ide_parse_ok"] = StartShowIdeRemoteConfigParseOk();
 	report["lifecycle_event_format_ok"] = LifecycleEventFormatOk();
+	report["event_batch_state_machine"] = BuildEventBatchStateMachineSelfTest();
+	report["event_batch_policy_ok"] = report["event_batch_state_machine"]["ok"];
+	report["event_worker_integration"] = BuildWorkerIntegrationSelfTest();
 	report["ok"] =
 		report["hmac_sha256_base64_ok"].get<bool>() &&
 		report["gzip_stored_deflate_ok"].get<bool>() &&
 		report["remote_config_parse_ok"].get<bool>() &&
 		report["remote_config_request_error_preserved_ok"].get<bool>() &&
 		report["start_show_ide_parse_ok"].get<bool>() &&
-		report["lifecycle_event_format_ok"].get<bool>();
+		report["lifecycle_event_format_ok"].get<bool>() &&
+		report["event_batch_policy_ok"].get<bool>() &&
+		report["event_worker_integration"]["ok"].get<bool>();
+	return report.dump(2);
+}
+
+std::string BuildLiveBatchTestReportJson(
+	const std::string& gameKey,
+	const std::string& secretKey)
+{
+	nlohmann::json report = {
+		{"ok", false},
+		{"step", "validate_credentials"}
+	};
+	const bool gameKeyValid = gameKey.size() >= 8 && gameKey.size() <= 128 &&
+		std::all_of(gameKey.begin(), gameKey.end(), [](unsigned char ch) {
+			return std::isalnum(ch) != 0 || ch == '-' || ch == '_';
+		});
+	if (!gameKeyValid || secretKey.empty()) {
+		report["error"] = "invalid GameAnalytics test credentials";
+		return report.dump(2);
+	}
+
+	report["step"] = "collector_init";
+	const std::string osVersion = GetWindowsVersionString();
+	const nlohmann::json initBodyJson = {
+		{"platform", kPlatform},
+		{"os_version", osVersion},
+		{"sdk_version", kSdkVersion}
+	};
+	const std::string initBody = initBodyJson.dump();
+	const std::string initHeaders = BuildJsonHeaders(initBody, secretKey);
+	const auto initResponse = PerformPostRequest(
+		std::format("{}/v2/{}/init", kApiBaseUrl, gameKey),
+		initBody,
+		initHeaders,
+		kHttpTimeoutMs,
+		true,
+		true);
+	report["collector_init"] = {
+		{"http_status", initResponse.second},
+		{"authorization_present", initHeaders.find("Authorization: ") != std::string::npos},
+		{"response_size", initResponse.first.size()}
+	};
+	if (initResponse.second != 200) {
+		report["error"] = "GameAnalytics collector init failed";
+		return report.dump(2);
+	}
+
+	long long clientTs = UnixTimeSeconds();
+	bool collectorEnabled = true;
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(initResponse.first);
+		if (parsed.contains("server_ts") && parsed["server_ts"].is_number_integer()) {
+			clientTs = parsed["server_ts"].get<long long>();
+		}
+		collectorEnabled = parsed.value("enabled", true);
+	}
+	catch (...) {
+	}
+	report["collector_init"]["enabled"] = collectorEnabled;
+	if (!collectorEnabled) {
+		report["error"] = "GameAnalytics collector disabled this game";
+		return report.dump(2);
+	}
+
+	report["step"] = "batch_events";
+	const std::string sessionId = GenerateUuidLower();
+	const std::string eventId = "AutoLinkerTest:BatchSmoke:" + GenerateUuidLower();
+	nlohmann::json events = nlohmann::json::array();
+	for (int i = 0; i < static_cast<int>(kFlushEventThreshold); ++i) {
+		events.push_back({
+			{"v", 2},
+			{"event_uuid", GenerateUuidLower()},
+			{"user_id", "autolinker-live-test"},
+			{"client_ts", clientTs},
+			{"sdk_version", kSdkVersion},
+			{"os_version", osVersion},
+			{"manufacturer", kManufacturer},
+			{"device", "windows-live-test"},
+			{"platform", kPlatform},
+			{"session_id", sessionId},
+			{"session_num", 1},
+			{"build", BuildVersionString()},
+			{"category", "design"},
+			{"event_id", eventId},
+			{"value", i + 1}
+		});
+	}
+	const std::string eventsBody = events.dump();
+	const std::string gzippedBody = GzipStoredDeflate(eventsBody);
+	const std::string eventHeaders = BuildGzipJsonHeaders(gzippedBody, secretKey);
+	const auto eventResponse = PerformPostRequest(
+		std::format("{}/v2/{}/events", kApiBaseUrl, gameKey),
+		gzippedBody,
+		eventHeaders,
+		kHttpTimeoutMs,
+		true,
+		true);
+	report["batch_events"] = {
+		{"http_status", eventResponse.second},
+		{"event_count", events.size()},
+		{"event_id", eventId},
+		{"json_bytes", eventsBody.size()},
+		{"gzip_bytes", gzippedBody.size()},
+		{"gzip_round_trip", ValidateStoredGzipForSelfTest(eventsBody, gzippedBody)},
+		{"authorization_present", eventHeaders.find("Authorization: ") != std::string::npos},
+		{"response_size", eventResponse.first.size()},
+		{"response_preview", eventResponse.first.substr(0, 300)}
+	};
+	report["step"] = "completed";
+	report["ok"] = eventResponse.second == 200 &&
+		events.size() == kFlushEventThreshold &&
+		report["batch_events"]["gzip_round_trip"].get<bool>() &&
+		report["batch_events"]["authorization_present"].get<bool>();
+	if (!report["ok"].get<bool>()) {
+		report["error"] = "GameAnalytics batch event submission failed";
+	}
 	return report.dump(2);
 }
 

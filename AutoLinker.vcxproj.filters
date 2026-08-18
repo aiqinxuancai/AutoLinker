@@ -110,6 +110,9 @@
     <ClCompile Include="src\GameAnalyticsClient.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\GameAnalyticsEventBatcher.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\ECOMEx.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -406,6 +409,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\GameAnalyticsClient.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\GameAnalyticsEventBatcher.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\EideInternalTextBridge.h">

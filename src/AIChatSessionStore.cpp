@@ -291,6 +291,9 @@ nlohmann::json SerializeRunCheckpoint(
 		{"compaction_count", checkpoint.compactionCount},
 		{"prompt_tokens", checkpoint.promptTokens},
 		{"total_tokens", checkpoint.totalTokens},
+		{"accumulated_input_tokens", checkpoint.accumulatedInputTokens},
+		{"accumulated_output_tokens", checkpoint.accumulatedOutputTokens},
+		{"completed_model_rounds", checkpoint.completedModelRounds},
 		{"has_usage", checkpoint.hasUsage},
 		{"context_messages", nlohmann::json::array()},
 		{"tool_calls", nlohmann::json::array()}
@@ -333,7 +336,15 @@ bool DeserializeRunCheckpoint(const nlohmann::json& value, AIChatRunCheckpoint& 
 	checkpoint.compactionCount = static_cast<int>(GetJsonInt64(value, "compaction_count", 0));
 	checkpoint.promptTokens = static_cast<int>(GetJsonInt64(value, "prompt_tokens", 0));
 	checkpoint.totalTokens = static_cast<int>(GetJsonInt64(value, "total_tokens", 0));
+	checkpoint.accumulatedInputTokens = GetJsonInt64(value, "accumulated_input_tokens", 0);
+	checkpoint.accumulatedOutputTokens = GetJsonInt64(value, "accumulated_output_tokens", 0);
+	checkpoint.completedModelRounds = static_cast<int>(GetJsonInt64(value, "completed_model_rounds", 0));
 	checkpoint.hasUsage = GetJsonBool(value, "has_usage", false);
+	if (!value.contains("accumulated_input_tokens") && checkpoint.hasUsage) {
+		checkpoint.accumulatedInputTokens = (std::max)(0, checkpoint.promptTokens);
+		checkpoint.accumulatedOutputTokens =
+			(std::max)(0, checkpoint.totalTokens - checkpoint.promptTokens);
+	}
 	if (value.contains("context_messages") && value["context_messages"].is_array()) {
 		for (const auto& row : value["context_messages"]) {
 			if (!row.is_object()) {

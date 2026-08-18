@@ -41,6 +41,13 @@ AUTOLINKER_TEST_API int AutoLinkerTest_GetAIChatThemeConfigPayload(char* buffer,
 // 执行 GameAnalytics 客户端无网络自检，并输出 JSON 结果。
 AUTOLINKER_TEST_API int AutoLinkerTest_RunGameAnalyticsSelfTest(char* buffer, int bufferSize);
 
+// 使用外部测试凭据执行 GameAnalytics 真实批量提交，并输出不含凭据的 JSON 结果。
+AUTOLINKER_TEST_API int AutoLinkerTest_RunGameAnalyticsLiveTest(
+	const char* gameKey,
+	const char* secretKey,
+	char* buffer,
+	int bufferSize);
+
 // 执行 AI 对话 MCP 客户端无 IDE 自检，并输出 JSON 结果。
 AUTOLINKER_TEST_API int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize);
 
