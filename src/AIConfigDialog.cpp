@@ -2053,6 +2053,32 @@ AISettings ReadAISettingsFromWebProfilePayload(const AISettings& current, const 
 	return next;
 }
 
+std::string BuildMissingEndpointConfigurationError(const AIConfigProfileEntry& endpoint)
+{
+	std::vector<std::string> missingFields;
+	if (AIService::Trim(endpoint.settings.baseUrl).empty()) {
+		missingFields.emplace_back("接口地址");
+	}
+	if (AIService::Trim(endpoint.settings.apiKey).empty()) {
+		missingFields.emplace_back("API 密钥");
+	}
+	if (AIService::Trim(endpoint.settings.model).empty()) {
+		missingFields.emplace_back("模型");
+	}
+	if (missingFields.empty()) {
+		return std::string();
+	}
+
+	std::string fieldsText;
+	for (const std::string& field : missingFields) {
+		if (!fieldsText.empty()) {
+			fieldsText += "、";
+		}
+		fieldsText += field;
+	}
+	return "启用目标中的端点“" + endpoint.name + "”缺少配置项：" + fieldsText + "。";
+}
+
 bool TryBuildAISettingsFromWebPayload(
 	const nlohmann::json& data,
 	const AISettings& current,
@@ -2166,10 +2192,9 @@ bool TryBuildAISettingsFromWebPayload(
 
 	for (const size_t index : activeEndpointIndexes) {
 		const AIConfigProfileEntry& endpoint = outEndpoints[index];
-		if (AIService::Trim(endpoint.settings.baseUrl).empty() ||
-			AIService::Trim(endpoint.settings.apiKey).empty() ||
-			AIService::Trim(endpoint.settings.model).empty()) {
-			outError = "启用目标中的端点“" + endpoint.name + "”缺少接口地址、API 密钥或模型。";
+		const std::string missingConfigurationError = BuildMissingEndpointConfigurationError(endpoint);
+		if (!missingConfigurationError.empty()) {
+			outError = missingConfigurationError;
 			return false;
 		}
 		std::string headerError;
