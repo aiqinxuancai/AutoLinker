@@ -104,6 +104,15 @@
     <ClCompile Include="src\ProjectAgentsConfigDialog.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\ProjectBuildConfigDialog.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ProjectBuildConfigManager.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
+    <ClCompile Include="src\ProjectBuildPipeline.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\ForceLinkLibManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -406,6 +415,15 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\ProjectAgentsConfigDialog.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ProjectBuildConfigDialog.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ProjectBuildConfigManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\ProjectBuildPipeline.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\GameAnalyticsClient.h">

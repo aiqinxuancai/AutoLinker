@@ -116,7 +116,8 @@ std::string BuildEncodedCommand(const std::wstring& userCommand)
 	std::wstring script =
 		L"[Console]::InputEncoding=[System.Text.Encoding]::UTF8\r\n"
 		L"[Console]::OutputEncoding=[System.Text.Encoding]::UTF8\r\n"
-		L"$OutputEncoding=[System.Text.Encoding]::UTF8\r\n";
+		L"$OutputEncoding=[System.Text.Encoding]::UTF8\r\n"
+		L"$ProgressPreference='SilentlyContinue'\r\n";
 	script += userCommand;
 
 	const auto* bytes = reinterpret_cast<const unsigned char*>(script.data());

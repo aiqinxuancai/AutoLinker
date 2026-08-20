@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <format>
@@ -25,6 +27,9 @@ namespace {
 
 constexpr std::uintptr_t kImageBase = 0x400000;
 constexpr size_t kActiveEditorSerializerFieldIndex = 23;
+// EProjectSerializer 中保存当前工程路径的 CStringA 成员偏移。
+constexpr size_t kSerializerSourcePathOffset = 0x33C;
+constexpr size_t kMaxSerializerPathBytes = 32768;
 constexpr size_t kCommandObjectFieldScanCount = 96;
 constexpr size_t kCommandObjectGraphMaxDepth = 2;
 constexpr size_t kCommandObjectVtableScanCount = 96;
@@ -36,6 +41,10 @@ constexpr const char* kDirectProjectSerializeToHandlePattern =
 	"83 EC 78 56 8B F1 68 00 10 00 00 68 02 20 00 00 8D 4C 24 ?? E8 ?? ?? ?? ?? "
 	"6A 00 68 00 10 00 00 8D 44 24 ?? 6A 00 50 8D 4C 24 ?? C7 84 24 ?? ?? ?? ?? "
 	"00 00 00 00 E8 ?? ?? ?? ??";
+constexpr const char* kCStringAssignPattern =
+	"56 57 8B 7C 24 0C 8B F1 85 FF 75 04 33 C0 EB 07 57 FF 15 ?? ?? ?? ?? "
+	"57 50 8B CE E8 ?? ?? ?? ?? 8B C6 5F 5E C2 04 00 "
+	"53 8B 5C 24 08 56 57 85 DB 8B F1";
 constexpr const char* kProjectCommandDispatchPatternE571 =
 	"A1 ?? ?? ?? ?? 53 85 C0 74 09 B8 01 00 00 00 5B C2 10 00 8B 5C 24 0C F6 C3 10 "
 	"74 09 B8 01 00 00 00 5B C2 10 00 8B 54 24 08 56 8B C2 33 F6 25 00 00 FF 7F "
@@ -54,12 +63,15 @@ constexpr const char* kProjectCommandDirect202Pattern =
 	"F6 84 24 88 00 00 00 0F 0F 84";
 
 using FnSerializeCurrentProjectToHandle = HGLOBAL(__thiscall*)(void*);
+using FnSerializeCurrentProjectToFile = int(__thiscall*)(void*, LPCSTR, int);
+using FnCStringAssign = void*(__thiscall*)(void*, LPCSTR);
 
 struct SerializerAddresses {
 	bool initialized = false;
 	bool ok = false;
 	std::uintptr_t moduleBase = 0;
 	FnSerializeCurrentProjectToHandle directSerializeToHandle = nullptr;
+	FnCStringAssign cstringAssign = nullptr;
 	bool coldCommandRoutesOk = false;
 	std::uintptr_t projectCommandDispatch = 0;
 	std::uintptr_t projectCommandDirect203 = 0;
@@ -69,6 +81,7 @@ struct SerializerAddresses {
 
 std::mutex g_serializerAddressMutex;
 SerializerAddresses g_serializerAddresses;
+std::atomic<void*> g_fileSerializerFunction = nullptr;
 
 struct SerializerContext {
 	void* serializerThis = nullptr;
@@ -312,10 +325,18 @@ bool PopulateSerializerAddresses(SerializerAddresses& addrs)
 			kProjectCommandDirect202Pattern,
 		},
 		addrs.moduleBase);
+	const std::uintptr_t cstringAssignRva = ResolveUniqueCodeAddressFromPatterns(
+		{
+			kCStringAssignPattern,
+		},
+		addrs.moduleBase);
 
 	addrs.directSerializeToHandle = ResolveInternalAddress<FnSerializeCurrentProjectToHandle>(
 		addrs.moduleBase,
 		directSerializeRva);
+	addrs.cstringAssign = ResolveInternalAddress<FnCStringAssign>(
+		addrs.moduleBase,
+		cstringAssignRva);
 	addrs.projectCommandDispatch = reinterpret_cast<std::uintptr_t>(
 		ResolveInternalAddress<void*>(
 			addrs.moduleBase,
@@ -338,9 +359,11 @@ bool PopulateSerializerAddresses(SerializerAddresses& addrs)
 		IsLikelyModuleCodeAddress(addrs.projectCommandDirect203, addrs.moduleBase) &&
 		IsLikelyModuleCodeAddress(addrs.projectCommandDirect202, addrs.moduleBase);
 	addrs.resolveTrace = std::format(
-		"direct=0x{:X}({})|dispatch=0x{:X}({})|direct203=0x{:X}({})|direct202=0x{:X}({})",
+		"direct=0x{:X}({})|cstring_assign=0x{:X}({})|dispatch=0x{:X}({})|direct203=0x{:X}({})|direct202=0x{:X}({})",
 		directSerializeRva,
 		directSerializeRva != 0 ? "pattern" : "missing",
+		cstringAssignRva,
+		cstringAssignRva != 0 ? "pattern" : "missing",
 		dispatchRva,
 		dispatchRva != 0 ? "pattern" : "missing",
 		direct203Rva,
@@ -484,29 +507,21 @@ bool CopyGlobalHandleBytes(
 	return true;
 }
 
-bool TrySerializeCurrentProjectFromActiveEditorSerializerField(
+bool TryResolveCurrentProjectSerializerFromActiveEditorField(
 	const SerializerAddresses& addrs,
-	std::vector<unsigned char>& outBytes,
+	void*& outSerializerThis,
 	std::string* outError,
 	std::string* outTrace)
 {
-	outBytes.clear();
-	if (outError != nullptr) {
-		outError->clear();
-	}
-	if (outTrace != nullptr) {
-		outTrace->clear();
-	}
+	outSerializerThis = nullptr;
+	if (outError != nullptr) outError->clear();
+	if (outTrace != nullptr) outTrace->clear();
 
 	ActiveEditorObjectInfo activeInfo{};
 	if (!ResolveCurrentActiveEditorObject(addrs.moduleBase, &activeInfo) || !activeInfo.ok) {
-		if (outError != nullptr) {
-			*outError = "resolve active editor object failed";
-		}
+		if (outError != nullptr) *outError = "resolve active editor object failed";
 		if (outTrace != nullptr) {
-			*outTrace = activeInfo.trace.empty()
-				? "resolve_active_editor_failed"
-				: activeInfo.trace;
+			*outTrace = activeInfo.trace.empty() ? "resolve_active_editor_failed" : activeInfo.trace;
 		}
 		return false;
 	}
@@ -515,14 +530,12 @@ bool TrySerializeCurrentProjectFromActiveEditorSerializerField(
 		std::uintptr_t object = 0;
 		const char* name = nullptr;
 	};
-
 	std::vector<SerializerOwnerCandidate> owners;
 	if (activeInfo.rawEditorObject != 0) {
-		owners.push_back(SerializerOwnerCandidate{ activeInfo.rawEditorObject, "raw" });
+		owners.push_back(SerializerOwnerCandidate{activeInfo.rawEditorObject, "raw"});
 	}
-	if (activeInfo.innerEditorObject != 0 &&
-		activeInfo.innerEditorObject != activeInfo.rawEditorObject) {
-		owners.push_back(SerializerOwnerCandidate{ activeInfo.innerEditorObject, "inner" });
+	if (activeInfo.innerEditorObject != 0 && activeInfo.innerEditorObject != activeInfo.rawEditorObject) {
+		owners.push_back(SerializerOwnerCandidate{activeInfo.innerEditorObject, "inner"});
 	}
 
 	std::vector<std::string> attemptTraces;
@@ -531,81 +544,149 @@ bool TrySerializeCurrentProjectFromActiveEditorSerializerField(
 			owner.object + kActiveEditorSerializerFieldIndex * sizeof(std::uintptr_t);
 		std::uintptr_t serializerAddress = 0;
 		if (!TryReadPointerValue(fieldAddress, &serializerAddress) || serializerAddress == 0) {
-			AppendTraceSummary(
-				attemptTraces,
-				std::format(
-					"field_read_failed owner={} owner_object={} field={} field_addr={}",
-					owner.name,
-					owner.object,
-					kActiveEditorSerializerFieldIndex,
-					fieldAddress));
+			AppendTraceSummary(attemptTraces, std::format(
+				"field_read_failed owner={} owner_object={} field={} field_addr={}",
+				owner.name, owner.object, kActiveEditorSerializerFieldIndex, fieldAddress));
 			continue;
 		}
 
 		std::uintptr_t serializerHeader = 0;
 		(void)TryReadPointerValue(serializerAddress, &serializerHeader);
 		if (!IsLikelySerializerObjectAddress(reinterpret_cast<void*>(serializerAddress), addrs.moduleBase)) {
-			AppendTraceSummary(
-				attemptTraces,
-				std::format(
-					"field_bad_object owner={} owner_object={} field={} field_addr={} serializer_this={} serializer_head={}",
-					owner.name,
-					owner.object,
-					kActiveEditorSerializerFieldIndex,
-					fieldAddress,
-					serializerAddress,
-					serializerHeader));
+			AppendTraceSummary(attemptTraces, std::format(
+				"field_bad_object owner={} owner_object={} field={} field_addr={} serializer_this={} serializer_head={}",
+				owner.name, owner.object, kActiveEditorSerializerFieldIndex, fieldAddress,
+				serializerAddress, serializerHeader));
 			continue;
 		}
 
-		const HGLOBAL handle = CallDirectSerializeProjectToHandleSafe(
-			addrs.directSerializeToHandle,
-			reinterpret_cast<void*>(serializerAddress));
-		std::string directError;
-		if (!CopyGlobalHandleBytes(handle, outBytes, &directError)) {
-			AppendTraceSummary(
-				attemptTraces,
-				std::format(
-					"field_direct_failed owner={} owner_object={} field={} field_addr={} serializer_this={} serializer_head={} error={}",
-					owner.name,
-					owner.object,
-					kActiveEditorSerializerFieldIndex,
-					fieldAddress,
-					serializerAddress,
-					serializerHeader,
-					directError));
-			continue;
-		}
-
+		outSerializerThis = reinterpret_cast<void*>(serializerAddress);
 		if (outTrace != nullptr) {
-			*outTrace =
-				activeInfo.trace +
-				"|" +
-				std::format(
-					"active_editor_serializer_ok owner={} owner_object={} field={} field_addr={} serializer_this={} serializer_head={} bytes={} magic={}",
-					owner.name,
-					owner.object,
-					kActiveEditorSerializerFieldIndex,
-					fieldAddress,
-					serializerAddress,
-					serializerHeader,
-					outBytes.size(),
-					BuildMagicText(outBytes));
+			*outTrace = activeInfo.trace + "|" + std::format(
+				"active_editor_serializer_resolved owner={} owner_object={} field={} field_addr={} serializer_this={} serializer_head={}",
+				owner.name, owner.object, kActiveEditorSerializerFieldIndex, fieldAddress,
+				serializerAddress, serializerHeader);
 		}
 		return true;
 	}
 
-	if (outError != nullptr) {
-		*outError = "active editor serializer field direct call failed";
-	}
+	if (outError != nullptr) *outError = "active editor serializer field resolution failed";
 	if (outTrace != nullptr) {
 		std::string trace = activeInfo.trace;
-		for (const auto& item : attemptTraces) {
-			trace += "|" + item;
-		}
+		for (const auto& item : attemptTraces) trace += "|" + item;
 		*outTrace = trace;
 	}
 	return false;
+}
+
+// 这些小函数故意只包含 POD 参数，避免 MSVC 禁止在带 C++ 栈展开的函数中使用 SEH。
+bool CopyCStringValueSafe(void* cstringObject, char* buffer, size_t capacity)
+{
+	if (buffer == nullptr || capacity < 2 || cstringObject == nullptr ||
+		!IsReadableAddressRange(reinterpret_cast<std::uintptr_t>(cstringObject), sizeof(char*))) {
+		return false;
+	}
+
+	buffer[0] = '\0';
+	__try {
+		const char* value = *reinterpret_cast<const char* const*>(cstringObject);
+		if (value == nullptr) {
+			return true;
+		}
+		for (size_t index = 0; index + 1 < capacity; ++index) {
+			const std::uintptr_t address = reinterpret_cast<std::uintptr_t>(value + index);
+			if (!IsReadableAddressRange(address, sizeof(char))) {
+				return false;
+			}
+			const char ch = value[index];
+			buffer[index] = ch;
+			if (ch == '\0') {
+				return true;
+			}
+		}
+		buffer[capacity - 1] = '\0';
+		return false;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		buffer[0] = '\0';
+		return false;
+	}
+}
+
+bool CallSerializeToFileSafe(
+	FnSerializeCurrentProjectToFile serializeFn,
+	void* serializerThis,
+	const char* path,
+	int mode,
+	int* outResult)
+{
+	if (outResult != nullptr) {
+		*outResult = 0;
+	}
+	if (serializeFn == nullptr || serializerThis == nullptr || path == nullptr || *path == '\0') {
+		return false;
+	}
+
+	__try {
+		const int result = serializeFn(serializerThis, path, mode);
+		if (outResult != nullptr) {
+			*outResult = result;
+		}
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+bool CallCStringAssignSafe(
+	FnCStringAssign assignFn,
+	void* cstringObject,
+	const char* value)
+{
+	if (assignFn == nullptr || cstringObject == nullptr || value == nullptr) {
+		return false;
+	}
+
+	__try {
+		(void)assignFn(cstringObject, value);
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		return false;
+	}
+}
+
+bool TrySerializeCurrentProjectFromActiveEditorSerializerField(
+	const SerializerAddresses& addrs,
+	std::vector<unsigned char>& outBytes,
+	std::string* outError,
+	std::string* outTrace)
+{
+	outBytes.clear();
+	void* serializerThis = nullptr;
+	std::string resolveError;
+	std::string resolveTrace;
+	if (!TryResolveCurrentProjectSerializerFromActiveEditorField(
+			addrs, serializerThis, &resolveError, &resolveTrace)) {
+		if (outError != nullptr) *outError = resolveError;
+		if (outTrace != nullptr) *outTrace = resolveTrace;
+		return false;
+	}
+
+	const HGLOBAL handle = CallDirectSerializeProjectToHandleSafe(
+		addrs.directSerializeToHandle, serializerThis);
+	std::string directError;
+	if (!CopyGlobalHandleBytes(handle, outBytes, &directError)) {
+		if (outError != nullptr) *outError = directError;
+		if (outTrace != nullptr) *outTrace = resolveTrace + "|field_direct_failed error=" + directError;
+		return false;
+	}
+	if (outTrace != nullptr) {
+		*outTrace = resolveTrace + "|serialize_bytes=" + std::to_string(outBytes.size()) +
+			"|magic=" + BuildMagicText(outBytes);
+	}
+	return true;
 }
 
 } // namespace
@@ -615,6 +696,18 @@ ProjectBinarySerializer& ProjectBinarySerializer::Instance()
 {
 	static ProjectBinarySerializer instance;
 	return instance;
+}
+
+void ProjectBinarySerializer::ConfigureFileSerializer(void* serializeToFileFunction)
+{
+#if defined(_M_IX86)
+	g_fileSerializerFunction.store(serializeToFileFunction, std::memory_order_release);
+	OutputStringToELog(
+		std::string("[ProjectBinarySerializer] file serializer configured address=") +
+		std::to_string(reinterpret_cast<std::uintptr_t>(serializeToFileFunction)));
+#else
+	(void)serializeToFileFunction;
+#endif
 }
 
 void ProjectBinarySerializer::RecordVerifiedSerializerContext(
@@ -869,6 +962,201 @@ bool ProjectBinarySerializer::WriteCurrentProjectToFile(
 	}
 	if (outTrace != nullptr) {
 		*outTrace = serializeTrace + "|write_ok path=" + outputPath;
+	}
+	return true;
+#endif
+}
+
+bool ProjectBinarySerializer::WriteCurrentProjectFileSnapshot(
+	const std::string& outputPath,
+	size_t* outBytesWritten,
+	std::string* outError,
+	std::string* outTrace)
+{
+	if (outBytesWritten != nullptr) {
+		*outBytesWritten = 0;
+	}
+	if (outError != nullptr) {
+		outError->clear();
+	}
+	if (outTrace != nullptr) {
+		outTrace->clear();
+	}
+
+#if !defined(_M_IX86)
+	if (outError != nullptr) {
+		*outError = "current project file serializer is only available on x86 IDE builds";
+	}
+	if (outTrace != nullptr) {
+		*outTrace = "unsupported_platform";
+	}
+	return false;
+#else
+	if (outputPath.empty()) {
+		if (outError != nullptr) *outError = "snapshot output path is empty";
+		if (outTrace != nullptr) *outTrace = "output_path_empty";
+		return false;
+	}
+
+	const auto& addrs = GetSerializerAddresses();
+	const auto fileSerializer = reinterpret_cast<FnSerializeCurrentProjectToFile>(
+		g_fileSerializerFunction.load(std::memory_order_acquire));
+	if (addrs.moduleBase == 0 || addrs.cstringAssign == nullptr || fileSerializer == nullptr) {
+		if (outError != nullptr) {
+			*outError = "project file serializer addresses unavailable";
+		}
+		if (outTrace != nullptr) {
+			*outTrace =
+				"address_unavailable|module_base=" + std::to_string(addrs.moduleBase) +
+				"|cstring_assign=" + std::to_string(reinterpret_cast<std::uintptr_t>(addrs.cstringAssign)) +
+				"|file_serializer=" + std::to_string(reinterpret_cast<std::uintptr_t>(fileSerializer));
+		}
+		return false;
+	}
+
+	void* serializerThis = nullptr;
+	std::string serializerSourcePath;
+	std::string contextReason;
+	std::string resolveTrace;
+	if (TryGetVerifiedSerializerContext(
+			addrs.moduleBase, serializerThis, serializerSourcePath, &contextReason) &&
+		IsLikelySerializerObjectAddress(serializerThis, addrs.moduleBase)) {
+		resolveTrace = "route=verified_context|serializer_this=" +
+			std::to_string(reinterpret_cast<std::uintptr_t>(serializerThis)) +
+			"|source=" + serializerSourcePath;
+	}
+	else {
+		std::string fieldError;
+		if (!TryResolveCurrentProjectSerializerFromActiveEditorField(
+				addrs, serializerThis, &fieldError, &resolveTrace)) {
+			if (outError != nullptr) {
+				*outError = fieldError.empty() ? "project serializer context unavailable" : fieldError;
+			}
+			if (outTrace != nullptr) {
+				*outTrace = "resolve_failed|context=" +
+					(contextReason.empty() ? std::string("unavailable") : contextReason) +
+					"|field=" + (resolveTrace.empty() ? std::string("unavailable") : resolveTrace);
+			}
+			return false;
+		}
+		resolveTrace = "route=active_editor_serializer_field|" + resolveTrace;
+	}
+
+	if (serializerThis == nullptr ||
+		!IsLikelySerializerObjectAddress(serializerThis, addrs.moduleBase)) {
+		if (outError != nullptr) *outError = "resolved serializer object is invalid";
+		if (outTrace != nullptr) *outTrace = resolveTrace + "|invalid_serializer_object";
+		return false;
+	}
+
+	char originalSourcePath[kMaxSerializerPathBytes] = {};
+	void* sourcePathCString = reinterpret_cast<unsigned char*>(serializerThis) +
+		kSerializerSourcePathOffset;
+	if (!CopyCStringValueSafe(
+			sourcePathCString, originalSourcePath, sizeof(originalSourcePath))) {
+		if (outError != nullptr) *outError = "read current serializer source path failed";
+		if (outTrace != nullptr) *outTrace = resolveTrace + "|source_path_read_failed";
+		return false;
+	}
+
+	std::filesystem::path snapshotPath;
+	try {
+		snapshotPath = std::filesystem::path(outputPath);
+		if (snapshotPath.has_parent_path()) {
+			std::error_code directoryError;
+			std::filesystem::create_directories(snapshotPath.parent_path(), directoryError);
+			if (directoryError) {
+				if (outError != nullptr) {
+					*outError = "create snapshot directory failed: " + directoryError.message();
+				}
+				if (outTrace != nullptr) *outTrace = resolveTrace + "|create_directory_failed";
+				return false;
+			}
+		}
+		std::error_code removeError;
+		std::filesystem::remove(snapshotPath, removeError);
+	}
+	catch (const std::exception& ex) {
+		if (outError != nullptr) *outError = std::string("prepare snapshot path failed: ") + ex.what();
+		if (outTrace != nullptr) *outTrace = resolveTrace + "|prepare_path_exception";
+		return false;
+	}
+
+	int serializerResult = 0;
+	const bool serializeCallCompleted = CallSerializeToFileSafe(
+		fileSerializer, serializerThis, outputPath.c_str(), 1, &serializerResult);
+	const bool restoreCallCompleted = CallCStringAssignSafe(
+		addrs.cstringAssign, sourcePathCString, originalSourcePath);
+
+	char restoredSourcePath[kMaxSerializerPathBytes] = {};
+	const bool restoredValueReadable = CopyCStringValueSafe(
+		sourcePathCString, restoredSourcePath, sizeof(restoredSourcePath));
+	const bool sourcePathRestored = restoreCallCompleted && restoredValueReadable &&
+		std::strcmp(originalSourcePath, restoredSourcePath) == 0;
+	if (!sourcePathRestored) {
+		if (outError != nullptr) *outError = "restore current serializer source path failed";
+		if (outTrace != nullptr) {
+			*outTrace = resolveTrace +
+				"|serialize_call=" + std::to_string(serializeCallCompleted ? 1 : 0) +
+				"|serialize_result=" + std::to_string(serializerResult) +
+				"|restore_call=" + std::to_string(restoreCallCompleted ? 1 : 0) +
+				"|restore_verify=" + std::to_string(restoredValueReadable ? 1 : 0);
+		}
+		return false;
+	}
+	if (!serializeCallCompleted) {
+		if (outError != nullptr) *outError = "IDE file serialization raised an exception";
+		if (outTrace != nullptr) {
+			*outTrace = resolveTrace + "|serialize_call=0|serialize_result=" + std::to_string(serializerResult) +
+				"|source_path_restored=1";
+		}
+		return false;
+	}
+
+	std::uintmax_t fileSize = 0;
+	std::array<unsigned char, 8> fileMagic = {};
+	try {
+		std::error_code fileError;
+		fileSize = std::filesystem::file_size(snapshotPath, fileError);
+		if (fileError || fileSize < kExpectedProjectMagic.size()) {
+			if (outError != nullptr) *outError = "IDE file serialization did not create a valid snapshot";
+			if (outTrace != nullptr) {
+				*outTrace = resolveTrace + "|serialize_result=" + std::to_string(serializerResult) +
+					"|source_path_restored=1|file_size=" + std::to_string(fileSize) +
+					"|file_size_error=" + std::to_string(fileError.value());
+			}
+			return false;
+		}
+
+		std::ifstream input(snapshotPath, std::ios::binary);
+		if (!input.is_open()) {
+			if (outError != nullptr) *outError = "open serialized snapshot for validation failed";
+			if (outTrace != nullptr) *outTrace = resolveTrace + "|snapshot_validation_open_failed";
+			return false;
+		}
+		input.read(reinterpret_cast<char*>(fileMagic.data()), static_cast<std::streamsize>(fileMagic.size()));
+		if (input.gcount() != static_cast<std::streamsize>(fileMagic.size()) || fileMagic != kExpectedProjectMagic) {
+			if (outError != nullptr) *outError = "serialized snapshot does not start with CNWTEPRG";
+			if (outTrace != nullptr) {
+				*outTrace = resolveTrace + "|serialize_result=" + std::to_string(serializerResult) +
+					"|source_path_restored=1|file_size=" + std::to_string(fileSize) +
+					"|magic=" + BuildMagicText(std::vector<unsigned char>(fileMagic.begin(), fileMagic.end()));
+			}
+			return false;
+		}
+	}
+	catch (const std::exception& ex) {
+		if (outError != nullptr) *outError = std::string("validate serialized snapshot failed: ") + ex.what();
+		if (outTrace != nullptr) *outTrace = resolveTrace + "|snapshot_validation_exception";
+		return false;
+	}
+
+	if (outBytesWritten != nullptr) *outBytesWritten = static_cast<size_t>(fileSize);
+	if (outTrace != nullptr) {
+		*outTrace = resolveTrace +
+			"|serialize_result=" + std::to_string(serializerResult) +
+			"|source_path_restored=1|snapshot_file=1|file_size=" + std::to_string(fileSize) +
+			"|magic=CNWTEPRG";
 	}
 	return true;
 #endif

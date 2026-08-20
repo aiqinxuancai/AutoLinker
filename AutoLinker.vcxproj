@@ -505,6 +505,15 @@
     <ClCompile Include="src\EcSwitchConfigDialog.cpp" />
     <ClCompile Include="src\ForceLinkLibConfigDialog.cpp" />
     <ClCompile Include="src\ProjectAgentsConfigDialog.cpp" />
+    <ClCompile Include="src\ProjectBuildConfigDialog.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="src\ProjectBuildConfigManager.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <ClCompile Include="src\ProjectBuildPipeline.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="src\ForceLinkLibManager.cpp" />
     <ClCompile Include="src\GameAnalyticsClient.cpp" />
     <ClCompile Include="src\GameAnalyticsEventBatcher.cpp" />
@@ -651,6 +660,9 @@
     <ClInclude Include="src\ForceLinkLibConfigDialog.h" />
     <ClInclude Include="src\ForceLinkLibManager.h" />
     <ClInclude Include="src\ProjectAgentsConfigDialog.h" />
+    <ClInclude Include="src\ProjectBuildConfigDialog.h" />
+    <ClInclude Include="src\ProjectBuildConfigManager.h" />
+    <ClInclude Include="src\ProjectBuildPipeline.h" />
     <ClInclude Include="src\GameAnalyticsClient.h" />
     <ClInclude Include="src\GameAnalyticsEventBatcher.h" />
     <ClInclude Include="src\EideEditorObjectResolver.h" />

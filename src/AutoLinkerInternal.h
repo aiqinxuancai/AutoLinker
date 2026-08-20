@@ -66,6 +66,10 @@ inline constexpr UINT IDM_AUTOLINKER_LINKER_MAX = 34999;
 
 inline constexpr UINT IDM_AUTOLINKER_UNPACK_SOURCE = 35001;
 
+inline constexpr UINT IDM_AUTOLINKER_PROJECT_BUILD_BASE = 35100;
+
+inline constexpr UINT IDM_AUTOLINKER_PROJECT_BUILD_MAX = 35999;
+
 inline constexpr UINT WM_AUTOLINKER_AI_TASK_DONE = WM_USER + 1001;
 
 inline constexpr UINT WM_AUTOLINKER_AI_APPLY_RESULT = WM_USER + 1002;
@@ -93,6 +97,8 @@ void OutputCurrentSourceLinker();
 void RebuildTopLinkerSubMenu();
 
 bool HandleTopLinkerMenuCommand(UINT cmd);
+
+bool HandleProjectBuildMenuCommand(UINT cmd);
 
 void PrepareAutoLinkerPopupMenu(HMENU hMenu);
 

@@ -722,6 +722,10 @@ void StartHookCreateFileA()
 	IdeCompileOutputCapture::CompleteHookInstallation(error == NO_ERROR);
 	if (error == NO_ERROR) {
 		g_fullHookInstalled = true;
+#if defined(_M_IX86)
+		e571::ProjectBinarySerializer::Instance().ConfigureFileSerializer(
+			reinterpret_cast<void*>(originalProjectSerializeToFile));
+#endif
 		if (attachMessageBoxHooks) {
 			g_messageBoxHookInstalled = true;
 		}

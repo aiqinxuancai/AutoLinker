@@ -1437,7 +1437,7 @@ std::wstring BuildUnpackMenuTitle()
 	if (filename.empty()) {
 		return L"将当前.e反编译到目录";
 	}
-	return L"将[" + filename + L"]反编译到目录";
+	return L"[" + filename + L"]反编译到目录";
 }
 
 bool CanUnpackCurrentSource()

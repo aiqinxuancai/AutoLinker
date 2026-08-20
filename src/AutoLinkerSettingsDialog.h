@@ -17,6 +17,7 @@ enum class AutoLinkerSettingsPageId {
 	Linker,
 	EcSwitch,
 	ForceLinkLib,
+	ProjectBuild,
 	LogOptimization,
 	About,
 	Count

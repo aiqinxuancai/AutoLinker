@@ -30,6 +30,7 @@
 #include "IdeLogViewer.h"
 #include "Logger.h"
 #include "ProjectAgentsConfigDialog.h"
+#include "ProjectBuildConfigDialog.h"
 #include "resource.h"
 #include "ResourceTextLoader.h"
 
@@ -98,6 +99,7 @@ constexpr std::array<const wchar_t*, static_cast<size_t>(AutoLinkerSettingsPageI
 	L"链接器",
 	L"EC 模块切换",
 	L"核心库函数重写",
+	L"编译配置",
 	L"IDE 增强",
 	L"关于"
 };
@@ -112,6 +114,7 @@ constexpr std::array<const char*, static_cast<size_t>(AutoLinkerSettingsPageId::
 	"linker",
 	"ec_switch",
 	"force_link_lib",
+	"project_build",
 	"log_optimization",
 	"about"
 };
@@ -1036,6 +1039,8 @@ HWND CreateSettingsPage(HWND window, AutoLinkerSettingsPageId pageId)
 		return CreateEcSwitchConfigSettingsPage(window);
 	case AutoLinkerSettingsPageId::ForceLinkLib:
 		return CreateForceLinkLibConfigSettingsPage(window);
+	case AutoLinkerSettingsPageId::ProjectBuild:
+		return CreateProjectBuildConfigSettingsPage(window);
 	case AutoLinkerSettingsPageId::LogOptimization:
 		return CreateSettingsWebViewPage(window, SettingsWebViewPageKind::LogOptimization);
 	case AutoLinkerSettingsPageId::About:
@@ -1373,7 +1378,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 	using nlohmann::json;
 	const json pages = {
 		"ai_service", "ai_other", "mcp", "skills", "chat_theme", "project_agents", "linker",
-		"ec_switch", "force_link_lib", "log_optimization", "about"
+		"ec_switch", "force_link_lib", "project_build", "log_optimization", "about"
 	};
 	const json links = {
 		"https://github.com/aiqinxuancai/AutoLinker",
@@ -1388,12 +1393,14 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 	const std::string logOptimizationHtml = LoadUtf8HtmlResourceText(IDR_HTML_LOG_OPTIMIZATION_SETTINGS);
 	const std::string aiOtherHtml = LoadUtf8HtmlResourceText(IDR_HTML_AI_OTHER_SETTINGS);
 	const std::string aboutHtml = LoadUtf8HtmlResourceText(IDR_HTML_ABOUT_SETTINGS);
+	const std::string projectBuildHtml = LoadUtf8HtmlResourceText(IDR_HTML_PROJECT_BUILD_CONFIG_DIALOG);
 	const std::string aboutIconDataUrl = LoadAboutIconDataUrl();
 	const bool webViewResourcesValid =
 		aiOtherHtml.find("autolinkerApplyAiOtherSettings") != std::string::npos &&
 		logOptimizationHtml.find("autolinkerApplyLogOptimization") != std::string::npos &&
 		logOptimizationHtml.find("mcpGenericToggle") != std::string::npos &&
 		logOptimizationHtml.find("fullGenericToggle") != std::string::npos &&
+		projectBuildHtml.find("autolinkerProjectBuildSaveResult") != std::string::npos &&
 		aboutHtml.find("autolinkerApplyAbout") != std::string::npos &&
 		!aboutIconDataUrl.empty();
 	const bool ePackagerTwoStepUpdateValid =
@@ -1425,6 +1432,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		{"debug_optimization_requires_compile_hook", hookDependencyValid},
 		{"log_optimization_webview2", !logOptimizationHtml.empty()},
 		{"ai_other_webview2", !aiOtherHtml.empty()},
+		{"project_build_webview2", !projectBuildHtml.empty()},
 		{"about_webview2", !aboutHtml.empty()},
 		{"about_icon_resource", !aboutIconDataUrl.empty()},
 		{"e_packager_two_step_update", ePackagerTwoStepUpdateValid},

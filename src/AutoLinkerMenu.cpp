@@ -2,15 +2,41 @@
 #include <Windows.h>
 #include <unordered_map>
 #include <string>
+#include <string_view>
 #include "AIService.h"
 #include "EPackagerIntegration.h"
 #include "Global.h"
 #include "IDEFacade.h"
+#include "ProjectBuildConfigManager.h"
+#include "ProjectBuildPipeline.h"
+#include "UnicodeTextCodec.h"
 
 namespace {
 bool g_isContextMenuRegistered = false;
 HMENU g_topLinkerSubMenu = NULL;
+HMENU g_projectBuildSubMenu = NULL;
 std::unordered_map<UINT, std::string> g_topLinkerCommandMap;
+std::unordered_map<UINT, std::string> g_projectBuildCommandMap;
+
+std::string ProjectBuildUtf8(std::u8string_view text)
+{
+	return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+}
+
+void OutputProjectBuildUtf8(const std::string& text)
+{
+	OutputStringToELog(UnicodeTextCodec::Utf8ToLocalPreservingUnicode(text));
+}
+
+std::wstring Utf8ToWideMenuText(const std::string& text)
+{
+	if (text.empty()) return {};
+	const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+	if (length <= 0) return std::wstring(text.begin(), text.end());
+	std::wstring result(static_cast<size_t>(length), L'\0');
+	MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), result.data(), length);
+	return result;
+}
 
 // 根据当前打开的源文件路径生成链接器父菜单项的显示标题（Wide 字符串）。
 // 无源文件时返回通用名；有源文件时返回"[xxxx.e]使用的链接器"。
@@ -200,6 +226,27 @@ bool EnsureTopLinkerSubMenu()
 	return true;
 }
 
+bool HasSubMenuItem(HMENU hMenu, HMENU subMenu)
+{
+	if (hMenu == nullptr || subMenu == nullptr) return false;
+	const int count = GetMenuItemCount(hMenu);
+	for (int i = 0; i < count; ++i) {
+		MENUITEMINFOW item = {};
+		item.cbSize = sizeof(item);
+		item.fMask = MIIM_SUBMENU;
+		if (GetMenuItemInfoW(hMenu, static_cast<UINT>(i), TRUE, &item) && item.hSubMenu == subMenu) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool EnsureProjectBuildSubMenu()
+{
+	if (g_projectBuildSubMenu == NULL || !IsMenu(g_projectBuildSubMenu)) g_projectBuildSubMenu = CreatePopupMenu();
+	return g_projectBuildSubMenu != NULL;
+}
+
 bool IsMenuSeparator(HMENU hMenu, int index)
 {
 	if (hMenu == NULL || index < 0) {
@@ -237,18 +284,27 @@ void RemoveExistingTopMenuExtensions(HMENU hTargetMenu)
 		bool removeThis = false;
 		bool preserveSubMenu = false;
 		if (GetMenuItemInfoW(hTargetMenu, static_cast<UINT>(i), TRUE, &mii)) {
-			if (mii.hSubMenu == g_topLinkerSubMenu || mii.wID == IDM_AUTOLINKER_UNPACK_SOURCE) {
+			const bool isLinkerSubMenu =
+				g_topLinkerSubMenu != NULL && mii.hSubMenu == g_topLinkerSubMenu;
+			const bool isProjectBuildSubMenu =
+				g_projectBuildSubMenu != NULL && mii.hSubMenu == g_projectBuildSubMenu;
+			if (isLinkerSubMenu || isProjectBuildSubMenu || mii.wID == IDM_AUTOLINKER_UNPACK_SOURCE) {
 				removeThis = true;
-				preserveSubMenu = mii.hSubMenu == g_topLinkerSubMenu;
+				preserveSubMenu = isLinkerSubMenu || isProjectBuildSubMenu;
 			}
 		}
 		if (!removeThis) {
 			std::wstring title = GetMenuTitleW(hTargetMenu, static_cast<UINT>(i), MF_BYPOSITION);
 			if (title.find(L"链接器切换") != std::wstring::npos ||
 				title.find(L"使用的链接器") != std::wstring::npos ||
-				title.find(L"反编译到目录") != std::wstring::npos) {
+				title.find(L"反编译到目录") != std::wstring::npos ||
+				title.find(L"按配置编译") != std::wstring::npos) {
 				removeThis = true;
-				preserveSubMenu = mii.hSubMenu == g_topLinkerSubMenu;
+				// 标题回退路径用于兼容 IDE 重建菜单后的旧句柄；当前句柄仍然有效时
+				// 必须只摘除菜单项本身，不能 DeleteMenu 销毁配置子菜单。
+				preserveSubMenu =
+					(g_topLinkerSubMenu != NULL && mii.hSubMenu == g_topLinkerSubMenu) ||
+					(g_projectBuildSubMenu != NULL && mii.hSubMenu == g_projectBuildSubMenu);
 			}
 		}
 		if (removeThis) {
@@ -272,6 +328,13 @@ void EnsureTopLinkerSubMenuAttached(HMENU hTargetMenu)
 	if (!EnsureTopLinkerSubMenu()) {
 		return;
 	}
+	// WM_INITMENUPOPUP 和 TrackPopupMenu 都可能触发刷新。菜单项已经挂载时只
+	// 更新子菜单内容，避免反复摘除/重挂载时误伤 IDE 自己的菜单项。
+	if (HasSubMenuItem(hTargetMenu, g_topLinkerSubMenu) &&
+		HasSubMenuItem(hTargetMenu, g_projectBuildSubMenu) &&
+		GetMenuState(hTargetMenu, IDM_AUTOLINKER_UNPACK_SOURCE, MF_BYCOMMAND) != 0xFFFFFFFF) {
+		return;
+	}
 
 	RemoveExistingTopMenuExtensions(hTargetMenu);
 	if (!EnsureTopLinkerSubMenu()) {
@@ -288,6 +351,40 @@ void EnsureTopLinkerSubMenuAttached(HMENU hTargetMenu)
 	AppendMenuW(hTargetMenu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(g_topLinkerSubMenu), GetLinkerMenuTitle().c_str());
 	UINT unpackFlags = MF_STRING | (EPackagerIntegration::CanUnpackCurrentSource() ? MF_ENABLED : MF_GRAYED);
 	AppendMenuW(hTargetMenu, unpackFlags, IDM_AUTOLINKER_UNPACK_SOURCE, EPackagerIntegration::BuildUnpackMenuTitle().c_str());
+	if (EnsureProjectBuildSubMenu()) {
+		AppendMenuW(hTargetMenu, MF_POPUP | MF_STRING, reinterpret_cast<UINT_PTR>(g_projectBuildSubMenu), L"按配置编译");
+	}
+}
+
+void RebuildProjectBuildSubMenu()
+{
+	if (!EnsureProjectBuildSubMenu()) return;
+	ClearMenuItemsByPosition(g_projectBuildSubMenu);
+	g_projectBuildCommandMap.clear();
+	UpdateCurrentOpenSourceFile();
+	if (g_nowOpenSourceFilePath.empty()) {
+		AppendMenuW(g_projectBuildSubMenu, MF_STRING | MF_GRAYED, 0, L"（未打开源文件）");
+		return;
+	}
+	const std::filesystem::path sourcePath(g_nowOpenSourceFilePath);
+	std::string error;
+	ProjectBuildConfigFile file = LoadProjectBuildConfigFile(sourcePath, &error);
+	if (!error.empty()) {
+		AppendMenuW(g_projectBuildSubMenu, MF_STRING | MF_GRAYED, 0, L"（配置文件无效）");
+		return;
+	}
+	if (file.configurations.empty()) {
+		AppendMenuW(g_projectBuildSubMenu, MF_STRING | MF_GRAYED, 0, L"目前没有编译配置");
+		return;
+	}
+	UINT command = IDM_AUTOLINKER_PROJECT_BUILD_BASE;
+	for (const auto& config : file.configurations) {
+		if (command > IDM_AUTOLINKER_PROJECT_BUILD_MAX) break;
+		const std::wstring title = Utf8ToWideMenuText(config.name);
+		AppendMenuW(g_projectBuildSubMenu, MF_STRING | MF_ENABLED, command, title.c_str());
+		g_projectBuildCommandMap[command] = config.name;
+		++command;
+	}
 }
 
 void RebuildTopLinkerSubMenu()
@@ -376,6 +473,46 @@ bool HandleTopLinkerMenuCommand(UINT cmd)
 	return true;
 }
 
+bool HandleProjectBuildMenuCommand(UINT cmd)
+{
+	auto it = g_projectBuildCommandMap.find(cmd);
+	UpdateCurrentOpenSourceFile();
+	if (g_nowOpenSourceFilePath.empty()) return true;
+	const std::filesystem::path sourcePath(g_nowOpenSourceFilePath);
+	std::string error;
+	const ProjectBuildConfigFile file = LoadProjectBuildConfigFile(sourcePath, &error);
+	if (!error.empty()) {
+		MessageBoxW(g_hwnd, Utf8ToWideMenuText(error).c_str(), L"项目配置", MB_OK | MB_ICONERROR);
+		return true;
+	}
+	std::string selectedName;
+	if (it != g_projectBuildCommandMap.end()) {
+		selectedName = it->second;
+	}
+	else if (cmd >= IDM_AUTOLINKER_PROJECT_BUILD_BASE && cmd <= IDM_AUTOLINKER_PROJECT_BUILD_MAX) {
+		// 菜单由 IDE 延迟创建时，WM_COMMAND 可能先于 WM_INITMENUPOPUP 到达；
+		// 仍按稳定的命令区间解析配置，避免点击后落回 IDE 原命令处理器。
+		const size_t index = static_cast<size_t>(cmd - IDM_AUTOLINKER_PROJECT_BUILD_BASE);
+		if (index < file.configurations.size()) selectedName = file.configurations[index].name;
+	}
+	if (selectedName.empty()) return false;
+	const auto configIt = std::find_if(file.configurations.begin(), file.configurations.end(), [&](const ProjectBuildConfig& config) { return config.name == selectedName; });
+	if (configIt == file.configurations.end()) return true;
+	ProjectBuildConfigFile updated = file;
+	updated.activeConfiguration = configIt->name;
+	SaveProjectBuildConfigFile(sourcePath, updated, nullptr);
+	OutputProjectBuildUtf8(ProjectBuildUtf8(u8"[项目配置] 开始执行配置：") + configIt->name);
+	const ProjectBuildPipelineResult result = StartProjectBuildPipelineAsync(sourcePath, *configIt);
+	if (result.ok) {
+		OutputProjectBuildUtf8(ProjectBuildUtf8(u8"[项目配置] 异步编译任务已提交，输出目标：") + result.outputPath);
+	}
+	else {
+		OutputProjectBuildUtf8(ProjectBuildUtf8(u8"[项目配置] 执行失败：") + result.stage + " - " + result.message);
+		MessageBoxW(g_hwnd, Utf8ToWideMenuText(result.message).c_str(), L"按配置编译失败", MB_OK | MB_ICONERROR);
+	}
+	return true;
+}
+
 void HandleInitMenuPopup(HMENU hMenu)
 {
 	if (hMenu == NULL) {
@@ -385,10 +522,15 @@ void HandleInitMenuPopup(HMENU hMenu)
 		RebuildTopLinkerSubMenu();
 		return;
 	}
+	if (hMenu == g_projectBuildSubMenu) {
+		RebuildProjectBuildSubMenu();
+		return;
+	}
 	if (IsCompileOrToolsTopPopup(hMenu)) {
 		UpdateCurrentOpenSourceFile();
 		EnsureTopLinkerSubMenuAttached(hMenu);
 		RebuildTopLinkerSubMenu();
+		RebuildProjectBuildSubMenu();
 		UpdateLinkerSubMenuParentItem(hMenu);
 		return;
 	}
@@ -441,8 +583,16 @@ void PrepareAutoLinkerPopupMenu(HMENU hMenu)
 		return;
 	}
 
-	if (hMenu == g_topLinkerSubMenu || IsCompileOrToolsTopPopup(hMenu)) {
+	if (hMenu == g_topLinkerSubMenu || hMenu == g_projectBuildSubMenu) {
 		HandleInitMenuPopup(hMenu);
+		return;
+	}
+	if (IsCompileOrToolsTopPopup(hMenu)) {
+		// TrackPopupMenu 钩子发生在 IDE 的 WM_INITMENUPOPUP 处理之前。菜单对象
+		// 会被 IDE 复用，因此这里只摘除上一次追加的 AutoLinker 项，让 IDE 始终
+		// 基于原始菜单结构更新“编译”“静态编译”等命令。新的扩展项统一留给
+		// 消息处理完成后的 FinalizeAutoLinkerPopupMenu。
+		RemoveExistingTopMenuExtensions(hMenu);
 		return;
 	}
 
@@ -481,7 +631,8 @@ void FinalizeAutoLinkerPopupMenu(HMENU hMenu)
 		return;
 	}
 
-	if (hMenu == g_topLinkerSubMenu || IsCompileOrToolsTopPopup(hMenu)) {
+	const bool isCompilePopup = IsCompileOrToolsTopPopup(hMenu);
+	if (hMenu == g_topLinkerSubMenu || hMenu == g_projectBuildSubMenu || isCompilePopup) {
 		HandleInitMenuPopup(hMenu);
 		return;
 	}

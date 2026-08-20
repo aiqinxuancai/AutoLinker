@@ -19,12 +19,22 @@ public:
 	// 清空已记录的序列化对象上下文。
 	void ClearVerifiedSerializerContext();
 
+	// 注册 Detours 交易完成后的 IDE 原始文件序列化入口。
+	void ConfigureFileSerializer(void* serializeToFileFunction);
+
 	bool SerializeCurrentProject(
 		std::vector<unsigned char>& outBytes,
 		std::string* outError = nullptr,
 		std::string* outTrace = nullptr);
 
 	bool WriteCurrentProjectToFile(
+		const std::string& outputPath,
+		size_t* outBytesWritten = nullptr,
+		std::string* outError = nullptr,
+		std::string* outTrace = nullptr);
+
+	// 按 IDE 完整 .e 文件格式写入快照，并恢复当前工程的原路径。
+	bool WriteCurrentProjectFileSnapshot(
 		const std::string& outputPath,
 		size_t* outBytesWritten = nullptr,
 		std::string* outError = nullptr,

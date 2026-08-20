@@ -12,6 +12,7 @@ IDR_HTML_PROJECT_AGENTS_CONFIG_DIALOG HTML "webview\\project_agents_config_dialo
 IDR_HTML_AI_CHAT_MCP_CONFIG_DIALOG HTML "webview\\ai_chat_mcp_config_dialog.html"
 IDR_HTML_AI_SKILL_CONFIG_DIALOG HTML "webview\\ai_skill_config_dialog.html"
 IDR_HTML_AI_OTHER_SETTINGS HTML "webview\\ai_other_settings.html"
+IDR_HTML_PROJECT_BUILD_CONFIG_DIALOG HTML "webview\\project_build_config_dialog.html"
 IDR_HTML_IDE_LOG_VIEWER HTML "webview\\ide_log_viewer.html"
 IDR_HTML_LOG_OPTIMIZATION_SETTINGS HTML "webview\\log_optimization_settings.html"
 IDR_HTML_ABOUT_SETTINGS HTML "webview\\about_settings.html"

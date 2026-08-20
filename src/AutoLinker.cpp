@@ -283,6 +283,9 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 		if (HandleTopLinkerMenuCommand(cmd)) {
 			return 0;
 		}
+		if (HandleProjectBuildMenuCommand(cmd)) {
+			return 0;
+		}
 		if (IDEFacade::Instance().HandleMainWindowCommand(wParam)) {
 			return 0;
 		}

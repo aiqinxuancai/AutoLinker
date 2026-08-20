@@ -39,6 +39,7 @@
 #include "LocalMcpServer.h"
 #include "PathHelper.h"
 #include "PowerShellToolRunner.h"
+#include "ProjectBuildConfigManager.h"
 #include "RealPageCodeToolSupport.h"
 #include "UnicodeTextCodec.h"
 #include "Version.h"
@@ -1833,6 +1834,10 @@ bool RunPowerShellRunnerSelfTest(nlohmann::json& outCheck)
 		"$p=Start-Process powershell.exe -WindowStyle Hidden -ArgumentList '-NoLogo','-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 30' -PassThru; [Console]::Out.Write($p.Id)",
 		"",
 		10);
+	const PowerShellRunResult progressRun = PowerShellToolRunner::Run(
+		"Write-Progress -Activity 'hidden-progress'; [Console]::Out.Write('progress-ok')",
+		"",
+		10);
 
 	bool childGone = false;
 	unsigned long childProcessId = 0;
@@ -1859,6 +1864,8 @@ bool RunPowerShellRunnerSelfTest(nlohmann::json& outCheck)
 		truncated.stdOut.size() <= 2 * 1024 * 1024;
 	const bool timeoutOk = !timedOut.ok && timedOut.timedOut;
 	const bool childCleanupOk = childRun.ok && childGone;
+	const bool progressSuppressedOk = progressRun.ok &&
+		progressRun.stdOut == "progress-ok" && progressRun.stdErr.empty();
 	outCheck["nonzero_exit"] = {
 		{"ok", nonZeroOk},
 		{"exit_code", nonZero.exitCode},
@@ -1881,7 +1888,12 @@ bool RunPowerShellRunnerSelfTest(nlohmann::json& outCheck)
 		{"runner_ok", childRun.ok},
 		{"runner_error", childRun.error}
 	};
-	outCheck["ok"] = nonZeroOk && truncationOk && timeoutOk && childCleanupOk;
+	outCheck["progress_suppressed"] = {
+		{"ok", progressSuppressedOk},
+		{"stdout", progressRun.stdOut},
+		{"stderr", progressRun.stdErr}
+	};
+	outCheck["ok"] = nonZeroOk && truncationOk && timeoutOk && childCleanupOk && progressSuppressedOk;
 	return outCheck.value("ok", false);
 }
 
@@ -3472,6 +3484,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 
 	for (const std::string& settingsSelfTest : {
 			BuildAutoLinkerSettingsSelfTestJson(),
+			BuildProjectBuildConfigSelfTestJson(),
 			AIImageAttachmentManager::BuildSelfTestJson(),
 			AIService::BuildImageInputSelfTestJson(),
 			AISkillManager::BuildSelfTestJson(),
