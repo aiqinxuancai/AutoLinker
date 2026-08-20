@@ -20,6 +20,9 @@ extern ModelManager g_modelManager;
 // 在 IDE 主线程刷新当前打开的易语言源码路径及关联上下文。
 void UpdateCurrentOpenSourceFile();
 
+// 返回用于查询项目级配置的源码路径；无头编译时返回原始工程路径。
+std::string GetCurrentProjectConfigSourcePath();
+
 void OutputStringToELog(const std::string& szbuf);
 
 uint64_t AllocateAIPerfTraceId();

@@ -10,6 +10,9 @@ namespace HeadlessCompileRunner {
 // 判断当前进程是否带有 AutoLinker 无头编译请求。
 bool HasHeadlessCompileRequest();
 
+// 返回无头任务对应的原始工程路径，供项目级配置查询使用；非无头模式返回空字符串。
+std::string GetOriginalProjectSourcePathLocal();
+
 // 如请求要求无头运行，则尽早隐藏 IDE 主窗口。
 void ApplyInitialWindowState(HWND mainWindow);
 

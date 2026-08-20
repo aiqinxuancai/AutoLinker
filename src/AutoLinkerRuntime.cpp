@@ -13,6 +13,7 @@
 #include "AIJsonConfig.h"
 #include "AIChatFeature.h"
 #include "Global.h"
+#include "HeadlessCompileRunner.h"
 #include "IDEFacade.h"
 #include "Logger.h"
 #include "LocalMcpServer.h"
@@ -258,13 +259,20 @@ void UpdateCurrentOpenSourceFile()
 	LocalMcpServer::UpdateInstanceHints(currentSourceFile, pageName, pageType);
 }
 
+std::string GetCurrentProjectConfigSourcePath()
+{
+	const std::string originalSourcePath = HeadlessCompileRunner::GetOriginalProjectSourcePathLocal();
+	return originalSourcePath.empty() ? g_nowOpenSourceFilePath : originalSourcePath;
+}
+
 void OutputCurrentSourceLinker()
 {
 	UpdateCurrentOpenSourceFile();
 
 	std::string linkerName = "默认";
-	if (!g_nowOpenSourceFilePath.empty()) {
-		std::string configured = g_configManager.getValue(g_nowOpenSourceFilePath);
+	const std::string configSourcePath = GetCurrentProjectConfigSourcePath();
+	if (!configSourcePath.empty()) {
+		std::string configured = g_configManager.getValue(configSourcePath);
 		if (!configured.empty()) {
 			linkerName = configured;
 		}

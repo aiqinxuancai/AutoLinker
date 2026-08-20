@@ -38,18 +38,21 @@ struct ProjectBuildJob {
 	std::string id;
 	ProjectBuildConfig config;
 	ProjectBuildVariableContext variables;
-	std::filesystem::path snapshotDirectory;
+	std::filesystem::path jobDirectory;
 	std::filesystem::path snapshotPath;
 	std::filesystem::path resultPath;
 	std::filesystem::path eidePath;
 };
 
-struct DirectoryCleanup {
-	std::filesystem::path path;
-	~DirectoryCleanup()
+struct ProjectBuildJobCleanup {
+	std::filesystem::path snapshotPath;
+	std::filesystem::path jobDirectory;
+	~ProjectBuildJobCleanup()
 	{
 		std::error_code error;
-		std::filesystem::remove_all(path, error);
+		std::filesystem::remove(snapshotPath, error);
+		error.clear();
+		std::filesystem::remove_all(jobDirectory, error);
 	}
 };
 
@@ -249,6 +252,8 @@ bool RunHeadlessCompile(ProjectBuildJob& job, std::string& outputPath, std::stri
 	AppendCommandLineArgument(commandLine, L"600");
 	AppendCommandLineArgument(commandLine, L"--autolinker-invocation-id");
 	AppendCommandLineArgument(commandLine, Utf8ToWide(job.id));
+	AppendCommandLineArgument(commandLine, L"--autolinker-project-source");
+	AppendCommandLineArgument(commandLine, job.variables.sourcePath.wstring());
 	AppendCommandLineArgument(commandLine, job.config.staticCompile ? L"--autolinker-static" : L"--autolinker-no-static");
 	AppendCommandLineArgument(commandLine, L"--autolinker-hide-window");
 	AppendCommandLineArgument(commandLine, L"--autolinker-exit");
@@ -306,7 +311,7 @@ bool RunHeadlessCompile(ProjectBuildJob& job, std::string& outputPath, std::stri
 
 void RunProjectBuildWorker(ProjectBuildJob job)
 {
-	DirectoryCleanup cleanup{job.snapshotDirectory};
+	ProjectBuildJobCleanup cleanup{job.snapshotPath, job.jobDirectory};
 	try {
 		std::string error;
 		if (!RunCommands(job.config.preBuildCommands, job.variables, "pre-build", error)) {
@@ -389,35 +394,42 @@ ProjectBuildPipelineResult StartProjectBuildPipelineAsync(
 		job.id = "project-build-" + std::to_string(GetCurrentProcessId()) + "-" +
 			std::to_string(GetTickCount64()) + "-" + std::to_string(counter);
 		std::error_code pathError;
-		job.snapshotDirectory = std::filesystem::temp_directory_path(pathError) /
+		job.jobDirectory = std::filesystem::temp_directory_path(pathError) /
 			L"AutoLinker" / L"project-build" / Utf8ToWide(job.id);
 		if (pathError) {
 			result.stage = "snapshot";
 			result.message = "cannot resolve system temp directory";
 			return result;
 		}
-		std::filesystem::create_directories(job.snapshotDirectory, pathError);
+		std::filesystem::create_directories(job.jobDirectory, pathError);
 		if (pathError) {
 			result.stage = "snapshot";
-			result.message = "cannot create project snapshot directory";
+			result.message = "cannot create project build task directory";
 			return result;
 		}
-		job.snapshotPath = job.snapshotDirectory / L"project.e";
-		job.resultPath = job.snapshotDirectory / L"result.json";
+		job.snapshotPath = job.variables.projectDir /
+			std::filesystem::path(L"~autolinker-" + Utf8ToWide(job.id) + L".e");
+		job.resultPath = job.jobDirectory / L"result.json";
 
 		result.stage = "snapshot";
 		size_t bytesWritten = 0;
 		std::string snapshotError;
 		std::string snapshotTrace;
 		if (!WriteProjectSnapshot(job.snapshotPath, bytesWritten, snapshotError, snapshotTrace)) {
-			std::filesystem::remove_all(job.snapshotDirectory, pathError);
+			std::filesystem::remove(job.snapshotPath, pathError);
+			pathError.clear();
+			std::filesystem::remove_all(job.jobDirectory, pathError);
 			result.message = snapshotError.empty() ? "serialize current project failed" : snapshotError;
 			Logger::Instance().Write("ProjectBuild", "snapshot failed: " + snapshotTrace);
 			return result;
 		}
 		Logger::Instance().Write(
 			"ProjectBuild",
-			"job=" + job.id + " snapshot_bytes=" + std::to_string(bytesWritten) + " trace=" + snapshotTrace);
+			"job=" + job.id +
+			" source=" + WideToUtf8(job.variables.sourcePath.wstring()) +
+			" snapshot=" + WideToUtf8(job.snapshotPath.wstring()) +
+			" snapshot_bytes=" + std::to_string(bytesWritten) +
+			" trace=" + snapshotTrace);
 
 		result.stage = "queued";
 		result.message = "project build queued";

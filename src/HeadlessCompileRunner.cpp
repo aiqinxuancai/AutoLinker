@@ -37,6 +37,7 @@ struct HeadlessCompileRequest {
 	bool enabled = false;
 	std::string target = "auto";
 	std::string outputPath;
+	std::string projectSourcePath;
 	bool staticCompile = false;
 	bool hideWindow = true;
 	bool exitAfterCompile = true;
@@ -174,6 +175,40 @@ std::wstring LocalToWideText(const std::string& text)
 		return std::wstring();
 	}
 	return wide;
+}
+
+std::string WideToLocalText(const std::wstring& text)
+{
+	if (text.empty()) {
+		return std::string();
+	}
+
+	const int localLen = WideCharToMultiByte(
+		CP_ACP,
+		0,
+		text.data(),
+		static_cast<int>(text.size()),
+		nullptr,
+		0,
+		nullptr,
+		nullptr);
+	if (localLen <= 0) {
+		return std::string();
+	}
+
+	std::string local(static_cast<size_t>(localLen), '\0');
+	if (WideCharToMultiByte(
+		CP_ACP,
+		0,
+		text.data(),
+		static_cast<int>(text.size()),
+		local.data(),
+		localLen,
+		nullptr,
+		nullptr) <= 0) {
+		return std::string();
+	}
+	return local;
 }
 
 void EnsureParentConsoleAttached()
@@ -471,6 +506,7 @@ void ApplyJsonRequest(const nlohmann::json& json, HeadlessCompileRequest& reques
 	request.enabled = GetJsonBool(json, "enabled", request.enabled);
 	request.target = GetJsonString(json, "target", request.target);
 	request.outputPath = GetJsonString(json, "output_path", request.outputPath);
+	request.projectSourcePath = GetJsonString(json, "project_source_path", request.projectSourcePath);
 	request.staticCompile = GetJsonBool(json, "static_compile", request.staticCompile);
 	request.hideWindow = GetJsonBool(json, "hide_window", request.hideWindow);
 	request.exitAfterCompile = GetJsonBool(json, "exit_after_compile", request.exitAfterCompile);
@@ -537,6 +573,7 @@ void ApplyEnvironmentRequest(HeadlessCompileRequest& request)
 	applyStringEnv(L"AL_HEADLESS_TARGET", request.target);
 	applyStringEnv(L"AL_HEADLESS_OUTPUT", request.outputPath);
 	applyStringEnv(L"AL_HEADLESS_OUTPUT_PATH", request.outputPath);
+	applyStringEnv(L"AL_HEADLESS_PROJECT_SOURCE", request.projectSourcePath);
 	applyStringEnv(L"AL_HEADLESS_RESULT", request.resultPath);
 	applyStringEnv(L"AL_HEADLESS_RESULT_PATH", request.resultPath);
 	applyStringEnv(L"AL_HEADLESS_INVOCATION_ID", request.invocationId);
@@ -548,6 +585,7 @@ void ApplyEnvironmentRequest(HeadlessCompileRequest& request)
 	applyStringEnv(L"AUTOLINKER_HEADLESS_TARGET", request.target);
 	applyStringEnv(L"AUTOLINKER_HEADLESS_OUTPUT", request.outputPath);
 	applyStringEnv(L"AUTOLINKER_HEADLESS_OUTPUT_PATH", request.outputPath);
+	applyStringEnv(L"AUTOLINKER_HEADLESS_PROJECT_SOURCE", request.projectSourcePath);
 	applyStringEnv(L"AUTOLINKER_HEADLESS_RESULT", request.resultPath);
 	applyStringEnv(L"AUTOLINKER_HEADLESS_RESULT_PATH", request.resultPath);
 	applyStringEnv(L"AUTOLINKER_HEADLESS_INVOCATION_ID", request.invocationId);
@@ -912,6 +950,10 @@ void ApplyCommandLineRequest(HeadlessCompileRequest& request)
 			request.target = hasValue ? value : ReadNextArgumentValue(args, i);
 			continue;
 		}
+		if (name == "autolinker-project-source" || name == "autolinker-project-source-path") {
+			request.projectSourcePath = hasValue ? value : ReadNextArgumentValue(args, i);
+			continue;
+		}
 		if (name == "autolinker-static" || name == "autolinker-static-compile") {
 			request.staticCompile = true;
 			if (hasValue) {
@@ -1026,6 +1068,7 @@ void EnsureRequestParsed()
 		ApplyCommandLineRequest(request);
 		request.target = ToLowerAsciiCopyLocal(TrimAsciiCopyLocal(request.target.empty() ? "auto" : request.target));
 		request.outputPath = TrimAsciiCopyLocal(request.outputPath);
+		request.projectSourcePath = TrimAsciiCopyLocal(request.projectSourcePath);
 		request.resultPath = TrimAsciiCopyLocal(request.resultPath);
 		request.invocationId = SanitizeInvocationId(request.invocationId);
 		if (request.enabled && request.resultPath.empty()) {
@@ -1501,6 +1544,7 @@ nlohmann::json BuildRequestJson(const HeadlessCompileRequest& request)
 	return {
 		{"target", request.target},
 		{"output_path", request.outputPath},
+		{"project_source_path", request.projectSourcePath},
 		{"static_compile", request.staticCompile},
 		{"hide_window", request.hideWindow},
 		{"exit_after_compile", request.exitAfterCompile},
@@ -1549,6 +1593,9 @@ void HeadlessWorkerMain()
 	result["latest_result_file"] = GetLatestResultPath().string();
 
 	OutputStringToELog("[HeadlessCompile] 已进入无头编译模式");
+	if (!request.projectSourcePath.empty()) {
+		OutputStringToELog("[HeadlessCompile] 原始工程上下文: " + request.projectSourcePath);
+	}
 
 	if (request.hideWindow) {
 		HeadlessCompileRunner::ApplyInitialWindowState(g_hwnd);
@@ -1639,6 +1686,22 @@ namespace HeadlessCompileRunner {
 bool HasHeadlessCompileRequest()
 {
 	return GetRequestCopy().enabled;
+}
+
+std::string GetOriginalProjectSourcePathLocal()
+{
+	const HeadlessCompileRequest request = GetRequestCopy();
+	if (!request.enabled || request.projectSourcePath.empty()) {
+		return std::string();
+	}
+
+	try {
+		std::filesystem::path path(Utf8ToWide(request.projectSourcePath));
+		return WideToLocalText(path.lexically_normal().wstring());
+	}
+	catch (...) {
+		return WideToLocalText(Utf8ToWide(request.projectSourcePath));
+	}
 }
 
 void ApplyInitialWindowState(HWND mainWindow)

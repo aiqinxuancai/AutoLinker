@@ -419,11 +419,14 @@ HANDLE WINAPI MyCreateFileA(
 	if (lpFileName != nullptr && autoLinkerPath.string() == std::string(lpFileName)) {
 		g_preCompiling = false;
 
-		auto linkName = g_configManager.getValue(g_nowOpenSourceFilePath);
+		const std::string configSourcePath = GetCurrentProjectConfigSourcePath();
+		auto linkName = g_configManager.getValue(configSourcePath);
 		if (!linkName.empty()) {
 			auto linkConfig = g_linkerManager.getConfig(linkName);
 			if (std::filesystem::exists(linkConfig.path)) {
-				OutputStringToELog("switch linker: " + linkConfig.name + " " + linkConfig.path);
+				OutputStringToELog(
+					"switch linker: " + linkConfig.name + " " + linkConfig.path +
+					" source=" + configSourcePath);
 				return originalCreateFileA(
 					linkConfig.path.c_str(),
 					dwDesiredAccess,
@@ -437,7 +440,7 @@ HANDLE WINAPI MyCreateFileA(
 			OutputStringToELog("failed to switch linker: file missing");
 		}
 		else {
-			OutputStringToELog("linker not configured for current source file");
+			OutputStringToELog("linker not configured for project source: " + configSourcePath);
 		}
 	}
 
@@ -491,7 +494,7 @@ BOOL WINAPI MyCreateProcessA(
 		const auto forceLinkRules = forceLinkLibManager.getRules();
 
 		if (!forceLinkRules.empty()) {
-			const std::string currentLinkerName = g_configManager.getValue(g_nowOpenSourceFilePath);
+			const std::string currentLinkerName = g_configManager.getValue(GetCurrentProjectConfigSourcePath());
 			OutputStringToELog(std::format("current linker: {}", currentLinkerName));
 
 			std::string libCmd;

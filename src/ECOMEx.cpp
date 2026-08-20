@@ -2,6 +2,7 @@
 #include "IDEFacade.h"
 #include "Global.h"
 #include <filesystem>
+#include <vector>
 
 int GetECOMCount() {
 	int ecomCount = 0;
@@ -46,18 +47,24 @@ int FindECOMNameIndex(std::string ecomName) {
 
 
 /// <summary>
-/// 根据当前是否是调试，自动切换模块
+/// 根据当前阶段自动切换模块
 /// </summary>
-/// <param name="isDebug"></param>
-void RunChangeECOM(bool isDebug) {
-	int ecomCount = GetECOMCount();
-	for (int i = 0; i < ecomCount; i++) {
+/// <param name="useCompileModules">true 切到静态编译版，false 切回动态调试版。</param>
+int RunChangeECOM(bool useCompileModules) {
+	struct Replacement {
+		std::string oldPath;
+		std::string newPath;
+	};
+
+	std::vector<Replacement> replacements;
+	const int ecomCount = GetECOMCount();
+	for (int i = 0; i < ecomCount; ++i) {
 		std::string item = GetECOMPath(i);
 		std::filesystem::path pathObj(item);
 		std::string fileName = pathObj.filename().string();
 		std::string needChangECOMName;
 
-		if (isDebug) {
+		if (useCompileModules) {
 			needChangECOMName = g_modelManager.getValue(fileName);
 		}
 		else {
@@ -65,10 +72,29 @@ void RunChangeECOM(bool isDebug) {
 		}
 
 		if (!needChangECOMName.empty()) {
-			auto newPath = pathObj.parent_path().append(needChangECOMName).string();
-			if (RemoveECOM(i) && AddECOM2(newPath)) {
-				OutputStringToELog("切换模块:" + item + " -> " + newPath);
-			}
+			replacements.push_back({
+				item,
+				(pathObj.parent_path() / needChangECOMName).string()
+			});
 		}
 	}
+
+	int changedCount = 0;
+	for (const auto& replacement : replacements) {
+		if (!RemoveECOM(replacement.oldPath)) {
+			OutputStringToELog("切换模块失败，无法移除: " + replacement.oldPath);
+			continue;
+		}
+		if (AddECOM2(replacement.newPath)) {
+			++changedCount;
+			OutputStringToELog("切换模块:" + replacement.oldPath + " -> " + replacement.newPath);
+			continue;
+		}
+
+		OutputStringToELog("切换模块失败，正在恢复: " + replacement.newPath);
+		if (!AddECOM2(replacement.oldPath)) {
+			OutputStringToELog("恢复原模块失败: " + replacement.oldPath);
+		}
+	}
+	return changedCount;
 }

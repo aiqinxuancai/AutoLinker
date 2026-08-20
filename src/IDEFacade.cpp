@@ -2328,7 +2328,10 @@ bool IDEFacade::CompileWithOutputPath(
 	}
 
 	// 工具编译不会经过地址 Hook，这里显式执行一次编译前 EC 模块切换。
-	RunChangeECOM(true);
+	const int changedEcomCount = RunChangeECOM(true);
+	OutputStringToELog(std::format(
+		"[Compile] EC 静态编译模块检查完成 changed={}",
+		changedEcomCount));
 
 	std::string requestDiagnostics;
 	if (!BeginSilentCompileOutputPathRequest(normalizedPath, GetCurrentThreadId(), &requestDiagnostics)) {

@@ -1,10 +1,10 @@
-#pragma once
+﻿#pragma once
 #include <format>
 
 #include <string>
 #include <Windows.h>
 
-///ģ�������չ
+// 易模块导入及动静态切换扩展。
 
 int GetECOMCount();
 
@@ -23,4 +23,5 @@ int FindECOMIndex(std::string filePah);
 int FindECOMNameIndex(std::string ecomName);
 
 
-void RunChangeECOM(bool isDebug);
+// 根据阶段切换 EC：true 切到静态编译版，false 切回动态调试版；返回成功切换数量。
+int RunChangeECOM(bool useCompileModules);
