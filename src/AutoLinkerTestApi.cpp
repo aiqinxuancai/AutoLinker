@@ -2773,6 +2773,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		}
 		else {
 			bool hasReadCodeItem = false;
+			bool hasEPackager = false;
 			bool hasRequiredRefreshDescription = false;
 			bool editCasSchemaOk = false;
 			bool multiEditCasSchemaOk = false;
@@ -2792,6 +2793,9 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 				if (name == "read_code_item") {
 					hasReadCodeItem = true;
 				}
+				if (name == "e_packager") {
+					hasEPackager = true;
+				}
 				const nlohmann::json properties = item.value("inputSchema", nlohmann::json::object())
 					.value("properties", nlohmann::json::object());
 				editCasSchemaOk = editCasSchemaOk || (name == "edit_file" && properties.contains("expected_base_hash"));
@@ -2809,11 +2813,12 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 				}
 			}
 			const bool casSchemasOk = editCasSchemaOk && multiEditCasSchemaOk && diffCasSchemaOk && restoreCasSchemaOk;
-			if (!hasReadCodeItem || !hasRequiredRefreshDescription || !casSchemasOk || !hiddenDependencyTools) {
+			if (!hasReadCodeItem || !hasEPackager || !hasRequiredRefreshDescription || !casSchemasOk || !hiddenDependencyTools) {
 				publicCatalogCheck["ok"] = false;
 				publicCatalogCheck["error"] = "public catalog visibility or CAS schema invariant failed";
 			}
 			publicCatalogCheck["has_read_code_item"] = hasReadCodeItem;
+			publicCatalogCheck["has_e_packager"] = hasEPackager;
 			publicCatalogCheck["has_required_refresh_description"] = hasRequiredRefreshDescription;
 			publicCatalogCheck["cas_schemas_ok"] = casSchemasOk;
 			publicCatalogCheck["dependency_tools_hidden"] = hiddenDependencyTools;

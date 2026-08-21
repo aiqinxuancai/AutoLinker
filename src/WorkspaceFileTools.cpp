@@ -182,6 +182,7 @@ bool IsDefaultVisiblePath(const std::string& relativePath)
 		path.rfind("ecom/", 0) == 0 ||
 		path.rfind("elib/", 0) == 0 ||
 		path.rfind("header/", 0) == 0 ||
+		path.rfind("unimported_code/", 0) == 0 ||
 		path == "agents.md" ||
 		path == "info.json";
 }

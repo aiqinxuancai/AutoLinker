@@ -574,6 +574,9 @@
     <ClCompile Include="src\AIChatToolRegistry.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
+    <ClCompile Include="src\EPackagerTool.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="src\AIChatToolPolicy.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -638,6 +641,7 @@
     <ClInclude Include="src\AIChatTooling.h" />
     <ClInclude Include="src\AIChatToolingInternal.h" />
     <ClInclude Include="src\AIChatToolRegistry.h" />
+    <ClInclude Include="src\EPackagerTool.h" />
     <ClInclude Include="src\AIChatToolPolicy.h" />
     <ClInclude Include="src\AIService.h" />
     <ClInclude Include="src\AIJsonConfig.h" />

@@ -6,6 +6,7 @@
 #include "AISkillManager.h"
 #include "ConfigManager.h"
 #include "ExecCommandSessionManager.h"
+#include "EPackagerTool.h"
 #include "Global.h"
 #include "IdeCompileDialogGuard.h"
 #include "Logger.h"
@@ -1058,6 +1059,10 @@ std::string ExecuteToolCallImpl(
 			return prepareResult;
 		}
 		return WorkspaceFileTools::ExecuteTool(toolName, argumentsJson, outOk, cancelCallback);
+	}
+
+	if (toolName == "e_packager") {
+		return JsonToLocalText(EPackagerTool::Execute(argumentsJson, outOk));
 	}
 
 	if (toolName == "add_new_file") {

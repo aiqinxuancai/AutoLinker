@@ -10,8 +10,9 @@
 namespace AIChatToolRegistry {
 namespace {
 
-constexpr std::array<ToolMetadata, 33> kTools = {{
+constexpr std::array<ToolMetadata, 34> kTools = {{
 	{"refresh_workspace_mirror", true, false, false, false, false},
+	{"e_packager", true, false, true, false, false},
 	{"update_plan", false, false, false, false, false},
 	{"get_goal", false, false, false, false, false},
 	{"update_goal", false, false, false, false, false},

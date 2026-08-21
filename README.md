@@ -88,6 +88,7 @@ url = "http://127.0.0.1:19207/mcp"
 
 ### 工程源码读写模型
 - 内置 AI 每轮请求前以 `full` 模式自动准备镜像；外部 MCP 会话首次读写前须调用 `refresh_workspace_mirror`。镜像由 e-packager 解包到 `%TEMP%/AutoLinker/workspace-mirror/`（含未保存改动），不污染源码目录。`mode` 支持 `auto` / `main_only` / `full`。
+- `e_packager` 可将磁盘上的其它 `.e` / `.ec` 解包到当前镜像的 `unimported_code/{文件名}/`，供读取、搜索和复刻参考；使用 `list_files` / `search_code` 定位文件，再用 `read_file` / `read_files` 读取，不对未引用源码使用 `read_code_item`。同名目录采用成功后替换，且会随当前工程镜像的全量刷新保留。
 - 读取统一走镜像相对路径（`list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`）；大文件返回 `next_source_byte_offset` 用于续读。续页建议原样回传上一页的非零 `mirror_generation`；漏传时自动绑定当前镜像代次，显式传入的旧代次游标仍会被拒绝。
 - 编辑前用 `read_real_file` 取分页视图和 `code_hash` 作为 CAS 基线。写工具（`edit_file`、`multi_edit_file`、`write_file` 等）以 `file_path` 为目标，映射回 IDE 程序项后直接写回 IDE，不回包编译。
 - 写入须带 SHA-256 `expected_base_hash`（恢复用 `expected_current_hash`）防止旧基线覆盖新改动；结果仅返回哈希、快照、验证与变更统计，完整结果在 `structuredContent`。
@@ -98,6 +99,7 @@ url = "http://127.0.0.1:19207/mcp"
 | 类别 | 方法 | 说明 |
 | --- | --- | --- |
 | 读取 | `refresh_workspace_mirror` | 从 IDE 内存工程刷新镜像（`auto` / `main_only` / `full`） |
+| 读取 | `e_packager` | 解包其它 `.e` / `.ec` 到只读参考目录 `unimported_code/{文件名}/` |
 | 读取 | `list_files` | 按 glob 列出镜像内文件 |
 | 读取 | `search_code` | 镜像内逐文件搜索，支持批量 patterns、glob、上下文、分页 |
 | 读取 | `read_file` / `read_files` | 读取单个 / 批量文件或区间，带行号 |

@@ -31,6 +31,14 @@ struct FileAccessSnapshot {
 	std::uint64_t generation = 0;
 };
 
+// 外部易语言源码解包结果；目录路径相对于当前工程镜像根目录。
+struct ReferenceUnpackResult {
+	std::string sourcePathUtf8;
+	std::string outputDirectoryUtf8;
+	std::uint64_t fileCount = 0;
+	std::uint64_t generation = 0;
+};
+
 // 确保当前源码的解包镜像可用；必要时导出内存快照并重新解包。
 bool EnsureMirrorFresh(std::string& outError);
 
@@ -50,6 +58,12 @@ bool ResolvePreparedFilePath(
 
 // 强制刷新当前源码镜像。Auto 保持原策略；MainOnly 只刷新源文件；Full 重建完整镜像。
 bool RefreshMirror(std::string& outError, std::string* outMode = nullptr, RefreshMode mode = RefreshMode::Auto);
+
+// 用 e-packager 把外部 .e/.ec 文件解包到 unimported_code/{文件名}/，供镜像读取工具参考。
+bool UnpackReferenceSource(
+	const std::string& sourceFilePathUtf8,
+	ReferenceUnpackResult& outResult,
+	std::string& outError);
 
 // 标记镜像已过期，下一次读取/搜索/列出时惰性重建。
 void InvalidateMirror();
