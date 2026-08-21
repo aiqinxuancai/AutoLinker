@@ -858,6 +858,46 @@ bool IsOwnVisibleDialog(HWND hWnd)
 	return _wcsicmp(GetWindowClassWide(hWnd).c_str(), L"#32770") == 0;
 }
 
+bool IsHeadlessIdeVisualWindow(HWND hWnd)
+{
+	const std::wstring className = GetWindowClassWide(hWnd);
+	if (_wcsicmp(className.c_str(), L"ENewFrame") == 0) {
+		return true;
+	}
+	if (className != L"Afx:400000:0:10003:0:0" || !GetWindowTextWide(hWnd).empty()) {
+		return false;
+	}
+
+	RECT bounds = {};
+	return GetWindowRect(hWnd, &bounds) != FALSE &&
+		bounds.right - bounds.left == 400 &&
+		bounds.bottom - bounds.top == 280;
+}
+
+struct HeadlessWindowHideContext {
+	DWORD processId = 0;
+	std::size_t hiddenCount = 0;
+};
+
+BOOL CALLBACK EnumHeadlessIdeWindowProc(HWND hWnd, LPARAM lParam)
+{
+	auto* context = reinterpret_cast<HeadlessWindowHideContext*>(lParam);
+	if (context == nullptr || hWnd == nullptr || !IsWindow(hWnd) || !IsWindowVisible(hWnd)) {
+		return TRUE;
+	}
+
+	DWORD processId = 0;
+	GetWindowThreadProcessId(hWnd, &processId);
+	if (processId != context->processId || !IsHeadlessIdeVisualWindow(hWnd)) {
+		return TRUE;
+	}
+
+	if (ShowWindow(hWnd, SW_HIDE) != FALSE) {
+		++context->hiddenCount;
+	}
+	return TRUE;
+}
+
 void DismissDialog(HWND hWnd)
 {
 	if (hWnd == nullptr || !IsWindow(hWnd)) {
@@ -902,8 +942,9 @@ void HeadlessDialogWatcherMain()
 		if (g_finishRequested.load()) {
 			break;
 		}
+		HeadlessCompileRunner::HideIdeWindowsForHeadlessProcess(GetCurrentProcessId());
 		EnumWindows(EnumHeadlessDialogProc, 0);
-		Sleep(200);
+		Sleep(50);
 	}
 }
 
@@ -1704,6 +1745,18 @@ std::string GetOriginalProjectSourcePathLocal()
 	}
 }
 
+std::size_t HideIdeWindowsForHeadlessProcess(DWORD processId)
+{
+	if (processId == 0) {
+		return 0;
+	}
+
+	HeadlessWindowHideContext context;
+	context.processId = processId;
+	EnumWindows(EnumHeadlessIdeWindowProc, reinterpret_cast<LPARAM>(&context));
+	return context.hiddenCount;
+}
+
 void ApplyInitialWindowState(HWND mainWindow)
 {
 	const HeadlessCompileRequest request = GetRequestCopy();
@@ -1711,6 +1764,7 @@ void ApplyInitialWindowState(HWND mainWindow)
 		return;
 	}
 
+	HideIdeWindowsForHeadlessProcess(GetCurrentProcessId());
 	ShowWindow(mainWindow, SW_HIDE);
 	SetWindowPos(
 		mainWindow,

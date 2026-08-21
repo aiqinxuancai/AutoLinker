@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <cstddef>
 #include <string>
 
 // AutoLinker 无头编译启动器：解析 e.exe 命令行并在 IDE 就绪后执行编译。
@@ -12,6 +13,9 @@ bool HasHeadlessCompileRequest();
 
 // 返回无头任务对应的原始工程路径，供项目级配置查询使用；非无头模式返回空字符串。
 std::string GetOriginalProjectSourcePathLocal();
+
+// 隐藏指定易语言进程的启动图和 IDE 主窗口，返回本次发出的隐藏请求数量。
+std::size_t HideIdeWindowsForHeadlessProcess(DWORD processId);
 
 // 如请求要求无头运行，则尽早隐藏 IDE 主窗口。
 void ApplyInitialWindowState(HWND mainWindow);

@@ -15,6 +15,7 @@
 #include "..\\thirdparty\\json.hpp"
 #include "EideProjectBinarySerializer.h"
 #include "Global.h"
+#include "HeadlessCompileRunner.h"
 #include "Logger.h"
 #include "PowerShellToolRunner.h"
 #include "UnicodeTextCodec.h"
@@ -22,6 +23,8 @@
 namespace {
 
 constexpr DWORD kHeadlessCompileTimeoutMilliseconds = 630000;
+constexpr ULONGLONG kHeadlessStartupWindowSuppressionMilliseconds = 10000;
+constexpr DWORD kHeadlessStartupWindowPollMilliseconds = 10;
 std::atomic<unsigned long long> g_projectBuildJobCounter = 0;
 
 std::string ProjectBuildUtf8(std::u8string_view text)
@@ -271,7 +274,7 @@ bool RunHeadlessCompile(ProjectBuildJob& job, std::string& outputPath, std::stri
 		nullptr,
 		nullptr,
 		FALSE,
-		CREATE_UNICODE_ENVIRONMENT,
+		CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
 		nullptr,
 		job.variables.projectDir.c_str(),
 		&startup,
@@ -281,8 +284,45 @@ bool RunHeadlessCompile(ProjectBuildJob& job, std::string& outputPath, std::stri
 		return false;
 	}
 
+	if (ResumeThread(process.hThread) == static_cast<DWORD>(-1)) {
+		const DWORD resumeError = GetLastError();
+		TerminateProcess(process.hProcess, 5);
+		WaitForSingleObject(process.hProcess, 5000);
+		CloseHandle(process.hThread);
+		CloseHandle(process.hProcess);
+		error = "ResumeThread failed, win32=" + std::to_string(resumeError);
+		return false;
+	}
 	CloseHandle(process.hThread);
-	const DWORD waitResult = WaitForSingleObject(process.hProcess, kHeadlessCompileTimeoutMilliseconds);
+	const ULONGLONG waitStartedAt = GetTickCount64();
+	std::size_t hiddenWindowEvents = 0;
+	DWORD waitResult = WAIT_TIMEOUT;
+	for (;;) {
+		const ULONGLONG elapsed = GetTickCount64() - waitStartedAt;
+		if (elapsed < kHeadlessStartupWindowSuppressionMilliseconds) {
+			hiddenWindowEvents += HeadlessCompileRunner::HideIdeWindowsForHeadlessProcess(process.dwProcessId);
+		}
+		if (elapsed >= kHeadlessCompileTimeoutMilliseconds) {
+			break;
+		}
+
+		const ULONGLONG remaining = kHeadlessCompileTimeoutMilliseconds - elapsed;
+		DWORD waitSlice = elapsed < kHeadlessStartupWindowSuppressionMilliseconds
+			? kHeadlessStartupWindowPollMilliseconds
+			: 1000;
+		if (remaining < waitSlice) {
+			waitSlice = static_cast<DWORD>(remaining);
+		}
+		waitResult = WaitForSingleObject(process.hProcess, waitSlice);
+		if (waitResult != WAIT_TIMEOUT) {
+			break;
+		}
+	}
+	if (hiddenWindowEvents > 0) {
+		Logger::Instance().Write(
+			"ProjectBuild",
+			"job=" + job.id + " hidden_headless_window_events=" + std::to_string(hiddenWindowEvents));
+	}
 	if (waitResult == WAIT_TIMEOUT) {
 		TerminateProcess(process.hProcess, 5);
 		WaitForSingleObject(process.hProcess, 5000);

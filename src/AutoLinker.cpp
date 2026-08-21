@@ -458,6 +458,9 @@ bool FneInit()
 
 EXTERN_C INT WINAPI AutoLinker_MessageNotify(INT nMsg, DWORD dwParam1, DWORD dwParam2)
 {
+	if (HeadlessCompileRunner::HasHeadlessCompileRequest()) {
+		HeadlessCompileRunner::HideIdeWindowsForHeadlessProcess(GetCurrentProcessId());
+	}
 	std::string s = std::format("AutoLinker_MessageNotify {0} {1} {2}", (int)nMsg, dwParam1, dwParam2);
 	if (nMsg == NL_IDE_READY) {
 		Logger::Instance().OpenIfNeeded(GetAutoLinkerLogFilePath("autolinker.log").string());
