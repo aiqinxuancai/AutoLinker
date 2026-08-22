@@ -2489,7 +2489,7 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "e_packager"},
-		{"description", "Unpack one existing .e or .ec file with e-packager into unimported_code/{file name}/ inside the current workspace mirror. The unpacked files are read-only reference code: use list_files or search_code to locate them, then read_file/read_files to read their contents. Relative file_path values resolve from the current project's directory; existing output for the same file name is replaced only after unpack succeeds."},
+		{"description", "Only call this tool when the user explicitly asks to parse, inspect, reference, or reproduce an external .e/.ec file. It unpacks that file with e-packager into unimported_code/{file name}/ inside the current workspace mirror. The unpacked files are read-only reference code: use list_files or search_code to locate them, then read_file/read_files to read their contents. Relative file_path values resolve from the current project's directory; existing output for the same file name is replaced only after unpack succeeds."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
@@ -3327,7 +3327,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"13) 通常我们只读取常量，不编辑和写入常量值，因为会覆盖一些长文本常量无法正确覆盖，所以我们通常用固定的程序集变量或局部变量来写固定的值，但需要给与一些注释，不要看起来像是魔法数字或文本。\n"
 			"14) 只有用户要求编译验证时，才调用 compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type、project_supported_compile_targets 和可用编译模式。对 win_exe、win_console_exe、win_dll 默认使用 static_compile=true；只有用户明确要求动态编译或不使用静态编译时才设为 false。当 project_type=ecom 且目的是编译验证/调试测试时，默认使用 target=win_console_exe 和 static_compile=true 生成静态控制台程序；只有用户明确要求发布/生成 .ec 模块时才使用 target=ecom 和 static_compile=false。\n"
 			"15) 除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用 refresh_dependency_catalog、search_available_modules、search_available_support_libraries、list_imported_modules、add_module_to_project、remove_module_from_project、add_support_library_to_project。\n"
-			"16) 用户要求参考或复刻其它 .e/.ec 文件时，用 e_packager 解包；结果位于 unimported_code/{文件名}/。用 list_files/search_code 定位文件，再用 read_file/read_files 读取；不要对未引用源码调用 read_code_item，也不得用写工具修改。\n\n"
+			"16) 仅当用户明确要求解析、查看、参考或复刻外部 .e/.ec 文件时，才调用 e_packager；结果位于 unimported_code/{文件名}/。用 list_files/search_code 定位文件，再用 read_file/read_files 读取；不要对未引用源码调用 read_code_item，也不得用写工具修改。\n\n"
 			"其他工具：\n"
 			"- 日常开发、排错和验证均可使用 update_plan；任务包含两个及以上有意义步骤，或展示进度有帮助时优先创建计划卡片，仅明显的一步式小操作可省略。\n"
 			"- 需要确认当前页名/页类型时用 get_current_page_info，不要臆测当前页。\n"
@@ -3396,7 +3396,7 @@ std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal
 		"日常开发、排错和验证均可使用 update_plan；有两个及以上有意义步骤或展示进度有帮助时优先创建计划，仅明显的一步式小操作可省略。写入 verified=true 后不要为了确认而复读源码。\n"
 		"如果需要读取网页或文档，优先调用 extract_web_document；需要原始响应时调用 fetch_url。\n"
 		"除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用依赖管理工具。\n"
-		"用户要求参考或复刻其它 .e/.ec 文件时，用 e_packager 解包；用 list_files/search_code 定位 unimported_code/{文件名}/ 下的文件，再用 read_file/read_files 读取，不要调用 read_code_item。\n"
+		"仅当用户明确要求解析、查看、参考或复刻外部 .e/.ec 文件时，才调用 e_packager；用 list_files/search_code 定位 unimported_code/{文件名}/ 下的文件，再用 read_file/read_files 读取，不要调用 read_code_item。\n"
 		"如果工具不可用或调用失败，说明限制并基于已有信息继续。\n"
 		"只输出对用户有用的结果，不输出内部推理过程。\n"
 		"`.子程序` 固定为 `.子程序 名称, 返回值, 公开属性, 说明文字`；`.程序集` 固定为 `.程序集 名称, 基类, 公开属性, 说明文字`。只可省略行尾未使用字段，填写第 4 字段说明时必须保留前三个结构逗号和中间空字段，第 3 字段只能为空或 `公开`。\n"
@@ -7785,7 +7785,7 @@ std::string AIService::BuildExternalMcpInstructions()
 
 		"【读取】\n"
 		"- 探索结构用 list_files；按内容/名称查找用 search_code；读取文件用 read_files（多个文件一次批量读，不要串行反复读单个）；当前工程中已知子程序/代码项名称时用 read_code_item。\n"
-		"- 用户要求参考或复刻磁盘上的其它 .e/.ec 文件时，调用 e_packager；它会把源码解包到 unimported_code/{文件名}/。该目录只读，用 list_files / search_code 定位文件，再用 read_file / read_files 读取；不要对未引用源码调用 read_code_item。\n"
+		"- 仅当用户明确要求解析、查看、参考或复刻磁盘上的其它 .e/.ec 文件时，才调用 e_packager；它会把源码解包到 unimported_code/{文件名}/。该目录只读，用 list_files / search_code 定位文件，再用 read_file / read_files 读取；不要对未引用源码调用 read_code_item。\n"
 		"- 编辑当前工程源码前，必须先对同一 file_path 调用 read_real_file，取得 real_source（真实页文本）与 code_hash 作为编辑基准；不要用其它来源的文本臆测当前内容。\n\n"
 
 		"【写入】\n"
