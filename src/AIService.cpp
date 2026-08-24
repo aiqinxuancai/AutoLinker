@@ -346,6 +346,11 @@ public:
 		return m_maxRetries + 1;
 	}
 
+	int MaxRetries() const noexcept
+	{
+		return m_maxRetries;
+	}
+
 	int RetriesPerformed() const noexcept
 	{
 		return m_retriesPerformed;
@@ -407,7 +412,107 @@ void ApplyPostToolRetryLimit(
 	ChatRetryCoordinator& retry,
 	const AIChatRunOptions& runOptions)
 {
+	const int before = retry.MaxRetries();
 	retry.LimitMaxRetries(runOptions.postToolRetryCount);
+	Logger::Instance().Write(
+		"AI",
+		std::format(
+			"[AI Chat][RetryBudget] post_tool_limit={} retries_before={} retries_after={} attempts_after={}",
+			runOptions.postToolRetryCount,
+			before,
+			retry.MaxRetries(),
+			retry.MaxAttempts()));
+}
+
+void LogChatRetryBudget(
+	const char* protocol,
+	const AISettings& settings,
+	const AIChatRunOptions& runOptions)
+{
+	Logger::Instance().Write(
+		"AI",
+		std::format(
+			"[AI Chat][RetryBudget] protocol={} endpoint={} configured_retries={} post_tool_limit={}",
+			protocol == nullptr ? "unknown" : protocol,
+			settings.endpointName.empty() ? "<unnamed>" : settings.endpointName,
+			(std::clamp)(settings.retryCount, 0, kAiMaxRequestRetryCount),
+			runOptions.postToolRetryCount));
+}
+
+std::string JsonErrorScalarUtf8(const nlohmann::json& value)
+{
+	if (value.is_string()) {
+		return AIService::Trim(value.get<std::string>());
+	}
+	if (value.is_number() || value.is_boolean()) {
+		return value.dump();
+	}
+	return std::string();
+}
+
+void CollectHttpErrorFields(
+	const nlohmann::json& value,
+	AIHttpErrorDetails& details,
+	int depth = 0)
+{
+	if (depth > 12) {
+		return;
+	}
+	if (value.is_array()) {
+		for (const auto& item : value) {
+			CollectHttpErrorFields(item, details, depth + 1);
+		}
+		return;
+	}
+	if (!value.is_object()) {
+		return;
+	}
+
+	const auto readFirst = [&value](const std::initializer_list<const char*>& keys) {
+		for (const char* key : keys) {
+			if (key != nullptr && value.contains(key)) {
+				const std::string scalar = JsonErrorScalarUtf8(value[key]);
+				if (!scalar.empty()) {
+					return scalar;
+				}
+			}
+		}
+		return std::string();
+	};
+
+	if (details.codeUtf8.empty()) {
+		details.codeUtf8 = readFirst({ "code", "error_code", "errorCode", "type" });
+	}
+	if (details.messageUtf8.empty()) {
+		details.messageUtf8 = readFirst({ "message", "error_description", "errorDescription", "title" });
+	}
+	if (details.detailUtf8.empty()) {
+		details.detailUtf8 = readFirst({ "detail", "details", "reason", "description" });
+	}
+	if (details.traceIdUtf8.empty()) {
+		details.traceIdUtf8 = readFirst({ "traceId", "trace_id", "requestId", "request_id" });
+	}
+
+	for (const auto& item : value.items()) {
+		CollectHttpErrorFields(item.value(), details, depth + 1);
+	}
+}
+
+AIHttpErrorDetails ParseHttpErrorDetailsInternal(
+	int statusCode,
+	const std::string& responseBody)
+{
+	AIHttpErrorDetails details;
+	details.httpStatus = statusCode;
+	try {
+		CollectHttpErrorFields(nlohmann::json::parse(responseBody), details);
+	}
+	catch (...) {
+		// 非 JSON 响应仍由界面错误构造函数使用原始响应作为回退文本。
+	}
+	details.retryAfterMs = TryParseRetryAfterDelayMs(statusCode, responseBody)
+		.value_or(0);
+	return details;
 }
 
 void LogAiHttpFailure(const std::string& tag, int statusCode, const std::string& responseBody)
@@ -419,9 +524,17 @@ void LogAiHttpFailure(const std::string& tag, int statusCode, const std::string&
 			? "<no response: network/transport failure>"
 			: "<empty response body>";
 	}
-	std::string ideResponse = AIService::Trim(responseBody);
+	std::string ideResponse = UnicodeTextCodec::Utf8ToLocalPreservingUnicode(responseBody);
 	if (ideResponse.empty()) {
 		ideResponse = fileResponse;
+	}
+	const AIHttpErrorDetails details = ParseHttpErrorDetailsInternal(statusCode, responseBody);
+	if (!details.codeUtf8.empty() || !details.traceIdUtf8.empty()) {
+		ideResponse = std::format(
+			"{}{}{}",
+			ideResponse,
+			details.codeUtf8.empty() ? "" : " code=" + details.codeUtf8,
+			details.traceIdUtf8.empty() ? "" : " traceId=" + details.traceIdUtf8);
 	}
 	const std::string prefix = std::format(
 		"[AI Chat][HTTP Failure] {} http={} response=",
@@ -439,10 +552,44 @@ void LogAiHttpFailure(const std::string& tag, int statusCode, const std::string&
 
 std::string BuildHttpStatusErrorForUi(int statusCode, const std::string& responseBody)
 {
-	// WinINet 返回体按字节保留 UTF-8；AIChatResult.error 会继续交给 IDE
-	// 的本地编码输出链路，不能把 UTF-8 字节直接当作 GBK 使用。
-	const std::string responseLocal = UnicodeTextCodec::Utf8ToLocalPreservingUnicode(responseBody);
-	return std::format("HTTP {}: {}", statusCode, TruncateForLog(responseLocal));
+	const AIHttpErrorDetails details = ParseHttpErrorDetailsInternal(statusCode, responseBody);
+	std::string displayUtf8 = !details.messageUtf8.empty()
+		? details.messageUtf8
+		: (!details.detailUtf8.empty() ? details.detailUtf8 : responseBody);
+	if (displayUtf8.empty()) {
+		displayUtf8 = statusCode == 0
+			? "network/transport failure"
+			: "empty response body";
+	}
+	// WinINet 返回体按字节保留 UTF-8；先提取结构化字段，再统一转本地编码，
+	// 避免把完整 JSON 或 UTF-8 字节直接交给 IDE 的本地编码输出链路。
+	std::string displayLocal = UnicodeTextCodec::Utf8ToLocalPreservingUnicode(displayUtf8);
+	std::string result = std::format("HTTP {}: {}", statusCode, TruncateForLog(displayLocal));
+	if (!details.codeUtf8.empty()) {
+		result += " [code=" + details.codeUtf8 + "]";
+	}
+	if (!details.traceIdUtf8.empty()) {
+		result += " [traceId=" + details.traceIdUtf8 + "]";
+	}
+	return result;
+}
+
+void SetHttpStatusError(AIResult& result, int statusCode, const std::string& responseBody)
+{
+	const AIHttpErrorDetails details = ParseHttpErrorDetailsInternal(statusCode, responseBody);
+	result.errorCode = details.codeUtf8;
+	result.errorTraceId = details.traceIdUtf8;
+	result.retryAfterMs = details.retryAfterMs;
+	result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+}
+
+void SetHttpStatusError(AIChatResult& result, int statusCode, const std::string& responseBody)
+{
+	const AIHttpErrorDetails details = ParseHttpErrorDetailsInternal(statusCode, responseBody);
+	result.errorCode = details.codeUtf8;
+	result.errorTraceId = details.traceIdUtf8;
+	result.retryAfterMs = details.retryAfterMs;
+	result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
 }
 
 AIChatResult MarkChatResultCancelled(AIChatResult result, const std::string& partialContentLocal = std::string())
@@ -4456,7 +4603,7 @@ AIResult ExecuteTaskClaude(
 	result.endpointEstablished = IsSuccessfulHttpStatus(statusCode);
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("claude-task", statusCode, responseBody);
-		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+		SetHttpStatusError(result, statusCode, responseBody);
 		return result;
 	}
 
@@ -4526,7 +4673,7 @@ AIResult ExecuteTaskGemini(
 	result.endpointEstablished = IsSuccessfulHttpStatus(statusCode);
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("gemini-task", statusCode, responseBody);
-		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+		SetHttpStatusError(result, statusCode, responseBody);
 		return result;
 	}
 
@@ -4593,7 +4740,7 @@ AIResult ExecuteTaskOpenAIResponses(
 	result.endpointEstablished = IsSuccessfulHttpStatus(statusCode);
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("openai-responses-task", statusCode, responseBody);
-		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+		SetHttpStatusError(result, statusCode, responseBody);
 		return result;
 	}
 
@@ -4662,7 +4809,7 @@ AIResult ExecuteTaskOpenAIWithPrompt(
 	result.httpStatus = statusCode;
 	result.endpointEstablished = IsSuccessfulHttpStatus(statusCode);
 	if (statusCode < 200 || statusCode >= 300) {
-		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+		SetHttpStatusError(result, statusCode, responseBody);
 		return result;
 	}
 
@@ -4913,6 +5060,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 
 	AIChatToolPolicy::Session toolPolicy;
 	ChatRetryCoordinator retry(settings.retryCount);
+	LogChatRetryBudget("claude", settings, runOptions);
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
@@ -4969,7 +5117,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 				return MarkChatResultCancelled(std::move(result));
 			}
 			LogAiHttpFailure("claude-chat", statusCode, responseBody);
-			result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+			SetHttpStatusError(result, statusCode, responseBody);
 			return result;
 		}
 
@@ -5258,6 +5406,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 	}
 	AIChatToolPolicy::Session toolPolicy;
 	ChatRetryCoordinator retry(settings.retryCount);
+	LogChatRetryBudget("gemini", settings, runOptions);
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
@@ -5343,7 +5492,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 				continue;
 			}
 			LogAiHttpFailure("gemini-chat", statusCode, responseBody);
-			result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+			SetHttpStatusError(result, statusCode, responseBody);
 			return result;
 		}
 
@@ -5651,6 +5800,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		runController.ContextMessages(), settings, skillPromptLocal);
 	AIChatToolPolicy::Session toolPolicy;
 	ChatRetryCoordinator retry(settings.retryCount);
+	LogChatRetryBudget("openai-responses", settings, runOptions);
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
@@ -5740,7 +5890,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			}
 			if (!IsSuccessfulHttpStatus(statusCode)) {
 				LogAiHttpFailure("openai-responses-chat", statusCode, responseBody);
-				result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+				SetHttpStatusError(result, statusCode, responseBody);
 			}
 			else {
 				result.error = BuildOpenAIResponsesRetryReason(streamState, statusCode, responseBody);
@@ -5749,7 +5899,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		}
 		if (statusCode < 200 || statusCode >= 300) {
 			LogAiHttpFailure("openai-responses-chat", statusCode, responseBody);
-			result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+			SetHttpStatusError(result, statusCode, responseBody);
 			return result;
 		}
 
@@ -6056,6 +6206,13 @@ std::vector<AISettings> ResolveEndpointCandidates(const AISettings& settings)
 }
 
 } // namespace
+
+AIHttpErrorDetails AIService::ParseHttpErrorDetails(
+	int statusCode,
+	const std::string& responseBody)
+{
+	return ParseHttpErrorDetailsInternal(statusCode, responseBody);
+}
 
 bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig, AISettings& outSettings)
 {
@@ -7159,7 +7316,7 @@ AIResult AIService::TestConnectionSingle(const AISettings& settings)
 
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("openai-test", statusCode, responseBody);
-		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+		SetHttpStatusError(result, statusCode, responseBody);
 		return result;
 	}
 
@@ -7297,7 +7454,7 @@ AIResult AIService::ExecuteTaskSingle(AITaskKind kind, const std::string& inputT
 
 	if (statusCode < 200 || statusCode >= 300) {
 		LogAiHttpFailure("openai-task", statusCode, responseBody);
-		result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+		SetHttpStatusError(result, statusCode, responseBody);
 		return result;
 	}
 
@@ -7467,6 +7624,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		runOptions.enableGoalTools);
 	AIChatToolPolicy::Session toolPolicy;
 	ChatRetryCoordinator retry(settings.retryCount);
+	LogChatRetryBudget("openai-chat", settings, runOptions);
 
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
@@ -7568,7 +7726,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			}
 			if (!IsSuccessfulHttpStatus(statusCode)) {
 				LogAiHttpFailure("openai-chat", statusCode, responseBody);
-				result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+				SetHttpStatusError(result, statusCode, responseBody);
 			}
 			else {
 				result.error = streamFlushed
@@ -7581,7 +7739,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		}
 		if (statusCode < 200 || statusCode >= 300) {
 			LogAiHttpFailure("openai-chat", statusCode, responseBody);
-			result.error = BuildHttpStatusErrorForUi(statusCode, responseBody);
+			SetHttpStatusError(result, statusCode, responseBody);
 			return result;
 		}
 
@@ -7968,22 +8126,44 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			"\xE6\x9C\x8D\xE5\x8A\xA1\xE6\x9A\x82\xE6\x97\xB6\xE7\xB9\x81\xE5\xBF\x99\xEF\xBC\x8C\xE8\xAF\xB7\xE7\xA8\x8D\xE5\x90\x8E\xE9\x87\x8D\xE8\xAF\x95";
 		const std::string responseBodyUtf8 =
 			"{\"message\":\"" + expectedMessageUtf8 + "\"}";
+		const std::string rateLimitedBody =
+			R"({"code":"RATE_LIMITED","message":"rate limited","data":{"retryAfterSeconds":12},"traceId":"trace-429"})";
+		const std::string busyMessageUtf8 =
+			"\xE6\x9C\x8D\xE5\x8A\xA1\xE7\xB9\x81\xE5\xBF\x99";
+		const std::string serviceBusyBody =
+			"{\"code\":\"SERVICE_BUSY\",\"error\":{\"message\":\"" +
+			busyMessageUtf8 + "\",\"traceId\":\"trace-503\"}}";
 		const DWORD retryAfterMs = ComputeAiRetryDelayMs(
 			0,
 			429,
-			R"({"code":"RATE_LIMITED","data":{"retryAfterSeconds":12}})");
+			rateLimitedBody);
+		const AIHttpErrorDetails rateLimited = AIService::ParseHttpErrorDetails(
+			429,
+			rateLimitedBody);
+		const AIHttpErrorDetails serviceBusy = AIService::ParseHttpErrorDetails(
+			503,
+			serviceBusyBody);
 		const std::string encodedError = BuildHttpStatusErrorForUi(
 			503,
 			responseBodyUtf8);
 		const std::string restoredError = LocalToUtf8(encodedError);
-		const bool retryAfterParsed = retryAfterMs == 12000;
+		const bool retryAfterParsed = retryAfterMs == 12000 && rateLimited.retryAfterMs == 12000;
+		const bool structuredFieldsParsed =
+			rateLimited.httpStatus == 429 &&
+			rateLimited.codeUtf8 == "RATE_LIMITED" &&
+			rateLimited.traceIdUtf8 == "trace-429" &&
+			serviceBusy.httpStatus == 503 &&
+			serviceBusy.codeUtf8 == "SERVICE_BUSY" &&
+			serviceBusy.messageUtf8 == busyMessageUtf8 &&
+			serviceBusy.traceIdUtf8 == "trace-503";
 		const bool httpErrorEncodingPreserved =
 			restoredError.find(expectedMessageUtf8) != std::string::npos;
-		const bool ok = retryAfterParsed && httpErrorEncodingPreserved;
+		const bool ok = retryAfterParsed && structuredFieldsParsed && httpErrorEncodingPreserved;
 		checks.push_back({
 			{"name", "http_retry_after_and_error_encoding"},
 			{"ok", ok},
 			{"retry_after_ms", retryAfterMs},
+			{"structured_fields_parsed", structuredFieldsParsed},
 			{"error_encoding_preserved", httpErrorEncodingPreserved}
 		});
 		allOk = allOk && ok;

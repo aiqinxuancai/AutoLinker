@@ -16,6 +16,8 @@ struct AIChatStoredMessage {
 	std::string reasoningContentUtf8;
 	std::string rawMessageJsonUtf8;
 	std::vector<AIImageAttachment> attachments;
+	// 预显示的待发送用户输入 ID，0 表示普通历史消息。
+	unsigned long long pendingInputId = 0;
 };
 
 // 尚未传入模型的用户输入。

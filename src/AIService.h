@@ -78,6 +78,16 @@ struct AISettings : AIEndpointSettings {
 	std::string activeTargetId;
 };
 
+// HTTP 错误响应中可供重试、日志和界面使用的结构化字段。
+struct AIHttpErrorDetails {
+	int httpStatus = 0;
+	std::string codeUtf8;
+	std::string messageUtf8;
+	std::string detailUtf8;
+	std::string traceIdUtf8;
+	int retryAfterMs = 0;
+};
+
 // AI 单次任务结果。
 struct AIResult {
 	bool ok = false;
@@ -87,6 +97,9 @@ struct AIResult {
 	std::string endpointId;
 	std::string endpointName;
 	int httpStatus = 0;
+	std::string errorCode;
+	std::string errorTraceId;
+	int retryAfterMs = 0;
 };
 
 // AI 对话消息。
@@ -176,6 +189,9 @@ struct AIChatResult {
 	std::string endpointId;
 	std::string endpointName;
 	int httpStatus = 0;
+	std::string errorCode;
+	std::string errorTraceId;
+	int retryAfterMs = 0;
 	std::vector<AIChatToolEvent> toolEvents;
 	std::vector<std::string> contextPrefixRawMessagesUtf8;
 	// 本轮真实 token 用量（用于上下文压缩触发判定）。
@@ -239,6 +255,8 @@ public:
 	static std::string BuildImageInputSelfTestJson();
 	// 构建 API 端点配置迁移、分组顺序与重试范围的内部自测报告。
 	static std::string BuildEndpointConfigSelfTestJson();
+	// 解析 HTTP 错误 JSON，字段按 UTF-8 返回，避免依赖固定中文文案。
+	static AIHttpErrorDetails ParseHttpErrorDetails(int statusCode, const std::string& responseBody);
 	static std::string NormalizeModelOutputToCode(const std::string& modelText);
 	static std::string Trim(const std::string& text);
 

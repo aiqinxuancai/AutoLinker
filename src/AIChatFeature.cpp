@@ -187,6 +187,8 @@ struct SessionMessage {
 	std::string reasoningContent;
 	std::string rawMessageJsonUtf8;
 	std::vector<AIImageAttachment> attachments;
+	// 预显示的待发送用户输入 ID，0 表示普通历史消息。
+	unsigned long long pendingInputId = 0;
 };
 
 struct AIChatRequestCancellation {
@@ -514,7 +516,8 @@ bool StartChatRequest(
 	const std::string& userInput,
 	const AIChatRunCheckpoint* resumeCheckpoint = nullptr,
 	AIChatRequestOrigin origin = AIChatRequestOrigin::User,
-	const std::vector<AIImageAttachment>& attachments = {});
+	const std::vector<AIImageAttachment>& attachments = {},
+	unsigned long long pendingInputId = 0);
 bool StartNextPendingInputRequest();
 bool StartGoalContinuationRequest();
 void ScheduleNextChatWork();
@@ -2267,6 +2270,7 @@ AIChatStoredSession BuildStoredSessionFromLockedState(const AIChatSessionState& 
 		row.reasoningContentUtf8 = message.reasoningContent;
 		row.rawMessageJsonUtf8 = message.rawMessageJsonUtf8;
 		row.attachments = message.attachments;
+		row.pendingInputId = message.pendingInputId;
 		stored.messages.push_back(std::move(row));
 	}
 	return stored;
@@ -2426,7 +2430,8 @@ bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
 				row.visibleInHistory,
 				row.reasoningContentUtf8,
 				row.rawMessageJsonUtf8,
-				row.attachments
+				row.attachments,
+				row.pendingInputId
 			});
 		}
 		if (hasLegacyPendingExecCall) {
@@ -4035,6 +4040,7 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 													? payload["action"].get<std::string>()
 													: std::string();
 											if (action == "submit") {
+												OutputStringToELog("[AI Chat][UI] webview submit action received");
 												const std::string text = payload.contains("text") && payload["text"].is_string()
 													? Utf8ToLocalText(payload["text"].get<std::string>())
 													: std::string();
@@ -6233,7 +6239,7 @@ void CloseRunningToolTranscriptMessagesLocked(
 	const std::string& resultPreviewLocal)
 {
 	for (SessionMessage& message : state.messages) {
-		if (message.role != SessionRole::Tool || !message.visibleInHistory ||
+		if (message.role != SessionRole::Tool ||
 			message.content.rfind(kToolTranscriptMessageMarker, 0) != 0) {
 			continue;
 		}
@@ -6282,7 +6288,7 @@ void UpsertToolTranscriptMessage(
 			return;
 		}
 		for (auto it = g_session.messages.rbegin(); it != g_session.messages.rend(); ++it) {
-			if (it->role == SessionRole::User && it->visibleInHistory) {
+			if (it->role == SessionRole::User && it->visibleInHistory && it->pendingInputId == 0) {
 				break;
 			}
 			if (it->role == SessionRole::Tool &&
@@ -6386,12 +6392,28 @@ bool EnqueuePendingUserInput(
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		EnsureChatSessionBindingLocked(g_session);
+		const unsigned long long pendingInputId = g_session.nextPendingInputId++;
 		g_session.pendingInputs.push_back(AIChatStoredPendingInput{
-			g_session.nextPendingInputId++,
+			pendingInputId,
 			trimmed,
 			GetCurrentUnixTimeMsForChat(),
 			attachments
 		});
+		// 先把用户刚提交的内容放入历史，避免后台准备工程镜像时看起来像没有发送。
+		g_session.messages.push_back(SessionMessage{
+			SessionRole::User,
+			trimmed,
+			false,
+			true,
+			"",
+			"",
+			attachments,
+			pendingInputId
+		});
+		OutputStringToELog(std::format(
+			"[AI Chat][UI] pending input queued id={} attachments={}",
+			pendingInputId,
+			attachments.size()));
 	}
 	PostRefreshDialog();
 	SaveChatSessionSnapshotNow();
@@ -6437,15 +6459,25 @@ std::vector<AIChatMessage> TakePendingUserInputsAtSafePoint(
 				"",
 				pending.attachments
 			});
-			g_session.messages.push_back(SessionMessage{
-				SessionRole::User,
-				pending.contentLocal,
-				false,
-				true,
-				"",
-				"",
-				pending.attachments
-			});
+			bool foundVisibleMessage = false;
+			for (auto it = g_session.messages.rbegin(); it != g_session.messages.rend(); ++it) {
+				if (it->role == SessionRole::User && it->pendingInputId == pending.id) {
+					it->pendingInputId = 0;
+					foundVisibleMessage = true;
+					break;
+				}
+			}
+			if (!foundVisibleMessage) {
+				g_session.messages.push_back(SessionMessage{
+					SessionRole::User,
+					pending.contentLocal,
+					false,
+					true,
+					"",
+					"",
+					pending.attachments
+				});
+			}
 		}
 	}
 	PostRefreshDialog();
@@ -6463,6 +6495,13 @@ bool RecallLastPendingUserInput(AIChatStoredPendingInput& outPending)
 		}
 		outPending = std::move(g_session.pendingInputs.back());
 		g_session.pendingInputs.pop_back();
+		for (auto it = g_session.messages.rbegin(); it != g_session.messages.rend(); ++it) {
+			if (it->role == SessionRole::User && it->pendingInputId == outPending.id) {
+				const auto base = it.base();
+				g_session.messages.erase(std::prev(base));
+				break;
+			}
+		}
 	}
 	PostRefreshDialog();
 	SaveChatSessionSnapshotNow();
@@ -6884,7 +6923,8 @@ bool StartChatRequest(
 	const std::string& userInput,
 	const AIChatRunCheckpoint* resumeCheckpoint,
 	AIChatRequestOrigin origin,
-	const std::vector<AIImageAttachment>& attachments)
+	const std::vector<AIImageAttachment>& attachments,
+	unsigned long long pendingInputId)
 {
 	const std::string trimmed = TrimAsciiCopy(userInput);
 	const bool explicitResume = resumeCheckpoint != nullptr;
@@ -6913,6 +6953,7 @@ bool StartChatRequest(
 	bool checkpointResumeStarted = false;
 	bool usedPendingCheckpoint = false;
 	bool appendedUserToCheckpoint = false;
+	bool reusedPendingHistoryMessage = false;
 	int resumeSamplingRounds = 0;
 	size_t resumeContextMessages = 0;
 	size_t resumeToolCalls = 0;
@@ -6936,15 +6977,27 @@ bool StartChatRequest(
 		g_session.sourceFileNameLocal = GetCurrentChatSourceFileNameLocal();
 		EnsureChatSessionBindingLocked(g_session);
 		if (!trimmed.empty() || !attachments.empty()) {
-			g_session.messages.push_back(SessionMessage{
-				SessionRole::User,
-				trimmed,
-				true,
-				origin != AIChatRequestOrigin::GoalContinuation,
-				"",
-				"",
-				attachments
-			});
+			if (pendingInputId != 0) {
+				for (auto it = g_session.messages.rbegin(); it != g_session.messages.rend(); ++it) {
+					if (it->role == SessionRole::User && it->pendingInputId == pendingInputId) {
+						it->includeInContext = true;
+						it->pendingInputId = 0;
+						reusedPendingHistoryMessage = true;
+						break;
+					}
+				}
+			}
+			if (!reusedPendingHistoryMessage) {
+				g_session.messages.push_back(SessionMessage{
+					SessionRole::User,
+					trimmed,
+					true,
+					origin != AIChatRequestOrigin::GoalContinuation,
+					"",
+					"",
+					attachments
+				});
+			}
 		}
 		g_session.effectiveContextWindow = AIService::ResolveContextWindowTokens(settings);
 		CompactHistoryLocked(g_session);
@@ -7009,6 +7062,15 @@ bool StartChatRequest(
 	if (threadId == static_cast<uintptr_t>(-1L)) {
 		{
 			std::lock_guard<std::mutex> guard(g_session.mutex);
+			if (reusedPendingHistoryMessage && pendingInputId != 0) {
+				for (auto it = g_session.messages.rbegin(); it != g_session.messages.rend(); ++it) {
+					if (it->role == SessionRole::User && it->content == trimmed && it->pendingInputId == 0) {
+						it->includeInContext = false;
+						it->pendingInputId = pendingInputId;
+						break;
+					}
+				}
+			}
 			FinishActiveSessionTimingLocked(g_session, GetCurrentUnixTimeMsForChat());
 			g_session.requestInFlight = false;
 			g_session.activeRequestId = 0;
@@ -7039,7 +7101,12 @@ bool StartNextPendingInputRequest()
 		g_session.pendingInputs.pop_front();
 	}
 
-	if (StartChatRequest(pending.contentLocal, nullptr, AIChatRequestOrigin::User, pending.attachments)) {
+	if (StartChatRequest(
+		pending.contentLocal,
+		nullptr,
+		AIChatRequestOrigin::User,
+		pending.attachments,
+		pending.id)) {
 		SaveChatSessionSnapshotNow();
 		return true;
 	}
@@ -7157,21 +7224,22 @@ void HandleChatSubmitUi(
 		hasPending = !g_session.pendingInputs.empty();
 	}
 
-	bool accepted = false;
-	if (inFlight) {
-		accepted = EnqueuePendingUserInput(trimmed, effectiveAttachments);
-	}
-	else if (hasPending) {
-		accepted = EnqueuePendingUserInput(trimmed, effectiveAttachments);
-		if (accepted) {
-			StartNextPendingInputRequest();
-		}
-	}
-	else {
-		accepted = StartChatRequest(trimmed, nullptr, AIChatRequestOrigin::User, effectiveAttachments);
+	// 所有提交都先进入统一队列并预显示到历史。这样即使当前请求刚好在
+	// 工具结束/远端失败的边界切换，用户也能立即看到消息，而不会被工程镜像
+	// 准备或请求启动延迟误导为“没有发送”。空闲时再立即取出队首启动请求。
+	const bool accepted = EnqueuePendingUserInput(trimmed, effectiveAttachments);
+	if (accepted && !inFlight) {
+		StartNextPendingInputRequest();
 	}
 	if (!accepted) {
+		OutputStringToELog("[AI Chat][UI] submit rejected");
 		RefreshChatDialog(hWnd);
+	}
+	else {
+		OutputStringToELog(std::format(
+			"[AI Chat][UI] submit accepted in_flight={} had_pending={}",
+			inFlight ? 1 : 0,
+			hasPending ? 1 : 0));
 	}
 	FocusChatComposerInput(ctx);
 }
@@ -8620,11 +8688,15 @@ void HandleChatTaskDone(LPARAM lParam)
 			OutputStringToELog("[" + LocalFromWide(L"AI\u5bf9\u8bdd") + "]" + err);
 		}
 
-		if (result->chatResult.ok &&
-			(!g_session.pendingInputs.empty() ||
-				AIChatGoalManager::CanAdvance(
-					g_session.goal,
-					IsPlanModeActive(g_session.planModeState)))) {
+		// 用户在工具执行或模型重试期间提交的输入不能因本轮远端失败而遗留在队列中。
+		// 失败消息仍会保留在历史，下一轮独立请求负责处理已提交的输入。
+		if (!g_session.pendingInputs.empty() && !continueAfterCancel) {
+			scheduleNextWork = true;
+		}
+		else if (result->chatResult.ok &&
+			AIChatGoalManager::CanAdvance(
+				g_session.goal,
+				IsPlanModeActive(g_session.planModeState))) {
 			scheduleNextWork = true;
 		}
 
@@ -9641,6 +9713,60 @@ bool HandleCompileToolExecutionRequest(const std::shared_ptr<ToolExecutionReques
 	return true;
 }
 
+// 镜像刷新可能需要启动 e-packager 并处理较大的工程文件。它不应在窗口
+// 线程同步执行，否则 WebView 的输入/刷新消息会在整个刷新期间无法派发。
+struct DeferredToolExecutionContext {
+	std::shared_ptr<ToolExecutionRequest> request;
+	std::string argumentsJson;
+};
+
+void RunDeferredToolExecution(void* parameter)
+{
+	std::unique_ptr<DeferredToolExecutionContext> context(
+		reinterpret_cast<DeferredToolExecutionContext*>(parameter));
+	if (!context || !context->request) {
+		return;
+	}
+
+	const std::shared_ptr<ToolExecutionRequest>& request = context->request;
+	if (IsToolExecutionRequestCancelled(request)) {
+		FinishToolExecutionRequest(
+			request,
+			false,
+			R"({"ok":false,"error":"main thread tool request was cancelled"})");
+		return;
+	}
+
+	bool ok = false;
+	const std::string resultJson = ExecuteToolCallOnMainThread(
+		request->toolName,
+		context->argumentsJson,
+		ok);
+	FinishToolExecutionRequest(request, ok, resultJson);
+	PostRefreshDialog();
+}
+
+bool BeginDeferredToolExecution(
+	const std::shared_ptr<ToolExecutionRequest>& request,
+	const std::string& argumentsJson)
+{
+	if (!request) {
+		return false;
+	}
+	auto* context = new (std::nothrow) DeferredToolExecutionContext();
+	if (!context) {
+		return false;
+	}
+	context->request = request;
+	context->argumentsJson = argumentsJson;
+	const uintptr_t threadId = _beginthread(RunDeferredToolExecution, 0, context);
+	if (threadId == static_cast<uintptr_t>(-1L)) {
+		delete context;
+		return false;
+	}
+	return true;
+}
+
 bool HandleToolExecRequest(LPARAM lParam)
 {
 	const UINT_PTR requestId = static_cast<UINT_PTR>(lParam);
@@ -9677,6 +9803,15 @@ bool HandleToolExecRequest(LPARAM lParam)
 		request->toolName,
 		request->argumentsJson);
 	PostRefreshDialog();
+	if (_stricmp(request->toolName.c_str(), "refresh_workspace_mirror") == 0) {
+		if (!BeginDeferredToolExecution(request, effectiveArgumentsJson)) {
+			FinishToolExecutionRequest(
+				request,
+				false,
+				R"({"ok":false,"error":"failed to start background workspace mirror refresh"})");
+		}
+		return true;
+	}
 
 	bool ok = false;
 	const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, effectiveArgumentsJson, ok);
@@ -10392,6 +10527,9 @@ std::string ExecuteDebugRunAIChatTool(const std::string& argumentsJson, bool& ou
 		: std::string();
 	result["tool_rounds_exceeded"] = chatResult.toolRoundsExceeded;
 	result["http_status"] = chatResult.httpStatus;
+	result["error_code"] = chatResult.errorCode;
+	result["error_trace_id"] = chatResult.errorTraceId;
+	result["retry_after_ms"] = chatResult.retryAfterMs;
 	result["elapsed_ms"] = sessionElapsedMs;
 	result["wall_elapsed_ms"] = wallElapsedMs;
 	result["tool_count"] = chatResult.toolEvents.size();

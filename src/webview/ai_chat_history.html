@@ -3251,7 +3251,9 @@ window.autolinkerSetInput = function(text) {
 	}
 };
 
-window.autolinkerSetPendingInputs = function(items) {
+var autolinkerOptimisticPendingInputs = [];
+
+function autolinkerRenderPendingInputs(items) {
 	var panel = document.getElementById("pending-inputs");
 	if (!panel) {
 		return;
@@ -3276,6 +3278,19 @@ window.autolinkerSetPendingInputs = function(items) {
 	html += '</div>';
 	panel.innerHTML = html;
 	panel.hidden = false;
+}
+
+window.autolinkerSetPendingInputs = function(items) {
+	autolinkerOptimisticPendingInputs = [];
+	autolinkerRenderPendingInputs(items);
+};
+
+window.autolinkerAddOptimisticPendingInput = function(item) {
+	if (!item) {
+		return;
+	}
+	autolinkerOptimisticPendingInputs.push(item);
+	autolinkerRenderPendingInputs(autolinkerOptimisticPendingInputs);
 };
 
 window.autolinkerFocusInput = function() {
@@ -3546,6 +3561,10 @@ window.autolinkerHideToolApproval = function() {
 		hideClearConfirm();
 		hideRestoreConfirm();
 		hideModeMenu();
+		window.autolinkerAddOptimisticPendingInput({
+			text: input.value || "",
+			attachmentCount: (window.autolinkerAttachments || []).length
+		});
 		post({
 			action: "submit",
 			text: input.value || "",

@@ -428,6 +428,7 @@ bool SerializeSession(const AIChatStoredSession& session, nlohmann::json& outJso
 			row["visible_in_history"] = message.visibleInHistory;
 			row["reasoning_content"] = message.reasoningContentUtf8;
 			row["raw_message_json_utf8"] = message.rawMessageJsonUtf8;
+			row["pending_input_id"] = message.pendingInputId;
 			row["attachments"] = SerializeImageAttachments(message.attachments, session.sessionFilePath);
 			outJson["messages"].push_back(std::move(row));
 		}
@@ -531,6 +532,10 @@ bool DeserializeSession(const nlohmann::json& jsonValue, AIChatStoredSession& ou
 		message.visibleInHistory = GetJsonBool(row, "visible_in_history", true);
 		message.reasoningContentUtf8 = GetJsonStringUtf8(row, "reasoning_content");
 		message.rawMessageJsonUtf8 = GetJsonStringUtf8(row, "raw_message_json_utf8");
+		const long long pendingInputId = GetJsonInt64(row, "pending_input_id", 0);
+		message.pendingInputId = pendingInputId > 0
+			? static_cast<unsigned long long>(pendingInputId)
+			: 0;
 		message.attachments = DeserializeImageAttachments(row, {});
 		outSession.messages.push_back(std::move(message));
 	}

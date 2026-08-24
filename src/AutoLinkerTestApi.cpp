@@ -472,6 +472,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		storedAttachment.width = 1;
 		storedAttachment.height = 1;
 		AIChatStoredMessage storedMessage{"user", "long task"};
+		storedMessage.pendingInputId = 7;
 		storedMessage.attachments.push_back(storedAttachment);
 		stored.messages.push_back(std::move(storedMessage));
 		AIChatStoredPendingInput firstPending{7, "first queued input", 1000};
@@ -495,6 +496,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 			loaded.schemaVersion == 7 &&
 			loaded.rollingSummaryLocal == "after" &&
 			loaded.messages.size() == 1 && loaded.messages[0].attachments.size() == 1 &&
+			loaded.messages[0].pendingInputId == 7 &&
 			loaded.messages[0].attachments[0].assetPathLocal == storedAttachment.assetPathLocal &&
 			loaded.pendingInputs.size() == 2 &&
 			loaded.pendingInputs[0].id == 7 &&
