@@ -28,7 +28,7 @@ Streamable HTTP 接口。方法、参数和约束以 `src/LocalMcpServer.cpp`、
   30 分钟后可过期，服务器最多保留 256 个外部会话。
 - 服务器仅绑定 `127.0.0.1`，拒绝带非空 `Origin` 的浏览器请求，不提供 CORS 或
   Bearer Token。不要用反向代理把它暴露到局域网或互联网。
-- `tools/list` 当前返回 21 个工具：19 个 AutoLinker 原生公开工具和 2 个网关路由工具。
+- `tools/list` 当前返回 22 个工具：20 个 AutoLinker 原生公开工具和 2 个网关路由工具。
   所有工具的根参数都是对象；工具 Schema 均禁止未声明的顶层参数。
 
 ### 工程状态和刷新门禁
@@ -42,7 +42,7 @@ Streamable HTTP 接口。方法、参数和约束以 `src/LocalMcpServer.cpp`、
 下列工具同时要求已打开工程，并要求当前 MCP 会话已经成功调用
 `refresh_workspace_mirror`：
 
-- `list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`
+- `e_packager`、`list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`
 - `read_real_file`、`edit_file`、`multi_edit_file`、`write_file`、`diff_file`
 - `restore_file_snapshot`
 
@@ -120,7 +120,7 @@ Streamable HTTP 接口。方法、参数和约束以 `src/LocalMcpServer.cpp`、
 
 ### `tools/list`
 
-列出当前全部 21 个工具和各自 `inputSchema`。`params` 传空对象；当前没有 cursor 分页，
+列出当前全部 22 个工具和各自 `inputSchema`。`params` 传空对象；当前没有 cursor 分页，
 响应结构为 `result.tools[]`。
 
 ### `tools/call`
@@ -221,6 +221,37 @@ HTTP 204。缺少或无效会话头时仍返回 204。
 
 关键返回字段：`refresh_mode`、`mirror_generation`、`source_file_path`、`file_count`、
 `mirror_root`。`mirror_root` 仅供诊断，不能直接编辑。
+
+### `e_packager`
+
+仅当用户明确要求解析、查看、参考或复刻外部 `.e/.ec` 文件时调用。工具通过 e-packager
+将外部源码解包到当前工作区镜像的只读目录
+`unimported_code/<文件名>/`。解包成功后使用 `list_files` / `search_code` 定位，再用
+`read_file` / `read_files` 读取；不要对该目录调用 `read_code_item`，也不要使用写工具修改。
+
+该工具要求当前 MCP 会话已成功调用 `refresh_workspace_mirror`。相对路径按当前工程目录解析，
+也可以传绝对路径。只接受已存在的普通 `.e` 或 `.ec` 文件；同名输出目录只有在本次解包成功
+后才替换。
+
+| 参数 | 类型 | 必填 | 默认/约束 | 说明 |
+| --- | --- | --- | --- | --- |
+| `file_path` | string | 是 | 1 到 32768 字节 | 外部 `.e/.ec` 绝对路径，或相对当前工程目录的路径 |
+
+成功返回：
+
+- `ok=true`
+- `operation="unpack"`
+- `source_file_path`
+- `output_directory`
+- `file_count`
+- `mirror_generation`
+- `read_hint`
+
+`e_packager` 会改变当前镜像代次。解包后不要继续使用旧的分页
+`mirror_generation`；重新从第一页调用 `list_files` 或 `search_code`，再使用新代次续页。
+
+常见失败包括：`file_path is required`、参数不是对象、文件不存在、扩展名不是 `.e/.ec`、
+e-packager 不可用或解包失败。
 
 ### `list_files`
 
