@@ -203,8 +203,77 @@ bool ShouldFailOverToNextEndpoint(int statusCode, const std::string& error)
 	return IsRetryableHttpStatus(statusCode);
 }
 
-DWORD ComputeAiRetryDelayMs(int retryIndex)
+std::optional<DWORD> TryParseRetryAfterDelayMs(
+	int statusCode,
+	const std::string& responseBody)
 {
+	if (statusCode != 429 || responseBody.empty()) {
+		return std::nullopt;
+	}
+
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(responseBody);
+		const auto readSeconds = [](const nlohmann::json& value, const auto& self) -> std::optional<double> {
+			if (value.is_array()) {
+				for (const auto& item : value) {
+					if (const std::optional<double> nested = self(item, self)) {
+						return nested;
+					}
+				}
+				return std::nullopt;
+			}
+			if (!value.is_object()) {
+				return std::nullopt;
+			}
+			for (const char* key : { "retryAfterSeconds", "retry_after_seconds" }) {
+				if (!value.contains(key)) {
+					continue;
+				}
+				const nlohmann::json& candidate = value[key];
+				if (candidate.is_number()) {
+					return candidate.get<double>();
+				}
+				if (candidate.is_string()) {
+					try {
+						return std::stod(candidate.get<std::string>());
+					}
+					catch (...) {
+						return std::nullopt;
+					}
+				}
+			}
+			for (const auto& item : value.items()) {
+				if (const std::optional<double> nested = self(item.value(), self)) {
+					return nested;
+				}
+			}
+			return std::nullopt;
+		};
+
+		const std::optional<double> seconds = readSeconds(parsed, readSeconds);
+		if (!seconds.has_value() || !std::isfinite(*seconds) || *seconds < 0.0) {
+			return std::nullopt;
+		}
+
+		constexpr double kMaxRetryAfterMs = 300000.0;
+		return static_cast<DWORD>(std::llround((std::min)(
+			*seconds * 1000.0,
+			kMaxRetryAfterMs)));
+	}
+	catch (...) {
+		return std::nullopt;
+	}
+}
+
+DWORD ComputeAiRetryDelayMs(
+	int retryIndex,
+	int statusCode = 0,
+	const std::string& responseBody = std::string())
+{
+	if (const std::optional<DWORD> serverDelay = TryParseRetryAfterDelayMs(statusCode, responseBody)) {
+		return *serverDelay;
+	}
+
 	switch (retryIndex) {
 	case 0:
 		return 250;
@@ -321,7 +390,7 @@ public:
 			resetStreamingPreview();
 		}
 		const DWORD delayMs = delayOverrideMs.value_or(
-			ComputeAiRetryDelayMs(m_retriesPerformed));
+			ComputeAiRetryDelayMs(m_retriesPerformed, statusCode, reason));
 		if (!SleepForRetryWithCancel(delayMs, cancelCallback, cancelContext)) {
 			return false;
 		}
@@ -370,7 +439,10 @@ void LogAiHttpFailure(const std::string& tag, int statusCode, const std::string&
 
 std::string BuildHttpStatusErrorForUi(int statusCode, const std::string& responseBody)
 {
-	return std::format("HTTP {}: {}", statusCode, TruncateForLog(responseBody));
+	// WinINet 返回体按字节保留 UTF-8；AIChatResult.error 会继续交给 IDE
+	// 的本地编码输出链路，不能把 UTF-8 字节直接当作 GBK 使用。
+	const std::string responseLocal = UnicodeTextCodec::Utf8ToLocalPreservingUnicode(responseBody);
+	return std::format("HTTP {}: {}", statusCode, TruncateForLog(responseLocal));
 }
 
 AIChatResult MarkChatResultCancelled(AIChatResult result, const std::string& partialContentLocal = std::string())
@@ -423,7 +495,10 @@ std::pair<std::string, int> PerformPostRequestWithRetry(
 			boundedRetryCount + 1,
 			lastResult.second,
 			lastResult.first);
-		if (!SleepForRetryWithCancel(ComputeAiRetryDelayMs(attempt), cancelCallback, cancelContext)) {
+		if (!SleepForRetryWithCancel(
+			ComputeAiRetryDelayMs(attempt, lastResult.second, lastResult.first),
+			cancelCallback,
+			cancelContext)) {
 			return std::make_pair(std::string("Request cancelled"), kAiRequestCancelledHttpStatus);
 		}
 	}
@@ -495,7 +570,10 @@ std::pair<std::string, int> PerformPostRequestStreamingWithRetry(
 			boundedRetryCount + 1,
 			lastResult.second,
 			lastResult.first);
-		if (!SleepForRetryWithCancel(ComputeAiRetryDelayMs(attempt), cancelCallback, cancelContext)) {
+		if (!SleepForRetryWithCancel(
+			ComputeAiRetryDelayMs(attempt, lastResult.second, lastResult.first),
+			cancelCallback,
+			cancelContext)) {
 			return std::make_pair(std::string("Request cancelled"), kAiRequestCancelledHttpStatus);
 		}
 	}
@@ -2314,8 +2392,13 @@ std::optional<DWORD> TryParseOpenAIResponsesRetryDelayMs(
 
 DWORD ComputeOpenAIResponsesRetryDelayMs(
 	const ResponsesStreamParseState& state,
-	int retryCount)
+	int retryCount,
+	const std::string& responseBody = std::string(),
+	int statusCode = 0)
 {
+	if (const std::optional<DWORD> serverDelay = TryParseRetryAfterDelayMs(statusCode, responseBody)) {
+		return *serverDelay;
+	}
 	if (const std::optional<DWORD> serverDelay = TryParseOpenAIResponsesRetryDelayMs(state)) {
 		return *serverDelay;
 	}
@@ -5637,7 +5720,9 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		if (retryableAttempt) {
 			const DWORD retryDelayMs = ComputeOpenAIResponsesRetryDelayMs(
 				streamState,
-				retry.RetriesPerformed() + 1);
+				retry.RetriesPerformed() + 1,
+				responseBody,
+				statusCode);
 			if (retry.WaitForRetry(
 					"openai-responses-chat",
 					statusCode,
@@ -7874,6 +7959,32 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"configured_retries", 5},
 			{"total_attempts", 6},
 			{"upper_clamp", kAiMaxRequestRetryCount}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		const std::string expectedMessageUtf8 =
+			"\xE6\x9C\x8D\xE5\x8A\xA1\xE6\x9A\x82\xE6\x97\xB6\xE7\xB9\x81\xE5\xBF\x99\xEF\xBC\x8C\xE8\xAF\xB7\xE7\xA8\x8D\xE5\x90\x8E\xE9\x87\x8D\xE8\xAF\x95";
+		const std::string responseBodyUtf8 =
+			"{\"message\":\"" + expectedMessageUtf8 + "\"}";
+		const DWORD retryAfterMs = ComputeAiRetryDelayMs(
+			0,
+			429,
+			R"({"code":"RATE_LIMITED","data":{"retryAfterSeconds":12}})");
+		const std::string encodedError = BuildHttpStatusErrorForUi(
+			503,
+			responseBodyUtf8);
+		const std::string restoredError = LocalToUtf8(encodedError);
+		const bool retryAfterParsed = retryAfterMs == 12000;
+		const bool httpErrorEncodingPreserved =
+			restoredError.find(expectedMessageUtf8) != std::string::npos;
+		const bool ok = retryAfterParsed && httpErrorEncodingPreserved;
+		checks.push_back({
+			{"name", "http_retry_after_and_error_encoding"},
+			{"ok", ok},
+			{"retry_after_ms", retryAfterMs},
+			{"error_encoding_preserved", httpErrorEncodingPreserved}
 		});
 		allOk = allOk && ok;
 	}

@@ -47,7 +47,6 @@ constexpr const char* kGitHubHeaders =
 std::atomic_bool g_unpackTaskRunning = false;
 std::atomic_bool g_toolCheckTaskRunning = false;
 std::atomic_bool g_toolUpdateTaskRunning = false;
-std::atomic_bool g_toolUpdateAfterCheckRequested = false;
 std::mutex g_toolTaskStartMutex;
 std::mutex g_updateStatusMutex;
 std::string Utf8FromStatusText(const std::string& text);
@@ -120,25 +119,7 @@ LatestReleaseInfo g_checkedRelease;
 bool g_checkedReleaseAvailable = false;
 
 void ToolUpdateWorker(void* parameter);
-
-bool StartToolUpdateWorker(const LatestReleaseInfo& latest)
-{
-	{
-		std::lock_guard<std::mutex> taskLock(g_toolTaskStartMutex);
-		if (g_toolUpdateTaskRunning.load(std::memory_order_acquire)) {
-			return false;
-		}
-		g_toolUpdateTaskRunning.store(true, std::memory_order_release);
-	}
-
-	auto* request = new (std::nothrow) LatestReleaseInfo(latest);
-	if (request == nullptr || _beginthread(ToolUpdateWorker, 0, request) == static_cast<uintptr_t>(-1)) {
-		delete request;
-		g_toolUpdateTaskRunning.store(false, std::memory_order_release);
-		return false;
-	}
-	return true;
-}
+void ToolMenuUpdateWorker(void*);
 
 void ClearCheckedRelease()
 {
@@ -1037,7 +1018,6 @@ struct ToolTaskRunningGuard {
 void ToolCheckWorker(void*)
 {
 	ToolTaskRunningGuard runningGuard(g_toolCheckTaskRunning);
-	const bool updateAfterCheck = g_toolUpdateAfterCheckRequested.exchange(false, std::memory_order_acq_rel);
 	try {
 		const std::filesystem::path toolPath = GetEPackagerExePath();
 		const bool toolExists = std::filesystem::exists(toolPath);
@@ -1083,10 +1063,6 @@ void ToolCheckWorker(void*)
 			toolExists ? "发现可用的新版本。" : "尚未安装，发现可用版本。",
 			displayedVersion,
 			latest.tag);
-		if (updateAfterCheck && !StartToolUpdateWorker(latest)) {
-			PublishUpdateStatus(ComponentUpdateState::Error, "启动 e-packager 更新任务失败。", displayedVersion, latest.tag);
-			OutputStringToELog("[e-packager] 启动一键更新任务失败");
-		}
 	}
 	catch (const std::exception& ex) {
 		ClearCheckedRelease();
@@ -1160,6 +1136,79 @@ void ToolUpdateWorker(void* parameter)
 	}
 	catch (...) {
 		OutputStringToELog("[e-packager] 手动更新发生未知异常");
+		PublishUpdateStatus(ComponentUpdateState::Error, "e-packager 更新发生未知异常。");
+	}
+}
+
+// 工具菜单使用一键更新流程：在同一个后台任务中检查、下载并安装最新版本。
+void ToolMenuUpdateWorker(void*)
+{
+	ToolTaskRunningGuard runningGuard(g_toolUpdateTaskRunning);
+	try {
+		const std::filesystem::path toolPath = GetEPackagerExePath();
+		const bool toolExists = std::filesystem::exists(toolPath);
+		const std::string installedVersion = toolExists ? DetectInstalledVersion(toolPath) : std::string();
+		const std::string displayedVersion = installedVersion.empty()
+			? (toolExists ? "已安装" : "未安装")
+			: installedVersion;
+		ClearCheckedRelease();
+		PublishUpdateStatus(
+			ComponentUpdateState::Checking,
+			"正在检查 e-packager 最新版本...",
+			displayedVersion);
+
+		LatestReleaseInfo latest;
+		std::string error;
+		if (!FetchLatestRelease(latest, error)) {
+			const std::string guidance = toolExists ? std::string() : "\r\n" + BuildManualEPackagerInstallGuidance();
+			PublishUpdateStatus(
+				ComponentUpdateState::Error,
+				"检查 e-packager 更新失败：" + error + guidance,
+				displayedVersion);
+			OutputStringToELog("[e-packager] 一键更新检查失败：" + error + guidance);
+			return;
+		}
+
+		if (!IsToolUpdateRequired(toolExists, installedVersion, latest)) {
+			SaveMeta(latest);
+			PublishUpdateStatus(
+				ComponentUpdateState::UpToDate,
+				"本地组件已是最新版本。",
+				displayedVersion,
+				latest.tag);
+			OutputStringToELog("[e-packager] 本地工具已是最新版本：" + latest.tag);
+			return;
+		}
+
+		PublishUpdateStatus(
+			ComponentUpdateState::Downloading,
+			"正在下载并安装 e-packager...",
+			displayedVersion,
+			latest.tag);
+		if (!DownloadAndInstallTool(latest, error)) {
+			error += "\r\n" + BuildManualEPackagerInstallGuidance();
+			PublishUpdateStatus(
+				ComponentUpdateState::Error,
+				"e-packager 更新失败：" + error,
+				displayedVersion,
+				latest.tag);
+			OutputStringToELog("[e-packager] 一键更新失败：" + error);
+			return;
+		}
+
+		PublishUpdateStatus(
+			ComponentUpdateState::Completed,
+			"e-packager 已更新完成。",
+			latest.tag,
+			latest.tag);
+		OutputStringToELog("[e-packager] 一键更新完成：" + LocalPathString(toolPath));
+	}
+	catch (const std::exception& ex) {
+		OutputStringToELog(std::string("[e-packager] 一键更新异常：") + ex.what());
+		PublishUpdateStatus(ComponentUpdateState::Error, std::string("e-packager 更新异常：") + ex.what());
+	}
+	catch (...) {
+		OutputStringToELog("[e-packager] 一键更新发生未知异常");
 		PublishUpdateStatus(ComponentUpdateState::Error, "e-packager 更新发生未知异常。");
 	}
 }
@@ -1413,7 +1462,6 @@ void CheckForToolUpdatesInBackground()
 			OutputStringToELog("[e-packager] 已有组件更新任务正在执行，请稍候");
 			return;
 		}
-		g_toolUpdateAfterCheckRequested.store(false, std::memory_order_release);
 		g_toolCheckTaskRunning.store(true, std::memory_order_release);
 	}
 
@@ -1435,12 +1483,6 @@ void CheckForToolUpdatesOnStartup()
 
 void RunToolUpdateFromMenuInBackground()
 {
-	LatestReleaseInfo checkedRelease;
-	if (TryGetCheckedRelease(checkedRelease)) {
-		RunToolUpdateInBackground();
-		return;
-	}
-
 	{
 		std::lock_guard<std::mutex> taskLock(g_toolTaskStartMutex);
 		if (g_toolCheckTaskRunning.load(std::memory_order_acquire) ||
@@ -1448,14 +1490,12 @@ void RunToolUpdateFromMenuInBackground()
 			OutputStringToELog("[e-packager] 已有组件更新任务正在执行，请稍候");
 			return;
 		}
-		g_toolUpdateAfterCheckRequested.store(true, std::memory_order_release);
-		g_toolCheckTaskRunning.store(true, std::memory_order_release);
+		g_toolUpdateTaskRunning.store(true, std::memory_order_release);
 	}
-	if (_beginthread(ToolCheckWorker, 0, nullptr) == static_cast<uintptr_t>(-1)) {
-		g_toolUpdateAfterCheckRequested.store(false, std::memory_order_release);
-		g_toolCheckTaskRunning.store(false, std::memory_order_release);
-		PublishUpdateStatus(ComponentUpdateState::Error, "启动 e-packager 后台检查任务失败。");
-		OutputStringToELog("[e-packager] 启动一键更新检查任务失败");
+	if (_beginthread(ToolMenuUpdateWorker, 0, nullptr) == static_cast<uintptr_t>(-1)) {
+		g_toolUpdateTaskRunning.store(false, std::memory_order_release);
+		PublishUpdateStatus(ComponentUpdateState::Error, "启动 e-packager 后台更新任务失败。");
+		OutputStringToELog("[e-packager] 启动一键更新任务失败");
 	}
 }
 

@@ -6734,7 +6734,7 @@ void RunAIChatWorker(void* pParams)
 			}
 			else {
 				AIChatRunOptions runOptions;
-				runOptions.postToolRetryCount = 0;
+				// 工具成功后仍沿用当前端点的重试预算；429/5xx 续轮必须等待并重试。
 				runOptions.enablePlanUserInput = request->enablePlanUserInput;
 				runOptions.enableGoalTools = request->enableGoalTools;
 				if (request->hasResumeCheckpoint) {
