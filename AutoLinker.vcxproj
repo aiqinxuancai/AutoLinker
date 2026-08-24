@@ -229,6 +229,8 @@
     <LinkIncremental>false</LinkIncremental>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='fne_release|Win32'">
+    <!-- fne_release 默认启用受控的 cl.exe 多进程编译；CI 失败回退时可覆盖为 false。 -->
+    <AutoLinkerParallelCompile>true</AutoLinkerParallelCompile>
     <TargetExt>.fne</TargetExt>
     <OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir>
     <IntDir>$(SolutionDir)bin\intermediate\$(Platform)\$(Configuration)\</IntDir>
@@ -439,6 +441,7 @@
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <Optimization>MaxSpeed</Optimization>
+      <AdditionalOptions Condition="'$(AutoLinkerParallelCompile)' == 'true'">/MP4 /FS %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='fne_release|x64'">

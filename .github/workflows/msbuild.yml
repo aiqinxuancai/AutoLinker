@@ -99,10 +99,6 @@ jobs:
     - name: Build
       shell: pwsh
       working-directory: ${{env.GITHUB_WORKSPACE}}
-      env:
-        # Keep MSBuild single-node; /MP parallelizes translation units inside cl.exe.
-        # /FS serializes shared PDB writes and avoids C1041 under parallel compilation.
-        CL: /MP4 /FS
       run: |
         $buildArguments = @(
           "${{env.SOLUTION_FILE_PATH}}/AutoLinker.vcxproj",
@@ -120,14 +116,14 @@ jobs:
         }
 
         Write-Warning "Parallel compilation failed with exit code $parallelExitCode. Retrying with a clean serial rebuild."
-        Remove-Item Env:CL -ErrorAction SilentlyContinue
         $serialArguments = @(
           "${{env.SOLUTION_FILE_PATH}}/AutoLinker.vcxproj",
           "-t:Rebuild",
           "-maxCpuCount:1",
           "-verbosity:normal",
           "-property:Configuration=${{env.BUILD_CONFIGURATION}}",
-          "-property:Platform=${{env.BUILD_PLATFORM}}"
+          "-property:Platform=${{env.BUILD_PLATFORM}}",
+          "-property:AutoLinkerParallelCompile=false"
         )
         & msbuild @serialArguments
         if ($LASTEXITCODE -ne 0) {
