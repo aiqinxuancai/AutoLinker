@@ -43,11 +43,11 @@ constexpr const char* kGitHubAcceleratorBaseUrl = "https://github-fast.apptest.d
 constexpr const char* kGitHubHeaders =
 	"User-Agent: AutoLinker\r\n"
 	"Accept: application/vnd.github+json\r\n";
-constexpr long long kUpdateCheckIntervalSeconds = 7LL * 24LL * 60LL * 60LL;
 
 std::atomic_bool g_unpackTaskRunning = false;
 std::atomic_bool g_toolCheckTaskRunning = false;
 std::atomic_bool g_toolUpdateTaskRunning = false;
+std::atomic_bool g_toolUpdateAfterCheckRequested = false;
 std::mutex g_toolTaskStartMutex;
 std::mutex g_updateStatusMutex;
 std::string Utf8FromStatusText(const std::string& text);
@@ -118,6 +118,27 @@ struct LatestReleaseInfo {
 
 LatestReleaseInfo g_checkedRelease;
 bool g_checkedReleaseAvailable = false;
+
+void ToolUpdateWorker(void* parameter);
+
+bool StartToolUpdateWorker(const LatestReleaseInfo& latest)
+{
+	{
+		std::lock_guard<std::mutex> taskLock(g_toolTaskStartMutex);
+		if (g_toolUpdateTaskRunning.load(std::memory_order_acquire)) {
+			return false;
+		}
+		g_toolUpdateTaskRunning.store(true, std::memory_order_release);
+	}
+
+	auto* request = new (std::nothrow) LatestReleaseInfo(latest);
+	if (request == nullptr || _beginthread(ToolUpdateWorker, 0, request) == static_cast<uintptr_t>(-1)) {
+		delete request;
+		g_toolUpdateTaskRunning.store(false, std::memory_order_release);
+		return false;
+	}
+	return true;
+}
 
 void ClearCheckedRelease()
 {
@@ -621,6 +642,15 @@ std::string ReadFileText(const std::filesystem::path& path)
 	return ss.str();
 }
 
+long long CurrentLocalDateKey()
+{
+	SYSTEMTIME systemTime = {};
+	GetLocalTime(&systemTime);
+	return static_cast<long long>(systemTime.wYear) * 10000LL +
+		static_cast<long long>(systemTime.wMonth) * 100LL +
+		static_cast<long long>(systemTime.wDay);
+}
+
 void WriteFileText(const std::filesystem::path& path, const std::string& text)
 {
 	std::ofstream out(path, std::ios::binary | std::ios::trunc);
@@ -644,19 +674,17 @@ void SaveMeta(const LatestReleaseInfo& info)
 {
 	json value = json::object();
 	value["last_check_unix"] = NowUnixSeconds();
+	value["last_check_local_date"] = CurrentLocalDateKey();
 	value["tag"] = info.tag;
 	value["asset_name"] = info.assetName;
 	WriteFileText(GetEPackagerMetaPath(), value.dump(2));
 }
 
-bool IsUpdateCheckDue(bool toolExists)
+bool IsDailyStartupCheckDue()
 {
-	if (!toolExists) {
-		return true;
-	}
 	const json meta = LoadMeta();
-	const long long lastCheck = meta.value("last_check_unix", 0LL);
-	return lastCheck <= 0 || NowUnixSeconds() - lastCheck >= kUpdateCheckIntervalSeconds;
+	const long long lastCheckDate = meta.value("last_check_local_date", 0LL);
+	return lastCheckDate != CurrentLocalDateKey();
 }
 
 bool FetchLatestRelease(LatestReleaseInfo& outInfo, std::string& outError)
@@ -934,38 +962,29 @@ bool DownloadAndInstallTool(const LatestReleaseInfo& info, std::string& outError
 
 bool EnsureToolReadyImpl(
 	std::filesystem::path& outToolPath,
-	std::string& outError,
-	bool forceCheck,
-	bool allowExistingFallback)
+	std::string& outError)
 {
 	const std::filesystem::path toolPath = GetEPackagerExePath();
 	const bool toolExists = std::filesystem::exists(toolPath);
 	const std::string installedVersion = toolExists ? DetectInstalledVersion(toolPath) : std::string();
-	PublishUpdateStatus(
-		ComponentUpdateState::Checking,
-		"正在检查 e-packager 最新版本...",
-		installedVersion.empty() ? (toolExists ? "已安装" : "未安装") : installedVersion);
-	if (!forceCheck && !IsUpdateCheckDue(toolExists)) {
+	if (toolExists) {
 		outToolPath = toolPath;
 		PublishUpdateStatus(
 			ComponentUpdateState::Completed,
-			"组件在最近检查周期内可用。",
+			"使用已安装的 e-packager；如需更新，请在关于页面或工具菜单中手动更新。",
 			installedVersion.empty() ? "已安装" : installedVersion);
 		return true;
 	}
 
+	// 本地缺少组件时仍需完成首次下载，否则工程镜像无法建立。
+	PublishUpdateStatus(
+		ComponentUpdateState::Checking,
+		"正在检查 e-packager 最新版本...",
+		installedVersion.empty() ? (toolExists ? "已安装" : "未安装") : installedVersion);
+
 	LatestReleaseInfo latest;
 	std::string fetchError;
 	if (!FetchLatestRelease(latest, fetchError)) {
-		if (toolExists && allowExistingFallback) {
-			OutputStringToELog("[e-packager] 检查更新失败，将继续使用现有工具：" + fetchError);
-			outToolPath = toolPath;
-			PublishUpdateStatus(
-				ComponentUpdateState::Error,
-				"检查失败，继续使用已安装组件：" + fetchError,
-				installedVersion.empty() ? "已安装" : installedVersion);
-			return true;
-		}
 		outError = "无法下载 e-packager：" + fetchError + "\r\n" + BuildManualEPackagerInstallGuidance();
 		PublishUpdateStatus(ComponentUpdateState::Error, outError);
 		return false;
@@ -992,17 +1011,6 @@ bool EnsureToolReadyImpl(
 		latest.tag);
 	if (!DownloadAndInstallTool(latest, outError)) {
 		outError += "\r\n" + BuildManualEPackagerInstallGuidance();
-		if (toolExists && allowExistingFallback) {
-			OutputStringToELog("[e-packager] 更新失败，将继续使用现有工具：" + outError);
-			PublishUpdateStatus(
-				ComponentUpdateState::Error,
-				"更新失败，继续使用已安装组件：" + outError,
-				installedVersion,
-				latest.tag);
-			outError.clear();
-			outToolPath = toolPath;
-			return true;
-		}
 		PublishUpdateStatus(ComponentUpdateState::Error, outError, installedVersion, latest.tag);
 		return false;
 	}
@@ -1029,6 +1037,7 @@ struct ToolTaskRunningGuard {
 void ToolCheckWorker(void*)
 {
 	ToolTaskRunningGuard runningGuard(g_toolCheckTaskRunning);
+	const bool updateAfterCheck = g_toolUpdateAfterCheckRequested.exchange(false, std::memory_order_acq_rel);
 	try {
 		const std::filesystem::path toolPath = GetEPackagerExePath();
 		const bool toolExists = std::filesystem::exists(toolPath);
@@ -1065,11 +1074,19 @@ void ToolCheckWorker(void*)
 		}
 
 		StoreCheckedRelease(latest);
+		SaveMeta(latest);
+		OutputStringToELog(std::format(
+			"[e-packager] 检测到新版本 {}，请通过关于页面或工具菜单手动更新。",
+			latest.tag));
 		PublishUpdateStatus(
 			ComponentUpdateState::UpdateAvailable,
 			toolExists ? "发现可用的新版本。" : "尚未安装，发现可用版本。",
 			displayedVersion,
 			latest.tag);
+		if (updateAfterCheck && !StartToolUpdateWorker(latest)) {
+			PublishUpdateStatus(ComponentUpdateState::Error, "启动 e-packager 更新任务失败。", displayedVersion, latest.tag);
+			OutputStringToELog("[e-packager] 启动一键更新任务失败");
+		}
 	}
 	catch (const std::exception& ex) {
 		ClearCheckedRelease();
@@ -1275,7 +1292,7 @@ void UnpackWorker(void* param)
 
 		std::filesystem::path toolPath;
 		std::string error;
-		if (!EnsureToolReadyImpl(toolPath, error, false, true)) {
+		if (!EnsureToolReadyImpl(toolPath, error)) {
 			OutputStringToELog("[e-packager] " + error);
 			CleanupSnapshotRootImpl(snapshotRoot);
 			g_unpackTaskRunning.store(false);
@@ -1358,12 +1375,7 @@ void CleanupSnapshotRoot(const std::filesystem::path& snapshotRoot)
 
 bool EnsureToolReady(std::filesystem::path& outToolPath, std::string& outError)
 {
-	return EnsureToolReadyImpl(outToolPath, outError, false, true);
-}
-
-bool EnsureLatestToolReady(std::filesystem::path& outToolPath, std::string& outError)
-{
-	return EnsureToolReadyImpl(outToolPath, outError, true, false);
+	return EnsureToolReadyImpl(outToolPath, outError);
 }
 
 void RunToolUpdateInBackground()
@@ -1401,6 +1413,7 @@ void CheckForToolUpdatesInBackground()
 			OutputStringToELog("[e-packager] 已有组件更新任务正在执行，请稍候");
 			return;
 		}
+		g_toolUpdateAfterCheckRequested.store(false, std::memory_order_release);
 		g_toolCheckTaskRunning.store(true, std::memory_order_release);
 	}
 
@@ -1408,6 +1421,41 @@ void CheckForToolUpdatesInBackground()
 		g_toolCheckTaskRunning.store(false, std::memory_order_release);
 		PublishUpdateStatus(ComponentUpdateState::Error, "启动 e-packager 后台检查任务失败。");
 		OutputStringToELog("[e-packager] 启动后台检查任务失败");
+	}
+}
+
+void CheckForToolUpdatesOnStartup()
+{
+	if (!std::filesystem::exists(GetEPackagerExePath()) || !IsDailyStartupCheckDue()) {
+		return;
+	}
+	OutputStringToELog("[e-packager] 开始执行今日首次启动版本检查");
+	CheckForToolUpdatesInBackground();
+}
+
+void RunToolUpdateFromMenuInBackground()
+{
+	LatestReleaseInfo checkedRelease;
+	if (TryGetCheckedRelease(checkedRelease)) {
+		RunToolUpdateInBackground();
+		return;
+	}
+
+	{
+		std::lock_guard<std::mutex> taskLock(g_toolTaskStartMutex);
+		if (g_toolCheckTaskRunning.load(std::memory_order_acquire) ||
+			g_toolUpdateTaskRunning.load(std::memory_order_acquire)) {
+			OutputStringToELog("[e-packager] 已有组件更新任务正在执行，请稍候");
+			return;
+		}
+		g_toolUpdateAfterCheckRequested.store(true, std::memory_order_release);
+		g_toolCheckTaskRunning.store(true, std::memory_order_release);
+	}
+	if (_beginthread(ToolCheckWorker, 0, nullptr) == static_cast<uintptr_t>(-1)) {
+		g_toolUpdateAfterCheckRequested.store(false, std::memory_order_release);
+		g_toolCheckTaskRunning.store(false, std::memory_order_release);
+		PublishUpdateStatus(ComponentUpdateState::Error, "启动 e-packager 后台检查任务失败。");
+		OutputStringToELog("[e-packager] 启动一键更新检查任务失败");
 	}
 }
 

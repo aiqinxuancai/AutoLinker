@@ -743,16 +743,6 @@ bool RefreshMirrorMainOnlyLocked(const std::filesystem::path& sourcePath, std::s
 
 	OutputStringToELog("[WorkspaceMirror] refreshing main workspace mirror: " + LocalFromPath(g_state.mirrorRoot));
 	EPackagerIntegration::ProcessRunResult result = runMainOnlyUnpack();
-	if (!result.ok) {
-		OutputStringToELog("[WorkspaceMirror] main-only refresh failed, checking latest e-packager");
-		std::string updateError;
-		if (EPackagerIntegration::EnsureLatestToolReady(toolPath, updateError)) {
-			result = runMainOnlyUnpack();
-		}
-		else {
-			OutputStringToELog("[WorkspaceMirror] latest e-packager check failed: " + updateError);
-		}
-	}
 	if (snapshotIsTemporary) {
 		EPackagerIntegration::CleanupSnapshotRoot(snapshotPath.parent_path());
 	}

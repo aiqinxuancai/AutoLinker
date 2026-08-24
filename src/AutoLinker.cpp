@@ -144,13 +144,25 @@ void ShowSettingsAddIn()
 	ShowAutoLinkerSettingsDialog(g_hwnd, AutoLinkerSettingsPageId::LastUsed);
 }
 
+void UpdateAutoLinkerAddIn()
+{
+	AutoLinkerUpdateManager::RunUpdateInBackground();
+}
+
+void UpdateEPackagerComponentAddIn()
+{
+	EPackagerIntegration::RunToolUpdateFromMenuInBackground();
+}
+
 const auto& GetAddInMenuEntries()
 {
-	static const std::array<AddInMenuEntry, 4> kEntries = { {
+	static const std::array<AddInMenuEntry, 6> kEntries = { {
 		{ "打开项目目录", "这是个用作测试的辅助工具功能。", &OpenProjectDirectoryAddIn },
 		{ "打开 AutoLinker 配置目录", "打开 AutoLinker 的本地配置目录。", &OpenAutoLinkerConfigDirectoryAddIn },
 		{ "打开易语言目录", "打开当前易语言 IDE 所在目录。", &OpenELanguageDirectoryAddIn },
 		{ "AutoLinker 设置", "统一管理 AI、MCP、链接器、IDE 增强与组件更新。", &ShowSettingsAddIn },
+		{ "更新AutoLinker支持库", "检查最新 Release，并在退出 IDE 后更新 AutoLinker.fne。", &UpdateAutoLinkerAddIn },
+		{ "更新e-packager组件", "检查并下载最新的 e-packager 组件。", &UpdateEPackagerComponentAddIn },
 	} };
 	return kEntries;
 }
@@ -439,16 +451,19 @@ bool FneInit()
 	HeadlessCompileRunner::NotifyIdeRuntimeReady();
 	TraceInitStep("检查无头编译请求");
 	HeadlessCompileRunner::StartIfRequested();
-	if (!headlessCompileMode && strcmp(AUTOLINKER_VERSION, "0.0.0") != 0) {
-		TraceInitStep("开始启动版本检查线程");
-		AutoLinkerUpdateManager::CheckForUpdatesInBackground();
+	if (!headlessCompileMode) {
+		if (strcmp(AUTOLINKER_VERSION, "0.0.0") != 0) {
+			TraceInitStep("开始启动版本检查线程");
+			AutoLinkerUpdateManager::CheckForUpdatesInBackground();
+		}
+		else {
+			TraceInitStep("自编译版本：跳过 AutoLinker 版本检查");
+		}
+		EPackagerIntegration::CheckForToolUpdatesOnStartup();
 		TraceInitStep("版本检查线程已启动");
 	}
-	else if (headlessCompileMode) {
-		TraceInitStep("无头编译模式：跳过版本检查线程");
-	}
 	else {
-		TraceInitStep("自编译版本：跳过启动版本检查");
+		TraceInitStep("无头编译模式：跳过版本检查线程");
 	}
 	g_uiInitialized = true;
 	TraceInitStep("FneInit 完成");

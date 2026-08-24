@@ -43,17 +43,20 @@ bool WriteCurrentProjectSnapshot(
 // 安全清理快照临时目录。
 void CleanupSnapshotRoot(const std::filesystem::path& snapshotRoot);
 
-// 确认 e-packager.exe 可用，必要时下载/更新。
+// 确认 e-packager.exe 可用；仅在本地缺少时执行首次下载。
 bool EnsureToolReady(std::filesystem::path& outToolPath, std::string& outError);
-
-// 强制检查最新版 e-packager.exe，失败时不静默回退到旧版本。
-bool EnsureLatestToolReady(std::filesystem::path& outToolPath, std::string& outError);
 
 // 后台检查 e-packager.exe 的最新版本，不执行下载或安装。
 void CheckForToolUpdatesInBackground();
 
+// 每次 IDE 启动时最多检查一次当天的 e-packager 版本，只提示，不自动安装。
+void CheckForToolUpdatesOnStartup();
+
 // 后台安装最近一次检查确认可用的 e-packager.exe 版本。
 void RunToolUpdateInBackground();
+
+// 工具菜单的一键更新入口：先检查版本，再安装可用的 e-packager.exe。
+void RunToolUpdateFromMenuInBackground();
 
 // 设置并读取“关于”页展示的组件更新状态。
 void SetUpdateStatusNotificationWindow(HWND window);
