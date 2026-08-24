@@ -66,7 +66,7 @@ LRESULT result = DefSubclassProc(hWnd, uMsg, wParam, lParam);
 2. 反编译到目录命令
 3. `按配置编译` 子菜单
 
-配置子菜单本身在 `RebuildProjectBuildSubMenu` 中从当前 `.e` 旁的 `*.autolinker.json` 读取，并把命令映射到 `IDM_AUTOLINKER_PROJECT_BUILD_BASE .. IDM_AUTOLINKER_PROJECT_BUILD_MAX`。
+配置子菜单本身在 `RebuildProjectBuildSubMenu` 中从当前 `.e` 旁的 `*.autolinker.json` 读取，并为实际添加到子菜单的项目建立命令映射。命令处理只认领当前子菜单中真实存在的项目，不把整个数值区间视为 AutoLinker 命令。
 
 ## 关键安全条件
 
@@ -89,6 +89,10 @@ mii.hSubMenu == g_projectBuildSubMenu;
 当 `g_projectBuildSubMenu` 尚未创建时，这个条件会对所有叶子项目成立，导致 `编译`、`静态编译`、`独立编译`、`编译为易包` 和安装软件项目被全部删除。该问题就是本次“编译菜单原有项目消失”的根因。
 
 同样的非空保护必须用于 `g_topLinkerSubMenu`。标题回退匹配（`按配置编译`、`使用的链接器`、反编译标题）只能删除确认属于 AutoLinker 的项目，并使用 `RemoveMenu` 保留仍由 AutoLinker 管理的子菜单句柄。
+
+### WM_COMMAND 归属判断
+
+主窗口会收到 IDE、AutoLinker 以及其他插件的全部 `WM_COMMAND`。项目配置命令不能仅通过数值区间判断归属：处理器首先检查当前 `g_projectBuildSubMenu` 中是否真实存在该命令项；菜单被摘除时同步清空子菜单项和命令映射。未满足该条件的命令必须返回 `false`，继续交给 IDE 原窗口过程。
 
 ## 验收清单
 

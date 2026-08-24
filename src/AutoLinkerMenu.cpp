@@ -1,5 +1,6 @@
 ﻿#include "AutoLinkerInternal.h"
 #include <Windows.h>
+#include <limits>
 #include <unordered_map>
 #include <string>
 #include <string_view>
@@ -283,10 +284,11 @@ void RemoveExistingTopMenuExtensions(HMENU hTargetMenu)
 
 		bool removeThis = false;
 		bool preserveSubMenu = false;
+		bool isProjectBuildSubMenu = false;
 		if (GetMenuItemInfoW(hTargetMenu, static_cast<UINT>(i), TRUE, &mii)) {
 			const bool isLinkerSubMenu =
 				g_topLinkerSubMenu != NULL && mii.hSubMenu == g_topLinkerSubMenu;
-			const bool isProjectBuildSubMenu =
+			isProjectBuildSubMenu =
 				g_projectBuildSubMenu != NULL && mii.hSubMenu == g_projectBuildSubMenu;
 			if (isLinkerSubMenu || isProjectBuildSubMenu || mii.wID == IDM_AUTOLINKER_UNPACK_SOURCE) {
 				removeThis = true;
@@ -308,6 +310,12 @@ void RemoveExistingTopMenuExtensions(HMENU hTargetMenu)
 			}
 		}
 		if (removeThis) {
+			if (isProjectBuildSubMenu) {
+				// 子菜单从父菜单摘除后，旧命令不再属于 AutoLinker；同时清除
+				// 映射和菜单项，避免菜单关闭期间误认领其他插件复用的 ID。
+				ClearMenuItemsByPosition(g_projectBuildSubMenu);
+				g_projectBuildCommandMap.clear();
+			}
 			if (preserveSubMenu) {
 				RemoveMenu(hTargetMenu, static_cast<UINT>(i), MF_BYPOSITION);
 			}
@@ -379,7 +387,7 @@ void RebuildProjectBuildSubMenu()
 	}
 	UINT command = IDM_AUTOLINKER_PROJECT_BUILD_BASE;
 	for (const auto& config : file.configurations) {
-		if (command > IDM_AUTOLINKER_PROJECT_BUILD_MAX) break;
+		if (command == (std::numeric_limits<UINT>::max)()) break;
 		const std::wstring title = Utf8ToWideMenuText(config.name);
 		AppendMenuW(g_projectBuildSubMenu, MF_STRING | MF_ENABLED, command, title.c_str());
 		g_projectBuildCommandMap[command] = config.name;
@@ -476,6 +484,18 @@ bool HandleTopLinkerMenuCommand(UINT cmd)
 bool HandleProjectBuildMenuCommand(UINT cmd)
 {
 	auto it = g_projectBuildCommandMap.find(cmd);
+	const bool hasMappedCommand = it != g_projectBuildCommandMap.end();
+	// WM_COMMAND 包含 IDE 和其他插件的全部命令，不能仅凭一个预留区间
+	// 判断归属。映射可能因菜单生命周期滞后而暂时缺失，但当前子菜单中
+	// 真实存在的项目才属于 AutoLinker。
+	if (!hasMappedCommand && cmd < IDM_AUTOLINKER_PROJECT_BUILD_BASE) {
+		return false;
+	}
+	if (g_projectBuildSubMenu == nullptr ||
+		GetMenuState(g_projectBuildSubMenu, cmd, MF_BYCOMMAND) == 0xFFFFFFFF) {
+		return false;
+	}
+
 	UpdateCurrentOpenSourceFile();
 	if (g_nowOpenSourceFilePath.empty()) return true;
 	const std::filesystem::path sourcePath(g_nowOpenSourceFilePath);
@@ -486,16 +506,18 @@ bool HandleProjectBuildMenuCommand(UINT cmd)
 		return true;
 	}
 	std::string selectedName;
-	if (it != g_projectBuildCommandMap.end()) {
+	if (hasMappedCommand) {
 		selectedName = it->second;
 	}
-	else if (cmd >= IDM_AUTOLINKER_PROJECT_BUILD_BASE && cmd <= IDM_AUTOLINKER_PROJECT_BUILD_MAX) {
-		// 菜单由 IDE 延迟创建时，WM_COMMAND 可能先于 WM_INITMENUPOPUP 到达；
-		// 仍按稳定的命令区间解析配置，避免点击后落回 IDE 原命令处理器。
+	else if (cmd >= IDM_AUTOLINKER_PROJECT_BUILD_BASE) {
+		// 菜单由 IDE 延迟创建时，WM_COMMAND 可能先于映射刷新到达；
+		// 仅按当前子菜单中真实存在的项目顺序解析配置。
 		const size_t index = static_cast<size_t>(cmd - IDM_AUTOLINKER_PROJECT_BUILD_BASE);
 		if (index < file.configurations.size()) selectedName = file.configurations[index].name;
 	}
-	if (selectedName.empty()) return false;
+	// 此时已经确认命令来自 AutoLinker 子菜单，即使配置在点击前被删除，
+	// 也应消费旧菜单项，避免把它误交给 IDE 或其他插件。
+	if (selectedName.empty()) return true;
 	const auto configIt = std::find_if(file.configurations.begin(), file.configurations.end(), [&](const ProjectBuildConfig& config) { return config.name == selectedName; });
 	if (configIt == file.configurations.end()) return true;
 	ProjectBuildConfigFile updated = file;
