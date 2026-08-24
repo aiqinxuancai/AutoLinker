@@ -2993,6 +2993,13 @@ window.autolinkerRenderGoalPanel = function() {
 	var data = window.autolinkerGoalState || {};
 	var status = data.status || "none";
 	var formVisible = status === "none" || !!window.autolinkerGoalEditing;
+	// 状态会在 AI 流式输出期间频繁刷新，重建 DOM 前保留用户尚未提交的目标草稿。
+	var objectiveId = status === "none" ? "goal-objective" : "goal-objective-edit";
+	var existingObjective = panel.querySelector ? panel.querySelector("#" + objectiveId) : null;
+	var draftObjective = existingObjective ? existingObjective.value : null;
+	var draftWasFocused = existingObjective && document.activeElement === existingObjective;
+	var draftSelectionStart = existingObjective ? existingObjective.selectionStart : 0;
+	var draftSelectionEnd = existingObjective ? existingObjective.selectionEnd : 0;
 	if (!window.autolinkerGoalPanelOpen || !formVisible) {
 		if (!formVisible) window.autolinkerGoalPanelOpen = false;
 		panel.hidden = true;
@@ -3020,8 +3027,16 @@ window.autolinkerRenderGoalPanel = function() {
 	if (status === "none" || window.autolinkerGoalEditing) {
 		var objective = document.getElementById(status === "none" ? "goal-objective" : "goal-objective-edit");
 		if (objective) {
-			objective.focus();
-			if (window.autolinkerGoalEditing) objective.setSelectionRange(objective.value.length, objective.value.length);
+			if (draftObjective !== null) {
+				objective.value = draftObjective;
+				if (draftWasFocused) {
+					objective.focus();
+					objective.setSelectionRange(draftSelectionStart, draftSelectionEnd);
+				}
+			} else {
+				objective.focus();
+				if (window.autolinkerGoalEditing) objective.setSelectionRange(objective.value.length, objective.value.length);
+			}
 		}
 	}
 };
