@@ -395,6 +395,20 @@ struct Session {
 			watcher.join();
 		}
 		if (reader.joinable()) {
+			readerStopRequested.store(true);
+			// ReadFile on an anonymous pipe is synchronous. Cancel it explicitly so
+			// a leaked descendant stdout handle cannot make session destruction wait
+			// forever after the command's main process has already exited.
+			while (true) {
+				CancelSynchronousIo(static_cast<HANDLE>(reader.native_handle()));
+				std::unique_lock<std::mutex> lock(mutex);
+				if (outputClosed || cv.wait_for(
+						lock,
+						std::chrono::milliseconds(10),
+						[this]() { return outputClosed; })) {
+					break;
+				}
+			}
 			reader.join();
 		}
 		if (readPipe != nullptr) {
@@ -468,6 +482,7 @@ struct Session {
 	HANDLE readPipe = nullptr;
 	std::thread reader;
 	std::thread watcher;
+	std::atomic_bool readerStopRequested = false;
 	std::mutex mutex;
 	std::condition_variable cv;
 	std::string unreadHead;
@@ -485,7 +500,7 @@ void ReadSessionOutput(Session* session)
 {
 	std::array<char, 8192> buffer = {};
 	DWORD bytesRead = 0;
-	while (ReadFile(
+	while (!session->readerStopRequested.load() && ReadFile(
 		session->readPipe,
 		buffer.data(),
 		static_cast<DWORD>(buffer.size()),
@@ -721,7 +736,10 @@ WaitSnapshot WaitAndCollect(
 		session.cv.wait_for(lock, slice);
 	}
 	WaitSnapshot snapshot;
-	snapshot.exited = session.processExited;
+	// A process handle can signal before every inherited stdout writer closes.
+	// Only report completion after the reader has observed EOF as well; otherwise
+	// retaining the session avoids a blocking destructor on this request thread.
+	snapshot.exited = session.processExited && session.outputClosed;
 	snapshot.exitCode = session.exitCode;
 	lock.unlock();
 	snapshot.output = session.DrainOutput();
@@ -1041,6 +1059,23 @@ std::string ExecCommandSessionManager::BuildSelfTestJson()
 	const bool interruptOk = interrupted.ok &&
 		interrupted.responseUtf8.find("Process exited with code 130") != std::string::npos;
 
+	HANDLE heldReadPipe = nullptr;
+	HANDLE heldWritePipe = nullptr;
+	bool boundedReaderShutdown = false;
+	long long boundedReaderShutdownMs = 0;
+	if (CreatePipe(&heldReadPipe, &heldWritePipe, nullptr, 0) != FALSE) {
+		auto heldSession = std::make_unique<Session>();
+		heldSession->readPipe = heldReadPipe;
+		heldSession->reader = std::thread(ReadSessionOutput, heldSession.get());
+		Sleep(50);
+		const auto shutdownStart = std::chrono::steady_clock::now();
+		heldSession.reset();
+		boundedReaderShutdownMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - shutdownStart).count();
+		boundedReaderShutdown = boundedReaderShutdownMs < 2000;
+		CloseHandle(heldWritePipe);
+	}
+
 	TerminateOwnerSession(owner);
 	report["short_command"] = {{"ok", shortOk}};
 	report["rapid_completion_lifecycle"] = {
@@ -1049,6 +1084,10 @@ std::string ExecCommandSessionManager::BuildSelfTestJson()
 	};
 	report["background_poll"] = {{"ok", sessionOk}, {"session_id", sessionId}};
 	report["interrupt"] = {{"ok", interruptOk}, {"session_id", cancelSessionId}};
-	report["ok"] = shortOk && rapidCompletionOk && sessionOk && interruptOk;
+	report["bounded_reader_shutdown"] = {
+		{"ok", boundedReaderShutdown},
+		{"elapsed_ms", boundedReaderShutdownMs}
+	};
+	report["ok"] = shortOk && rapidCompletionOk && sessionOk && interruptOk && boundedReaderShutdown;
 	return report.dump();
 }

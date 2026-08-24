@@ -149,6 +149,8 @@ struct AIChatRunCheckpoint {
 struct AIChatRunOptions {
 	const AIChatRunCheckpoint* resumeCheckpoint = nullptr;
 	std::function<void(const AIChatRunCheckpoint& checkpoint)> checkpointCallback;
+	// 工具完成后的模型续轮最多重试次数；负数表示沿用端点配置。
+	int postToolRetryCount = -1;
 	// 仅在计划阶段向内置聊天公开结构化询问工具。
 	bool enablePlanUserInput = false;
 	// 仅在活动 Goal 中公开查询和结束 Goal 的工具。

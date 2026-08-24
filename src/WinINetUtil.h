@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -13,6 +14,10 @@
 // HTTP request cancellation context.
 class HttpRequestCancellation {
 public:
+	HttpRequestCancellation();
+	HttpRequestCancellation(const HttpRequestCancellation&) = delete;
+	HttpRequestCancellation& operator=(const HttpRequestCancellation&) = delete;
+
 	void Cancel();
 	bool IsCancelled() const;
 
@@ -25,15 +30,13 @@ public:
 	void CloseRegisteredRequestHandle(HINTERNET handle);
 
 private:
-	void CloseHandleLocked(HINTERNET& handle);
-	void AttachHandleLocked(HINTERNET& slot, HINTERNET handle);
-	void CloseRegisteredHandleLocked(HINTERNET& slot, HINTERNET handle);
+	struct State;
+	static void CloseHandleLocked(HINTERNET& handle);
+	static void AttachHandleLocked(State& state, HINTERNET& slot, HINTERNET handle);
+	static void CloseRegisteredHandleLocked(HINTERNET& slot, HINTERNET handle);
 
-	std::atomic_bool cancelled_{ false };
-	mutable std::mutex mutex_;
-	HINTERNET internetHandle_ = nullptr;
-	HINTERNET connectionHandle_ = nullptr;
-	HINTERNET requestHandle_ = nullptr;
+	// 取消线程与请求线程共享句柄状态，保证异步关闭期间对象销毁也安全。
+	std::shared_ptr<State> state_;
 };
 
 // HTTP response header entry.

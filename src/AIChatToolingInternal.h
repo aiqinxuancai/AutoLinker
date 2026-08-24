@@ -52,6 +52,8 @@ ConfigManager* GetAIChatConfigManagerForTooling();
 AIJsonConfig* GetAIChatAIJsonConfigForTooling();
 // 获取内部 AI 命令会话标识及默认工程目录（本地代码页）。
 bool GetAIChatExecContextForTooling(std::string& outSessionId, std::string& outProjectDirectoryLocal);
+// 查询内部 AI 对话是否已开启自动允许写入与本机命令。
+bool GetAIChatAutoAllowWritesForTooling();
 // 获取内部图片工具的会话资源目录与相对路径基准目录。
 bool GetAIChatImageContextForTooling(
 	std::string& outAssetDirectoryLocal,

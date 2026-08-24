@@ -446,6 +446,9 @@ bool g_webView2RuntimeAvailable = false;
 
 void RefreshChatDialog(HWND hWnd);
 void SaveChatSessionSnapshotNow();
+void CloseRunningToolTranscriptMessagesLocked(
+	AIChatSessionState& state,
+	const std::string& resultPreviewLocal);
 void RequestClearChatHistoryAsync();
 void ClearChatHistory();
 void HandleChatSubmitUi(HWND hWnd, ChatDialogContext* ctx, const std::string& text, const std::vector<AIImageAttachment>& attachments = {});
@@ -6195,6 +6198,9 @@ void RecoverInFlightIfNeeded(const std::string& reason)
 		g_session.cancellation.reset();
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
+		CloseRunningToolTranscriptMessagesLocked(
+			g_session,
+			LocalFromWide(L"对话状态已自动恢复，未完成的工具卡已停止等待。"));
 		g_session.messages.push_back(SessionMessage{
 			SessionRole::System,
 			"Chat request auto-recovered: " + reason,
@@ -6220,6 +6226,33 @@ std::string BuildAgentActivityLine(const std::string& toolName, bool done, bool 
 		return LocalFromWide(L"\u6b63\u5728\u8c03\u7528\u5de5\u5177\uff1a") + displayName;
 	}
 	return LocalFromWide(L"\u5de5\u5177\u5b8c\u6210\uff1a") + displayName + (ok ? " (ok)" : " (failed)");
+}
+
+void CloseRunningToolTranscriptMessagesLocked(
+	AIChatSessionState& state,
+	const std::string& resultPreviewLocal)
+{
+	for (SessionMessage& message : state.messages) {
+		if (message.role != SessionRole::Tool || !message.visibleInHistory ||
+			message.content.rfind(kToolTranscriptMessageMarker, 0) != 0) {
+			continue;
+		}
+		try {
+			nlohmann::json payload = nlohmann::json::parse(
+				LocalToUtf8Text(message.content.substr(std::strlen(kToolTranscriptMessageMarker))));
+			if (payload.value("phase", std::string()) != "running") {
+				continue;
+			}
+			payload["phase"] = "ran";
+			payload["ok"] = false;
+			payload["result_preview"] = LocalToUtf8Text(resultPreviewLocal);
+			message.content = std::string(kToolTranscriptMessageMarker) +
+				Utf8ToLocalText(payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+		}
+		catch (...) {
+			// Malformed historical messages are not actionable running cards.
+		}
+	}
 }
 
 void UpsertToolTranscriptMessage(
@@ -6701,6 +6734,7 @@ void RunAIChatWorker(void* pParams)
 			}
 			else {
 				AIChatRunOptions runOptions;
+				runOptions.postToolRetryCount = 0;
 				runOptions.enablePlanUserInput = request->enablePlanUserInput;
 				runOptions.enableGoalTools = request->enableGoalTools;
 				if (request->hasResumeCheckpoint) {
@@ -8369,6 +8403,13 @@ void HandleChatTaskDone(LPARAM lParam)
 		g_session.cancellation.reset();
 		g_session.streamingAssistantPreview.clear();
 		g_session.agentActivityLines.clear();
+		CloseRunningToolTranscriptMessagesLocked(
+			g_session,
+			result->chatResult.cancelled
+				? LocalFromWide(L"本次对话已停止，工具结果可能已经产生外部副作用。")
+				: (result->chatResult.ok
+					? LocalFromWide(L"工具已结束，但状态回写未完成；请确认外部副作用。")
+					: LocalFromWide(L"模型续轮失败，工具调用已结束；恢复会话前请先确认外部副作用。")));
 		const bool continueAfterCancel =
 			result->chatResult.cancelled && !g_session.pendingInputs.empty();
 		if (continueAfterCancel) {
@@ -9678,6 +9719,11 @@ bool GetAIChatExecContextForTooling(std::string& outSessionId, std::string& outP
 	return !outProjectDirectoryLocal.empty();
 }
 
+bool GetAIChatAutoAllowWritesForTooling()
+{
+	return IsAutoAllowWritesEnabled();
+}
+
 bool GetAIChatImageContextForTooling(
 	std::string& outAssetDirectoryLocal,
 	std::string& outProjectDirectoryLocal)
@@ -10851,15 +10897,40 @@ std::string BuildPlanModeSelfTestJson()
 		execApprovalPreview.find("D:\\project") != std::string::npos &&
 		execApprovalPreview.find("1500 ms") != std::string::npos;
 
+	AIChatSessionState transcriptState;
+	transcriptState.messages.push_back(SessionMessage{
+		SessionRole::Tool,
+		BuildToolTranscriptMessageLocal("running", "exec_command", R"({"cmd":"Get-Date"})", "", false),
+		false,
+		true,
+		"",
+		""
+	});
+	CloseRunningToolTranscriptMessagesLocked(transcriptState, "request finished");
+	std::string closedPhase;
+	std::string closedInvocation;
+	std::string closedPreview;
+	bool closedOk = true;
+	const bool transcriptCloseOk = ExtractToolTranscriptMessage(
+		transcriptState.messages.front().content,
+		closedPhase,
+		closedInvocation,
+		closedPreview,
+		closedOk) &&
+		closedPhase == "ran" &&
+		!closedOk &&
+		closedPreview == "request finished";
+
 	return nlohmann::json({
 		{"name", "plan-mode-approval-compat"},
-		{"ok", explicitOk && toolPlanOk && plainPlanOk && userInputOk && stepUiOk && execApprovalOk},
+		{"ok", explicitOk && toolPlanOk && plainPlanOk && userInputOk && stepUiOk && execApprovalOk && transcriptCloseOk},
 		{"explicit_plan", explicitOk},
 		{"update_plan_fallback", toolPlanOk},
 		{"plain_text_fallback", plainPlanOk},
 		{"user_input_protocol", userInputCheck},
 		{"user_input_step_ui", stepUiOk},
-		{"exec_command_approval", execApprovalOk}
+		{"exec_command_approval", execApprovalOk},
+		{"running_tool_transcript_closed", transcriptCloseOk}
 	}).dump();
 }
 

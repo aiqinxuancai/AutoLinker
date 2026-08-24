@@ -287,6 +287,17 @@ public:
 		m_retriesPerformed = 0;
 	}
 
+	void LimitMaxRetries(int maxRetries) noexcept
+	{
+		if (maxRetries < 0) {
+			return;
+		}
+		m_maxRetries = (std::min)(
+			m_maxRetries,
+			(std::clamp)(maxRetries, 0, kAiMaxRequestRetryCount));
+		m_retriesPerformed = (std::min)(m_retriesPerformed, m_maxRetries);
+	}
+
 	bool WaitForRetry(
 		const char* tag,
 		int statusCode,
@@ -322,6 +333,13 @@ private:
 	int m_maxRetries = 0;
 	int m_retriesPerformed = 0;
 };
+
+void ApplyPostToolRetryLimit(
+	ChatRetryCoordinator& retry,
+	const AIChatRunOptions& runOptions)
+{
+	retry.LimitMaxRetries(runOptions.postToolRetryCount);
+}
 
 void LogAiHttpFailure(const std::string& tag, int statusCode, const std::string& responseBody)
 {
@@ -5066,6 +5084,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 				{"content", std::move(toolResultContent)}
 			});
 		}
+		ApplyPostToolRetryLimit(retry, runOptions);
 		if (runController.IsStalled()) {
 			result.paused = true;
 			result.terminationReason = AIChatRunTerminationReason::Stalled;
@@ -5459,6 +5478,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 				runController.CompleteToolCall(i, toolResultLocal, toolOk);
 			}
 		}
+		ApplyPostToolRetryLimit(retry, runOptions);
 		if (runController.IsStalled()) {
 			result.paused = true;
 			result.terminationReason = AIChatRunTerminationReason::Stalled;
@@ -5854,6 +5874,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 				BuildRawCheckpointMessage("tool", toolResultLocal, toolOutputItem));
 			AppendToolImagesToController(runController, call.name, toolExecution.attachments);
 		}
+		ApplyPostToolRetryLimit(retry, runOptions);
 		if (runController.IsStalled()) {
 			result.paused = true;
 			result.terminationReason = AIChatRunTerminationReason::Stalled;
@@ -7656,6 +7677,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 				AppendToolImagesToController(runController, toolName, toolExecution.attachments);
 				++toolCallIndex;
 			}
+			ApplyPostToolRetryLimit(retry, runOptions);
 			if (runController.IsStalled()) {
 				result.paused = true;
 				result.terminationReason = AIChatRunTerminationReason::Stalled;

@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstring>
 #include <format>
+#include <thread>
 
 #pragma comment(lib, "wininet.lib")
 
@@ -178,6 +179,20 @@ std::string FormatInternetFailure(const char* operation, DWORD error)
 }
 } // namespace
 
+struct HttpRequestCancellation::State {
+	std::atomic_bool cancelled = false;
+	std::atomic_bool closeStarted = false;
+	std::mutex mutex;
+	HINTERNET internetHandle = nullptr;
+	HINTERNET connectionHandle = nullptr;
+	HINTERNET requestHandle = nullptr;
+};
+
+HttpRequestCancellation::HttpRequestCancellation()
+	: state_(std::make_shared<State>())
+{
+}
+
 void HttpRequestCancellation::CloseHandleLocked(HINTERNET& handle)
 {
 	if (handle == nullptr) {
@@ -188,10 +203,13 @@ void HttpRequestCancellation::CloseHandleLocked(HINTERNET& handle)
 	InternetCloseHandle(closingHandle);
 }
 
-void HttpRequestCancellation::AttachHandleLocked(HINTERNET& slot, HINTERNET handle)
+void HttpRequestCancellation::AttachHandleLocked(
+	State& state,
+	HINTERNET& slot,
+	HINTERNET handle)
 {
 	slot = handle;
-	if (cancelled_.load()) {
+	if (state.cancelled.load()) {
 		CloseHandleLocked(slot);
 	}
 }
@@ -206,52 +224,64 @@ void HttpRequestCancellation::CloseRegisteredHandleLocked(HINTERNET& slot, HINTE
 
 void HttpRequestCancellation::Cancel()
 {
-	cancelled_.store(true);
-	std::lock_guard<std::mutex> guard(mutex_);
-	CloseHandleLocked(requestHandle_);
-	CloseHandleLocked(connectionHandle_);
-	CloseHandleLocked(internetHandle_);
+	const std::shared_ptr<State> state = state_;
+	state->cancelled.store(true);
+	if (state->closeStarted.exchange(true)) {
+		return;
+	}
+	std::thread([state]() {
+		std::lock_guard<std::mutex> guard(state->mutex);
+		HttpRequestCancellation::CloseHandleLocked(state->requestHandle);
+		HttpRequestCancellation::CloseHandleLocked(state->connectionHandle);
+		HttpRequestCancellation::CloseHandleLocked(state->internetHandle);
+	}).detach();
 }
 
 bool HttpRequestCancellation::IsCancelled() const
 {
-	return cancelled_.load();
+	return state_->cancelled.load();
 }
 
 void HttpRequestCancellation::AttachInternetHandle(HINTERNET handle)
 {
-	std::lock_guard<std::mutex> guard(mutex_);
-	AttachHandleLocked(internetHandle_, handle);
+	const std::shared_ptr<State> state = state_;
+	std::lock_guard<std::mutex> guard(state->mutex);
+	AttachHandleLocked(*state, state->internetHandle, handle);
 }
 
 void HttpRequestCancellation::AttachConnectionHandle(HINTERNET handle)
 {
-	std::lock_guard<std::mutex> guard(mutex_);
-	AttachHandleLocked(connectionHandle_, handle);
+	const std::shared_ptr<State> state = state_;
+	std::lock_guard<std::mutex> guard(state->mutex);
+	AttachHandleLocked(*state, state->connectionHandle, handle);
 }
 
 void HttpRequestCancellation::AttachRequestHandle(HINTERNET handle)
 {
-	std::lock_guard<std::mutex> guard(mutex_);
-	AttachHandleLocked(requestHandle_, handle);
+	const std::shared_ptr<State> state = state_;
+	std::lock_guard<std::mutex> guard(state->mutex);
+	AttachHandleLocked(*state, state->requestHandle, handle);
 }
 
 void HttpRequestCancellation::CloseRegisteredInternetHandle(HINTERNET handle)
 {
-	std::lock_guard<std::mutex> guard(mutex_);
-	CloseRegisteredHandleLocked(internetHandle_, handle);
+	const std::shared_ptr<State> state = state_;
+	std::lock_guard<std::mutex> guard(state->mutex);
+	CloseRegisteredHandleLocked(state->internetHandle, handle);
 }
 
 void HttpRequestCancellation::CloseRegisteredConnectionHandle(HINTERNET handle)
 {
-	std::lock_guard<std::mutex> guard(mutex_);
-	CloseRegisteredHandleLocked(connectionHandle_, handle);
+	const std::shared_ptr<State> state = state_;
+	std::lock_guard<std::mutex> guard(state->mutex);
+	CloseRegisteredHandleLocked(state->connectionHandle, handle);
 }
 
 void HttpRequestCancellation::CloseRegisteredRequestHandle(HINTERNET handle)
 {
-	std::lock_guard<std::mutex> guard(mutex_);
-	CloseRegisteredHandleLocked(requestHandle_, handle);
+	const std::shared_ptr<State> state = state_;
+	std::lock_guard<std::mutex> guard(state->mutex);
+	CloseRegisteredHandleLocked(state->requestHandle, handle);
 }
 
 std::string HttpResponseDetails::GetHeaderValue(const std::string& name) const

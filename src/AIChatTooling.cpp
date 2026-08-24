@@ -529,7 +529,8 @@ bool RequestToolExecutionFromMainThread(
 	std::string& outResultJson,
 	bool& outOk,
 	bool bypassInteractiveApproval = false,
-	bool approvalOnly = false)
+	bool approvalOnly = false,
+	const std::function<bool()>& cancelCallback = {})
 {
 	outResultJson.clear();
 	outOk = false;
@@ -578,6 +579,13 @@ bool RequestToolExecutionFromMainThread(
 				lock.unlock();
 				IdeCompileDialogGuard::TryDismissDependencyWriteDialog();
 				lock.lock();
+			}
+			if (cancelCallback && cancelCallback()) {
+				request->cancelled = true;
+				lock.unlock();
+				CancelToolExecutionRequestForTooling(requestId);
+				outResultJson = R"({"ok":false,"error":"main thread tool request was cancelled"})";
+				return false;
 			}
 		}
 		if (!request->done) {
@@ -733,7 +741,8 @@ std::string ExecuteToolCallImpl(
 				approvalResult,
 				approved,
 				false,
-				true)) {
+				true,
+				cancelCallback)) {
 			return approvalResult.empty()
 				? Utf8ToLocalText(R"({"ok":false,"error":"view_image approval transport failed"})")
 				: approvalResult;
@@ -871,19 +880,22 @@ std::string ExecuteToolCallImpl(
 		approvalArgs["yield_time_ms"] = request.yieldTimeMs;
 		std::string approvalResult;
 		bool approved = false;
-		if (!RequestToolExecutionFromMainThread(
+		const bool autoAllowWrites = GetAIChatAutoAllowWritesForTooling();
+		if (!autoAllowWrites &&
+			!RequestToolExecutionFromMainThread(
 				"exec_command",
 				approvalArgs.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace),
 				approvalResult,
 				approved,
 				false,
-				true)) {
+				true,
+				cancelCallback)) {
 			outOk = false;
 			return approvalResult.empty()
 				? Utf8ToLocalText("exec_command approval transport failed")
 				: approvalResult;
 		}
-		if (!approved) {
+		if (!autoAllowWrites && !approved) {
 			outOk = false;
 			return approvalResult.empty()
 				? Utf8ToLocalText("exec_command execution denied by user")
@@ -1049,7 +1061,10 @@ std::string ExecuteToolCallImpl(
 				"__prepare_workspace_file_access",
 				"{}",
 				prepareResult,
-				prepareOk)) {
+				prepareOk,
+				false,
+				false,
+				cancelCallback)) {
 			return prepareResult.empty()
 				? R"({"ok":false,"error":"prepare workspace file access transport failed"})"
 				: prepareResult;
@@ -1073,7 +1088,9 @@ std::string ExecuteToolCallImpl(
 				argumentsJson,
 				createResult,
 				createOk,
-				ShouldBypassToolApprovalForScope(approvalScope))) {
+				ShouldBypassToolApprovalForScope(approvalScope),
+				false,
+				cancelCallback)) {
 			return createResult.empty()
 				? R"({"ok":false,"error":"add_new_file create stage transport failed"})"
 				: createResult;
@@ -1117,7 +1134,9 @@ std::string ExecuteToolCallImpl(
 				finishArgs.dump(),
 				finishResult,
 				finishOk,
-				ShouldBypassToolApprovalForScope(approvalScope))) {
+				ShouldBypassToolApprovalForScope(approvalScope),
+				false,
+				cancelCallback)) {
 			return finishResult.empty()
 				? R"({"ok":false,"error":"add_new_file finish stage transport failed"})"
 				: finishResult;
@@ -1150,7 +1169,9 @@ std::string ExecuteToolCallImpl(
 				argumentsJson,
 				resultJson,
 				outOk,
-				ShouldBypassToolApprovalForScope(approvalScope))) {
+				ShouldBypassToolApprovalForScope(approvalScope),
+				false,
+				cancelCallback)) {
 			return resultJson.empty()
 				? R"({"ok":false,"error":"main thread tool execution failed"})"
 				: resultJson;

@@ -45,6 +45,7 @@
 #include "Version.h"
 #include "WebDocumentClient.h"
 #include "WebDocumentExtractor.h"
+#include "WinINetUtil.h"
 #include "WindowHelper.h"
 #include "WorkspaceFileTools.h"
 #include "WorkspaceMirror.h"
@@ -793,7 +794,9 @@ class MockIntegrationHttpServer {
 public:
 	enum class AiScriptMode {
 		EmptyThenSuccess,
-		TransportThenEmptyThenSuccess
+		TransportThenEmptyThenSuccess,
+		ToolThenTransportFailure,
+		HangUntilDisconnect
 	};
 
 	~MockIntegrationHttpServer()
@@ -871,6 +874,8 @@ public:
 	void SetAiScriptMode(AiScriptMode mode)
 	{
 		aiScriptMode_.store(mode);
+		hangingRequestActive_.store(false);
+		hangingRequestDisconnected_.store(false);
 		openAiChatRequests_.store(0);
 		openAiResponsesRequests_.store(0);
 		geminiRequests_.store(0);
@@ -891,6 +896,16 @@ public:
 		default:
 			return 0;
 		}
+	}
+
+	bool IsHangingRequestActive() const
+	{
+		return hangingRequestActive_.load();
+	}
+
+	bool WasHangingRequestDisconnected() const
+	{
+		return hangingRequestDisconnected_.load();
 	}
 
 private:
@@ -1022,8 +1037,29 @@ private:
 		}
 	}
 
+	static std::string BuildToolAiResponse(AiRoute route)
+	{
+		switch (route) {
+		case AiRoute::OpenAIChat:
+			return R"({"choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_mock","type":"function","function":{"name":"mock_tool","arguments":"{}"}}]},"finish_reason":"tool_calls"}]})";
+		case AiRoute::OpenAIResponses:
+			return R"({"output":[{"id":"fc_mock","type":"function_call","call_id":"call_mock","name":"mock_tool","arguments":"{}"}]})";
+		case AiRoute::Gemini:
+			return R"({"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_mock","name":"mock_tool","args":{}}}]},"finishReason":"STOP"}]})";
+		case AiRoute::Claude:
+			return R"({"content":[{"type":"tool_use","id":"call_mock","name":"mock_tool","input":{}}],"stop_reason":"tool_use","usage":{"input_tokens":1,"output_tokens":1}})";
+		default:
+			return R"({})";
+		}
+	}
+
 	std::pair<int, std::string> BuildAiResponse(AiRoute route, int attempt) const
 	{
+		if (aiScriptMode_.load() == AiScriptMode::ToolThenTransportFailure) {
+			return attempt == 1
+				? std::make_pair(200, BuildToolAiResponse(route))
+				: std::make_pair(503, std::string(R"({"error":{"message":"mock post-tool failure"}})"));
+		}
 		if (aiScriptMode_.load() == AiScriptMode::TransportThenEmptyThenSuccess) {
 			if (attempt == 1) {
 				return { 503, R"({"error":{"message":"mock service unavailable"}})" };
@@ -1144,9 +1180,37 @@ private:
 		const std::string body = requestText.substr(headerEnd + 4, static_cast<size_t>(contentLength));
 		const AiRoute aiRoute = DetectAiRoute(ExtractRequestTarget(headers));
 		if (aiRoute != AiRoute::None) {
+			const int attempt = IncrementAiRequestCount(aiRoute);
+			if (aiScriptMode_.load() == AiScriptMode::HangUntilDisconnect) {
+				hangingRequestActive_.store(true);
+				DWORD receiveTimeoutMs = 100;
+				setsockopt(
+					client,
+					SOL_SOCKET,
+					SO_RCVTIMEO,
+					reinterpret_cast<const char*>(&receiveTimeoutMs),
+					static_cast<int>(sizeof(receiveTimeoutMs)));
+				char probe = 0;
+				while (!stop_.load()) {
+					const int received = recv(client, &probe, 1, 0);
+					if (received == 0) {
+						hangingRequestDisconnected_.store(true);
+						break;
+					}
+					if (received == SOCKET_ERROR) {
+						const int socketError = WSAGetLastError();
+						if (socketError != WSAETIMEDOUT && socketError != WSAEWOULDBLOCK) {
+							hangingRequestDisconnected_.store(true);
+							break;
+						}
+					}
+				}
+				hangingRequestActive_.store(false);
+				return;
+			}
 			const auto [status, responseBody] = BuildAiResponse(
 				aiRoute,
-				IncrementAiRequestCount(aiRoute));
+				attempt);
 			const std::string response = BuildHttpResponse(status, responseBody, false);
 			send(client, response.data(), static_cast<int>(response.size()), 0);
 			return;
@@ -1176,6 +1240,8 @@ private:
 	std::atomic_int openAiResponsesRequests_{ 0 };
 	std::atomic_int geminiRequests_{ 0 };
 	std::atomic_int claudeRequests_{ 0 };
+	std::atomic_bool hangingRequestActive_{ false };
+	std::atomic_bool hangingRequestDisconnected_{ false };
 	std::thread thread_;
 };
 
@@ -1467,6 +1533,165 @@ bool RunAIChatSharedRetryBudgetSelfTest(nlohmann::json& outCheck)
 		outCheck["error"] = "unknown exception";
 		return false;
 	}
+}
+
+bool RunAIChatPostToolReleaseSelfTest(nlohmann::json& outCheck)
+{
+	outCheck = {
+		{"name", "ai_chat_post_tool_release"},
+		{"ok", false},
+		{"protocols", nlohmann::json::array()}
+	};
+
+	struct ProtocolCase {
+		AIProtocolType protocol;
+		const char* name;
+	};
+	const std::vector<ProtocolCase> protocolCases = {
+		{ AIProtocolType::OpenAI, "openai_chat" },
+		{ AIProtocolType::OpenAIResponses, "openai_responses" },
+		{ AIProtocolType::Gemini, "gemini" },
+		{ AIProtocolType::Claude, "claude" }
+	};
+
+	MockIntegrationHttpServer server;
+	std::string error;
+	try {
+		if (!server.Start(error)) {
+			outCheck["error"] = error;
+			return false;
+		}
+
+		bool allOk = true;
+		for (const ProtocolCase& protocolCase : protocolCases) {
+			AISettings settings = {};
+			settings.protocolType = protocolCase.protocol;
+			settings.baseUrl = server.BaseUrl();
+			settings.apiKey = "mock-key";
+			settings.model = "mock-model";
+			settings.timeoutMs = 1000;
+			settings.retryCount = 5;
+			settings.temperature = 0;
+
+			server.SetAiScriptMode(MockIntegrationHttpServer::AiScriptMode::ToolThenTransportFailure);
+			int toolExecutionCount = 0;
+			AIChatRunOptions options;
+			options.postToolRetryCount = 0;
+			const auto startedAt = std::chrono::steady_clock::now();
+			const AIChatResult result = AIService::ExecuteChatWithTools(
+				{{"user", "call mock_tool once", "", ""}},
+				settings,
+				[&toolExecutionCount](
+					const std::string& toolName,
+					const std::string&,
+					bool& outOk) {
+					++toolExecutionCount;
+					outOk = toolName == "mock_tool";
+					return std::string(R"({"ok":true,"value":"tool-finished"})");
+				},
+				{},
+				{},
+				nullptr,
+				options);
+			const long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - startedAt).count();
+			const int requestCount = server.AiRequestCount(protocolCase.protocol);
+			const bool checkpointCompleted = result.hasCheckpoint &&
+				!result.checkpoint.toolCalls.empty() &&
+				result.checkpoint.toolCalls.front().completed &&
+				result.checkpoint.toolCalls.front().ok;
+			const bool protocolOk = !result.ok &&
+				toolExecutionCount == 1 &&
+				requestCount == 2 &&
+				result.toolEvents.size() == 1 &&
+				checkpointCompleted &&
+				elapsedMs < 3000;
+			outCheck["protocols"].push_back({
+				{"name", protocolCase.name},
+				{"ok", protocolOk},
+				{"tool_execution_count", toolExecutionCount},
+				{"request_count", requestCount},
+				{"checkpoint_completed", checkpointCompleted},
+				{"elapsed_ms", elapsedMs},
+				{"error", result.error}
+			});
+			allOk = allOk && protocolOk;
+		}
+		outCheck["ok"] = allOk;
+		return allOk;
+	}
+	catch (const std::exception& ex) {
+		outCheck["error"] = ex.what();
+		return false;
+	}
+	catch (...) {
+		outCheck["error"] = "unknown exception";
+		return false;
+	}
+}
+
+bool RunHttpCancellationSelfTest(nlohmann::json& outCheck)
+{
+	outCheck = {
+		{"name", "http_cancellation_nonblocking"},
+		{"ok", false}
+	};
+	MockIntegrationHttpServer server;
+	std::string error;
+	if (!server.Start(error)) {
+		outCheck["error"] = error;
+		return false;
+	}
+
+	server.SetAiScriptMode(MockIntegrationHttpServer::AiScriptMode::HangUntilDisconnect);
+	HttpRequestCancellation cancellation;
+	std::atomic_bool requestDone = false;
+	std::pair<std::string, int> requestResult;
+	std::thread requestThread([&]() {
+		requestResult = PerformPostRequest(
+			server.BaseUrl() + "/chat/completions",
+			"{}",
+			"Content-Type: application/json\r\n",
+			10000,
+			false,
+			false,
+			&cancellation);
+		requestDone.store(true);
+	});
+
+	const auto waitStartedAt = std::chrono::steady_clock::now();
+	while (!server.IsHangingRequestActive() &&
+		std::chrono::steady_clock::now() - waitStartedAt < std::chrono::seconds(2)) {
+		Sleep(10);
+	}
+	const bool requestReachedServer = server.IsHangingRequestActive();
+	const auto cancelStartedAt = std::chrono::steady_clock::now();
+	cancellation.Cancel();
+	const long long cancelReturnMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - cancelStartedAt).count();
+	const auto completionDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	while (!requestDone.load() && std::chrono::steady_clock::now() < completionDeadline) {
+		Sleep(10);
+	}
+	const bool releasedPromptly = requestDone.load();
+	server.Stop();
+	requestThread.join();
+	const bool disconnected = server.WasHangingRequestDisconnected();
+	const bool ok = requestReachedServer &&
+		cancelReturnMs < 250 &&
+		releasedPromptly &&
+		disconnected &&
+		requestResult.second == 499;
+	outCheck = {
+		{"name", "http_cancellation_nonblocking"},
+		{"ok", ok},
+		{"request_reached_server", requestReachedServer},
+		{"cancel_return_ms", cancelReturnMs},
+		{"request_released_promptly", releasedPromptly},
+		{"server_observed_disconnect", disconnected},
+		{"http_status", requestResult.second}
+	};
+	return ok;
 }
 
 bool RunMcpStdioRoundtripSelfTest(nlohmann::json& outCheck)
@@ -3447,6 +3672,14 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	nlohmann::json sharedRetryBudgetCheck;
 	RunAIChatSharedRetryBudgetSelfTest(sharedRetryBudgetCheck);
 	report["checks"].push_back(std::move(sharedRetryBudgetCheck));
+
+	nlohmann::json postToolReleaseCheck;
+	RunAIChatPostToolReleaseSelfTest(postToolReleaseCheck);
+	report["checks"].push_back(std::move(postToolReleaseCheck));
+
+	nlohmann::json httpCancellationCheck;
+	RunHttpCancellationSelfTest(httpCancellationCheck);
+	report["checks"].push_back(std::move(httpCancellationCheck));
 
 	nlohmann::json mockStdioRoundtripCheck;
 	RunMcpStdioRoundtripSelfTest(mockStdioRoundtripCheck);
