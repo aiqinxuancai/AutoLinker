@@ -48,12 +48,19 @@ AutoLinker 是易语言的 AI Agent 支持库，通过逆向让 AI 全自动编�
 
 在 IDE「工具」菜单打开 **AutoLinker EC 模块自动切换设置** 维护规则。注意：需先自行引用动/静任一 ec，且成对的两个 ec 必须放在**同一文件夹**中（替换时只改文件名）。
 
+### ⭐ 项目级按配置编译
+在“工具菜单 → AutoLinker 设置 → 编译配置”中为当前 `.e/.ec` 工程维护多套输出配置，支持
+`auto`、窗口 EXE、控制台 EXE、DLL、易模块目标、静态编译，以及编译前/后 PowerShell 动作。
+保存后从“主菜单 → 编译 → 按配置编译”选择配置；任务会生成当前 IDE 工程快照，在独立隐藏的
+`e.exe` 实例中异步执行。配置保存在源文件旁的 `<文件名>.autolinker.json`，详细字段和变量见
+`docs/project-build-menu-integration.md`。
+
 ## 本地 MCP 服务
 
 将易语言 MCP 接入 Codex、Claude Code、Gemini CLI 等工具，需客户端支持 **MCP Streamable HTTP**。
 
 ### 服务地址
-- 默认监听 `http://127.0.0.1:19207/mcp`，端口占用时自动向 `19208` 起顺延。
+- 外部客户端固定连接 `http://127.0.0.1:19207/mcp`；各 IDE 实例使用 `19208` 之后的内部后端端口，网关由存活实例接管。
 - 启动成功后 IDE 输出窗口和 `autolinker.log` 会记录：
   ```text
   [AutoLinker][LocalMCP] 本地 MCP 服务已启动：http://127.0.0.1:19207/mcp
@@ -88,16 +95,19 @@ url = "http://127.0.0.1:19207/mcp"
 
 ### 工程源码读写模型
 - 内置 AI 每轮请求前以 `full` 模式自动准备镜像；外部 MCP 会话首次读写前须调用 `refresh_workspace_mirror`。镜像由 e-packager 解包到 `%TEMP%/AutoLinker/workspace-mirror/`（含未保存改动），不污染源码目录。`mode` 支持 `auto` / `main_only` / `full`。
-- 读取统一走镜像相对路径（`list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`）；大文件返回 `next_source_byte_offset` 用于续读，分页建议回传 `mirror_generation`，旧代次游标会被拒绝。
+- 仅当用户明确要求解析、查看、参考或复刻外部 `.e` / `.ec` 文件时，才调用 `e_packager`，且当前 MCP 会话必须先成功调用 `refresh_workspace_mirror`。参数为必填的 `file_path`（绝对路径，或相对当前工程目录的路径；只接受已存在的普通 `.e` / `.ec` 文件），会将文件解包到当前镜像的只读目录 `unimported_code/{文件名}/`；使用 `list_files` / `search_code` 定位文件，再用 `read_file` / `read_files` 读取，不对未引用源码使用 `read_code_item`，也不得使用写工具修改。同名目录仅在解包成功后替换；成功返回 `operation="unpack"`、`output_directory`、`file_count`、新的 `mirror_generation` 和 `read_hint`。解包会改变镜像代次，分页读取须从第一页重新开始。
+- 读取统一走镜像相对路径（`list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`）；大文件返回 `next_source_byte_offset` 用于续读。续页建议原样回传上一页的非零 `mirror_generation`；漏传时自动绑定当前镜像代次，显式传入的旧代次游标仍会被拒绝。
 - 编辑前用 `read_real_file` 取分页视图和 `code_hash` 作为 CAS 基线。写工具（`edit_file`、`multi_edit_file`、`write_file` 等）以 `file_path` 为目标，映射回 IDE 程序项后直接写回 IDE，不回包编译。
 - 写入须带 SHA-256 `expected_base_hash`（恢复用 `expected_current_hash`）防止旧基线覆盖新改动；结果仅返回哈希、快照、验证与变更统计，完整结果在 `structuredContent`。
-- `src/*.xml` 为窗口界面文件，仅供读取搜索；固定表（常量、全局变量、DLL 声明、数据类型）可经对应路径编辑。程序集变量写回会按 IDE 可接受格式处理。
+- `src/*.xml` 为易语言原生窗口界面文件，仅供读取搜索。当前工具不支持调整窗口或控件的位置、大小、层级和属性，不支持添加、删除控件，也不支持新增、删除或修改控件事件绑定。对应 `src/*.txt` 中的窗口程序集代码和已有事件处理代码仍可编辑，但新增事件子程序不代表已经建立控件事件绑定。固定表（常量、全局变量、DLL 声明、数据类型）可经对应路径编辑，程序集变量写回会按 IDE 可接受格式处理。
+- 同时打开多个 IDE 时，先调用 `list_instances` 查看目标工程，再用 `select_instance` 选择实例；选择按 `Mcp-Session-Id` 隔离，实例退出后不会静默切换。
 
 ### 公开工具（`tools/list`）
 
 | 类别 | 方法 | 说明 |
 | --- | --- | --- |
 | 读取 | `refresh_workspace_mirror` | 从 IDE 内存工程刷新镜像（`auto` / `main_only` / `full`） |
+| 读取 | `e_packager` | 在刷新后的镜像中解包其它 `.e` / `.ec` 到只读参考目录 `unimported_code/{文件名}/`，返回新的 `mirror_generation` |
 | 读取 | `list_files` | 按 glob 列出镜像内文件 |
 | 读取 | `search_code` | 镜像内逐文件搜索，支持批量 patterns、glob、上下文、分页 |
 | 读取 | `read_file` / `read_files` | 读取单个 / 批量文件或区间，带行号 |
@@ -109,6 +119,8 @@ url = "http://127.0.0.1:19207/mcp"
 | 编辑 | `restore_file_snapshot` | 恢复写入前快照 |
 | 当前页 | `get_current_page_info` | 当前页名称、类型与解析来源 |
 | 当前页 | `get_current_eide_info` | 源码路径、IDE 进程路径、MCP 端口等 |
+| 路由 | `list_instances` | 列出运行中的 AutoLinker IDE 实例和当前会话选择 |
+| 路由 | `select_instance` | 将当前 MCP 会话路由到指定实例 |
 | 编译 | `compile_with_output_path` | `target` 默认 `auto`，以产物指纹验证成功 |
 | 交互 | `run_powershell_command` | 经确认后执行 PowerShell，超时终止进程树 |
 | 联网 | `search_web_tavily` | 联网搜索网页 |
@@ -118,7 +130,7 @@ url = "http://127.0.0.1:19207/mcp"
 ## 其他功能
 
 ### ⭐ 无头命令行编译
-推荐用 `AutoLinkerTest headless-compile` 启动 e.exe：自动关闭启动期弹窗、隐藏 IDE、调用 `compile_with_output_path`，并把结果 JSON 输出到控制台。该启动器支持多个进程同时调用：同一 `.e` 工程按调用顺序排队，不同工程可并行编译；相同输出路径还会通过跨进程锁避免同时写入。
+推荐用 `AutoLinkerTest headless-compile` 启动 e.exe：自动关闭启动期弹窗、隐藏 IDE、调用 `compile_with_output_path`，并把结果 JSON 输出到控制台。该启动器支持多个进程同时调用：同一 `.e` 工程按调用顺序排队，不同工程可并行编译；输出路径仍应由调用方自行保持唯一。
 
 ```powershell
 .\bin\fne_release\AutoLinkerTest.exe headless-compile `
@@ -126,7 +138,7 @@ url = "http://127.0.0.1:19207/mcp"
   --target auto --static --result "D:\demo\build\compile-result.json" --timeout 120
 ```
 
-`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL。省略 `--result` 时，每次调用生成独立的 `<输出文件>.headless.<invocation-id>.json`，并原子更新兼容文件 `<输出文件>.headless.json`。`e\AutoLinker\Log\headless_compile_last.json` 也是原子更新的“最近一次结果”，并发调用方不应依赖它区分各自结果。显式传入 `--result` 时，并发调用方应分别使用不同路径。
+`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL。省略 `--result` 时，每次调用生成独立的 `<输出文件>.headless.<invocation-id>.json`，并原子更新兼容文件 `<输出文件>.headless.json`。`{易语言目录}\AutoLinker\Log\headless_compile_last.json` 也是原子更新的“最近一次结果”，并发调用方不应依赖它区分各自结果。显式传入 `--result` 时，并发调用方应分别使用不同路径。
 
 也可直接启动主程序（仅负责无头编译，早期弹窗和同一工程的并发启动协调仍建议用启动器）：
 
