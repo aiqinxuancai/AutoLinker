@@ -2670,6 +2670,22 @@ void UpdateInternalWorkspaceMirrorStateAfterToolCall(const std::string& toolName
 	}
 }
 
+bool IsEditScrolledNearBottom(HWND hEdit)
+{
+	if (hEdit == nullptr) {
+		return true;
+	}
+	SCROLLINFO scrollInfo = { sizeof(scrollInfo) };
+	scrollInfo.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+	if (!GetScrollInfo(hEdit, SB_VERT, &scrollInfo)) {
+		return true;
+	}
+	const int bottomPosition = (std::max)(
+		scrollInfo.nMin,
+		scrollInfo.nMax - (std::max)(static_cast<int>(scrollInfo.nPage) - 1, 0));
+	return bottomPosition - scrollInfo.nPos <= 2;
+}
+
 void ScrollEditToBottom(HWND hEdit)
 {
 	if (hEdit == nullptr) {
@@ -2679,6 +2695,29 @@ void ScrollEditToBottom(HWND hEdit)
 	SendMessageA(hEdit, EM_SETSEL, static_cast<WPARAM>(len), static_cast<LPARAM>(len));
 	SendMessageA(hEdit, EM_SCROLLCARET, 0, 0);
 	SendMessageA(hEdit, WM_VSCROLL, SB_BOTTOM, 0);
+}
+
+void SetHistoryEditTextPreservingScroll(HWND hEdit, const std::string& text)
+{
+	if (hEdit == nullptr) {
+		return;
+	}
+	const bool followBottom = IsEditScrolledNearBottom(hEdit);
+	const LRESULT firstVisibleLine = SendMessageA(hEdit, EM_GETFIRSTVISIBLELINE, 0, 0);
+	SetWindowTextA(hEdit, text.c_str());
+	if (followBottom) {
+		ScrollEditToBottom(hEdit);
+	}
+	else if (firstVisibleLine > 0) {
+		SendMessageA(hEdit, EM_LINESCROLL, 0, firstVisibleLine);
+	}
+}
+
+void ScrollEditToBottomIfNeeded(HWND hEdit)
+{
+	if (IsEditScrolledNearBottom(hEdit)) {
+		ScrollEditToBottom(hEdit);
+	}
 }
 
 LRESULT CALLBACK EditControlSubclassProc(
@@ -3564,6 +3603,10 @@ void RefreshSessionTimingOnly(HWND hWnd, ChatDialogContext* ctx)
 	UpdateNativeSessionTiming(ctx, snapshot);
 	UpdateWebViewSessionTiming(ctx, snapshot);
 	SyncSessionTimingTimer(hWnd, snapshot.inProgress);
+	if (snapshot.inProgress) {
+		// 计时器同时作为状态校准心跳，避免工具卡或 WebView 刷新事件丢失后长期停留在旧状态。
+		PostRefreshDialog();
+	}
 	if (timingVisibilityChanged) {
 		LayoutAIChatDialog(hWnd, ctx);
 	}
@@ -3955,11 +3998,12 @@ void FlushHistoryWebViewHtml(ChatDialogContext* ctx)
 		return;
 	}
 
-	ctx->webViewFlushScheduled = false;
 	const std::wstring htmlWide = WideFromLocal(ctx->pendingHistoryHtml);
 	if (htmlWide.empty()) {
+		ctx->webViewFlushScheduled = false;
 		return;
 	}
+	ctx->webViewFlushScheduled = false;
 	std::wstring script = L"window.autolinkerSetChatHtml('";
 	script += EscapeJsSingleQuotedWide(htmlWide);
 	script += L"');";
@@ -8256,6 +8300,18 @@ bool RestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry
 		return false;
 	}
 
+	const std::string currentSourcePath = GetCurrentChatSourceFilePathLocal();
+	if (!AreAIChatSessionSourcePathsEquivalent(
+		stored.sourceFilePathHintLocal,
+		currentSourcePath)) {
+		MessageBoxA(
+			hWnd,
+			"恢复会话失败：会话来源文件与当前打开的源码不一致。",
+			"AI Chat",
+			MB_ICONWARNING | MB_OK);
+		return false;
+	}
+
 	if (!ReplaceChatSessionStateFromStoredSession(stored)) {
 		MessageBoxA(hWnd, "当前有进行中的 AI 请求，暂时无法恢复会话。", "AI Chat", MB_ICONWARNING | MB_OK);
 		return false;
@@ -8796,8 +8852,7 @@ void RefreshChatDialog(HWND hWnd)
 	ctx->requestInFlight = inFlight;
 
 	if (nativeHistoryVisible) {
-		SetWindowTextA(ctx->hHistory, history.c_str());
-		ScrollEditToBottom(ctx->hHistory);
+		SetHistoryEditTextPreservingScroll(ctx->hHistory, history);
 	}
 	if (ctx->webViewDesired) {
 		UpdateHistoryWebViewHtml(ctx, historyHtml);
@@ -9057,6 +9112,9 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		if (ctx != nullptr) {
 			ctx->pageVisible = wParam != FALSE;
 			SyncHistoryPresentation(ctx);
+			if (ctx->pageVisible) {
+				PostRefreshDialog();
+			}
 		}
 		break;
 
@@ -9069,7 +9127,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 	case WM_SIZE:
 		if (ctx != nullptr) {
 			UpdateInputRowsAndLayout(hWnd, ctx, true);
-			ScrollEditToBottom(ctx->hHistory);
+			ScrollEditToBottomIfNeeded(ctx->hHistory);
 		}
 		return 0;
 
@@ -9078,7 +9136,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 			const auto* pos = reinterpret_cast<WINDOWPOS*>(lParam);
 			if (pos != nullptr && (pos->flags & SWP_NOSIZE) == 0) {
 				UpdateInputRowsAndLayout(hWnd, ctx, true);
-				ScrollEditToBottom(ctx->hHistory);
+				ScrollEditToBottomIfNeeded(ctx->hHistory);
 			}
 		}
 		break;
@@ -9154,7 +9212,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 	case WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT:
 		if (ctx != nullptr) {
 			UpdateInputRowsAndLayout(hWnd, ctx, true);
-			ScrollEditToBottom(ctx->hHistory);
+			ScrollEditToBottomIfNeeded(ctx->hHistory);
 		}
 		return 0;
 
@@ -10078,6 +10136,7 @@ void ShowLeftWorkAreaChatPage(bool focusInput)
 	g_leftWorkAreaHost.pageVisible = true;
 	LayoutLeftWorkAreaChatPage();
 	ShowWindow(g_chatDialog, SW_SHOW);
+	PostRefreshDialog();
 	if (focusInput) {
 		FocusChatInputControl();
 	}
@@ -10682,6 +10741,7 @@ void ActivateTab()
 	} else {
 		ShowWindow(g_chatDialog, SW_SHOW);
 		PostMessageA(g_chatDialog, WM_AUTOLINKER_AI_CHAT_DEFER_LAYOUT, 0, 0);
+		PostRefreshDialog();
 		FocusChatInputControl();
 	}
 	LogChatTab("activate");

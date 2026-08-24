@@ -66,6 +66,11 @@ std::string CreateAIChatSessionId();
 // 获取当前源码对应的 AI 对话会话目录。
 std::filesystem::path GetAIChatSessionDirectoryPathForSourceFile(const std::string& sourceFilePathLocal);
 
+// 比较两个会话来源路径是否指向同一个源码文件。
+bool AreAIChatSessionSourcePathsEquivalent(
+	const std::string& leftSourceFilePathLocal,
+	const std::string& rightSourceFilePathLocal);
+
 // 解析当前源码下某个会话文件路径。
 std::filesystem::path ResolveAIChatSessionFilePath(
 	const std::string& sourceFilePathLocal,

@@ -571,6 +571,45 @@ std::filesystem::path GetAIChatSessionDirectoryPathForSourceFile(const std::stri
 	return GetAutoLinkerSessionRootDirectoryPath() / SanitizePathComponentForStorage(sourceName);
 }
 
+namespace {
+
+std::filesystem::path NormalizeSessionSourcePath(const std::string& sourceFilePathLocal)
+{
+	if (sourceFilePathLocal.empty()) {
+		return {};
+	}
+
+	std::filesystem::path path = LocalTextToPathForSessionStore(sourceFilePathLocal);
+	if (path.empty()) {
+		return {};
+	}
+
+	std::error_code ec;
+	path = std::filesystem::weakly_canonical(path, ec);
+	if (ec || path.empty()) {
+		ec.clear();
+		path = std::filesystem::absolute(path, ec);
+	}
+	if (ec || path.empty()) {
+		return {};
+	}
+	return path.lexically_normal();
+}
+
+} // namespace
+
+bool AreAIChatSessionSourcePathsEquivalent(
+	const std::string& leftSourceFilePathLocal,
+	const std::string& rightSourceFilePathLocal)
+{
+	const std::filesystem::path left = NormalizeSessionSourcePath(leftSourceFilePathLocal);
+	const std::filesystem::path right = NormalizeSessionSourcePath(rightSourceFilePathLocal);
+	if (left.empty() || right.empty()) {
+		return false;
+	}
+	return _wcsicmp(left.wstring().c_str(), right.wstring().c_str()) == 0;
+}
+
 std::filesystem::path ResolveAIChatSessionFilePath(
 	const std::string& sourceFilePathLocal,
 	const std::string& sessionId)
@@ -748,6 +787,9 @@ std::vector<AIChatStoredSessionListEntry> ListRecentAIChatStoredSessions(
 	if (limit == 0) {
 		return out;
 	}
+	if (NormalizeSessionSourcePath(sourceFilePathLocal).empty()) {
+		return out;
+	}
 
 	const std::filesystem::path dir = GetAIChatSessionDirectoryPathForSourceFile(sourceFilePathLocal);
 	std::error_code existsEc;
@@ -763,6 +805,11 @@ std::vector<AIChatStoredSessionListEntry> ListRecentAIChatStoredSessions(
 		}
 		AIChatStoredSession session;
 		if (!LoadAIChatStoredSession(it->path(), session, nullptr)) {
+			continue;
+		}
+		if (!AreAIChatSessionSourcePathsEquivalent(
+			session.sourceFilePathHintLocal,
+			sourceFilePathLocal)) {
 			continue;
 		}
 		AIChatStoredSessionListEntry row = {};

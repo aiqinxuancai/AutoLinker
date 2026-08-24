@@ -2852,6 +2852,8 @@ window.autolinkerRenderActiveGoal = function() {
 window.autolinkerSetChatHtml = function(html) {
 	var root = document.getElementById("chat-root");
 	var scroll = document.getElementById("history-scroll");
+	var followBottom = !scroll || scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 24;
+	var previousScrollTop = scroll ? scroll.scrollTop : 0;
 	if (root) {
 		root.innerHTML = html || "";
 		var planButtons = root.querySelectorAll ? root.querySelectorAll(".plan-action") : [];
@@ -2865,7 +2867,7 @@ window.autolinkerSetChatHtml = function(html) {
 			window.autolinkerSetBusy(!!window.autolinkerBusy, !!window.autolinkerStopRequested);
 		}
 		if (scroll) {
-			scroll.scrollTop = scroll.scrollHeight;
+			scroll.scrollTop = followBottom ? scroll.scrollHeight : previousScrollTop;
 		}
 		window.autolinkerScheduleLatestUserFloat();
 	}
