@@ -195,6 +195,19 @@ bool ShouldRetryAiHttpRequest(int statusCode, const std::string& responseBody)
 	return IsRetryableHttpStatus(statusCode);
 }
 
+bool ShouldRetryAiChatHttpFailure(int statusCode, const std::string& responseBody)
+{
+	if (IsSuccessfulHttpStatus(statusCode) || statusCode == kAiRequestCancelledHttpStatus) {
+		return false;
+	}
+	if (statusCode == 0) {
+		return responseBody.empty() || ContainsRetryableTransportHint(responseBody);
+	}
+	// 对齐 Codex 上层错误语义：400 映射为 InvalidRequest，其他 HTTP 失败映射为
+	// UnexpectedStatus，并由对话轮次的共享预算执行重试。
+	return statusCode > 0 && statusCode != 400;
+}
+
 bool ShouldFailOverToNextEndpoint(int statusCode, const std::string& error)
 {
 	if (statusCode == 0) {
@@ -286,6 +299,25 @@ DWORD ComputeAiRetryDelayMs(
 	default:
 		return 2000;
 	}
+}
+
+DWORD ComputeAiChatRetryDelayMs(
+	int retryIndex,
+	int statusCode = 0,
+	const std::string& responseBody = std::string())
+{
+	if (const std::optional<DWORD> serverDelay = TryParseRetryAfterDelayMs(statusCode, responseBody)) {
+		return *serverDelay;
+	}
+
+	const int exponent = (std::max)(0, retryIndex);
+	const double baseDelayMs = 200.0 * std::pow(2.0, static_cast<double>(exponent));
+	thread_local std::mt19937 generator(static_cast<unsigned int>(
+		::GetTickCount64() ^ static_cast<ULONGLONG>(::GetCurrentThreadId())));
+	std::uniform_real_distribution<double> jitter(0.9, 1.1);
+	const double delayMs = baseDelayMs * jitter(generator);
+	const double maxDelayMs = static_cast<double>((std::numeric_limits<DWORD>::max)());
+	return static_cast<DWORD>((std::min)(delayMs, maxDelayMs));
 }
 
 void LogAiRetryAttempt(
@@ -395,7 +427,7 @@ public:
 			resetStreamingPreview();
 		}
 		const DWORD delayMs = delayOverrideMs.value_or(
-			ComputeAiRetryDelayMs(m_retriesPerformed, statusCode, reason));
+			ComputeAiChatRetryDelayMs(m_retriesPerformed, statusCode, reason));
 		if (!SleepForRetryWithCancel(delayMs, cancelCallback, cancelContext)) {
 			return false;
 		}
@@ -2114,7 +2146,7 @@ bool ShouldRetryOpenAIChatStreamAttempt(
 	const std::string& responseBody)
 {
 	if (!IsSuccessfulHttpStatus(statusCode)) {
-		return ShouldRetryAiHttpRequest(statusCode, responseBody);
+		return ShouldRetryAiChatHttpFailure(statusCode, responseBody);
 	}
 	if (!state.parseError.empty()) {
 		return true;
@@ -2433,7 +2465,7 @@ bool ShouldRetryOpenAIResponsesStreamAttempt(
 	const std::string& responseBody)
 {
 	if (!IsSuccessfulHttpStatus(statusCode)) {
-		return ShouldRetryAiHttpRequest(statusCode, responseBody);
+		return ShouldRetryAiChatHttpFailure(statusCode, responseBody);
 	}
 	if (!state.failureEventType.empty()) {
 		return IsRetryableResponsesStreamFailure(state);
@@ -2550,14 +2582,10 @@ DWORD ComputeOpenAIResponsesRetryDelayMs(
 		return *serverDelay;
 	}
 
-	const int exponent = (std::max)(0, retryCount - 1);
-	const double baseDelayMs = 200.0 * std::pow(2.0, static_cast<double>(exponent));
-	thread_local std::mt19937 generator(static_cast<unsigned int>(
-		::GetTickCount64() ^ static_cast<ULONGLONG>(::GetCurrentThreadId())));
-	std::uniform_real_distribution<double> jitter(0.9, 1.1);
-	const double delayMs = baseDelayMs * jitter(generator);
-	const double maxDelayMs = static_cast<double>((std::numeric_limits<DWORD>::max)());
-	return static_cast<DWORD>((std::min)(delayMs, maxDelayMs));
+	return ComputeAiChatRetryDelayMs(
+		(std::max)(0, retryCount - 1),
+		statusCode,
+		responseBody);
 }
 
 nlohmann::json BuildResponsesParsedFromStream(const ResponsesStreamParseState& state)
@@ -5104,7 +5132,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 			return MarkChatResultCancelled(std::move(result));
 		}
 		if (statusCode < 200 || statusCode >= 300) {
-			if (ShouldRetryAiHttpRequest(statusCode, responseBody) &&
+			if (ShouldRetryAiChatHttpFailure(statusCode, responseBody) &&
 				retry.WaitForRetry(
 					"claude-chat",
 					statusCode,
@@ -5465,7 +5493,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 		if (statusCode < 200 || statusCode >= 300) {
 			const bool resourceExhausted =
 				IsGeminiResourceExhaustedResponse(statusCode, responseBody);
-			if (ShouldRetryAiHttpRequest(statusCode, responseBody) &&
+			if (ShouldRetryAiChatHttpFailure(statusCode, responseBody) &&
 				retry.WaitForRetry(
 					"gemini-chat",
 					statusCode,
@@ -8234,6 +8262,10 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			ChatStreamParseState{},
 			503,
 			"service unavailable");
+		const bool forbiddenHttpAccepted = ShouldRetryOpenAIChatStreamAttempt(
+			ChatStreamParseState{},
+			403,
+			"forbidden");
 		const bool fatalHttpRejected = !ShouldRetryOpenAIChatStreamAttempt(
 			ChatStreamParseState{},
 			400,
@@ -8249,6 +8281,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			emptyBodyRetry &&
 			malformedBodyRetry &&
 			retryableHttpAccepted &&
+			forbiddenHttpAccepted &&
 			fatalHttpRejected;
 		checks.push_back({
 			{"name", "openai_chat_stream_retry_classification"},
@@ -8263,6 +8296,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"empty_body_retry", emptyBodyRetry},
 			{"malformed_body_retry", malformedBodyRetry},
 			{"retryable_http_accepted", retryableHttpAccepted},
+			{"forbidden_http_accepted", forbiddenHttpAccepted},
 			{"fatal_http_rejected", fatalHttpRejected}
 		});
 		allOk = allOk && ok;
@@ -8827,6 +8861,14 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			ResponsesStreamParseState{},
 			0,
 			"HttpSendRequest failed, wininet_error=12029 ERROR_INTERNET_CANNOT_CONNECT");
+		const bool forbiddenHttpAccepted = ShouldRetryOpenAIResponsesStreamAttempt(
+			ResponsesStreamParseState{},
+			403,
+			"forbidden");
+		const bool invalidRequestRejected = !ShouldRetryOpenAIResponsesStreamAttempt(
+			ResponsesStreamParseState{},
+			400,
+			"invalid request");
 		const bool rateLimitDelayParsed =
 			TryParseOpenAIResponsesRetryDelayMs(rateLimitMsState) == std::optional<DWORD>(28) &&
 			TryParseOpenAIResponsesRetryDelayMs(rateLimitSecondsState) == std::optional<DWORD>(1898) &&
@@ -8851,6 +8893,8 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			jsonTransportAccepted &&
 			readFailureRetry &&
 			connectFailureRetry &&
+			forbiddenHttpAccepted &&
+			invalidRequestRejected &&
 			rateLimitDelayParsed &&
 			codexBackoffRange;
 		checks.push_back({
@@ -8871,6 +8915,8 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"json_transport_accepted", jsonTransportAccepted},
 			{"read_failure_retry", readFailureRetry},
 			{"connect_failure_retry", connectFailureRetry},
+			{"forbidden_http_accepted", forbiddenHttpAccepted},
+			{"invalid_request_rejected", invalidRequestRejected},
 			{"rate_limit_delay_parsed", rateLimitDelayParsed},
 			{"codex_backoff_range", codexBackoffRange}
 		});

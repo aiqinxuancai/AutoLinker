@@ -797,7 +797,11 @@ public:
 	enum class AiScriptMode {
 		EmptyThenSuccess,
 		TransportThenEmptyThenSuccess,
+		ForbiddenThenSuccess,
+		ForbiddenAlways,
+		BadRequestAlways,
 		ToolThenTransportFailure,
+		ToolThenForbiddenThenSuccess,
 		HangUntilDisconnect
 	};
 
@@ -1062,6 +1066,14 @@ private:
 				? std::make_pair(200, BuildToolAiResponse(route))
 				: std::make_pair(503, std::string(R"({"error":{"message":"mock post-tool failure"}})"));
 		}
+		if (aiScriptMode_.load() == AiScriptMode::ToolThenForbiddenThenSuccess) {
+			if (attempt == 1) {
+				return { 200, BuildToolAiResponse(route) };
+			}
+			return attempt == 2
+				? std::make_pair(403, std::string(R"({"error":{"message":"mock post-tool forbidden"}})"))
+				: std::make_pair(200, BuildSuccessfulAiResponse(route));
+		}
 		if (aiScriptMode_.load() == AiScriptMode::TransportThenEmptyThenSuccess) {
 			if (attempt == 1) {
 				return { 503, R"({"error":{"message":"mock service unavailable"}})" };
@@ -1070,6 +1082,17 @@ private:
 				return { 200, BuildEmptyAiResponse(route) };
 			}
 			return { 200, BuildSuccessfulAiResponse(route) };
+		}
+		if (aiScriptMode_.load() == AiScriptMode::ForbiddenThenSuccess) {
+			return attempt == 1
+				? std::make_pair(403, std::string(R"({"error":{"message":"mock forbidden"}})"))
+				: std::make_pair(200, BuildSuccessfulAiResponse(route));
+		}
+		if (aiScriptMode_.load() == AiScriptMode::ForbiddenAlways) {
+			return { 403, R"({"error":{"message":"mock forbidden"}})" };
+		}
+		if (aiScriptMode_.load() == AiScriptMode::BadRequestAlways) {
+			return { 400, R"({"error":{"message":"mock invalid request"}})" };
 		}
 		return attempt == 1
 			? std::make_pair(200, BuildEmptyAiResponse(route))
@@ -1509,7 +1532,99 @@ bool RunAIChatSharedRetryBudgetSelfTest(nlohmann::json& outCheck)
 				!exhaustedResult.ok &&
 				exhaustedRequests == 2 &&
 				exhaustedPreviewResets == (protocolCase.streaming ? 1 : 0);
-			const bool protocolOk = successOk && sharedBudgetOk;
+
+			server.SetAiScriptMode(MockIntegrationHttpServer::AiScriptMode::ForbiddenThenSuccess);
+			int forbiddenSuccessPreviewResets = 0;
+			AIChatRunOptions forbiddenSuccessOptions;
+			forbiddenSuccessOptions.streamRetryCallback = [&forbiddenSuccessPreviewResets]() {
+				++forbiddenSuccessPreviewResets;
+			};
+			const AIChatResult forbiddenSuccessResult = AIService::ExecuteChatWithTools(
+				messages,
+				settings,
+				toolCallback,
+				{},
+				{},
+				nullptr,
+				forbiddenSuccessOptions);
+			const int forbiddenSuccessRequests = server.AiRequestCount(protocolCase.protocol);
+			const bool forbiddenSuccessOk =
+				forbiddenSuccessResult.ok &&
+				forbiddenSuccessResult.content == protocolCase.expectedContent &&
+				forbiddenSuccessRequests == 2 &&
+				forbiddenSuccessPreviewResets == (protocolCase.streaming ? 1 : 0);
+
+			server.SetAiScriptMode(MockIntegrationHttpServer::AiScriptMode::ForbiddenAlways);
+			int forbiddenExhaustedPreviewResets = 0;
+			AIChatRunOptions forbiddenExhaustedOptions;
+			forbiddenExhaustedOptions.streamRetryCallback = [&forbiddenExhaustedPreviewResets]() {
+				++forbiddenExhaustedPreviewResets;
+			};
+			const AIChatResult forbiddenExhaustedResult = AIService::ExecuteChatWithTools(
+				messages,
+				settings,
+				toolCallback,
+				{},
+				{},
+				nullptr,
+				forbiddenExhaustedOptions);
+			const int forbiddenExhaustedRequests = server.AiRequestCount(protocolCase.protocol);
+			const bool forbiddenExhaustedOk =
+				!forbiddenExhaustedResult.ok &&
+				forbiddenExhaustedResult.httpStatus == 403 &&
+				forbiddenExhaustedRequests == 2 &&
+				forbiddenExhaustedPreviewResets == (protocolCase.streaming ? 1 : 0);
+
+			AISettings noRetrySettings = settings;
+			noRetrySettings.retryCount = 0;
+			server.SetAiScriptMode(MockIntegrationHttpServer::AiScriptMode::ForbiddenAlways);
+			int noRetryPreviewResets = 0;
+			AIChatRunOptions noRetryOptions;
+			noRetryOptions.streamRetryCallback = [&noRetryPreviewResets]() {
+				++noRetryPreviewResets;
+			};
+			const AIChatResult noRetryResult = AIService::ExecuteChatWithTools(
+				messages,
+				noRetrySettings,
+				toolCallback,
+				{},
+				{},
+				nullptr,
+				noRetryOptions);
+			const int noRetryRequests = server.AiRequestCount(protocolCase.protocol);
+			const bool noRetryOk =
+				!noRetryResult.ok &&
+				noRetryResult.httpStatus == 403 &&
+				noRetryRequests == 1 &&
+				noRetryPreviewResets == 0;
+
+			server.SetAiScriptMode(MockIntegrationHttpServer::AiScriptMode::BadRequestAlways);
+			int badRequestPreviewResets = 0;
+			AIChatRunOptions badRequestOptions;
+			badRequestOptions.streamRetryCallback = [&badRequestPreviewResets]() {
+				++badRequestPreviewResets;
+			};
+			const AIChatResult badRequestResult = AIService::ExecuteChatWithTools(
+				messages,
+				settings,
+				toolCallback,
+				{},
+				{},
+				nullptr,
+				badRequestOptions);
+			const int badRequestRequests = server.AiRequestCount(protocolCase.protocol);
+			const bool badRequestOk =
+				!badRequestResult.ok &&
+				badRequestResult.httpStatus == 400 &&
+				badRequestRequests == 1 &&
+				badRequestPreviewResets == 0;
+
+			const bool protocolOk = successOk &&
+				sharedBudgetOk &&
+				forbiddenSuccessOk &&
+				forbiddenExhaustedOk &&
+				noRetryOk &&
+				badRequestOk;
 			outCheck["protocols"].push_back({
 				{"name", protocolCase.name},
 				{"ok", protocolOk},
@@ -1519,7 +1634,17 @@ bool RunAIChatSharedRetryBudgetSelfTest(nlohmann::json& outCheck)
 				{"transport_then_empty_exhausted", sharedBudgetOk},
 				{"exhausted_requests", exhaustedRequests},
 				{"exhausted_preview_resets", exhaustedPreviewResets},
-				{"exhausted_error", exhaustedResult.error}
+				{"exhausted_error", exhaustedResult.error},
+				{"forbidden_then_success", forbiddenSuccessOk},
+				{"forbidden_success_requests", forbiddenSuccessRequests},
+				{"forbidden_success_preview_resets", forbiddenSuccessPreviewResets},
+				{"forbidden_exhausted", forbiddenExhaustedOk},
+				{"forbidden_exhausted_requests", forbiddenExhaustedRequests},
+				{"forbidden_exhausted_preview_resets", forbiddenExhaustedPreviewResets},
+				{"retry_disabled_forbidden", noRetryOk},
+				{"retry_disabled_requests", noRetryRequests},
+				{"bad_request_not_retried", badRequestOk},
+				{"bad_request_requests", badRequestRequests}
 			});
 			allOk = allOk && protocolOk;
 		}
@@ -1548,12 +1673,13 @@ bool RunAIChatPostToolReleaseSelfTest(nlohmann::json& outCheck)
 	struct ProtocolCase {
 		AIProtocolType protocol;
 		const char* name;
+		bool streaming;
 	};
 	const std::vector<ProtocolCase> protocolCases = {
-		{ AIProtocolType::OpenAI, "openai_chat" },
-		{ AIProtocolType::OpenAIResponses, "openai_responses" },
-		{ AIProtocolType::Gemini, "gemini" },
-		{ AIProtocolType::Claude, "claude" }
+		{ AIProtocolType::OpenAI, "openai_chat", true },
+		{ AIProtocolType::OpenAIResponses, "openai_responses", true },
+		{ AIProtocolType::Gemini, "gemini", false },
+		{ AIProtocolType::Claude, "claude", false }
 	};
 
 	MockIntegrationHttpServer server;
@@ -1602,20 +1728,62 @@ bool RunAIChatPostToolReleaseSelfTest(nlohmann::json& outCheck)
 				!result.checkpoint.toolCalls.empty() &&
 				result.checkpoint.toolCalls.front().completed &&
 				result.checkpoint.toolCalls.front().ok;
-			const bool protocolOk = !result.ok &&
+			const bool releaseOk = !result.ok &&
 				toolExecutionCount == 1 &&
 				requestCount == 2 &&
 				result.toolEvents.size() == 1 &&
 				checkpointCompleted &&
 				elapsedMs < 3000;
+
+			server.SetAiScriptMode(MockIntegrationHttpServer::AiScriptMode::ToolThenForbiddenThenSuccess);
+			int retryToolExecutionCount = 0;
+			int retryPreviewResets = 0;
+			AIChatRunOptions retryOptions;
+			retryOptions.postToolRetryCount = 1;
+			retryOptions.streamRetryCallback = [&retryPreviewResets]() {
+				++retryPreviewResets;
+			};
+			const AIChatResult retryResult = AIService::ExecuteChatWithTools(
+				{{"user", "call mock_tool once then recover", "", ""}},
+				settings,
+				[&retryToolExecutionCount](
+					const std::string& toolName,
+					const std::string&,
+					bool& outOk) {
+					++retryToolExecutionCount;
+					outOk = toolName == "mock_tool";
+					return std::string(R"({"ok":true,"value":"tool-finished"})");
+				},
+				{},
+				{},
+				nullptr,
+				retryOptions);
+			const int retryRequestCount = server.AiRequestCount(protocolCase.protocol);
+			const bool retryCheckpointCompleted = retryResult.hasCheckpoint &&
+				!retryResult.checkpoint.toolCalls.empty() &&
+				retryResult.checkpoint.toolCalls.front().completed &&
+				retryResult.checkpoint.toolCalls.front().ok;
+			const bool postToolForbiddenRetryOk = retryResult.ok &&
+				retryToolExecutionCount == 1 &&
+				retryRequestCount == 3 &&
+				retryResult.toolEvents.size() == 1 &&
+				retryCheckpointCompleted &&
+				retryPreviewResets == (protocolCase.streaming ? 1 : 0);
+			const bool protocolOk = releaseOk && postToolForbiddenRetryOk;
 			outCheck["protocols"].push_back({
 				{"name", protocolCase.name},
 				{"ok", protocolOk},
+				{"post_tool_limit_release", releaseOk},
 				{"tool_execution_count", toolExecutionCount},
 				{"request_count", requestCount},
 				{"checkpoint_completed", checkpointCompleted},
 				{"elapsed_ms", elapsedMs},
-				{"error", result.error}
+				{"error", result.error},
+				{"post_tool_forbidden_retry", postToolForbiddenRetryOk},
+				{"retry_tool_execution_count", retryToolExecutionCount},
+				{"retry_request_count", retryRequestCount},
+				{"retry_preview_resets", retryPreviewResets},
+				{"retry_error", retryResult.error}
 			});
 			allOk = allOk && protocolOk;
 		}
@@ -2327,7 +2495,8 @@ int RunOpenAIImageIntegrationTestInternal(
 
 	std::string step = "prepare_image";
 	try {
-		const std::filesystem::path sourcePath = std::filesystem::u8path(imagePath);
+		const std::filesystem::path sourcePath(
+			std::u8string(reinterpret_cast<const char8_t*>(imagePath)));
 		nlohmann::json report = {
 			{"provider", "openai"},
 			{"protocol", "openai_responses"},

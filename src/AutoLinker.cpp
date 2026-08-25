@@ -459,7 +459,6 @@ bool FneInit()
 		else {
 			TraceInitStep("自编译版本：跳过 AutoLinker 版本检查");
 		}
-		EPackagerIntegration::CheckForToolUpdatesOnStartup();
 		TraceInitStep("版本检查线程已启动");
 	}
 	else {

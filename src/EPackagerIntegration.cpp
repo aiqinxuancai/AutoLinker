@@ -43,6 +43,7 @@ constexpr const char* kGitHubAcceleratorBaseUrl = "https://github-fast.apptest.d
 constexpr const char* kGitHubHeaders =
 	"User-Agent: AutoLinker\r\n"
 	"Accept: application/vnd.github+json\r\n";
+constexpr long long kUpdateCheckIntervalSeconds = 7LL * 24LL * 60LL * 60LL;
 
 std::atomic_bool g_unpackTaskRunning = false;
 std::atomic_bool g_toolCheckTaskRunning = false;
@@ -623,15 +624,6 @@ std::string ReadFileText(const std::filesystem::path& path)
 	return ss.str();
 }
 
-long long CurrentLocalDateKey()
-{
-	SYSTEMTIME systemTime = {};
-	GetLocalTime(&systemTime);
-	return static_cast<long long>(systemTime.wYear) * 10000LL +
-		static_cast<long long>(systemTime.wMonth) * 100LL +
-		static_cast<long long>(systemTime.wDay);
-}
-
 void WriteFileText(const std::filesystem::path& path, const std::string& text)
 {
 	std::ofstream out(path, std::ios::binary | std::ios::trunc);
@@ -655,17 +647,19 @@ void SaveMeta(const LatestReleaseInfo& info)
 {
 	json value = json::object();
 	value["last_check_unix"] = NowUnixSeconds();
-	value["last_check_local_date"] = CurrentLocalDateKey();
 	value["tag"] = info.tag;
 	value["asset_name"] = info.assetName;
 	WriteFileText(GetEPackagerMetaPath(), value.dump(2));
 }
 
-bool IsDailyStartupCheckDue()
+bool IsUpdateCheckDue(bool toolExists)
 {
+	if (!toolExists) {
+		return true;
+	}
 	const json meta = LoadMeta();
-	const long long lastCheckDate = meta.value("last_check_local_date", 0LL);
-	return lastCheckDate != CurrentLocalDateKey();
+	const long long lastCheck = meta.value("last_check_unix", 0LL);
+	return lastCheck <= 0 || NowUnixSeconds() - lastCheck >= kUpdateCheckIntervalSeconds;
 }
 
 bool FetchLatestRelease(LatestReleaseInfo& outInfo, std::string& outError)
@@ -948,16 +942,15 @@ bool EnsureToolReadyImpl(
 	const std::filesystem::path toolPath = GetEPackagerExePath();
 	const bool toolExists = std::filesystem::exists(toolPath);
 	const std::string installedVersion = toolExists ? DetectInstalledVersion(toolPath) : std::string();
-	if (toolExists) {
+	if (!IsUpdateCheckDue(toolExists)) {
 		outToolPath = toolPath;
 		PublishUpdateStatus(
 			ComponentUpdateState::Completed,
-			"使用已安装的 e-packager；如需更新，请在关于页面或工具菜单中手动更新。",
+			"e-packager 在最近 7 天内已检查，继续使用现有组件。",
 			installedVersion.empty() ? "已安装" : installedVersion);
 		return true;
 	}
 
-	// 本地缺少组件时仍需完成首次下载，否则工程镜像无法建立。
 	PublishUpdateStatus(
 		ComponentUpdateState::Checking,
 		"正在检查 e-packager 最新版本...",
@@ -966,6 +959,15 @@ bool EnsureToolReadyImpl(
 	LatestReleaseInfo latest;
 	std::string fetchError;
 	if (!FetchLatestRelease(latest, fetchError)) {
+		if (toolExists) {
+			OutputStringToELog("[e-packager] 7 天周期检查失败，将继续使用现有工具：" + fetchError);
+			outToolPath = toolPath;
+			PublishUpdateStatus(
+				ComponentUpdateState::Error,
+				"检查失败，继续使用已安装组件：" + fetchError,
+				installedVersion.empty() ? "已安装" : installedVersion);
+			return true;
+		}
 		outError = "无法下载 e-packager：" + fetchError + "\r\n" + BuildManualEPackagerInstallGuidance();
 		PublishUpdateStatus(ComponentUpdateState::Error, outError);
 		return false;
@@ -992,6 +994,17 @@ bool EnsureToolReadyImpl(
 		latest.tag);
 	if (!DownloadAndInstallTool(latest, outError)) {
 		outError += "\r\n" + BuildManualEPackagerInstallGuidance();
+		if (toolExists) {
+			OutputStringToELog("[e-packager] 自动更新失败，将继续使用现有工具：" + outError);
+			PublishUpdateStatus(
+				ComponentUpdateState::Error,
+				"自动更新失败，继续使用已安装组件：" + outError,
+				installedVersion,
+				latest.tag);
+			outError.clear();
+			outToolPath = toolPath;
+			return true;
+		}
 		PublishUpdateStatus(ComponentUpdateState::Error, outError, installedVersion, latest.tag);
 		return false;
 	}
@@ -1054,7 +1067,6 @@ void ToolCheckWorker(void*)
 		}
 
 		StoreCheckedRelease(latest);
-		SaveMeta(latest);
 		OutputStringToELog(std::format(
 			"[e-packager] 检测到新版本 {}，请通过关于页面或工具菜单手动更新。",
 			latest.tag));
@@ -1470,15 +1482,6 @@ void CheckForToolUpdatesInBackground()
 		PublishUpdateStatus(ComponentUpdateState::Error, "启动 e-packager 后台检查任务失败。");
 		OutputStringToELog("[e-packager] 启动后台检查任务失败");
 	}
-}
-
-void CheckForToolUpdatesOnStartup()
-{
-	if (!std::filesystem::exists(GetEPackagerExePath()) || !IsDailyStartupCheckDue()) {
-		return;
-	}
-	OutputStringToELog("[e-packager] 开始执行今日首次启动版本检查");
-	CheckForToolUpdatesInBackground();
 }
 
 void RunToolUpdateFromMenuInBackground()
