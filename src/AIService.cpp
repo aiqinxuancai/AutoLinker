@@ -12,6 +12,7 @@
 #include <random>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <Windows.h>
 
 #include "..\\thirdparty\\json.hpp"
@@ -108,6 +109,8 @@ std::string TruncateForLog(const std::string& text, size_t maxLen = 240)
 constexpr int kAiRequestRetryCount = 5;
 constexpr int kAiMaxRequestRetryCount = 20;
 constexpr int kAiChatRequestTimeoutMs = 60000;
+constexpr int kAiDefaultStreamIdleTimeoutMs = 300000;
+constexpr int kAiMaxStreamIdleTimeoutMs = 1800000;
 constexpr int kAiConnectionTestExtraTimeoutMs = 20000;
 constexpr int kAiRequestCancelledHttpStatus = 499;
 
@@ -123,6 +126,23 @@ int GetConnectionTestTimeoutMs(const AISettings& settings)
 int GetChatRequestTimeoutMs(const AISettings& settings)
 {
 	return (std::clamp)(settings.timeoutMs, 1000, kAiChatRequestTimeoutMs);
+}
+
+int GetChatStreamIdleTimeoutMs(const AISettings& settings)
+{
+	return (std::clamp)(
+		settings.streamIdleTimeoutMs > 0 ? settings.streamIdleTimeoutMs : kAiDefaultStreamIdleTimeoutMs,
+		1000,
+		kAiMaxStreamIdleTimeoutMs);
+}
+
+void ReportChatActivity(
+	const AIChatRunOptions& runOptions,
+	const std::string& line)
+{
+	if (runOptions.activityCallback && !line.empty()) {
+		runOptions.activityCallback(line);
+	}
 }
 
 bool IsCancelRequested(
@@ -203,9 +223,15 @@ bool ShouldRetryAiChatHttpFailure(int statusCode, const std::string& responseBod
 	if (statusCode == 0) {
 		return responseBody.empty() || ContainsRetryableTransportHint(responseBody);
 	}
-	// 对齐 Codex 上层错误语义：400 映射为 InvalidRequest，其他 HTTP 失败映射为
-	// UnexpectedStatus，并由对话轮次的共享预算执行重试。
-	return statusCode > 0 && statusCode != 400;
+	// 对齐 Codex 上层错误语义：400 映射为 InvalidRequest，不重试；403
+	// 属于 UnexpectedStatus，由对话轮次的共享预算执行采样级重试。
+	if (statusCode == 400) {
+		return false;
+	}
+	if (statusCode == 403) {
+		return true;
+	}
+	return statusCode > 0;
 }
 
 bool ShouldFailOverToNextEndpoint(int statusCode, const std::string& error)
@@ -358,8 +384,11 @@ void LogAiRetryAttempt(
 
 class ChatRetryCoordinator {
 public:
-	explicit ChatRetryCoordinator(int configuredRetryCount)
-		: m_maxRetries((std::clamp)(configuredRetryCount, 0, kAiMaxRequestRetryCount))
+	explicit ChatRetryCoordinator(
+		int configuredRetryCount,
+		std::function<void(const std::string& line)> activityCallback = {})
+		: m_maxRetries((std::clamp)(configuredRetryCount, 0, kAiMaxRequestRetryCount)),
+		  m_activityCallback(std::move(activityCallback))
 	{
 	}
 
@@ -423,6 +452,13 @@ public:
 			MaxAttempts(),
 			statusCode,
 			reason);
+		if (m_activityCallback) {
+			m_activityCallback(std::format(
+				"Reconnecting... {}/{}{}",
+				m_retriesPerformed + 2,
+				MaxAttempts(),
+				statusCode > 0 ? std::format(" (HTTP {})", statusCode) : std::string()));
+		}
 		if (resetStreamingPreview) {
 			resetStreamingPreview();
 		}
@@ -438,6 +474,7 @@ public:
 private:
 	int m_maxRetries = 0;
 	int m_retriesPerformed = 0;
+	std::function<void(const std::string& line)> m_activityCallback;
 };
 
 void ApplyPostToolRetryLimit(
@@ -464,11 +501,13 @@ void LogChatRetryBudget(
 	Logger::Instance().Write(
 		"AI",
 		std::format(
-			"[AI Chat][RetryBudget] protocol={} endpoint={} configured_retries={} post_tool_limit={}",
+			"[AI Chat][RetryBudget] protocol={} endpoint={} configured_retries={} post_tool_limit={} request_timeout_ms={} stream_idle_timeout_ms={}",
 			protocol == nullptr ? "unknown" : protocol,
 			settings.endpointName.empty() ? "<unnamed>" : settings.endpointName,
 			(std::clamp)(settings.retryCount, 0, kAiMaxRequestRetryCount),
-			runOptions.postToolRetryCount));
+			runOptions.postToolRetryCount,
+			GetChatRequestTimeoutMs(settings),
+			GetChatStreamIdleTimeoutMs(settings)));
 }
 
 std::string JsonErrorScalarUtf8(const nlohmann::json& value)
@@ -2180,6 +2219,10 @@ std::string BuildOpenAIChatRetryReason(
 		return state.parseError;
 	}
 	if (!IsSuccessfulHttpStatus(statusCode)) {
+		if (ToLowerAsciiCopy(responseBody).find("timeout") != std::string::npos ||
+			ToLowerAsciiCopy(responseBody).find("timed out") != std::string::npos) {
+			return "stream idle timeout: " + responseBody;
+		}
 		return responseBody;
 	}
 	if (!state.finishReason.empty()) {
@@ -2495,6 +2538,10 @@ std::string BuildOpenAIResponsesRetryReason(
 	const std::string& responseBody)
 {
 	if (!IsSuccessfulHttpStatus(statusCode)) {
+		if (ToLowerAsciiCopy(responseBody).find("timeout") != std::string::npos ||
+			ToLowerAsciiCopy(responseBody).find("timed out") != std::string::npos) {
+			return "stream idle timeout: " + responseBody;
+		}
 		return responseBody;
 	}
 	if (!state.failureCode.empty() && state.failureCode != state.parseError) {
@@ -4962,11 +5009,27 @@ void CompactLongTaskIfNeeded(
 	if (!controller.ShouldCompact()) {
 		return;
 	}
+	controller.ReportActivity("正在压缩对话上下文...");
+	Logger::Instance().Write(
+		"AI",
+		std::format(
+			"[AI Chat][Context] compaction_start sampling_rounds={} compaction_count={} prompt_tokens={} context_messages={}",
+			controller.SamplingRounds(),
+			controller.CompactionCount(),
+			controller.PromptTokens(),
+			controller.ContextMessages().size()));
 	const std::string summary = GenerateLongTaskSummary(controller, settings, result.toolEvents);
 	controller.RecordCompaction(summary);
 	toolPolicy.StartNewContextWindow();
 	result.contextPrefixRawMessagesUtf8.clear();
 	resetProtocolContext(summary);
+	Logger::Instance().Write(
+		"AI",
+		std::format(
+			"[AI Chat][Context] compaction_complete sampling_rounds={} compaction_count={} context_messages={}",
+			controller.SamplingRounds(),
+			controller.CompactionCount(),
+			controller.ContextMessages().size()));
 	SyncLongTaskResult(result, controller);
 }
 
@@ -5087,7 +5150,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 	}
 
 	AIChatToolPolicy::Session toolPolicy;
-	ChatRetryCoordinator retry(settings.retryCount);
+	ChatRetryCoordinator retry(settings.retryCount, runOptions.activityCallback);
 	LogChatRetryBudget("claude", settings, runOptions);
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
@@ -5110,6 +5173,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 
 		const std::string requestBodyText = requestBody.dump();
 		const auto roundStart = PerfClock::now();
+		ReportChatActivity(runOptions, "等待 AI 首包...");
 		const auto [responseBody, statusCode] = PerformPostRequest(
 			endpoint,
 			requestBodyText,
@@ -5433,7 +5497,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 		contents.push_back(BuildGeminiContent(msg));
 	}
 	AIChatToolPolicy::Session toolPolicy;
-	ChatRetryCoordinator retry(settings.retryCount);
+	ChatRetryCoordinator retry(settings.retryCount, runOptions.activityCallback);
 	LogChatRetryBudget("gemini", settings, runOptions);
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
@@ -5469,6 +5533,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 
 		const std::string requestBodyText = requestBody.dump();
 		const auto roundStart = PerfClock::now();
+		ReportChatActivity(runOptions, "等待 AI 首包...");
 		const auto [responseBody, statusCode] = PerformPostRequest(
 			endpoint,
 			requestBodyText,
@@ -5827,7 +5892,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 	std::string instructionsUtf8 = BuildResponsesInstructions(
 		runController.ContextMessages(), settings, skillPromptLocal);
 	AIChatToolPolicy::Session toolPolicy;
-	ChatRetryCoordinator retry(settings.retryCount);
+	ChatRetryCoordinator retry(settings.retryCount, runOptions.activityCallback);
 	LogChatRetryBudget("openai-responses", settings, runOptions);
 	for (int round = 0;; ++round) {
 		runController.BeginSampling();
@@ -5854,16 +5919,22 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		ResponsesStreamParseState streamState;
 		bool sawResponseChunk = false;
 		const auto roundStart = PerfClock::now();
+		ReportChatActivity(runOptions, "等待 AI 首包...");
+		bool reportedFirstChunk = false;
 		const auto [responseBody, statusCode] = PerformPostRequestStreaming(
 			endpoint,
 			requestBodyText,
-			[&streamState, &streamCallback, &cancelCallback, cancelContext, &sawResponseChunk](
+			[&streamState, &streamCallback, &cancelCallback, cancelContext, &sawResponseChunk, &reportedFirstChunk, &runOptions](
 				const std::string& chunk) -> bool {
 				if (IsCancelRequested(cancelCallback, cancelContext)) {
 					return false;
 				}
 				if (!chunk.empty()) {
 					sawResponseChunk = true;
+					if (!reportedFirstChunk) {
+						reportedFirstChunk = true;
+						ReportChatActivity(runOptions, "正在接收 AI 流...");
+					}
 				}
 				return ConsumeResponsesStreamChunk(chunk, streamState, streamCallback);
 			},
@@ -5871,7 +5942,8 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			GetChatRequestTimeoutMs(settings),
 			false,
 			false,
-			cancelContext);
+			cancelContext,
+			GetChatStreamIdleTimeoutMs(settings));
 		bool streamFlushed = true;
 		if (IsSuccessfulHttpStatus(statusCode)) {
 			streamFlushed = FlushResponsesStreamState(streamState, streamCallback);
@@ -6195,6 +6267,17 @@ void ApplyEndpointValues(
 		try { endpoint.timeoutMs = (std::max)(1000, std::stoi(value)); }
 		catch (...) { endpoint.timeoutMs = 120000; }
 	}
+	if (const std::string value = get("stream_idle_timeout_ms"); !value.empty()) {
+		try {
+			endpoint.streamIdleTimeoutMs = (std::clamp)(
+				std::stoi(value),
+				1000,
+				kAiMaxStreamIdleTimeoutMs);
+		}
+		catch (...) {
+			endpoint.streamIdleTimeoutMs = kAiDefaultStreamIdleTimeoutMs;
+		}
+	}
 	if (const std::string value = get("temperature"); !value.empty()) {
 		try { endpoint.temperature = std::stod(value); }
 		catch (...) { endpoint.temperature = 0.2; }
@@ -6261,6 +6344,7 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 				{ "system_prompt_extra","ai.system_prompt_extra"  },
 				{ "custom_headers",     "ai.custom_headers"       },
 				{ "timeout_ms",         "ai.timeout_ms"           },
+				{ "stream_idle_timeout_ms", "ai.stream_idle_timeout_ms" },
 				{ "temperature",        "ai.temperature"          },
 				{ "context_window",     "ai.context_window"       },
 			};
@@ -6339,6 +6423,7 @@ void AIService::SaveSettings(AIJsonConfig& jsonConfig, const AISettings& setting
 		{ "system_prompt_extra", settings.extraSystemPrompt                  },
 		{ "custom_headers",      settings.customHeadersText                  },
 		{ "timeout_ms",          std::to_string(settings.timeoutMs)          },
+		{ "stream_idle_timeout_ms", std::to_string(GetChatStreamIdleTimeoutMs(settings)) },
 		{ "temperature",         std::format("{:.2f}", settings.temperature) },
 		{ "context_window",      std::to_string(settings.contextWindowTokens) },
 		{ "image_input_mode",    ImageInputModeToString(settings.imageInputMode) },
@@ -7651,7 +7736,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		runOptions.enablePlanUserInput,
 		runOptions.enableGoalTools);
 	AIChatToolPolicy::Session toolPolicy;
-	ChatRetryCoordinator retry(settings.retryCount);
+	ChatRetryCoordinator retry(settings.retryCount, runOptions.activityCallback);
 	LogChatRetryBudget("openai-chat", settings, runOptions);
 
 	for (int round = 0;; ++round) {
@@ -7688,17 +7773,23 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		ChatStreamParseState streamState;
 		bool sawResponseChunk = false;
 		const auto networkStart = PerfClock::now();
+		ReportChatActivity(runOptions, "等待 AI 首包...");
+		bool reportedFirstChunk = false;
 		const auto [responseBody, statusCode] =
 			PerformPostRequestStreaming(
 				endpoint,
 				requestBodyText,
-				[&streamState, &streamCallback, &cancelCallback, cancelContext, &sawResponseChunk](
+				[&streamState, &streamCallback, &cancelCallback, cancelContext, &sawResponseChunk, &reportedFirstChunk, &runOptions](
 					const std::string& chunk) -> bool {
 					if (IsCancelRequested(cancelCallback, cancelContext)) {
 						return false;
 					}
 					if (!chunk.empty()) {
 						sawResponseChunk = true;
+						if (!reportedFirstChunk) {
+							reportedFirstChunk = true;
+							ReportChatActivity(runOptions, "正在接收 AI 流...");
+						}
 					}
 					return ConsumeStreamChunk(chunk, streamState, streamCallback);
 				},
@@ -7706,7 +7797,8 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 				GetChatRequestTimeoutMs(settings),
 				false,
 				false,
-				cancelContext);
+				cancelContext,
+				GetChatStreamIdleTimeoutMs(settings));
 		bool streamFlushed = true;
 		if (IsSuccessfulHttpStatus(statusCode)) {
 			streamFlushed = FlushStreamParseState(streamState, streamCallback);

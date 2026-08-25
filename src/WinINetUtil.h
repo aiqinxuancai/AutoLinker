@@ -87,7 +87,9 @@ std::pair<std::string, int> PerformPostRequestStreaming(
 	int timeout = 200000,
 	bool AutoCookies = true,
 	bool NeverRedirect = true,
-	HttpRequestCancellation* cancellation = nullptr);
+	HttpRequestCancellation* cancellation = nullptr,
+	// 流式响应的独立接收空闲超时；0 表示沿用请求超时。
+	int streamIdleTimeout = 300000);
 
 // Execute HTTP GET.
 std::pair<std::string, int> PerformGetRequest(

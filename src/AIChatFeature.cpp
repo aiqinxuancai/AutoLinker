@@ -267,6 +267,7 @@ struct ChatDialogContext {
 	HWND hTooltip = nullptr;
 	std::wstring sessionStatusTooltip;
 	std::wstring apiProfileTooltip;
+	std::wstring stopTooltip;
 	int inputRowsVisible = 1;
 	bool sessionTimingInProgress = false;
 	bool sessionTimingVisible = false;
@@ -3302,7 +3303,11 @@ void ApplyCurrentThemeToWebView(ChatDialogContext* ctx)
 	ExecuteWebViewScript(ctx, AIChatThemeManager::BuildApplyCurrentThemeScript());
 }
 
-void UpdateWebViewComposerState(ChatDialogContext* ctx, bool busy, bool stopRequested = false)
+void UpdateWebViewComposerState(
+	ChatDialogContext* ctx,
+	bool busy,
+	bool stopRequested = false,
+	const std::string& latestActivity = {})
 {
 	if (ctx == nullptr) {
 		return;
@@ -3311,6 +3316,10 @@ void UpdateWebViewComposerState(ChatDialogContext* ctx, bool busy, bool stopRequ
 	script += busy ? L"true" : L"false";
 	script += L",";
 	script += stopRequested ? L"true" : L"false";
+	script += L",\"";
+	script += EscapeJsDoubleQuotedWide(WideFromLocal(
+		latestActivity.empty() ? LocalFromWide(L"停止") : latestActivity));
+	script += L"\"";
 	script += L");";
 	ExecuteWebViewScript(ctx, script);
 }
@@ -3545,6 +3554,34 @@ void UpdateNativeSessionTiming(ChatDialogContext* ctx, const SessionTimingSnapsh
 	if (ctx->hSessionStatus != nullptr) {
 		SetWindowTextW(ctx->hSessionStatus, WideFromLocal(snapshot.elapsedLabelLocal).c_str());
 		InvalidateRect(ctx->hSessionStatus, nullptr, TRUE);
+	}
+}
+
+void UpdateNativeStopTooltip(
+	ChatDialogContext* ctx,
+	bool inFlight,
+	bool stopRequested,
+	const std::string& latestActivity)
+{
+	if (ctx == nullptr) {
+		return;
+	}
+	if (stopRequested) {
+		ctx->stopTooltip = L"停止中...";
+	}
+	else if (inFlight && !latestActivity.empty()) {
+		ctx->stopTooltip = WideFromLocal(latestActivity);
+	}
+	else {
+		ctx->stopTooltip = L"停止";
+	}
+	if (ctx->hTooltip != nullptr && ctx->hStop != nullptr) {
+		TOOLINFOW toolInfo = { sizeof(toolInfo) };
+		toolInfo.hwnd = GetParent(ctx->hStop);
+		toolInfo.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+		toolInfo.uId = reinterpret_cast<UINT_PTR>(ctx->hStop);
+		toolInfo.lpszText = ctx->stopTooltip.data();
+		SendMessageW(ctx->hTooltip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&toolInfo));
 	}
 }
 
@@ -4279,6 +4316,7 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												}
 												bool inFlight = false;
 												bool stopRequested = false;
+												std::string latestActivity;
 												bool apiProfilePendingForNextRequest = false;
 												PlanModeState planModeState = PlanModeState::Normal;
 												bool autoAllowWrites = false;
@@ -4298,13 +4336,20 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												!g_session.activeRequestProfileIdLocal.empty() &&
 												apiProfilesSnapshot.activeTargetKeyLocal != g_session.activeRequestProfileIdLocal;
 													stopRequested = IsStopRequestedLocked(g_session);
+														if (inFlight && !g_session.agentActivityLines.empty()) {
+														latestActivity = g_session.agentActivityLines.back();
+													}
 													planModeState = g_session.planModeState;
 													autoAllowWrites = g_session.autoAllowWrites;
 													pendingInputs.assign(g_session.pendingInputs.begin(), g_session.pendingInputs.end());
 													usageSnapshot = BuildContextUsageSnapshotLocked(g_session, fallbackContextWindow);
 													timingSnapshot = BuildSessionTimingSnapshotLocked(g_session, GetCurrentUnixTimeMsForChat());
 												}
-												UpdateWebViewComposerState(navCtx, inFlight, stopRequested);
+												UpdateWebViewComposerState(
+													navCtx,
+													inFlight,
+													stopRequested,
+													latestActivity);
 												UpdateWebViewPendingInputs(navCtx, pendingInputs);
 												UpdateWebViewContextUsage(navCtx, usageSnapshot);
 												UpdateWebViewSessionTiming(navCtx, timingSnapshot);
@@ -5773,7 +5818,6 @@ std::string BuildHistoryHtmlLocked(
 			msg.role == SessionRole::Assistant,
 			msg.attachments);
 	}
-
 	if (state.requestInFlight) {
 		const std::string preview = TrimAsciiCopy(state.streamingAssistantPreview);
 		if (!preview.empty()) {
@@ -6829,6 +6873,9 @@ void RunAIChatWorker(void* pParams)
 				};
 				runOptions.streamRetryCallback = [requestId = request->requestId]() {
 					ResetStreamingAssistantPreviewForRetry(requestId);
+				};
+				runOptions.activityCallback = [requestId = request->requestId](const std::string& line) {
+					AppendAgentActivity(requestId, line);
 				};
 				result->chatResult = AIService::ExecuteChatWithTools(
 					request->contextMessages,
@@ -8797,6 +8844,7 @@ void RefreshChatDialog(HWND hWnd)
 	std::string historyHtml;
 	bool inFlight = false;
 	bool stopRequested = false;
+	std::string latestActivity;
 	bool apiProfilePendingForNextRequest = false;
 	PlanModeState planModeState = PlanModeState::Normal;
 	bool autoAllowWrites = false;
@@ -8827,6 +8875,9 @@ void RefreshChatDialog(HWND hWnd)
 			!g_session.activeRequestProfileIdLocal.empty() &&
 			apiProfilesSnapshot.activeTargetKeyLocal != g_session.activeRequestProfileIdLocal;
 		stopRequested = IsStopRequestedLocked(g_session);
+		if (inFlight && !g_session.agentActivityLines.empty()) {
+			latestActivity = g_session.agentActivityLines.back();
+		}
 		planModeState = g_session.planModeState;
 		autoAllowWrites = g_session.autoAllowWrites;
 		pendingInputs.assign(g_session.pendingInputs.begin(), g_session.pendingInputs.end());
@@ -8898,6 +8949,7 @@ void RefreshChatDialog(HWND hWnd)
 		SetWindowTextW(ctx->hStop, stopRequested ? L"\u505c\u6b62\u4e2d..." : L"\u505c\u6b62");
 		ShowWindow(ctx->hStop, (nativeComposerVisible && inFlight) ? SW_SHOW : SW_HIDE);
 	}
+	UpdateNativeStopTooltip(ctx, inFlight, stopRequested, latestActivity);
 	if (ctx->hSessionStatus != nullptr) {
 		ShowWindow(ctx->hSessionStatus, (nativeComposerVisible && timingSnapshot.visible) ? SW_SHOW : SW_HIDE);
 	}
@@ -8908,7 +8960,7 @@ void RefreshChatDialog(HWND hWnd)
 	UpdateNativePlanModeState(ctx, planModeState);
 	UpdateNativeAutoAllowModeState(ctx, autoAllowWrites);
 	UpdateNativeGoalState(ctx, goalSnapshot, planModeState);
-	UpdateWebViewComposerState(ctx, inFlight, stopRequested);
+	UpdateWebViewComposerState(ctx, inFlight, stopRequested, latestActivity);
 	UpdateWebViewContextUsage(ctx, usageSnapshot);
 	UpdateWebViewSessionTiming(ctx, timingSnapshot);
 	UpdateWebViewApiProfiles(ctx, apiProfilesSnapshot, apiProfilePendingForNextRequest);
@@ -9060,6 +9112,7 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 		InstallChatActionControl(ctx->hClearConfirmCancel, kActionClearCancel);
 		ctx->sessionStatusTooltip = L"\u4e0a\u4e0b\u6587\u7528\u91cf\u4e0d\u53ef\u7528";
 		ctx->apiProfileTooltip = L"\u5f53\u524d API\uff1a\u672a\u914d\u7f6e";
+		ctx->stopTooltip = L"\u505c\u6b62";
 		ctx->hTooltip = CreateWindowExW(
 			WS_EX_TOPMOST,
 			TOOLTIPS_CLASSW,
@@ -9077,9 +9130,10 @@ LRESULT CALLBACK AIChatDialogProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lP
 				0, 0, 0, 0,
 				SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 			SendMessageW(ctx->hTooltip, TTM_SETMAXTIPWIDTH, 0, 360);
-			const std::array<std::pair<HWND, std::wstring*>, 2> tooltipTargets = {
+			const std::array<std::pair<HWND, std::wstring*>, 3> tooltipTargets = {
 				std::pair{ ctx->hSessionStatus, &ctx->sessionStatusTooltip },
-				std::pair{ ctx->hApiProfile, &ctx->apiProfileTooltip }
+				std::pair{ ctx->hApiProfile, &ctx->apiProfileTooltip },
+				std::pair{ ctx->hStop, &ctx->stopTooltip }
 			};
 			for (const auto& [toolHwnd, tooltipText] : tooltipTargets) {
 				TOOLINFOW toolInfo = { sizeof(toolInfo) };

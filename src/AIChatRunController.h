@@ -20,6 +20,8 @@ public:
 	void ReplaceContextWithSummary(const std::string& summaryLocal);
 
 	void BeginSampling();
+	// 向当前 AI 对话报告阶段状态，不改变检查点状态。
+	void ReportActivity(const std::string& line) const;
 	void RecordUsage(int promptTokens, int totalTokens, bool hasUsage);
 	void RecordModelRound();
 	bool ShouldCompact() const;
@@ -78,6 +80,7 @@ private:
 	std::string m_summary;
 	int m_samplingRounds = 0;
 	int m_compactionCount = 0;
+	int m_samplingRoundsAtLastCompaction = 0;
 	int m_promptTokens = 0;
 	int m_totalTokens = 0;
 	long long m_accumulatedInputTokens = 0;

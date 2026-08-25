@@ -731,6 +731,9 @@ void ApplyProfileValuesToSettings(const std::map<std::string, std::string>& valu
 	if (const auto it = values.find("timeout_ms"); it != values.end()) {
 		try { settings.timeoutMs = (std::max)(1000, std::stoi(it->second)); } catch (...) {}
 	}
+	if (const auto it = values.find("stream_idle_timeout_ms"); it != values.end()) {
+		try { settings.streamIdleTimeoutMs = (std::clamp)(std::stoi(it->second), 1000, 1800000); } catch (...) {}
+	}
 	if (const auto it = values.find("temperature"); it != values.end()) {
 		try { settings.temperature = std::stod(it->second); } catch (...) {}
 	}
@@ -754,6 +757,7 @@ std::map<std::string, std::string> BuildProfileValuesFromSettings(const AISettin
 		{ "system_prompt_extra", settings.extraSystemPrompt },
 		{ "custom_headers", settings.customHeadersText },
 		{ "timeout_ms", std::to_string(settings.timeoutMs) },
+		{ "stream_idle_timeout_ms", std::to_string((std::clamp)(settings.streamIdleTimeoutMs, 1000, 1800000)) },
 		{ "temperature", std::format("{:.2f}", settings.temperature) },
 		{ "context_window", std::to_string(settings.contextWindowTokens) },
 		{ "retry_count", std::to_string((std::clamp)(settings.retryCount, 0, 20)) }

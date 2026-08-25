@@ -568,8 +568,9 @@ bool RequestToolExecutionFromMainThread(
 
 	{
 		std::unique_lock<std::mutex> lock(request->mutex);
-		const auto dispatchDeadline = std::chrono::steady_clock::now() + std::chrono::minutes(20);
-		while (!request->done && std::chrono::steady_clock::now() < dispatchDeadline) {
+		const auto waitStartedAt = std::chrono::steady_clock::now();
+		auto nextWaitLogAt = waitStartedAt + std::chrono::seconds(30);
+		while (!request->done) {
 			if (request->cv.wait_for(lock, std::chrono::milliseconds(50), [&request]() {
 				return request->done;
 			})) {
@@ -587,16 +588,17 @@ bool RequestToolExecutionFromMainThread(
 				outResultJson = R"({"ok":false,"error":"main thread tool request was cancelled"})";
 				return false;
 			}
-		}
-		if (!request->done) {
-			request->cancelled = true;
-			lock.unlock();
-			CancelToolExecutionRequestForTooling(requestId);
-			outResultJson = R"({"ok":false,"error":"main thread tool execution timed out"})";
-			LogInternalToolCallLine(std::format(
-				"main_thread_dispatch_timeout tool={}",
-				toolName.empty() ? "unknown_tool" : toolName));
-			return false;
+			const auto now = std::chrono::steady_clock::now();
+			if (now >= nextWaitLogAt) {
+				const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+					now - waitStartedAt).count();
+				LogInternalToolCallLine(std::format(
+					"main_thread_dispatch_waiting tool={} elapsed_ms={} stage={}",
+					toolName.empty() ? "unknown_tool" : toolName,
+					elapsedMs,
+					toolName == "compile_with_output_path" ? "compile" : "main_thread_tool"));
+				nextWaitLogAt = now + std::chrono::seconds(30);
+			}
 		}
 	}
 

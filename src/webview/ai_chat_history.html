@@ -2531,6 +2531,8 @@ body,
 </div>
 <script>
 window.autolinkerBusy = false;
+window.autolinkerStopRequested = false;
+window.autolinkerStopTooltip = "\u505c\u6b62";
 window.autolinkerPlanState = "normal";
 window.autolinkerAutoAllow = false;
 window.autolinkerGoalState = { status: "none", objective: "", tokensUsed: 0, elapsedLabel: "0m 0s", label: "\u76EE\u6807" };
@@ -2864,7 +2866,10 @@ window.autolinkerSetChatHtml = function(html) {
 		window.autolinkerRenderActivePlan(root);
 		window.autolinkerAwaitingPlanUserInput = !!(root.querySelector && root.querySelector(".plan-user-input-card.active"));
 		if (typeof window.autolinkerSetBusy === "function") {
-			window.autolinkerSetBusy(!!window.autolinkerBusy, !!window.autolinkerStopRequested);
+			window.autolinkerSetBusy(
+				!!window.autolinkerBusy,
+				!!window.autolinkerStopRequested,
+				window.autolinkerStopTooltip || "\u505c\u6b62");
 		}
 		if (scroll) {
 			scroll.scrollTop = followBottom ? scroll.scrollHeight : previousScrollTop;
@@ -3061,7 +3066,7 @@ window.autolinkerSetGoalState = function(payload) {
 	window.autolinkerRenderGoalPanel();
 };
 
-window.autolinkerSetBusy = function(busy, stopRequested) {
+window.autolinkerSetBusy = function(busy, stopRequested, stopTooltip) {
 	var send = document.getElementById("send-btn");
 	var attach = document.getElementById("attach-btn");
 	var stop = document.getElementById("stop-btn");
@@ -3075,9 +3080,13 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	var input = document.getElementById("chat-input");
 	var isBusy = !!busy;
 	var isStopping = !!stopRequested;
+	var resolvedStopTooltip = typeof stopTooltip === "string" && stopTooltip
+		? stopTooltip
+		: "\u505c\u6b62";
 	var waitingForPlanInput = !!window.autolinkerAwaitingPlanUserInput;
 	window.autolinkerBusy = isBusy;
 	window.autolinkerStopRequested = isStopping;
+	window.autolinkerStopTooltip = resolvedStopTooltip;
 	if (send) {
 		send.disabled = waitingForPlanInput;
 		send.style.display = "";
@@ -3087,7 +3096,8 @@ window.autolinkerSetBusy = function(busy, stopRequested) {
 	}
 	if (stop) {
 		stop.disabled = !isBusy || isStopping;
-		stop.title = isStopping ? "\u505C\u6B62\u4E2D..." : "\u505C\u6B62";
+		stop.title = isStopping ? "\u505C\u6B62\u4E2D..." : resolvedStopTooltip;
+		stop.setAttribute("aria-label", stop.title);
 		stop.style.display = isBusy ? "" : "none";
 	}
 	if (newSession) {

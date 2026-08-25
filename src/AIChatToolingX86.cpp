@@ -5711,6 +5711,9 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		if (diagnostics == "compile_invoked_dialog_pending" ||
 			diagnostics == "compile_invoked_dialog_suppressed") {
 			const auto waitStartedAt = std::chrono::steady_clock::now();
+			Logger::Instance().WriteAndIde("Tool", std::format(
+				"compile_artifact_wait_start output={} stage=artifact_confirmation timeout_ms=30000",
+				normalizedPath));
 			const auto waitDeadline = waitStartedAt + std::chrono::seconds(30);
 			compileWaitOutcome = "timeout";
 			bool outputFileReadySeen = false;
@@ -5784,6 +5787,11 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			compileWaitElapsedMs = static_cast<long long>(
 				std::chrono::duration_cast<std::chrono::milliseconds>(
 					std::chrono::steady_clock::now() - waitStartedAt).count());
+			Logger::Instance().WriteAndIde("Tool", std::format(
+				"compile_artifact_wait_end output={} stage=artifact_confirmation outcome={} elapsed_ms={}",
+				normalizedPath,
+				compileWaitOutcome,
+				compileWaitElapsedMs));
 			CancelSilentCompileOutputPathRequest();
 		}
 

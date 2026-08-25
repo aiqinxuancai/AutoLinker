@@ -9,6 +9,8 @@
 namespace {
 
 constexpr int kAutoCompactPercent = 90;
+constexpr int kAutoCompactSamplingRounds = 256;
+constexpr size_t kAutoCompactContextBytes = 900000;
 constexpr int kRecoveryHintFailureCount = 3;
 constexpr int kStalledFailureCount = 8;
 constexpr int kRepeatedWriteRecoveryCount = 3;
@@ -154,6 +156,13 @@ void AIChatRunController::BeginSampling()
 	++m_samplingRounds;
 }
 
+void AIChatRunController::ReportActivity(const std::string& line) const
+{
+	if (m_options.activityCallback && !line.empty()) {
+		m_options.activityCallback(line);
+	}
+}
+
 void AIChatRunController::RecordUsage(int promptTokens, int totalTokens, bool hasUsage)
 {
 	if (!hasUsage) {
@@ -176,6 +185,16 @@ bool AIChatRunController::ShouldCompact() const
 {
 	if (m_contextWindowTokens <= 0) {
 		return false;
+	}
+	if (m_samplingRounds - m_samplingRoundsAtLastCompaction >= kAutoCompactSamplingRounds) {
+		return true;
+	}
+	size_t contextBytes = 0;
+	for (const AIChatMessage& message : m_contextMessages) {
+		contextBytes += MessageBytes(message);
+	}
+	if (contextBytes >= kAutoCompactContextBytes) {
+		return true;
 	}
 	const size_t limit = static_cast<size_t>(m_contextWindowTokens) * kAutoCompactPercent / 100;
 	const size_t predictedTokens = m_hasUsage
@@ -322,6 +341,7 @@ void AIChatRunController::RecordCompaction(const std::string& summaryLocal)
 {
 	++m_compactionCount;
 	ReplaceContextWithSummary(summaryLocal);
+	m_samplingRoundsAtLastCompaction = m_samplingRounds;
 	PublishCheckpoint();
 }
 

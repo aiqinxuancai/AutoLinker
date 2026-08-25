@@ -304,7 +304,8 @@ HttpResponseDetails PerformPostRequestCore(
     bool autoCookies,
     bool neverRedirect,
     const std::function<bool(const std::string& chunk)>* onChunk,
-    HttpRequestCancellation* cancellation)
+    HttpRequestCancellation* cancellation,
+    int streamIdleTimeout)
 {
     HINTERNET hInternet = nullptr;
     HINTERNET hConnect = nullptr;
@@ -394,7 +395,10 @@ HttpResponseDetails PerformPostRequestCore(
 
     InternetSetOption(hInternet, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
     InternetSetOption(hInternet, INTERNET_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
-    InternetSetOption(hInternet, INTERNET_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
+	int receiveTimeout = onChunk != nullptr && streamIdleTimeout > 0
+        ? streamIdleTimeout
+        : timeout;
+    InternetSetOption(hInternet, INTERNET_OPTION_RECEIVE_TIMEOUT, &receiveTimeout, sizeof(receiveTimeout));
 
     URL_COMPONENTSA urlComp = {};
     urlComp.dwStructSize = sizeof(urlComp);
@@ -460,6 +464,11 @@ HttpResponseDetails PerformPostRequestCore(
             return cancelledResult();
         }
     }
+	// WinINet 可能不会把父句柄上的选项完整继承到请求句柄，流式读取时在
+	// request 句柄上再次设置接收空闲超时，避免 InternetReadFile 无限等待。
+	InternetSetOption(hRequest, INTERNET_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
+	InternetSetOption(hRequest, INTERNET_OPTION_SEND_TIMEOUT, &timeout, sizeof(timeout));
+	InternetSetOption(hRequest, INTERNET_OPTION_RECEIVE_TIMEOUT, &receiveTimeout, sizeof(receiveTimeout));
 
     if (!HttpSendRequestA(
         hRequest,
@@ -556,7 +565,8 @@ std::pair<std::string, int> PerformPostRequest(
         AutoCookies,
         NeverRedirect,
         nullptr,
-        cancellation);
+        cancellation,
+        0);
     return std::make_pair(details.body, details.statusCode);
 }
 
@@ -577,7 +587,8 @@ HttpResponseDetails PerformPostRequestDetailed(
         AutoCookies,
         NeverRedirect,
         nullptr,
-        cancellation);
+        cancellation,
+        0);
 }
 
 std::pair<std::string, int> PerformPostRequestStreaming(
@@ -585,10 +596,11 @@ std::pair<std::string, int> PerformPostRequestStreaming(
     const std::string& postData,
     const std::function<bool(const std::string& chunk)>& onChunk,
     const std::string& customHeaders,
-    int timeout,
-    bool AutoCookies,
+	int timeout,
+	bool AutoCookies,
 	bool NeverRedirect,
-	HttpRequestCancellation* cancellation)
+	HttpRequestCancellation* cancellation,
+	int streamIdleTimeout)
 {
     const HttpResponseDetails details = PerformPostRequestCore(
         url,
@@ -598,7 +610,8 @@ std::pair<std::string, int> PerformPostRequestStreaming(
         AutoCookies,
         NeverRedirect,
         &onChunk,
-        cancellation);
+        cancellation,
+		streamIdleTimeout);
     return std::make_pair(details.body, details.statusCode);
 }
 

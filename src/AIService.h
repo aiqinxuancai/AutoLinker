@@ -63,6 +63,7 @@ struct AIEndpointSettings {
 	std::string extraSystemPrompt;
 	std::string customHeadersText;
 	int timeoutMs = 120000;
+	int streamIdleTimeoutMs = 300000; // 流式响应连续无数据的最大等待时间
 	double temperature = 0.2;
 	int contextWindowTokens = 0; // 0 = 未设置，回落到模型表/默认
 	AIImageInputMode imageInputMode = AIImageInputMode::Auto;
@@ -172,6 +173,8 @@ struct AIChatRunOptions {
 	std::function<std::vector<AIChatMessage>(const std::string& completedAssistantContent)> takePendingUserInputsCallback;
 	// 流式协议重连前清理当前未完成的界面预览，避免重放增量造成重复显示。
 	std::function<void()> streamRetryCallback;
+	// 报告 AI 请求阶段、流接收和重试状态。
+	std::function<void(const std::string& line)> activityCallback;
 };
 
 // AI 对话结果。
