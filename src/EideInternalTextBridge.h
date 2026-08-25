@@ -22,6 +22,17 @@ struct NativeRealPageAccessResult {
 	std::string trace;
 };
 
+// 常量页长文本不透明载荷写入结果。
+struct ConstLongTextPreservationResult {
+	bool ok = false;
+	bool protectionRequired = false;
+	bool rollbackAttempted = false;
+	bool rollbackSucceeded = false;
+	size_t preservedCount = 0;
+	std::string pageCode;
+	std::string trace;
+};
+
 // 当前活动页编辑器对象解析结果。
 struct ActiveEditorObjectInfo {
 	bool ok = false;
@@ -71,13 +82,22 @@ bool ReplaceRealPageCodeByEditorObject(
 	const std::string* rollbackPageCode,
 	NativeRealPageAccessResult* outResult = nullptr);
 
-// 按程序树页数据整页覆盖真实源码。
+// 按程序树页数据整页覆盖真实源码；常量长文本保护必须由常量虚拟文件入口显式启用。
 bool ReplaceRealPageCodeByProgramTreeItemData(
 	unsigned int itemData,
 	std::uintptr_t moduleBase,
 	const std::string& newPageCode,
 	const std::string* rollbackPageCode,
+	bool preserveConstLongText,
 	NativeRealPageAccessResult* outResult = nullptr);
+
+// 保留常量页已有长文本的 IDE 自定义剪贴板载荷，并覆盖写入普通文本字段。
+bool ReplaceConstResourcePagePreservingLongText(
+	unsigned int itemData,
+	std::uintptr_t moduleBase,
+	const std::string& basePageCode,
+	const std::string& targetPageCode,
+	ConstLongTextPreservationResult* outResult = nullptr);
 
 // 解析当前活动代码页的编辑器对象。
 bool ResolveCurrentActiveEditorObject(

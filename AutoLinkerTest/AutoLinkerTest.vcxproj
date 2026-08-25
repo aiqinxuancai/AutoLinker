@@ -307,11 +307,15 @@
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <ClCompile Include="..\src\UnicodeTextCodec.cpp" />
+    <ClCompile Include="..\src\EideConstLongTextProtection.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\AIChatMarkdownTableRenderer.h" />
     <ClInclude Include="..\src\DownloadProgressReporter.h" />
     <ClInclude Include="..\src\UnicodeTextCodec.h" />
+    <ClInclude Include="..\src\EideConstLongTextProtection.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\\AutoLinker.vcxproj">

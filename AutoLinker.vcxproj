@@ -504,6 +504,7 @@
 	</ClCompile>
     <ClCompile Include="src\DependencyCatalogCache.cpp" />
     <ClCompile Include="src\EideHiddenTypeWriteSupport.cpp" />
+    <ClCompile Include="src\EideConstLongTextProtection.cpp" />
     <ClCompile Include="src\EideInternalTextBridge.cpp" />
     <ClCompile Include="src\EcSwitchConfigDialog.cpp" />
     <ClCompile Include="src\ForceLinkLibConfigDialog.cpp" />
@@ -662,6 +663,7 @@
     <ClInclude Include="src\ExecCommandSessionManager.h" />
     <ClInclude Include="src\EcSwitchConfigDialog.h" />
     <ClInclude Include="src\EideHiddenTypeWriteSupport.h" />
+    <ClInclude Include="src\EideConstLongTextProtection.h" />
     <ClInclude Include="src\EideInternalTextBridge.h" />
     <ClInclude Include="src\EideProjectBinarySerializer.h" />
     <ClInclude Include="src\ForceLinkLibConfigDialog.h" />

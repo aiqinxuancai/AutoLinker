@@ -221,6 +221,7 @@ struct ProgramTreeItemInfo {
 	int selectedImage = -1;
 	std::string typeKey;
 	std::string typeName;
+	bool preserveConstLongTextOnWrite = false;
 };
 
 struct SourceEditBaseForAI {
@@ -238,6 +239,8 @@ constexpr const char* kProgramTreeConstantTablePageNameForAI = "常量表...";
 constexpr const char* kProgramTreeUserDataTypePageNameForAI = "自定义数据类型";
 constexpr const char* kProgramTreeDllCommandPageNameForAI = "Dll命令";
 constexpr const char* kProgramTreeGlobalVariablePageNameForAI = "全局变量";
+constexpr const char* kMappedConstantTablePathUtf8ForAI =
+	"src/.\xE5\xB8\xB8\xE9\x87\x8F.txt";
 
 // 类模块改名后不再能从默认“类N”名称推断类型，缓存 IDE 稳定的程序树图标索引。
 int g_knownClassModuleTreeImageForAI = -1;
@@ -1134,34 +1137,6 @@ bool HasConcreteFixedTableDeclarationForAI(const std::string& code, const std::s
 	return false;
 }
 
-std::string JoinLinesWithCrLfForAI(const std::vector<std::string>& lines)
-{
-	std::string text;
-	for (size_t i = 0; i < lines.size(); ++i) {
-		if (i != 0) {
-			text += "\r\n";
-		}
-		text += lines[i];
-	}
-	return text;
-}
-
-std::string ExtractConstResourceNameForAI(const std::string& line)
-{
-	const std::string trimmed = TrimAsciiCopy(line);
-	const std::string directive = ".常量";
-	if (trimmed.rfind(directive, 0) != 0) {
-		return std::string();
-	}
-
-	std::string remain = TrimAsciiCopy(trimmed.substr(directive.size()));
-	const size_t comma = remain.find(',');
-	if (comma != std::string::npos) {
-		remain = remain.substr(0, comma);
-	}
-	return TrimAsciiCopy(remain);
-}
-
 bool TryReadWorkspaceMirrorTextLocalForAI(
 	const std::string& filePathUtf8,
 	std::string& outTextLocal,
@@ -1196,40 +1171,6 @@ bool TryReadWorkspaceMirrorTextLocalForAI(
 		outError = std::string("read workspace mirror file exception: ") + ex.what();
 		return false;
 	}
-}
-
-std::string MergeConstResourceLongTextPlaceholdersForAI(
-	const std::string& targetCode,
-	const std::string& fullConstCode)
-{
-	std::unordered_map<std::string, std::string> fullLineByName;
-	for (const std::string& line : SplitLinesCopyForAI(NormalizeLineBreaksForAI(fullConstCode))) {
-		if (line.find("<文本长度:") != std::string::npos) {
-			continue;
-		}
-		const std::string name = ExtractConstResourceNameForAI(line);
-		if (!name.empty()) {
-			fullLineByName[name] = line;
-		}
-	}
-	if (fullLineByName.empty()) {
-		return targetCode;
-	}
-
-	std::vector<std::string> targetLines = SplitLinesCopyForAI(NormalizeLineBreaksForAI(targetCode));
-	bool changed = false;
-	for (std::string& line : targetLines) {
-		if (line.find("<文本长度:") == std::string::npos) {
-			continue;
-		}
-		const std::string name = ExtractConstResourceNameForAI(line);
-		const auto it = fullLineByName.find(name);
-		if (it != fullLineByName.end()) {
-			line = it->second;
-			changed = true;
-		}
-	}
-	return changed ? JoinLinesWithCrLfForAI(targetLines) : targetCode;
 }
 
 bool OpenFixedTablePageForAI(const ProgramTreeItemInfo& item, std::string& outTrace)
@@ -1598,19 +1539,6 @@ bool TryResolveRealPageWriteBaseForAI(
 		std::string fixedTableError;
 		if (TryReadFixedTableRealPageCodeForAI(item, fixedTableCode, fixedTableTrace, fixedTableError)) {
 			std::string writeBaseCode = fixedTableCode;
-			if (item.typeKey == "const_resource") {
-				std::string mirrorConstCode;
-				std::string mirrorConstError;
-				if (TryReadWorkspaceMirrorTextLocalForAI("src/.常量.txt", mirrorConstCode, mirrorConstError)) {
-					writeBaseCode = NormalizeRealCodeLineBreaksToCrLf(
-						MergeConstResourceLongTextPlaceholdersForAI(fixedTableCode, mirrorConstCode));
-					fixedTableTrace += "|const_long_text_placeholders_merged_from_mirror";
-				}
-				else {
-					fixedTableTrace += "|const_long_text_mirror_merge_failed:" + mirrorConstError;
-				}
-			}
-
 			outLiveTrace = fixedTableTrace + "|write_base=fixed_table_real_copy";
 			outCurrentCode = writeBaseCode;
 			const std::string fixedTableHash = BuildStableTextHashForRealCode(writeBaseCode);
@@ -1779,6 +1707,7 @@ bool TryWriteRealPageCodeForAI(
 			moduleBase,
 			normalizedNewCode,
 			&normalizedRollbackBaseCode,
+			item.preserveConstLongTextOnWrite,
 			&fixedTableWriteResult);
 		const auto fixedTableWriteMs = ElapsedToolMs(fixedTableWriteStart);
 		outRollbackAttempted = fixedTableWriteResult.rollbackAttempted;
@@ -1801,6 +1730,12 @@ bool TryWriteRealPageCodeForAI(
 
 			outTrace = fixedTableDirectTrace + "|final_code=real_copy";
 			return true;
+		}
+
+		if (item.preserveConstLongTextOnWrite) {
+			outTrace = fixedTableDirectTrace + "|const_long_text_safe_write_failed_no_text_fallback";
+			outError = "preserve existing long-text constants failed; page was not changed or was rolled back";
+			return false;
 		}
 
 		std::string fallbackFinalCode;
@@ -1850,6 +1785,7 @@ bool TryWriteRealPageCodeForAI(
 			moduleBase,
 			normalizedNewCode,
 			&normalizedRollbackBaseCode,
+			item.preserveConstLongTextOnWrite,
 			&writeResult);
 	const auto writeMs = ElapsedToolMs(writeStart);
 	outRollbackAttempted = writeResult.rollbackAttempted;
@@ -4561,9 +4497,6 @@ std::string ExecuteMappedWriteFileToolForAI(
 	const std::string& baseCode = editBase.baseCode;
 
 	std::string preparedFullCode = fullCode;
-	if (item.typeKey == "const_resource") {
-		preparedFullCode = MergeConstResourceLongTextPlaceholdersForAI(preparedFullCode, baseCode);
-	}
 	const std::string normalizedFullCode = NormalizeRealCodeLineBreaksToCrLf(preparedFullCode);
 	if (BuildStableTextHashForRealCode(normalizedFullCode) == BuildStableTextHashForRealCode(baseCode)) {
 		nlohmann::json r;
@@ -4671,10 +4604,7 @@ std::string ExecuteMappedDiffFileToolForAI(
 	std::string candidateCode;
 	nlohmann::json editResults = nlohmann::json::array();
 	if (hasNewCode || hasFullCode) {
-		candidateCode = NormalizeRealCodeLineBreaksToCrLf(
-			item.typeKey == "const_resource"
-				? MergeConstResourceLongTextPlaceholdersForAI(newCodeInput, baseCode)
-				: newCodeInput);
+		candidateCode = NormalizeRealCodeLineBreaksToCrLf(newCodeInput);
 	}
 	else if (!oldText.empty()) {
 		std::vector<RealPageTextEditRequest> edits = {
@@ -5066,12 +4996,16 @@ std::string ExecuteFileMappedRealPageToolForAI(
 				totalStart);
 		}
 	}
+	programItem.preserveConstLongTextOnWrite =
+		item.relativePathUtf8 == kMappedConstantTablePathUtf8ForAI;
 	LogToolStageForAI(
 		"file_mapped_tool",
 		"after_program_item_lookup_ok|tool=" + publicToolName +
 			"|page=" + LocalToUtf8Text(programItem.name) +
 			"|type=" + programItem.typeKey +
-			"|item_data=" + std::to_string(programItem.itemData),
+			"|item_data=" + std::to_string(programItem.itemData) +
+			"|const_long_text_protection=" +
+			std::to_string(programItem.preserveConstLongTextOnWrite ? 1 : 0),
 		totalStart);
 
 	std::string resultLocal;

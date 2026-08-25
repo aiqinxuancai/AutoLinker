@@ -19,8 +19,12 @@
     <ClCompile Include="..\src\UnicodeTextCodec.cpp">
       <Filter>源文件</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\EideConstLongTextProtection.cpp">
+      <Filter>源文件</Filter>
+    </ClCompile>
     <ClInclude Include="..\src\AIChatMarkdownTableRenderer.h" />
     <ClInclude Include="..\src\DownloadProgressReporter.h" />
     <ClInclude Include="..\src\UnicodeTextCodec.h" />
+    <ClInclude Include="..\src\EideConstLongTextProtection.h" />
   </ItemGroup>
 </Project>

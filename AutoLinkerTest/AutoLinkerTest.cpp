@@ -22,6 +22,7 @@
 #include "..\\src\\AIChatMarkdownTableRenderer.h"
 #include "..\\src\\DownloadProgressReporter.h"
 #include "..\\src\\UnicodeTextCodec.h"
+#include "..\\src\\EideConstLongTextProtection.h"
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -1351,6 +1352,97 @@ bool RunBuiltInThemeSmokeTest()
 	}
 }
 
+bool RunConstLongTextProtectionSmokeTest()
+{
+	const std::string base =
+		".版本 2\r\n\r\n"
+		".常量 普通常量, \"1\", , 数值的话是整数\r\n"
+		".常量 带逗号, \"a,b\", 公开, 备注中的 <文本长度: 99> 不应识别\r\n"
+		".常量 长文本常量, \"<文本长度: 56>\"\r\n"
+		".常量 长文本常量2, \"<文本长度: 27>\", 公开, 原备注\r\n";
+	const std::string target =
+		".版本 2\n\n"
+		".常量 普通常量, \"2\", , 已修改\n"
+		".常量 带逗号, \"a,b\", 公开, 新备注\n"
+		".常量 长文本常量, \"<文本长度: 56>\"\n"
+		".常量 长文本常量2, \"<文本长度: 27>\", 公开, 原备注\n";
+	eide_const::LongTextPreservationPlan plan;
+	std::string error;
+	if (!eide_const::TryBuildLongTextPreservationPlan(base, target, plan, error) ||
+		!plan.protectionRequired || plan.entries.size() != 2 ||
+		plan.baseRowCount != 4 || plan.targetRowCount != 4 ||
+		plan.entries[0].name != "长文本常量" ||
+		plan.entries[1].name != "长文本常量2" ||
+		plan.entries[0].baseLineIndex != 4 || plan.entries[0].baseRowIndex != 2 ||
+		plan.entries[0].targetLineIndex != 4 || plan.entries[0].targetRowIndex != 2 ||
+		plan.entries[1].baseLineIndex != 5 || plan.entries[1].baseRowIndex != 3 ||
+		plan.entries[1].targetLineIndex != 5 || plan.entries[1].targetRowIndex != 3 ||
+		plan.stagedCode.find("<文本长度: 56>") != std::string::npos ||
+		plan.stagedCode.find("<文本长度: 27>") != std::string::npos ||
+		plan.stagedCode.find("__AUTOLINKER_PRESERVE_LONG_TEXT_") == std::string::npos ||
+		plan.stagedCode.find("\"2\", , 已修改") == std::string::npos) {
+		return false;
+	}
+	const auto gbkToUtf8 = [](const std::string& text) {
+		const int wideLength = MultiByteToWideChar(
+			936, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+		if (wideLength <= 0) {
+			return std::string();
+		}
+		std::wstring wide(static_cast<size_t>(wideLength), L'\0');
+		MultiByteToWideChar(
+			936, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), wide.data(), wideLength);
+		const int utf8Length = WideCharToMultiByte(
+			CP_UTF8, 0, wide.data(), wideLength, nullptr, 0, nullptr, nullptr);
+		if (utf8Length <= 0) {
+			return std::string();
+		}
+		std::string utf8(static_cast<size_t>(utf8Length), '\0');
+		WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideLength, utf8.data(), utf8Length, nullptr, nullptr);
+		return utf8;
+	};
+	const std::string baseUtf8 = gbkToUtf8(base);
+	const std::string targetUtf8 = gbkToUtf8(target);
+	if (baseUtf8.empty() || targetUtf8.empty() ||
+		!eide_const::TryBuildLongTextPreservationPlan(baseUtf8, targetUtf8, plan, error) ||
+		!plan.protectionRequired || plan.entries.size() != 2 ||
+		plan.baseRowCount != 4 || plan.targetRowCount != 4 ||
+		plan.entries[0].baseRowIndex != 2 || plan.entries[0].targetRowIndex != 2 ||
+		plan.entries[1].baseRowIndex != 3 || plan.entries[1].targetRowIndex != 3) {
+		return false;
+	}
+
+	const std::string metadataChanged =
+		".版本 2\r\n.常量 长文本常量, \"<文本长度: 56>\", 公开, 改备注\r\n";
+	if (eide_const::TryBuildLongTextPreservationPlan(base, metadataChanged, plan, error) ||
+		error.find("metadata") == std::string::npos) {
+		return false;
+	}
+
+	const std::string removed =
+		".版本 2\r\n.常量 普通常量, \"2\"\r\n";
+	if (eide_const::TryBuildLongTextPreservationPlan(base, removed, plan, error) ||
+		error.find("removed") == std::string::npos) {
+		return false;
+	}
+
+	const std::string duplicate = base + ".常量 长文本常量, \"<文本长度: 56>\"\r\n";
+	if (eide_const::TryBuildLongTextPreservationPlan(base, duplicate, plan, error) ||
+		error.find("duplicate") == std::string::npos) {
+		return false;
+	}
+
+	const std::string emptyBase;
+	const std::string noLongTextTarget =
+		".版本 2\r\n"
+		".常量 普通常量, \"1\"\r\n";
+	if (!eide_const::TryBuildLongTextPreservationPlan(emptyBase, noLongTextTarget, plan, error) ||
+		plan.protectionRequired || !plan.entries.empty()) {
+		return false;
+	}
+	return true;
+}
+
 int RunSmokeTest()
 {
 	char buffer[512] = {};
@@ -1375,6 +1467,11 @@ int RunSmokeTest()
 		return EXIT_FAILURE;
 	}
 	std::cout << "built-in-theme: ok" << std::endl;
+	if (!RunConstLongTextProtectionSmokeTest()) {
+		std::cerr << "const-long-text-protection failed" << std::endl;
+		return EXIT_FAILURE;
+	}
+	std::cout << "const-long-text-protection: ok" << std::endl;
 
 	if (!AutoLinkerTest_CompareVersion("1.2.3", "1.2.0", &compareResult)) {
 		std::cerr << "version-compare failed" << std::endl;

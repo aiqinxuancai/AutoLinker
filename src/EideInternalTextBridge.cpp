@@ -11,6 +11,7 @@
 #include <cstring>
 #include <fstream>
 #include <initializer_list>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -23,14 +24,20 @@
 #include "WindowHelper.h"
 #include "EideEditorObjectResolver.h"
 #include "EideHiddenTypeWriteSupport.h"
+#include "EideConstLongTextProtection.h"
 
 namespace e571 {
 namespace {
 
 constexpr std::uintptr_t kImageBase = 0x400000;
 constexpr int kEditorCmdSelectAll = 0x01010023;
+constexpr int kEditorCmdMoveCaretUp = 0x01010001;
+constexpr int kEditorCmdMoveCaretDown = 0x01010002;
+constexpr int kEditorCmdMoveCaretPrevious = 0x01010036;
 constexpr int kEditorCmdMoveCaretNext = 0x01010037;
+constexpr int kEditorCmdMoveCaretHome = 0x01010038;
 constexpr int kEditorCmdMoveCaretToEnd = 0x01010039;
+constexpr int kEditorCmdSelectCaretNext = 0x01010027;
 constexpr int kEditorCmdDeleteSelection = 0x02020003;
 constexpr int kEditorCmdPaste = 0x02020005;
 constexpr int kEditorCmdCopy = 0x02030001;
@@ -65,6 +72,7 @@ constexpr std::uintptr_t kE595TextBufferInitRva = 0x4918B0;
 constexpr std::uintptr_t kE595TextBufferAssignRva = 0x492170;
 constexpr std::uintptr_t kE595TextBufferAppendCharRva = 0x491BB0;
 constexpr std::uintptr_t kE595TextBufferDestroyRva = 0x491AB0;
+constexpr std::uintptr_t kE595SetEditorCaretPositionRva = 0x4C63E0;
 constexpr std::uintptr_t kE595TextPackageCtorRva = 0x40E5E0;
 constexpr std::uintptr_t kE595TextPackageDestroyRva = 0x401F70;
 constexpr std::uintptr_t kE595TextPackageParseTextRva = 0x4D59B0;
@@ -117,6 +125,7 @@ using FnThiscallPtrArrayRemoveAt = void*(__thiscall*)(void*, int, int);
 using FnCdeclFillMemory = void(__cdecl*)(void*, int);
 using FnE595TextBufferAssign = int(__thiscall*)(void*, const void*, int);
 using FnE595TextBufferAppendChar = int(__thiscall*)(void*, char);
+using FnE595SetEditorCaretPosition = int(__thiscall*)(void*, int, int, void*, int, int);
 using FnE595TextPackageParseText = int(__thiscall*)(void*, void*);
 
 bool InvokeRenameProgramUnitSafely(
@@ -1506,6 +1515,60 @@ bool CallGenericThiscallCommandSafe(
 	}
 }
 
+bool CallSetEditorCaretPositionSafe(
+	std::uintptr_t editorObject,
+	std::uintptr_t functionAddress,
+	int rowIndex,
+	int* outResult,
+	int* outActualRow,
+	int* outActualColumn,
+	bool* outThrew)
+{
+	if (outResult != nullptr) {
+		*outResult = 0;
+	}
+	if (outActualRow != nullptr) {
+		*outActualRow = -1;
+	}
+	if (outActualColumn != nullptr) {
+		*outActualColumn = -1;
+	}
+	if (outThrew != nullptr) {
+		*outThrew = false;
+	}
+	if (editorObject == 0 || functionAddress == 0) {
+		return false;
+	}
+
+	const auto fn = reinterpret_cast<FnE595SetEditorCaretPosition>(functionAddress);
+	__try {
+		const int result = fn(
+			reinterpret_cast<void*>(editorObject),
+			rowIndex,
+			0,
+			nullptr,
+			1,
+			1);
+		const auto* fields = reinterpret_cast<const std::uint32_t*>(editorObject);
+		if (outResult != nullptr) {
+			*outResult = result;
+		}
+		if (outActualRow != nullptr) {
+			*outActualRow = static_cast<int>(fields[29]);
+		}
+		if (outActualColumn != nullptr) {
+			*outActualColumn = static_cast<int>(fields[30]);
+		}
+		return true;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		if (outThrew != nullptr) {
+			*outThrew = true;
+		}
+		return false;
+	}
+}
+
 struct CustomClipboardPayload {
 	UINT format = 0;
 	HANDLE handle = nullptr;
@@ -1756,6 +1819,25 @@ public:
 				}
 				return true;
 			}
+		}
+		return false;
+	}
+
+	bool CopyFirstCustomPayload(CustomClipboardPayload& outPayload) const
+	{
+		outPayload.Reset();
+		std::lock_guard<std::mutex> lock(g_fakeClipboardDataMutex);
+		for (const auto& [format, handle] : m_context.formats) {
+			if (format == CF_TEXT || handle == nullptr) {
+				continue;
+			}
+			HANDLE duplicate = nullptr;
+			if (!DuplicateGlobalHandle(handle, &duplicate)) {
+				return false;
+			}
+			outPayload.format = format;
+			outPayload.handle = duplicate;
+			return true;
 		}
 		return false;
 	}
@@ -5722,10 +5804,20 @@ const char* DescribeEditorCommand(int command)
 	switch (command) {
 	case kEditorCmdSelectAll:
 		return "select_all";
+	case kEditorCmdMoveCaretUp:
+		return "move_caret_up";
+	case kEditorCmdMoveCaretDown:
+		return "move_caret_down";
+	case kEditorCmdMoveCaretPrevious:
+		return "move_caret_previous";
 	case kEditorCmdMoveCaretNext:
 		return "move_caret_next";
+	case kEditorCmdMoveCaretHome:
+		return "move_caret_home";
 	case kEditorCmdMoveCaretToEnd:
 		return "move_caret_to_end";
+	case kEditorCmdSelectCaretNext:
+		return "select_caret_next";
 	case kEditorCmdDeleteSelection:
 		return "delete_selection";
 	case kEditorCmdPaste:
@@ -6385,40 +6477,57 @@ bool CopyCurrentSelectionByEditor(
 	std::uintptr_t editorObject,
 	std::uintptr_t moduleBase,
 	std::string* outCode,
-	NativeRealPageAccessResult* outResult)
+	NativeRealPageAccessResult* outResult,
+	CustomClipboardPayload* outCustomPayload = nullptr)
 {
+	AppendPageEditTraceLine(
+		"CopyCurrentSelection.begin|editor=" + std::to_string(editorObject) +
+		"|capture_payload=" + std::to_string(outCustomPayload != nullptr ? 1 : 0));
 	if (outCode != nullptr) {
 		outCode->clear();
 	}
+	if (outCustomPayload != nullptr) {
+		outCustomPayload->Reset();
+	}
 	ScopedFakeClipboard fakeClipboard;
 	if (!fakeClipboard.IsActive()) {
+		AppendPageEditTraceLine("CopyCurrentSelection.fake_clipboard_failed");
 		if (outResult != nullptr) {
 			outResult->trace = "fake_clipboard_install_failed";
 		}
 		return false;
 	}
+	AppendPageEditTraceLine("CopyCurrentSelection.fake_clipboard_ready");
 
 	std::string copyTrace;
+	AppendPageEditTraceLine("CopyCurrentSelection.before_copy_command");
 	if (!InvokeEditorCommandWithFallback(
 			editorObject,
 			moduleBase,
 			kEditorCmdCopy,
 			&copyTrace)) {
+		AppendPageEditTraceLine("CopyCurrentSelection.copy_command_failed|" + copyTrace);
 		if (outResult != nullptr) {
 			outResult->trace = "editor_copy_failed|" + copyTrace;
 		}
 		return false;
 	}
+	AppendPageEditTraceLine("CopyCurrentSelection.after_copy_command|" + copyTrace);
 
 	std::string clipboardTrace;
+	AppendPageEditTraceLine("CopyCurrentSelection.before_wait_text");
 	if (!WaitForFakeClipboardText(fakeClipboard, outCode, &clipboardTrace) ||
 		outCode == nullptr ||
 		outCode->empty()) {
+		AppendPageEditTraceLine("CopyCurrentSelection.wait_text_failed|" + clipboardTrace);
 		if (outResult != nullptr) {
 			outResult->trace = "copy_text_format_missing|" + copyTrace + "|" + clipboardTrace;
 		}
 		return false;
 	}
+	AppendPageEditTraceLine(
+		"CopyCurrentSelection.after_wait_text|bytes=" + std::to_string(outCode->size()) +
+		"|" + clipboardTrace);
 
 	if (outResult != nullptr) {
 		outResult->usedClipboardEmulation = true;
@@ -6426,6 +6535,21 @@ bool CopyCurrentSelectionByEditor(
 		outResult->textBytes = outCode->size();
 		outResult->trace = "copy_ok|" + copyTrace + "|" + clipboardTrace;
 	}
+	if (outCustomPayload != nullptr) {
+		AppendPageEditTraceLine("CopyCurrentSelection.before_copy_custom_payload");
+		if (!fakeClipboard.CopyFirstCustomPayload(*outCustomPayload)) {
+			AppendPageEditTraceLine("CopyCurrentSelection.custom_payload_failed");
+			if (outResult != nullptr) {
+				outResult->trace += "|custom_payload_capture_failed";
+			}
+			return false;
+		}
+		AppendPageEditTraceLine(
+			"CopyCurrentSelection.custom_payload_ok|format=" +
+			std::to_string(outCustomPayload->format) +
+			"|bytes=" + std::to_string(outCustomPayload->ByteSize()));
+	}
+	AppendPageEditTraceLine("CopyCurrentSelection.ok");
 	return true;
 }
 
@@ -8590,8 +8714,13 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 	std::uintptr_t moduleBase,
 	const std::string& newPageCode,
 	const std::string* rollbackPageCode,
+	bool preserveConstLongText,
 	NativeRealPageAccessResult* outResult)
 {
+	AppendPageEditTraceLine(
+		"ReplaceByTreeItem.begin|item_data=" + std::to_string(itemData) +
+		"|item_type=" + std::to_string(itemData >> 28) +
+		"|const_long_text=" + std::to_string(preserveConstLongText ? 1 : 0));
 	if (outResult != nullptr) {
 		*outResult = {};
 	}
@@ -8607,6 +8736,11 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 			&originalActiveEditorObject,
 			&originalActiveEditorTrace) &&
 		originalActiveEditorObject != 0;
+	AppendPageEditTraceLine(
+		"ReplaceByTreeItem.active_editor_captured|ok=" +
+		std::to_string(originalActiveEditorCaptured ? 1 : 0) +
+		"|editor=" + std::to_string(originalActiveEditorObject) +
+		"|" + originalActiveEditorTrace);
 	std::string postWriteRestoreTrace;
 	const auto appendPostWriteRestoreSegment = [&](const std::string& segment) {
 		if (segment.empty()) {
@@ -8713,6 +8847,47 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 			result.trace += "|post_write_restore|" + postWriteRestoreTrace;
 		}
 	};
+
+	std::string constLongTextProtectionTrace;
+	if (preserveConstLongText) {
+		AppendPageEditTraceLine("ReplaceByTreeItem.const_long_text.before_validate");
+		if ((itemData >> 28) != 6 || rollbackPageCode == nullptr) {
+			NativeRealPageAccessResult localResult{};
+			localResult.trace = "const_long_text_protection_arguments_invalid";
+			appendPostWriteRestoreTrace(localResult);
+			if (outResult != nullptr) {
+				*outResult = std::move(localResult);
+			}
+			return false;
+		}
+		ConstLongTextPreservationResult preserveResult{};
+		AppendPageEditTraceLine("ReplaceByTreeItem.const_long_text.before_execute");
+		const bool preserveOk = ReplaceConstResourcePagePreservingLongText(
+			itemData,
+			moduleBase,
+			*rollbackPageCode,
+			newPageCode,
+			&preserveResult);
+		AppendPageEditTraceLine(
+			"ReplaceByTreeItem.const_long_text.after_execute|ok=" +
+			std::to_string(preserveOk ? 1 : 0) + "|" + preserveResult.trace);
+		if (preserveResult.protectionRequired ||
+			preserveResult.trace != "const_long_text_not_required") {
+			NativeRealPageAccessResult localResult{};
+			localResult.ok = preserveOk;
+			localResult.rollbackAttempted = preserveResult.rollbackAttempted;
+			localResult.rollbackSucceeded = preserveResult.rollbackSucceeded;
+			localResult.textBytes = preserveResult.pageCode.size();
+			localResult.pageCode = std::move(preserveResult.pageCode);
+			localResult.trace = std::move(preserveResult.trace);
+			appendPostWriteRestoreTrace(localResult);
+			if (outResult != nullptr) {
+				*outResult = std::move(localResult);
+			}
+			return preserveOk;
+		}
+		constLongTextProtectionTrace = preserveResult.trace;
+	}
 
 	std::uintptr_t editorObject = 0;
 	std::string resolveTrace;
@@ -8837,6 +9012,9 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 	}
 
 	localResult.editorObject = editorObject;
+	if (!constLongTextProtectionTrace.empty()) {
+		localResult.trace = constLongTextProtectionTrace + "|" + localResult.trace;
+	}
 	localResult.trace = resolveTrace.empty() ? localResult.trace : (resolveTrace + "|" + localResult.trace);
 	appendPostWriteRestoreTrace(localResult);
 	if (outResult != nullptr) {
@@ -9121,6 +9299,738 @@ bool CaptureCustomClipboardPayloadByThiscall(
 			"|bytes=" + std::to_string(outBytes.size()) +
 			"|" +
 			fakeClipboard.BuildStatsText();
+	}
+	return true;
+}
+
+namespace {
+
+class ScopedConstEditorActivation {
+public:
+	ScopedConstEditorActivation(std::uintptr_t moduleBase, std::uintptr_t editorObject)
+		: m_moduleBase(moduleBase), m_editorObject(editorObject)
+	{
+		m_active = TrySetMainEditorActiveEditorObjectFast(
+			m_moduleBase,
+			m_editorObject,
+			1,
+			&m_previousEditorObject,
+			&m_activateTrace);
+	}
+
+	~ScopedConstEditorActivation()
+	{
+		if (!m_active || m_previousEditorObject == 0 ||
+			m_previousEditorObject == m_editorObject) {
+			return;
+		}
+		std::string restoreTrace;
+		const bool restored = TrySetMainEditorActiveEditorObjectFast(
+			m_moduleBase,
+			m_previousEditorObject,
+			1,
+			nullptr,
+			&restoreTrace);
+		AppendPageEditTraceLine(
+			std::string("ConstLongText.editor_activation.restore|ok=") +
+			std::to_string(restored ? 1 : 0) + "|" + restoreTrace);
+	}
+
+	bool IsActive() const
+	{
+		return m_active;
+	}
+
+	const std::string& Trace() const
+	{
+		return m_activateTrace;
+	}
+
+private:
+	std::uintptr_t m_moduleBase = 0;
+	std::uintptr_t m_editorObject = 0;
+	std::uintptr_t m_previousEditorObject = 0;
+	bool m_active = false;
+	std::string m_activateTrace;
+};
+
+bool SetConstEditorCaretRow(
+	std::uintptr_t editorObject,
+	std::uintptr_t moduleBase,
+	size_t rowIndex,
+	std::string& outTrace)
+{
+	outTrace.clear();
+	if (editorObject == 0 || moduleBase == 0 || rowIndex > static_cast<size_t>((std::numeric_limits<int>::max)())) {
+		outTrace = "set_const_row_invalid_argument";
+		return false;
+	}
+
+	// e5.95 的记录导航命令最终调用此函数写入编辑器对象的当前行、列字段。
+	// 先校验版本锁定入口，避免把固定 RVA 用到其他 IDE 版本。
+	constexpr std::array<std::uint8_t, 16> kSetCaretSignature = {
+		0x6A, 0xFF, 0x68, 0xD8, 0xF1, 0x5E, 0x00, 0x64,
+		0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89,
+	};
+	if (!MatchRvaSignature(moduleBase, kE595SetEditorCaretPositionRva, kSetCaretSignature)) {
+		outTrace = "set_const_row_unsupported_signature";
+		return false;
+	}
+
+	const auto setCaret = reinterpret_cast<FnE595SetEditorCaretPosition>(
+		moduleBase + (kE595SetEditorCaretPositionRva - kImageBase));
+	int invokeResult = 0;
+	bool invokeThrew = false;
+	int actualRow = -1;
+	int actualColumn = -1;
+	// 最后一个参数由 POD 包装层固定为 1，以便在同一位置清除整页选区。
+	const bool invoked = CallSetEditorCaretPositionSafe(
+		editorObject,
+		reinterpret_cast<std::uintptr_t>(setCaret),
+		static_cast<int>(rowIndex),
+		&invokeResult,
+		&actualRow,
+		&actualColumn,
+		&invokeThrew);
+
+	outTrace =
+		"set_const_row_direct"
+		"|requested=" + std::to_string(rowIndex) +
+		"|actual_row=" + std::to_string(actualRow) +
+		"|actual_column=" + std::to_string(actualColumn) +
+		"|ret=" + std::to_string(invokeResult) +
+		"|exc=" + std::to_string(invokeThrew ? 1 : 0);
+	return invoked && !invokeThrew && actualRow == static_cast<int>(rowIndex) && actualColumn == 0;
+}
+
+bool SelectConstRowByToken(
+	std::uintptr_t editorObject,
+	std::uintptr_t moduleBase,
+	const std::string& expectedToken,
+	size_t rowIndex,
+	size_t rowCount,
+	CustomClipboardPayload* outPayload,
+	std::string& outTrace)
+{
+	outTrace.clear();
+	if (outPayload != nullptr) {
+		outPayload->Reset();
+	}
+	if (rowCount == 0 || rowIndex >= rowCount) {
+		outTrace = "const_row_index_invalid";
+		return false;
+	}
+
+	AppendPageEditTraceLine(
+		"ConstLongText.row_select.begin|row=" + std::to_string(rowIndex) +
+		"|capture_payload=" + std::to_string(outPayload != nullptr ? 1 : 0));
+	std::string resetSelectionTrace;
+	if (!InvokeEditorCommandWithFallback(
+			editorObject,
+			moduleBase,
+			kEditorCmdSelectAll,
+			&resetSelectionTrace)) {
+		outTrace = "row_selection_reset_failed|" + resetSelectionTrace;
+		return false;
+	}
+	std::string collapseSelectionTrace;
+	if (!InvokeEditorCommandWithFallback(
+			editorObject,
+			moduleBase,
+			kEditorCmdMoveCaretUp,
+			&collapseSelectionTrace)) {
+		outTrace = "row_selection_collapse_failed|" + collapseSelectionTrace;
+		return false;
+	}
+
+	std::string positionTrace;
+	// 常量编辑器把“.版本”作为第 0 条内部记录；保护计划只统计“.常量”声明。
+	const size_t editorRowIndex = rowIndex + 1;
+	if (!SetConstEditorCaretRow(editorObject, moduleBase, editorRowIndex, positionTrace)) {
+		outTrace = "row_position_failed|row=" + std::to_string(rowIndex) + "|" + positionTrace;
+		AppendPageEditTraceLine("ConstLongText.row_select.position_failed|" + outTrace);
+		return false;
+	}
+	SettleEditorAfterCommand(20);
+	std::string anchorResetTrace;
+	if (!InvokeEditorCommandWithFallback(
+			editorObject,
+			moduleBase,
+			kEditorCmdMoveCaretHome,
+			&anchorResetTrace)) {
+		outTrace = "row_anchor_reset_failed|" + anchorResetTrace;
+		return false;
+	}
+
+	std::string selectNextTrace;
+	if (!InvokeEditorCommandWithFallback(
+			editorObject,
+			moduleBase,
+			kEditorCmdSelectCaretNext,
+			&selectNextTrace)) {
+		outTrace = "select_next_failed|" + selectNextTrace;
+		return false;
+	}
+
+	std::string copiedCode;
+	NativeRealPageAccessResult copyResult{};
+	AppendPageEditTraceLine(
+		"ConstLongText.row_select.before_copy|row=" + std::to_string(rowIndex) +
+		"|" + positionTrace);
+	if (!CopyCurrentSelectionByEditor(
+			editorObject,
+			moduleBase,
+			&copiedCode,
+			&copyResult,
+			outPayload)) {
+		outTrace = "copy_failed|" + positionTrace + "|" + copyResult.trace;
+		AppendPageEditTraceLine(
+			"ConstLongText.row_select.copy_failed|row=" + std::to_string(rowIndex) +
+			"|" + outTrace);
+		return false;
+	}
+	std::string selectionMatchToken = expectedToken;
+	if (selectionMatchToken.size() >= 2 &&
+		selectionMatchToken.front() == '"' &&
+		selectionMatchToken.back() == '"') {
+		selectionMatchToken = selectionMatchToken.substr(1, selectionMatchToken.size() - 2);
+	}
+	if (selectionMatchToken.empty() || copiedCode.find(selectionMatchToken) == std::string::npos) {
+		outTrace =
+			"row_token_mismatch"
+			"|expected_token_bytes=" + std::to_string(selectionMatchToken.size()) +
+			"|copied_bytes=" + std::to_string(copiedCode.size()) +
+			"|" + positionTrace;
+		AppendPageEditTraceLine(
+			"ConstLongText.row_select.token_mismatch|row=" + std::to_string(rowIndex) +
+			"|copied_bytes=" + std::to_string(copiedCode.size()) +
+			"|" + positionTrace);
+		return false;
+	}
+
+	outTrace =
+		"row_select_ok|row=" + std::to_string(rowIndex) +
+		"|payload_bytes=" +
+		std::to_string(outPayload != nullptr ? outPayload->ByteSize() : 0) +
+		"|selection_reset=" + resetSelectionTrace +
+		"|selection_collapse=" + collapseSelectionTrace +
+		"|anchor_reset=" + anchorResetTrace +
+		"|" + positionTrace +
+		"|" + copyResult.trace;
+	AppendPageEditTraceLine("ConstLongText.row_select.ok|" + outTrace);
+	return true;
+}
+
+bool CaptureConstSelectionPayload(
+	std::uintptr_t editorObject,
+	std::uintptr_t moduleBase,
+	const std::string& expectedToken,
+	size_t rowIndex,
+	size_t rowCount,
+	CustomClipboardPayload& outPayload,
+	std::string& outTrace)
+{
+	if (!SelectConstRowByToken(
+			editorObject,
+			moduleBase,
+			expectedToken,
+			rowIndex,
+			rowCount,
+			&outPayload,
+			outTrace) ||
+		!outPayload.IsValid()) {
+		if (outTrace.empty()) {
+			outTrace = "row_payload_capture_failed|custom_payload_missing";
+		}
+		return false;
+	}
+	return true;
+}
+
+bool ReplaceConstTextStage(
+	std::uintptr_t editorObject,
+	std::uintptr_t moduleBase,
+	const std::string& stagedCode,
+	bool deleteSelectionFirst,
+	std::string& outTrace)
+{
+	NativeRealPageAccessResult stageResult{};
+	if (ReplaceRealPageCodeByEditorObjectInternal(
+			editorObject,
+			moduleBase,
+			stagedCode,
+			nullptr,
+			deleteSelectionFirst,
+			true,
+			&stageResult)) {
+		outTrace = "stage_ok|" + stageResult.trace;
+		return true;
+	}
+	outTrace = "stage_failed|" + stageResult.trace;
+	return false;
+}
+
+bool BuildRestoredConstCode(
+	const eide_const::LongTextPreservationPlan& plan,
+	std::string& outCode)
+{
+	outCode = plan.stagedCode;
+	for (const eide_const::LongTextPreservationEntry& entry : plan.entries) {
+		const size_t markerPos = outCode.find(entry.markerValue);
+		if (markerPos == std::string::npos) {
+			return false;
+		}
+		outCode.replace(markerPos, entry.markerValue.size(), entry.placeholderValue);
+	}
+	return true;
+}
+
+}  // namespace
+
+bool ReplaceConstResourcePagePreservingLongText(
+	unsigned int itemData,
+	std::uintptr_t moduleBase,
+	const std::string& basePageCode,
+	const std::string& targetPageCode,
+	ConstLongTextPreservationResult* outResult)
+{
+	ConstLongTextPreservationResult result;
+	AppendPageEditTraceLine(
+		"ConstLongText.begin|item_data=" + std::to_string(itemData) +
+		"|item_type=" + std::to_string(itemData >> 28) +
+		"|base_bytes=" + std::to_string(basePageCode.size()) +
+		"|target_bytes=" + std::to_string(targetPageCode.size()));
+	if ((itemData >> 28) != 6) {
+		result.trace = "const_long_text_wrong_page_type";
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+	if (moduleBase == 0 || targetPageCode.empty()) {
+		result.trace = "const_long_text_invalid_argument";
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+
+	eide_const::LongTextPreservationPlan plan;
+	std::string planError;
+	if (!eide_const::TryBuildLongTextPreservationPlan(
+			basePageCode,
+			targetPageCode,
+			plan,
+			planError)) {
+		AppendPageEditTraceLine("ConstLongText.preflight.failed|" + planError);
+		result.protectionRequired = plan.protectionRequired;
+		result.trace = "const_long_text_preflight_failed|" + planError;
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+	result.protectionRequired = plan.protectionRequired;
+	AppendPageEditTraceLine(
+		"ConstLongText.preflight.ok|required=" +
+		std::to_string(plan.protectionRequired ? 1 : 0) +
+		"|count=" + std::to_string(plan.entries.size()));
+	if (!plan.protectionRequired) {
+		result.ok = false;
+		result.trace = "const_long_text_not_required";
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+
+	std::uintptr_t editorObject = 0;
+	std::string resolveTrace;
+	AppendPageEditTraceLine("ConstLongText.before_resolve_editor");
+	if (!ResolveEditorObjectByProgramTreeItemDataInternal(
+			itemData,
+			moduleBase,
+			&editorObject,
+			&resolveTrace) ||
+		editorObject == 0) {
+		result.trace = "const_long_text_resolve_failed|" + resolveTrace;
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+	AppendPageEditTraceLine(
+		"ConstLongText.after_resolve_editor|editor=" + std::to_string(editorObject) +
+		"|" + resolveTrace);
+	EditorDispatchTargetInfo constTargetInfo{};
+	if (!TryResolveInnerEditorObject(editorObject, &constTargetInfo) ||
+		constTargetInfo.pageType != 6) {
+		result.trace =
+			"const_long_text_editor_page_type_mismatch|actual=" +
+			std::to_string(constTargetInfo.pageType);
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+	AppendPageEditTraceLine(
+		"ConstLongText.editor_type_ok|page_type=" +
+		std::to_string(constTargetInfo.pageType));
+	ScopedConstEditorActivation editorActivation(moduleBase, editorObject);
+	if (!editorActivation.IsActive()) {
+		result.trace =
+			"const_long_text_editor_activation_failed|" + editorActivation.Trace();
+		AppendPageEditTraceLine(
+			"ConstLongText.editor_activation.failed|" + editorActivation.Trace());
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+	AppendPageEditTraceLine(
+		"ConstLongText.editor_activation.ok|" + editorActivation.Trace());
+
+	CustomClipboardPayload rollbackPayload;
+	std::string wholeCode;
+	std::string selectAllTrace;
+	NativeRealPageAccessResult wholeCopyResult{};
+	AppendPageEditTraceLine("ConstLongText.whole_payload.before_select_all");
+	if (!InvokeEditorCommandWithFallback(
+			editorObject,
+			moduleBase,
+			kEditorCmdSelectAll,
+			&selectAllTrace)) {
+		result.trace = "const_long_text_whole_payload_select_failed|" + selectAllTrace;
+		AppendPageEditTraceLine("ConstLongText.whole_payload.select_failed|" + selectAllTrace);
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+	AppendPageEditTraceLine("ConstLongText.whole_payload.after_select_all|" + selectAllTrace);
+	AppendPageEditTraceLine("ConstLongText.whole_payload.before_copy");
+	if (!CopyCurrentSelectionByEditor(
+			editorObject,
+			moduleBase,
+			&wholeCode,
+			&wholeCopyResult,
+			&rollbackPayload) ||
+		!rollbackPayload.IsValid()) {
+		result.trace = "const_long_text_whole_payload_capture_failed|" + wholeCopyResult.trace;
+		AppendPageEditTraceLine("ConstLongText.whole_payload.copy_failed|" + wholeCopyResult.trace);
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+	AppendPageEditTraceLine(
+		"ConstLongText.whole_payload.ok|text_bytes=" + std::to_string(wholeCode.size()) +
+		"|payload_bytes=" + std::to_string(rollbackPayload.ByteSize()) +
+		"|" + wholeCopyResult.trace);
+
+	struct CapturedEntry {
+		eide_const::LongTextPreservationEntry entry;
+		CustomClipboardPayload payload;
+	};
+	std::vector<CapturedEntry> capturedEntries;
+	capturedEntries.reserve(plan.entries.size());
+	for (const eide_const::LongTextPreservationEntry& entry : plan.entries) {
+		CapturedEntry captured;
+		captured.entry = entry;
+		std::string captureTrace;
+		AppendPageEditTraceLine(
+			"ConstLongText.row_payload.before_capture|row=" +
+			std::to_string(entry.baseRowIndex));
+		if (!CaptureConstSelectionPayload(
+				editorObject,
+				moduleBase,
+				entry.placeholderValue,
+				entry.baseRowIndex,
+				plan.baseRowCount,
+				captured.payload,
+				captureTrace)) {
+			result.trace =
+				"const_long_text_row_payload_capture_failed|name=" + entry.name + "|" + captureTrace;
+			AppendPageEditTraceLine(
+				"ConstLongText.row_payload.capture_failed|row=" +
+				std::to_string(entry.baseRowIndex) + "|" + captureTrace);
+			if (outResult != nullptr) {
+				*outResult = std::move(result);
+			}
+			return false;
+		}
+		AppendPageEditTraceLine(
+			"ConstLongText.row_payload.ok|row=" + std::to_string(entry.baseRowIndex) +
+			"|bytes=" + std::to_string(captured.payload.ByteSize()));
+		result.trace += (result.trace.empty() ? std::string() : "|") + captureTrace;
+		capturedEntries.push_back(std::move(captured));
+	}
+
+	EditorDispatchTargetInfo targetInfo{};
+	const bool deleteSelectionFirst =
+		!TryResolveInnerEditorObject(editorObject, &targetInfo) ||
+		!IsSelectionReplacePreferredEditorPageType(targetInfo.pageType);
+	std::string stageTrace;
+	AppendPageEditTraceLine("ConstLongText.stage.before_replace");
+	if (!ReplaceConstTextStage(
+			editorObject,
+			moduleBase,
+			plan.stagedCode,
+			deleteSelectionFirst,
+			stageTrace)) {
+		result.rollbackAttempted = true;
+		std::string rollbackTrace;
+		result.rollbackSucceeded = TryRollbackRealPageCode(
+			editorObject,
+			moduleBase,
+			&rollbackPayload,
+			nullptr,
+			deleteSelectionFirst,
+			&rollbackTrace);
+		result.trace += "|" + stageTrace + "|rollback=" + rollbackTrace;
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+	AppendPageEditTraceLine("ConstLongText.stage.ok|" + stageTrace);
+
+	// 删除 marker 后再插入自定义对象。删除最后一条记录时 IDE 会把光标夹到前一行，
+	// 因此需先移到该行末尾，让粘贴位置落在其后。
+	for (const CapturedEntry& captured : capturedEntries) {
+		std::string locateTrace;
+		AppendPageEditTraceLine(
+			"ConstLongText.restore.before_locate|row=" +
+			std::to_string(captured.entry.targetRowIndex));
+		if (!SelectConstRowByToken(
+				editorObject,
+				moduleBase,
+				captured.entry.markerValue,
+				captured.entry.targetRowIndex,
+				plan.targetRowCount,
+				nullptr,
+				locateTrace)) {
+			result.rollbackAttempted = true;
+			std::string rollbackTrace;
+			result.rollbackSucceeded = TryRollbackRealPageCode(
+				editorObject, moduleBase, &rollbackPayload, nullptr, deleteSelectionFirst, &rollbackTrace);
+			result.trace += "|marker_row_locate_failed|" + locateTrace + "|rollback=" + rollbackTrace;
+			if (outResult != nullptr) {
+				*outResult = std::move(result);
+			}
+			return false;
+		}
+
+		const bool isLastTargetRow =
+			captured.entry.targetRowIndex + 1 == plan.targetRowCount;
+		if (isLastTargetRow) {
+			// 末行没有后继插入位置：先在 marker 前插入对象，再定位新产生的
+			// marker 行并删除它，避免对象覆盖前一条常量。
+			std::string insertTrace;
+			if (!PasteCustomClipboardPayloadByEditor(
+					editorObject,
+					moduleBase,
+					captured.payload,
+					&insertTrace)) {
+				result.rollbackAttempted = true;
+				std::string rollbackTrace;
+				result.rollbackSucceeded = TryRollbackRealPageCode(
+					editorObject, moduleBase, &rollbackPayload, nullptr, deleteSelectionFirst, &rollbackTrace);
+				result.trace += "|last_marker_insert_failed|" + insertTrace + "|rollback=" + rollbackTrace;
+				if (outResult != nullptr) {
+					*outResult = std::move(result);
+				}
+				return false;
+			}
+
+			std::string insertedMarkerTrace;
+			if (!SelectConstRowByToken(
+					editorObject,
+					moduleBase,
+					captured.entry.markerValue,
+					captured.entry.targetRowIndex + 1,
+					plan.targetRowCount + 1,
+					nullptr,
+					insertedMarkerTrace)) {
+				result.rollbackAttempted = true;
+				std::string rollbackTrace;
+				result.rollbackSucceeded = TryRollbackRealPageCode(
+					editorObject, moduleBase, &rollbackPayload, nullptr, deleteSelectionFirst, &rollbackTrace);
+				result.trace +=
+					"|last_marker_relocate_failed|" + insertedMarkerTrace +
+					"|rollback=" + rollbackTrace;
+				if (outResult != nullptr) {
+					*outResult = std::move(result);
+				}
+				return false;
+			}
+
+			std::string deleteInsertedMarkerTrace;
+			if (!InvokeEditorCommandWithFallback(
+					editorObject,
+					moduleBase,
+					kEditorCmdDeleteSelection,
+					&deleteInsertedMarkerTrace)) {
+				result.rollbackAttempted = true;
+				std::string rollbackTrace;
+				result.rollbackSucceeded = TryRollbackRealPageCode(
+					editorObject, moduleBase, &rollbackPayload, nullptr, deleteSelectionFirst, &rollbackTrace);
+				result.trace +=
+					"|last_marker_delete_failed|" + deleteInsertedMarkerTrace +
+					"|rollback=" + rollbackTrace;
+				if (outResult != nullptr) {
+					*outResult = std::move(result);
+				}
+				return false;
+			}
+
+			result.trace +=
+				"|restore=" + captured.entry.name +
+				"|" + locateTrace +
+				"|last_row_insert=" + insertTrace +
+				"|last_marker_relocate=" + insertedMarkerTrace +
+				"|last_marker_delete=" + deleteInsertedMarkerTrace;
+			continue;
+		}
+
+		std::string deleteTrace;
+		if (!InvokeEditorCommandWithFallback(
+				editorObject,
+				moduleBase,
+				kEditorCmdDeleteSelection,
+				&deleteTrace)) {
+			result.rollbackAttempted = true;
+			std::string rollbackTrace;
+			result.rollbackSucceeded = TryRollbackRealPageCode(
+				editorObject, moduleBase, &rollbackPayload, nullptr, deleteSelectionFirst, &rollbackTrace);
+			result.trace += "|marker_delete_failed|" + deleteTrace + "|rollback=" + rollbackTrace;
+			if (outResult != nullptr) {
+				*outResult = std::move(result);
+			}
+			return false;
+		}
+
+		std::string lastRowPositionTrace = "not_last_row";
+		std::string lastRowSeparatorTrace = "not_last_row";
+		if (captured.entry.targetRowIndex + 1 == plan.targetRowCount &&
+			!InvokeEditorCommandWithFallback(
+				editorObject,
+				moduleBase,
+				kEditorCmdMoveCaretToEnd,
+				&lastRowPositionTrace)) {
+			result.rollbackAttempted = true;
+			std::string rollbackTrace;
+			result.rollbackSucceeded = TryRollbackRealPageCode(
+				editorObject, moduleBase, &rollbackPayload, nullptr, deleteSelectionFirst, &rollbackTrace);
+			result.trace +=
+				"|last_marker_end_position_failed|" + lastRowPositionTrace +
+				"|rollback=" + rollbackTrace;
+			if (outResult != nullptr) {
+				*outResult = std::move(result);
+			}
+			return false;
+		}
+		if (captured.entry.targetRowIndex + 1 == plan.targetRowCount &&
+			!PastePlainTextByEditor(
+				editorObject,
+				moduleBase,
+				"\r\n",
+				&lastRowSeparatorTrace)) {
+			result.rollbackAttempted = true;
+			std::string rollbackTrace;
+			result.rollbackSucceeded = TryRollbackRealPageCode(
+				editorObject, moduleBase, &rollbackPayload, nullptr, deleteSelectionFirst, &rollbackTrace);
+			result.trace =
+				"last_marker_separator_failed|" + lastRowSeparatorTrace +
+				"|rollback=" + rollbackTrace;
+			if (outResult != nullptr) {
+				*outResult = std::move(result);
+			}
+			return false;
+		}
+
+		std::string pasteTrace;
+		AppendPageEditTraceLine(
+			"ConstLongText.restore.before_paste|row=" +
+			std::to_string(captured.entry.targetRowIndex));
+		if (!PasteCustomClipboardPayloadByEditor(
+				editorObject,
+				moduleBase,
+				captured.payload,
+				&pasteTrace)) {
+			result.rollbackAttempted = true;
+			std::string rollbackTrace;
+			result.rollbackSucceeded = TryRollbackRealPageCode(
+				editorObject, moduleBase, &rollbackPayload, nullptr, deleteSelectionFirst, &rollbackTrace);
+			result.trace += "|marker_paste_failed|" + pasteTrace + "|rollback=" + rollbackTrace;
+			if (outResult != nullptr) {
+				*outResult = std::move(result);
+			}
+			return false;
+		}
+		AppendPageEditTraceLine(
+			"ConstLongText.restore.ok|row=" +
+			std::to_string(captured.entry.targetRowIndex) + "|" + pasteTrace);
+		result.trace +=
+			"|restore=" + captured.entry.name +
+			"|" + locateTrace +
+			"|" + deleteTrace +
+			"|last_row_position=" + lastRowPositionTrace +
+			"|last_row_separator=" + lastRowSeparatorTrace +
+			"|" + pasteTrace;
+	}
+
+	std::string expectedCode;
+	if (!BuildRestoredConstCode(plan, expectedCode)) {
+		result.rollbackAttempted = true;
+		std::string rollbackTrace;
+		result.rollbackSucceeded = TryRollbackRealPageCode(
+			editorObject, moduleBase, &rollbackPayload, nullptr, deleteSelectionFirst, &rollbackTrace);
+		result.trace += "|restored_expected_code_build_failed|rollback=" + rollbackTrace;
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+
+	std::string verifyCode;
+	NativeRealPageAccessResult verifyResult{};
+	AppendPageEditTraceLine("ConstLongText.verify.before_read");
+	if (!ReadWholePageTextForVerification(editorObject, moduleBase, &verifyCode, &verifyResult) ||
+		verifyCode.find("__AUTOLINKER_PRESERVE_LONG_TEXT_") != std::string::npos) {
+		result.rollbackAttempted = true;
+		std::string rollbackTrace;
+		result.rollbackSucceeded = TryRollbackRealPageCode(
+			editorObject, moduleBase, &rollbackPayload, nullptr, deleteSelectionFirst, &rollbackTrace);
+		result.trace += "|const_long_text_verify_read_failed|" + verifyResult.trace + "|rollback=" + rollbackTrace;
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+	std::string verifyMode;
+	std::string verifySummary;
+	if (!VerifyRealPageCodeMatches(expectedCode, verifyCode, &verifyMode, &verifySummary)) {
+		result.rollbackAttempted = true;
+		std::string rollbackTrace;
+		result.rollbackSucceeded = TryRollbackRealPageCode(
+			editorObject, moduleBase, &rollbackPayload, nullptr, deleteSelectionFirst, &rollbackTrace);
+		result.trace += "|const_long_text_verify_mismatch|" + verifySummary + "|rollback=" + rollbackTrace;
+		if (outResult != nullptr) {
+			*outResult = std::move(result);
+		}
+		return false;
+	}
+
+	result.ok = true;
+	result.preservedCount = capturedEntries.size();
+	result.pageCode = std::move(verifyCode);
+	result.trace =
+		"const_long_text_preserve_ok|count=" + std::to_string(result.preservedCount) +
+		"|verify=" + verifyMode + "|" + result.trace;
+	AppendPageEditTraceLine("ConstLongText.ok|" + result.trace);
+	if (outResult != nullptr) {
+		*outResult = std::move(result);
 	}
 	return true;
 }

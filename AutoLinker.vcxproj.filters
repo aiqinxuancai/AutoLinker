@@ -92,6 +92,9 @@
     <ClCompile Include="src\EideHiddenTypeWriteSupport.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\EideConstLongTextProtection.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\EideInternalTextBridge.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -439,6 +442,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\EideInternalTextBridge.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\EideConstLongTextProtection.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\EideHiddenTypeWriteSupport.h">
