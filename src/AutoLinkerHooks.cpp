@@ -377,7 +377,16 @@ int __fastcall MyEStartCompileFunc(DWORD* thisPtr, int dummy, int a2)
 {
 	OutputStringToELog("compile start");
 	RunChangeECOM(true);
-	return originalEStartCompileFunc(thisPtr, a2);
+	// 普通 IDE 编译也可能弹出名称冲突选择框；工具编译已经建立会话时由外层负责生命周期。
+	const bool ownsCompileDialogSession = !IdeCompileDialogGuard::IsCompileSessionActive();
+	if (ownsCompileDialogSession) {
+		IdeCompileDialogGuard::BeginCompileSession();
+	}
+	const int result = originalEStartCompileFunc(thisPtr, a2);
+	if (ownsCompileDialogSession) {
+		IdeCompileDialogGuard::EndCompileSession();
+	}
+	return result;
 }
 
 int __fastcall MyEStartDebugFunc(DWORD* thisPtr, int dummy, int a2, int a3)

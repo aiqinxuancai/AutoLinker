@@ -23,6 +23,7 @@
 
 #include "AIChatFeature.h"
 #include "Global.h"
+#include "IdeCompileDialogGuard.h"
 #include "PathHelper.h"
 
 #pragma comment(lib, "Shell32.lib")
@@ -911,6 +912,11 @@ void DismissDialog(HWND hWnd)
 BOOL CALLBACK EnumHeadlessDialogProc(HWND hWnd, LPARAM)
 {
 	if (!IsOwnVisibleDialog(hWnd)) {
+		return TRUE;
+	}
+	// 名称冲突选择框不是 MessageBox，不能走统一的“取消”路径；
+	// 编译会话守卫会选择当前默认项并点击“确定”。
+	if (IdeCompileDialogGuard::TryDismissNameConflictDialog()) {
 		return TRUE;
 	}
 

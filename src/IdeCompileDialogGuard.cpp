@@ -3,10 +3,12 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cwctype>
 #include <format>
 #include <iterator>
+#include <thread>
 #include <string>
 
 #include "..\\thirdparty\\json.hpp"
@@ -17,6 +19,8 @@ namespace {
 
 std::atomic_bool g_compileSessionActive = false;
 std::atomic_bool g_dependencyDialogDismissed = false;
+std::atomic_uint g_nameConflictDialogsDismissed = 0;
+std::atomic_uint64_t g_compileSessionGeneration = 0;
 
 std::wstring GetWindowTextCopy(HWND window)
 {
@@ -68,9 +72,25 @@ bool IsDoNotWriteButton(const std::wstring& text)
 	return NormalizeVisibleText(text).find(L"不写出") != std::wstring::npos;
 }
 
+bool IsNameConflictPrompt(const std::wstring& text)
+{
+	const std::wstring normalized = NormalizeVisibleText(text);
+	return normalized.find(L"现有多个名称与指定拼音输入字") != std::wstring::npos &&
+		normalized.find(L"相对应") != std::wstring::npos &&
+		normalized.find(L"请选择") != std::wstring::npos;
+}
+
+bool IsConfirmButton(const std::wstring& text)
+{
+	const std::wstring normalized = NormalizeVisibleText(text);
+	return normalized.find(L"确定") != std::wstring::npos;
+}
+
 struct ChildSearchContext {
-	bool promptMatched = false;
+	bool dependencyPromptMatched = false;
+	bool nameConflictPromptMatched = false;
 	HWND doNotWriteButton = nullptr;
+	HWND confirmButton = nullptr;
 };
 
 BOOL CALLBACK EnumDialogChild(HWND child, LPARAM param)
@@ -83,18 +103,26 @@ BOOL CALLBACK EnumDialogChild(HWND child, LPARAM param)
 	const std::wstring className = GetWindowClassCopy(child);
 	const std::wstring text = GetWindowTextCopy(child);
 	if (className == L"Static" && IsDependencyWritePrompt(text)) {
-		context->promptMatched = true;
+		context->dependencyPromptMatched = true;
 	}
 	else if (className == L"Button" && IsDoNotWriteButton(text)) {
 		context->doNotWriteButton = child;
+	}
+	else if (className == L"Static" && IsNameConflictPrompt(text)) {
+		context->nameConflictPromptMatched = true;
+	}
+	else if (className == L"Button" && IsConfirmButton(text)) {
+		context->confirmButton = child;
 	}
 	return TRUE;
 }
 
 struct DialogSearchContext {
 	DWORD processId = 0;
+	bool nameConflictOnly = false;
 	HWND dialog = nullptr;
 	HWND doNotWriteButton = nullptr;
+	HWND confirmButton = nullptr;
 };
 
 BOOL CALLBACK EnumProcessWindow(HWND window, LPARAM param)
@@ -112,15 +140,30 @@ BOOL CALLBACK EnumProcessWindow(HWND window, LPARAM param)
 
 	ChildSearchContext childContext;
 	EnumChildWindows(window, EnumDialogChild, reinterpret_cast<LPARAM>(&childContext));
-	if (!childContext.promptMatched ||
-		childContext.doNotWriteButton == nullptr ||
-		!IsWindowEnabled(childContext.doNotWriteButton)) {
+	if (!context->nameConflictOnly && childContext.dependencyPromptMatched &&
+		childContext.doNotWriteButton != nullptr && IsWindowEnabled(childContext.doNotWriteButton)) {
+		context->dialog = window;
+		context->doNotWriteButton = childContext.doNotWriteButton;
+		return FALSE;
+	}
+	if (!context->nameConflictOnly || !childContext.nameConflictPromptMatched ||
+		childContext.confirmButton == nullptr || !IsWindowEnabled(childContext.confirmButton)) {
 		return TRUE;
 	}
 
 	context->dialog = window;
-	context->doNotWriteButton = childContext.doNotWriteButton;
+	context->confirmButton = childContext.confirmButton;
 	return FALSE;
+}
+
+void CompileDialogWatcherMain(std::uint64_t sessionGeneration)
+{
+	while (g_compileSessionActive.load(std::memory_order_acquire) &&
+		g_compileSessionGeneration.load(std::memory_order_acquire) == sessionGeneration) {
+		TryDismissDependencyWriteDialog();
+		TryDismissNameConflictDialog();
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	}
 }
 
 } // namespace
@@ -128,12 +171,23 @@ BOOL CALLBACK EnumProcessWindow(HWND window, LPARAM param)
 void BeginCompileSession()
 {
 	g_dependencyDialogDismissed.store(false, std::memory_order_release);
+	g_nameConflictDialogsDismissed.store(0, std::memory_order_release);
 	g_compileSessionActive.store(true, std::memory_order_release);
+	// 编译入口可能在 IDE 主线程中同步阻塞，使用独立监视线程保证该线程仍可处理编译。
+	const std::uint64_t sessionGeneration =
+		g_compileSessionGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+	std::thread(CompileDialogWatcherMain, sessionGeneration).detach();
 }
 
 void EndCompileSession()
 {
 	g_compileSessionActive.store(false, std::memory_order_release);
+	g_compileSessionGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
+bool IsCompileSessionActive()
+{
+	return g_compileSessionActive.load(std::memory_order_acquire);
 }
 
 bool TryDismissDependencyWriteDialog()
@@ -168,6 +222,38 @@ bool WasDependencyWriteDialogDismissed()
 	return g_dependencyDialogDismissed.load(std::memory_order_acquire);
 }
 
+bool TryDismissNameConflictDialog()
+{
+	if (!g_compileSessionActive.load(std::memory_order_acquire)) {
+		return false;
+	}
+
+	DialogSearchContext context;
+	context.processId = GetCurrentProcessId();
+	context.nameConflictOnly = true;
+	EnumWindows(EnumProcessWindow, reinterpret_cast<LPARAM>(&context));
+	if (context.dialog == nullptr || context.confirmButton == nullptr) {
+		return false;
+	}
+
+	if (!PostMessageW(context.confirmButton, BM_CLICK, 0, 0)) {
+		return false;
+	}
+	g_nameConflictDialogsDismissed.fetch_add(1, std::memory_order_acq_rel);
+	Logger::Instance().Write(
+		"SilentCompile",
+		std::format(
+			"dismissed name conflict dialog with confirm button dialog=0x{:X} button_id={}",
+			reinterpret_cast<std::uintptr_t>(context.dialog),
+			GetDlgCtrlID(context.confirmButton)));
+	return true;
+}
+
+bool WasNameConflictDialogDismissed()
+{
+	return g_nameConflictDialogsDismissed.load(std::memory_order_acquire) != 0;
+}
+
 std::string BuildSelfTestJson()
 {
 	const bool observedPromptAccepted = IsDependencyWritePrompt(
@@ -178,8 +264,14 @@ std::string BuildSelfTestJson()
 		L"是否覆盖已经存在的目标文件？");
 	const bool doNotWriteAccepted = IsDoNotWriteButton(L"不写出(&C)");
 	const bool writeRejected = !IsDoNotWriteButton(L"写出(&W)");
+	const bool nameConflictAccepted = IsNameConflictPrompt(
+		L"现有多个名称与指定拼音输入字“位置”相对应，请选择其一:");
+	const bool nameConflictRejected = !IsNameConflictPrompt(L"请选择要覆盖的目标文件:");
+	const bool confirmAccepted = IsConfirmButton(L"确定(O)");
+	const bool cancelRejected = !IsConfirmButton(L"取消(C)");
 	const bool ok = observedPromptAccepted && compactPromptAccepted && unrelatedPromptRejected &&
-		doNotWriteAccepted && writeRejected;
+		doNotWriteAccepted && writeRejected && nameConflictAccepted && nameConflictRejected &&
+		confirmAccepted && cancelRejected;
 	return nlohmann::json({
 		{"name", "ide-compile-dialog-guard"},
 		{"ok", ok},
@@ -187,7 +279,11 @@ std::string BuildSelfTestJson()
 		{"compact_prompt_accepted", compactPromptAccepted},
 		{"unrelated_prompt_rejected", unrelatedPromptRejected},
 		{"do_not_write_button_accepted", doNotWriteAccepted},
-		{"write_button_rejected", writeRejected}
+		{"write_button_rejected", writeRejected},
+		{"name_conflict_prompt_accepted", nameConflictAccepted},
+		{"name_conflict_prompt_rejected", nameConflictRejected},
+		{"confirm_button_accepted", confirmAccepted},
+		{"cancel_button_rejected", cancelRejected}
 	}).dump();
 }
 
