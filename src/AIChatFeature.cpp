@@ -3603,10 +3603,6 @@ void RefreshSessionTimingOnly(HWND hWnd, ChatDialogContext* ctx)
 	UpdateNativeSessionTiming(ctx, snapshot);
 	UpdateWebViewSessionTiming(ctx, snapshot);
 	SyncSessionTimingTimer(hWnd, snapshot.inProgress);
-	if (snapshot.inProgress) {
-		// 计时器同时作为状态校准心跳，避免工具卡或 WebView 刷新事件丢失后长期停留在旧状态。
-		PostRefreshDialog();
-	}
 	if (timingVisibilityChanged) {
 		LayoutAIChatDialog(hWnd, ctx);
 	}
