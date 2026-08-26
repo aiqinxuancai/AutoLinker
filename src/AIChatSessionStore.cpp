@@ -168,6 +168,9 @@ std::string SanitizeSessionIdFileName(const std::string& sessionId)
 std::string BuildSessionTitleLocal(const AIChatStoredSession& session)
 {
 	for (auto it = session.messages.rbegin(); it != session.messages.rend(); ++it) {
+		if (!it->visibleInHistory) {
+			continue;
+		}
 		if (_stricmp(it->role.c_str(), "user") != 0) {
 			continue;
 		}

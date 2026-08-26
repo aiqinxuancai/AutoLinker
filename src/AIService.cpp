@@ -5286,7 +5286,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 				result,
 				[&systemUtf8, &messages, &settings, &skillPromptLocal](const std::string& summaryLocal) {
 					systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal) +
-						"\n\n" + LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal);
+					"\n\n" + LocalToUtf8("长期任务压缩检查点：\n") + LocalToUtf8(summaryLocal);
 					messages = nlohmann::json::array({
 						{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
 					});
@@ -5428,7 +5428,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 			result,
 			[&systemUtf8, &messages, &settings, &skillPromptLocal](const std::string& summaryLocal) {
 				systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal) +
-					"\n\n" + LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal);
+					"\n\n" + LocalToUtf8("长期任务压缩检查点：\n") + LocalToUtf8(summaryLocal);
 				messages = nlohmann::json::array({
 					{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
 				});
@@ -5693,7 +5693,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 				result,
 				[&systemUtf8, &contents, &settings, &skillPromptLocal](const std::string& summaryLocal) {
 					systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, false) + skillPromptLocal) +
-						"\n\n" + LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal);
+						"\n\n" + LocalToUtf8("长期任务压缩检查点：\n") + LocalToUtf8(summaryLocal);
 					contents = nlohmann::json::array({
 						{{"role", "user"}, {"parts", nlohmann::json::array({
 							{{"text", LocalToUtf8("请从检查点继续执行原任务。")}}
@@ -5827,7 +5827,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 			result,
 			[&systemUtf8, &contents, &settings, &skillPromptLocal](const std::string& summaryLocal) {
 				systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, false) + skillPromptLocal) +
-					"\n\n" + LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal);
+					"\n\n" + LocalToUtf8("长期任务压缩检查点：\n") + LocalToUtf8(summaryLocal);
 				contents = nlohmann::json::array({
 					{{"role", "user"}, {"parts", nlohmann::json::array({
 						{{"text", LocalToUtf8("请从检查点继续执行原任务。")}}
@@ -6775,13 +6775,18 @@ EncodedImageAttachment EncodeImageAttachment(const AIImageAttachment& attachment
 	EncodedImageAttachment encoded;
 	std::string errorLocal;
 	if (!AIImageAttachmentManager::BuildDataUrl(attachment, encoded.dataUrlUtf8, errorLocal)) {
-		encoded.errorUtf8 = LocalToUtf8(
-			"[无法读取图片附件 " + attachment.fileNameLocal + "：" + errorLocal + "]");
+		encoded.errorUtf8 = LocalToUtf8("[无法读取图片附件 ") +
+			LocalToUtf8(attachment.fileNameLocal) +
+			LocalToUtf8("：") +
+			LocalToUtf8(errorLocal) +
+			LocalToUtf8("]");
 		return encoded;
 	}
 	const size_t separator = encoded.dataUrlUtf8.find(',');
 	if (separator == std::string::npos) {
-		encoded.errorUtf8 = LocalToUtf8("[图片附件编码无效：" + attachment.fileNameLocal + "]");
+		encoded.errorUtf8 = LocalToUtf8("[图片附件编码无效：") +
+			LocalToUtf8(attachment.fileNameLocal) +
+			LocalToUtf8("]");
 		encoded.dataUrlUtf8.clear();
 		return encoded;
 	}
@@ -8062,7 +8067,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 				[&requestMessages, &settings, &skillPromptLocal](const std::string& summaryLocal) {
 					requestMessages = nlohmann::json::array({
 						{{"role", "system"}, {"content", LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal)}},
-						{{"role", "system"}, {"content", LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal)}},
+						{{"role", "system"}, {"content", LocalToUtf8("长期任务压缩检查点：\n") + LocalToUtf8(summaryLocal)}},
 						{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
 					});
 				});
@@ -8117,7 +8122,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			[&requestMessages, &settings, &skillPromptLocal](const std::string& summaryLocal) {
 				requestMessages = nlohmann::json::array({
 					{{"role", "system"}, {"content", LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal)}},
-					{{"role", "system"}, {"content", LocalToUtf8("长期任务压缩检查点：\n" + summaryLocal)}},
+					{{"role", "system"}, {"content", LocalToUtf8("长期任务压缩检查点：\n") + LocalToUtf8(summaryLocal)}},
 					{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
 				});
 			});

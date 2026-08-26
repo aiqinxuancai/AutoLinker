@@ -56,6 +56,14 @@ namespace {
 
 constexpr const char* kUtf8ChineseArgument = "\xE4\xB8\xAD\xE6\x96\x87\xE5\x8F\x82\xE6\x95\xB0";
 constexpr const char* kUtf8TestPassed = "\xE6\xB5\x8B\xE8\xAF\x95\xE9\x80\x9A\xE8\xBF\x87";
+constexpr const char* kUtf8FallbackContextTitle =
+	"\xE7\x9B\xAE\xE6\xA0\x87\xE4\xB8\x8E\xE5\x8E\x86\xE5\x8F\xB2\xE4\xB8\x8A\xE4\xB8\x8B\xE6\x96\x87";
+constexpr const char* kUtf8FallbackContinueTitle = "\xE7\xBB\xA7\xE7\xBB\xAD\xE8\xA6\x81\xE6\xB1\x82";
+constexpr const char* kUtf8RecoveryFailureTitle =
+	"\xE8\xBF\x9E\xE7\xBB\xAD\xE5\xB7\xA5\xE5\x85\xB7\xE8\xB0\x83\xE7\x94\xA8\xE5\xA4\xB1\xE8\xB4\xA5";
+constexpr const char* kUtf8RecentErrorTitle = "\xE6\x9C\x80\xE8\xBF\x91\xE9\x94\x99\xE8\xaf\xaf";
+constexpr const char* kUtf8VisibleSessionTitle =
+	"\xE7\x9C\x9F\xE5\xae\x9E\xE7\x94\xA8\xE6\x88\xB7\xE6\xA0\x87\xE9\xA2\x98";
 
 std::string LocalToUtf8ForTest(const std::string& text)
 {
@@ -255,6 +263,9 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	const std::string fallbackSummary = roundController.BuildLocalFallbackSummary(fallbackEvents);
 	const bool localCompactionFallback = fallbackSummary.find("read_file") != std::string::npos &&
 		fallbackSummary.find("src/Test.cpp") != std::string::npos;
+	const bool localCompactionChineseRoundTrip =
+		UnicodeTextCodec::LocalToUtf8RestoringUnicode(fallbackSummary).find(kUtf8FallbackContextTitle) != std::string::npos &&
+		UnicodeTextCodec::LocalToUtf8RestoringUnicode(fallbackSummary).find(kUtf8FallbackContinueTitle) != std::string::npos;
 
 	AIChatRunController failureController(settings, initialContext, {});
 	std::vector<AIChatCheckpointToolCall> failedCalls;
@@ -275,10 +286,13 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 			AIChatMessage{"tool", "failed", "", ""});
 		if (i == 2) {
 			const std::string hint = failureController.TakeRecoveryHint();
+			const std::string hintUtf8 = UnicodeTextCodec::LocalToUtf8RestoringUnicode(hint);
 			recoveryHintAtThree =
 				hint.find("request_user_input") != std::string::npos &&
 				hint.find("header must be a string") != std::string::npos &&
-				hint.find("expected_arguments") != std::string::npos;
+				hint.find("expected_arguments") != std::string::npos &&
+				hintUtf8.find(kUtf8RecoveryFailureTitle) != std::string::npos &&
+				hintUtf8.find(kUtf8RecentErrorTitle) != std::string::npos;
 		}
 	}
 	const std::string failureStallReason = failureController.StallReason();
@@ -432,6 +446,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	bool schemaV7RoundTrip = false;
 	bool atomicReplace = false;
 	bool completedCheckpointIgnored = false;
+	bool hiddenMessageIgnoredForTitle = false;
 	if (!fileEc) {
 		const auto loadLegacy = [&tempRoot](int schemaVersion, bool& outLoaded) {
 			const std::filesystem::path path = tempRoot /
@@ -533,6 +548,32 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		completedCheckpointIgnored = SaveAIChatStoredSession(stored, nullptr) &&
 			LoadAIChatStoredSession(stored.sessionFilePath, completedLoaded, nullptr) &&
 			!completedLoaded.hasRunCheckpoint;
+
+		const std::filesystem::path titleSourcePath = tempRoot / "title-source.e";
+		AIChatStoredSession titleSession;
+		titleSession.schemaVersion = 7;
+		titleSession.sessionId = "hidden-title-regression";
+		titleSession.sourceFilePathHintLocal = titleSourcePath.string();
+		titleSession.updatedAtUnixMs = 1;
+		titleSession.sessionFilePath = ResolveAIChatSessionFilePath(
+			titleSourcePath.string(), titleSession.sessionId);
+		titleSession.messages = {
+			AIChatStoredMessage{
+				"user",
+				UnicodeTextCodec::Utf8ToLocalPreservingUnicode(kUtf8VisibleSessionTitle)},
+			AIChatStoredMessage{
+				"user",
+				UnicodeTextCodec::Utf8ToLocalPreservingUnicode(
+					"\xE5\x86\x85\xE9\x83\xA8\xE6\x81\xA2\xE5\xA4\x8D\xE6\x8F\x90\xE7\xA4\xBA\xEF\xBC\x8C\xE4\xB8\x8D\xE5\xBA\x94\xE6\x98\xBE\xE7\xA4\xBA"),
+				true,
+				false}
+		};
+		const bool titleSaved = SaveAIChatStoredSession(titleSession, nullptr);
+		const auto titleEntries = ListRecentAIChatStoredSessions(titleSourcePath.string(), 10);
+		hiddenMessageIgnoredForTitle = titleSaved && titleEntries.size() == 1 &&
+			UnicodeTextCodec::LocalToUtf8RestoringUnicode(titleEntries.front().titleLocal) == kUtf8VisibleSessionTitle;
+		std::error_code titleCleanupError;
+		std::filesystem::remove_all(titleSession.sessionFilePath.parent_path(), titleCleanupError);
 	}
 	std::filesystem::remove_all(tempRoot, fileEc);
 
@@ -540,6 +581,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		multipleCompactions &&
 		cumulativeUsage &&
 		localCompactionFallback &&
+		localCompactionChineseRoundTrip &&
 		recoveryHintAtThree &&
 		stalledAtEight &&
 		failureStateResetAfterSuccess &&
@@ -556,12 +598,14 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		legacyV6 &&
 		schemaV7RoundTrip &&
 		atomicReplace &&
-		completedCheckpointIgnored;
+		completedCheckpointIgnored &&
+		hiddenMessageIgnoredForTitle;
 	outCheck["ok"] = ok;
 	outCheck["rounds_beyond_64"] = roundsBeyondLegacyLimit;
 	outCheck["multiple_compactions"] = multipleCompactions;
 	outCheck["cumulative_usage"] = cumulativeUsage;
 	outCheck["local_compaction_fallback"] = localCompactionFallback;
+	outCheck["local_compaction_chinese_round_trip"] = localCompactionChineseRoundTrip;
 	outCheck["recovery_hint_at_3"] = recoveryHintAtThree;
 	outCheck["stalled_at_8"] = stalledAtEight;
 	outCheck["failure_state_reset_after_success"] = failureStateResetAfterSuccess;
@@ -579,6 +623,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	outCheck["schema_v7_round_trip"] = schemaV7RoundTrip;
 	outCheck["atomic_replace"] = atomicReplace;
 	outCheck["completed_checkpoint_ignored"] = completedCheckpointIgnored;
+	outCheck["hidden_message_ignored_for_title"] = hiddenMessageIgnoredForTitle;
 	return ok;
 }
 

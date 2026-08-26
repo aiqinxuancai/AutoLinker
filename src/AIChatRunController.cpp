@@ -5,6 +5,7 @@
 #include <utility>
 
 #include "..\\thirdparty\\json.hpp"
+#include "UnicodeTextCodec.h"
 
 namespace {
 
@@ -16,6 +17,12 @@ constexpr int kStalledFailureCount = 8;
 constexpr int kRepeatedWriteRecoveryCount = 3;
 constexpr int kRepeatedWriteStalledCount = 5;
 constexpr size_t kMaxFallbackEventCount = 32;
+
+// 源文件按 UTF-8 编译，但控制器内部字符串沿用本地编码约定。
+std::string LocalText(const char* utf8)
+{
+	return UnicodeTextCodec::Utf8ToLocalPreservingUnicode(utf8 == nullptr ? std::string() : std::string(utf8));
+}
 
 size_t MessageBytes(const AIChatMessage& message)
 {
@@ -134,13 +141,13 @@ void AIChatRunController::ReplaceContextWithSummary(const std::string& summaryLo
 	m_contextMessages.clear();
 	m_contextMessages.push_back(AIChatMessage{
 		"system",
-		"长期任务压缩检查点：\n" + summaryLocal,
+		LocalText("长期任务压缩检查点：\n") + summaryLocal,
 		"",
 		""
 	});
 	m_contextMessages.push_back(AIChatMessage{
 		"user",
-		"请从上述检查点继续执行原任务。先确认未完成步骤，再继续调用必要工具。",
+		LocalText("请从上述检查点继续执行原任务。先确认未完成步骤，再继续调用必要工具。"),
 		"",
 		""
 	});
@@ -265,14 +272,14 @@ void AIChatRunController::CompleteToolCallInternal(
 		m_lastFailureDetail = BuildFailureDetail(resultJsonLocal);
 		if (m_consecutiveFailures == kRecoveryHintFailureCount) {
 			m_recoveryHint =
-				"连续工具调用失败 " + std::to_string(m_consecutiveFailures) +
-				" 次。最近失败工具：" + m_lastFailedToolName +
-				"；最近错误：" + TruncateText(m_lastFailureDetail, 300) +
-				"。请先按错误结果修正根因，禁止继续猜测字段或无变化重试；无法修正时改用其他验证或实现路径。";
+				LocalText("连续工具调用失败 ") + std::to_string(m_consecutiveFailures) +
+				LocalText(" 次。最近失败工具：") + m_lastFailedToolName +
+				LocalText("；最近错误：") + TruncateText(m_lastFailureDetail, 300) +
+				LocalText("。请先按错误结果修正根因，禁止继续猜测字段或无变化重试；无法修正时改用其他验证或实现路径。");
 			if (ToLowerAsciiCopy(m_lastFailedToolName) == "request_user_input") {
 				m_recoveryHint +=
-					"该工具的失败结果包含 expected_arguments，必须按其结构重新生成：根节点只允许 questions，"
-					"header 位于每个问题内，options 是包含 label 和 description 的对象数组。";
+					LocalText("该工具的失败结果包含 expected_arguments，必须按其结构重新生成：根节点只允许 questions，")
+					+ LocalText("header 位于每个问题内，options 是包含 label 和 description 的对象数组。");
 			}
 		}
 		if (IsSourceWriteTool(toolName)) {
@@ -289,10 +296,10 @@ void AIChatRunController::CompleteToolCallInternal(
 			}
 			if (state.count == kRepeatedWriteRecoveryCount) {
 				m_recoveryHint =
-					std::string("对源码目标 ") + displayTarget +
-					" 的写入已重复 " + std::to_string(state.count) +
-					" 次出现相同错误：" + TruncateText(errorSignature, 300) +
-					"。成功读取或预览不代表该写入问题已解决；请先修正根因并采用不同的写入内容或方案。";
+					LocalText("对源码目标 ") + displayTarget +
+					LocalText(" 的写入已重复 ") + std::to_string(state.count) +
+					LocalText(" 次出现相同错误：") + TruncateText(errorSignature, 300) +
+					LocalText("。成功读取或预览不代表该写入问题已解决；请先修正根因并采用不同的写入内容或方案。");
 			}
 			if (state.count >= kRepeatedWriteStalledCount) {
 				m_repeatedWriteFailureStalled = true;
@@ -376,13 +383,13 @@ std::string AIChatRunController::BuildLocalFallbackSummary(
 	const std::vector<AIChatToolEvent>& events) const
 {
 	std::ostringstream out;
-	out << "目标与历史上下文：\n";
+	out << LocalText("目标与历史上下文：\n");
 	for (const AIChatMessage& message : m_contextMessages) {
 		if (message.role == "user" || message.role == "system") {
 			out << "[" << message.role << "] " << TruncateText(message.content, 800) << "\n";
 		}
 	}
-	out << "\n最近工具执行：\n";
+	out << LocalText("\n最近工具执行：\n");
 	const size_t begin = events.size() > kMaxFallbackEventCount
 		? events.size() - kMaxFallbackEventCount
 		: 0;
@@ -392,7 +399,7 @@ std::string AIChatRunController::BuildLocalFallbackSummary(
 			<< " args=" << TruncateText(event.argumentsJson, 300)
 			<< " result=" << TruncateText(event.resultJson, 600) << "\n";
 	}
-	out << "\n继续要求：复核当前工程状态，完成剩余修改并执行必要测试。";
+	out << LocalText("\n继续要求：复核当前工程状态，完成剩余修改并执行必要测试。");
 	return out.str();
 }
 
@@ -487,9 +494,9 @@ std::string AIChatRunController::BuildResumeFallbackSummary(
 	const AIChatRunCheckpoint& checkpoint) const
 {
 	std::ostringstream out;
-	out << "恢复来源：协议=" << static_cast<int>(checkpoint.protocolType)
-		<< "，模型=" << checkpoint.model << "。\n";
-	out << "任务上下文：\n";
+	out << LocalText("恢复来源：协议=") << static_cast<int>(checkpoint.protocolType)
+		<< LocalText("，模型=") << checkpoint.model << LocalText("。\n");
+	out << LocalText("任务上下文：\n");
 	for (const AIChatMessage& message : checkpoint.contextMessages) {
 		if (message.content.empty()) {
 			continue;
@@ -497,7 +504,7 @@ std::string AIChatRunController::BuildResumeFallbackSummary(
 		out << "[" << message.role << "] " << TruncateText(message.content, 1200) << "\n";
 	}
 	if (!checkpoint.toolCalls.empty()) {
-		out << "\n最近工具调用：\n";
+		out << LocalText("\n最近工具调用：\n");
 		for (const AIChatCheckpointToolCall& call : checkpoint.toolCalls) {
 			out << "- " << (call.name.empty() ? "<unknown>" : call.name)
 				<< (call.completed ? (call.ok ? " (ok)" : " (failed)") : " (interrupted)")
@@ -508,7 +515,7 @@ std::string AIChatRunController::BuildResumeFallbackSummary(
 			out << "\n";
 		}
 	}
-	out << "\n恢复要求：工具调用可能已产生外部副作用。先检查工程当前状态，"
-		"不要盲目重放已中断调用，再完成剩余步骤和验证。";
+	out << LocalText("\n恢复要求：工具调用可能已产生外部副作用。先检查工程当前状态，"
+		"不要盲目重放已中断调用，再完成剩余步骤和验证。");
 	return out.str();
 }
