@@ -205,9 +205,9 @@ bool ExtractArchive(
 		outError = result.error;
 		return false;
 	}
-	OutputUpdateLog(std::format(
-		"[AutoLinker更新] 解压完成，extract_method={}",
-		ArchiveExtractor::MethodName(result.method)));
+	OutputUpdateLog(
+		std::string("[AutoLinker更新] 解压完成，extract_method=") +
+		ArchiveExtractor::MethodName(result.method));
 	if (result.method == ArchiveExtractor::ExtractionMethod::Tar && !result.primaryError.empty()) {
 		OutputUpdateLog("[AutoLinker更新] PowerShell 解压失败，已使用 tar 后备：" + result.primaryError);
 	}
@@ -478,10 +478,10 @@ void CheckWorker(void*)
 		}
 		if (IsNewerVersion(release.tag, AUTOLINKER_VERSION)) {
 			PublishStatus(ComponentUpdateState::UpdateAvailable, "发现可用的新版本。", release.tag);
-			OutputUpdateLog(std::format(
-				"[AutoLinker更新] 发现新版本：当前版本 {}，最新版本 {}。请在“工具 -> AutoLinker 设置”中更新。",
-				AUTOLINKER_VERSION,
-				release.tag));
+			OutputUpdateLog(
+				std::string("[AutoLinker更新] 发现新版本：当前版本 ") + AUTOLINKER_VERSION +
+				"，最新版本 " + release.tag +
+				"。请在“工具 -> AutoLinker 设置”中更新。");
 			AIChatFeature::SetUpdateAvailable(release.tag);
 		}
 		else {
