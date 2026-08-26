@@ -5,8 +5,12 @@
 
 class HttpRequestCancellation;
 
-// 在主线程执行工具调用。
-std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::string& argumentsJson, bool& outOk);
+// 在主线程执行工具调用；enableMcpAutoSave 仅由外部 MCP 请求开启。
+std::string ExecuteToolCallOnMainThread(
+	const std::string& toolName,
+	const std::string& argumentsJson,
+	bool& outOk,
+	bool enableMcpAutoSave = false);
 
 // 构建编译产物指纹判定的无 IDE 自检报告。
 std::string BuildCompileArtifactFingerprintSelfTestJson();

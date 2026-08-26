@@ -11,40 +11,40 @@ namespace AIChatToolRegistry {
 namespace {
 
 constexpr std::array<ToolMetadata, 34> kTools = {{
-	{"refresh_workspace_mirror", true, false, false, false, false},
-	{"e_packager", true, false, true, false, false},
-	{"update_plan", false, false, false, false, false},
-	{"get_goal", false, false, false, false, false},
-	{"update_goal", false, false, false, false, false},
-	{"read_skill_resource", false, false, false, false, false},
-	{"list_files", true, false, true, false, false},
-	{"search_code", true, false, true, false, false},
-	{"read_file", true, false, true, false, false},
-	{"read_files", true, false, true, false, false},
-	{"read_code_item", true, false, true, false, false},
-	{"read_real_file", true, false, true, false, false},
-	{"edit_file", true, false, true, true, false},
-	{"multi_edit_file", true, false, true, true, false},
-	{"write_file", true, false, true, true, false},
-	{"diff_file", true, false, true, false, false},
-	{"restore_file_snapshot", true, false, true, true, false},
-	{"add_new_file", true, false, false, true, false},
-	{"get_current_page_info", true, false, false, false, false},
-	{"get_current_eide_info", true, false, false, false, false},
-	{"refresh_dependency_catalog", false, true, false, false, false},
-	{"search_available_modules", false, true, false, false, false},
-	{"search_available_support_libraries", false, true, false, false, false},
-	{"list_imported_modules", false, true, false, false, false},
-	{"add_module_to_project", false, true, false, true, true},
-	{"remove_module_from_project", false, true, false, true, false},
-	{"add_support_library_to_project", false, true, false, true, false},
-	{"compile_with_output_path", true, false, false, true, false},
-	{"exec_command", false, false, false, true, true},
-	{"write_stdin", false, false, false, false, false},
-	{"view_image", false, false, false, false, true},
-	{"search_web_tavily", true, false, false, false, false},
-	{"fetch_url", true, false, false, false, false},
-	{"extract_web_document", true, false, false, false, false},
+	{"refresh_workspace_mirror", true, false, false, false, false, false},
+	{"e_packager", true, false, true, false, false, false},
+	{"update_plan", false, false, false, false, false, false},
+	{"get_goal", false, false, false, false, false, false},
+	{"update_goal", false, false, false, false, false, false},
+	{"read_skill_resource", false, false, false, false, false, false},
+	{"list_files", true, false, true, false, false, false},
+	{"search_code", true, false, true, false, false, false},
+	{"read_file", true, false, true, false, false, false},
+	{"read_files", true, false, true, false, false, false},
+	{"read_code_item", true, false, true, false, false, false},
+	{"read_real_file", true, false, true, false, false, false},
+	{"edit_file", true, false, true, true, true, false},
+	{"multi_edit_file", true, false, true, true, true, false},
+	{"write_file", true, false, true, true, true, false},
+	{"diff_file", true, false, true, false, false, false},
+	{"restore_file_snapshot", true, false, true, true, true, false},
+	{"add_new_file", true, false, false, true, true, false},
+	{"get_current_page_info", true, false, false, false, false, false},
+	{"get_current_eide_info", true, false, false, false, false, false},
+	{"refresh_dependency_catalog", false, true, false, false, false, false},
+	{"search_available_modules", false, true, false, false, false, false},
+	{"search_available_support_libraries", false, true, false, false, false, false},
+	{"list_imported_modules", false, true, false, false, false, false},
+	{"add_module_to_project", false, true, false, true, true, true},
+	{"remove_module_from_project", false, true, false, true, true, false},
+	{"add_support_library_to_project", false, true, false, true, true, false},
+	{"compile_with_output_path", true, false, false, false, true, false},
+	{"exec_command", false, false, false, false, true, true},
+	{"write_stdin", false, false, false, false, false, false},
+	{"view_image", false, false, false, false, false, true},
+	{"search_web_tavily", true, false, false, false, false, false},
+	{"fetch_url", true, false, false, false, false, false},
+	{"extract_web_document", true, false, false, false, false, false},
 }};
 
 std::string BuildPath(const std::string& parent, const std::string& child)
@@ -257,6 +257,12 @@ bool RequiresOpenSource(std::string_view toolName)
 		toolName == "remove_module_from_project" ||
 		toolName == "add_support_library_to_project" ||
 		toolName == "compile_with_output_path";
+}
+
+bool ModifiesProject(std::string_view toolName)
+{
+	const ToolMetadata* metadata = Find(toolName);
+	return metadata != nullptr && metadata->modifiesProject;
 }
 
 nlohmann::json BuildNoSourceOpenError(std::string_view toolName)

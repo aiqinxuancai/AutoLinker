@@ -553,7 +553,11 @@ bool RequestToolExecutionFromMainThread(
 			outResultJson = R"({"ok":false,"error":"interactive approval cannot block the AI chat UI thread"})";
 			return false;
 		}
-		outResultJson = ExecuteToolCallOnMainThread(toolName, argumentsJson, outOk);
+		outResultJson = ExecuteToolCallOnMainThread(
+			toolName,
+			argumentsJson,
+			outOk,
+			bypassInteractiveApproval);
 		return true;
 	}
 

@@ -598,6 +598,7 @@
     <ClCompile Include="src\LocalMcpProxyTransport.cpp" />
     <ClCompile Include="src\Logger.cpp" />
     <ClCompile Include="src\LocalMcpServer.cpp" />
+    <ClCompile Include="src\McpAutoSaveManager.cpp" />
     <ClCompile Include="src\PathHelper.cpp" />
     <ClCompile Include="src\PageCodeCacheManager.cpp" />
     <ClCompile Include="src\RealPageCodeToolSupport.cpp" />
@@ -690,6 +691,7 @@
     <ClInclude Include="src\LocalMcpProxyTransport.h" />
     <ClInclude Include="src\Logger.h" />
     <ClInclude Include="src\LocalMcpServer.h" />
+    <ClInclude Include="src\McpAutoSaveManager.h" />
     <ClInclude Include="src\MemFind.h" />
     <ClInclude Include="src\ModelManager.h" />
     <ClInclude Include="src\MouseBack.h" />

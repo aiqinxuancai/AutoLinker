@@ -32,6 +32,7 @@
 #include "IdeOutputControlCapture.h"
 #include "LocalMcpServer.h"
 #include "Logger.h"
+#include "McpAutoSaveManager.h"
 #include "PageCodeCacheManager.h"
 #include "PathHelper.h"
 #include "RealPageCodeToolSupport.h"
@@ -6005,10 +6006,56 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 // 过程、穿过 Win32 消息派发边界，触发 MSVC 运行时 abort（“abnormal program
 // termination”），整个 IDE 进程崩溃。这里统一兜底，把异常转成失败结果返回，
 // 保证无论工具内部发生什么都不会崩进程。
-std::string ExecuteToolCallOnMainThread(const std::string& toolName, const std::string& argumentsJson, bool& outOk)
+std::string ExecuteToolCallOnMainThread(
+	const std::string& toolName,
+	const std::string& argumentsJson,
+	bool& outOk,
+	bool enableMcpAutoSave)
 {
 	try {
-		return ExecuteToolCallOnMainThreadImpl(toolName, argumentsJson, outOk);
+		std::string resultLocal = ExecuteToolCallOnMainThreadImpl(toolName, argumentsJson, outOk);
+		if (!enableMcpAutoSave) {
+			return resultLocal;
+		}
+		AIJsonConfig* config = GetAIChatAIJsonConfigForTooling();
+		if (config == nullptr) {
+			return resultLocal;
+		}
+
+		nlohmann::json result = nlohmann::json::parse(LocalToUtf8Text(resultLocal), nullptr, false);
+		bool projectChanged = outOk;
+		if (result.is_object()) {
+			projectChanged = !result.value("no_changes", false) &&
+				!result.value("pending_finish", false);
+			if (toolName == "add_module_to_project") {
+				projectChanged = result.value("added", false);
+			}
+			else if (toolName == "remove_module_from_project") {
+				projectChanged = result.value("removed", false);
+			}
+			else if (toolName == "add_support_library_to_project") {
+				projectChanged = result.value("write_succeeded", false);
+			}
+		}
+		const McpAutoSaveManager::Result autoSave =
+			McpAutoSaveManager::TrySaveAfterSuccessfulTool(*config, toolName, outOk, projectChanged);
+		if (!autoSave.enabled || !autoSave.eligible) {
+			return resultLocal;
+		}
+
+		if (result.is_discarded() || !result.is_object()) {
+			return resultLocal;
+		}
+		result["auto_save"] = {
+			{"enabled", true},
+			{"attempted", autoSave.attempted},
+			{"ok", autoSave.saved},
+			{"source_file_path", LocalToUtf8Text(autoSave.sourceFilePathLocal)}
+		};
+		if (!autoSave.reason.empty()) {
+			result["auto_save"]["reason"] = autoSave.reason;
+		}
+		return JsonToLocalTextForAI(std::move(result));
 	}
 	catch (const std::exception& ex) {
 		outOk = false;

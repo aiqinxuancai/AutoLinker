@@ -16,6 +16,7 @@
 #include "..\\thirdparty\\WebView2.h"
 
 #include "AIChatMcpConfigDialog.h"
+#include "AIChatToolRegistry.h"
 #include "AIConfigDialog.h"
 #include "AISkillConfigDialog.h"
 #include "AutoLinkerInternal.h"
@@ -29,6 +30,7 @@
 #include "IdeCompileOutputCapture.h"
 #include "IdeLogViewer.h"
 #include "Logger.h"
+#include "McpAutoSaveManager.h"
 #include "ProjectAgentsConfigDialog.h"
 #include "ProjectBuildConfigDialog.h"
 #include "resource.h"
@@ -434,6 +436,7 @@ std::string BuildAiOtherSettingsPayload(
 	return DumpWebViewJson({
 		{"sourceEditMode", sourceEditMode},
 		{"tavilyApiKey", g_aiJsonConfig.getGlobalValue("tavily_api_key")},
+		{"mcpAutoSaveAfterWrite", McpAutoSaveManager::IsEnabled(g_aiJsonConfig)},
 		{"notice", notice},
 		{"noticeIsError", noticeIsError}
 	});
@@ -608,7 +611,9 @@ void HandleSettingsWebViewMessage(
 		}
 		g_aiJsonConfig.setGlobalValues({
 			{"source_edit_mode", sourceEditMode},
-			{"tavily_api_key", data.value("tavilyApiKey", std::string())}
+			{"tavily_api_key", data.value("tavilyApiKey", std::string())},
+			{std::string(McpAutoSaveManager::kConfigKey),
+				data.value("mcpAutoSaveAfterWrite", false) ? "true" : "false"}
 		});
 		PostMessageW(
 			GetParent(page),
@@ -1395,8 +1400,24 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 	const std::string aboutHtml = LoadUtf8HtmlResourceText(IDR_HTML_ABOUT_SETTINGS);
 	const std::string projectBuildHtml = LoadUtf8HtmlResourceText(IDR_HTML_PROJECT_BUILD_CONFIG_DIALOG);
 	const std::string aboutIconDataUrl = LoadAboutIconDataUrl();
+	const bool mcpAutoSaveUiValid =
+		aiOtherHtml.find("mcpAutoSaveAfterWrite") != std::string::npos &&
+		aiOtherHtml.find("每次MCP写入或修改代码后自动保存代码") != std::string::npos;
+	const bool mcpAutoSaveToolScopeValid =
+		AIChatToolRegistry::ModifiesProject("edit_file") &&
+		AIChatToolRegistry::ModifiesProject("multi_edit_file") &&
+		AIChatToolRegistry::ModifiesProject("write_file") &&
+		AIChatToolRegistry::ModifiesProject("restore_file_snapshot") &&
+		AIChatToolRegistry::ModifiesProject("add_new_file") &&
+		AIChatToolRegistry::ModifiesProject("add_module_to_project") &&
+		AIChatToolRegistry::ModifiesProject("remove_module_from_project") &&
+		AIChatToolRegistry::ModifiesProject("add_support_library_to_project") &&
+		!AIChatToolRegistry::ModifiesProject("diff_file") &&
+		!AIChatToolRegistry::ModifiesProject("compile_with_output_path") &&
+		!AIChatToolRegistry::ModifiesProject("exec_command");
 	const bool webViewResourcesValid =
 		aiOtherHtml.find("autolinkerApplyAiOtherSettings") != std::string::npos &&
+		mcpAutoSaveUiValid &&
 		logOptimizationHtml.find("autolinkerApplyLogOptimization") != std::string::npos &&
 		logOptimizationHtml.find("mcpGenericToggle") != std::string::npos &&
 		logOptimizationHtml.find("fullGenericToggle") != std::string::npos &&
@@ -1422,13 +1443,15 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		{"name", "unified-settings-self-test"},
 		{"ok", pages.size() == static_cast<size_t>(AutoLinkerSettingsPageId::Count) &&
 			hookDependencyValid && links.size() == 5 && webViewResourcesValid &&
-			invalidUtf8PayloadSafe && ePackagerTwoStepUpdateValid},
+			invalidUtf8PayloadSafe && ePackagerTwoStepUpdateValid && mcpAutoSaveToolScopeValid},
 		{"page_count", pages.size()},
 		{"pages", pages},
 		{"about_fixed_links", links},
 		{"compile_hook_default_enabled", false},
 		{"mcp_generic_type_default_enabled", false},
 		{"full_generic_type_default_enabled", false},
+		{"mcp_auto_save_default_enabled", false},
+		{"mcp_auto_save_tool_scope", mcpAutoSaveToolScopeValid},
 		{"debug_optimization_requires_compile_hook", hookDependencyValid},
 		{"log_optimization_webview2", !logOptimizationHtml.empty()},
 		{"ai_other_webview2", !aiOtherHtml.empty()},
@@ -1441,7 +1464,8 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		{"compile_hook_config_key", kCompileOutputCaptureHookConfigKey},
 		{"debug_optimization_config_key", kDebugOutputOptimizationConfigKey},
 		{"mcp_generic_type_config_key", kMcpWriteHiddenGenericTypeConfigKey},
-		{"full_generic_type_config_key", kFullHiddenGenericTypeConfigKey}
+		{"full_generic_type_config_key", kFullHiddenGenericTypeConfigKey},
+		{"mcp_auto_save_config_key", std::string(McpAutoSaveManager::kConfigKey)}
 	};
 	return report.dump();
 }

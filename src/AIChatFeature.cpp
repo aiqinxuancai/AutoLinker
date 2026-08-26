@@ -9813,7 +9813,8 @@ bool HandleCompileToolExecutionRequest(const std::shared_ptr<ToolExecutionReques
 			const std::string resultJson = ExecuteToolCallOnMainThread(
 				request->toolName,
 				request->argumentsJson,
-				ok);
+				ok,
+				request->bypassInteractiveApproval);
 			FinishToolExecutionRequest(request, ok, resultJson);
 		}
 		request = TakeNextQueuedCompileToolExecution();
@@ -9849,7 +9850,8 @@ void RunDeferredToolExecution(void* parameter)
 	const std::string resultJson = ExecuteToolCallOnMainThread(
 		request->toolName,
 		context->argumentsJson,
-		ok);
+		ok,
+		request->bypassInteractiveApproval);
 	FinishToolExecutionRequest(request, ok, resultJson);
 	PostRefreshDialog();
 }
@@ -9922,7 +9924,11 @@ bool HandleToolExecRequest(LPARAM lParam)
 	}
 
 	bool ok = false;
-	const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, effectiveArgumentsJson, ok);
+	const std::string resultJson = ExecuteToolCallOnMainThread(
+		request->toolName,
+		effectiveArgumentsJson,
+		ok,
+		request->bypassInteractiveApproval);
 	FinishToolExecutionRequest(request, ok, resultJson);
 	return true;
 }

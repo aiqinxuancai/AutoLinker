@@ -13,6 +13,7 @@ struct ToolMetadata {
 	bool externalPublic = false;
 	bool dependencyManagement = false;
 	bool requiresWorkspaceRefresh = false;
+	bool modifiesProject = false;
 	bool destructive = false;
 	bool interactive = false;
 };
@@ -31,6 +32,9 @@ bool RequiresWorkspaceRefresh(std::string_view toolName);
 
 // 判断工具是否依赖当前已打开的易语言源码工程。
 bool RequiresOpenSource(std::string_view toolName);
+
+// 判断工具成功执行后是否修改了当前易语言工程，需要参与 MCP 自动保存。
+bool ModifiesProject(std::string_view toolName);
 
 // 构建未打开源码时统一返回的结构化工具错误。
 nlohmann::json BuildNoSourceOpenError(std::string_view toolName);

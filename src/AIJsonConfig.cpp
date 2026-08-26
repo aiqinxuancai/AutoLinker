@@ -21,7 +21,8 @@ bool IsReservedRootKey(const std::string& key)
 
 bool IsLegacyGlobalRootKey(const std::string& key)
 {
-	return key == "source_edit_mode" || key == "tavily_api_key";
+	return key == "source_edit_mode" || key == "tavily_api_key" ||
+		key == "mcp_auto_save_after_write";
 }
 
 bool IsValidUtf8(const std::string& text)
