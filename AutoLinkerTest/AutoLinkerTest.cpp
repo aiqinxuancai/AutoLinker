@@ -1244,6 +1244,11 @@ bool RunUnicodeTextCodecSmokeTest()
 	if (UnicodeTextCodec::Utf8ToLocalPreservingUnicode("??") != "??") {
 		return false;
 	}
+	const std::string chineseText = "\xE4\xB8\x80"; // 一
+	const std::string chineseTextLocal = UnicodeTextCodec::Utf8ToLocalPreservingUnicode(chineseText);
+	if (UnicodeTextCodec::LocalToUtf8Strict(chineseTextLocal) != chineseText) {
+		return false;
+	}
 
 	const std::vector<std::string> tableLines = {
 		"| Priority |",

@@ -27,6 +27,7 @@
 #include "LinkerManager.h"
 #include "PathHelper.h"
 #include "ResourceTextLoader.h"
+#include "UnicodeTextCodec.h"
 #include "WinINetUtil.h"
 
 #pragma comment(lib, "comctl32.lib")
@@ -1191,6 +1192,45 @@ std::string BuildAIConnectionTestMessage(const AIResult& result, long long elaps
 	if (!result.error.empty()) {
 		message += "\n错误：";
 		message += result.error;
+	}
+	return message;
+}
+
+std::string BuildAIConnectionTestMessageUtf8(const AIResult& result, long long elapsedMs)
+{
+	const auto fixed = [](const wchar_t* text) {
+		return WideToUtf8(std::wstring(text == nullptr ? L"" : text));
+	};
+	const auto local = [](const std::string& text) {
+		return UnicodeTextCodec::LocalToUtf8Strict(text);
+	};
+
+	if (result.ok) {
+		std::string message = fixed(L"连通性测试成功。");
+		if (!result.endpointName.empty()) {
+			message += fixed(L"\n成功端点：");
+			message += local(result.endpointName);
+		}
+		message += fixed(L"\n用时：") + std::to_string(elapsedMs) + fixed(L" 毫秒");
+		if (result.httpStatus > 0) {
+			message += fixed(L"\nHTTP: ") + std::to_string(result.httpStatus);
+		}
+		const std::string trimmed = AIService::Trim(result.content);
+		if (!trimmed.empty()) {
+			message += fixed(L"\n模型返回：");
+			message += local(trimmed);
+		}
+		return message;
+	}
+
+	std::string message = fixed(L"连通性测试失败。");
+	message += fixed(L"\n用时：") + std::to_string(elapsedMs) + fixed(L" 毫秒");
+	if (result.httpStatus > 0) {
+		message += fixed(L"\nHTTP: ") + std::to_string(result.httpStatus);
+	}
+	if (!result.error.empty()) {
+		message += fixed(L"\n错误：");
+		message += local(result.error);
 	}
 	return message;
 }
@@ -2360,7 +2400,7 @@ void ShowAIConfigWebViewTestResult(
 
 	nlohmann::json payload;
 	payload["ok"] = result.ok;
-	payload["message"] = LocalToUtf8Text(BuildAIConnectionTestMessage(result, elapsedMs));
+	payload["message"] = BuildAIConnectionTestMessageUtf8(result, elapsedMs);
 
 	const std::wstring payloadJsonWide = Utf8ToWide(payload.dump());
 	if (payloadJsonWide.empty()) {

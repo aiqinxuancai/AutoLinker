@@ -268,6 +268,14 @@ std::string LocalToUtf8RestoringUnicode(const std::string& text)
 	return DecodeNumericCharacterReferences(utf8);
 }
 
+std::string LocalToUtf8Strict(const std::string& text)
+{
+	if (text.empty()) {
+		return {};
+	}
+	return DecodeNumericCharacterReferences(LocalToUtf8(text));
+}
+
 size_t NumericCharacterReferenceLength(std::string_view text, size_t offset)
 {
 	uint32_t codePoint = 0;

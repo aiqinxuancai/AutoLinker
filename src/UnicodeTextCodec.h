@@ -13,6 +13,9 @@ std::string Utf8ToLocalPreservingUnicode(const std::string& text);
 // 将本地编码转为 UTF-8，并还原暂存的数字字符引用。
 std::string LocalToUtf8RestoringUnicode(const std::string& text);
 
+// 将本地编码强制转为 UTF-8，并还原暂存的数字字符引用；输入不会按 UTF-8 猜测。
+std::string LocalToUtf8Strict(const std::string& text);
+
 // 返回指定位置合法数字字符引用的字节数，不匹配时返回 0。
 size_t NumericCharacterReferenceLength(std::string_view text, size_t offset);
 
