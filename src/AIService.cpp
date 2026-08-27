@@ -1367,6 +1367,26 @@ bool IsOpenAIGpt5Model(std::string_view model)
 	return ContainsAsciiInsensitive(model, "gpt-5");
 }
 
+bool IsKnownOpenAIReasoningModelWithoutTemperature(std::string_view model)
+{
+	const size_t separator = model.find_last_of("/\\");
+	const std::string normalized = ToLowerAsciiCopy(std::string(
+		separator == std::string_view::npos ? model : model.substr(separator + 1)));
+	auto hasFamilyPrefix = [&normalized](std::string_view family) {
+		if (!normalized.starts_with(family)) {
+			return false;
+		}
+		return normalized.size() == family.size() ||
+			normalized[family.size()] == '-' ||
+			normalized[family.size()] == '.';
+	};
+	return IsOpenAIGpt5Model(model) ||
+		hasFamilyPrefix("o1") ||
+		hasFamilyPrefix("o3") ||
+		hasFamilyPrefix("o4") ||
+		hasFamilyPrefix("codex");
+}
+
 bool IsGrokReasoningModel(std::string_view model)
 {
 	return ContainsAsciiInsensitive(model, "grok-4.6") ||
@@ -1386,10 +1406,17 @@ bool IsKimiK3Model(std::string_view model)
 
 bool ShouldOmitOpenAITemperature(const AISettings& settings)
 {
-	// Kimi K2.7 Code/K3 的采样参数由服务端固定；显式发送用户温度会被 API 拒绝。
-	return IsOpenAIGpt5Model(settings.model) ||
+	// 推理模型及 Kimi Code/K3 的采样参数由服务端固定；显式发送温度可能被 API 拒绝。
+	return IsKnownOpenAIReasoningModelWithoutTemperature(settings.model) ||
 		IsKimiK27CodeModel(settings.model) ||
 		IsKimiK3Model(settings.model);
+}
+
+void ApplyTemperatureIfSpecified(nlohmann::json& requestBody, const AISettings& settings)
+{
+	if (settings.temperature.has_value() && AIService::IsValidTemperature(*settings.temperature)) {
+		requestBody["temperature"] = *settings.temperature;
+	}
 }
 
 void ApplyOpenAITemperatureIfSupported(
@@ -1397,7 +1424,7 @@ void ApplyOpenAITemperatureIfSupported(
 	const AISettings& settings,
 	double temperature)
 {
-	if (ShouldOmitOpenAITemperature(settings)) {
+	if (!AIService::IsValidTemperature(temperature) || ShouldOmitOpenAITemperature(settings)) {
 		return;
 	}
 	requestBody["temperature"] = temperature;
@@ -1405,7 +1432,9 @@ void ApplyOpenAITemperatureIfSupported(
 
 void ApplyOpenAITemperatureIfSupported(nlohmann::json& requestBody, const AISettings& settings)
 {
-	ApplyOpenAITemperatureIfSupported(requestBody, settings, settings.temperature);
+	if (settings.temperature.has_value()) {
+		ApplyOpenAITemperatureIfSupported(requestBody, settings, *settings.temperature);
+	}
 }
 
 bool ShouldSkipOpenAIChatReasoningForToolUse(const AISettings& settings)
@@ -4652,7 +4681,7 @@ AIResult ExecuteTaskClaude(
 	nlohmann::json requestBody;
 	requestBody["model"] = LocalToUtf8(settings.model);
 	requestBody["max_tokens"] = 4096;
-	requestBody["temperature"] = settings.temperature;
+	ApplyTemperatureIfSpecified(requestBody, settings);
 	requestBody["system"] = LocalToUtf8(systemPrompt);
 	requestBody["messages"] = nlohmann::json::array({
 		{
@@ -4723,7 +4752,8 @@ AIResult ExecuteTaskGemini(
 	requestBody["system_instruction"] = {
 		{"parts", nlohmann::json::array({ {{"text", LocalToUtf8(systemPrompt)}} })}
 	};
-	requestBody["generationConfig"] = { {"temperature", settings.temperature} };
+	requestBody["generationConfig"] = nlohmann::json::object();
+	ApplyTemperatureIfSpecified(requestBody["generationConfig"], settings);
 	requestBody["contents"] = nlohmann::json::array({
 		{
 			{"role", "user"},
@@ -5162,7 +5192,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 		nlohmann::json requestBody;
 		requestBody["model"] = LocalToUtf8(settings.model);
 		requestBody["max_tokens"] = 4096;
-		requestBody["temperature"] = roundSettings.temperature;
+		ApplyTemperatureIfSpecified(requestBody, roundSettings);
 		requestBody["system"] = systemUtf8;
 		requestBody["messages"] = messages;
 		requestBody["tools"] = tools;
@@ -5523,7 +5553,8 @@ AIChatResult ExecuteChatWithToolsGemini(
 		requestBody["system_instruction"] = {
 			{"parts", nlohmann::json::array({ {{"text", systemUtf8}} })}
 		};
-		requestBody["generationConfig"] = { {"temperature", roundSettings.temperature} };
+		requestBody["generationConfig"] = nlohmann::json::object();
+		ApplyTemperatureIfSpecified(requestBody["generationConfig"], roundSettings);
 		requestBody["contents"] = contents;
 		if (tools.is_array() && !tools.empty()) {
 			requestBody["tools"] = tools;
@@ -6278,9 +6309,19 @@ void ApplyEndpointValues(
 			endpoint.streamIdleTimeoutMs = kAiDefaultStreamIdleTimeoutMs;
 		}
 	}
-	if (const std::string value = get("temperature"); !value.empty()) {
-		try { endpoint.temperature = std::stod(value); }
-		catch (...) { endpoint.temperature = 0.2; }
+	// 旧配置缺少该字段时曾隐式使用 0.2；显式 auto 才启用新的服务端默认模式。
+	endpoint.temperature = 0.2;
+	if (const auto it = values.find("temperature"); it != values.end()) {
+		std::optional<double> parsedTemperature;
+		if (AIService::TryParseTemperature(it->second, parsedTemperature)) {
+			endpoint.temperature = parsedTemperature;
+		}
+		else {
+			endpoint.temperature.reset();
+			Logger::Instance().Write(
+				"AIService",
+				"invalid persisted temperature; falling back to auto for model=" + endpoint.model);
+		}
 	}
 	if (const std::string value = get("context_window"); !value.empty()) {
 		try { endpoint.contextWindowTokens = (std::max)(0, std::stoi(value)); }
@@ -6424,7 +6465,7 @@ void AIService::SaveSettings(AIJsonConfig& jsonConfig, const AISettings& setting
 		{ "custom_headers",      settings.customHeadersText                  },
 		{ "timeout_ms",          std::to_string(settings.timeoutMs)          },
 		{ "stream_idle_timeout_ms", std::to_string(GetChatStreamIdleTimeoutMs(settings)) },
-		{ "temperature",         std::format("{:.2f}", settings.temperature) },
+		{ "temperature",         TemperatureToConfigValue(settings.temperature) },
 		{ "context_window",      std::to_string(settings.contextWindowTokens) },
 		{ "image_input_mode",    ImageInputModeToString(settings.imageInputMode) },
 		{ "retry_count",         std::to_string((std::clamp)(settings.retryCount, 0, kAiMaxRequestRetryCount)) },
@@ -7139,6 +7180,8 @@ std::string AIService::BuildEndpointConfigSelfTestJson()
 		}
 		AIJsonConfig flatMigrated(configPath);
 		const auto flatEndpoints = flatMigrated.getEndpointsLocal();
+		AISettings flatSettings;
+		LoadSettings(flatMigrated, nullptr, flatSettings);
 		report["checks"]["flat_legacy_scope_preserved"] =
 			flatEndpoints.size() == 1 &&
 			flatEndpoints[0].values.contains("base_url") &&
@@ -7147,6 +7190,8 @@ std::string AIService::BuildEndpointConfigSelfTestJson()
 			flatMigrated.getGlobalValue("base_url").empty() &&
 			flatMigrated.getGlobalValue("source_edit_mode") == "mirror_source_base" &&
 			flatMigrated.getGlobalValue("tavily_api_key") == "tavily-key";
+		report["checks"]["missing_temperature_keeps_legacy_default"] =
+			flatSettings.temperature.has_value() && *flatSettings.temperature == 0.2;
 
 		const nlohmann::json legacy = {
 			{ "active_profile_id", "second" },
@@ -7169,6 +7214,7 @@ std::string AIService::BuildEndpointConfigSelfTestJson()
 						{ "base_url", "https://second.example/v1" },
 						{ "api_key", "key-second" },
 						{ "model", "model-second" },
+						{ "temperature", "0.20" },
 						{ "context_window", "2000" }
 					} }
 				}
@@ -7190,9 +7236,12 @@ std::string AIService::BuildEndpointConfigSelfTestJson()
 			migratedTarget.type == "endpoint" && migratedTarget.id == "second";
 		report["checks"]["retry_default_five"] =
 			migratedSettings.retryCount == 5 && migratedSettings.endpointCandidates.size() == 1;
+		report["checks"]["explicit_temperature_preserved"] =
+			migratedSettings.temperature.has_value() && *migratedSettings.temperature == 0.2;
 
 		auto endpoints = migratedEndpoints;
 		endpoints[0].values["retry_count"] = "-4";
+		endpoints[0].values["temperature"] = "auto";
 		endpoints[1].values["retry_count"] = "44";
 		AIJsonConfigEndpointGroupSnapshot group;
 		group.id = "ordered";
@@ -7225,6 +7274,11 @@ std::string AIService::BuildEndpointConfigSelfTestJson()
 			groupedSettings.endpointCandidates.size() == 2 &&
 			groupedSettings.endpointCandidates[0].retryCount == 20 &&
 			groupedSettings.endpointCandidates[1].retryCount == 0;
+		report["checks"]["temperature_modes_roundtrip"] =
+			groupedSettings.endpointCandidates.size() == 2 &&
+			groupedSettings.endpointCandidates[0].temperature.has_value() &&
+			*groupedSettings.endpointCandidates[0].temperature == 0.2 &&
+			!groupedSettings.endpointCandidates[1].temperature.has_value();
 		report["checks"]["duplicate_member_rejected"] = duplicateRejected;
 		report["checks"]["active_group_reloaded"] =
 			reloadedTarget.type == "group" && reloadedTarget.id == "ordered";
@@ -7240,6 +7294,26 @@ std::string AIService::BuildEndpointConfigSelfTestJson()
 			secondReloaded->values.at("api_key") == "key-second" &&
 			secondReloaded->values.contains("model") &&
 			secondReloaded->values.at("model") == "model-second";
+		const auto firstReloaded = std::find_if(
+			reloadedEndpoints.begin(),
+			reloadedEndpoints.end(),
+			[](const auto& endpoint) { return endpoint.id == "first"; });
+		report["checks"]["auto_temperature_marker_preserved"] =
+			firstReloaded != reloadedEndpoints.end() &&
+			firstReloaded->values.contains("temperature") &&
+			firstReloaded->values.at("temperature") == "auto";
+
+		std::optional<double> parsedTemperature;
+		const bool autoTemperatureParsed =
+			TryParseTemperature("auto", parsedTemperature) && !parsedTemperature.has_value();
+		const bool numericTemperatureParsed =
+			TryParseTemperature("1.25", parsedTemperature) &&
+			parsedTemperature.has_value() && *parsedTemperature == 1.25;
+		report["checks"]["temperature_validation"] =
+			autoTemperatureParsed && numericTemperatureParsed &&
+			!TryParseTemperature("nan", parsedTemperature) &&
+			!TryParseTemperature("2.1", parsedTemperature) &&
+			!TryParseTemperature("0.2x", parsedTemperature);
 		const bool endpointTargetSelected = reloaded.setActiveTargetLocal({ "endpoint", "first" });
 		const bool invalidTargetRejected = !reloaded.setActiveTargetLocal({ "group", "missing" });
 		const bool groupTargetRestored = reloaded.setActiveTargetLocal({ "group", "ordered" });
@@ -7274,6 +7348,43 @@ bool AIService::ValidateCustomHeadersText(const std::string& headerText, std::st
 {
 	std::vector<HttpHeaderEntry> headers;
 	return ParseCustomHeadersTextInternal(headerText, headers, outError);
+}
+
+bool AIService::TryParseTemperature(
+	const std::string& text,
+	std::optional<double>& outTemperature)
+{
+	outTemperature.reset();
+	const std::string trimmed = Trim(text);
+	if (trimmed.empty() || ToLowerAsciiCopy(trimmed) == "auto") {
+		outTemperature.reset();
+		return true;
+	}
+
+	try {
+		size_t parsedLength = 0;
+		const double value = std::stod(trimmed, &parsedLength);
+		if (parsedLength != trimmed.size() || !IsValidTemperature(value)) {
+			return false;
+		}
+		outTemperature = value;
+		return true;
+	}
+	catch (...) {
+		return false;
+	}
+}
+
+std::string AIService::TemperatureToConfigValue(const std::optional<double>& temperature)
+{
+	return temperature.has_value() && IsValidTemperature(*temperature)
+		? std::format("{:.2f}", *temperature)
+		: "auto";
+}
+
+bool AIService::IsValidTemperature(double temperature)
+{
+	return std::isfinite(temperature) && temperature >= 0.0 && temperature <= 2.0;
 }
 
 AIProtocolType AIService::ParseProtocolType(const std::string& text)
@@ -7390,7 +7501,7 @@ AIResult AIService::TestConnectionSingle(const AISettings& settings)
 
 	nlohmann::json requestBody;
 	requestBody["model"] = modelUtf8;
-	ApplyOpenAITemperatureIfSupported(requestBody, settings, 0.0);
+	ApplyOpenAITemperatureIfSupported(requestBody, settings);
 	requestBody["stream"] = false;
 	requestBody["messages"] = nlohmann::json::array({
 		{
@@ -8598,6 +8709,57 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"context_window", 500000},
 			{"off_uses_provider_default_high", offUsesProviderDefault},
 			{"supported_efforts_clamped", effortMappingOk}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		AISettings automatic = {};
+		automatic.model = "general-chat";
+		nlohmann::json providerAutomatic;
+		ApplyTemperatureIfSpecified(providerAutomatic, automatic);
+		nlohmann::json openAIAutomatic;
+		ApplyOpenAITemperatureIfSupported(openAIAutomatic, automatic);
+
+		AISettings explicitTemperature = automatic;
+		explicitTemperature.temperature = 0.7;
+		nlohmann::json providerExplicit;
+		ApplyTemperatureIfSpecified(providerExplicit, explicitTemperature);
+		nlohmann::json openAIExplicit;
+		ApplyOpenAITemperatureIfSupported(openAIExplicit, explicitTemperature);
+
+		const std::array<const char*, 7> incompatibleModels = {
+			"gpt-5.6-sol",
+			"openai/o1-pro",
+			"openai/o3-mini",
+			"o4-mini",
+			"codex-mini-latest",
+			"kimi-k2.7-code",
+			"kimi-k3"
+		};
+		bool incompatibleModelsOmitted = true;
+		for (const char* model : incompatibleModels) {
+			AISettings settings = explicitTemperature;
+			settings.model = model;
+			nlohmann::json request;
+			ApplyOpenAITemperatureIfSupported(request, settings);
+			incompatibleModelsOmitted = incompatibleModelsOmitted &&
+				!request.contains("temperature");
+		}
+
+		const bool automaticOmitted =
+			!providerAutomatic.contains("temperature") &&
+			!openAIAutomatic.contains("temperature");
+		const bool explicitApplied =
+			providerExplicit.value("temperature", -1.0) == 0.7 &&
+			openAIExplicit.value("temperature", -1.0) == 0.7;
+		const bool ok = automaticOmitted && explicitApplied && incompatibleModelsOmitted;
+		checks.push_back({
+			{"name", "temperature_auto_and_model_compatibility"},
+			{"ok", ok},
+			{"automatic_omitted", automaticOmitted},
+			{"explicit_applied", explicitApplied},
+			{"known_incompatible_omitted", incompatibleModelsOmitted}
 		});
 		allOk = allOk && ok;
 	}

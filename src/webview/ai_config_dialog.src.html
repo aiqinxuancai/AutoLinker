@@ -131,8 +131,13 @@
 
 						<div class="field-grid grid grid-cols-2 gap-4">
 							<div>
-								<label for="temperature" class="ui-label">温度</label>
-								<input id="temperature" class="ui-input" type="number" min="0" max="2" step="0.1" value="0.2">
+								<div class="flex items-center justify-between gap-3">
+									<label for="temperature" class="ui-label">温度</label>
+									<label class="mb-1 flex items-center gap-1 text-[12px] text-slate-600">
+										<input id="temperatureAuto" type="checkbox" class="h-4 w-4 accent-blue-700" checked>自动
+									</label>
+								</div>
+								<input id="temperature" class="ui-input" type="number" min="0" max="2" step="0.1" value="0.2" disabled>
 							</div>
 							<div>
 								<label for="contextWindow" class="ui-label">上下文长度</label>
@@ -223,7 +228,7 @@ function findEndpoint(id) { for(var i=0;i<_endpoints.length;i++) if(_endpoints[i
 function findGroup(id) { for(var i=0;i<_groups.length;i++) if(_groups[i].id===id) return _groups[i]; return null; }
 function endpointName(id) { var endpoint=findEndpoint(id); return endpoint?endpoint.name:id; }
 function cloneEndpoint(item) {
-	return { id:item.id, name:item.name, protocolType:item.protocolType||"openai", thinkingLevel:item.thinkingLevel||"off", imageInputMode:item.imageInputMode||"auto", baseUrl:item.baseUrl||"", apiKey:item.apiKey||"", model:item.model||"", extraPrompt:item.extraPrompt||"", customHeaders:item.customHeaders||"", timeoutMs:clampInt(item.timeoutMs,1000,2147483647,120000), temperature:typeof item.temperature==="number"?item.temperature:0.2, contextWindow:clampInt(item.contextWindow,0,2147483647,0), retryCount:clampInt(item.retryCount,0,20,5) };
+	return { id:item.id, name:item.name, protocolType:item.protocolType||"openai", thinkingLevel:item.thinkingLevel||"off", imageInputMode:item.imageInputMode||"auto", baseUrl:item.baseUrl||"", apiKey:item.apiKey||"", model:item.model||"", extraPrompt:item.extraPrompt||"", customHeaders:item.customHeaders||"", timeoutMs:clampInt(item.timeoutMs,1000,2147483647,120000), temperature:item.temperature===null?null:(typeof item.temperature==="number"?item.temperature:null), contextWindow:clampInt(item.contextWindow,0,2147483647,0), retryCount:clampInt(item.retryCount,0,20,5) };
 }
 function defaultEndpoint() { return cloneEndpoint({ id:"default", name:"默认" }); }
 function cloneGroup(item) { return { id:item.id, name:item.name, endpointIds:(item.endpointIds||[]).slice() }; }
@@ -260,12 +265,13 @@ function saveEndpointForm(){
 	if(!_settingsLoaded)return;var item=findEndpoint(_selectedEndpointId); if(!item||_selectionType!=="endpoint")return;
 	item.protocolType=$("protocol").value||"openai"; item.thinkingLevel=$("thinkingLevel").value||"off"; item.imageInputMode=$("imageInputMode").value||"auto";
 	item.baseUrl=$("baseUrl").value||""; item.apiKey=$("apiKey").value||""; item.model=$("model").value||""; item.extraPrompt=$("extraPrompt").value||""; item.customHeaders=$("customHeaders").value||"";
-	item.timeoutMs=clampInt($("timeoutMs").value,1000,2147483647,120000); item.temperature=numberValue("temperature",0.2); item.contextWindow=clampInt($("contextWindow").value,0,2147483647,0); item.retryCount=clampInt($("retryCount").value,0,20,5);
+	item.timeoutMs=clampInt($("timeoutMs").value,1000,2147483647,120000); item.temperature=$("temperatureAuto").checked?null:numberValue("temperature",NaN); item.contextWindow=clampInt($("contextWindow").value,0,2147483647,0); item.retryCount=clampInt($("retryCount").value,0,20,5);
 }
+function updateTemperatureInputState(){var automatic=$("temperatureAuto").checked;$("temperature").disabled=automatic;$("temperature").setAttribute("aria-disabled",automatic?"true":"false");if(!automatic&&!trimText($("temperature").value))$("temperature").value="0.2";}
 function applyEndpointForm(item){
 	if(!item)return; $("endpointTitle").textContent=item.name; $("protocol").value=item.protocolType; $("thinkingLevel").value=item.thinkingLevel; $("imageInputMode").value=item.imageInputMode;
 	$("baseUrl").value=item.baseUrl; $("apiKey").value=item.apiKey; $("model").value=item.model; $("extraPrompt").value=item.extraPrompt; $("customHeaders").value=item.customHeaders;
-	$("timeoutMs").value=String(item.timeoutMs); $("temperature").value=String(item.temperature); $("contextWindow").value=item.contextWindow?String(item.contextWindow):""; $("retryCount").value=String(item.retryCount);
+	$("timeoutMs").value=String(item.timeoutMs); $("temperatureAuto").checked=item.temperature===null; $("temperature").value=item.temperature===null?"0.2":String(item.temperature); updateTemperatureInputState(); $("contextWindow").value=item.contextWindow?String(item.contextWindow):""; $("retryCount").value=String(item.retryCount);
 	$("endpointEnabled").checked=_activeTarget.type==="endpoint"&&_activeTarget.id===item.id; updateEndpointPreview(); updateProviderSiteLink(item.baseUrl); updateModelMenu(presetModels(item.baseUrl));
 }
 
@@ -337,7 +343,7 @@ function missingEndpointFields(endpoint){var fields=[];if(!endpoint||!trimText(e
 function collect(){if(!_settingsLoaded)return {activeTarget:{type:"",id:""},endpoints:[],groups:[]};saveEndpointForm();return {activeTarget:{type:_activeTarget.type,id:_activeTarget.id},endpoints:_endpoints.map(cloneEndpoint),groups:_groups.map(cloneGroup)};}
 function collectTestData(){var data=collect();data.activeTarget=_selectionType==="group"?{type:"group",id:_selectedGroupId}:{type:"endpoint",id:_selectedEndpointId};return data;}
 function validate(data){
-	if(!data.endpoints.length){alert("至少需要一个 API 端点。");return false;}var ids={};for(var i=0;i<data.endpoints.length;i++){var endpoint=data.endpoints[i];if(!trimText(endpoint.name)||ids[endpoint.id]){alert("API 端点名称或 ID 无效。");return false;}ids[endpoint.id]=true;endpoint.retryCount=clampInt(endpoint.retryCount,0,20,5);}
+	if(!data.endpoints.length){alert("至少需要一个 API 端点。");return false;}var ids={};for(var i=0;i<data.endpoints.length;i++){var endpoint=data.endpoints[i];if(!trimText(endpoint.name)||ids[endpoint.id]){alert("API 端点名称或 ID 无效。");return false;}if(endpoint.temperature!==null&&(typeof endpoint.temperature!=="number"||!isFinite(endpoint.temperature)||endpoint.temperature<0||endpoint.temperature>2)){alert("API 端点“"+(trimText(endpoint.name)||endpoint.id)+"”的温度必须为自动，或者 0 到 2 之间的数值。");return false;}ids[endpoint.id]=true;endpoint.retryCount=clampInt(endpoint.retryCount,0,20,5);}
 	var activeEndpoints=[],activeEndpointIds=[];if(data.activeTarget.type==="endpoint"){var target=findEndpoint(data.activeTarget.id);if(!target){alert("当前启用的 API 端点无效。");return false;}activeEndpoints=[target];activeEndpointIds=[target.id];}else{var group=findGroup(data.activeTarget.id);if(!group||!group.endpointIds.length){alert("当前启用的端点分组无效或没有成员。");return false;}activeEndpointIds=group.endpointIds.slice();activeEndpoints=activeEndpointIds.map(findEndpoint);}
 	for(var j=0;j<activeEndpoints.length;j++){var active=activeEndpoints[j];if(!active){alert("启用目标引用的端点不存在（ID："+activeEndpointIds[j]+"）。");return false;}var missingFields=missingEndpointFields(active);if(missingFields.length){alert("启用目标中的端点“"+(trimText(active.name)||active.id)+"”缺少配置项："+missingFields.join("、")+"。");return false;}if(!validateHeaders(active.customHeaders))return false;}return true;
 }
@@ -360,6 +366,7 @@ $("endpointEnabled").onchange=function(){setActiveTarget("endpoint",_selectedEnd
 $("addGroupMemberBtn").onclick=openEndpointPicker;$("closeEndpointPickerBtn").onclick=closeEndpointPicker;$("cancelEndpointPickerBtn").onclick=closeEndpointPicker;$("confirmEndpointPickerBtn").onclick=confirmEndpointPicker;$("endpointPickerSearch").oninput=renderEndpointPicker;$("endpointPickerDialog").onclick=function(event){if(event.target===this)closeEndpointPicker();};
 $("providerSiteLink").onclick=function(event){event.preventDefault();var url=this.getAttribute("data-url");if(url)post({action:"open_url",url:url});};
 $("toggleApiKey").onclick=function(){toggleSecret("apiKey","toggleApiKey");};$("protocol").onchange=updateEndpointPreview;$("baseUrl").oninput=function(){updateEndpointPreview();updateProviderSiteLink(this.value);updateModelMenu(presetModels(this.value));};
+$("temperatureAuto").onchange=updateTemperatureInputState;
 $("modelArrow").onclick=function(event){event.stopPropagation();_modelMenuOpen?hideModelMenu():showModelMenu();};$("modelArrow").onmousedown=function(event){event.preventDefault();};$("model").onfocus=showModelMenu;$("model").onblur=function(){setTimeout(hideModelMenu,150);};$("modelFetchBtn").onclick=requestModels;
 $("presetBtn").onclick=function(event){event.stopPropagation();_presetMenuOpen?hidePresetMenu():showPresetMenu();};document.addEventListener("click",function(event){if(!$("modelCmb").contains(event.target))hideModelMenu();if(!$("presetMenuAnchor").contains(event.target))hidePresetMenu();});
 document.addEventListener("keydown",function(event){if(event.key==="Escape"&&$("endpointPickerDialog").getAttribute("aria-hidden")==="false")closeEndpointPicker();});

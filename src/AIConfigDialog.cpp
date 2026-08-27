@@ -734,8 +734,13 @@ void ApplyProfileValuesToSettings(const std::map<std::string, std::string>& valu
 	if (const auto it = values.find("stream_idle_timeout_ms"); it != values.end()) {
 		try { settings.streamIdleTimeoutMs = (std::clamp)(std::stoi(it->second), 1000, 1800000); } catch (...) {}
 	}
+	// 兼容历史端点：字段缺失沿用旧默认 0.2，显式 auto 才使用服务端默认。
+	settings.temperature = 0.2;
 	if (const auto it = values.find("temperature"); it != values.end()) {
-		try { settings.temperature = std::stod(it->second); } catch (...) {}
+		std::optional<double> parsedTemperature;
+		settings.temperature = AIService::TryParseTemperature(it->second, parsedTemperature)
+			? parsedTemperature
+			: std::nullopt;
 	}
 	if (const auto it = values.find("context_window"); it != values.end()) {
 		try { settings.contextWindowTokens = (std::max)(0, std::stoi(it->second)); } catch (...) {}
@@ -747,7 +752,7 @@ void ApplyProfileValuesToSettings(const std::map<std::string, std::string>& valu
 
 std::map<std::string, std::string> BuildProfileValuesFromSettings(const AISettings& settings)
 {
-	return {
+	std::map<std::string, std::string> values = {
 		{ "protocol_type", AIService::ProtocolTypeToString(settings.protocolType) },
 		{ "thinking_level", AIService::ThinkingLevelToString(settings.thinkingLevel) },
 		{ "image_input_mode", AIService::ImageInputModeToString(settings.imageInputMode) },
@@ -758,10 +763,11 @@ std::map<std::string, std::string> BuildProfileValuesFromSettings(const AISettin
 		{ "custom_headers", settings.customHeadersText },
 		{ "timeout_ms", std::to_string(settings.timeoutMs) },
 		{ "stream_idle_timeout_ms", std::to_string((std::clamp)(settings.streamIdleTimeoutMs, 1000, 1800000)) },
-		{ "temperature", std::format("{:.2f}", settings.temperature) },
 		{ "context_window", std::to_string(settings.contextWindowTokens) },
 		{ "retry_count", std::to_string((std::clamp)(settings.retryCount, 0, 20)) }
 	};
+	values["temperature"] = AIService::TemperatureToConfigValue(settings.temperature);
+	return values;
 }
 
 std::vector<AIConfigProfileEntry> LoadProfileEntriesFromJsonConfig(AIJsonConfig& jsonConfig, AISettings& ioSettings, std::string& outActiveProfileId)
@@ -1606,7 +1612,9 @@ std::string BuildAIConfigWebViewSettingsJson(
 		item["extraPrompt"] = LocalToUtf8Text(endpoint.settings.extraSystemPrompt);
 		item["customHeaders"] = LocalToUtf8Text(endpoint.settings.customHeadersText);
 		item["timeoutMs"] = endpoint.settings.timeoutMs;
-		item["temperature"] = endpoint.settings.temperature;
+		item["temperature"] = endpoint.settings.temperature.has_value()
+			? nlohmann::json(*endpoint.settings.temperature)
+			: nlohmann::json(nullptr);
 		item["contextWindow"] = endpoint.settings.contextWindowTokens;
 		item["retryCount"] = endpoint.settings.retryCount;
 		initialSettings["endpoints"].push_back(std::move(item));
@@ -2051,7 +2059,20 @@ AISettings ReadAISettingsFromWebProfilePayload(const AISettings& current, const 
 	next.extraSystemPrompt = Utf8ToLocalText(data.value("extraPrompt", ""));
 	next.customHeadersText = Utf8ToLocalText(data.value("customHeaders", ""));
 	next.timeoutMs = (std::max)(1000, data.value("timeoutMs", next.timeoutMs));
-	next.temperature = data.value("temperature", next.temperature);
+	if (const auto it = data.find("temperature"); it != data.end()) {
+		if (it->is_null()) {
+			next.temperature.reset();
+		}
+		else if (it->is_number()) {
+			const double temperature = it->get<double>();
+			next.temperature = AIService::IsValidTemperature(temperature)
+				? std::optional<double>(temperature)
+				: std::nullopt;
+		}
+		else {
+			next.temperature.reset();
+		}
+	}
 	next.contextWindowTokens = (std::max)(0, data.value("contextWindow", 0));
 	next.retryCount = (std::clamp)(data.value("retryCount", 5), 0, 20);
 	return next;
@@ -2111,6 +2132,14 @@ bool TryBuildAISettingsFromWebPayload(
 		if (!item.is_object()) {
 			outError = "API 端点数据无效。";
 			return false;
+		}
+		if (const auto temperatureIt = item.find("temperature");
+			temperatureIt != item.end() && !temperatureIt->is_null()) {
+			if (!temperatureIt->is_number() ||
+				!AIService::IsValidTemperature(temperatureIt->get<double>())) {
+				outError = "温度必须为自动，或者 0 到 2 之间的有限数值。";
+				return false;
+			}
 		}
 		AIConfigProfileEntry entry;
 		entry.id = Utf8ToLocalText(item.value("id", ""));

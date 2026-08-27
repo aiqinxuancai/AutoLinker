@@ -2391,6 +2391,10 @@ body,
 .mode-menu-item:focus-visible { background: var(--al-button-hover-bg); }
 .mode-menu-item-icon { color: var(--al-muted-text); }
 .mode-menu-item-state { color: var(--al-primary); }
+.mode-menu-item.goal-active .mode-menu-item-state { color: var(--al-primary); }
+.mode-menu-item.goal-paused .mode-menu-item-state { color: var(--al-warning); }
+.mode-menu-item.goal-blocked .mode-menu-item-state { color: var(--al-danger); }
+.mode-menu-item.goal-complete .mode-menu-item-state { color: var(--al-success); }
 .session-item-title,
 .page-msgbox-title {
 	color: var(--al-plan-text);

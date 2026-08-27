@@ -455,7 +455,9 @@ void RunAiFunctionReplaceTask(AITaskKind kind)
 			"[SETTINGS] baseUrl=\"" + EscapeOneLineForLog(settings.baseUrl) +
 			"\" model=\"" + EscapeOneLineForLog(settings.model) +
 			"\" timeoutMs=" + std::to_string(settings.timeoutMs) +
-			" temperature=" + std::format("{:.3f}", settings.temperature));
+			" temperature=" + (settings.temperature.has_value()
+				? std::format("{:.3f}", *settings.temperature)
+				: std::string("auto")));
 
 		const std::string userInput =
 			"请处理以下易语言函数代码，并严格返回完整可替换代码：\n```e\n" +

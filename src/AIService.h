@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -64,7 +65,7 @@ struct AIEndpointSettings {
 	std::string customHeadersText;
 	int timeoutMs = 120000;
 	int streamIdleTimeoutMs = 300000; // 流式响应连续无数据的最大等待时间
-	double temperature = 0.2;
+	std::optional<double> temperature; // 空值表示使用模型服务端默认温度
 	int contextWindowTokens = 0; // 0 = 未设置，回落到模型表/默认
 	AIImageInputMode imageInputMode = AIImageInputMode::Auto;
 	int retryCount = 5; // 首次请求之外的额外重试次数
@@ -223,6 +224,10 @@ public:
 	static AIProtocolType ParseProtocolType(const std::string& text);
 	static std::string ProtocolTypeToString(AIProtocolType protocolType);
 	static std::string ProtocolTypeDisplayName(AIProtocolType protocolType);
+	// 解析持久化温度；auto/空字符串表示自动，非法值返回 false。
+	static bool TryParseTemperature(const std::string& text, std::optional<double>& outTemperature);
+	static std::string TemperatureToConfigValue(const std::optional<double>& temperature);
+	static bool IsValidTemperature(double temperature);
 	static AIThinkingLevel ParseThinkingLevel(const std::string& text);
 	static std::string ThinkingLevelToString(AIThinkingLevel thinkingLevel);
 	static std::string ThinkingLevelDisplayName(AIThinkingLevel thinkingLevel);

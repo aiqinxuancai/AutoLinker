@@ -34,6 +34,164 @@
 #previewRoot .preview-color-flash.preview-color-text-flash.preview-composer-input::placeholder {
 	animation: preview-color-text-flash 340ms ease-in-out 2;
 }
+#previewRoot {
+	font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	font-size: 10px;
+	line-height: 1.5;
+}
+#previewRoot button,
+#previewRoot textarea {
+	font: inherit;
+}
+#previewRoot .chat-preview {
+	display: flex;
+	height: 100%;
+	min-height: 0;
+	flex-direction: column;
+	overflow: hidden;
+}
+#previewRoot .preview-topbar {
+	display: flex;
+	height: 36px;
+	flex: 0 0 36px;
+	align-items: center;
+	justify-content: space-between;
+	padding: 0 9px 0 10px;
+}
+#previewRoot .preview-brand {
+	font-size: 11px;
+	font-weight: 500;
+}
+#previewRoot .preview-top-actions,
+#previewRoot .preview-composer-actions,
+#previewRoot .preview-activity-main,
+#previewRoot .preview-activity-actions {
+	display: flex;
+	align-items: center;
+}
+#previewRoot .preview-top-actions {
+	gap: 3px;
+}
+#previewRoot .preview-top-action {
+	display: inline-flex;
+	height: 22px;
+	min-width: 22px;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	background: transparent;
+	padding: 0 4px;
+}
+#previewRoot .preview-history {
+	min-height: 0;
+	flex: 1 1 auto;
+	overflow: auto;
+}
+#previewRoot .preview-message {
+	padding: 8px 10px;
+}
+#previewRoot .preview-role {
+	margin-bottom: 4px;
+	font-weight: 700;
+}
+#previewRoot .preview-body {
+	overflow-wrap: anywhere;
+}
+#previewRoot .preview-code {
+	margin: 6px 0 0;
+	padding: 7px 8px;
+	white-space: pre-wrap;
+}
+#previewRoot .preview-tool-card,
+#previewRoot .preview-plan-card,
+#previewRoot .preview-approval-card {
+	margin-top: 5px;
+	padding: 6px 7px;
+}
+#previewRoot .preview-chip {
+	display: inline-flex;
+	align-items: center;
+	margin-left: 4px;
+	padding: 1px 5px;
+}
+#previewRoot .preview-diff {
+	margin: 5px 0 0;
+	padding: 5px 6px;
+	white-space: pre-wrap;
+}
+#previewRoot .preview-plan-step {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 4px;
+}
+#previewRoot .preview-composer {
+	flex: 0 0 auto;
+	padding: 7px 8px 8px;
+}
+#previewRoot .preview-activity-dock {
+	display: grid;
+	gap: 4px;
+	margin-bottom: 6px;
+}
+#previewRoot .preview-activity {
+	min-width: 0;
+	padding: 5px 6px;
+}
+#previewRoot .preview-activity-main {
+	min-width: 0;
+	flex: 1 1 auto;
+	gap: 5px;
+}
+#previewRoot .preview-activity-label {
+	flex: 0 0 auto;
+	font-weight: 700;
+}
+#previewRoot .preview-activity-summary {
+	min-width: 0;
+	flex: 1 1 auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+#previewRoot .preview-activity-actions {
+	flex: 0 0 auto;
+	gap: 4px;
+}
+#previewRoot .preview-composer-surface {
+	overflow: hidden;
+}
+#previewRoot .preview-composer-input {
+	display: block;
+	width: 100%;
+	height: 42px;
+	resize: none;
+	border: 0;
+	padding: 8px 9px;
+	outline: 0;
+}
+#previewRoot .preview-composer-toolbar {
+	display: flex;
+	height: 32px;
+	align-items: center;
+	justify-content: space-between;
+	padding: 3px 5px;
+}
+#previewRoot .preview-composer-actions {
+	gap: 4px;
+}
+#previewRoot .preview-toolbar-button,
+#previewRoot .preview-send-button {
+	display: inline-flex;
+	height: 24px;
+	align-items: center;
+	justify-content: center;
+	padding: 0 6px;
+}
+#previewRoot .preview-send-button {
+	width: 24px;
+	padding: 0;
+}
 </style>
 </head>
 <body class="h-full overflow-hidden font-sans text-[13px]">
@@ -546,51 +704,59 @@ function renderPreview() {
 	var theme = currentTheme() || defaultTheme();
 	var c = clone((theme && theme.colors) || {});
 	var root = $("previewRoot");
-	root.innerHTML = "";
-	var frame = document.createElement("div");
-	frame.className = "flex h-full flex-col";
-	frame.setAttribute("data-preview-key", "pageBg");
-	frame.style.background = c.pageBg;
-	frame.style.color = c.text;
-	var top = document.createElement("div");
-	top.className = "flex h-9 items-center justify-between px-3";
-	top.setAttribute("data-preview-key", "toolbarBg border");
-	top.style.background = c.toolbarBg;
-	top.style.borderBottom = "1px solid " + c.border;
-	top.innerHTML = '<strong data-preview-key="brand" data-preview-text="true" style="color:' + c.brand + '">AUTOLINKER</strong>' +
-		'<div style="display:flex;align-items:center;gap:8px"><span data-preview-key="accent" data-preview-text="true" style="color:' + c.accent + ';font-weight:600">强调</span>' +
-		'<span data-preview-key="subtleText" data-preview-text="true" style="color:' + c.subtleText + '">上下文 18%</span></div>';
-	var history = document.createElement("div");
-	history.className = "min-h-0 flex-1 overflow-auto";
-	history.innerHTML =
-		'<section data-preview-key="userMsgBg" style="background:' + c.userMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
-		'<div data-preview-key="roleText" data-preview-text="true" style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">用户</div>' +
-		'<div data-preview-key="bodyText" data-preview-text="true" style="color:' + c.bodyText + '">请生成一个带日志输出的初始化函数。</div></section>' +
-		'<section data-preview-key="assistantMsgBg" style="background:' + c.assistantMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
-		'<div data-preview-key="roleText" data-preview-text="true" style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">AI</div>' +
-		'<div data-preview-key="bodyText" data-preview-text="true" style="color:' + c.bodyText + '">可以这样组织：<a data-preview-key="linkText" data-preview-text="true" style="color:' + c.linkText + ';text-decoration:none" href="#">查看说明</a> <code data-preview-key="inlineCodeBg" style="background:' + c.inlineCodeBg + ';padding:1px 4px;border-radius:4px">Init()</code>' +
-		'<pre data-preview-key="codeBlockBg codeText" data-preview-text="true" data-preview-text-key="codeText" style="margin-top:8px;background:' + c.codeBlockBg + ';color:' + c.codeText + ';border-radius:6px;padding:10px;white-space:pre-wrap">bool Init() {\\n    return true;\\n}</pre>' +
-		'<div data-preview-key="panelBg softBorder" style="margin-top:8px;overflow:hidden;border:1px solid ' + c.softBorder + ';background:' + c.panelBg + ';border-radius:6px"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead style="background:' + c.buttonHoverBg + '"><tr><th style="padding:5px 7px;text-align:left;border-right:1px solid ' + c.softBorder + '">方法</th><th style="padding:5px 7px;text-align:left">优先级</th></tr></thead><tbody><tr><td style="padding:5px 7px;border-top:1px solid ' + c.softBorder + ';border-right:1px solid ' + c.softBorder + '"><code data-preview-key="inlineCodeBg" style="background:' + c.inlineCodeBg + ';padding:1px 4px;border-radius:4px">Init</code></td><td style="padding:5px 7px;border-top:1px solid ' + c.softBorder + '">高</td></tr></tbody></table></div></div></section>' +
-		'<section data-preview-key="toolMsgBg" style="background:' + c.toolMsgBg + ';border-bottom:1px solid ' + c.border + ';padding:10px 12px">' +
-		'<div style="font-weight:700;color:' + c.roleText + ';margin-bottom:6px">工具 <span data-preview-key="chipBg" style="background:' + c.chipBg + ';padding:1px 6px;border-radius:5px;font-size:10px"><span data-preview-key="success" data-preview-text="true" style="color:' + c.success + '">完成</span></span></div>' +
-		'<pre data-preview-key="diffBg" style="margin:0;background:' + c.diffBg + ';color:' + c.planText + ';border-radius:6px;padding:8px;white-space:pre-wrap"><span data-preview-key="diffAdd" data-preview-text="true" style="color:' + c.diffAdd + '">+ 新增日志输出</span>\\n<span data-preview-key="diffDel" data-preview-text="true" style="color:' + c.diffDel + '">- 删除旧提示</span></pre></section>' +
-		'<section data-preview-key="planMsgBg" style="background:' + c.planMsgBg + ';padding:10px 12px"><div data-preview-key="planBg planBorder" style="border:1px solid ' + c.planBorder + ';background:' + c.planBg + ';color:' + c.planText + ';padding:10px;border-radius:8px"><span data-preview-key="planText" data-preview-text="true" style="color:' + c.planText + '">实施计划</span> <span style="background:' + c.chipBg + ';color:' + c.primary + ';padding:2px 6px;border-radius:5px">预览</span></div></section>' +
-		'<section data-preview-key="systemMsgBg" style="background:' + c.systemMsgBg + ';padding:10px 12px"><div data-preview-key="approvalBg" style="border:1px solid ' + c.softBorder + ';background:' + c.approvalBg + ';color:' + c.text + ';padding:8px;border-radius:8px"><span data-preview-key="text" data-preview-text="true" style="color:' + c.text + '">写入审批</span> <span data-preview-key="warning" data-preview-text="true" style="color:' + c.warning + '">等待确认</span><span style="color:' + c.subtleText + ';margin:0 5px">·</span><span data-preview-key="danger" data-preview-text="true" style="color:' + c.danger + '">拒绝</span></div></section>';
-	var composer = document.createElement("div");
-	composer.className = "border-t p-3";
-	composer.setAttribute("data-preview-key", "composerBg");
-	composer.style.borderColor = c.border;
-	composer.style.background = c.composerBg;
-	composer.innerHTML = '<textarea class="preview-composer-input" data-preview-key="inputBg inputBorder placeholder" data-preview-text="true" data-preview-text-key="placeholder" readonly placeholder="输入消息..." style="--preview-placeholder-color:' + c.placeholder + ';width:100%;height:64px;border:1px solid ' + c.inputBorder + ';background:' + c.inputBg + ';color:' + c.text + ';border-radius:6px;padding:8px;resize:none"></textarea>' +
-		'<div style="margin-top:8px;display:flex;align-items:center;justify-content:space-between;gap:8px"><span data-preview-key="mutedText" data-preview-text="true" style="color:' + c.mutedText + '">自动允许</span>' +
-		'<div style="display:flex;align-items:center;gap:5px"><button data-preview-key="buttonBg" style="border:1px solid ' + c.softBorder + ';background:' + c.buttonBg + ';color:' + c.text + ';border-radius:6px;padding:6px 8px">设置</button>' +
-		'<button data-preview-key="buttonHoverBg" style="border:1px solid ' + c.softBorder + ';background:' + c.buttonHoverBg + ';color:' + c.text + ';border-radius:6px;padding:6px 8px">按钮悬停</button>' +
-		'<button data-preview-key="primaryHover" style="border:1px solid ' + c.primaryHover + ';background:' + c.primaryHover + ';color:' + c.panelBg + ';border-radius:6px;padding:6px 8px">主色悬停</button>' +
-		'<button data-preview-key="primary" style="border:1px solid ' + c.primary + ';background:' + c.primary + ';color:' + c.panelBg + ';border-radius:6px;padding:6px 10px">发送</button></div></div>';
-	frame.appendChild(top);
-	frame.appendChild(history);
-	frame.appendChild(composer);
-	root.appendChild(frame);
+	root.innerHTML =
+		'<div class="chat-preview" data-preview-key="pageBg" style="background:' + c.pageBg + ';color:' + c.text + '">' +
+			'<div class="preview-topbar" data-preview-key="toolbarBg border" style="background:' + c.toolbarBg + ';border-bottom:1px solid ' + c.border + '">' +
+				'<span class="preview-brand" data-preview-key="brand" data-preview-text="true" style="color:' + c.brand + '">AUTOLINKER</span>' +
+				'<div class="preview-top-actions" data-preview-key="text" data-preview-text="true" style="color:' + c.text + '">' +
+					'<button class="preview-top-action" type="button">＋</button><button class="preview-top-action" type="button">↶</button>' +
+					'<button class="preview-top-action" type="button">⚙</button><button class="preview-top-action" type="button" data-preview-key="accent" data-preview-text="true" style="color:' + c.accent + ';font-weight:700">MCP</button>' +
+				'</div>' +
+			'</div>' +
+			'<div class="preview-history" data-preview-key="pageBg" style="background:' + c.pageBg + '">' +
+				'<section class="preview-message" data-preview-key="userMsgBg border" style="background:' + c.userMsgBg + ';border-bottom:1px solid ' + c.border + '">' +
+					'<div class="preview-role" data-preview-key="roleText" data-preview-text="true" style="color:' + c.roleText + '">用户</div>' +
+					'<div class="preview-body" data-preview-key="bodyText" data-preview-text="true" style="color:' + c.bodyText + '">请为初始化流程增加日志，并更新执行计划。</div>' +
+				'</section>' +
+				'<section class="preview-message" data-preview-key="assistantMsgBg border" style="background:' + c.assistantMsgBg + ';border-bottom:1px solid ' + c.border + '">' +
+					'<div class="preview-role" data-preview-key="roleText" data-preview-text="true" style="color:' + c.roleText + '">AI</div>' +
+					'<div class="preview-body" data-preview-key="bodyText" data-preview-text="true" style="color:' + c.bodyText + '">我会先检查 <code data-preview-key="inlineCodeBg" style="background:' + c.inlineCodeBg + ';padding:1px 4px">Init()</code>，再按<a href="#" data-preview-key="linkText" data-preview-text="true" style="color:' + c.linkText + ';text-decoration:none">项目规范</a>修改。</div>' +
+					'<pre class="preview-code" data-preview-key="codeBlockBg codeText" data-preview-text="true" data-preview-text-key="codeText" style="background:' + c.codeBlockBg + ';color:' + c.codeText + '">bool Init() {\n    Log("ready");\n    return true;\n}</pre>' +
+				'</section>' +
+				'<section class="preview-message" data-preview-key="toolMsgBg border" style="background:' + c.toolMsgBg + ';border-bottom:1px solid ' + c.border + '">' +
+					'<div class="preview-role" data-preview-key="roleText" data-preview-text="true" style="color:' + c.roleText + '">工具调用 <span class="preview-chip" data-preview-key="chipBg" style="background:' + c.chipBg + '"><span data-preview-key="success" data-preview-text="true" style="color:' + c.success + '">已完成</span></span></div>' +
+					'<div class="preview-tool-card" data-preview-key="systemMsgBg softBorder" style="background:' + c.systemMsgBg + ';border:1px solid ' + c.softBorder + '">' +
+						'<span data-preview-key="mutedText" data-preview-text="true" style="color:' + c.mutedText + '">apply_patch · 2 处修改</span>' +
+						'<pre class="preview-diff" data-preview-key="diffBg planText" style="background:' + c.diffBg + ';color:' + c.planText + '"><span data-preview-key="diffAdd" data-preview-text="true" style="color:' + c.diffAdd + '">+ Log("ready");</span>\n<span data-preview-key="diffDel" data-preview-text="true" style="color:' + c.diffDel + '">- // TODO</span></pre>' +
+					'</div>' +
+				'</section>' +
+				'<section class="preview-message" data-preview-key="planMsgBg border" style="background:' + c.planMsgBg + ';border-bottom:1px solid ' + c.border + '">' +
+					'<div class="preview-plan-card" data-preview-key="planBg planBorder planText" data-preview-text="true" data-preview-text-key="planText" style="background:' + c.planBg + ';border:1px solid ' + c.planBorder + ';color:' + c.planText + '">' +
+						'<strong>执行计划</strong><span class="preview-chip" data-preview-key="chipBg primary" data-preview-text="true" data-preview-text-key="primary" style="background:' + c.chipBg + ';color:' + c.primary + '">进行中</span>' +
+						'<div class="preview-plan-step"><span data-preview-key="success" data-preview-text="true" style="color:' + c.success + '">完成</span><span>定位初始化入口</span></div>' +
+						'<div class="preview-plan-step"><span data-preview-key="warning" data-preview-text="true" style="color:' + c.warning + '">执行</span><span>补充日志和验证</span></div>' +
+					'</div>' +
+				'</section>' +
+				'<section class="preview-message" data-preview-key="systemMsgBg" style="background:' + c.systemMsgBg + '">' +
+					'<div class="preview-approval-card" data-preview-key="approvalBg softBorder text" data-preview-text="true" data-preview-text-key="text" style="background:' + c.approvalBg + ';border:1px solid ' + c.softBorder + ';color:' + c.text + '">写入审批 <span data-preview-key="warning" data-preview-text="true" style="color:' + c.warning + '">等待确认</span> <span data-preview-key="danger" data-preview-text="true" style="color:' + c.danger + '">拒绝</span></div>' +
+				'</section>' +
+			'</div>' +
+			'<div class="preview-composer" data-preview-key="composerBg border" style="background:' + c.composerBg + ';border-top:1px solid ' + c.border + '">' +
+				'<div class="preview-activity-dock">' +
+					'<div class="preview-activity" data-preview-key="panelBg softBorder" style="background:' + c.panelBg + ';border:1px solid ' + c.softBorder + '">' +
+						'<div class="preview-activity-main"><span data-preview-key="primary" data-preview-text="true" style="color:' + c.primary + '">◎</span><span class="preview-activity-label" data-preview-key="planText" data-preview-text="true" style="color:' + c.planText + '">进行中的目标</span><span class="preview-activity-summary" data-preview-key="mutedText" data-preview-text="true" style="color:' + c.mutedText + '">完成日志功能并通过编译</span></div>' +
+						'<div class="preview-activity-actions"><span data-preview-key="subtleText" data-preview-text="true" style="color:' + c.subtleText + '">Ⅱ</span><span data-preview-key="danger" data-preview-text="true" style="color:' + c.danger + '">×</span></div>' +
+					'</div>' +
+				'</div>' +
+				'<div class="preview-composer-surface" data-preview-key="inputBg inputBorder" style="background:' + c.inputBg + ';border:1px solid ' + c.inputBorder + '">' +
+					'<textarea class="preview-composer-input" data-preview-key="inputBg placeholder" data-preview-text="true" data-preview-text-key="placeholder" readonly placeholder="输入消息，Enter 发送..." style="--preview-placeholder-color:' + c.placeholder + ';background:' + c.inputBg + ';color:' + c.text + '"></textarea>' +
+					'<div class="preview-composer-toolbar" data-preview-key="softBorder" style="border-top:1px solid ' + c.softBorder + '">' +
+						'<div class="preview-composer-actions"><button class="preview-toolbar-button" type="button" data-preview-key="buttonBg text" data-preview-text="true" data-preview-text-key="text" style="background:' + c.buttonBg + ';color:' + c.text + ';border:1px solid ' + c.softBorder + '">＋</button><button class="preview-toolbar-button" type="button" data-preview-key="buttonHoverBg primaryHover" data-preview-text="true" data-preview-text-key="primaryHover" style="background:' + c.buttonHoverBg + ';color:' + c.primaryHover + ';border:0">默认 API</button></div>' +
+						'<div class="preview-composer-actions"><span data-preview-key="subtleText" data-preview-text="true" style="color:' + c.subtleText + '">0m 18s</span><button class="preview-toolbar-button" type="button" data-preview-key="buttonHoverBg primary" data-preview-text="true" data-preview-text-key="primary" style="background:' + c.buttonHoverBg + ';color:' + c.primary + ';border:0">手动⌄</button><button class="preview-send-button" type="button" data-preview-key="primary panelBg" style="background:' + c.primary + ';color:' + c.panelBg + ';border:0">➤</button></div>' +
+					'</div>' +
+				'</div>' +
+			'</div>' +
+		'</div>';
 	if (_activeColorKey) {
 		highlightPreviewColor(_activeColorKey, false);
 	}
