@@ -1341,6 +1341,7 @@ bool RunBuiltInThemeSmokeTest()
 			!defaultTheme->value("isDefault", false) ||
 			!darkTheme->value("isBuiltIn", false) ||
 			darkTheme->value("isDefault", true) ||
+			payload.value("fontSize", 0) != 13 ||
 			!darkTheme->contains("colors") || !(*darkTheme)["colors"].is_object()) {
 			return false;
 		}

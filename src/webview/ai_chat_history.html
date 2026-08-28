@@ -8,7 +8,7 @@ html, body {
 	padding: 0;
 	background: #e6e9ef;
 	color: #4c4f69;
-	font: 13px/1.6 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+	font: var(--al-font-size, 13px)/1.6 "Microsoft YaHei UI", "Segoe UI", sans-serif;
 }
 
 body {
@@ -164,7 +164,7 @@ html:not(.autolinker-page-visible) *::after {
 	padding: 0;
 	box-sizing: border-box;
 	background: #e6e9ef;
-	font-size: 12px;
+	font-size: var(--al-font-size, 13px);
 	color: #4c4f69;
 }
 
@@ -1219,6 +1219,7 @@ html:not(.autolinker-page-visible) *::after {
 	box-sizing: border-box;
 	overflow: hidden;
 	color: #4c4f69;
+	font-size: var(--al-font-size, 13px);
 }
 
 .msg.user {
@@ -2016,6 +2017,7 @@ html:not(.autolinker-page-visible) *::after {
 }
 
 :root {
+	--al-font-size: 13px;
 	--al-page-bg: #e6e9ef;
 	--al-text: #4c4f69;
 	--al-muted-text: #5d6475;
@@ -2140,6 +2142,7 @@ body,
 #chat-input {
 	background: var(--al-input-bg);
 	color: var(--al-text);
+	font-size: var(--al-font-size);
 }
 #chat-input::placeholder { color: var(--al-placeholder); }
 .toolbar-text-btn { color: var(--al-muted-text); }
@@ -2563,6 +2566,9 @@ window.autolinkerEscapeHtml = function(text) {
 
 window.autolinkerApplyTheme = function(theme) {
 	var colors = theme && theme.colors ? theme.colors : {};
+	var fontSize = Number(theme && theme.fontSize);
+	if (!isFinite(fontSize)) { fontSize = 13; }
+	fontSize = Math.max(10, Math.min(24, Math.round(fontSize)));
 	var map = {
 		pageBg: "--al-page-bg",
 		text: "--al-text",
@@ -2606,6 +2612,7 @@ window.autolinkerApplyTheme = function(theme) {
 		placeholder: "--al-placeholder"
 	};
 	var root = document.documentElement;
+	root.style.setProperty("--al-font-size", fontSize + "px");
 	for (var key in map) {
 		if (Object.prototype.hasOwnProperty.call(map, key) && colors[key]) {
 			root.style.setProperty(map[key], colors[key]);

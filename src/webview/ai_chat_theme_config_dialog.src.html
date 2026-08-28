@@ -36,8 +36,10 @@
 }
 #previewRoot {
 	font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
-	font-size: 10px;
 	line-height: 1.5;
+}
+#previewRoot .chat-preview {
+	font-size: var(--preview-font-size, 10px);
 }
 #previewRoot button,
 #previewRoot textarea {
@@ -302,6 +304,10 @@ var _dirty = false;
 var _activeColorKey = "";
 var _lastColorActivationAt = 0;
 var _previewFlashTimer = 0;
+var DEFAULT_FONT_SIZE = 13;
+var MIN_FONT_SIZE = 10;
+var MAX_FONT_SIZE = 24;
+var _fontSize = DEFAULT_FONT_SIZE;
 
 function $(id) { return document.getElementById(id); }
 function post(payload) {
@@ -329,6 +335,7 @@ function defaultTheme() {
 function snapshot() {
 	return JSON.stringify({
 		currentThemeId: _selectedId,
+		fontSize: normalizeFontSize(_fontSize),
 		themes: _themes.map(function (t) {
 			return { id: t.id, name: t.name, isDefault: !!t.isDefault, isBuiltIn: !!t.isBuiltIn, colors: t.colors || {} };
 		})
@@ -356,6 +363,11 @@ function uniqueId(base) {
 }
 function isHexColor(value) {
 	return /^#[0-9a-fA-F]{6}$/.test(String(value || ""));
+}
+function normalizeFontSize(value) {
+	var size = Number(value);
+	if (!isFinite(size)) { return DEFAULT_FONT_SIZE; }
+	return Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(size)));
 }
 </script>
 <script>
@@ -561,7 +573,33 @@ function renderEditor() {
 	var locked = !!current.isBuiltIn || !!current.isDefault;
 	var state = ensureAuthoring(current);
 	$("editorTitle").textContent = current.name;
-	$("editorHint").textContent = locked ? "内置配色不可直接修改，可复制后再编辑。" : "调整下面 7 个主色即可，其余颜色自动推导。需要精修时展开高级。";
+	$("editorHint").textContent = locked ? "内置颜色不可直接修改，可复制后再编辑；字号可单独调整。" : "调整字号和下面 7 个主色即可，其余颜色自动推导。需要精修时展开高级。";
+
+	var fontRow = document.createElement("div");
+	fontRow.className = "flex items-center gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2";
+	fontRow.setAttribute("data-font-size-key", "fontSize");
+	var fontLabel = document.createElement("label");
+	fontLabel.className = "shrink-0 text-[12px] font-semibold text-slate-700";
+	fontLabel.style.width = "150px";
+	fontLabel.textContent = "字体大小";
+	var fontInput = document.createElement("input");
+	fontInput.type = "range";
+	fontInput.min = String(MIN_FONT_SIZE);
+	fontInput.max = String(MAX_FONT_SIZE);
+	fontInput.step = "1";
+	fontInput.value = String(normalizeFontSize(_fontSize));
+	fontInput.className = "min-w-0 flex-1";
+	fontInput.style.accentColor = "#2563eb";
+	fontInput.setAttribute("data-font-size", "true");
+	var fontValue = document.createElement("output");
+	fontValue.className = "shrink-0 text-right font-mono text-[12px] text-slate-600";
+	fontValue.style.width = "48px";
+	fontValue.setAttribute("data-font-size-value", "true");
+	fontValue.textContent = fontInput.value + "px";
+	fontRow.appendChild(fontLabel);
+	fontRow.appendChild(fontInput);
+	fontRow.appendChild(fontValue);
+	root.appendChild(fontRow);
 
 	var modeRow = document.createElement("div");
 	modeRow.className = "flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2";
@@ -703,9 +741,10 @@ function activateColorPreview(key) {
 function renderPreview() {
 	var theme = currentTheme() || defaultTheme();
 	var c = clone((theme && theme.colors) || {});
+	var fontSize = normalizeFontSize(_fontSize);
 	var root = $("previewRoot");
 	root.innerHTML =
-		'<div class="chat-preview" data-preview-key="pageBg" style="background:' + c.pageBg + ';color:' + c.text + '">' +
+		'<div class="chat-preview" data-preview-key="pageBg" style="--preview-font-size:' + fontSize + 'px;background:' + c.pageBg + ';color:' + c.text + '">' +
 			'<div class="preview-topbar" data-preview-key="toolbarBg border" style="background:' + c.toolbarBg + ';border-bottom:1px solid ' + c.border + '">' +
 				'<span class="preview-brand" data-preview-key="brand" data-preview-text="true" style="color:' + c.brand + '">AUTOLINKER</span>' +
 				'<div class="preview-top-actions" data-preview-key="text" data-preview-text="true" style="color:' + c.text + '">' +
@@ -824,6 +863,7 @@ window.autolinkerApplyThemeConfig = function(payload) {
 	_themes = Array.isArray(data.themes) ? data.themes : [];
 	_colorKeys = Array.isArray(data.colorKeys) ? data.colorKeys : Object.keys((defaultTheme() || {}).colors || {});
 	_selectedId = data.currentThemeId || "default";
+	_fontSize = normalizeFontSize(data.fontSize);
 	_initialSnapshot = snapshot();
 	renderAll();
 	$("saveBtn").disabled = true;
@@ -872,7 +912,17 @@ $("colorEditor").addEventListener("input", function (e) {
 	var input = e.target;
 	if (!input || !input.getAttribute) { return; }
 	var theme = currentTheme();
-	if (!theme || theme.isBuiltIn || theme.isDefault) { return; }
+	if (!theme) { return; }
+	if (input.getAttribute("data-font-size") === "true") {
+		_fontSize = normalizeFontSize(input.value);
+		input.value = String(_fontSize);
+		var output = $("colorEditor").querySelector("[data-font-size-value]");
+		if (output) { output.textContent = _fontSize + "px"; }
+		renderPreview();
+		recomputeDirty();
+		return;
+	}
+	if (theme.isBuiltIn || theme.isDefault) { return; }
 	var value = (input.value || "").toLowerCase();
 	if (!isHexColor(value)) { return; }
 	var baseKey = input.getAttribute("data-base-key");
@@ -930,6 +980,7 @@ $("saveBtn").addEventListener("click", function () {
 		action: "save",
 		data: {
 			currentThemeId: _selectedId,
+			fontSize: normalizeFontSize(_fontSize),
 			themes: _themes.map(function (t) {
 				return { id: t.id, name: t.name, isDefault: !!t.isDefault, isBuiltIn: !!t.isBuiltIn, colors: t.colors || {} };
 			})

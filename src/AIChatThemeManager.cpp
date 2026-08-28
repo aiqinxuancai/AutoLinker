@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -19,6 +20,9 @@ constexpr const char* kBuiltInDarkThemeId = "builtin_dark";
 constexpr const char* kBuiltInDarkThemeName = "内置深色";
 constexpr const char* kCurrentThemeFileName = "current_theme.json";
 constexpr const char* kThemesDirectoryName = "AIChatThemes";
+constexpr int kDefaultFontSize = 13;
+constexpr int kMinFontSize = 10;
+constexpr int kMaxFontSize = 24;
 
 std::filesystem::path GetThemeRoot()
 {
@@ -182,6 +186,29 @@ std::string NormalizeColorValue(const nlohmann::json& value, const std::string& 
 		return static_cast<char>(std::tolower(ch));
 	});
 	return text;
+}
+
+int NormalizeFontSize(const nlohmann::json& value, int fallback = kDefaultFontSize)
+{
+	if (!value.is_number()) {
+		return fallback;
+	}
+	try {
+		const double number = value.get<double>();
+		if (!std::isfinite(number)) {
+			return fallback;
+		}
+		if (number <= kMinFontSize) {
+			return kMinFontSize;
+		}
+		if (number >= kMaxFontSize) {
+			return kMaxFontSize;
+		}
+		return static_cast<int>(std::lround(number));
+	}
+	catch (...) {
+		return fallback;
+	}
 }
 
 nlohmann::json MergeWithDefaults(const nlohmann::json& colors)
@@ -367,10 +394,28 @@ std::string LoadCurrentThemeId()
 	}
 }
 
-bool SaveCurrentThemeId(const std::string& id)
+int LoadCurrentFontSize()
+{
+	try {
+		const std::string text = ReadFileUtf8(GetCurrentThemePath());
+		if (text.empty()) {
+			return kDefaultFontSize;
+		}
+		const nlohmann::json root = nlohmann::json::parse(text);
+		return root.is_object()
+			? NormalizeFontSize(root.value("fontSize", kDefaultFontSize))
+			: kDefaultFontSize;
+	}
+	catch (...) {
+		return kDefaultFontSize;
+	}
+}
+
+bool SaveCurrentThemeSettings(const std::string& id, int fontSize)
 {
 	nlohmann::json root;
 	root["currentThemeId"] = id.empty() ? kDefaultThemeId : id;
+	root["fontSize"] = NormalizeFontSize(fontSize);
 	return WriteFileUtf8Bom(GetCurrentThemePath(), root.dump(2, ' ', false, nlohmann::json::error_handler_t::replace));
 }
 
@@ -533,6 +578,7 @@ std::string BuildConfigPayloadJson()
 {
 	nlohmann::json payload;
 	payload["currentThemeId"] = LoadCurrentTheme().id;
+	payload["fontSize"] = LoadCurrentFontSize();
 	payload["colorKeys"] = nlohmann::json::array();
 	for (const std::string& key : BuildConfigColorKeys()) {
 		payload["colorKeys"].push_back(key);
@@ -625,7 +671,10 @@ bool SaveConfigPayload(const nlohmann::json& data, std::string& outMessage)
 		seenIds.find(ToLowerAscii(selectedId)) == seenIds.end()) {
 		selectedId = kDefaultThemeId;
 	}
-	if (!SaveCurrentThemeId(selectedId)) {
+	const int fontSize = data.contains("fontSize")
+		? NormalizeFontSize(data["fontSize"])
+		: LoadCurrentFontSize();
+	if (!SaveCurrentThemeSettings(selectedId, fontSize)) {
 		outMessage = "无法保存当前配色选择。";
 		return false;
 	}
@@ -637,6 +686,7 @@ bool SaveConfigPayload(const nlohmann::json& data, std::string& outMessage)
 std::wstring BuildApplyCurrentThemeScript()
 {
 	nlohmann::json payload = ThemeEntryToJson(LoadCurrentTheme());
+	payload["fontSize"] = LoadCurrentFontSize();
 	std::wstring script = L"if(window.autolinkerApplyTheme){window.autolinkerApplyTheme(JSON.parse('";
 	script += EscapeJsSingleQuotedWide(Utf8ToWide(payload.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace)));
 	script += L"'));}";
