@@ -456,9 +456,12 @@ std::wstring QuoteCommandLineArg(const std::wstring& arg)
 	return quoted;
 }
 
-void ReadPipeToBytes(HANDLE pipe, std::string* output)
+void ReadPipeToBytes(HANDLE pipe, std::string* output, std::atomic_bool* done)
 {
 	if (pipe == nullptr || output == nullptr) {
+		if (done != nullptr) {
+			done->store(true, std::memory_order_release);
+		}
 		return;
 	}
 
@@ -467,7 +470,12 @@ void ReadPipeToBytes(HANDLE pipe, std::string* output)
 	while (ReadFile(pipe, buffer, static_cast<DWORD>(sizeof(buffer)), &bytesRead, nullptr) != FALSE && bytesRead > 0) {
 		output->append(buffer, bytesRead);
 	}
+	if (done != nullptr) {
+		done->store(true, std::memory_order_release);
+	}
 }
+
+constexpr DWORD kEPackagerProcessTimeoutMs = 180000;
 
 ProcessRunResult RunProcessAndCaptureImpl(
 	const std::filesystem::path& exePath,
@@ -504,13 +512,50 @@ ProcessRunResult RunProcessAndCaptureImpl(
 	SetHandleInformation(stdOutRead, HANDLE_FLAG_INHERIT, 0);
 	SetHandleInformation(stdErrRead, HANDLE_FLAG_INHERIT, 0);
 
-	STARTUPINFOW si = {};
-	si.cb = sizeof(si);
-	si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-	si.wShowWindow = SW_HIDE;
-	si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-	si.hStdOutput = stdOutWrite;
-	si.hStdError = stdErrWrite;
+	STARTUPINFOEXW si = {};
+	si.StartupInfo.cb = sizeof(si);
+	si.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+	si.StartupInfo.wShowWindow = SW_HIDE;
+	// e-packager is non-interactive; leaving stdin unset also avoids inheriting
+	// an arbitrary IDE console handle through the restricted handle list.
+	si.StartupInfo.hStdInput = nullptr;
+	si.StartupInfo.hStdOutput = stdOutWrite;
+	si.StartupInfo.hStdError = stdErrWrite;
+
+	// Restrict inherited handles so a child process spawned by e-packager cannot
+	// keep our anonymous pipes open after the main process exits.
+	SIZE_T attributeListBytes = 0;
+	InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeListBytes);
+	std::vector<BYTE> attributeStorage(attributeListBytes);
+	LPPROC_THREAD_ATTRIBUTE_LIST attributeList =
+		reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attributeStorage.data());
+	if (attributeListBytes == 0 ||
+		InitializeProcThreadAttributeList(attributeList, 1, 0, &attributeListBytes) == FALSE) {
+		CloseHandle(stdOutRead);
+		CloseHandle(stdOutWrite);
+		CloseHandle(stdErrRead);
+		CloseHandle(stdErrWrite);
+		result.error = std::format("InitializeProcThreadAttributeList failed, error={}", GetLastError());
+		return result;
+	}
+	const HANDLE inheritedHandles[] = { stdOutWrite, stdErrWrite };
+	if (UpdateProcThreadAttribute(
+			attributeList,
+			0,
+			PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+			const_cast<HANDLE*>(inheritedHandles),
+			sizeof(inheritedHandles),
+			nullptr,
+			nullptr) == FALSE) {
+		DeleteProcThreadAttributeList(attributeList);
+		CloseHandle(stdOutRead);
+		CloseHandle(stdOutWrite);
+		CloseHandle(stdErrRead);
+		CloseHandle(stdErrWrite);
+		result.error = std::format("UpdateProcThreadAttribute handle list failed, error={}", GetLastError());
+		return result;
+	}
+	si.lpAttributeList = attributeList;
 
 	PROCESS_INFORMATION pi = {};
 	std::vector<wchar_t> mutableCommandLine(commandLine.begin(), commandLine.end());
@@ -522,11 +567,13 @@ ProcessRunResult RunProcessAndCaptureImpl(
 		nullptr,
 		nullptr,
 		TRUE,
-		CREATE_NO_WINDOW,
+		CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
 		nullptr,
 		cwd.empty() ? nullptr : cwd.c_str(),
-		&si,
+		reinterpret_cast<LPSTARTUPINFOW>(&si),
 		&pi);
+	const DWORD createError = created == FALSE ? GetLastError() : ERROR_SUCCESS;
+	DeleteProcThreadAttributeList(attributeList);
 
 	CloseHandle(stdOutWrite);
 	CloseHandle(stdErrWrite);
@@ -534,14 +581,52 @@ ProcessRunResult RunProcessAndCaptureImpl(
 	if (created == FALSE) {
 		CloseHandle(stdOutRead);
 		CloseHandle(stdErrRead);
-		result.error = std::format("CreateProcessW failed, error={}", GetLastError());
+		result.error = std::format("CreateProcessW failed, error={}", createError);
 		return result;
 	}
 
-	std::thread stdoutReader(ReadPipeToBytes, stdOutRead, &result.stdOutBytes);
-	std::thread stderrReader(ReadPipeToBytes, stdErrRead, &result.stdErrBytes);
+	HANDLE job = CreateJobObjectW(nullptr, nullptr);
+	if (job == nullptr) {
+		const DWORD jobError = GetLastError();
+		OutputStringToELog(std::format(
+			"[e-packager] CreateJobObjectW unavailable, continuing without child cleanup job, error={}",
+			jobError));
+	}
+	if (job != nullptr) {
+		JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo = {};
+		jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+		if (SetInformationJobObject(
+				job,
+				JobObjectExtendedLimitInformation,
+				&jobInfo,
+				static_cast<DWORD>(sizeof(jobInfo))) == FALSE ||
+			AssignProcessToJobObject(job, pi.hProcess) == FALSE) {
+			const DWORD jobAssignError = GetLastError();
+			OutputStringToELog(std::format(
+				"[e-packager] child cleanup job unavailable, continuing without it, error={}",
+				jobAssignError));
+			CloseHandle(job);
+			job = nullptr;
+		}
+	}
 
-	WaitForSingleObject(pi.hProcess, INFINITE);
+	std::atomic_bool stdoutDone = false;
+	std::atomic_bool stderrDone = false;
+	std::thread stdoutReader(ReadPipeToBytes, stdOutRead, &result.stdOutBytes, &stdoutDone);
+	std::thread stderrReader(ReadPipeToBytes, stdErrRead, &result.stdErrBytes, &stderrDone);
+
+	const DWORD waitResult = WaitForSingleObject(pi.hProcess, kEPackagerProcessTimeoutMs);
+	if (waitResult == WAIT_TIMEOUT) {
+		result.error = std::format("e-packager timed out after {} ms", kEPackagerProcessTimeoutMs);
+		OutputStringToELog("[e-packager] " + result.error);
+		TerminateProcess(pi.hProcess, 124);
+		WaitForSingleObject(pi.hProcess, 5000);
+	}
+	else if (waitResult == WAIT_FAILED) {
+		result.error = std::format("WaitForSingleObject failed, error={}", GetLastError());
+		TerminateProcess(pi.hProcess, 126);
+		WaitForSingleObject(pi.hProcess, 5000);
+	}
 	DWORD exitCode = 0;
 	if (GetExitCodeProcess(pi.hProcess, &exitCode) != FALSE) {
 		result.exitCode = exitCode;
@@ -550,14 +635,25 @@ ProcessRunResult RunProcessAndCaptureImpl(
 	CloseHandle(pi.hThread);
 	CloseHandle(pi.hProcess);
 
-	if (stdoutReader.joinable()) {
-		stdoutReader.join();
-	}
-	if (stderrReader.joinable()) {
-		stderrReader.join();
-	}
+	const auto finishPipeReader = [](std::thread& reader, std::atomic_bool& done) {
+		if (!reader.joinable()) {
+			return;
+		}
+		// Give a normally exiting process a short chance to drain its final bytes.
+		for (int attempt = 0; attempt < 20 && !done.load(std::memory_order_acquire); ++attempt) {
+			Sleep(5);
+		}
+		if (!done.load(std::memory_order_acquire)) {
+			// A leaked descendant handle can leave ReadFile blocked forever.
+			CancelSynchronousIo(static_cast<HANDLE>(reader.native_handle()));
+		}
+		reader.join();
+	};
+	finishPipeReader(stdoutReader, stdoutDone);
+	finishPipeReader(stderrReader, stderrDone);
 	CloseHandle(stdOutRead);
 	CloseHandle(stdErrRead);
+	CloseHandle(job);
 
 	result.ok = result.exitCode == 0 && result.error.empty();
 	return result;

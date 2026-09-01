@@ -5143,7 +5143,7 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		parsed = false;
 	}
 	if (!parsed) {
-		if (outOk && invalidateOnWrite) {
+		if (outOk && invalidateOnWrite && !item.fixedTable) {
 			WorkspaceMirror::InvalidateMirror();
 		}
 		return resultLocal;
@@ -5174,10 +5174,20 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		}
 
 		if (!mirrorUpdated) {
-			WorkspaceMirror::InvalidateMirror();
-			result["workspace_mirror_invalidated"] = true;
-			if (!mirrorUpdateError.empty()) {
-				result["workspace_mirror_update_error"] = LocalToUtf8Text(mirrorUpdateError);
+			// Fixed-table pages (.常量.txt, .全局变量.txt, etc.) are read back
+			// directly from the IDE and are not materialized by the unpacked
+			// mirror. Invalidating here would force the next ordinary source read
+			// to synchronously run a full e-packager unpack on the UI thread.
+			if (!item.fixedTable) {
+				WorkspaceMirror::InvalidateMirror();
+				result["workspace_mirror_invalidated"] = true;
+				if (!mirrorUpdateError.empty()) {
+					result["workspace_mirror_update_error"] = LocalToUtf8Text(mirrorUpdateError);
+				}
+			}
+			else {
+				result["workspace_mirror_invalidated"] = false;
+				result["workspace_mirror_update_skipped"] = "fixed_table_read_direct";
 			}
 		}
 
