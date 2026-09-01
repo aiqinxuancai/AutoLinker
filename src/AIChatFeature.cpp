@@ -2450,6 +2450,8 @@ bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
 	if (!previousSessionId.empty() && previousSessionId != stored.sessionId) {
 		CloseInternalExecSession(previousSessionId);
 	}
+	// 恢复历史会话后重新建立工程镜像，避免沿用上一会话的解包基准和文件索引。
+	WorkspaceMirror::ResetAndCleanup();
 	SavePersistedAutoAllowWrites(autoAllowWrites);
 	return true;
 }

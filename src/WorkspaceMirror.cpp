@@ -10,6 +10,7 @@
 #include <fstream>
 #include <format>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <string>
 #include <unordered_map>
@@ -36,6 +37,40 @@ struct MirrorState {
 std::mutex g_mutex;
 MirrorState g_state;
 std::uint64_t g_generation = 1;
+std::optional<std::uint64_t> g_initialUnpackDurationMs;
+
+constexpr DWORD kMaxWorkspaceUnpackTimeoutMs = 180000;
+
+DWORD CurrentWorkspaceUnpackTimeoutMs()
+{
+	if (!g_initialUnpackDurationMs.has_value() || g_initialUnpackDurationMs.value() == 0) {
+		return kMaxWorkspaceUnpackTimeoutMs;
+	}
+
+	const std::uint64_t calculated =
+		g_initialUnpackDurationMs.value() > (UINT64_MAX - 10000ULL) / 2ULL
+		? UINT64_MAX
+		: g_initialUnpackDurationMs.value() * 2ULL + 10000ULL;
+	return static_cast<DWORD>((std::min)(
+		calculated,
+		static_cast<std::uint64_t>(kMaxWorkspaceUnpackTimeoutMs)));
+}
+
+void RecordInitialUnpackDuration(
+	const EPackagerIntegration::ProcessRunResult& result,
+	const char* unpackKind)
+{
+	if (g_initialUnpackDurationMs.has_value() || !result.ok) {
+		return;
+	}
+
+	g_initialUnpackDurationMs = result.elapsedMs;
+	OutputStringToELog(std::format(
+		"[WorkspaceMirror] initial {} unpack completed in {} ms; subsequent timeout={} ms",
+		unpackKind,
+		result.elapsedMs,
+		CurrentWorkspaceUnpackTimeoutMs()));
+}
 
 std::wstring WideFromCodePage(const std::string& text, UINT codePage, DWORD flags = 0)
 {
@@ -622,6 +657,11 @@ void RollbackMovedReferenceDirectory(
 
 bool RebuildMirrorLocked(const std::filesystem::path& sourcePath, std::string& outError)
 {
+	if (!g_state.sourcePath.empty() && !IsSamePath(g_state.sourcePath, sourcePath)) {
+		g_initialUnpackDurationMs.reset();
+		OutputStringToELog("[WorkspaceMirror] source changed; reset unpack timing baseline");
+	}
+
 	MirrorState nextState;
 	if (!BuildUniqueMirrorRoot(nextState.mirrorRoot, outError)) {
 		return false;
@@ -653,11 +693,19 @@ bool RebuildMirrorLocked(const std::filesystem::path& sourcePath, std::string& o
 		return false;
 	}
 
-	OutputStringToELog("[WorkspaceMirror] preparing workspace mirror: " + LocalFromPath(nextState.mirrorRoot));
+	const DWORD unpackTimeoutMs = CurrentWorkspaceUnpackTimeoutMs();
+	OutputStringToELog(std::format(
+		"[WorkspaceMirror] preparing workspace mirror: {} timeout={} ms{}",
+		LocalFromPath(nextState.mirrorRoot),
+		unpackTimeoutMs,
+		g_initialUnpackDurationMs.has_value()
+			? std::format(" baseline={} ms", g_initialUnpackDurationMs.value())
+			: std::string(" baseline=pending")));
 	const EPackagerIntegration::ProcessRunResult result = EPackagerIntegration::RunProcessAndCapture(
 		toolPath,
 		{ L"unpack", snapshotPath.wstring(), nextState.mirrorRoot.wstring() },
-		toolPath.parent_path());
+		toolPath.parent_path(),
+		unpackTimeoutMs);
 	if (snapshotIsTemporary) {
 		EPackagerIntegration::CleanupSnapshotRoot(snapshotPath.parent_path());
 	}
@@ -691,6 +739,7 @@ bool RebuildMirrorLocked(const std::filesystem::path& sourcePath, std::string& o
 		RemoveMirrorRootIfSafe(nextState.mirrorRoot);
 		return false;
 	}
+	RecordInitialUnpackDuration(result, "full workspace");
 
 	nextState.valid = true;
 	g_state = std::move(nextState);
@@ -738,10 +787,17 @@ bool RefreshMirrorMainOnlyLocked(const std::filesystem::path& sourcePath, std::s
 		return EPackagerIntegration::RunProcessAndCapture(
 			toolPath,
 			{ L"unpack", snapshotPath.wstring(), g_state.mirrorRoot.wstring(), L"--main-only" },
-			toolPath.parent_path());
+			toolPath.parent_path(),
+			CurrentWorkspaceUnpackTimeoutMs());
 	};
 
-	OutputStringToELog("[WorkspaceMirror] refreshing main workspace mirror: " + LocalFromPath(g_state.mirrorRoot));
+	OutputStringToELog(std::format(
+		"[WorkspaceMirror] refreshing main workspace mirror: {} timeout={} ms{}",
+		LocalFromPath(g_state.mirrorRoot),
+		CurrentWorkspaceUnpackTimeoutMs(),
+		g_initialUnpackDurationMs.has_value()
+			? std::format(" baseline={} ms", g_initialUnpackDurationMs.value())
+			: std::string(" baseline=pending")));
 	EPackagerIntegration::ProcessRunResult result = runMainOnlyUnpack();
 	if (snapshotIsTemporary) {
 		EPackagerIntegration::CleanupSnapshotRoot(snapshotPath.parent_path());
@@ -766,6 +822,7 @@ bool RefreshMirrorMainOnlyLocked(const std::filesystem::path& sourcePath, std::s
 		g_state.valid = false;
 		return false;
 	}
+	RecordInitialUnpackDuration(result, "main-only workspace");
 
 	g_state.valid = true;
 	++g_generation;
@@ -1064,11 +1121,19 @@ bool UnpackReferenceSource(
 		std::error_code cleanupError;
 		std::filesystem::remove_all(stagingPath, cleanupError);
 	};
-	OutputStringToELog("[WorkspaceMirror] unpacking reference source: " + LocalFromPath(sourcePath));
+	const DWORD referenceUnpackTimeoutMs = CurrentWorkspaceUnpackTimeoutMs();
+	OutputStringToELog(std::format(
+		"[WorkspaceMirror] unpacking reference source: {} timeout={} ms{}",
+		LocalFromPath(sourcePath),
+		referenceUnpackTimeoutMs,
+		g_initialUnpackDurationMs.has_value()
+			? std::format(" baseline={} ms", g_initialUnpackDurationMs.value())
+			: std::string(" baseline=pending")));
 	const EPackagerIntegration::ProcessRunResult processResult = EPackagerIntegration::RunProcessAndCapture(
 		toolPath,
 		{ L"unpack", sourcePath.wstring(), stagingPath.wstring() },
-		toolPath.parent_path());
+		toolPath.parent_path(),
+		referenceUnpackTimeoutMs);
 	if (!processResult.ok) {
 		cleanupStaging();
 		outError = std::format(
@@ -1196,6 +1261,7 @@ void ResetAndCleanup()
 	std::lock_guard<std::mutex> guard(g_mutex);
 	RemoveMirrorRootIfSafe(g_state.mirrorRoot);
 	g_state = {};
+	g_initialUnpackDurationMs.reset();
 	++g_generation;
 }
 

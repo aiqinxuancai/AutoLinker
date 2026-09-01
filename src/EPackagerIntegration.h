@@ -13,6 +13,8 @@ namespace EPackagerIntegration {
 struct ProcessRunResult {
 	bool ok = false;
 	unsigned long exitCode = 0;
+	// e-packager 子进程从启动成功到退出（或被超时终止）的耗时。
+	unsigned long long elapsedMs = 0;
 	std::string stdOutBytes;
 	std::string stdErrBytes;
 	std::string error;
@@ -63,6 +65,7 @@ ComponentUpdateStatus GetUpdateStatus();
 ProcessRunResult RunProcessAndCapture(
 	const std::filesystem::path& exePath,
 	const std::vector<std::wstring>& args,
-	const std::filesystem::path& workingDirectory);
+	const std::filesystem::path& workingDirectory,
+	unsigned long timeoutMs = 180000);
 
 } // namespace EPackagerIntegration

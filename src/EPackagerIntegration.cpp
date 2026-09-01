@@ -477,12 +477,34 @@ void ReadPipeToBytes(HANDLE pipe, std::string* output, std::atomic_bool* done)
 
 constexpr DWORD kEPackagerProcessTimeoutMs = 180000;
 
+bool IsIdeMainThread()
+{
+	if (g_hwnd == nullptr || !IsWindow(g_hwnd)) {
+		return false;
+	}
+	const DWORD threadId = GetWindowThreadProcessId(g_hwnd, nullptr);
+	return threadId != 0 && threadId == GetCurrentThreadId();
+}
+
+bool IsSafeMessageToDispatchWhileWaiting(const UINT message)
+{
+	return message == WM_PAINT ||
+		message == WM_NCPAINT ||
+		message == WM_ERASEBKGND ||
+		message == WM_TIMER ||
+		message == WM_SETCURSOR;
+}
+
 ProcessRunResult RunProcessAndCaptureImpl(
 	const std::filesystem::path& exePath,
 	const std::vector<std::wstring>& args,
-	const std::filesystem::path& workingDirectory)
+	const std::filesystem::path& workingDirectory,
+	const DWORD timeoutMs = kEPackagerProcessTimeoutMs)
 {
 	ProcessRunResult result = {};
+	const DWORD effectiveTimeoutMs = timeoutMs == 0
+		? kEPackagerProcessTimeoutMs
+		: (std::min)(timeoutMs, kEPackagerProcessTimeoutMs);
 
 	std::wstring commandLine = QuoteCommandLineArg(exePath.wstring());
 	for (const auto& arg : args) {
@@ -584,6 +606,7 @@ ProcessRunResult RunProcessAndCaptureImpl(
 		result.error = std::format("CreateProcessW failed, error={}", createError);
 		return result;
 	}
+	const ULONGLONG processStartTick = GetTickCount64();
 
 	HANDLE job = CreateJobObjectW(nullptr, nullptr);
 	if (job == nullptr) {
@@ -615,9 +638,75 @@ ProcessRunResult RunProcessAndCaptureImpl(
 	std::thread stdoutReader(ReadPipeToBytes, stdOutRead, &result.stdOutBytes, &stdoutDone);
 	std::thread stderrReader(ReadPipeToBytes, stdErrRead, &result.stdErrBytes, &stderrDone);
 
-	const DWORD waitResult = WaitForSingleObject(pi.hProcess, kEPackagerProcessTimeoutMs);
+	DWORD waitResult = WAIT_FAILED;
+	std::vector<MSG> deferredMessages;
+	if (!IsIdeMainThread()) {
+		waitResult = WaitForSingleObject(pi.hProcess, effectiveTimeoutMs);
+	}
+	else {
+		// WorkspaceMirror is invoked by the IDE window procedure. Waiting on the
+		// child directly would stop painting and make the IDE appear hung while a
+		// large project is unpacked. Pump only redraw/timer messages here; tool,
+		// command, and input messages are deferred to avoid re-entering the mirror
+		// lock and are posted back after the child finishes.
+		const ULONGLONG deadline = processStartTick + effectiveTimeoutMs;
+		for (;;) {
+			const ULONGLONG now = GetTickCount64();
+			if (now >= deadline) {
+				waitResult = WAIT_TIMEOUT;
+				break;
+			}
+			const DWORD remaining = static_cast<DWORD>((std::min)(
+				deadline - now,
+				static_cast<ULONGLONG>(MAXDWORD)));
+			const DWORD messageWait = MsgWaitForMultipleObjectsEx(
+				1,
+				&pi.hProcess,
+				remaining,
+				QS_ALLINPUT,
+				MWMO_INPUTAVAILABLE);
+			if (messageWait == WAIT_OBJECT_0) {
+				waitResult = WAIT_OBJECT_0;
+				break;
+			}
+			if (messageWait == WAIT_TIMEOUT) {
+				waitResult = WAIT_TIMEOUT;
+				break;
+			}
+			if (messageWait != WAIT_OBJECT_0 + 1) {
+				waitResult = WAIT_FAILED;
+				break;
+			}
+
+			MSG message = {};
+			while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != FALSE) {
+				if (message.message == WM_QUIT) {
+					deferredMessages.push_back(message);
+					continue;
+				}
+				if (IsSafeMessageToDispatchWhileWaiting(message.message)) {
+					TranslateMessage(&message);
+					DispatchMessageW(&message);
+				}
+				else if (deferredMessages.size() < 1024) {
+					deferredMessages.push_back(message);
+				}
+			}
+		}
+	}
+	for (const MSG& message : deferredMessages) {
+		if (message.message == WM_QUIT) {
+			PostQuitMessage(static_cast<int>(message.wParam));
+		}
+		else if (message.hwnd != nullptr) {
+			PostMessageW(message.hwnd, message.message, message.wParam, message.lParam);
+		}
+		else {
+			PostThreadMessageW(GetCurrentThreadId(), message.message, message.wParam, message.lParam);
+		}
+	}
 	if (waitResult == WAIT_TIMEOUT) {
-		result.error = std::format("e-packager timed out after {} ms", kEPackagerProcessTimeoutMs);
+		result.error = std::format("e-packager timed out after {} ms", effectiveTimeoutMs);
 		OutputStringToELog("[e-packager] " + result.error);
 		TerminateProcess(pi.hProcess, 124);
 		WaitForSingleObject(pi.hProcess, 5000);
@@ -627,6 +716,7 @@ ProcessRunResult RunProcessAndCaptureImpl(
 		TerminateProcess(pi.hProcess, 126);
 		WaitForSingleObject(pi.hProcess, 5000);
 	}
+	result.elapsedMs = GetTickCount64() - processStartTick;
 	DWORD exitCode = 0;
 	if (GetExitCodeProcess(pi.hProcess, &exitCode) != FALSE) {
 		result.exitCode = exitCode;
@@ -1613,9 +1703,10 @@ ComponentUpdateStatus GetUpdateStatus()
 ProcessRunResult RunProcessAndCapture(
 	const std::filesystem::path& exePath,
 	const std::vector<std::wstring>& args,
-	const std::filesystem::path& workingDirectory)
+	const std::filesystem::path& workingDirectory,
+	const unsigned long timeoutMs)
 {
-	return RunProcessAndCaptureImpl(exePath, args, workingDirectory);
+	return RunProcessAndCaptureImpl(exePath, args, workingDirectory, timeoutMs);
 }
 
 std::wstring BuildUnpackMenuTitle()
