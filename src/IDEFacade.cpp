@@ -3,6 +3,7 @@
 #include "Global.h"
 #include "PathHelper.h"
 #include "RealPageCodeToolSupport.h"
+#include "..\\thirdparty\\json.hpp"
 
 #include <fnshare.h>
 #include <lib2.h>
@@ -18,6 +19,7 @@
 #include <vector>
 
 namespace {
+using nlohmann::json;
 using PerfClock = std::chrono::steady_clock;
 
 constexpr int kOutputEditTextLimit = 8 * 1024 * 1024;
@@ -105,6 +107,65 @@ std::string NormalizeCompileOutputPathLocal(
 		}
 		return std::string();
 	}
+}
+
+std::string WideToUtf8Local(const std::wstring& text)
+{
+	if (text.empty()) return {};
+	const int size = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
+	if (size <= 0) return {};
+	std::string result(static_cast<size_t>(size), '\0');
+	WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), size, nullptr, nullptr);
+	return result;
+}
+
+std::string AnsiToUtf8Local(const std::string& text)
+{
+	if (text.empty()) return {};
+	const int wideSize = MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+	if (wideSize <= 0) return {};
+	std::wstring wide(static_cast<size_t>(wideSize), L'\0');
+	MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), wide.data(), wideSize);
+	return WideToUtf8Local(wide);
+}
+
+std::string Utf8ToAnsiLocal(const std::string& text)
+{
+	if (text.empty()) return {};
+	const int wideSize = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+	if (wideSize <= 0) return {};
+	std::wstring wide(static_cast<size_t>(wideSize), L'\0');
+	MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), wide.data(), wideSize);
+	const int ansiSize = WideCharToMultiByte(CP_ACP, 0, wide.data(), wideSize, nullptr, 0, nullptr, nullptr);
+	if (ansiSize <= 0) return {};
+	std::string result(static_cast<size_t>(ansiSize), '\0');
+	WideCharToMultiByte(CP_ACP, 0, wide.data(), wideSize, result.data(), ansiSize, nullptr, nullptr);
+	return result;
+}
+
+std::filesystem::path BlackMoonConfigPathLocal()
+{
+	char idePath[MAX_PATH] = {};
+	const DWORD ideLength = GetModuleFileNameA(nullptr, idePath, static_cast<DWORD>(sizeof(idePath)));
+	if (ideLength > 0 && ideLength < sizeof(idePath)) {
+		const std::filesystem::path bmDir = std::filesystem::path(idePath).parent_path() / "BlackMoon";
+		const std::filesystem::path iniPath = bmDir / "BlackMoon.ini";
+		if (GetPrivateProfileIntA("BlackMoon", "ConfigOnInstallPath", 0, iniPath.string().c_str()) == 1) {
+			return bmDir / "Config.json";
+		}
+	}
+	char programData[MAX_PATH] = {};
+	const DWORD length = GetEnvironmentVariableA("ProgramData", programData, static_cast<DWORD>(sizeof(programData)));
+	if (length == 0 || length >= sizeof(programData)) return {};
+	return std::filesystem::path(programData) / "BlackMoon" / "Config.json";
+}
+
+using BlackMoonCompileProc = int(WINAPI*)(LPCSTR, LPCSTR);
+
+HMODULE FindBlackMoonModuleLocal()
+{
+	if (HMODULE module = GetModuleHandleA("BlackMoon.fne")) return module;
+	return GetModuleHandleA("BlackMoon.dll");
 }
 
 std::string GetWindowTextCopyLocalA(HWND hWnd)
@@ -2374,6 +2435,113 @@ bool IDEFacade::CompileWithOutputPath(
 		*outDiagnostics = dialogSuppressed
 			? "compile_invoked_dialog_suppressed"
 			: "compile_invoked_dialog_pending";
+	}
+	return true;
+}
+
+bool IDEFacade::CompileWithBlackMoonOutputPath(
+	CompileOutputKind kind,
+	const std::string& outputPath,
+	BlackMoonCompileMode mode,
+	std::string* outNormalizedPath,
+	std::string* outDiagnostics) const
+{
+	if (kind == CompileOutputKind::Ecom) {
+		if (outDiagnostics) *outDiagnostics = "blackmoon_ecom_not_supported";
+		return false;
+	}
+	const int modeValue = static_cast<int>(mode);
+	if (modeValue < 0 || modeValue > 2) {
+		if (outDiagnostics) *outDiagnostics = "blackmoon_invalid_compile_mode";
+		return false;
+	}
+	HMODULE module = FindBlackMoonModuleLocal();
+	if (module == nullptr) {
+		if (outDiagnostics) *outDiagnostics = "blackmoon_plugin_not_loaded";
+		return false;
+	}
+	static std::mutex configMutex;
+	std::lock_guard configLock(configMutex);
+	auto compileProc = reinterpret_cast<BlackMoonCompileProc>(GetProcAddress(module, "BMCompile"));
+	if (compileProc == nullptr || GetProcAddress(module, "GetBMVersion") == nullptr) {
+		if (outDiagnostics) *outDiagnostics = "blackmoon_plugin_api_unavailable";
+		return false;
+	}
+	std::string normalizeDiagnostics;
+	const std::string normalizedPath = NormalizeCompileOutputPathLocal(outputPath, kind, &normalizeDiagnostics);
+	if (normalizedPath.empty()) {
+		if (outDiagnostics) *outDiagnostics = normalizeDiagnostics.empty() ? "normalize_output_path_failed" : normalizeDiagnostics;
+		return false;
+	}
+	if (outNormalizedPath) *outNormalizedPath = normalizedPath;
+
+	const auto configPath = BlackMoonConfigPathLocal();
+	std::ifstream input(configPath, std::ios::binary);
+	if (!input.is_open()) {
+		if (outDiagnostics) *outDiagnostics = "blackmoon_config_missing";
+		return false;
+	}
+	const std::string originalBytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+	json config;
+	try {
+		config = json::parse(AnsiToUtf8Local(originalBytes));
+	}
+	catch (const std::exception& ex) {
+		if (outDiagnostics) *outDiagnostics = std::string("blackmoon_config_invalid: ") + ex.what();
+		return false;
+	}
+	if (!config.is_object() || !config.contains("Config") || !config["Config"].is_object()) {
+		if (outDiagnostics) *outDiagnostics = "blackmoon_config_profiles_missing";
+		return false;
+	}
+	static const char* modeNames[] = {"汇编模式", "C/C++模式", "VC++模式"};
+	const std::string selectedName = modeNames[modeValue];
+	if (!config["Config"].contains(selectedName)) {
+		if (outDiagnostics) *outDiagnostics = "blackmoon_compile_mode_unavailable";
+		return false;
+	}
+	config["Use"] = selectedName;
+	const std::string updatedBytes = Utf8ToAnsiLocal(config.dump(4));
+	if (updatedBytes.empty()) {
+		if (outDiagnostics) *outDiagnostics = "blackmoon_config_encode_failed";
+		return false;
+	}
+	std::ofstream output(configPath, std::ios::binary | std::ios::trunc);
+	if (!output.is_open()) {
+		if (outDiagnostics) *outDiagnostics = "blackmoon_config_write_failed";
+		return false;
+	}
+	output.write(updatedBytes.data(), static_cast<std::streamsize>(updatedBytes.size()));
+	output.close();
+	if (!output) {
+		if (outDiagnostics) *outDiagnostics = "blackmoon_config_write_failed";
+		return false;
+	}
+	struct ConfigRestore {
+		std::filesystem::path path;
+		std::string bytes;
+		~ConfigRestore() {
+			std::ofstream restore(path, std::ios::binary | std::ios::trunc);
+			if (restore.is_open()) restore.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+		}
+	} restore{configPath, originalBytes};
+
+	RunChangeECOM(true);
+	std::string requestDiagnostics;
+	if (!BeginSilentCompileOutputPathRequest(normalizedPath, GetCurrentThreadId(), &requestDiagnostics)) {
+		if (outDiagnostics) *outDiagnostics = requestDiagnostics.empty() ? "begin_silent_compile_request_failed" : requestDiagnostics;
+		return false;
+	}
+	const int result = compileProc(nullptr, nullptr);
+	if (result == 0) {
+		CancelSilentCompileOutputPathRequest();
+		if (outDiagnostics) *outDiagnostics = "blackmoon_compile_failed";
+		return false;
+	}
+	if (outDiagnostics) {
+		*outDiagnostics = WasSilentCompileOutputPathRequestConsumed()
+			? "blackmoon_compile_invoked_dialog_suppressed"
+			: "blackmoon_compile_invoked_dialog_pending";
 	}
 	return true;
 }

@@ -3215,13 +3215,15 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "compile_with_output_path"},
-		{"description", "Compile the current project with a specified output path, suppressing the IDE save-file dialog. target=auto selects the default compile target. For an E-language module project, auto builds a win_console_exe test program; use target=ecom only to publish the module as .ec. Static compilation is the default for supported targets. A successful result requires the output artifact to exist and be updated."},
+		{"description", "Compile the current project with a specified output path, suppressing the IDE save-file dialog. target=auto selects the default compile target. For an E-language module project, auto builds a win_console_exe test program; use target=ecom only to publish the module as .ec. Static compilation is the default for supported targets. Set compiler=blackmoon and blackmoon_mode to asm, cxx, or vcxx to use the BlackMoon plugin; the plugin must be loaded and its three profiles available. A successful result requires the output artifact to exist and be updated."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
 				{"target", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "win_exe", "win_console_exe", "win_dll", "ecom"})}, {"description", "Defaults to auto. For module-project compile verification, use win_console_exe; ecom publishes a .ec module."}}},
 				{"output_path", {{"type", "string"}}},
-				{"static_compile", {{"type", "boolean"}, {"description", "Defaults to true for win_exe, win_console_exe, and win_dll. target=ecom does not support static compilation and defaults to false, but a module project can be compiled as a static win_console_exe for testing. Set false only when the user explicitly requests non-static compilation or module publishing."}}}
+				{"static_compile", {{"type", "boolean"}, {"description", "Defaults to true for win_exe, win_console_exe, and win_dll. target=ecom does not support static compilation and defaults to false, but a module project can be compiled as a static win_console_exe for testing. Set false only when the user explicitly requests non-static compilation or module publishing."}}},
+				{"compiler", {{"type", "string"}, {"enum", nlohmann::json::array({"eide", "blackmoon"})}}},
+				{"blackmoon_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"asm", "cxx", "vcxx"})}, {"description", "BlackMoon BMType: asm=汇编模式, cxx=C/C++模式, vcxx=VC++模式."}}}
 			}},
 			{"required", nlohmann::json::array({"output_path"})},
 			{"additionalProperties", false}

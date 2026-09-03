@@ -44,6 +44,13 @@ public:
 		Ecom
 	};
 
+	// 黑月编译模式，对应 BlackMoon Config.json 的 BMType。
+	enum class BlackMoonCompileMode {
+		Asm = 0,
+		Cxx = 1,
+		Vcxx = 2
+	};
+
 	// 子程序代码块信息（按当前页扫描得到）。
 	struct FunctionBlock {
 		std::string name;
@@ -156,6 +163,13 @@ public:
 		CompileOutputKind kind,
 		const std::string& outputPath,
 		bool staticCompile,
+		std::string* outNormalizedPath = nullptr,
+		std::string* outDiagnostics = nullptr) const;
+	// 通过已加载的 BlackMoon.fne 触发黑月编译，并临时选择指定模式。
+	bool CompileWithBlackMoonOutputPath(
+		CompileOutputKind kind,
+		const std::string& outputPath,
+		BlackMoonCompileMode mode,
 		std::string* outNormalizedPath = nullptr,
 		std::string* outDiagnostics = nullptr) const;
 	bool AddOutputTab(HWND hWnd, const std::string& caption, const std::string& toolTip, HICON hIcon = nullptr) const;

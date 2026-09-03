@@ -138,7 +138,7 @@ url = "http://127.0.0.1:19207/mcp"
   --target auto --static --result "D:\demo\build\compile-result.json" --timeout 120
 ```
 
-`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL。省略 `--result` 时，每次调用生成独立的 `<输出文件>.headless.<invocation-id>.json`，并原子更新兼容文件 `<输出文件>.headless.json`。`{易语言目录}\AutoLinker\Log\headless_compile_last.json` 也是原子更新的“最近一次结果”，并发调用方不应依赖它区分各自结果。显式传入 `--result` 时，并发调用方应分别使用不同路径。
+`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL。需要黑月编译时增加 `--blackmoon asm|cxx|vcxx`（分别对应汇编、C/C++、VC++模式），启动器会在 IDE 进程内确认 `BlackMoon.fne` 已加载且配置可用；不可用时直接返回错误。省略 `--result` 时，每次调用生成独立的 `<输出文件>.headless.<invocation-id>.json`，并原子更新兼容文件 `<输出文件>.headless.json`。`{易语言目录}\AutoLinker\Log\headless_compile_last.json` 也是原子更新的“最近一次结果”，并发调用方不应依赖它区分各自结果。显式传入 `--result` 时，并发调用方应分别使用不同路径。
 
 也可直接启动主程序（仅负责无头编译，早期弹窗和同一工程的并发启动协调仍建议用启动器）：
 

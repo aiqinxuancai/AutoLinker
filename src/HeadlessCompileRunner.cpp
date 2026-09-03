@@ -40,6 +40,8 @@ struct HeadlessCompileRequest {
 	std::string outputPath;
 	std::string projectSourcePath;
 	bool staticCompile = false;
+	std::string compiler = "eide";
+	std::string blackMoonMode;
 	bool hideWindow = true;
 	bool exitAfterCompile = true;
 	int startupTimeoutSeconds = kDefaultStartupTimeoutSeconds;
@@ -509,6 +511,9 @@ void ApplyJsonRequest(const nlohmann::json& json, HeadlessCompileRequest& reques
 	request.outputPath = GetJsonString(json, "output_path", request.outputPath);
 	request.projectSourcePath = GetJsonString(json, "project_source_path", request.projectSourcePath);
 	request.staticCompile = GetJsonBool(json, "static_compile", request.staticCompile);
+	request.compiler = GetJsonString(json, "compiler", request.compiler);
+	request.blackMoonMode = GetJsonString(json, "blackmoon_mode", request.blackMoonMode);
+	if (request.blackMoonMode.empty()) request.blackMoonMode = GetJsonString(json, "compile_mode", request.blackMoonMode);
 	request.hideWindow = GetJsonBool(json, "hide_window", request.hideWindow);
 	request.exitAfterCompile = GetJsonBool(json, "exit_after_compile", request.exitAfterCompile);
 	request.startupTimeoutSeconds = GetJsonBoundedInt(
@@ -995,6 +1000,15 @@ void ApplyCommandLineRequest(HeadlessCompileRequest& request)
 		}
 		if (name == "autolinker-target") {
 			request.target = hasValue ? value : ReadNextArgumentValue(args, i);
+			continue;
+		}
+		if (name == "autolinker-compiler") {
+			request.compiler = hasValue ? value : ReadNextArgumentValue(args, i);
+			continue;
+		}
+		if (name == "autolinker-blackmoon-mode" || name == "autolinker-compile-mode") {
+			request.compiler = "blackmoon";
+			request.blackMoonMode = hasValue ? value : ReadNextArgumentValue(args, i);
 			continue;
 		}
 		if (name == "autolinker-project-source" || name == "autolinker-project-source-path") {
@@ -1593,6 +1607,8 @@ nlohmann::json BuildRequestJson(const HeadlessCompileRequest& request)
 		{"output_path", request.outputPath},
 		{"project_source_path", request.projectSourcePath},
 		{"static_compile", request.staticCompile},
+		{"compiler", request.compiler},
+		{"blackmoon_mode", request.blackMoonMode},
 		{"hide_window", request.hideWindow},
 		{"exit_after_compile", request.exitAfterCompile},
 		{"startup_timeout_seconds", request.startupTimeoutSeconds},
@@ -1684,7 +1700,9 @@ void HeadlessWorkerMain()
 	nlohmann::json compileArgs = {
 		{"target", resolvedTarget},
 		{"output_path", request.outputPath},
-		{"static_compile", request.staticCompile}
+		{"static_compile", request.staticCompile},
+		{"compiler", request.compiler},
+		{"blackmoon_mode", request.blackMoonMode}
 	};
 
 	OutputStringToELog(std::format(

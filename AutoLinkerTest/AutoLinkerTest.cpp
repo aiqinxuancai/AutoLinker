@@ -37,6 +37,8 @@ struct HeadlessLauncherOptions {
 	std::string resultPath;
 	std::string target = "auto";
 	bool staticCompile = false;
+	std::string compiler = "eide";
+	std::string blackMoonMode;
 	bool hideWindow = true;
 	int timeoutSeconds = 120;
 	bool resultPathExplicit = false;
@@ -969,6 +971,13 @@ int RunHeadlessCompile(int argc, char* argv[])
 		else if (arg == "--target" && i + 1 < argc) {
 			options.target = argv[++i];
 		}
+		else if (arg == "--blackmoon" && i + 1 < argc) {
+			options.compiler = "blackmoon";
+			options.blackMoonMode = argv[++i];
+		}
+		else if (arg == "--compiler" && i + 1 < argc) {
+			options.compiler = argv[++i];
+		}
 		else if (arg == "--result" && i + 1 < argc) {
 			options.resultPath = argv[++i];
 			options.resultPathExplicit = true;
@@ -988,6 +997,8 @@ int RunHeadlessCompile(int argc, char* argv[])
 		{"launcher_name", "AutoLinkerTest.exe"},
 		{"target", options.target},
 		{"static_compile", options.staticCompile},
+		{"compiler", options.compiler},
+		{"blackmoon_mode", options.blackMoonMode},
 		{"output_path", options.outputPath},
 		{"result_path", options.resultPath},
 		{"startup_timeout_seconds", options.timeoutSeconds},
@@ -1026,6 +1037,12 @@ int RunHeadlessCompile(int argc, char* argv[])
 	appendCommandLineArg(L"--autolinker-invocation-id");
 	appendCommandLineArg(Utf8ToWide(options.invocationId));
 	appendCommandLineArg(options.staticCompile ? L"--autolinker-static" : L"--autolinker-no-static");
+	appendCommandLineArg(L"--autolinker-compiler");
+	appendCommandLineArg(Utf8ToWide(options.compiler));
+	if (!options.blackMoonMode.empty()) {
+		appendCommandLineArg(L"--autolinker-blackmoon-mode");
+		appendCommandLineArg(Utf8ToWide(options.blackMoonMode));
+	}
 	appendCommandLineArg(options.hideWindow ? L"--autolinker-hide-window" : L"--autolinker-show-window");
 	appendCommandLineArg(L"--autolinker-exit");
 	const std::filesystem::path projectFsPath = MakePathFromText(options.projectPath);
@@ -2141,7 +2158,7 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest openai-image-test <api-key> <model> <image-path> <expected-text> [base-url]" << std::endl;
 	std::cout << "  AutoLinkerTest gemini-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest claude-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
-	std::cout << "  AutoLinkerTest headless-compile <e.exe> <input.e> <output> [--target auto|win_exe|win_console_exe|win_dll|ecom] [--static] [--result path] [--timeout seconds]" << std::endl;
+	std::cout << "  AutoLinkerTest headless-compile <e.exe> <input.e> <output> [--target auto|win_exe|win_console_exe|win_dll|ecom] [--static] [--blackmoon asm|cxx|vcxx] [--result path] [--timeout seconds]" << std::endl;
 }
 
 }
