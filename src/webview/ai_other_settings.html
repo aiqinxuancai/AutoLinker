@@ -22,6 +22,13 @@
         </select>
       </div>
       <div class="setting">
+        <label class="setting-label" for="aiDebugLogEnabled">AI 全链路调试日志</label>
+        <label class="toggle" title="记录 AI 请求、响应、重试、上下文摘要及缓存明细，可能包含敏感内容">
+          <input id="aiDebugLogEnabled" type="checkbox">
+          <span class="toggle-track" aria-hidden="true"></span>
+        </label>
+      </div>
+      <div class="setting">
         <div><label class="setting-label" for="tavilyApiKey">Tavily API 密钥</label><a id="tavilyLink" class="link" href="https://tavily.com">官网</a></div>
         <div class="secret-row">
           <input id="tavilyApiKey" class="control" type="password" autocomplete="off">
@@ -66,13 +73,14 @@ window.autolinkerApplyAiOtherSettings=function(payload){
   $("sourceEditMode").value=data.sourceEditMode==="mirror_source_base"?"mirror_source_base":"real_page_first";
   $("tavilyApiKey").value=data.tavilyApiKey||"";
   $("mcpAutoSaveAfterWrite").checked=data.mcpAutoSaveAfterWrite===true;
+  $("aiDebugLogEnabled").checked=data.aiDebugLogEnabled===true;
   $("status").textContent=data.notice||"";
   $("status").className="status"+(data.noticeIsError?" error":"");
   if(data.notice&&!data.noticeIsError&&window.autolinkerShowSettingsToast){window.autolinkerShowSettingsToast({message:"设置已保存"})}
 };
 $("toggleKey").addEventListener("click",function(){var input=$("tavilyApiKey");input.type=input.type==="password"?"text":"password";this.textContent=input.type==="password"?"显示":"隐藏"});
 $("tavilyLink").addEventListener("click",function(event){event.preventDefault();post({action:"open_tavily"})});
-$("saveBtn").addEventListener("click",function(){post({action:"save",data:{sourceEditMode:$("sourceEditMode").value,tavilyApiKey:$("tavilyApiKey").value||"",mcpAutoSaveAfterWrite:$("mcpAutoSaveAfterWrite").checked}})});
+$("saveBtn").addEventListener("click",function(){post({action:"save",data:{sourceEditMode:$("sourceEditMode").value,tavilyApiKey:$("tavilyApiKey").value||"",mcpAutoSaveAfterWrite:$("mcpAutoSaveAfterWrite").checked,aiDebugLogEnabled:$("aiDebugLogEnabled").checked}})});
 document.addEventListener("DOMContentLoaded",function(){post({action:"ready"})});
 </script>
 <div id="autolinkerSettingsToastRegion" class="pointer-events-none fixed inset-x-[16px] top-[16px] z-[100] flex justify-center sm:inset-x-auto sm:right-[20px] sm:top-[20px] sm:block" aria-live="polite" aria-atomic="true">

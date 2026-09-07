@@ -89,7 +89,9 @@ std::pair<std::string, int> PerformPostRequestStreaming(
 	bool NeverRedirect = true,
 	HttpRequestCancellation* cancellation = nullptr,
 	// 流式响应的独立接收空闲超时；0 表示沿用请求超时。
-	int streamIdleTimeout = 300000);
+	int streamIdleTimeout = 300000,
+	// 可选返回响应头，用于关联服务端请求与路由诊断。
+	std::vector<HttpResponseHeaderEntry>* responseHeaders = nullptr);
 
 // Execute HTTP GET.
 std::pair<std::string, int> PerformGetRequest(

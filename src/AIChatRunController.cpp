@@ -170,7 +170,12 @@ void AIChatRunController::ReportActivity(const std::string& line) const
 	}
 }
 
-void AIChatRunController::RecordUsage(int promptTokens, int totalTokens, bool hasUsage)
+void AIChatRunController::RecordUsage(
+	int promptTokens,
+	int totalTokens,
+	bool hasUsage,
+	int cachedInputTokens,
+	int cacheWriteInputTokens)
 {
 	if (!hasUsage) {
 		return;
@@ -178,6 +183,8 @@ void AIChatRunController::RecordUsage(int promptTokens, int totalTokens, bool ha
 	m_hasUsage = true;
 	m_promptTokens = (std::max)(0, promptTokens);
 	m_totalTokens = (std::max)(m_promptTokens, totalTokens);
+	m_cachedInputTokens = (std::max)(0, cachedInputTokens);
+	m_cacheWriteInputTokens = (std::max)(0, cacheWriteInputTokens);
 	m_accumulatedInputTokens += static_cast<long long>(m_promptTokens);
 	m_accumulatedOutputTokens += static_cast<long long>(m_totalTokens - m_promptTokens);
 	m_contextBytesAfterUsage = 0;
@@ -370,6 +377,8 @@ AIChatRunCheckpoint AIChatRunController::BuildCheckpoint(const std::string& stat
 	checkpoint.compactionCount = m_compactionCount;
 	checkpoint.promptTokens = m_promptTokens;
 	checkpoint.totalTokens = m_totalTokens;
+	checkpoint.cachedInputTokens = m_cachedInputTokens;
+	checkpoint.cacheWriteInputTokens = m_cacheWriteInputTokens;
 	checkpoint.accumulatedInputTokens = m_accumulatedInputTokens;
 	checkpoint.accumulatedOutputTokens = m_accumulatedOutputTokens;
 	checkpoint.completedModelRounds = m_completedModelRounds;
@@ -423,6 +432,16 @@ int AIChatRunController::TotalTokens() const
 	return m_totalTokens;
 }
 
+int AIChatRunController::CachedInputTokens() const
+{
+	return m_cachedInputTokens;
+}
+
+int AIChatRunController::CacheWriteInputTokens() const
+{
+	return m_cacheWriteInputTokens;
+}
+
 long long AIChatRunController::AccumulatedInputTokens() const
 {
 	return m_accumulatedInputTokens;
@@ -458,6 +477,8 @@ void AIChatRunController::ApplyResumeCheckpoint(const AIChatRunCheckpoint& check
 	m_compactionCount = (std::max)(0, checkpoint.compactionCount);
 	m_promptTokens = (std::max)(0, checkpoint.promptTokens);
 	m_totalTokens = (std::max)(m_promptTokens, checkpoint.totalTokens);
+	m_cachedInputTokens = (std::max)(0, checkpoint.cachedInputTokens);
+	m_cacheWriteInputTokens = (std::max)(0, checkpoint.cacheWriteInputTokens);
 	m_accumulatedInputTokens = (std::max)(0LL, checkpoint.accumulatedInputTokens);
 	m_accumulatedOutputTokens = (std::max)(0LL, checkpoint.accumulatedOutputTokens);
 	m_completedModelRounds = (std::max)(0, checkpoint.completedModelRounds);

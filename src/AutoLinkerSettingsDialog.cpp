@@ -433,10 +433,13 @@ std::string BuildAiOtherSettingsPayload(
 	if (sourceEditMode != "mirror_source_base") {
 		sourceEditMode = "real_page_first";
 	}
+	const std::string debugLogValue = g_aiJsonConfig.getGlobalValue("ai_debug_log_enabled");
+	const bool debugLogEnabled = debugLogValue == "true" || debugLogValue == "1" || debugLogValue == "on";
 	return DumpWebViewJson({
 		{"sourceEditMode", sourceEditMode},
 		{"tavilyApiKey", g_aiJsonConfig.getGlobalValue("tavily_api_key")},
 		{"mcpAutoSaveAfterWrite", McpAutoSaveManager::IsEnabled(g_aiJsonConfig)},
+		{"aiDebugLogEnabled", debugLogEnabled},
 		{"notice", notice},
 		{"noticeIsError", noticeIsError}
 	});
@@ -613,7 +616,8 @@ void HandleSettingsWebViewMessage(
 			{"source_edit_mode", sourceEditMode},
 			{"tavily_api_key", data.value("tavilyApiKey", std::string())},
 			{std::string(McpAutoSaveManager::kConfigKey),
-				data.value("mcpAutoSaveAfterWrite", false) ? "true" : "false"}
+				data.value("mcpAutoSaveAfterWrite", false) ? "true" : "false"},
+			{"ai_debug_log_enabled", data.value("aiDebugLogEnabled", false) ? "true" : "false"}
 		});
 		PostMessageW(
 			GetParent(page),

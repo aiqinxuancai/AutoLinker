@@ -217,6 +217,12 @@ bool IsAICodeFetchDebugEnabled()
 	return raw == "1" || raw == "true" || raw == "on" || raw == "yes";
 }
 
+bool IsAIDebugLogEnabled()
+{
+	const std::string raw = ToLowerAsciiCopy(TrimAsciiCopy(g_aiJsonConfig.getGlobalValue("ai_debug_log_enabled")));
+	return raw == "1" || raw == "true" || raw == "on" || raw == "yes";
+}
+
 void LogAIPerfCost(uint64_t traceId, const std::string& step, long long costMs, const std::string& extra, bool force)
 {
 	if (!IsAIPerfLogEnabled()) {

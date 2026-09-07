@@ -32,6 +32,8 @@ uint64_t GetCurrentAIPerfTraceId();
 bool IsAIPerfLogEnabled();
 int GetAIPerfLogThresholdMs();
 bool IsAICodeFetchDebugEnabled();
+// 是否记录 AI 全链路调试日志（请求、响应、重试和缓存明细）。
+bool IsAIDebugLogEnabled();
 
 void LogAIPerfCost(
 	uint64_t traceId,

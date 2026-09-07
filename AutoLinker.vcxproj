@@ -710,6 +710,7 @@
     <ClInclude Include="src\WebDocumentExtractor.h" />
     <ClInclude Include="src\WindowHelper.h" />
     <ClInclude Include="src\WinINetUtil.h" />
+    <ClInclude Include="src\AIHttpTrace.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="src\AutoLinker.def" />

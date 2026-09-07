@@ -294,6 +294,7 @@ struct ChatDialogContext {
 struct AIChatAsyncRequest {
 	unsigned long long requestId = 0;
 	AISettings settings = {};
+	std::string promptCacheKey;
 	std::string sourceFilePathLocal;
 	std::vector<AIChatMessage> contextMessages;
 	std::shared_ptr<AIChatRequestCancellation> cancellation;
@@ -6859,6 +6860,7 @@ void RunAIChatWorker(void* pParams)
 			}
 			else {
 				AIChatRunOptions runOptions;
+				runOptions.promptCacheKey = request->promptCacheKey;
 				// 工具成功后仍沿用当前端点的重试预算；429/5xx 续轮必须等待并重试。
 				runOptions.enablePlanUserInput = request->enablePlanUserInput;
 				runOptions.enableGoalTools = request->enableGoalTools;
@@ -7093,6 +7095,7 @@ bool StartChatRequest(
 
 		request->requestId = g_session.nextRequestId++;
 		request->settings = settings;
+		request->promptCacheKey = AIService::BuildPromptCacheKey(g_session.activeSessionId);
 		request->sourceFilePathLocal = g_session.sourceFilePathLocal;
 		request->contextMessages = BuildContextMessagesLocked(g_session);
 		request->cancellation = std::make_shared<AIChatRequestCancellation>();
@@ -8599,6 +8602,8 @@ void HandleChatTaskDone(LPARAM lParam)
 			result->chatResult.hasUsage = result->chatResult.checkpoint.hasUsage;
 			result->chatResult.promptTokens = result->chatResult.checkpoint.promptTokens;
 			result->chatResult.totalTokens = result->chatResult.checkpoint.totalTokens;
+			result->chatResult.cachedInputTokens = result->chatResult.checkpoint.cachedInputTokens;
+			result->chatResult.cacheWriteInputTokens = result->chatResult.checkpoint.cacheWriteInputTokens;
 			result->chatResult.accumulatedInputTokens =
 				result->chatResult.checkpoint.accumulatedInputTokens;
 			result->chatResult.accumulatedOutputTokens =
@@ -10656,6 +10661,8 @@ std::string ExecuteDebugRunAIChatTool(const std::string& argumentsJson, bool& ou
 	if (chatResult.hasUsage) {
 		result["prompt_tokens"] = chatResult.promptTokens;
 		result["total_tokens"] = chatResult.totalTokens;
+		result["cached_input_tokens"] = chatResult.cachedInputTokens;
+		result["cache_write_input_tokens"] = chatResult.cacheWriteInputTokens;
 		result["accumulated_input_tokens"] = chatResult.accumulatedInputTokens;
 		result["accumulated_output_tokens"] = chatResult.accumulatedOutputTokens;
 	}

@@ -4,6 +4,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -18,6 +19,7 @@
 #include "..\\thirdparty\\json.hpp"
 
 #include "AIChatMcpClient.h"
+#include "AIHttpTrace.h"
 #include "AIChatRunController.h"
 #include "AIChatToolRegistry.h"
 #include "AIChatToolPolicy.h"
@@ -45,6 +47,7 @@ long long ElapsedMs(const PerfClock::time_point& start)
 	return static_cast<long long>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(PerfClock::now() - start).count());
 }
+
 
 std::string ToLowerAsciiCopy(const std::string& text)
 {
@@ -699,7 +702,7 @@ std::pair<std::string, int> PerformPostRequestWithRetry(
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return std::make_pair(std::string("Request cancelled"), kAiRequestCancelledHttpStatus);
 		}
-		lastResult = PerformPostRequest(url, postData, customHeaders, timeout, autoCookies, neverRedirect, cancelContext);
+		lastResult = AIHttpTrace::Post(url, postData, customHeaders, timeout, autoCookies, neverRedirect, cancelContext);
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return std::make_pair(std::string("Request cancelled"), kAiRequestCancelledHttpStatus);
 		}
@@ -754,7 +757,7 @@ std::pair<std::string, int> PerformPostRequestStreamingWithRetry(
 			return std::make_pair(std::string("Request cancelled"), kAiRequestCancelledHttpStatus);
 		}
 		bool sawChunk = false;
-		lastResult = PerformPostRequestStreaming(
+		lastResult = AIHttpTrace::Stream(
 			url,
 			postData,
 			[&onChunk, &sawChunk, &cancelCallback, cancelContext, outSawResponseChunk](const std::string& chunk) -> bool {
@@ -1883,12 +1886,9 @@ ChatToolExecutionResult ExecuteChatToolWithPolicy(
 
 AISettings BuildChatRoundSettings(const AISettings& settings, const AIChatToolPolicy::Session& policy)
 {
-	AISettings roundSettings = settings;
-	if (policy.PreferLowThinkingForNextRound() &&
-		roundSettings.thinkingLevel > AIThinkingLevel::Low) {
-		roundSettings.thinkingLevel = AIThinkingLevel::Low;
-	}
-	return roundSettings;
+	// 保持用户配置，不在写入成功后隐式切换思考等级。
+	(void)policy;
+	return settings;
 }
 
 void LogChatRoundMetrics(
@@ -2029,7 +2029,101 @@ struct ChatStreamParseState {
 	bool hasUsage = false;
 	int promptTokens = 0;
 	int totalTokens = 0;
+	int cachedInputTokens = 0;
+	int cacheWriteInputTokens = 0;
+	bool hasCacheDetails = false;
 };
+
+struct OpenAIUsageMetrics {
+	bool hasUsage = false;
+	int inputTokens = 0;
+	int totalTokens = 0;
+	int cachedInputTokens = 0;
+	int cacheWriteInputTokens = 0;
+	bool hasCacheDetails = false;
+};
+
+int ReadUsageTokenCount(const nlohmann::json& usage, const char* key)
+{
+	if (!usage.is_object() || key == nullptr || !usage.contains(key)) {
+		return 0;
+	}
+	const auto& value = usage[key];
+	if (!value.is_number_integer() && !value.is_number_unsigned()) {
+		return 0;
+	}
+	try {
+		return static_cast<int>((std::clamp)(value.get<long long>(), 0LL, static_cast<long long>((std::numeric_limits<int>::max)())));
+	}
+	catch (...) {
+		return 0;
+	}
+}
+
+OpenAIUsageMetrics ParseOpenAIUsage(
+	const nlohmann::json& usage,
+	const char* inputTokenKey,
+	const char* outputTokenKey,
+	const char* totalTokenKey)
+{
+	OpenAIUsageMetrics metrics;
+	if (!usage.is_object()) {
+		return metrics;
+	}
+	metrics.hasUsage = true;
+	metrics.inputTokens = ReadUsageTokenCount(usage, inputTokenKey);
+	const int outputTokens = ReadUsageTokenCount(usage, outputTokenKey);
+	metrics.totalTokens = ReadUsageTokenCount(usage, totalTokenKey);
+	if (metrics.totalTokens <= 0) {
+		metrics.totalTokens = metrics.inputTokens + outputTokens;
+	}
+	if (usage.contains("prompt_tokens_details") && usage["prompt_tokens_details"].is_object()) {
+		const auto& details = usage["prompt_tokens_details"];
+		metrics.hasCacheDetails = true;
+		metrics.cachedInputTokens = ReadUsageTokenCount(details, "cached_tokens");
+		metrics.cacheWriteInputTokens = ReadUsageTokenCount(details, "cache_write_tokens");
+	}
+	if (usage.contains("input_tokens_details") && usage["input_tokens_details"].is_object()) {
+		const auto& details = usage["input_tokens_details"];
+		metrics.hasCacheDetails = true;
+		metrics.cachedInputTokens = ReadUsageTokenCount(details, "cached_tokens");
+		metrics.cacheWriteInputTokens = ReadUsageTokenCount(details, "cache_write_tokens");
+	}
+	return metrics;
+}
+
+void RecordOpenAIUsage(
+	AIChatRunController& controller,
+	const AIChatRunOptions& runOptions,
+	const OpenAIUsageMetrics& metrics,
+	const char* tag)
+{
+	controller.RecordUsage(
+		metrics.inputTokens,
+		metrics.totalTokens,
+		metrics.hasUsage,
+		metrics.cachedInputTokens,
+		metrics.cacheWriteInputTokens);
+	if (!metrics.hasUsage) {
+		return;
+	}
+	const int cacheHitPercent = metrics.inputTokens > 0
+		? static_cast<int>((static_cast<long long>(metrics.cachedInputTokens) * 100) / metrics.inputTokens)
+		: 0;
+	Logger::Instance().Write(
+		"AI",
+		std::format(
+			"[AI Chat][Cache] tag={} key_present={} key={} usage_reported={} cache_details_reported={} input_tokens={} cached_input_tokens={} cache_write_input_tokens={} cache_hit_percent={}",
+			tag == nullptr ? "openai" : tag,
+			runOptions.promptCacheKey.empty() ? 0 : 1,
+			runOptions.promptCacheKey.empty() ? "<none>" : runOptions.promptCacheKey,
+			metrics.hasUsage ? 1 : 0,
+			metrics.hasCacheDetails ? 1 : 0,
+			metrics.inputTokens,
+			metrics.cachedInputTokens,
+			metrics.cacheWriteInputTokens,
+			cacheHitPercent));
+}
 
 StreamToolCallState& EnsureToolCallSlot(std::vector<StreamToolCallState>& toolCalls, size_t index)
 {
@@ -2080,13 +2174,13 @@ bool ProcessStreamDataPayload(
 	// usage 通常随最后一个 chunk 下发（需 stream_options.include_usage），其 choices 为空数组，
 	// 故须在下面的 choices 早退之前捕获。
 	if (packet.contains("usage") && packet["usage"].is_object()) {
-		const auto& u = packet["usage"];
-		if (u.contains("prompt_tokens") && u["prompt_tokens"].is_number_integer()) {
-			state.promptTokens = u["prompt_tokens"].get<int>();
-		}
-		if (u.contains("total_tokens") && u["total_tokens"].is_number_integer()) {
-			state.totalTokens = u["total_tokens"].get<int>();
-		}
+		const OpenAIUsageMetrics usage = ParseOpenAIUsage(
+			packet["usage"], "prompt_tokens", "completion_tokens", "total_tokens");
+		state.promptTokens = usage.inputTokens;
+		state.totalTokens = usage.totalTokens;
+		state.cachedInputTokens = usage.cachedInputTokens;
+		state.cacheWriteInputTokens = usage.cacheWriteInputTokens;
+		state.hasCacheDetails = usage.hasCacheDetails;
 		state.hasUsage = true;
 	}
 
@@ -2309,6 +2403,7 @@ struct ResponsesStreamParseState {
 	std::string parseError;
 	std::string failureEventType;
 	std::string failureCode;
+	OpenAIUsageMetrics usage;
 	nlohmann::json completedResponse = nlohmann::json::object();
 	nlohmann::json outputItems = nlohmann::json::array();
 };
@@ -2435,6 +2530,17 @@ bool ProcessResponsesStreamEvent(
 		state.sawCompletedEvent = true;
 		if (packet.contains("response") && packet["response"].is_object()) {
 			state.completedResponse = packet["response"];
+			if (state.completedResponse.contains("usage")) {
+				state.usage = ParseOpenAIUsage(
+					state.completedResponse["usage"],
+					"input_tokens",
+					"output_tokens",
+					"total_tokens");
+			}
+		}
+		else if (packet.contains("usage")) {
+			state.usage = ParseOpenAIUsage(
+				packet["usage"], "input_tokens", "output_tokens", "total_tokens");
 		}
 		return true;
 	}
@@ -2671,6 +2777,17 @@ nlohmann::json BuildResponsesParsedFromStream(const ResponsesStreamParseState& s
 	}
 	nlohmann::json parsed;
 	parsed["output"] = state.outputItems;
+	if (state.usage.hasUsage) {
+		parsed["usage"] = {
+			{"input_tokens", state.usage.inputTokens},
+			{"output_tokens", state.usage.totalTokens - state.usage.inputTokens},
+			{"total_tokens", state.usage.totalTokens},
+			{"input_tokens_details", {
+				{"cached_tokens", state.usage.cachedInputTokens},
+				{"cache_write_tokens", state.usage.cacheWriteInputTokens}
+			}}
+		};
+	}
 	return parsed;
 }
 
@@ -3781,14 +3898,10 @@ std::string BuildGeminiChatSystemPrompt(const AISettings& settings, bool minimal
 
 std::string BuildSkillRuntimePrompt(const std::vector<AIChatMessage>& contextMessages)
 {
-	std::string latestUserMessage;
-	for (auto it = contextMessages.rbegin(); it != contextMessages.rend(); ++it) {
-		if (ToLowerAsciiCopy(AIService::Trim(it->role)) == "user") {
-			latestUserMessage = it->content;
-			break;
-		}
-	}
-	return Utf8ToLocal(AISkillManager::BuildRuntimePromptAddon(LocalToUtf8(latestUserMessage)));
+	// 技能目录属于稳定系统前缀；具体技能正文由 read_skill_resource 按轮次读取，
+	// 不把最新用户消息拼入系统提示，避免每轮破坏提示缓存前缀。
+	(void)contextMessages;
+	return Utf8ToLocal(AISkillManager::BuildRuntimePromptAddon(std::string()));
 }
 
 std::string UrlEncode(const std::string& value)
@@ -4829,6 +4942,9 @@ AIResult ExecuteTaskOpenAIResponses(
 	});
 	requestBody["stream"] = false;
 	requestBody["store"] = false;
+	if (!settings.model.empty()) {
+		requestBody["prompt_cache_key"] = AIService::BuildPromptCacheKey(settings.model);
+	}
 	ApplyThinkingConfigToOpenAIResponsesRequest(requestBody, settings);
 	NormalizeJsonStringsToUtf8InPlace(requestBody);
 
@@ -4895,6 +5011,7 @@ AIResult ExecuteTaskOpenAIWithPrompt(
 	requestBody["model"] = LocalToUtf8(settings.model);
 	ApplyOpenAITemperatureIfSupported(requestBody, settings);
 	requestBody["stream"] = false;
+	requestBody["prompt_cache_key"] = AIService::BuildPromptCacheKey(settings.model);
 	requestBody["messages"] = nlohmann::json::array({
 		{{"role", "system"}, {"content", LocalToUtf8(systemPrompt)}},
 		{{"role", "user"}, {"content", LocalToUtf8(inputText)}}
@@ -4994,6 +5111,8 @@ void SyncLongTaskResult(AIChatResult& result, const AIChatRunController& control
 	result.hasUsage = controller.HasUsage();
 	result.promptTokens = controller.PromptTokens();
 	result.totalTokens = controller.TotalTokens();
+	result.cachedInputTokens = controller.CachedInputTokens();
+	result.cacheWriteInputTokens = controller.CacheWriteInputTokens();
 	result.accumulatedInputTokens = controller.AccumulatedInputTokens();
 	result.accumulatedOutputTokens = controller.AccumulatedOutputTokens();
 	result.completedModelRounds = controller.CompletedModelRounds();
@@ -5206,7 +5325,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 		const std::string requestBodyText = requestBody.dump();
 		const auto roundStart = PerfClock::now();
 		ReportChatActivity(runOptions, "等待 AI 首包...");
-		const auto [responseBody, statusCode] = PerformPostRequest(
+		const auto [responseBody, statusCode] = AIHttpTrace::Post(
 			endpoint,
 			requestBodyText,
 			BuildClaudeHeaders(settings),
@@ -5567,7 +5686,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 		const std::string requestBodyText = requestBody.dump();
 		const auto roundStart = PerfClock::now();
 		ReportChatActivity(runOptions, "等待 AI 首包...");
-		const auto [responseBody, statusCode] = PerformPostRequest(
+		const auto [responseBody, statusCode] = AIHttpTrace::Post(
 			endpoint,
 			requestBodyText,
 			BuildJsonHeadersOnly(settings),
@@ -5945,6 +6064,9 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		requestBody["parallel_tool_calls"] = true;
 		requestBody["stream"] = true;
 		requestBody["store"] = false;
+		if (!runOptions.promptCacheKey.empty()) {
+			requestBody["prompt_cache_key"] = runOptions.promptCacheKey;
+		}
 		ApplyThinkingConfigToOpenAIResponsesRequest(requestBody, roundSettings);
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
@@ -5954,7 +6076,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		const auto roundStart = PerfClock::now();
 		ReportChatActivity(runOptions, "等待 AI 首包...");
 		bool reportedFirstChunk = false;
-		const auto [responseBody, statusCode] = PerformPostRequestStreaming(
+		const auto [responseBody, statusCode] = AIHttpTrace::Stream(
 			endpoint,
 			requestBodyText,
 			[&streamState, &streamCallback, &cancelCallback, cancelContext, &sawResponseChunk, &reportedFirstChunk, &runOptions](
@@ -6001,6 +6123,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			statusCode,
 			responseBody);
 		if (retryableAttempt) {
+			RecordOpenAIUsage(runController, runOptions, streamState.usage, "openai-responses-chat");
 			const DWORD retryDelayMs = ComputeOpenAIResponsesRetryDelayMs(
 				streamState,
 				retry.RetriesPerformed() + 1,
@@ -6081,12 +6204,12 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			usage = &parsed["usage"];
 		}
 		if (usage != nullptr) {
-			const int inputTokens = usage->value("input_tokens", 0);
-			const int outputTokens = usage->value("output_tokens", 0);
-			runController.RecordUsage(
-				inputTokens,
-				usage->value("total_tokens", inputTokens + outputTokens),
-				true);
+			const OpenAIUsageMetrics metrics = ParseOpenAIUsage(
+				*usage, "input_tokens", "output_tokens", "total_tokens");
+			RecordOpenAIUsage(runController, runOptions, metrics, "openai-responses-chat");
+		}
+		else if (streamState.usage.hasUsage) {
+			RecordOpenAIUsage(runController, runOptions, streamState.usage, "openai-responses-chat");
 		}
 		if (!toolCalls.empty() || !textUtf8.empty()) {
 			runController.RecordModelRound();
@@ -7869,6 +7992,9 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		requestBody["stream"] = true;
 		requestBody["stream_options"] = { {"include_usage", true} };
 		requestBody["messages"] = requestMessages;
+		if (!runOptions.promptCacheKey.empty()) {
+			requestBody["prompt_cache_key"] = runOptions.promptCacheKey;
+		}
 		requestBody["tools"] = tools;
 		if (!IsDeepSeekCompatibleSettings(settings)) {
 			requestBody["tool_choice"] = "auto";
@@ -7894,7 +8020,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		ReportChatActivity(runOptions, "等待 AI 首包...");
 		bool reportedFirstChunk = false;
 		const auto [responseBody, statusCode] =
-			PerformPostRequestStreaming(
+			AIHttpTrace::Stream(
 				endpoint,
 				requestBodyText,
 				[&streamState, &streamCallback, &cancelCallback, cancelContext, &sawResponseChunk, &reportedFirstChunk, &runOptions](
@@ -7944,10 +8070,18 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			statusCode,
 			responseBody);
 		if (retryableAttempt) {
-			runController.RecordUsage(
-				streamState.promptTokens,
-				streamState.totalTokens,
-				streamState.hasUsage);
+			RecordOpenAIUsage(
+				runController,
+				runOptions,
+				OpenAIUsageMetrics{
+					streamState.hasUsage,
+					streamState.promptTokens,
+					streamState.totalTokens,
+					streamState.cachedInputTokens,
+					streamState.cacheWriteInputTokens,
+					streamState.hasCacheDetails
+				},
+				"openai-chat");
 			if (retry.WaitForRetry(
 					"openai-chat",
 					statusCode,
@@ -7981,10 +8115,18 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			return result;
 		}
 
-		runController.RecordUsage(
-			streamState.promptTokens,
-			streamState.totalTokens,
-			streamState.hasUsage);
+		RecordOpenAIUsage(
+			runController,
+			runOptions,
+			OpenAIUsageMetrics{
+				streamState.hasUsage,
+				streamState.promptTokens,
+				streamState.totalTokens,
+					streamState.cachedInputTokens,
+					streamState.cacheWriteInputTokens,
+					streamState.hasCacheDetails
+			},
+			"openai-chat");
 		if (IsCancelRequested(cancelCallback, cancelContext)) {
 			return MarkChatResultCancelled(std::move(result), Utf8ToLocal(streamState.mergedUtf8));
 		}
@@ -8020,13 +8162,15 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 				return result;
 			}
 			if (parsed.contains("usage") && parsed["usage"].is_object()) {
-				const auto& usage = parsed["usage"];
-				const int promptTokens = usage.value("prompt_tokens", 0);
-				const int completionTokens = usage.value("completion_tokens", 0);
-				runController.RecordUsage(
-					promptTokens,
-					usage.value("total_tokens", promptTokens + completionTokens),
-					true);
+				RecordOpenAIUsage(
+					runController,
+					runOptions,
+					ParseOpenAIUsage(
+						parsed["usage"],
+						"prompt_tokens",
+						"completion_tokens",
+						"total_tokens"),
+					"openai-chat");
 			}
 
 			std::string parseError;
@@ -8326,6 +8470,19 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 {
 	nlohmann::json checks = nlohmann::json::array();
 	bool allOk = true;
+	{
+		AISettings settings;
+		settings.thinkingLevel = AIThinkingLevel::Medium;
+		AIChatToolPolicy::Session policy;
+		policy.AfterToolCall("edit_file", "{}", "{\"ok\":true}", true);
+		const auto headers = AIHttpTrace::SafeHeaders({
+			{"Set-Cookie", "secret"}, {"AUTHORIZATION", "secret"}, {"x-request-id", "test-id"}});
+		const bool ok = BuildChatRoundSettings(settings, policy).thinkingLevel == AIThinkingLevel::Medium &&
+			headers[0]["value"] == "<redacted>" && headers[1]["value"] == "<redacted>" &&
+			headers[2]["value"] == "test-id" && AIHttpTrace::Hex(std::string("\xE4\xB8", 2)) == "e4b8";
+		checks.push_back({{"name", "http_trace_and_stable_thinking"}, {"ok", ok}});
+		allOk = allOk && ok;
+	}
 
 	{
 		ChatRetryCoordinator configured(5);
@@ -9641,6 +9798,34 @@ std::string AIService::Trim(const std::string& text)
 		--end;
 	}
 	return text.substr(begin, end - begin);
+}
+
+std::string AIService::BuildPromptCacheKey(const std::string& sessionId)
+{
+	const std::string trimmed = Trim(sessionId);
+	std::string key = "autolinker:v1:";
+	for (const unsigned char ch : trimmed) {
+		if (std::isalnum(ch) != 0 || ch == '-' || ch == '_' || ch == '.' || ch == ':') {
+			key.push_back(static_cast<char>(ch));
+		}
+		else if (key.back() != '-') {
+			key.push_back('-');
+		}
+	}
+	if (key == "autolinker:v1:") {
+		key += "default";
+	}
+	if (key.size() <= 64) {
+		return key;
+	}
+
+	// 超长或历史异常会话 ID 使用稳定摘要，避免截断造成缓存键碰撞。
+	std::uint64_t hash = 14695981039346656037ull;
+	for (const unsigned char ch : trimmed) {
+		hash ^= ch;
+		hash *= 1099511628211ull;
+	}
+	return std::format("autolinker:v1:{:016X}", hash);
 }
 
 std::string AIService::BuildEndpoint(const std::string& baseUrl)

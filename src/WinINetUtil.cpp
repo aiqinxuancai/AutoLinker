@@ -600,7 +600,8 @@ std::pair<std::string, int> PerformPostRequestStreaming(
 	bool AutoCookies,
 	bool NeverRedirect,
 	HttpRequestCancellation* cancellation,
-	int streamIdleTimeout)
+	int streamIdleTimeout,
+	std::vector<HttpResponseHeaderEntry>* responseHeaders)
 {
     const HttpResponseDetails details = PerformPostRequestCore(
         url,
@@ -612,6 +613,7 @@ std::pair<std::string, int> PerformPostRequestStreaming(
         &onChunk,
         cancellation,
 		streamIdleTimeout);
+    if (responseHeaders != nullptr) *responseHeaders = details.headers;
     return std::make_pair(details.body, details.statusCode);
 }
 

@@ -22,7 +22,12 @@ public:
 	void BeginSampling();
 	// 向当前 AI 对话报告阶段状态，不改变检查点状态。
 	void ReportActivity(const std::string& line) const;
-	void RecordUsage(int promptTokens, int totalTokens, bool hasUsage);
+	void RecordUsage(
+		int promptTokens,
+		int totalTokens,
+		bool hasUsage,
+		int cachedInputTokens = 0,
+		int cacheWriteInputTokens = 0);
 	void RecordModelRound();
 	bool ShouldCompact() const;
 
@@ -50,6 +55,8 @@ public:
 	int CompactionCount() const;
 	int PromptTokens() const;
 	int TotalTokens() const;
+	int CachedInputTokens() const;
+	int CacheWriteInputTokens() const;
 	long long AccumulatedInputTokens() const;
 	long long AccumulatedOutputTokens() const;
 	int CompletedModelRounds() const;
@@ -83,6 +90,8 @@ private:
 	int m_samplingRoundsAtLastCompaction = 0;
 	int m_promptTokens = 0;
 	int m_totalTokens = 0;
+	int m_cachedInputTokens = 0;
+	int m_cacheWriteInputTokens = 0;
 	long long m_accumulatedInputTokens = 0;
 	long long m_accumulatedOutputTokens = 0;
 	int m_completedModelRounds = 0;

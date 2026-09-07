@@ -152,6 +152,8 @@ struct AIChatRunCheckpoint {
 	int compactionCount = 0;
 	int promptTokens = 0;
 	int totalTokens = 0;
+	int cachedInputTokens = 0;
+	int cacheWriteInputTokens = 0;
 	long long accumulatedInputTokens = 0;
 	long long accumulatedOutputTokens = 0;
 	int completedModelRounds = 0;
@@ -162,6 +164,8 @@ struct AIChatRunCheckpoint {
 
 // AI 长任务运行选项。
 struct AIChatRunOptions {
+	// 同一内置聊天会话的稳定提示缓存分区键；为空时不发送缓存键。
+	std::string promptCacheKey;
 	const AIChatRunCheckpoint* resumeCheckpoint = nullptr;
 	std::function<void(const AIChatRunCheckpoint& checkpoint)> checkpointCallback;
 	// 工具完成后的模型续轮最多重试次数；负数表示沿用端点配置。
@@ -202,6 +206,8 @@ struct AIChatResult {
 	bool hasUsage = false;
 	int promptTokens = 0; // 输入 token —— 衡量「上下文有多满」的关键数
 	int totalTokens = 0;  // prompt+completion，仅日志诊断用
+	int cachedInputTokens = 0; // 服务端报告的提示缓存命中 token
+	int cacheWriteInputTokens = 0; // 服务端报告的提示缓存写入 token
 	long long accumulatedInputTokens = 0; // 本次运行累计输入 token
 	long long accumulatedOutputTokens = 0; // 本次运行累计输出 token
 	int completedModelRounds = 0; // 成功解析的模型轮数，不包含网络重试
@@ -266,6 +272,8 @@ public:
 	// 解析 HTTP 错误 JSON，字段按 UTF-8 返回，避免依赖固定中文文案。
 	static AIHttpErrorDetails ParseHttpErrorDetails(int statusCode, const std::string& responseBody);
 	static std::string NormalizeModelOutputToCode(const std::string& modelText);
+	// 根据持久化会话 ID 生成符合 API 长度限制的稳定缓存键。
+	static std::string BuildPromptCacheKey(const std::string& sessionId);
 	static std::string Trim(const std::string& text);
 
 private:

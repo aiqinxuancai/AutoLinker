@@ -294,6 +294,8 @@ nlohmann::json SerializeRunCheckpoint(
 		{"compaction_count", checkpoint.compactionCount},
 		{"prompt_tokens", checkpoint.promptTokens},
 		{"total_tokens", checkpoint.totalTokens},
+		{"cached_input_tokens", checkpoint.cachedInputTokens},
+		{"cache_write_input_tokens", checkpoint.cacheWriteInputTokens},
 		{"accumulated_input_tokens", checkpoint.accumulatedInputTokens},
 		{"accumulated_output_tokens", checkpoint.accumulatedOutputTokens},
 		{"completed_model_rounds", checkpoint.completedModelRounds},
@@ -339,6 +341,8 @@ bool DeserializeRunCheckpoint(const nlohmann::json& value, AIChatRunCheckpoint& 
 	checkpoint.compactionCount = static_cast<int>(GetJsonInt64(value, "compaction_count", 0));
 	checkpoint.promptTokens = static_cast<int>(GetJsonInt64(value, "prompt_tokens", 0));
 	checkpoint.totalTokens = static_cast<int>(GetJsonInt64(value, "total_tokens", 0));
+	checkpoint.cachedInputTokens = static_cast<int>(GetJsonInt64(value, "cached_input_tokens", 0));
+	checkpoint.cacheWriteInputTokens = static_cast<int>(GetJsonInt64(value, "cache_write_input_tokens", 0));
 	checkpoint.accumulatedInputTokens = GetJsonInt64(value, "accumulated_input_tokens", 0);
 	checkpoint.accumulatedOutputTokens = GetJsonInt64(value, "accumulated_output_tokens", 0);
 	checkpoint.completedModelRounds = static_cast<int>(GetJsonInt64(value, "completed_model_rounds", 0));
