@@ -141,7 +141,7 @@
 							</div>
 							<div>
 								<label for="contextWindow" class="ui-label">上下文长度</label>
-								<input id="contextWindow" class="ui-input" type="number" min="0" step="1024" placeholder="自动判断">
+								<input id="contextWindow" class="ui-input" type="number" min="0" step="1024" placeholder="200000">
 							</div>
 						</div>
 
@@ -271,7 +271,7 @@ function updateTemperatureInputState(){var automatic=$("temperatureAuto").checke
 function applyEndpointForm(item){
 	if(!item)return; $("endpointTitle").textContent=item.name; $("protocol").value=item.protocolType; $("thinkingLevel").value=item.thinkingLevel; $("imageInputMode").value=item.imageInputMode;
 	$("baseUrl").value=item.baseUrl; $("apiKey").value=item.apiKey; $("model").value=item.model; $("extraPrompt").value=item.extraPrompt; $("customHeaders").value=item.customHeaders;
-	$("timeoutMs").value=String(item.timeoutMs); $("temperatureAuto").checked=item.temperature===null; $("temperature").value=item.temperature===null?"0.2":String(item.temperature); updateTemperatureInputState(); $("contextWindow").value=item.contextWindow?String(item.contextWindow):""; $("retryCount").value=String(item.retryCount);
+	$("timeoutMs").value=String(item.timeoutMs); $("temperatureAuto").checked=item.temperature===null; $("temperature").value=item.temperature===null?"0.2":String(item.temperature); updateTemperatureInputState(); $("contextWindow").value=item.contextWindow?String(item.contextWindow):""; updateContextWindowPlaceholder(); $("retryCount").value=String(item.retryCount);
 	$("endpointEnabled").checked=_activeTarget.type==="endpoint"&&_activeTarget.id===item.id; updateEndpointPreview(); updateProviderSiteLink(item.baseUrl); updateModelMenu(presetModels(item.baseUrl));
 }
 
@@ -327,11 +327,36 @@ function deleteItem(){
 function normalizeUrl(url){return trimSlashes(trimText(url)).toLowerCase();}
 function presetForUrl(url){var normalized=normalizeUrl(url);for(var i=0;i<PRESET_SITES.length;i++)if(normalizeUrl(PRESET_SITES[i].baseUrl)===normalized)return PRESET_SITES[i];return null;}
 function presetModels(url){var site=presetForUrl(url);return site?site.models:[];}
+function contextWindowPreset(model){
+	var m=trimText(model).toLowerCase(); if(!m)return 200000;
+	if(m.indexOf("gpt-6")>=0)return 272000;
+	if(m.indexOf("gpt-5")>=0){
+		if(m.indexOf("-mini")>=0||m.indexOf("-nano")>=0||m.indexOf("-codex")>=0)return 400000;
+		if(m.indexOf("gpt-5.6")>=0||m.indexOf("gpt-5.4")>=0||m.indexOf("gpt-5.5-pro")>=0)return 272000;
+		if(m.indexOf("gpt-5.5")>=0)return 272000;
+		return 400000;
+	}
+	if(m.indexOf("gpt-4.1")>=0)return 1047576;
+	if(m.indexOf("gpt-4o")>=0)return 128000;
+	if(m.indexOf("gpt-4-turbo")>=0)return 128000;
+	if(m.indexOf("grok-4")>=0)return 500000;
+	if(m.indexOf("claude")>=0)return 200000;
+	if(m.indexOf("gemini-1.5-pro")>=0)return 2097152;
+	if(m.indexOf("gemini")>=0)return 1048576;
+	if(m.indexOf("deepseek-v4")>=0||m.indexOf("deepseek-chat")>=0||m.indexOf("deepseek-reasoner")>=0)return 1000000;
+	if(m.indexOf("deepseek")>=0)return 128000;
+	if(m.indexOf("kimi-k3")>=0)return 1000000;
+	if(m.indexOf("kimi")>=0||m.indexOf("qwen")>=0||m.indexOf("doubao")>=0)return 262144;
+	if(m.indexOf("minimax-m3")>=0)return 1000000;
+	if(m.indexOf("minimax")>=0)return 196608;
+	return 200000;
+}
+function updateContextWindowPlaceholder(){ $("contextWindow").placeholder=String(contextWindowPreset($("model").value)); }
 function updateProviderSiteLink(url){var site=presetForUrl(url),link=$("providerSiteLink");if(!site||!site.providerUrl){link.classList.add("hidden");link.removeAttribute("href");link.removeAttribute("data-url");link.textContent="";return;}link.textContent="前往"+site.providerLabel+"官网";link.setAttribute("href",site.providerUrl);link.setAttribute("data-url",site.providerUrl);link.classList.remove("hidden");}
 function dedupe(values){var seen={},result=[];(values||[]).forEach(function(value){value=trimText(value);if(value&&!seen[value]){seen[value]=true;result.push(value);}});return result;}
 function hideModelMenu(){$("modelMenu").classList.add("hidden");_modelMenuOpen=false;}
 function showModelMenu(){if($("modelMenu").children.length){$("modelMenu").classList.remove("hidden");_modelMenuOpen=true;}}
-function updateModelMenu(models){_modelOptions=dedupe(models);var menu=$("modelMenu");menu.innerHTML="";_modelOptions.forEach(function(model){var item=document.createElement("div");item.className="ui-menu-item";item.textContent=model;item.onmousedown=function(event){event.preventDefault();$("model").value=model;hideModelMenu();};menu.appendChild(item);});$("modelArrow").disabled=!_modelOptions.length;if(!_modelOptions.length)hideModelMenu();}
+function updateModelMenu(models){_modelOptions=dedupe(models);var menu=$("modelMenu");menu.innerHTML="";_modelOptions.forEach(function(model){var item=document.createElement("div");item.className="ui-menu-item";item.textContent=model;item.onmousedown=function(event){event.preventDefault();$("model").value=model;updateContextWindowPlaceholder();hideModelMenu();};menu.appendChild(item);});$("modelArrow").disabled=!_modelOptions.length;if(!_modelOptions.length)hideModelMenu();}
 function endpointPayloadFromForm(){saveEndpointForm();return cloneEndpoint(findEndpoint(_selectedEndpointId));}
 function requestModels(){var payload=endpointPayloadFromForm();if(!trimText(payload.baseUrl)||!trimText(payload.apiKey)){alert("接口地址和 API 密钥不能为空。");return;}if(!validateHeaders(payload.customHeaders))return;setModelFetchBusy(true);post({action:"fetch_models",data:payload});}
 function setModelFetchBusy(busy){_fetchingModels=!!busy;$("modelFetchBtn").disabled=_fetchingModels;$("modelFetchBtn").textContent=_fetchingModels?"…":"↻";}
@@ -367,7 +392,7 @@ $("addGroupMemberBtn").onclick=openEndpointPicker;$("closeEndpointPickerBtn").on
 $("providerSiteLink").onclick=function(event){event.preventDefault();var url=this.getAttribute("data-url");if(url)post({action:"open_url",url:url});};
 $("toggleApiKey").onclick=function(){toggleSecret("apiKey","toggleApiKey");};$("protocol").onchange=updateEndpointPreview;$("baseUrl").oninput=function(){updateEndpointPreview();updateProviderSiteLink(this.value);updateModelMenu(presetModels(this.value));};
 $("temperatureAuto").onchange=updateTemperatureInputState;
-$("modelArrow").onclick=function(event){event.stopPropagation();_modelMenuOpen?hideModelMenu():showModelMenu();};$("modelArrow").onmousedown=function(event){event.preventDefault();};$("model").onfocus=showModelMenu;$("model").onblur=function(){setTimeout(hideModelMenu,150);};$("modelFetchBtn").onclick=requestModels;
+$("modelArrow").onclick=function(event){event.stopPropagation();_modelMenuOpen?hideModelMenu():showModelMenu();};$("modelArrow").onmousedown=function(event){event.preventDefault();};$("model").oninput=updateContextWindowPlaceholder;$("model").onfocus=showModelMenu;$("model").onblur=function(){setTimeout(hideModelMenu,150);};$("modelFetchBtn").onclick=requestModels;
 $("presetBtn").onclick=function(event){event.stopPropagation();_presetMenuOpen?hidePresetMenu():showPresetMenu();};document.addEventListener("click",function(event){if(!$("modelCmb").contains(event.target))hideModelMenu();if(!$("presetMenuAnchor").contains(event.target))hidePresetMenu();});
 document.addEventListener("keydown",function(event){if(event.key==="Escape"&&$("endpointPickerDialog").getAttribute("aria-hidden")==="false")closeEndpointPicker();});
 $("cancelBtn").onclick=function(){post({action:"cancel"});};$("testBtn").onclick=function(){var data=collectTestData();if(validate(data))post({action:"test_connection",data:data});};$("saveBtn").onclick=function(){var data=collect();if(validate(data))post({action:"save",data:data});};

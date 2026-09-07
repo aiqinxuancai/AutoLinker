@@ -5106,7 +5106,6 @@ std::string GenerateLongTaskSummary(
 	const std::vector<AIChatToolEvent>& events)
 {
 	AISettings compactSettings = settings;
-	compactSettings.thinkingLevel = AIThinkingLevel::Low;
 	const std::string systemPrompt =
 		"你负责压缩一个仍在执行的长期编程任务。仅输出可供另一个 Agent 继续工作的结构化中文检查点，"
 		"必须包含：目标、持久约束、已完成工作、修改文件、关键发现、测试状态、未完成步骤、最后失败。"
@@ -5191,7 +5190,7 @@ void CompactLongTaskIfNeeded(
 	Logger::Instance().Write(
 		"AI",
 		std::format(
-			"[AI Chat][Context] compaction_start reason=budget sampling_rounds={} compaction_count={} model={} context_window_tokens={} prompt_tokens={} predicted_context_tokens={} context_bytes={} context_messages={} thinking_level=low purpose=summary_request",
+			"[AI Chat][Context] compaction_start reason=budget sampling_rounds={} compaction_count={} model={} context_window_tokens={} prompt_tokens={} predicted_context_tokens={} context_bytes={} context_messages={} thinking_level={} purpose=summary_request",
 			controller.SamplingRounds(),
 			controller.CompactionCount(),
 			settings.model,
@@ -5199,7 +5198,8 @@ void CompactLongTaskIfNeeded(
 			controller.PromptTokens(),
 			controller.PredictedContextTokens(),
 			controller.ContextBytes(),
-			controller.ContextMessages().size()));
+			controller.ContextMessages().size(),
+			AIService::ThinkingLevelToString(settings.thinkingLevel)));
 	const std::string summary = GenerateLongTaskSummary(controller, settings, result.toolEvents);
 	controller.RecordCompaction(summary);
 	toolPolicy.StartNewContextWindow();
@@ -6721,16 +6721,25 @@ bool ResolveGpt5Window(const std::string& model, int& outWindow)
 		return true;
 	}
 
-	const bool proVariant = model.find("-pro") != std::string::npos;
 	if (minor >= 6) {
-		outWindow = 1050000;
+		outWindow = 272000;
 		return true;
 	}
 	if (minor >= 5) {
-		outWindow = proVariant ? 1050000 : 1000000;
+		outWindow = 272000;
 		return true;
 	}
-	outWindow = minor >= 4 ? 1050000 : 400000;
+	outWindow = minor >= 4 ? 272000 : 400000;
+	return true;
+}
+
+bool ResolveGpt6Window(const std::string& model, int& outWindow)
+{
+	int minor = 0;
+	if (!ParseFamilyMinorVersion(model, "gpt-6", minor)) {
+		return false;
+	}
+	outWindow = 272000;
 	return true;
 }
 
@@ -6751,13 +6760,19 @@ int AIService::ResolveContextWindowTokens(const AISettings& settings)
 
 	const std::string m = ToLowerAsciiCopy(settings.model);
 
-	// P2a: OpenAI GPT-5 系列 —— 5.4 与 5.6 为 1.05M，5.5 主模型为 1M，mini/nano/codex 仍按 400K。
+	// P2a: OpenAI GPT-6 系列 —— Codex 默认上下文窗口为 272K。
+	int gpt6Window = 0;
+	if (ResolveGpt6Window(m, gpt6Window)) {
+		return gpt6Window;
+	}
+
+	// P2b: OpenAI GPT-5 系列 —— 5.4、5.5 与 5.6 主模型为 272K，mini/nano/codex 仍按 400K。
 	int gpt5Window = 0;
 	if (ResolveGpt5Window(m, gpt5Window)) {
 		return gpt5Window;
 	}
 
-	// P2b: 版本递增族 —— 未登记的更高小版本继承上一代窗口（窗口值核实于 2026-07）。
+	// P2c: 版本递增族 —— 未登记的更高小版本继承上一代窗口（窗口值核实于 2026-07）。
 	// versions 按 minor 升序，主版本号写在前缀里。
 	struct VersionedFamily { const char* prefix; const FamilyMinorWindow* versions; size_t count; };
 	static const FamilyMinorWindow kOpus4[]   = { { 0, 200000 }, { 1, 200000 }, { 6, 1000000 }, { 7, 1000000 }, { 8, 1000000 } };
@@ -6775,7 +6790,7 @@ int AIService::ResolveContextWindowTokens(const AISettings& settings)
 		}
 	}
 
-	// P2c: 子串表 —— 不规则命名或非递增族。更具体的在前。
+	// P2d: 子串表 —— 不规则命名或非递增族。更具体的在前。
 	struct Entry { const char* key; int window; };
 	static const Entry kTable[] = {
 		// xAI Grok：4.6 暂按已知 4.5 窗口保守处理，避免默认窗口过小。
@@ -8768,19 +8783,26 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 	}
 
 	{
-		const std::array<const char*, 3> models = {
-			"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"
-		};
+		const std::array<std::pair<const char*, int>, 8> models = {{
+			{ "gpt-5.4", 272000 },
+			{ "gpt-5.5-pro", 272000 },
+			{ "gpt-5.6-sol", 272000 },
+			{ "gpt-5.6-terra", 272000 },
+			{ "gpt-5.6-luna", 272000 },
+			{ "gpt-6-astra", 272000 },
+			{ "gpt-5.5", 272000 },
+			{ "gpt-5.4-mini", 400000 }
+		}};
 		bool ok = true;
-		for (const char* model : models) {
+		for (const auto& [model, expectedWindow] : models) {
 			AISettings settings = {};
 			settings.model = model;
-			ok = ok && ResolveContextWindowTokens(settings) == 1050000;
+			ok = ok && ResolveContextWindowTokens(settings) == expectedWindow;
 		}
 		checks.push_back({
-			{"name", "gpt_5_6_context_window_presets"},
+			{"name", "gpt_5_6_and_gpt_6_context_window_presets"},
 			{"ok", ok},
-			{"context_window", 1050000}
+			{"context_window", 272000}
 		});
 		allOk = allOk && ok;
 	}
