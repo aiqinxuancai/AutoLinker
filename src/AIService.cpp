@@ -20,6 +20,7 @@
 
 #include "AIChatMcpClient.h"
 #include "AIHttpTrace.h"
+#include "AIProviderCache.h"
 #include "AIChatRunController.h"
 #include "AIChatToolRegistry.h"
 #include "AIChatToolPolicy.h"
@@ -2123,6 +2124,22 @@ void RecordOpenAIUsage(
 			metrics.cachedInputTokens,
 			metrics.cacheWriteInputTokens,
 			cacheHitPercent));
+}
+
+void RecordProviderCacheUsage(
+	AIChatRunController& controller,
+	const AIProviderCache::Usage& usage,
+	const char* tag,
+	const char* mode)
+{
+	controller.RecordUsage(usage.input, usage.total, usage.reported, usage.read, usage.write);
+	Logger::Instance().Write("AI", std::format(
+		"[AI Chat][Cache] tag={} cache_mode={} usage_reported={} cache_details_reported={} cache_read_reported={} cache_write_reported={} input_tokens={} cached_input_tokens={} cache_write_input_tokens={} cache_hit_percent={}",
+		tag, mode, usage.reported ? 1 : 0, (usage.readReported || usage.writeReported) ? 1 : 0,
+		usage.readReported ? 1 : 0, usage.writeReported ? 1 : 0,
+		usage.input, usage.read, usage.write,
+		usage.input > 0 && usage.readReported
+			? std::to_string(static_cast<int64_t>(usage.read) * 100 / usage.input) : "unknown"));
 }
 
 StreamToolCallState& EnsureToolCallSlot(std::vector<StreamToolCallState>& toolCalls, size_t index)
@@ -5320,6 +5337,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 		requestBody["tool_choice"] = { {"type", "auto"} };
 		requestBody["stream"] = false;
 		ApplyThinkingConfigToClaudeRequest(requestBody, roundSettings);
+		AIProviderCache::ApplyClaude(requestBody);
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
 		const std::string requestBodyText = requestBody.dump();
@@ -5393,12 +5411,9 @@ AIChatResult ExecuteChatWithToolsClaude(
 
 		const std::vector<ClaudeToolCall> toolCalls = ExtractClaudeToolCalls(parsed);
 		const std::string textUtf8 = ExtractClaudeTextUtf8(parsed);
-		if (parsed.contains("usage") && parsed["usage"].is_object()) {
-			const auto& usage = parsed["usage"];
-			const int promptTokens = usage.value("input_tokens", 0);
-			const int outputTokens = usage.value("output_tokens", 0);
-			runController.RecordUsage(promptTokens, promptTokens + outputTokens, true);
-		}
+		RecordProviderCacheUsage(runController,
+			AIProviderCache::ParseClaude(parsed.value("usage", nlohmann::json())),
+			"claude-chat", "ephemeral_breakpoints_5m");
 		if (!toolCalls.empty() || !textUtf8.empty()) {
 			runController.RecordModelRound();
 		}
@@ -5768,6 +5783,10 @@ AIChatResult ExecuteChatWithToolsGemini(
 			return result;
 		}
 
+		// 即使没有候选内容，服务端已报告的用量也必须入账。
+		RecordProviderCacheUsage(runController,
+			AIProviderCache::ParseGemini(parsed.value("usageMetadata", nlohmann::json())),
+			"gemini-chat", "implicit");
 		if (!parsed.contains("candidates") || !parsed["candidates"].is_array() || parsed["candidates"].empty()) {
 			if (retry.WaitForRetry(
 					"gemini-chat",
@@ -5804,13 +5823,6 @@ AIChatResult ExecuteChatWithToolsGemini(
 
 		const std::vector<GeminiToolCall> toolCalls = ExtractGeminiToolCalls(parsed);
 		const std::string textUtf8 = ExtractGeminiTextUtf8(parsed);
-		if (parsed.contains("usageMetadata") && parsed["usageMetadata"].is_object()) {
-			const auto& usage = parsed["usageMetadata"];
-			runController.RecordUsage(
-				usage.value("promptTokenCount", 0),
-				usage.value("totalTokenCount", 0),
-				true);
-		}
 		if (!toolCalls.empty() || !textUtf8.empty()) {
 			runController.RecordModelRound();
 		}
