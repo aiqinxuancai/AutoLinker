@@ -5083,21 +5083,220 @@ AIResult ExecuteTaskOpenAIWithPrompt(
 	return result;
 }
 
-std::string BuildLongTaskCompactionInput(const AIChatRunController& controller)
+constexpr char kCodexCompactionPrompt[] =
+	"You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.\n\n"
+	"Include:\n"
+	"- Current progress and key decisions made\n"
+	"- Important context, constraints, or user preferences\n"
+	"- What remains to be done (clear next steps)\n"
+	"- Any critical data, examples, or references needed to continue\n\n"
+	"Be concise, structured, and focused on helping the next LLM seamlessly continue the work.\n";
+
+AIResult ExecuteCodexCompactionRequest(
+	const AIChatRunController& controller,
+	const AISettings& settings)
 {
-	std::string input;
-	input.reserve(32768);
-	for (const AIChatMessage& message : controller.ContextMessages()) {
-		input += "[" + message.role + "]\n";
-		if (!message.content.empty()) {
-			input += message.content;
-		}
-		else if (!message.rawMessageJsonUtf8.empty()) {
-			input += Utf8ToLocal(message.rawMessageJsonUtf8);
-		}
-		input += "\n\n";
+	AIResult result = {};
+	std::string validationError;
+	if (!ValidateRequestSettings(settings, validationError)) {
+		result.error = validationError;
+		return result;
 	}
-	return input;
+
+	const std::string promptUtf8 = LocalToUtf8(kCodexCompactionPrompt);
+	const std::string skillPromptLocal = BuildSkillRuntimePrompt(controller.ContextMessages());
+	const std::string baseSystemUtf8 = LocalToUtf8(
+		BuildChatSystemPrompt(settings) + skillPromptLocal);
+	nlohmann::json requestBody;
+	std::string endpoint;
+	std::string headers;
+	const char* operation = "ai-compaction";
+
+	if (settings.protocolType == AIProtocolType::Claude) {
+		endpoint = BuildClaudeEndpoint(settings.baseUrl);
+		headers = BuildClaudeHeaders(settings);
+		operation = "claude-compaction";
+		std::string systemUtf8 = baseSystemUtf8;
+		nlohmann::json messages = nlohmann::json::array();
+		for (const AIChatMessage& message : controller.ContextMessages()) {
+			const std::string role = ToLowerAsciiCopy(AIService::Trim(message.role));
+			if (role == "system") {
+				systemUtf8 += "\n\n" + LocalToUtf8(message.content);
+				continue;
+			}
+			if (role != "user" && role != "assistant") {
+				continue;
+			}
+			messages.push_back(BuildClaudeMessage(message));
+		}
+		messages.push_back({
+			{"role", "user"},
+			{"content", nlohmann::json::array({{{"type", "text"}, {"text", promptUtf8}}})}
+		});
+		requestBody["model"] = LocalToUtf8(settings.model);
+		requestBody["max_tokens"] = 4096;
+		ApplyTemperatureIfSpecified(requestBody, settings);
+		requestBody["system"] = systemUtf8;
+		requestBody["messages"] = std::move(messages);
+		ApplyThinkingConfigToClaudeRequest(requestBody, settings);
+	}
+	else if (settings.protocolType == AIProtocolType::Gemini) {
+		endpoint = BuildGeminiEndpoint(settings.baseUrl, LocalToUtf8(settings.model), false);
+		endpoint = AppendQueryParam(endpoint, "key", settings.apiKey);
+		headers = BuildJsonHeadersOnly(settings);
+		operation = "gemini-compaction";
+		std::string systemUtf8 = LocalToUtf8(
+			BuildGeminiChatSystemPrompt(settings, false) + skillPromptLocal);
+		nlohmann::json contents = nlohmann::json::array();
+		for (const AIChatMessage& message : controller.ContextMessages()) {
+			const std::string role = ToLowerAsciiCopy(AIService::Trim(message.role));
+			if (role == "system") {
+				systemUtf8 += "\n\n" + LocalToUtf8(message.content);
+				continue;
+			}
+			if (role != "user" && role != "assistant") {
+				continue;
+			}
+			contents.push_back(BuildGeminiContent(message));
+		}
+		contents.push_back({
+			{"role", "user"},
+			{"parts", nlohmann::json::array({{{"text", promptUtf8}}})}
+		});
+		requestBody["system_instruction"] = {
+			{"parts", nlohmann::json::array({{{"text", systemUtf8}}})}
+		};
+		requestBody["generationConfig"] = nlohmann::json::object();
+		ApplyTemperatureIfSpecified(requestBody["generationConfig"], settings);
+		requestBody["contents"] = std::move(contents);
+		ApplyThinkingConfigToGeminiRequest(requestBody, settings);
+	}
+	else if (settings.protocolType == AIProtocolType::OpenAIResponses) {
+		endpoint = BuildOpenAIResponsesEndpoint(settings.baseUrl);
+		headers = BuildOpenAIHeaders(settings);
+		operation = "openai-responses-compaction";
+		nlohmann::json input = nlohmann::json::array();
+		for (const AIChatMessage& message : controller.ContextMessages()) {
+			const std::string role = ToLowerAsciiCopy(AIService::Trim(message.role));
+			if (role == "system") {
+				continue;
+			}
+			nlohmann::json rawInputItem;
+			if (TryParseRawChatMessageJson(message.rawMessageJsonUtf8, rawInputItem) &&
+				IsResponsesInputItem(rawInputItem)) {
+				input.push_back(std::move(rawInputItem));
+				continue;
+			}
+			if (role == "user" || role == "assistant") {
+				input.push_back(BuildResponsesMessage(message));
+			}
+		}
+		input.push_back(BuildResponsesTextMessage("user", promptUtf8));
+		PrepareResponsesInputItemsForStatelessRequest(input);
+		requestBody["model"] = LocalToUtf8(settings.model);
+		ApplyOpenAITemperatureIfSupported(requestBody, settings);
+		requestBody["instructions"] = BuildResponsesInstructions(
+			controller.ContextMessages(), settings, skillPromptLocal);
+		requestBody["input"] = std::move(input);
+		requestBody["stream"] = false;
+		requestBody["store"] = false;
+		requestBody["prompt_cache_key"] = AIService::BuildPromptCacheKey(settings.model);
+		ApplyThinkingConfigToOpenAIResponsesRequest(requestBody, settings);
+	}
+	else {
+		endpoint = AIService::Trim(settings.baseUrl);
+		while (!endpoint.empty() && endpoint.back() == '/') {
+			endpoint.pop_back();
+		}
+		endpoint = ReplaceSuffixIfPresent(endpoint, "/responses", "/chat/completions");
+		if (!EndsWithInsensitive(endpoint, "/chat/completions")) {
+			endpoint += EndsWithOpenAIVersionSegment(endpoint)
+				? "/chat/completions"
+				: "/v1/chat/completions";
+		}
+		headers = BuildOpenAIHeaders(settings);
+		operation = "openai-chat-compaction";
+		nlohmann::json messages = nlohmann::json::array({
+			{{"role", "system"}, {"content", baseSystemUtf8}}
+		});
+		for (const AIChatMessage& message : controller.ContextMessages()) {
+			const std::string role = ToLowerAsciiCopy(AIService::Trim(message.role));
+			if (role != "system" && role != "user" && role != "assistant" && role != "tool") {
+				continue;
+			}
+			nlohmann::json rawMessage;
+			if ((role == "assistant" || role == "tool") &&
+				TryParseRawChatMessageJson(message.rawMessageJsonUtf8, rawMessage)) {
+				rawMessage["role"] = role;
+				if (!rawMessage.contains("content") || rawMessage["content"].is_null()) {
+					rawMessage["content"] = LocalToUtf8(message.content);
+				}
+				messages.push_back(std::move(rawMessage));
+			}
+			else {
+				messages.push_back(BuildOpenAIChatMessage(message));
+			}
+		}
+		messages.push_back({{"role", "user"}, {"content", promptUtf8}});
+		requestBody["model"] = LocalToUtf8(settings.model);
+		ApplyOpenAITemperatureIfSupported(requestBody, settings);
+		requestBody["stream"] = false;
+		requestBody["prompt_cache_key"] = AIService::BuildPromptCacheKey(settings.model);
+		requestBody["messages"] = std::move(messages);
+		ApplyThinkingConfigToOpenAIChatRequest(requestBody, settings);
+	}
+
+	NormalizeJsonStringsToUtf8InPlace(requestBody);
+	const auto [responseBody, statusCode] = PerformPostRequestWithRetry(
+		endpoint,
+		requestBody.dump(),
+		headers,
+		settings.timeoutMs,
+		false,
+		false,
+		operation,
+		{},
+		nullptr,
+		settings.retryCount);
+	result.httpStatus = statusCode;
+	result.endpointEstablished = IsSuccessfulHttpStatus(statusCode);
+	if (statusCode < 200 || statusCode >= 300) {
+		SetHttpStatusError(result, statusCode, responseBody);
+		return result;
+	}
+
+	try {
+		const nlohmann::json parsed = nlohmann::json::parse(responseBody);
+		const std::string errUtf8 = ParseErrorMessageUtf8(parsed);
+		if (!errUtf8.empty()) {
+			result.error = Utf8ToLocal(errUtf8);
+			return result;
+		}
+		std::string textUtf8;
+		if (settings.protocolType == AIProtocolType::Claude) {
+			textUtf8 = ExtractClaudeTextUtf8(parsed);
+		}
+		else if (settings.protocolType == AIProtocolType::Gemini) {
+			textUtf8 = ExtractGeminiTextUtf8(parsed);
+		}
+		else if (settings.protocolType == AIProtocolType::OpenAIResponses) {
+			textUtf8 = ExtractResponsesTextUtf8(parsed);
+		}
+		else if (parsed.contains("choices") && parsed["choices"].is_array() &&
+			!parsed["choices"].empty()) {
+			textUtf8 = MergeMessageContentUtf8(parsed["choices"][0]["message"]);
+		}
+		if (textUtf8.empty()) {
+			result.error = "Compaction response content is empty";
+			return result;
+		}
+		result.ok = true;
+		result.content = Utf8ToLocal(textUtf8);
+	}
+	catch (const std::exception& ex) {
+		result.error = std::string("Failed to parse compaction response: ") + ex.what();
+	}
+	return result;
 }
 
 std::string GenerateLongTaskSummary(
@@ -5105,25 +5304,7 @@ std::string GenerateLongTaskSummary(
 	const AISettings& settings,
 	const std::vector<AIChatToolEvent>& events)
 {
-	AISettings compactSettings = settings;
-	const std::string systemPrompt =
-		"你负责压缩一个仍在执行的长期编程任务。仅输出可供另一个 Agent 继续工作的结构化中文检查点，"
-		"必须包含：目标、持久约束、已完成工作、修改文件、关键发现、测试状态、未完成步骤、最后失败。"
-		"不要宣称任务已经完成，不要调用工具。";
-	const std::string input = BuildLongTaskCompactionInput(controller);
-	AIResult compactResult;
-	if (settings.protocolType == AIProtocolType::Claude) {
-		compactResult = ExecuteTaskClaude(systemPrompt, input, compactSettings, compactSettings.retryCount);
-	}
-	else if (settings.protocolType == AIProtocolType::Gemini) {
-		compactResult = ExecuteTaskGemini(systemPrompt, input, compactSettings, compactSettings.retryCount);
-	}
-	else if (settings.protocolType == AIProtocolType::OpenAIResponses) {
-		compactResult = ExecuteTaskOpenAIResponses(systemPrompt, input, compactSettings, compactSettings.retryCount);
-	}
-	else {
-		compactResult = ExecuteTaskOpenAIWithPrompt(systemPrompt, input, compactSettings);
-	}
+	const AIResult compactResult = ExecuteCodexCompactionRequest(controller, settings);
 	if (compactResult.ok && !AIService::Trim(compactResult.content).empty()) {
 		return compactResult.content;
 	}
@@ -5464,12 +5645,12 @@ AIChatResult ExecuteChatWithToolsClaude(
 				toolPolicy,
 				settings,
 				result,
-				[&systemUtf8, &messages, &settings, &skillPromptLocal](const std::string& summaryLocal) {
-					systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal) +
-					"\n\n" + LocalToUtf8("长期任务压缩检查点：\n") + LocalToUtf8(summaryLocal);
-					messages = nlohmann::json::array({
-						{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
-					});
+				[&systemUtf8, &messages, &settings, &skillPromptLocal, &runController](const std::string&) {
+					systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal);
+					messages = nlohmann::json::array();
+					for (const AIChatMessage& message : runController.ContextMessages()) {
+						messages.push_back(BuildClaudeMessage(message));
+					}
 				});
 			const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, contentLocal);
 			if (!pending.empty()) {
@@ -5606,12 +5787,12 @@ AIChatResult ExecuteChatWithToolsClaude(
 			toolPolicy,
 			settings,
 			result,
-			[&systemUtf8, &messages, &settings, &skillPromptLocal](const std::string& summaryLocal) {
-				systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal) +
-					"\n\n" + LocalToUtf8("长期任务压缩检查点：\n") + LocalToUtf8(summaryLocal);
-				messages = nlohmann::json::array({
-					{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
-				});
+			[&systemUtf8, &messages, &settings, &skillPromptLocal, &runController](const std::string&) {
+				systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal);
+				messages = nlohmann::json::array();
+				for (const AIChatMessage& message : runController.ContextMessages()) {
+					messages.push_back(BuildClaudeMessage(message));
+				}
 			});
 		const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, "");
 		for (const AIChatMessage& message : pending) {
@@ -5869,14 +6050,12 @@ AIChatResult ExecuteChatWithToolsGemini(
 				toolPolicy,
 				settings,
 				result,
-				[&systemUtf8, &contents, &settings, &skillPromptLocal](const std::string& summaryLocal) {
-					systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, false) + skillPromptLocal) +
-						"\n\n" + LocalToUtf8("长期任务压缩检查点：\n") + LocalToUtf8(summaryLocal);
-					contents = nlohmann::json::array({
-						{{"role", "user"}, {"parts", nlohmann::json::array({
-							{{"text", LocalToUtf8("请从检查点继续执行原任务。")}}
-						})}}
-					});
+				[&systemUtf8, &contents, &settings, &skillPromptLocal, &runController](const std::string&) {
+					systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, false) + skillPromptLocal);
+					contents = nlohmann::json::array();
+					for (const AIChatMessage& message : runController.ContextMessages()) {
+						contents.push_back(BuildGeminiContent(message));
+					}
 				});
 			const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, contentLocal);
 			if (!pending.empty()) {
@@ -6003,14 +6182,12 @@ AIChatResult ExecuteChatWithToolsGemini(
 			toolPolicy,
 			settings,
 			result,
-			[&systemUtf8, &contents, &settings, &skillPromptLocal](const std::string& summaryLocal) {
-				systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, false) + skillPromptLocal) +
-					"\n\n" + LocalToUtf8("长期任务压缩检查点：\n") + LocalToUtf8(summaryLocal);
-				contents = nlohmann::json::array({
-					{{"role", "user"}, {"parts", nlohmann::json::array({
-						{{"text", LocalToUtf8("请从检查点继续执行原任务。")}}
-					})}}
-				});
+			[&systemUtf8, &contents, &settings, &skillPromptLocal, &runController](const std::string&) {
+				systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, false) + skillPromptLocal);
+				contents = nlohmann::json::array();
+				for (const AIChatMessage& message : runController.ContextMessages()) {
+					contents.push_back(BuildGeminiContent(message));
+				}
 			});
 		const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, "");
 		for (const AIChatMessage& message : pending) {
@@ -6283,9 +6460,10 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 				[&instructionsUtf8, &input, &settings, &runController, &skillPromptLocal](const std::string&) {
 					instructionsUtf8 = BuildResponsesInstructions(
 						runController.ContextMessages(), settings, skillPromptLocal);
-					input = nlohmann::json::array({
-						BuildResponsesTextMessage("user", LocalToUtf8("请从检查点继续执行原任务。"))
-					});
+					input = nlohmann::json::array();
+					for (const AIChatMessage& message : runController.ContextMessages()) {
+						input.push_back(BuildResponsesMessage(message));
+					}
 				});
 			const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, contentLocal);
 			if (!pending.empty()) {
@@ -6413,9 +6591,10 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			[&instructionsUtf8, &input, &settings, &runController, &skillPromptLocal](const std::string&) {
 				instructionsUtf8 = BuildResponsesInstructions(
 					runController.ContextMessages(), settings, skillPromptLocal);
-				input = nlohmann::json::array({
-					BuildResponsesTextMessage("user", LocalToUtf8("请从检查点继续执行原任务。"))
-				});
+				input = nlohmann::json::array();
+				for (const AIChatMessage& message : runController.ContextMessages()) {
+					input.push_back(BuildResponsesMessage(message));
+				}
 			});
 		const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, "");
 		for (const AIChatMessage& message : pending) {
@@ -8362,12 +8541,13 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 				toolPolicy,
 				settings,
 				result,
-				[&requestMessages, &settings, &skillPromptLocal](const std::string& summaryLocal) {
+				[&requestMessages, &settings, &skillPromptLocal, &runController](const std::string&) {
 					requestMessages = nlohmann::json::array({
-						{{"role", "system"}, {"content", LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal)}},
-						{{"role", "system"}, {"content", LocalToUtf8("长期任务压缩检查点：\n") + LocalToUtf8(summaryLocal)}},
-						{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
+						{{"role", "system"}, {"content", LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal)}}
 					});
+					for (const AIChatMessage& message : runController.ContextMessages()) {
+						requestMessages.push_back(BuildOpenAIChatMessage(message));
+					}
 				});
 			const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, "");
 			for (const AIChatMessage& message : pending) {
@@ -8417,12 +8597,13 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			toolPolicy,
 			settings,
 			result,
-			[&requestMessages, &settings, &skillPromptLocal](const std::string& summaryLocal) {
+			[&requestMessages, &settings, &skillPromptLocal, &runController](const std::string&) {
 				requestMessages = nlohmann::json::array({
-					{{"role", "system"}, {"content", LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal)}},
-					{{"role", "system"}, {"content", LocalToUtf8("长期任务压缩检查点：\n") + LocalToUtf8(summaryLocal)}},
-					{{"role", "user"}, {"content", LocalToUtf8("请从检查点继续执行原任务。")}}
+					{{"role", "system"}, {"content", LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal)}}
 				});
+				for (const AIChatMessage& message : runController.ContextMessages()) {
+					requestMessages.push_back(BuildOpenAIChatMessage(message));
+				}
 			});
 		const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, contentLocal);
 		if (!pending.empty()) {

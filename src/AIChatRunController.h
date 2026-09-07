@@ -18,6 +18,8 @@ public:
 	const std::vector<AIChatMessage>& ContextMessages() const;
 	void AppendContextMessage(AIChatMessage message);
 	void ReplaceContextWithSummary(const std::string& summaryLocal);
+	// 按 Codex 压缩规则保留最近 user 消息，并追加摘要 user 片段。
+	void ReplaceContextWithCompaction(const std::string& summaryLocal);
 
 	void BeginSampling();
 	// 向当前 AI 对话报告阶段状态，不改变检查点状态。

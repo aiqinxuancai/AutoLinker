@@ -15,6 +15,13 @@ constexpr int kStalledFailureCount = 8;
 constexpr int kRepeatedWriteRecoveryCount = 3;
 constexpr int kRepeatedWriteStalledCount = 5;
 constexpr size_t kMaxFallbackEventCount = 32;
+constexpr size_t kCodexCompactionUserMessageMaxTokens = 20000;
+
+constexpr char kCodexSummaryPrefix[] =
+	"Another language model started to solve this problem and produced a summary of its thinking process. "
+	"You also have access to the state of the tools that were used by that language model. "
+	"Use this to build on the work that has already been done and avoid duplicating work. "
+	"Here is the summary produced by the other language model, use the information in this summary to assist with your own analysis:";
 
 // 源文件按 UTF-8 编译，但控制器内部字符串沿用本地编码约定。
 std::string LocalText(const char* utf8)
@@ -46,6 +53,52 @@ std::string ToLowerAsciiCopy(std::string text)
 		}
 	}
 	return text;
+}
+
+size_t CodexTextTokens(const std::string& localText)
+{
+	const std::string utf8 = UnicodeTextCodec::LocalToUtf8Strict(localText);
+	return (utf8.size() + 3) / 4;
+}
+
+std::string TruncateCodexText(const std::string& localText, size_t maxTokens)
+{
+	const std::string utf8 = UnicodeTextCodec::LocalToUtf8Strict(localText);
+	const size_t maxBytes = maxTokens * 4;
+	if (utf8.size() <= maxBytes) {
+		return localText;
+	}
+
+	const size_t leftBudget = maxBytes / 2;
+	const size_t rightBudget = maxBytes - leftBudget;
+	size_t prefixEnd = 0;
+	for (size_t i = 0; i < utf8.size();) {
+		const unsigned char ch = static_cast<unsigned char>(utf8[i]);
+		const size_t width = (ch < 0x80) ? 1 :
+			((ch & 0xE0) == 0xC0 ? 2 : ((ch & 0xF0) == 0xE0 ? 3 : 4));
+		if (i + width > leftBudget) {
+			break;
+		}
+		prefixEnd = i + width;
+		i += width;
+	}
+	size_t suffixStart = utf8.size();
+	const size_t suffixTarget = utf8.size() > rightBudget ? utf8.size() - rightBudget : 0;
+	for (size_t i = suffixTarget; i < utf8.size(); ++i) {
+		const unsigned char ch = static_cast<unsigned char>(utf8[i]);
+		if ((ch & 0xC0) != 0x80) {
+			suffixStart = i;
+			break;
+		}
+	}
+	if (suffixStart < prefixEnd) {
+		suffixStart = prefixEnd;
+	}
+
+	const size_t removedTokens = (utf8.size() - maxBytes + 3) / 4;
+	const std::string marker = "\xE2\x80\xA6" + std::to_string(removedTokens) + " tokens truncated\xE2\x80\xA6";
+	const std::string truncatedUtf8 = utf8.substr(0, prefixEnd) + marker + utf8.substr(suffixStart);
+	return UnicodeTextCodec::Utf8ToLocalPreservingUnicode(truncatedUtf8);
 }
 
 bool IsSourceWriteTool(const std::string& toolName)
@@ -149,6 +202,51 @@ void AIChatRunController::ReplaceContextWithSummary(const std::string& summaryLo
 		"",
 		""
 	});
+	m_contextBytesAfterUsage = 0;
+	m_promptTokens = 0;
+	m_totalTokens = 0;
+	m_hasUsage = false;
+	ResetForNewContextWindow();
+}
+
+void AIChatRunController::ReplaceContextWithCompaction(const std::string& summaryLocal)
+{
+	m_summary = summaryLocal;
+	std::vector<AIChatMessage> userMessages;
+	userMessages.reserve(m_contextMessages.size());
+	for (const AIChatMessage& message : m_contextMessages) {
+		if (ToLowerAsciiCopy(message.role) != "user" ||
+			message.content.starts_with(LocalText(kCodexSummaryPrefix) + "\n")) {
+			continue;
+		}
+		userMessages.push_back(message);
+	}
+
+	std::vector<AIChatMessage> compactedMessages;
+	compactedMessages.reserve(userMessages.size() + 1);
+	size_t remainingTokens = kCodexCompactionUserMessageMaxTokens;
+	for (auto it = userMessages.rbegin(); it != userMessages.rend() && remainingTokens > 0; ++it) {
+		AIChatMessage message{
+			"user",
+			it->content,
+			"",
+			""
+		};
+		const size_t messageTokens = CodexTextTokens(message.content);
+		if (messageTokens > remainingTokens) {
+			message.content = TruncateCodexText(message.content, remainingTokens);
+		}
+		remainingTokens = remainingTokens > messageTokens ? remainingTokens - messageTokens : 0;
+		compactedMessages.push_back(std::move(message));
+	}
+	std::reverse(compactedMessages.begin(), compactedMessages.end());
+	compactedMessages.push_back(AIChatMessage{
+		"user",
+		LocalText(kCodexSummaryPrefix) + "\n" + summaryLocal,
+		"",
+		""
+	});
+	m_contextMessages = std::move(compactedMessages);
 	m_contextBytesAfterUsage = 0;
 	m_promptTokens = 0;
 	m_totalTokens = 0;
@@ -365,7 +463,7 @@ void AIChatRunController::ResetForNewContextWindow()
 void AIChatRunController::RecordCompaction(const std::string& summaryLocal)
 {
 	++m_compactionCount;
-	ReplaceContextWithSummary(summaryLocal);
+	ReplaceContextWithCompaction(summaryLocal);
 	PublishCheckpoint();
 }
 
