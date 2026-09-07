@@ -5191,10 +5191,14 @@ void CompactLongTaskIfNeeded(
 	Logger::Instance().Write(
 		"AI",
 		std::format(
-			"[AI Chat][Context] compaction_start sampling_rounds={} compaction_count={} prompt_tokens={} context_messages={}",
+			"[AI Chat][Context] compaction_start reason=budget sampling_rounds={} compaction_count={} model={} context_window_tokens={} prompt_tokens={} predicted_context_tokens={} context_bytes={} context_messages={} thinking_level=low purpose=summary_request",
 			controller.SamplingRounds(),
 			controller.CompactionCount(),
+			settings.model,
+			controller.ContextWindowTokens(),
 			controller.PromptTokens(),
+			controller.PredictedContextTokens(),
+			controller.ContextBytes(),
 			controller.ContextMessages().size()));
 	const std::string summary = GenerateLongTaskSummary(controller, settings, result.toolEvents);
 	controller.RecordCompaction(summary);

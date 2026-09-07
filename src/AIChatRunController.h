@@ -30,6 +30,10 @@ public:
 		int cacheWriteInputTokens = 0);
 	void RecordModelRound();
 	bool ShouldCompact() const;
+	// 返回自动压缩判定所使用的上下文字节数和预测 token，供诊断日志使用。
+	size_t ContextBytes() const;
+	size_t PredictedContextTokens() const;
+	int ContextWindowTokens() const;
 
 	void BeginToolBatch(std::vector<AIChatCheckpointToolCall> calls);
 	void CompleteToolCall(

@@ -244,6 +244,36 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		roundController.BeginSampling();
 	}
 	const bool roundsBeyondLegacyLimit = roundController.SamplingRounds() == 96;
+	for (int i = 0; i < 160; ++i) {
+		roundController.BeginSampling();
+	}
+	const bool lowUsageRoundsDoNotForceCompaction =
+		roundController.SamplingRounds() == 256 &&
+		!roundController.ShouldCompact();
+	const bool ninetyPercentBoundary = [&]() {
+		AISettings boundarySettings = settings;
+		boundarySettings.contextWindowTokens = 100000;
+		AIChatRunController boundaryController(boundarySettings, initialContext, {});
+		boundaryController.RecordUsage(89999, 90000, true);
+		if (boundaryController.ShouldCompact()) {
+			return false;
+		}
+		boundaryController.RecordUsage(90000, 90001, true);
+		return boundaryController.ShouldCompact();
+	}();
+	const bool largeRawMessageDoesNotUseByteThreshold = [&]() {
+		AISettings largeMessageSettings = settings;
+		largeMessageSettings.contextWindowTokens = 1000000;
+		AIChatRunController largeMessageController(largeMessageSettings, initialContext, {});
+		largeMessageController.RecordUsage(1000, 1100, true);
+		largeMessageController.AppendContextMessage(AIChatMessage{
+			"tool",
+			std::string(900001, 'x'),
+			"",
+			""
+		});
+		return !largeMessageController.ShouldCompact();
+	}();
 	roundController.RecordUsage(100, 140, true);
 	roundController.RecordModelRound();
 	roundController.RecordUsage(150, 210, true);
@@ -578,6 +608,9 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	std::filesystem::remove_all(tempRoot, fileEc);
 
 	const bool ok = roundsBeyondLegacyLimit &&
+		lowUsageRoundsDoNotForceCompaction &&
+		ninetyPercentBoundary &&
+		largeRawMessageDoesNotUseByteThreshold &&
 		multipleCompactions &&
 		cumulativeUsage &&
 		localCompactionFallback &&
@@ -602,6 +635,9 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		hiddenMessageIgnoredForTitle;
 	outCheck["ok"] = ok;
 	outCheck["rounds_beyond_64"] = roundsBeyondLegacyLimit;
+	outCheck["low_usage_rounds_do_not_force_compaction"] = lowUsageRoundsDoNotForceCompaction;
+	outCheck["ninety_percent_boundary"] = ninetyPercentBoundary;
+	outCheck["large_raw_message_does_not_use_byte_threshold"] = largeRawMessageDoesNotUseByteThreshold;
 	outCheck["multiple_compactions"] = multipleCompactions;
 	outCheck["cumulative_usage"] = cumulativeUsage;
 	outCheck["local_compaction_fallback"] = localCompactionFallback;

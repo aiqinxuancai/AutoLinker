@@ -10,8 +10,6 @@
 namespace {
 
 constexpr int kAutoCompactPercent = 90;
-constexpr int kAutoCompactSamplingRounds = 256;
-constexpr size_t kAutoCompactContextBytes = 900000;
 constexpr int kRecoveryHintFailureCount = 3;
 constexpr int kStalledFailureCount = 8;
 constexpr int kRepeatedWriteRecoveryCount = 3;
@@ -200,21 +198,34 @@ bool AIChatRunController::ShouldCompact() const
 	if (m_contextWindowTokens <= 0) {
 		return false;
 	}
-	if (m_samplingRounds - m_samplingRoundsAtLastCompaction >= kAutoCompactSamplingRounds) {
-		return true;
-	}
-	size_t contextBytes = 0;
-	for (const AIChatMessage& message : m_contextMessages) {
-		contextBytes += MessageBytes(message);
-	}
-	if (contextBytes >= kAutoCompactContextBytes) {
-		return true;
-	}
+	// 服务端 usage 可用时使用最近一次真实 prompt_tokens；首轮尚无 usage 时，
+	// 仅按上下文文本估算 token。原始 JSON/工具 schema 字节不能直接作为触发条件。
 	const size_t limit = static_cast<size_t>(m_contextWindowTokens) * kAutoCompactPercent / 100;
 	const size_t predictedTokens = m_hasUsage
 		? static_cast<size_t>(m_promptTokens) + (m_contextBytesAfterUsage + 3) / 4
 		: EstimateContextTokens(m_contextMessages);
 	return predictedTokens >= limit;
+}
+
+size_t AIChatRunController::ContextBytes() const
+{
+	size_t bytes = 0;
+	for (const AIChatMessage& message : m_contextMessages) {
+		bytes += MessageBytes(message);
+	}
+	return bytes;
+}
+
+size_t AIChatRunController::PredictedContextTokens() const
+{
+	return m_hasUsage
+		? static_cast<size_t>(m_promptTokens) + (m_contextBytesAfterUsage + 3) / 4
+		: EstimateContextTokens(m_contextMessages);
+}
+
+int AIChatRunController::ContextWindowTokens() const
+{
+	return m_contextWindowTokens;
 }
 
 void AIChatRunController::BeginToolBatch(std::vector<AIChatCheckpointToolCall> calls)
