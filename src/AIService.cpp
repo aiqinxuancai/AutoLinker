@@ -21,6 +21,7 @@
 #include "AIChatMcpClient.h"
 #include "AIHttpTrace.h"
 #include "AIProviderCache.h"
+#include "AIToolCatalogGuard.h"
 #include "AIChatRunController.h"
 #include "AIChatToolRegistry.h"
 #include "AIChatToolPolicy.h"
@@ -3676,7 +3677,16 @@ nlohmann::json BuildInternalToolCatalog(
 		catalog.push_back(BuildGetGoalToolDefinition());
 		catalog.push_back(BuildUpdateGoalToolDefinition());
 	}
-	return catalog;
+	// 所有协议转换前统一校验，覆盖后续新增的内置工具及 MCP 名称冲突。
+	const auto filtered = AIToolCatalogGuard::Filter(catalog);
+	if (filtered.Changed()) {
+		Logger::Instance().Write("AI", "[ToolCatalogGuard] " + nlohmann::json({
+			{"stage", "protocol_catalog"}, {"input_count", catalog.size()},
+			{"output_count", filtered.catalog.size()}, {"duplicates", filtered.duplicateNames},
+			{"rejected_conflicts", filtered.conflictNames}, {"invalid_count", filtered.invalidCount}
+		}).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+	}
+	return filtered.catalog;
 }
 
 nlohmann::json BuildGeminiTools(

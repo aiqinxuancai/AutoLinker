@@ -14,6 +14,7 @@
 #include <unordered_map>
 
 #include "AutoLinkerVersion.h"
+#include "AIToolCatalogGuard.h"
 #include "Logger.h"
 #include "WinINetUtil.h"
 
@@ -1523,6 +1524,16 @@ bool InitializeStdioSession(
 	return true;
 }
 
+void LogToolCatalogGuard(const char* stage, const AIToolCatalogGuard::Result& filtered, size_t inputCount)
+{
+	if (!filtered.Changed()) return;
+	Logger::Instance().Write("MCP", "[ToolCatalogGuard] " + nlohmann::json({
+		{"stage", stage}, {"input_count", inputCount}, {"output_count", filtered.catalog.size()},
+		{"duplicates", filtered.duplicateNames}, {"rejected_conflicts", filtered.conflictNames},
+		{"invalid_count", filtered.invalidCount}
+	}).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+}
+
 bool ListToolsFromInitializedTransport(
 	const AIChatMcpServerConfig& server,
 	const std::function<JsonRpcResult()>& listCall,
@@ -1545,7 +1556,10 @@ bool ListToolsFromInitializedTransport(
 		return false;
 	}
 
-	for (const auto& item : tools) {
+	// 在名称加入 schema 摘要前检查原名冲突，防止歧义被不同模型别名掩盖。
+	const auto filtered = AIToolCatalogGuard::Filter(tools);
+	LogToolCatalogGuard("tools/list", filtered, tools.size());
+	for (const auto& item : filtered.catalog) {
 		if (!item.is_object() || !item.contains("name") || !item["name"].is_string()) {
 			continue;
 		}
@@ -1653,7 +1667,11 @@ std::vector<AIChatMcpToolInfo> RefreshTools(const AIChatMcpConfig& config, const
 {
 	std::vector<AIChatMcpToolInfo> tools;
 	std::unordered_map<std::string, McpToolMapping> mappings;
+	std::vector<McpToolMapping> candidates;
+	nlohmann::json identities = nlohmann::json::array();
+	size_t sourceIndex = 0;
 	for (const auto& server : config.servers) {
+		const size_t routeIdentity = sourceIndex++;
 		if (!server.enabled) {
 			continue;
 		}
@@ -1675,9 +1693,19 @@ std::vector<AIChatMcpToolInfo> RefreshTools(const AIChatMcpConfig& config, const
 			McpToolMapping mapping;
 			mapping.tool = tool;
 			mapping.server = server;
-			mappings[tool.modelName] = std::move(mapping);
-			tools.push_back(std::move(tool));
+			auto identity = BuildCatalogItem(tool);
+			// 不同配置项视为不同来源，避免漏掉凭据差异，也无需复制敏感配置。
+			identity["route_identity"] = routeIdentity;
+			identities.push_back(std::move(identity));
+			candidates.push_back(std::move(mapping));
 		}
+	}
+	const auto filtered = AIToolCatalogGuard::Filter(identities);
+	LogToolCatalogGuard("registration", filtered, identities.size());
+	for (const size_t index : filtered.indices) {
+		auto& mapping = candidates[index];
+		tools.push_back(mapping.tool);
+		mappings.emplace(mapping.tool.modelName, std::move(mapping));
 	}
 
 	std::lock_guard<std::mutex> guard(g_toolCache.mutex);
@@ -2004,7 +2032,9 @@ nlohmann::json AppendMcpToolsToCatalog(const nlohmann::json& baseCatalog)
 	for (const auto& tool : tools) {
 		catalog.push_back(BuildCatalogItem(tool));
 	}
-	return catalog;
+	const auto filtered = AIToolCatalogGuard::Filter(catalog);
+	LogToolCatalogGuard("merge", filtered, catalog.size());
+	return filtered.catalog;
 }
 
 AIChatMcpExecutionResult ExecuteTool(
