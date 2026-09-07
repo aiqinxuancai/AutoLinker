@@ -91,7 +91,6 @@ private:
 	std::string m_summary;
 	int m_samplingRounds = 0;
 	int m_compactionCount = 0;
-	int m_samplingRoundsAtLastCompaction = 0;
 	int m_promptTokens = 0;
 	int m_totalTokens = 0;
 	int m_cachedInputTokens = 0;

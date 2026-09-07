@@ -366,7 +366,6 @@ void AIChatRunController::RecordCompaction(const std::string& summaryLocal)
 {
 	++m_compactionCount;
 	ReplaceContextWithSummary(summaryLocal);
-	m_samplingRoundsAtLastCompaction = m_samplingRounds;
 	PublishCheckpoint();
 }
 
