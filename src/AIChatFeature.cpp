@@ -508,7 +508,7 @@ bool RestoreStoredChatSessionEntry(HWND hWnd, const AIChatStoredSessionListEntry
 bool TryPromptAndRestoreRecentChatSession(HWND hWnd);
 bool IsStopRequestedLocked(const AIChatSessionState& state);
 void EnsureChatSessionBindingLocked(AIChatSessionState& state);
-void CompactHistoryLocked(AIChatSessionState& state);
+void CleanupInactiveHistoryLocked(AIChatSessionState& state);
 std::string DescribeMissingChatSettingField(const std::string& missingField);
 bool QueryChatSettingsState(AISettings& outSettings, std::string* outMissingField = nullptr);
 void PostRefreshDialog();
@@ -4947,7 +4947,7 @@ std::string RenderMarkdownToHtml(const std::string& markdown)
 	return html;
 }
 
-void CompactHistoryLocked(AIChatSessionState& state)
+void CleanupInactiveHistoryLocked(AIChatSessionState& state)
 {
 	auto cleanupInvisibleContextMessages = [&state]() {
 		const size_t keepInvisibleCount = 24;
@@ -4977,80 +4977,8 @@ void CompactHistoryLocked(AIChatSessionState& state)
 			state.messages.end());
 	};
 
-	size_t contextChars = 0;
-	size_t contextCount = 0;
-	for (const auto& message : state.messages) {
-		if (message.includeInContext) {
-			contextChars += message.content.size();
-			++contextCount;
-		}
-	}
-
-	// 触发判定（移植自 openai/codex）：以「模型上下文窗口 × 95%」为可用上限，
-	// 优先用上一轮的真实输入 token，无则按 字符数/4 估算；另保留宽松的字符数二级兜底。
-	const int window = state.effectiveContextWindow > 0 ? state.effectiveContextWindow : 200000;
-	const long long limit = static_cast<long long>(window) * 95 / 100;
-	const long long currentTokens = state.hasLastUsage
-		? static_cast<long long>(state.lastInputTokens)
-		: static_cast<long long>(contextChars / 4);
-	const bool overTokenLimit = currentTokens >= limit;
-	const bool overCharSafetyNet = contextChars > 200000;
-
-	if (!overTokenLimit && !overCharSafetyNet) {
-		cleanupInvisibleContextMessages();
-		return;
-	}
-
-	const size_t keepContextCount = (std::min)(contextCount, static_cast<size_t>(24));
-	const size_t compactContextCount = contextCount - keepContextCount;
-	if (compactContextCount == 0) {
-		return;
-	}
-
-	std::string summaryAppend;
-	summaryAppend.reserve(2048);
-	size_t compactedCount = 0;
-	for (auto& msg : state.messages) {
-		if (!msg.includeInContext) {
-			continue;
-		}
-
-		if (compactedCount < compactContextCount) {
-			if (msg.visibleInHistory) {
-				std::string line = TrimAsciiCopy(msg.content);
-				if (line.size() > 120) {
-					line.resize(120);
-					line += "...";
-				}
-				if (summaryAppend.size() <= 4000) {
-					summaryAppend += "[";
-					summaryAppend += RoleLabel(msg.role);
-					summaryAppend += "] ";
-					summaryAppend += line;
-					summaryAppend += "\n";
-				}
-			}
-			msg.includeInContext = false;
-			msg.reasoningContent.clear();
-			msg.rawMessageJsonUtf8.clear();
-			++compactedCount;
-		}
-
-		if (compactedCount >= compactContextCount) {
-			break;
-		}
-	}
-
-	if (!summaryAppend.empty()) {
-		if (!state.rollingSummary.empty()) {
-			state.rollingSummary += "\n";
-		}
-		state.rollingSummary += summaryAppend;
-		if (state.rollingSummary.size() > 12000) {
-			state.rollingSummary.erase(0, state.rollingSummary.size() - 12000);
-		}
-	}
-
+	// 上下文压缩统一由运行控制器按模型预算执行，UI 不裁剪有效消息，
+	// 避免固定字节门槛提前丢失历史，或按条数截断工具调用与结果。
 	cleanupInvisibleContextMessages();
 }
 
@@ -6429,10 +6357,9 @@ void UpdateActiveRunCheckpoint(
 		}
 		g_session.hasPendingRunCheckpoint = true;
 		g_session.pendingRunCheckpoint = checkpoint;
-		if (checkpoint.hasUsage && checkpoint.promptTokens > 0) {
-			g_session.lastInputTokens = checkpoint.promptTokens;
-			g_session.hasLastUsage = true;
-		}
+		// 压缩后控制器会使旧 usage 失效，UI 必须同步这一状态。
+		g_session.hasLastUsage = checkpoint.hasUsage && checkpoint.promptTokens > 0;
+		g_session.lastInputTokens = g_session.hasLastUsage ? checkpoint.promptTokens : 0;
 	}
 	SaveChatSessionSnapshotNow();
 }
@@ -7091,7 +7018,7 @@ bool StartChatRequest(
 			}
 		}
 		g_session.effectiveContextWindow = AIService::ResolveContextWindowTokens(settings);
-		CompactHistoryLocked(g_session);
+		CleanupInactiveHistoryLocked(g_session);
 
 		request->requestId = g_session.nextRequestId++;
 		request->settings = settings;
@@ -8621,10 +8548,8 @@ void HandleChatTaskDone(LPARAM lParam)
 		g_lastCompletedRequestId = result->requestId;
 		g_lastCompletedChatResult = result->chatResult;
 
-		if (result->chatResult.hasUsage && result->chatResult.promptTokens > 0) {
-			g_session.lastInputTokens = result->chatResult.promptTokens;
-			g_session.hasLastUsage = true;
-		}
+		g_session.hasLastUsage = result->chatResult.hasUsage && result->chatResult.promptTokens > 0;
+		g_session.lastInputTokens = g_session.hasLastUsage ? result->chatResult.promptTokens : 0;
 		if (result->goalProgressTracked && result->chatResult.hasUsage) {
 			AIChatGoalManager::AddUsage(
 				g_session.goal,
@@ -8648,6 +8573,8 @@ void HandleChatTaskDone(LPARAM lParam)
 		}
 
 		if (result->chatResult.ok && !result->chatResult.continuationMessages.empty()) {
+			// 完整续轮上下文已经包含旧摘要，不能在下次请求时再前置一遍。
+			g_session.rollingSummary.clear();
 			for (SessionMessage& message : g_session.messages) {
 				message.includeInContext = false;
 			}
@@ -8806,7 +8733,7 @@ void HandleChatTaskDone(LPARAM lParam)
 			scheduleNextWork = true;
 		}
 
-		CompactHistoryLocked(g_session);
+		CleanupInactiveHistoryLocked(g_session);
 	}
 	if (result->chatResult.ok) {
 		const long long totalTokens =
@@ -11049,7 +10976,7 @@ bool UpdatePlanFromTool(const std::string& argumentsJsonUtf8, std::string& outRe
 			"",
 			""
 		});
-		CompactHistoryLocked(g_session);
+		CleanupInactiveHistoryLocked(g_session);
 	}
 
 	SaveChatSessionSnapshotNow();
@@ -11199,6 +11126,35 @@ std::string BuildPlanModeSelfTestJson()
 
 std::string BuildCheckpointResumeSelfTestJson()
 {
+	// 大窗口低用量和压缩前遗留的高 usage 均不能触发 UI 二次裁剪。
+	AIChatSessionState history;
+	history.effectiveContextWindow = 1000000;
+	history.hasLastUsage = true;
+	history.lastInputTokens = 1000;
+	history.rollingSummary = "existing summary";
+	for (int i = 0; i < 30; ++i) {
+		history.messages.push_back(SessionMessage{
+			SessionRole::User, std::string(8000, 'x'), true, true, "", ""});
+	}
+	history.messages.push_back(SessionMessage{
+		SessionRole::Assistant, "", true, false, "", R"({"tool_calls":[{"id":"call_1"}]})"});
+	history.messages.push_back(SessionMessage{
+		SessionRole::Tool, "", true, false, "", R"({"tool_call_id":"call_1","content":"ok"})"});
+	for (int i = 0; i < 30; ++i) {
+		history.messages.push_back(SessionMessage{
+			SessionRole::System, "inactive", false, false, "", ""});
+	}
+	CleanupInactiveHistoryLocked(history);
+	history.lastInputTokens = 990000;
+	CleanupInactiveHistoryLocked(history);
+	const bool activeHistoryPreserved = history.rollingSummary == "existing summary" &&
+		std::count_if(history.messages.begin(), history.messages.end(),
+			[](const SessionMessage& message) { return message.includeInContext; }) == 32 &&
+		history.messages[0].content.size() == 8000 &&
+		!history.messages[30].rawMessageJsonUtf8.empty() &&
+		!history.messages[31].rawMessageJsonUtf8.empty();
+	const bool inactiveHistoryBounded = history.messages.size() == 32 + 24;
+
 	AIChatRunCheckpoint pending;
 	pending.protocolType = AIProtocolType::OpenAIResponses;
 	pending.model = "checkpoint-model";
@@ -11276,7 +11232,7 @@ std::string BuildCheckpointResumeSelfTestJson()
 		{},
 		emptyResult,
 		emptyUsedPending);
-	const bool ok = priorContextPreserved &&
+	const bool ok = activeHistoryPreserved && inactiveHistoryBounded && priorContextPreserved &&
 		followupAppended &&
 		toolCallsPreserved &&
 		runningState &&
@@ -11285,6 +11241,8 @@ std::string BuildCheckpointResumeSelfTestJson()
 	return nlohmann::json({
 		{"name", "active-checkpoint-resume"},
 		{"ok", ok},
+		{"active_history_preserved", activeHistoryPreserved},
+		{"inactive_history_bounded", inactiveHistoryBounded},
 		{"pending_checkpoint_selected", pendingSelected && usedPending},
 		{"prior_context_preserved", priorContextPreserved},
 		{"followup_appended", followupAppended},
