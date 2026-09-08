@@ -31,6 +31,10 @@ std::string LocalText(const char* utf8)
 
 size_t MessageBytes(const AIChatMessage& message)
 {
+	// 原始消息 JSON 是实际请求序列化时的来源；存在它时不要再把 content/reasoning 重复计入。
+	if (!message.rawMessageJsonUtf8.empty()) {
+		return message.role.size() + message.rawMessageJsonUtf8.size();
+	}
 	return message.role.size() +
 		message.content.size() +
 		message.reasoningContent.size() +
@@ -312,6 +316,11 @@ size_t AIChatRunController::ContextBytes() const
 		bytes += MessageBytes(message);
 	}
 	return bytes;
+}
+
+size_t AIChatRunController::ContextBytesAfterUsage() const
+{
+	return m_contextBytesAfterUsage;
 }
 
 size_t AIChatRunController::PredictedContextTokens() const

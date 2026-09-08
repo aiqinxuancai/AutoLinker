@@ -3118,13 +3118,13 @@ window.autolinkerSetBusy = function(busy, stopRequested, stopTooltip) {
 		restore.disabled = isBusy;
 	}
 	if (settings) {
-		settings.disabled = isBusy;
+		settings.disabled = false;
 	}
 	if (mcpSettings) {
-		mcpSettings.disabled = isBusy;
+		mcpSettings.disabled = false;
 	}
 	if (skillSettings) {
-		skillSettings.disabled = isBusy;
+		skillSettings.disabled = false;
 	}
 	if (input) {
 		input.disabled = waitingForPlanInput;

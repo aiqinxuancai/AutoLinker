@@ -8920,13 +8920,13 @@ void RefreshChatDialog(HWND hWnd)
 		EnableWindow(ctx->hRestoreSession, inFlight ? FALSE : TRUE);
 	}
 	if (ctx->hOpenSettings != nullptr) {
-		EnableWindow(ctx->hOpenSettings, inFlight ? FALSE : TRUE);
+		EnableWindow(ctx->hOpenSettings, TRUE);
 	}
 	if (ctx->hOpenMcpSettings != nullptr) {
-		EnableWindow(ctx->hOpenMcpSettings, inFlight ? FALSE : TRUE);
+		EnableWindow(ctx->hOpenMcpSettings, TRUE);
 	}
 	if (ctx->hOpenSkillSettings != nullptr) {
-		EnableWindow(ctx->hOpenSkillSettings, inFlight ? FALSE : TRUE);
+		EnableWindow(ctx->hOpenSkillSettings, TRUE);
 	}
 	if (ctx->hPlanMode != nullptr) {
 		EnableWindow(ctx->hPlanMode, inFlight ? FALSE : TRUE);

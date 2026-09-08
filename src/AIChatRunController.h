@@ -34,6 +34,8 @@ public:
 	bool ShouldCompact() const;
 	// 返回自动压缩判定所使用的上下文字节数和预测 token，供诊断日志使用。
 	size_t ContextBytes() const;
+	// 返回最近一次服务端 usage 之后追加、尚未计入该 usage 的上下文字节数。
+	size_t ContextBytesAfterUsage() const;
 	size_t PredictedContextTokens() const;
 	int ContextWindowTokens() const;
 

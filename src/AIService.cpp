@@ -5094,7 +5094,9 @@ constexpr char kCodexCompactionPrompt[] =
 
 AIResult ExecuteCodexCompactionRequest(
 	const AIChatRunController& controller,
-	const AISettings& settings)
+	const AISettings& settings,
+	const std::function<bool()>& cancelCallback,
+	HttpRequestCancellation* cancelContext)
 {
 	AIResult result = {};
 	std::string validationError;
@@ -5255,8 +5257,8 @@ AIResult ExecuteCodexCompactionRequest(
 		false,
 		false,
 		operation,
-		{},
-		nullptr,
+		cancelCallback,
+		cancelContext,
 		settings.retryCount);
 	result.httpStatus = statusCode;
 	result.endpointEstablished = IsSuccessfulHttpStatus(statusCode);
@@ -5302,9 +5304,15 @@ AIResult ExecuteCodexCompactionRequest(
 std::string GenerateLongTaskSummary(
 	AIChatRunController& controller,
 	const AISettings& settings,
-	const std::vector<AIChatToolEvent>& events)
+	const std::vector<AIChatToolEvent>& events,
+	const std::function<bool()>& cancelCallback,
+	HttpRequestCancellation* cancelContext)
 {
-	const AIResult compactResult = ExecuteCodexCompactionRequest(controller, settings);
+	const AIResult compactResult = ExecuteCodexCompactionRequest(
+		controller,
+		settings,
+		cancelCallback,
+		cancelContext);
 	if (compactResult.ok && !AIService::Trim(compactResult.content).empty()) {
 		return compactResult.content;
 	}
@@ -5357,31 +5365,53 @@ AIChatMessage BuildRawCheckpointMessage(
 	return message;
 }
 
-void CompactLongTaskIfNeeded(
+bool CompactLongTaskIfNeeded(
 	AIChatRunController& controller,
 	AIChatToolPolicy::Session& toolPolicy,
 	const AISettings& settings,
 	AIChatResult& result,
-	const std::function<void(const std::string& summaryLocal)>& resetProtocolContext)
+	const std::function<void(const std::string& summaryLocal)>& resetProtocolContext,
+	const std::function<bool()>& cancelCallback,
+	HttpRequestCancellation* cancelContext)
 {
 	if (!controller.ShouldCompact()) {
-		return;
+		return false;
 	}
 	controller.ReportActivity("正在压缩对话上下文...");
-	Logger::Instance().Write(
-		"AI",
-		std::format(
-			"[AI Chat][Context] compaction_start reason=budget sampling_rounds={} compaction_count={} model={} context_window_tokens={} prompt_tokens={} predicted_context_tokens={} context_bytes={} context_messages={} thinking_level={} purpose=summary_request",
-			controller.SamplingRounds(),
-			controller.CompactionCount(),
-			settings.model,
-			controller.ContextWindowTokens(),
-			controller.PromptTokens(),
-			controller.PredictedContextTokens(),
-			controller.ContextBytes(),
-			controller.ContextMessages().size(),
-			AIService::ThinkingLevelToString(settings.thinkingLevel)));
-	const std::string summary = GenerateLongTaskSummary(controller, settings, result.toolEvents);
+	const size_t incrementalContextBytes = controller.ContextBytesAfterUsage();
+	const size_t incrementalContextTokens = (incrementalContextBytes + 3) / 4;
+	const std::string compactionLog = std::format(
+		"[AI Chat][Context] compaction_start reason=budget sampling_rounds={} compaction_count={} model={} "
+		"has_usage={} prompt_tokens={} total_tokens={} cached_input_tokens={} cache_write_input_tokens={} "
+		"context_window_tokens={} compact_threshold_tokens={} incremental_context_bytes={} incremental_context_tokens={} "
+		"predicted_context_tokens={} total_context_bytes={} context_messages={} thinking_level={} purpose=summary_request",
+		controller.SamplingRounds(),
+		controller.CompactionCount(),
+		settings.model,
+		controller.HasUsage(),
+		controller.PromptTokens(),
+		controller.TotalTokens(),
+		controller.CachedInputTokens(),
+		controller.CacheWriteInputTokens(),
+		controller.ContextWindowTokens(),
+		static_cast<size_t>(controller.ContextWindowTokens()) * 90 / 100,
+		incrementalContextBytes,
+		incrementalContextTokens,
+		controller.PredictedContextTokens(),
+		controller.ContextBytes(),
+		controller.ContextMessages().size(),
+		AIService::ThinkingLevelToString(settings.thinkingLevel));
+	// WriteAndIde 同时保留完整 UTF-8 文件日志，并将同一条诊断信息输出到 IDE 日志窗口。
+	Logger::Instance().WriteAndIde("AI", compactionLog);
+	const std::string summary = GenerateLongTaskSummary(
+		controller,
+		settings,
+		result.toolEvents,
+		cancelCallback,
+		cancelContext);
+	if (IsCancelRequested(cancelCallback, cancelContext)) {
+		return true;
+	}
 	controller.RecordCompaction(summary);
 	toolPolicy.StartNewContextWindow();
 	result.contextPrefixRawMessagesUtf8.clear();
@@ -5394,6 +5424,7 @@ void CompactLongTaskIfNeeded(
 			controller.CompactionCount(),
 			controller.ContextMessages().size()));
 	SyncLongTaskResult(result, controller);
+	return false;
 }
 
 std::vector<AIChatMessage> TakePendingUserInputs(
@@ -5640,7 +5671,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 			messages.push_back(assistantMessage);
 			runController.AppendContextMessage(BuildRawCheckpointMessage(
 				"assistant", contentLocal, assistantMessage));
-			CompactLongTaskIfNeeded(
+			if (CompactLongTaskIfNeeded(
 				runController,
 				toolPolicy,
 				settings,
@@ -5651,7 +5682,11 @@ AIChatResult ExecuteChatWithToolsClaude(
 					for (const AIChatMessage& message : runController.ContextMessages()) {
 						messages.push_back(BuildClaudeMessage(message));
 					}
-				});
+				},
+				cancelCallback,
+				cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
 			const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, contentLocal);
 			if (!pending.empty()) {
 				for (const AIChatMessage& message : pending) {
@@ -5782,7 +5817,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 			messages.push_back({{"role", "user"}, {"content", LocalToUtf8(hint)}});
 			runController.AppendContextMessage(AIChatMessage{"user", hint, "", ""});
 		}
-		CompactLongTaskIfNeeded(
+		if (CompactLongTaskIfNeeded(
 			runController,
 			toolPolicy,
 			settings,
@@ -5790,10 +5825,14 @@ AIChatResult ExecuteChatWithToolsClaude(
 			[&systemUtf8, &messages, &settings, &skillPromptLocal, &runController](const std::string&) {
 				systemUtf8 = LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal);
 				messages = nlohmann::json::array();
-				for (const AIChatMessage& message : runController.ContextMessages()) {
-					messages.push_back(BuildClaudeMessage(message));
-				}
-			});
+					for (const AIChatMessage& message : runController.ContextMessages()) {
+						messages.push_back(BuildClaudeMessage(message));
+					}
+				},
+				cancelCallback,
+				cancelContext)) {
+			return MarkChatResultCancelled(std::move(result));
+		}
 		const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, "");
 		for (const AIChatMessage& message : pending) {
 			messages.push_back(BuildClaudeMessage(message));
@@ -6045,7 +6084,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 			contents.push_back(candidateContent);
 			runController.AppendContextMessage(BuildRawCheckpointMessage(
 				"assistant", contentLocal, candidateContent));
-			CompactLongTaskIfNeeded(
+			if (CompactLongTaskIfNeeded(
 				runController,
 				toolPolicy,
 				settings,
@@ -6056,7 +6095,11 @@ AIChatResult ExecuteChatWithToolsGemini(
 					for (const AIChatMessage& message : runController.ContextMessages()) {
 						contents.push_back(BuildGeminiContent(message));
 					}
-				});
+				},
+				cancelCallback,
+				cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
 			const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, contentLocal);
 			if (!pending.empty()) {
 				for (const AIChatMessage& message : pending) {
@@ -6177,7 +6220,7 @@ AIChatResult ExecuteChatWithToolsGemini(
 			});
 			runController.AppendContextMessage(AIChatMessage{"user", hint, "", ""});
 		}
-		CompactLongTaskIfNeeded(
+		if (CompactLongTaskIfNeeded(
 			runController,
 			toolPolicy,
 			settings,
@@ -6185,10 +6228,14 @@ AIChatResult ExecuteChatWithToolsGemini(
 			[&systemUtf8, &contents, &settings, &skillPromptLocal, &runController](const std::string&) {
 				systemUtf8 = LocalToUtf8(BuildGeminiChatSystemPrompt(settings, false) + skillPromptLocal);
 				contents = nlohmann::json::array();
-				for (const AIChatMessage& message : runController.ContextMessages()) {
-					contents.push_back(BuildGeminiContent(message));
-				}
-			});
+					for (const AIChatMessage& message : runController.ContextMessages()) {
+						contents.push_back(BuildGeminiContent(message));
+					}
+				},
+				cancelCallback,
+			cancelContext)) {
+			return MarkChatResultCancelled(std::move(result));
+		}
 		const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, "");
 		for (const AIChatMessage& message : pending) {
 			contents.push_back(BuildGeminiContent(message));
@@ -6452,7 +6499,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 						"assistant", contentLocal, contextItem));
 				}
 			}
-			CompactLongTaskIfNeeded(
+			if (CompactLongTaskIfNeeded(
 				runController,
 				toolPolicy,
 				settings,
@@ -6464,7 +6511,11 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 					for (const AIChatMessage& message : runController.ContextMessages()) {
 						input.push_back(BuildResponsesMessage(message));
 					}
-				});
+				},
+				cancelCallback,
+				cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
 			const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, contentLocal);
 			if (!pending.empty()) {
 				for (const AIChatMessage& message : pending) {
@@ -6583,7 +6634,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			input.push_back(BuildResponsesTextMessage("user", LocalToUtf8(hint)));
 			runController.AppendContextMessage(AIChatMessage{"user", hint, "", ""});
 		}
-		CompactLongTaskIfNeeded(
+		if (CompactLongTaskIfNeeded(
 			runController,
 			toolPolicy,
 			settings,
@@ -6592,10 +6643,14 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 				instructionsUtf8 = BuildResponsesInstructions(
 					runController.ContextMessages(), settings, skillPromptLocal);
 				input = nlohmann::json::array();
-				for (const AIChatMessage& message : runController.ContextMessages()) {
-					input.push_back(BuildResponsesMessage(message));
-				}
-			});
+					for (const AIChatMessage& message : runController.ContextMessages()) {
+						input.push_back(BuildResponsesMessage(message));
+					}
+				},
+				cancelCallback,
+			cancelContext)) {
+			return MarkChatResultCancelled(std::move(result));
+		}
 		const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, "");
 		for (const AIChatMessage& message : pending) {
 			input.push_back(BuildResponsesMessage(message));
@@ -8536,7 +8591,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 				requestMessages.push_back({{"role", "user"}, {"content", LocalToUtf8(hint)}});
 				runController.AppendContextMessage(AIChatMessage{"user", hint, "", ""});
 			}
-			CompactLongTaskIfNeeded(
+			if (CompactLongTaskIfNeeded(
 				runController,
 				toolPolicy,
 				settings,
@@ -8548,7 +8603,11 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 					for (const AIChatMessage& message : runController.ContextMessages()) {
 						requestMessages.push_back(BuildOpenAIChatMessage(message));
 					}
-				});
+				},
+				cancelCallback,
+				cancelContext)) {
+				return MarkChatResultCancelled(std::move(result));
+			}
 			const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, "");
 			for (const AIChatMessage& message : pending) {
 				requestMessages.push_back(BuildOpenAIChatMessage(message));
@@ -8592,7 +8651,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		requestMessages.push_back(message);
 		runController.AppendContextMessage(BuildRawCheckpointMessage(
 			"assistant", contentLocal, message));
-		CompactLongTaskIfNeeded(
+		if (CompactLongTaskIfNeeded(
 			runController,
 			toolPolicy,
 			settings,
@@ -8601,10 +8660,14 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 				requestMessages = nlohmann::json::array({
 					{{"role", "system"}, {"content", LocalToUtf8(BuildChatSystemPrompt(settings) + skillPromptLocal)}}
 				});
-				for (const AIChatMessage& message : runController.ContextMessages()) {
-					requestMessages.push_back(BuildOpenAIChatMessage(message));
-				}
-			});
+					for (const AIChatMessage& message : runController.ContextMessages()) {
+						requestMessages.push_back(BuildOpenAIChatMessage(message));
+					}
+				},
+				cancelCallback,
+			cancelContext)) {
+			return MarkChatResultCancelled(std::move(result));
+		}
 		const std::vector<AIChatMessage> pending = TakePendingUserInputs(runOptions, contentLocal);
 		if (!pending.empty()) {
 			for (const AIChatMessage& message : pending) {
