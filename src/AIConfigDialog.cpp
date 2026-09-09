@@ -2232,7 +2232,7 @@ bool TryBuildAISettingsFromWebPayload(
 	}
 
 	if (!data.contains("activeTarget") || !data["activeTarget"].is_object()) {
-		outError = "当前启用目标无效。";
+		outError = "请至少启用一个 API 端点或端点分组。";
 		return false;
 	}
 	outActiveTarget.type = data["activeTarget"].value("type", "");
@@ -2251,7 +2251,9 @@ bool TryBuildAISettingsFromWebPayload(
 			return group.id == outActiveTarget.id;
 		});
 		if (groupIt == outGroups.end() || groupIt->endpointIds.empty()) {
-			outError = "当前启用的端点分组不存在或没有成员。";
+			outError = groupIt == outGroups.end()
+				? "当前启用的端点分组不存在，请重新选择启用目标。"
+				: "当前启用的端点分组没有成员，请添加端点后再启用。";
 			return false;
 		}
 		for (const std::string& endpointId : groupIt->endpointIds) {
@@ -2259,7 +2261,7 @@ bool TryBuildAISettingsFromWebPayload(
 		}
 	}
 	else {
-		outError = "当前启用目标类型无效。";
+		outError = "请至少启用一个 API 端点或端点分组。";
 		return false;
 	}
 
