@@ -291,6 +291,7 @@ struct ChatDialogContext {
 	ULONGLONG lastChatRefreshTick = 0;
 	int remoteConfigPollTicksRemaining = 0;
 	std::string pendingHistoryHtml;
+	std::string pendingHistorySessionId;
 	AIChatStoredSessionListEntry pendingRestoreSession;
 	std::vector<AIChatStoredSessionListEntry> lastSessionMenuEntries;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> webViewEnvironment;
@@ -4056,12 +4057,13 @@ const AIChatStoredSessionListEntry* FindSessionMenuEntryById(const ChatDialogCon
 	return nullptr;
 }
 
-void UpdateHistoryWebViewHtml(ChatDialogContext* ctx, const std::string& htmlLocal)
+void UpdateHistoryWebViewHtml(ChatDialogContext* ctx, const std::string& htmlLocal, const std::string& sessionId)
 {
 	if (ctx == nullptr) {
 		return;
 	}
 	ctx->pendingHistoryHtml = htmlLocal;
+	ctx->pendingHistorySessionId = sessionId;
 	if (!ctx->webViewReady || ctx->webView == nullptr) {
 		return;
 	}
@@ -4085,6 +4087,8 @@ void FlushHistoryWebViewHtml(ChatDialogContext* ctx)
 	ctx->webViewFlushScheduled = false;
 	std::wstring script = L"window.autolinkerSetChatHtml('";
 	script += EscapeJsSingleQuotedWide(htmlWide);
+	script += L"', '";
+	script += EscapeJsSingleQuotedWide(WideFromUtf8Text(ctx->pendingHistorySessionId));
 	script += L"');";
 	ExecuteWebViewScript(ctx, script);
 }
@@ -4357,7 +4361,7 @@ void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)
 												LayoutAIChatDialog(hWnd, navCtx);
 												ApplyCurrentThemeToWebView(navCtx);
 												if (!navCtx->pendingHistoryHtml.empty()) {
-													UpdateHistoryWebViewHtml(navCtx, navCtx->pendingHistoryHtml);
+													UpdateHistoryWebViewHtml(navCtx, navCtx->pendingHistoryHtml, navCtx->pendingHistorySessionId);
 													FlushHistoryWebViewHtml(navCtx);
 												}
 												bool inFlight = false;
@@ -8852,6 +8856,7 @@ void RefreshChatDialog(HWND hWnd)
 	const bool nativeHistoryVisible = !ctx->webViewContentReady;
 	std::string history;
 	std::string historyHtml;
+	std::string historySessionId;
 	bool inFlight = false;
 	bool stopRequested = false;
 	std::string latestActivity;
@@ -8879,6 +8884,7 @@ void RefreshChatDialog(HWND hWnd)
 		}
 		if (ctx->webViewDesired) {
 			historyHtml = BuildHistoryHtmlLocked(g_session, settingsReady, missingField);
+			historySessionId = g_session.activeSessionId;
 		}
 		inFlight = g_session.requestInFlight;
 		apiProfilePendingForNextRequest = inFlight &&
@@ -8912,7 +8918,7 @@ void RefreshChatDialog(HWND hWnd)
 		SetHistoryEditTextPreservingScroll(ctx->hHistory, history);
 	}
 	if (ctx->webViewDesired) {
-		UpdateHistoryWebViewHtml(ctx, historyHtml);
+		UpdateHistoryWebViewHtml(ctx, historyHtml, historySessionId);
 		UpdateWebViewPendingInputs(ctx, pendingInputs);
 	}
 	const bool nativeComposerVisible = !ctx->webViewContentReady;

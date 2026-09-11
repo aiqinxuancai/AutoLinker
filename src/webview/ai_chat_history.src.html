@@ -2766,6 +2766,41 @@ window.autolinkerUpdateActivityDockVisibility = function() {
 	dock.hidden = (!plan || plan.hidden) && (!goal || goal.hidden) && (!goalDetails || goalDetails.hidden);
 };
 
+// 原位更新内容，保留滚动容器及未变化节点的浏览状态。
+window.autolinkerUpdateHtml = function(root, html) {
+	if (root.autolinkerRenderedHtml === html) return;
+	var template = document.createElement("template");
+	template.innerHTML = html;
+	function updateChildren(current, incoming) {
+		var index = 0;
+		while (index < incoming.childNodes.length) {
+			var next = incoming.childNodes[index];
+			var node = current.childNodes[index];
+			if (!node) {
+				current.appendChild(next.cloneNode(true));
+			} else if (node.nodeType !== next.nodeType || node.nodeName !== next.nodeName) {
+				current.replaceChild(next.cloneNode(true), node);
+			} else if (!node.isEqualNode(next)) {
+				if (node.nodeType === Node.ELEMENT_NODE) {
+					for (var attr of Array.from(node.attributes)) {
+						if (!next.hasAttribute(attr.name)) node.removeAttribute(attr.name);
+					}
+					for (var attr of Array.from(next.attributes)) {
+						if (node.getAttribute(attr.name) !== attr.value) node.setAttribute(attr.name, attr.value);
+					}
+					updateChildren(node, next);
+				} else {
+					node.nodeValue = next.nodeValue;
+				}
+			}
+			index++;
+		}
+		while (current.childNodes.length > index) current.lastChild.remove();
+	}
+	updateChildren(root, template.content);
+	root.autolinkerRenderedHtml = html;
+};
+
 window.autolinkerRenderActivePlan = function(root) {
 	var chatRoot = root || document.getElementById("chat-root");
 	var panel = document.getElementById("active-plan-panel");
@@ -2778,7 +2813,7 @@ window.autolinkerRenderActivePlan = function(root) {
 	var card = source && source.querySelector ? source.querySelector(".plan-card") : null;
 	if (!card) {
 		panel.hidden = true;
-		panel.innerHTML = "";
+		window.autolinkerUpdateHtml(panel, "");
 		window.autolinkerUpdateActivityDockVisibility();
 		return;
 	}
@@ -2796,7 +2831,7 @@ window.autolinkerRenderActivePlan = function(root) {
 	var active = steps.length ? (inProgress + pending > 0) : planModeActive;
 	if (!active) {
 		panel.hidden = true;
-		panel.innerHTML = "";
+		window.autolinkerUpdateHtml(panel, "");
 		window.autolinkerUpdateActivityDockVisibility();
 		return;
 	}
@@ -2807,14 +2842,13 @@ window.autolinkerRenderActivePlan = function(root) {
 		: String((card.querySelector(".plan-status") || {}).textContent || "\u6b63\u5728\u6267\u884c").trim();
 	var expanded = !!window.autolinkerPlanDockExpanded;
 	panel.classList.toggle("expanded", expanded);
-	panel.innerHTML = '<div class="activity-summary"><button class="activity-summary-main" type="button" data-activity-action="toggle-plan" aria-expanded="' + (expanded ? "true" : "false") + '" title="' + (expanded ? "\u6536\u8d77\u8ba1\u5212" : "\u5c55\u5f00\u8ba1\u5212") + '">' +
+	window.autolinkerUpdateHtml(panel, '<div class="activity-summary"><button class="activity-summary-main" type="button" data-activity-action="toggle-plan" aria-expanded="' + (expanded ? "true" : "false") + '" title="' + (expanded ? "\u6536\u8d77\u8ba1\u5212" : "\u5c55\u5f00\u8ba1\u5212") + '">' +
 		'<span class="activity-summary-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"></path><circle cx="4" cy="6" r="1"></circle><path d="m3 12 1 1 2-2"></path><circle cx="4" cy="18" r="1"></circle></svg></span>' +
 		'<span class="activity-summary-label">\u4efb\u52a1</span><span class="activity-summary-text">' + window.autolinkerEscapeHtml(summary) + '</span>' +
 		'<span class="activity-chevron" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m7 14 5-5 5 5"></path></svg></span></button></div>' +
-		'<div class="activity-details activity-plan-details"' + (expanded ? "" : " hidden") + '></div>';
+		'<div class="activity-details activity-plan-details"' + (expanded ? "" : " hidden") + '>' + card.outerHTML + '</div>');
 	var details = panel.querySelector(".activity-plan-details");
 	if (details) {
-		details.appendChild(card.cloneNode(true));
 		var planButtons = details.querySelectorAll ? details.querySelectorAll(".plan-action") : [];
 		for (var buttonIndex = 0; buttonIndex < planButtons.length; buttonIndex++) {
 			planButtons[buttonIndex].disabled = !!window.autolinkerBusy;
@@ -2863,13 +2897,23 @@ window.autolinkerRenderActiveGoal = function() {
 	window.autolinkerUpdateActivityDockVisibility();
 };
 
-window.autolinkerSetChatHtml = function(html) {
+window.autolinkerSetChatHtml = function(html, sessionId) {
 	var root = document.getElementById("chat-root");
 	var scroll = document.getElementById("history-scroll");
 	var followBottom = !scroll || scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight <= 24;
 	var previousScrollTop = scroll ? scroll.scrollTop : 0;
 	if (root) {
-		root.innerHTML = html || "";
+		if (root.autolinkerSessionId !== sessionId) {
+			root.replaceChildren();
+			delete root.autolinkerRenderedHtml;
+			root.autolinkerSessionId = sessionId;
+			var planPanel = document.getElementById("active-plan-panel");
+			if (planPanel) {
+				planPanel.replaceChildren();
+				delete planPanel.autolinkerRenderedHtml;
+			}
+		}
+		window.autolinkerUpdateHtml(root, html || "");
 		var planButtons = root.querySelectorAll ? root.querySelectorAll(".plan-action") : [];
 		for (var i = 0; i < planButtons.length; i++) {
 			planButtons[i].disabled = !!window.autolinkerBusy;
@@ -3287,7 +3331,7 @@ function autolinkerRenderPendingInputs(items) {
 	var rows = Array.isArray(items) ? items : [];
 	if (!rows.length) {
 		panel.hidden = true;
-		panel.innerHTML = "";
+		window.autolinkerUpdateHtml(panel, "");
 		return;
 	}
 	var html = '<div class="pending-inputs-head"><span>\u5F85\u4F20\u5165 ' + rows.length + ' \u6761</span>';
@@ -3302,7 +3346,7 @@ function autolinkerRenderPendingInputs(items) {
 		html += '<div class="pending-input-item"><span class="pending-input-order">' + (i + 1) + '.</span><span class="pending-input-text">' + window.autolinkerEscapeHtml(pendingText) + '</span></div>';
 	}
 	html += '</div>';
-	panel.innerHTML = html;
+	window.autolinkerUpdateHtml(panel, html);
 	panel.hidden = false;
 }
 
@@ -4190,4 +4234,3 @@ window.autolinkerHideToolApproval = function() {
 </script>
 </body>
 </html>
-
