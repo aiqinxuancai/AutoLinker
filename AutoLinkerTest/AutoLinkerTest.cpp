@@ -1456,6 +1456,42 @@ bool RunConstLongTextProtectionSmokeTest()
 	}
 
 	const std::string emptyBase;
+	const std::string initialBase = ".版本 2\r\n\r\n.常量 常量1\r\n";
+	const std::string normalizedBase = ".版本 2\r\n\r\n.常量 常量1, \"\"\r\n";
+	for (const bool utf8 : {false, true}) {
+		const auto encode = [&](const std::string& code) { return utf8 ? gbkToUtf8(code) : code; };
+		std::string normalized;
+		if (!eide_const::TryNormalizeConstPageText(encode(initialBase), normalized, error) ||
+			normalized != encode(normalizedBase) ||
+			!eide_const::TryNormalizeConstPageText(normalized, normalized, error) ||
+			normalized != encode(normalizedBase)) {
+			return false;
+		}
+		for (const std::string value : {"1", "\"1\"", "\"\"", "", "\"a,b\""}) {
+			const std::string ordinaryTarget = encode(".版本 2\r\n\r\n.常量 TEST_A, " + value + "\r\n");
+			if (!eide_const::TryBuildLongTextPreservationPlan(encode(initialBase), ordinaryTarget, plan, error) ||
+				plan.protectionRequired || plan.baseRowCount != 1 || plan.targetRowCount != 1 ||
+				plan.stagedCode != ordinaryTarget) {
+				return false;
+			}
+		}
+		const std::string mixedBase = encode(initialBase + ".常量 长文本, \"<文本长度: 56>\"\r\n");
+		const std::string mixedTarget = encode(normalizedBase + ".常量 长文本, \"<文本长度: 56>\"\r\n");
+		if (!eide_const::TryBuildLongTextPreservationPlan(mixedBase, mixedTarget, plan, error) ||
+			!plan.protectionRequired || plan.entries.size() != 1 ||
+			plan.entries[0].baseRowIndex != 1 || plan.entries[0].targetRowIndex != 1 ||
+			plan.stagedCode.find("__AUTOLINKER_PRESERVE_LONG_TEXT_") == std::string::npos ||
+			eide_const::TryBuildLongTextPreservationPlan(mixedBase, encode(normalizedBase), plan, error)) {
+			return false;
+		}
+		for (const std::string malformed : {".常量 , \"1\"", ".常量 TEST, \"1", ".常量"}) {
+			eide_const::ConstPage page;
+			if (eide_const::TryParseConstPage(encode(malformed), page, error) ||
+				eide_const::TryNormalizeConstPageText(encode(malformed), normalized, error)) {
+				return false;
+			}
+		}
+	}
 	const std::string noLongTextTarget =
 		".版本 2\r\n"
 		".常量 普通常量, \"1\"\r\n";

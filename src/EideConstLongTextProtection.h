@@ -45,10 +45,16 @@ struct LongTextPreservationPlan {
 	std::vector<LongTextPreservationEntry> entries;
 };
 
-// 解析完整常量页；非常量行会被忽略，格式损坏的常量声明会返回失败。
+// 解析完整常量页；允许省略尾部空值，非常量行会被忽略，损坏声明返回失败。
 bool TryParseConstPage(
 	const std::string& pageCode,
 	ConstPage& outPage,
+	std::string& outError);
+
+// 将 IDE 省略的常量值补为显式空文本，保留其它内容及换行。
+bool TryNormalizeConstPageText(
+	const std::string& pageCode,
+	std::string& outCode,
 	std::string& outError);
 
 // 校验长文本集合和元数据，并生成以普通文本标记暂代长文本值的写入代码。

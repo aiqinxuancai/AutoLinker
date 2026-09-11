@@ -6632,6 +6632,15 @@ bool TryFormatWholePageTextDirectByEditor(
 		return false;
 	}
 
+	std::string normalizedCode;
+	std::string normalizeError;
+	const bool normalizedConstValues =
+		eide_const::TryNormalizeConstPageText(*outCode, normalizedCode, normalizeError) &&
+		normalizedCode != *outCode;
+	if (normalizedConstValues) {
+		*outCode = std::move(normalizedCode);
+	}
+
 	bool rebuiltHeader = false;
 	if (!outCode->empty()) {
 		const std::string trimmed = TrimAsciiCopyLocal(*outCode);
@@ -6648,7 +6657,8 @@ bool TryFormatWholePageTextDirectByEditor(
 			"|buffer_bytes=" + std::to_string(buffer.ByteSize()) +
 			"|text_bytes=" + std::to_string(outCode->size()) +
 			"|rebuilt_header=" + std::to_string(rebuiltHeader ? 1 : 0) +
-			"|support_lib_omitted=1";
+			"|support_lib_omitted=1|normalized_const_values=" +
+			std::to_string(normalizedConstValues ? 1 : 0);
 	}
 	return true;
 }

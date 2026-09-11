@@ -274,9 +274,9 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 		});
 		return !largeMessageController.ShouldCompact();
 	}();
-	roundController.RecordUsage(100, 140, true);
+	roundController.RecordUsage(100, 140, true, 40);
 	roundController.RecordModelRound();
-	roundController.RecordUsage(150, 210, true);
+	roundController.RecordUsage(150, 210, true, 90);
 	roundController.RecordModelRound();
 	roundController.RecordCompaction("第一次压缩");
 	roundController.RecordCompaction("第二次压缩");
@@ -285,6 +285,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	const bool cumulativeUsage =
 		roundController.AccumulatedInputTokens() == 250 &&
 		roundController.AccumulatedOutputTokens() == 100 &&
+		roundController.BuildCheckpoint().accumulatedCachedTokens == 130 &&
 		roundController.CompletedModelRounds() == 2;
 
 	const std::vector<AIChatToolEvent> fallbackEvents = {
@@ -409,6 +410,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	completedCheckpoint.totalTokens = 210;
 	completedCheckpoint.accumulatedInputTokens = 250;
 	completedCheckpoint.accumulatedOutputTokens = 100;
+	completedCheckpoint.accumulatedCachedTokens = 130;
 	completedCheckpoint.completedModelRounds = 2;
 	completedCheckpoint.contextMessages = {
 		{"user", "完成长期任务", "", ""},
@@ -428,6 +430,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 	const bool cumulativeUsageResume =
 		exactResumeController.AccumulatedInputTokens() == 250 &&
 		exactResumeController.AccumulatedOutputTokens() == 100 &&
+		exactResumeController.BuildCheckpoint().accumulatedCachedTokens == 130 &&
 		exactResumeController.CompletedModelRounds() == 2;
 
 	AIChatRunCheckpoint interruptedCheckpoint = completedCheckpoint;
@@ -533,6 +536,9 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 			stored.runCheckpoint.contextMessages.front().attachments.push_back(storedAttachment);
 		}
 		const bool firstSave = SaveAIChatStoredSession(stored, nullptr);
+		stored.totalTokens = 350;
+		stored.inputTokens = 250;
+		stored.cachedTokens = 130;
 		stored.rollingSummaryLocal = "after";
 		const bool secondSave = SaveAIChatStoredSession(stored, nullptr);
 		AIChatStoredSession loaded;
@@ -554,6 +560,8 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 			loaded.runCheckpoint.state == "paused" &&
 			loaded.runCheckpoint.accumulatedInputTokens == 250 &&
 			loaded.runCheckpoint.accumulatedOutputTokens == 100 &&
+			loaded.runCheckpoint.accumulatedCachedTokens == 130 &&
+			loaded.totalTokens == 350 && loaded.inputTokens == 250 && loaded.cachedTokens == 130 &&
 			loaded.runCheckpoint.completedModelRounds == 2 &&
 			loaded.runCheckpoint.toolCalls.size() == 1 &&
 			!loaded.runCheckpoint.contextMessages.empty() &&

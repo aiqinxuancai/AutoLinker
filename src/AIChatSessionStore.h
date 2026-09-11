@@ -37,6 +37,9 @@ struct AIChatStoredSession {
 	long long createdAtUnixMs = 0;
 	long long updatedAtUnixMs = 0;
 	long long elapsedMs = 0;  // 会话累计实际用时（毫秒）。
+	long long totalTokens = 0; // 会话累计输入与输出量。
+	long long inputTokens = 0; // 会话累计输入量。
+	long long cachedTokens = 0; // 会话累计缓存命中量。
 	std::string createdAtDisplayLocal;
 	std::string updatedAtDisplayLocal;
 	std::string rollingSummaryLocal;

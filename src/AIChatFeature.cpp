@@ -233,6 +233,13 @@ struct AIChatSessionState {
 	std::shared_ptr<AIChatRequestCancellation> cancellation;
 	int lastInputTokens = 0;          // 上一轮响应的真实输入 token（无则 0）
 	bool hasLastUsage = false;        // 是否已有真实 usage
+	long long sessionTotalTokens = 0; // 当前会话累计 token
+	long long sessionCachedTokens = 0; // 当前会话缓存 token
+	long long sessionInputTokens = 0; // 当前会话累计输入 token（用于缓存率）
+	long long accountedRunInput = 0;
+	long long accountedRunOutput = 0;
+	long long accountedRunCached = 0;
+	long long receivedStreamBytes = 0;
 	int effectiveContextWindow = 0;   // 请求开始时按当前 settings 解析的上下文窗口
 	bool hasPendingRunCheckpoint = false;
 	AIChatRunCheckpoint pendingRunCheckpoint;
@@ -336,6 +343,9 @@ struct ContextUsageSnapshot {
 	long long usedTokens = 0;
 	int contextWindow = 0;
 	std::string titleLocal;
+	long long sessionTotalTokens = 0;
+	long long sessionCachedTokens = 0;
+	int cacheRate = 0;
 };
 
 struct SessionTimingSnapshot {
@@ -1229,7 +1239,15 @@ ContextUsageSnapshot BuildContextUsageSnapshotLocked(const AIChatSessionState& s
 	ContextUsageSnapshot snapshot = {};
 	snapshot.contextWindow = state.effectiveContextWindow > 0 ? state.effectiveContextWindow : fallbackContextWindow;
 	if (snapshot.contextWindow <= 0) {
-		snapshot.titleLocal = LocalFromWide(L"\u4e0a\u4e0b\u6587\u7528\u91cf\u4e0d\u53ef\u7528");
+		snapshot.sessionTotalTokens = state.sessionTotalTokens;
+		snapshot.sessionCachedTokens = state.sessionCachedTokens;
+		snapshot.cacheRate = state.sessionInputTokens > 0
+			? static_cast<int>((state.sessionCachedTokens * 100) / state.sessionInputTokens) : 0;
+		snapshot.titleLocal = LocalFromWide(std::format(
+			L"上下文用量不可用\n会话总 token：{}\n缓存 token：{}\n缓存率：{}%",
+			snapshot.sessionTotalTokens,
+			snapshot.sessionCachedTokens,
+			snapshot.cacheRate).c_str());
 		return snapshot;
 	}
 
@@ -1251,14 +1269,26 @@ ContextUsageSnapshot BuildContextUsageSnapshotLocked(const AIChatSessionState& s
 	const long long rawPercent =
 		(snapshot.usedTokens * 100 + snapshot.contextWindow / 2) / snapshot.contextWindow;
 	snapshot.percent = static_cast<int>((std::min<long long>)(999, (std::max<long long>)(0, rawPercent)));
+	snapshot.sessionTotalTokens = state.sessionTotalTokens;
+	snapshot.sessionCachedTokens = state.sessionCachedTokens;
+	snapshot.cacheRate = state.sessionInputTokens > 0
+		? static_cast<int>((state.sessionCachedTokens * 100) / state.sessionInputTokens) : 0;
+	auto formatTokens = [](long long value) {
+		if (value >= 1000000) return std::format("{:.1f}M", static_cast<double>(value) / 1000000.0);
+		if (value >= 1000) return std::format("{:.1f}k", static_cast<double>(value) / 1000.0);
+		return std::to_string(value);
+	};
 	snapshot.titleLocal = std::format(
 		"{} {}% {} {}{} / {} tokens",
 		LocalFromWide(L"\u4e0a\u4e0b\u6587"),
 		snapshot.percent,
 		LocalFromWide(L"\u00b7"),
 		snapshot.estimated ? LocalFromWide(L"\u4f30\u7b97 ") : std::string(),
-		snapshot.usedTokens,
-		snapshot.contextWindow);
+		formatTokens(snapshot.usedTokens),
+		formatTokens(snapshot.contextWindow));
+	snapshot.titleLocal += LocalFromWide(L"\n会话总 token：") + formatTokens(snapshot.sessionTotalTokens);
+	snapshot.titleLocal += LocalFromWide(L"\n缓存 token：") + formatTokens(snapshot.sessionCachedTokens);
+	snapshot.titleLocal += LocalFromWide(L"\n缓存率：") + std::to_string(snapshot.cacheRate) + "%";
 	return snapshot;
 }
 
@@ -2234,6 +2264,9 @@ AIChatStoredSession BuildStoredSessionFromLockedState(const AIChatSessionState& 
 	stored.createdAtUnixMs = state.createdAtUnixMs;
 	stored.updatedAtUnixMs = nowMs;
 	stored.elapsedMs = CalculateSessionElapsedMsLocked(state, nowMs);
+	stored.totalTokens = state.sessionTotalTokens;
+	stored.inputTokens = state.sessionInputTokens;
+	stored.cachedTokens = state.sessionCachedTokens;
 	stored.createdAtDisplayLocal = FormatUnixTimeLocalForChat(stored.createdAtUnixMs);
 	stored.updatedAtDisplayLocal = FormatUnixTimeLocalForChat(stored.updatedAtUnixMs);
 	stored.rollingSummaryLocal = state.rollingSummary;
@@ -2419,6 +2452,9 @@ bool ReplaceChatSessionStateFromStoredSession(const AIChatStoredSession& stored)
 		g_session.cancellation.reset();
 		g_session.nextRequestId = 1;
 		g_session.lastInputTokens = 0;
+		g_session.sessionTotalTokens = stored.totalTokens;
+		g_session.sessionCachedTokens = stored.cachedTokens;
+		g_session.sessionInputTokens = stored.inputTokens;
 		g_session.hasLastUsage = false;
 		g_session.effectiveContextWindow = 0;
 		g_session.workspaceMirrorRefreshed = false;
@@ -3315,13 +3351,20 @@ void UpdateWebViewComposerState(
 	if (ctx == nullptr) {
 		return;
 	}
+	// 流式接收期间把当前已接收内容估算为 token 数，随状态刷新展示在停止按钮浮层中。
+	std::string tooltipActivity = latestActivity;
+	if (busy) {
+		std::lock_guard<std::mutex> guard(g_session.mutex);
+		const long long streamingTokens = (g_session.receivedStreamBytes + 3) / 4;
+		tooltipActivity = LocalFromWide(L"已接收流（估算）：") + std::to_string(streamingTokens) + " tokens";
+	}
 	std::wstring script = L"window.autolinkerSetBusy(";
 	script += busy ? L"true" : L"false";
 	script += L",";
 	script += stopRequested ? L"true" : L"false";
 	script += L",\"";
 	script += EscapeJsDoubleQuotedWide(WideFromLocal(
-		latestActivity.empty() ? LocalFromWide(L"停止") : latestActivity));
+		tooltipActivity.empty() ? LocalFromWide(L"停止") : tooltipActivity));
 	script += L"\"";
 	script += L");";
 	ExecuteWebViewScript(ctx, script);
@@ -6346,6 +6389,19 @@ void UpsertToolTranscriptMessage(
 	}
 }
 
+void AccumulateSessionUsageLocked(const AIChatRunCheckpoint& checkpoint)
+{
+	const auto input = (std::max)(g_session.accountedRunInput, checkpoint.accumulatedInputTokens);
+	const auto output = (std::max)(g_session.accountedRunOutput, checkpoint.accumulatedOutputTokens);
+	const auto cached = (std::max)(g_session.accountedRunCached, checkpoint.accumulatedCachedTokens);
+	g_session.sessionInputTokens += input - g_session.accountedRunInput;
+	g_session.sessionTotalTokens += input - g_session.accountedRunInput + output - g_session.accountedRunOutput;
+	g_session.sessionCachedTokens += cached - g_session.accountedRunCached;
+	g_session.accountedRunInput = input;
+	g_session.accountedRunOutput = output;
+	g_session.accountedRunCached = cached;
+}
+
 void UpdateActiveRunCheckpoint(
 	unsigned long long requestId,
 	const AIChatRunCheckpoint& checkpoint)
@@ -6357,10 +6413,12 @@ void UpdateActiveRunCheckpoint(
 		}
 		g_session.hasPendingRunCheckpoint = true;
 		g_session.pendingRunCheckpoint = checkpoint;
+		AccumulateSessionUsageLocked(checkpoint);
 		// 压缩后控制器会使旧 usage 失效，UI 必须同步这一状态。
 		g_session.hasLastUsage = checkpoint.hasUsage && checkpoint.promptTokens > 0;
 		g_session.lastInputTokens = g_session.hasLastUsage ? checkpoint.promptTokens : 0;
 	}
+	PostRefreshDialog();
 	SaveChatSessionSnapshotNow();
 }
 
@@ -6788,6 +6846,14 @@ void RunAIChatWorker(void* pParams)
 			else {
 				AIChatRunOptions runOptions;
 				runOptions.promptCacheKey = request->promptCacheKey;
+				runOptions.streamContentBytesCallback = [requestId = request->requestId](size_t bytes) {
+					{
+						std::lock_guard<std::mutex> guard(g_session.mutex);
+						if (!g_session.requestInFlight || g_session.activeRequestId != requestId) return;
+						g_session.receivedStreamBytes += bytes;
+					}
+					PostRefreshDialog();
+				};
 				// 工具成功后仍沿用当前端点的重试预算；429/5xx 续轮必须等待并重试。
 				runOptions.enablePlanUserInput = request->enablePlanUserInput;
 				runOptions.enableGoalTools = request->enableGoalTools;
@@ -7059,6 +7125,10 @@ bool StartChatRequest(
 				? L"当前未打开易语言源码，工程读写工具已禁用"
 				: L"\u6b63\u5728\u4ee5 full \u6a21\u5f0f\u51c6\u5907\u5de5\u7a0b\u955c\u50cf..."));
 		g_session.requestInFlight = true;
+		g_session.receivedStreamBytes = 0;
+		g_session.accountedRunInput = request->hasResumeCheckpoint ? request->resumeCheckpoint.accumulatedInputTokens : 0;
+		g_session.accountedRunOutput = request->hasResumeCheckpoint ? request->resumeCheckpoint.accumulatedOutputTokens : 0;
+		g_session.accountedRunCached = request->hasResumeCheckpoint ? request->resumeCheckpoint.accumulatedCachedTokens : 0;
 		g_session.activeRequestId = request->requestId;
 		g_session.activeRequestProfileIdLocal = requestProfileIdLocal;
 		g_session.activeRequestOrigin = origin;
@@ -8396,6 +8466,9 @@ void ClearChatHistory()
 			PersistChatSessionSnapshotLocked(g_session);
 		}
 		oldMessages.swap(g_session.messages);
+		g_session.sessionTotalTokens = 0;
+		g_session.sessionInputTokens = 0;
+		g_session.sessionCachedTokens = 0;
 		oldSummary.swap(g_session.rollingSummary);
 		oldSessionId = g_session.activeSessionId;
 		g_session.streamingAssistantPreview.clear();
@@ -8550,6 +8623,9 @@ void HandleChatTaskDone(LPARAM lParam)
 
 		g_session.hasLastUsage = result->chatResult.hasUsage && result->chatResult.promptTokens > 0;
 		g_session.lastInputTokens = g_session.hasLastUsage ? result->chatResult.promptTokens : 0;
+		if (result->chatResult.hasCheckpoint) {
+			AccumulateSessionUsageLocked(result->chatResult.checkpoint);
+		}
 		if (result->goalProgressTracked && result->chatResult.hasUsage) {
 			AIChatGoalManager::AddUsage(
 				g_session.goal,

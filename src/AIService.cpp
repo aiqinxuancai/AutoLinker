@@ -150,6 +150,42 @@ void ReportChatActivity(
 	}
 }
 
+void ReportStreamContentBytes(std::string& pending, const std::string& chunk, const AIChatRunOptions& options)
+{
+	if (!options.streamContentBytesCallback) return;
+	pending += chunk;
+	size_t end;
+	while ((end = pending.find('\n')) != std::string::npos) {
+		const std::string line = pending.substr(0, end);
+		pending.erase(0, end + 1);
+		if (line.rfind("data:", 0) != 0) continue;
+		const auto packet = nlohmann::json::parse(line.substr(5), nullptr, false);
+		if (packet.is_discarded()) continue;
+		size_t bytes = 0;
+		const auto count = [&](const auto& self, const nlohmann::json& value) -> void {
+			if (value.is_array()) {
+				for (const auto& item : value) self(self, item);
+			} else if (value.is_object()) {
+				for (auto it = value.begin(); it != value.end(); ++it) {
+					if (it.value().is_string() && (it.key() == "content" || it.key() == "reasoning_content" ||
+						it.key() == "arguments" || it.key() == "text" || it.key() == "thinking")) {
+						bytes += it.value().template get_ref<const std::string&>().size();
+					} else if (it.value().is_structured()) self(self, it.value());
+				}
+			}
+		};
+		if (packet.contains("delta")) {
+			if (packet["delta"].is_string()) bytes = packet["delta"].get_ref<const std::string&>().size();
+			else count(count, packet["delta"]);
+		} else if (packet.contains("choices") && packet["choices"].is_array()) {
+			for (const auto& choice : packet["choices"]) {
+				if (choice.contains("delta")) count(count, choice["delta"]);
+			}
+		}
+		if (bytes) options.streamContentBytesCallback(bytes);
+	}
+}
+
 bool IsCancelRequested(
 	const std::function<bool()>& cancelCallback,
 	const HttpRequestCancellation* cancelContext = nullptr)
@@ -3822,7 +3858,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"10) ecom/、elib/、header/ 是依赖/公开信息参考，可读可搜但不可写。\n"
 			"11) 固定表文件 src/.数据类型.txt、src/.DLL声明.txt、src/.常量.txt、src/.全局变量.txt 可作为对应真实表页的编辑目标。\n"
 			"12) 需要预览改动用 diff_file；需要回滚最近写入用 restore_file_snapshot。\n"
-			"13) 通常我们只读取常量，不编辑和写入常量值，因为会覆盖一些长文本常量无法正确覆盖，所以我们通常用固定的程序集变量或局部变量来写固定的值，但需要给与一些注释，不要看起来像是魔法数字或文本。\n"
+			"13) 用户明确要求时可以编辑和写入常量页中的普通常量；必须保留现有长文本常量的占位符及元数据，不能新增、删除或改变长文本内容。普通常量按规范格式写入，避免无理由地改用变量替代用户要求的常量。\n"
 			"14) 只有用户要求编译验证时，才调用 compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type、project_supported_compile_targets 和可用编译模式。对 win_exe、win_console_exe、win_dll 默认使用 static_compile=true；只有用户明确要求动态编译或不使用静态编译时才设为 false。当 project_type=ecom 且目的是编译验证/调试测试时，默认使用 target=win_console_exe 和 static_compile=true 生成静态控制台程序；只有用户明确要求发布/生成 .ec 模块时才使用 target=ecom 和 static_compile=false。\n"
 			"15) 除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用 refresh_dependency_catalog、search_available_modules、search_available_support_libraries、list_imported_modules、add_module_to_project、remove_module_from_project、add_support_library_to_project。\n"
 			"16) 仅当用户明确要求解析、查看、参考或复刻外部 .e/.ec 文件时，才调用 e_packager；结果位于 unimported_code/{文件名}/。用 list_files/search_code 定位文件，再用 read_file/read_files 读取；不要对未引用源码调用 read_code_item，也不得用写工具修改。\n\n"
@@ -6322,6 +6358,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 
 		const std::string requestBodyText = requestBody.dump();
 		ResponsesStreamParseState streamState;
+		std::string streamMetricsPending;
 		bool sawResponseChunk = false;
 		const auto roundStart = PerfClock::now();
 		ReportChatActivity(runOptions, "等待 AI 首包...");
@@ -6329,7 +6366,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		const auto [responseBody, statusCode] = AIHttpTrace::Stream(
 			endpoint,
 			requestBodyText,
-			[&streamState, &streamCallback, &cancelCallback, cancelContext, &sawResponseChunk, &reportedFirstChunk, &runOptions](
+			[&streamState, &streamCallback, &cancelCallback, cancelContext, &sawResponseChunk, &reportedFirstChunk, &runOptions, &streamMetricsPending](
 				const std::string& chunk) -> bool {
 				if (IsCancelRequested(cancelCallback, cancelContext)) {
 					return false;
@@ -6341,6 +6378,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 						ReportChatActivity(runOptions, "正在接收 AI 流...");
 					}
 				}
+				ReportStreamContentBytes(streamMetricsPending, chunk, runOptions);
 				return ConsumeResponsesStreamChunk(chunk, streamState, streamCallback);
 			},
 			BuildOpenAIHeaders(settings),
@@ -8290,6 +8328,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		}
 
 		ChatStreamParseState streamState;
+		std::string streamMetricsPending;
 		bool sawResponseChunk = false;
 		const auto networkStart = PerfClock::now();
 		ReportChatActivity(runOptions, "等待 AI 首包...");
@@ -8298,7 +8337,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			AIHttpTrace::Stream(
 				endpoint,
 				requestBodyText,
-				[&streamState, &streamCallback, &cancelCallback, cancelContext, &sawResponseChunk, &reportedFirstChunk, &runOptions](
+				[&streamState, &streamCallback, &cancelCallback, cancelContext, &sawResponseChunk, &reportedFirstChunk, &runOptions, &streamMetricsPending](
 					const std::string& chunk) -> bool {
 					if (IsCancelRequested(cancelCallback, cancelContext)) {
 						return false;
@@ -8310,6 +8349,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 							ReportChatActivity(runOptions, "正在接收 AI 流...");
 						}
 					}
+					ReportStreamContentBytes(streamMetricsPending, chunk, runOptions);
 					return ConsumeStreamChunk(chunk, streamState, streamCallback);
 				},
 				headers,
@@ -8755,6 +8795,20 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 {
 	nlohmann::json checks = nlohmann::json::array();
 	bool allOk = true;
+	{
+		AIChatRunOptions options;
+		size_t received = 0;
+		options.streamContentBytesCallback = [&](size_t bytes) { received += bytes; };
+		std::string pending;
+		const std::string events =
+			"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think\",\"content\":\"text\",\"tool_calls\":[{\"function\":{\"arguments\":\"{}\"}}]}}]}\n\n"
+			"data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"more\"}\n\n"
+			"data: [DONE]\n\n";
+		for (char ch : events) ReportStreamContentBytes(pending, std::string(1, ch), options);
+		const bool ok = received == 15;
+		checks.push_back({{"name", "stream_metrics_split_chunks_reasoning_and_tools"}, {"ok", ok}});
+		allOk = allOk && ok;
+	}
 	{
 		AISettings settings;
 		settings.thinkingLevel = AIThinkingLevel::Medium;

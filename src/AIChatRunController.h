@@ -100,6 +100,7 @@ private:
 	int m_cachedInputTokens = 0;
 	int m_cacheWriteInputTokens = 0;
 	long long m_accumulatedInputTokens = 0;
+	long long m_accumulatedCachedTokens = 0; // 各轮缓存命中累计量。
 	long long m_accumulatedOutputTokens = 0;
 	int m_completedModelRounds = 0;
 	bool m_hasUsage = false;

@@ -297,6 +297,7 @@ nlohmann::json SerializeRunCheckpoint(
 		{"cached_input_tokens", checkpoint.cachedInputTokens},
 		{"cache_write_input_tokens", checkpoint.cacheWriteInputTokens},
 		{"accumulated_input_tokens", checkpoint.accumulatedInputTokens},
+		{"accumulated_cached_tokens", checkpoint.accumulatedCachedTokens},
 		{"accumulated_output_tokens", checkpoint.accumulatedOutputTokens},
 		{"completed_model_rounds", checkpoint.completedModelRounds},
 		{"has_usage", checkpoint.hasUsage},
@@ -344,6 +345,7 @@ bool DeserializeRunCheckpoint(const nlohmann::json& value, AIChatRunCheckpoint& 
 	checkpoint.cachedInputTokens = static_cast<int>(GetJsonInt64(value, "cached_input_tokens", 0));
 	checkpoint.cacheWriteInputTokens = static_cast<int>(GetJsonInt64(value, "cache_write_input_tokens", 0));
 	checkpoint.accumulatedInputTokens = GetJsonInt64(value, "accumulated_input_tokens", 0);
+	checkpoint.accumulatedCachedTokens = GetJsonInt64(value, "accumulated_cached_tokens", 0);
 	checkpoint.accumulatedOutputTokens = GetJsonInt64(value, "accumulated_output_tokens", 0);
 	checkpoint.completedModelRounds = static_cast<int>(GetJsonInt64(value, "completed_model_rounds", 0));
 	checkpoint.hasUsage = GetJsonBool(value, "has_usage", false);
@@ -396,6 +398,9 @@ bool SerializeSession(const AIChatStoredSession& session, nlohmann::json& outJso
 		outJson["created_at_unix_ms"] = session.createdAtUnixMs;
 		outJson["updated_at_unix_ms"] = session.updatedAtUnixMs;
 		outJson["elapsed_ms"] = session.elapsedMs;
+		outJson["total_tokens"] = session.totalTokens;
+		outJson["input_tokens"] = session.inputTokens;
+		outJson["cached_tokens"] = session.cachedTokens;
 		outJson["created_at_display"] = LocalToUtf8TextForSessionStore(session.createdAtDisplayLocal);
 		outJson["updated_at_display"] = LocalToUtf8TextForSessionStore(session.updatedAtDisplayLocal);
 		outJson["rolling_summary"] = LocalToUtf8TextForSessionStore(session.rollingSummaryLocal);
@@ -462,6 +467,9 @@ bool DeserializeSession(const nlohmann::json& jsonValue, AIChatStoredSession& ou
 	outSession.createdAtUnixMs = GetJsonInt64(jsonValue, "created_at_unix_ms", 0);
 	outSession.updatedAtUnixMs = GetJsonInt64(jsonValue, "updated_at_unix_ms", 0);
 	outSession.elapsedMs = GetJsonInt64(jsonValue, "elapsed_ms", 0);
+	outSession.totalTokens = (std::max)(0LL, GetJsonInt64(jsonValue, "total_tokens", 0));
+	outSession.inputTokens = (std::max)(0LL, GetJsonInt64(jsonValue, "input_tokens", 0));
+	outSession.cachedTokens = (std::max)(0LL, GetJsonInt64(jsonValue, "cached_tokens", 0));
 	if (outSession.elapsedMs < 0) {
 		outSession.elapsedMs = 0;
 	}

@@ -148,21 +148,23 @@ bool TryParseConstDeclaration(
 		return false;
 	}
 	ranges.push_back(TrimRange(line, fieldBegin, line.size()));
-	if (ranges.size() < 2 || ranges[0].begin == ranges[0].end) {
-		outError = "const declaration requires name and value at line " + std::to_string(lineIndex + 1);
+	if (ranges[0].begin == ranges[0].end) {
+		outError = "const declaration requires name at line " + std::to_string(lineIndex + 1);
 		return false;
 	}
 
 	outDeclaration.lineIndex = lineIndex;
 	outDeclaration.rawLine.assign(line);
-	outDeclaration.valueBegin = lineBegin + ranges[1].begin;
-	outDeclaration.valueEnd = lineBegin + ranges[1].end;
+	// IDE 会省略初始空值常量的尾部字段，保留原始偏移供规范化使用。
+	const FieldRange valueRange = ranges.size() > 1 ? ranges[1] : FieldRange{line.size(), line.size()};
+	outDeclaration.valueBegin = lineBegin + valueRange.begin;
+	outDeclaration.valueEnd = lineBegin + valueRange.end;
 	outDeclaration.fields.reserve(ranges.size());
 	for (const FieldRange& range : ranges) {
 		outDeclaration.fields.emplace_back(line.substr(range.begin, range.end - range.begin));
 	}
 	outDeclaration.name = outDeclaration.fields[0];
-	outDeclaration.value = outDeclaration.fields[1];
+	outDeclaration.value = ranges.size() > 1 ? outDeclaration.fields[1] : std::string();
 	outDeclaration.isLongTextPlaceholder =
 		TryParseLongTextPlaceholder(outDeclaration.value, outDeclaration.longTextLength);
 	return true;
@@ -232,6 +234,24 @@ bool TryParseConstPage(
 			++lineBegin;
 		}
 		++lineIndex;
+	}
+	return true;
+}
+
+bool TryNormalizeConstPageText(
+	const std::string& pageCode,
+	std::string& outCode,
+	std::string& outError)
+{
+	outCode = pageCode;
+	ConstPage page;
+	if (!TryParseConstPage(pageCode, page, outError)) {
+		return false;
+	}
+	for (auto it = page.declarations.rbegin(); it != page.declarations.rend(); ++it) {
+		if (it->fields.size() == 1) {
+			outCode.insert(it->valueBegin, ", \"\"");
+		}
 	}
 	return true;
 }

@@ -155,6 +155,7 @@ struct AIChatRunCheckpoint {
 	int cachedInputTokens = 0;
 	int cacheWriteInputTokens = 0;
 	long long accumulatedInputTokens = 0;
+	long long accumulatedCachedTokens = 0; // 本次运行累计缓存命中量。
 	long long accumulatedOutputTokens = 0;
 	int completedModelRounds = 0;
 	bool hasUsage = false;
@@ -178,6 +179,8 @@ struct AIChatRunOptions {
 	std::function<std::vector<AIChatMessage>(const std::string& completedAssistantContent)> takePendingUserInputsCallback;
 	// 流式协议重连前清理当前未完成的界面预览，避免重放增量造成重复显示。
 	std::function<void()> streamRetryCallback;
+	// 已解析流增量的 UTF-8 字节量，包含正文、推理和工具参数。
+	std::function<void(size_t)> streamContentBytesCallback;
 	// 报告 AI 请求阶段、流接收和重试状态。
 	std::function<void(const std::string& line)> activityCallback;
 };

@@ -286,6 +286,7 @@ void AIChatRunController::RecordUsage(
 	m_cachedInputTokens = (std::max)(0, cachedInputTokens);
 	m_cacheWriteInputTokens = (std::max)(0, cacheWriteInputTokens);
 	m_accumulatedInputTokens += static_cast<long long>(m_promptTokens);
+	m_accumulatedCachedTokens += m_cachedInputTokens;
 	m_accumulatedOutputTokens += static_cast<long long>(m_totalTokens - m_promptTokens);
 	m_contextBytesAfterUsage = 0;
 }
@@ -497,6 +498,7 @@ AIChatRunCheckpoint AIChatRunController::BuildCheckpoint(const std::string& stat
 	checkpoint.cachedInputTokens = m_cachedInputTokens;
 	checkpoint.cacheWriteInputTokens = m_cacheWriteInputTokens;
 	checkpoint.accumulatedInputTokens = m_accumulatedInputTokens;
+	checkpoint.accumulatedCachedTokens = m_accumulatedCachedTokens;
 	checkpoint.accumulatedOutputTokens = m_accumulatedOutputTokens;
 	checkpoint.completedModelRounds = m_completedModelRounds;
 	checkpoint.hasUsage = m_hasUsage;
@@ -595,6 +597,7 @@ void AIChatRunController::ApplyResumeCheckpoint(const AIChatRunCheckpoint& check
 	m_promptTokens = (std::max)(0, checkpoint.promptTokens);
 	m_totalTokens = (std::max)(m_promptTokens, checkpoint.totalTokens);
 	m_cachedInputTokens = (std::max)(0, checkpoint.cachedInputTokens);
+	m_accumulatedCachedTokens = (std::max)(0LL, checkpoint.accumulatedCachedTokens);
 	m_cacheWriteInputTokens = (std::max)(0, checkpoint.cacheWriteInputTokens);
 	m_accumulatedInputTokens = (std::max)(0LL, checkpoint.accumulatedInputTokens);
 	m_accumulatedOutputTokens = (std::max)(0LL, checkpoint.accumulatedOutputTokens);

@@ -288,7 +288,7 @@ html:not(.autolinker-page-visible) *::after {
 .session-status.done {
 	color: #7b8190;
 }
-.al-tooltip-pop { position:fixed; z-index:10000; max-width:320px; padding:8px 10px; border:1px solid #d8dee9; border-radius:7px; background:#fff; color:#303846; box-shadow:0 6px 18px rgba(0,0,0,.16); font:12px/1.45 "Segoe UI", "Microsoft YaHei UI", sans-serif; white-space:pre-line; pointer-events:none; display:none; }
+.al-tooltip-pop { position:fixed; z-index:10000; max-width:320px; padding:8px 10px; border:1px solid #d8dee9; border-radius:7px; background:#fff; color:#303846; box-shadow:0 6px 18px rgba(0,0,0,.16); font:12px/1.45 "Segoe UI", "Microsoft YaHei UI", sans-serif; white-space:pre-line; pointer-events:none; display:none; }\r\n\r\n/* 统一的小浮层提示 */\r\n.al-tooltip-pop { position:fixed; z-index:10000; max-width:320px; padding:8px 10px; border:1px solid #d8dee9; border-radius:7px; background:#fff; color:#303846; box-shadow:0 6px 18px rgba(0,0,0,.16); font:12px/1.45 "Segoe UI", "Microsoft YaHei UI", sans-serif; white-space:pre-line; pointer-events:none; display:none; }
 
 .input-wrap {
 	display: flex;
@@ -2157,7 +2157,7 @@ body,
 }
 .session-status { color: var(--al-subtle-text); }
 .session-status.working { color: var(--al-primary); }
-.session-status.done { color: var(--al-muted-text); }
+.session-status.done { color: var(--al-muted-text); }\r\n\r\n/* 统一的小浮层提示 */\r\n.al-tooltip-pop { position:fixed; z-index:10000; max-width:320px; padding:8px 10px; border:1px solid #d8dee9; border-radius:7px; background:#fff; color:#303846; box-shadow:0 6px 18px rgba(0,0,0,.16); font:12px/1.45 "Segoe UI", "Microsoft YaHei UI", sans-serif; white-space:pre-line; pointer-events:none; display:none; }
 .btn {
 	background: var(--al-button-bg);
 	border-color: var(--al-soft-border);
@@ -3078,38 +3078,7 @@ window.autolinkerSetGoalState = function(payload) {
 	window.autolinkerRenderGoalPanel();
 };
 
-(function() {
-	var pop = document.createElement("div");
-	pop.className = "al-tooltip-pop";
-	pop.setAttribute("role", "tooltip");
-	document.body.appendChild(pop);
-	var target = null;
-	function hide() { target = null; pop.style.display = "none"; }
-	window.autolinkerRefreshFloatTips = function() {
-		if (!target) return;
-		if (!target.getClientRects().length || !target.dataset.floatTip) { hide(); return; }
-		pop.textContent = target.dataset.floatTip.replace(/\b(\d+) tokens/g, function(_, value) {
-			return window.autolinkerFormatTokens(Number(value)) + " tokens";
-		});
-		pop.style.display = "block";
-		var rect = target.getBoundingClientRect();
-		pop.style.left = Math.max(6, Math.min(innerWidth - pop.offsetWidth - 6, rect.right - pop.offsetWidth)) + "px";
-		pop.style.top = Math.max(0, rect.top - pop.offsetHeight - 2) + "px";
-	};
-	["stop-btn", "session-status"].forEach(function(id) {
-		var el = document.getElementById(id);
-		el.addEventListener("mouseenter", function() { target = el; window.autolinkerRefreshFloatTips(); });
-		el.addEventListener("mouseleave", hide);
-	});
-	window.addEventListener("resize", window.autolinkerRefreshFloatTips);
-	window.addEventListener("blur", hide);
-})();
-
-window.autolinkerFormatTokens = function(value) {
-	if (value >= 1000000) return (value / 1000000).toFixed(1) + "M";
-	if (value >= 1000) return (value / 1000).toFixed(1) + "k";
-	return String(value);
-};
+(function(){var p=document.createElement("div");p.className="al-tooltip-pop";document.body.appendChild(p);function b(e){if(!e)return;e.addEventListener("mouseenter",function(){var t=e.dataset.floatTip||e.title;if(!t)return;p.textContent=t;p.style.display="block";var r=e.getBoundingClientRect();p.style.left=Math.max(6,Math.min(innerWidth-326,r.left))+"px";p.style.top=Math.max(6,r.top-p.offsetHeight-8)+"px"});e.addEventListener("mouseleave",function(){p.style.display="none"})}window.autolinkerRefreshFloatTips=function(){b(document.getElementById("stop-btn"));b(document.getElementById("session-status"))};setTimeout(window.autolinkerRefreshFloatTips,0)})();
 
 window.autolinkerSetBusy = function(busy, stopRequested, stopTooltip) {
 	var send = document.getElementById("send-btn");
@@ -3142,9 +3111,8 @@ window.autolinkerSetBusy = function(busy, stopRequested, stopTooltip) {
 	if (stop) {
 		stop.disabled = !isBusy || isStopping;
 		stop.title = ""; stop.dataset.floatTip = isStopping ? "停止中..." : resolvedStopTooltip;
-		stop.setAttribute("aria-label", isStopping ? "停止中" : "停止");
+		stop.setAttribute("aria-label", stop.title);
 		stop.style.display = isBusy ? "" : "none";
-		window.autolinkerRefreshFloatTips();
 	}
 	if (newSession) {
 		newSession.disabled = isBusy;
@@ -3191,8 +3159,7 @@ window.autolinkerSetSessionTiming = function(elapsedLabel, working, visible) {
 		status.hidden = !shouldShow;
 		var value = status.querySelector ? status.querySelector(".session-status-value") : null;
 		if (value) value.textContent = elapsedLabel || "0m 00s";
-		status.removeAttribute("title");
-		window.autolinkerRefreshFloatTips();
+		status.title = window.autolinkerContextUsageTitle || "\u4E0A\u4E0B\u6587\u7528\u91CF\u4E0D\u53EF\u7528";
 		status.classList.toggle("working", isWorking);
 		status.classList.toggle("done", !isWorking);
 	}
@@ -3203,7 +3170,6 @@ window.autolinkerSetContextUsage = function(title) {
 	window.autolinkerContextUsageTitle = title || "\u4E0A\u4E0B\u6587\u7528\u91CF\u4E0D\u53EF\u7528";
 	if (!el) return;
 	el.title = ""; el.dataset.floatTip = window.autolinkerContextUsageTitle;
-	window.autolinkerRefreshFloatTips();
 };
 
 window.autolinkerResizeChatInput = function(input) {
@@ -4224,3 +4190,4 @@ window.autolinkerHideToolApproval = function() {
 </script>
 </body>
 </html>
+
