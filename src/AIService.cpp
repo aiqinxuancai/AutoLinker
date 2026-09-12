@@ -1105,6 +1105,10 @@ nlohmann::json CompactToolContextJsonValue(
 	if (value.is_string()) {
 		const std::string text = value.get<std::string>();
 		const std::string loweredKey = ToLowerAsciiCopy(key);
+		// 技能正文已在读取端限制分页大小，不能再次裁剪，否则续读游标将越过未显示的内容。
+		if (toolName == "read_skill_resource" && loweredKey == "content") {
+			return value;
+		}
 		if ((toolName == "read_file" || toolName == "read_code_item") && loweredKey == "content") {
 			return BuildUtf8Excerpt(
 				text,
@@ -9331,6 +9335,48 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"name", "read_file_context_not_truncated_to_800_bytes"},
 			{"ok", ok},
 			{"content_bytes", compactBytes}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		// 覆盖用户报告的全文大小、重复读取、非零偏移分页及最大允许页大小。
+		bool ok = true;
+		for (const size_t totalBytes : {size_t(11989), size_t(262144 + 97)}) {
+			std::string sourceContent;
+			while (sourceContent.size() + 6 <= totalBytes) {
+				sourceContent += "技能";
+			}
+			sourceContent.append(totalBytes - sourceContent.size(), 'x');
+			for (const size_t pageBytes : {size_t(4098), size_t(262144)}) {
+				std::string reconstructed;
+				for (size_t offset = 0; offset < sourceContent.size();) {
+					const size_t end = ClampUtf8PrefixBoundary(sourceContent,
+						(std::min)(offset + pageBytes, sourceContent.size()));
+					const nlohmann::json raw = {
+						{"ok", true}, {"skill_name", "e-language"},
+						{"relative_path", "SKILL.md"},
+						{"content", sourceContent.substr(offset, end - offset)},
+						{"byte_offset", offset}, {"total_bytes", totalBytes},
+						{"next_byte_offset", end < totalBytes ? nlohmann::json(end) : nlohmann::json(nullptr)}
+					};
+					for (int repeat = 0; repeat < 3; ++repeat) {
+						const auto compact = BuildCompactToolResultPayload(
+							"read_skill_resource", Utf8ToLocal(raw.dump()));
+						ok = ok && compact.jsonValue == raw &&
+							nlohmann::json::parse(compact.textUtf8) == raw;
+						if (repeat == 0) {
+							reconstructed += compact.jsonValue.value("content", std::string());
+						}
+					}
+					offset = end;
+				}
+				ok = ok && reconstructed == sourceContent;
+			}
+		}
+		checks.push_back({
+			{"name", "read_skill_resource_context_preserves_full_pages_and_cursors"},
+			{"ok", ok}
 		});
 		allOk = allOk && ok;
 	}
