@@ -8126,6 +8126,98 @@ bool OpenProgramTreeItemPageByData(
 	return false;
 }
 
+bool GetRealPageRowTextByEditorObject(
+    std::uintptr_t editorObject, std::uintptr_t moduleBase, int row,
+    std::string& outText, int& outSourceLine, std::string& outTrace,
+    const std::string* preferredRowText,
+    std::string* outPageCode)
+{
+    outText.clear();
+    if (outPageCode) outPageCode->clear();
+    outSourceLine = -1;
+    outTrace = "native_row_unavailable";
+    if (!editorObject || !moduleBase || row < 0 || !IsGenericArrayInteropSupported(moduleBase, nullptr)) {
+        return false;
+    }
+    const auto& addrs = GetNativeEditorCommandAddresses(moduleBase);
+    const auto countFn = ResolveInternalAddress<FnThiscallInt>(moduleBase, addrs.editorGetRangeCount);
+    const auto formatFn = ResolveInternalAddress<FnEditorFormatRangeText>(moduleBase, addrs.editorFormatRangeText);
+    if (!countFn || !formatFn) return false;
+    const int count = CallThiscallIntSafe(countFn, reinterpret_cast<void*>(editorObject));
+    if (row >= count) return false;
+    auto format = [&](int first, int last, std::string& text) {
+        text.clear();
+        if (last < first) return true;
+        InternalGenericArrayBuffer buffer(moduleBase);
+        return CallEditorFormatRangeTextSafe(formatFn, reinterpret_cast<void*>(editorObject),
+            first, last, buffer.Data(), 0) && buffer.CopyTextTo(&text);
+    };
+    std::string rowText;
+    if (!format(row, row, rowText)) return false;
+    outText = preferredRowText ? TrimAsciiCopyLocal(*preferredRowText) : TrimAsciiCopyLocal(rowText);
+    // SDK 文本作为内容来源；原生范围保留缩进/换行，仅用于校验其坐标映射。
+    if (preferredRowText && outText != TrimAsciiCopyLocal(rowText)) {
+        outTrace = "sdk_native_row_mismatch";
+        return !outText.empty();
+    }
+    outTrace = "native_row_text_only";
+    std::string prefix, whole;
+    if (format(0, row - 1, prefix) && format(0, count - 1, whole) &&
+        whole.compare(0, prefix.size(), prefix) == 0 &&
+        whole.compare(prefix.size(), rowText.size(), rowText) == 0) {
+        // 真实页读取会重建版本头；只在原生范围文本与整页前缀完全吻合时给出行号。
+        const std::string header = TrimAsciiCopyLocal(whole).rfind(".版本", 0) == 0
+            ? std::string() : BuildDirectWholePageHeaderText();
+        outSourceLine = 1 + static_cast<int>(std::count(header.begin(), header.end(), '\n')) +
+            static_cast<int>(std::count(prefix.begin(), prefix.end(), '\n'));
+        outTrace = "native_range_prefix_verified";
+    }
+    std::string canonical;
+    if (!TryFormatWholePageTextDirectByEditor(editorObject, moduleBase, &canonical, nullptr) ||
+        outText.find_first_of("\r\n") != std::string::npos) {
+        outSourceLine = -1;
+        outTrace = "native_row_text_only";
+        return !outText.empty();
+    }
+    if (outPageCode) *outPageCode = canonical;
+    // 前缀换算还必须与 read_real_file 使用的规范化整页逐行核对。
+    if (outSourceLine > 0) {
+        size_t begin = 0;
+        for (int line = 1; line < outSourceLine && begin < canonical.size(); ++line) {
+            const auto end = canonical.find('\n', begin);
+            begin = end == std::string::npos ? canonical.size() : end + 1;
+        }
+        const auto end = canonical.find('\n', begin);
+        if (begin >= canonical.size() || TrimAsciiCopyLocal(canonical.substr(
+                begin, end == std::string::npos ? end : end - begin)) != outText) {
+            outSourceLine = -1;
+            outTrace = "native_row_text_only";
+        }
+    }
+    if (outSourceLine < 0 && !outText.empty()) {
+        // 范围格式化可能追加分隔空行。改用真实整页的唯一完整行匹配，重复行绝不猜测。
+        {
+            int line = 1;
+            int match = -1;
+            for (size_t begin = 0; begin < canonical.size(); ++line) {
+                const auto end = canonical.find('\n', begin);
+                const auto text = canonical.substr(begin, end == std::string::npos ? end : end - begin);
+                if (TrimAsciiCopyLocal(text) == outText) {
+                    if (match > 0) { match = -1; break; }
+                    match = line;
+                }
+                if (end == std::string::npos) break;
+                begin = end + 1;
+            }
+            if (match > 0) {
+                outSourceLine = match;
+                outTrace = "native_row_unique_text_verified";
+            }
+        }
+    }
+    return !outText.empty();
+}
+
 bool GetRealPageCodeByEditorObject(
 	std::uintptr_t editorObject,
 	std::uintptr_t moduleBase,

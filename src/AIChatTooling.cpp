@@ -596,11 +596,15 @@ bool RequestToolExecutionFromMainThread(
 			if (now >= nextWaitLogAt) {
 				const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
 					now - waitStartedAt).count();
-				LogInternalToolCallLine(std::format(
+				// 等待诊断不能同步调用 IDE 窗口：主线程可能正在完成请求并等待
+				// request->mutex。只写文件，并在日志 I/O 期间释放请求锁。
+				lock.unlock();
+				Logger::Instance().Write("Tool", std::format(
 					"main_thread_dispatch_waiting tool={} elapsed_ms={} stage={}",
 					toolName.empty() ? "unknown_tool" : toolName,
 					elapsedMs,
 					toolName == "compile_with_output_path" ? "compile" : "main_thread_tool"));
+				lock.lock();
 				nextWaitLogAt = now + std::chrono::seconds(30);
 			}
 		}

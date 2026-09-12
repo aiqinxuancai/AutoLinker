@@ -537,6 +537,9 @@
     <ClCompile Include="src\IdeCompileDialogGuard.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
+    <ClCompile Include="src\CompileDiagnostics.cpp">
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="src\IdeCompileOutputCapture.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
@@ -681,6 +684,7 @@
     <ClInclude Include="src\HeadlessCompileRunner.h" />
     <ClInclude Include="src\IDEFacade.h" />
     <ClInclude Include="src\IdeCompileDialogGuard.h" />
+    <ClInclude Include="src\CompileDiagnostics.h" />
     <ClInclude Include="src\IdeCompileOutputCapture.h" />
     <ClInclude Include="src\IdeLogStore.h" />
     <ClInclude Include="src\IdeLogViewer.h" />

@@ -1349,7 +1349,13 @@ std::string BuildToolContentSummary(
 			}
 		}
 	}
-	return DumpJsonSafe(summary);
+    if (toolName == "compile_with_output_path" && structured.is_object()) {
+        // 仅消费 MCP text 的客户端也必须收到错误节选，不能只返回失败状态。
+        for (const char* key : {"diagnostics", "artifact_verified", "output_scope", "output_belongs_to_current_compile"}) {
+            if (structured.contains(key)) summary[key] = structured[key];
+        }
+    }
+    return DumpJsonSafe(summary);
 }
 
 bool TryBuildToolCallResult(

@@ -1,5 +1,6 @@
 ﻿#include "IDEFacade.h"
 #include "ECOMEx.h"
+#include "EideInternalTextBridge.h"
 #include "Global.h"
 #include "PathHelper.h"
 #include "RealPageCodeToolSupport.h"
@@ -2192,20 +2193,38 @@ bool IDEFacade::GetCaretPosition(int& rowIndex, int& colIndex) const
 	return rowOk && colOk;
 }
 
+bool IDEFacade::GetProgramText(int rowIndex, int colIndex, std::string& outText, int* outType) const
+{
+	outText.clear();
+	if (outType) *outType = 0;
+	GET_PRG_TEXT_PARAM parameter{};
+	parameter.m_nRowIndex = rowIndex;
+	parameter.m_nColIndex = colIndex;
+	if (!Invoke(FN_GET_PRG_TEXT, PtrToDWORD(&parameter), 0) ||
+		parameter.m_nBufSize <= 0 || parameter.m_nBufSize > 1024 * 1024) return false;
+	std::vector<char> buffer(static_cast<size_t>(parameter.m_nBufSize) + 1, '\0');
+	parameter.m_pBuf = buffer.data();
+	if (!Invoke(FN_GET_PRG_TEXT, PtrToDWORD(&parameter), 0)) return false;
+	const auto end = std::find(buffer.begin(), buffer.end(), '\0');
+	outText.assign(buffer.begin(), end);
+	if (outType) *outType = parameter.m_nType;
+	return !outText.empty();
+}
+
 std::string IDEFacade::GetRowFullText(int rowIndex) const
 {
 	if (rowIndex < 0) {
 		return std::string();
 	}
-	std::string pageCode;
-	if (!GetCurrentPageCode(pageCode)) {
-		return std::string();
-	}
-	std::vector<std::string> lines = SplitLinesPreserveEmpty(pageCode);
-	if (rowIndex >= static_cast<int>(lines.size())) {
-		return std::string();
-	}
-	return lines[static_cast<size_t>(rowIndex)];
+    std::string text, trace;
+    if (GetProgramText(rowIndex, -1, text)) return text;
+    const auto moduleBase = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    e571::ActiveEditorObjectInfo editor;
+    int sourceLine = -1;
+    if (!e571::ResolveCurrentActiveEditorObject(moduleBase, &editor) ||
+        !e571::GetRealPageRowTextByEditorObject(editor.rawEditorObject, moduleBase,
+            rowIndex, text, sourceLine, trace)) return {};
+    return text;
 }
 
 bool IDEFacade::InsertText(const std::string& text, bool asKeyboardInput) const
@@ -2388,6 +2407,28 @@ bool IDEFacade::CompileWithOutputPath(
 		*outNormalizedPath = normalizedPath;
 	}
 
+	INT compileCommand = 0;
+	switch (kind) {
+	case CompileOutputKind::WinExe:
+		compileCommand = staticCompile ? FN_STATIC_COMPILE_WINDOWS_EXE : FN_COMPILE_WINDOWS_EXE;
+		break;
+	case CompileOutputKind::WinConsoleExe:
+		compileCommand = staticCompile ? FN_STATIC_COMPILE_WINDOWS_CONOLE_EXE : FN_COMPILE_WINDOWS_CONOLE_EXE;
+		break;
+	case CompileOutputKind::WinDll:
+		compileCommand = staticCompile ? FN_STATIC_COMPILE_WINDOWS_DLL : FN_COMPILE_WINDOWS_DLL;
+		break;
+	case CompileOutputKind::Ecom:
+		compileCommand = FN_COMPILE_WINDOWS_ECOM;
+		break;
+	}
+	bool commandEnabled = false;
+	if (!compileCommand || !RunIsFuncEnabled(compileCommand, commandEnabled) || !commandEnabled) {
+		// 运行/暂停等状态下命令可能被 IDE 忽略。不要把调度成功当成编译已启动再空等 30 秒。
+		if (outDiagnostics) *outDiagnostics = "compile_command_not_enabled";
+		return false;
+	}
+
 	// 工具编译不会经过地址 Hook，这里显式执行一次编译前 EC 模块切换。
 	const int changedEcomCount = RunChangeECOM(true);
 	OutputStringToELog(std::format(
@@ -2402,24 +2443,7 @@ bool IDEFacade::CompileWithOutputPath(
 		return false;
 	}
 
-	bool ok = false;
-	switch (kind) {
-	case CompileOutputKind::WinExe:
-		ok = staticCompile ? RunStaticCompileWindowsExe() : RunCompileWindowsExe();
-		break;
-	case CompileOutputKind::WinConsoleExe:
-		ok = staticCompile ? RunStaticCompileWindowsConoleExe() : RunCompileWindowsConoleExe();
-		break;
-	case CompileOutputKind::WinDll:
-		ok = staticCompile ? RunStaticCompileWindowsDll() : RunCompileWindowsDll();
-		break;
-	case CompileOutputKind::Ecom:
-		ok = RunCompileWindowsEcom();
-		break;
-	default:
-		ok = false;
-		break;
-	}
+	const bool ok = Invoke(compileCommand);
 
 	if (!ok) {
 		CancelSilentCompileOutputPathRequest();

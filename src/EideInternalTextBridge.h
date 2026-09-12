@@ -59,6 +59,13 @@ bool GetRealPageCodeByEditorObject(
 	std::string* outCode,
 	NativeRealPageAccessResult* outResult = nullptr);
 
+// 按 IDE 原生行范围读取错误代码，并验证到真实源码文本行的映射（行号从 1 开始）。
+bool GetRealPageRowTextByEditorObject(
+    std::uintptr_t editorObject, std::uintptr_t moduleBase, int row,
+    std::string& outText, int& outSourceLine, std::string& outTrace,
+    const std::string* preferredRowText = nullptr,
+    std::string* outPageCode = nullptr);
+
 // 按程序树页数据读取真实整页源码。
 bool GetRealPageCodeByProgramTreeItemData(
 	unsigned int itemData,

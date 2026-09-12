@@ -122,7 +122,9 @@ public:
 	bool IsFunctionEnabled(INT code) const;
 	ActiveWindowType GetActiveWindowType() const;
 	bool GetCaretPosition(int& rowIndex, int& colIndex) const;
-	// 从当前页整页复制文本中读取指定行描述。
+	// 用 SDK 直接读取指定位置文本；-1 表示当前光标，不触碰剪贴板或选区。
+	bool GetProgramText(int rowIndex, int colIndex, std::string& outText, int* outType = nullptr) const;
+	// 优先 SDK 读取，再回退原生范围；不可将 IDE 行号直接索引导出的整页源码。
 	std::string GetRowFullText(int rowIndex) const;
 
 	// 编辑操作封装。

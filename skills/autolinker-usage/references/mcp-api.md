@@ -497,6 +497,45 @@ e-packager 不可用或解包失败。
 `target=ecom`，且该目标不支持静态编译。返回产物指纹验证、编译输出、等待状态和错误光标
 位置；判断结果以 `ok` / `artifact_verified` 为准。
 
+编译结果另含 `diagnostics[]`，每项包含 `severity`、`message`、`file`、`line`、
+`location_verified` 和 `location_status`。已核实的位置还包含 `code`、带行号的
+`code_excerpt`、`page_name`、`ide_row` / `ide_column`。这些诊断也包含在 MCP
+`content[].text` 摘要中，纯文本客户端无需依赖 `structuredContent` 才能读到错误代码。
+
+错误行文本优先通过 IDE SDK `FN_GET_PRG_TEXT` 取得，`code_source` 标明来源；
+源码行及节选通过真实页直接格式化器核实，不经整页复制或系统剪贴板。
+`code_excerpt` 包含前后各两行并以 `>` 标出错误行，`focus_line`、
+`excerpt_start_line` / `excerpt_end_line` 明确对应位置。SDK 不可用时允许原生行范围
+读取回退。原生编译命令在 IDE 中不可用时返回 `compile_command_not_enabled`。
+
+- `line` 从 1 开始，与 `read_real_file` 的实际源码行一致；`file` 为镜像相对路径。
+- `ide_row` / `ide_column` 是 IDE 原生的零基位置，不能把 `ide_row + 1` 当作源码行号。
+- 跨程序集诊断的页名优先取真实源码声明，并核对编辑器对象；IDE 自动跳转后的
+  页签标题可能过期，不能据此判定错误属于哪个文件。
+- 仅当原生行与整页源码映射、文件对应的编辑器对象、错误消息引用的符号均核实后，
+  才返回 `location_verified=true` 和可用于定位的源码行。前缀映射不能验证时，仅接受
+  唯一完整行匹配；存在歧义则 `file` / `line` 为 `null`，不猜测。
+- 当前支持易语言 `错误(...)`、`警告(...)`、语法错误和编译错误文本；外部链接器、
+  黑月或无源码位置的诊断可能只有原始输出，不能把当前光标当作它们的错误位置。
+- 兼容字段 `caret_*` 表示采集到的光标状态，消费者应以诊断的
+  `location_verified` 判断是否可以作为错误定位。
+
+输出归属由 `output_scope`、`output_cleared_before_compile` 和
+`output_belongs_to_current_compile` 描述：
+
+| `output_scope` | 含义 |
+| --- | --- |
+| `compile_session` | 来自本次编译期间的内部 Hook 捕获 |
+| `cleared_control_compile_session` | 编译前已清空并验证控件基线，本次读取的新输出 |
+| `appended_since_compile_start` | 无已验证的清空基线，仅返回追加差分 |
+| `replaced_since_compile_start` | 控件全文发生替换，不能排除历史文本 |
+| `unchanged` / `unavailable` | 无文本变化或无法读取输出 |
+
+前两种情况下 `output_belongs_to_current_compile=true`，否则为 `null`（未知）。
+编译开始会清空原生输出窗口；`output_window_text` 可能包含本次编译期间的
+AutoLinker 日志，并不保证其中每一行都是编译器消息。
+
+
 ## 网络工具
 
 ### `search_web_tavily`

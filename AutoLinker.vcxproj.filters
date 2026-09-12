@@ -143,6 +143,9 @@
     <ClCompile Include="src\IdeCompileDialogGuard.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\CompileDiagnostics.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\IdeCompileOutputCapture.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -466,6 +469,9 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\IdeCompileDialogGuard.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\CompileDiagnostics.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\IdeCompileOutputCapture.h">
