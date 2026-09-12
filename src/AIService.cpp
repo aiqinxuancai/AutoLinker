@@ -7096,6 +7096,7 @@ int AIService::ResolveContextWindowTokens(const AISettings& settings)
 		{ "gemini",         1048576 },
 		// DeepSeek —— V4/官方 chat/reasoner 别名为 1M，旧 R1/V3.2 保持 128K
 		{ "deepseek-v4",    1000000 },
+		{ "deepseek-flash", 1000000 },
 		{ "deepseek-chat",  1000000 },
 		{ "deepseek-reasoner", 1000000 },
 		{ "deepseek-v3.2",   128000 },
