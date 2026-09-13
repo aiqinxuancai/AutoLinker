@@ -2185,6 +2185,7 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest gameanalytics-self-test" << std::endl;
 	std::cout << "  AutoLinkerTest gameanalytics-live-test  (reads AUTOLINKER_GA_TEST_GAME_KEY and AUTOLINKER_GA_TEST_SECRET_KEY)" << std::endl;
 	std::cout << "  AutoLinkerTest mcp-self-test" << std::endl;
+	std::cout << "  AutoLinkerTest image-tool-batch-self-test" << std::endl;
 	std::cout << "  AutoLinkerTest plan-mode-self-test" << std::endl;
 	std::cout << "  AutoLinkerTest goal-mode-self-test" << std::endl;
 	std::cout << "  AutoLinkerTest ai-endpoint-config-self-test" << std::endl;
@@ -2316,13 +2317,15 @@ int main(int argc, char* argv[])
 		}
 	}
 
-	if (commandName == "mcp-self-test") {
+	if (commandName == "mcp-self-test" || commandName == "image-tool-batch-self-test") {
 		if (argc != 2) {
 			PrintUsage();
 			return EXIT_FAILURE;
 		}
 		char buffer[524288] = {};
-		const int result = AutoLinkerTest_RunAIChatMcpSelfTest(buffer, static_cast<int>(sizeof(buffer)));
+		const int result = commandName == "image-tool-batch-self-test"
+			? AutoLinkerTest_RunAIImageToolBatchSelfTest(buffer, static_cast<int>(sizeof(buffer)))
+			: AutoLinkerTest_RunAIChatMcpSelfTest(buffer, static_cast<int>(sizeof(buffer)));
 		if (result < 0) {
 			return PrintStringResult(commandName.c_str(), result, buffer);
 		}

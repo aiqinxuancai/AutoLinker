@@ -569,6 +569,7 @@
 	<ClCompile Include="src\AIChatGoalManager.cpp">
 	  <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
 	</ClCompile>
+    <ClCompile Include="src\AIChatHistoryAdapter.cpp" />
     <ClCompile Include="src\AIChatSessionStore.cpp" />
     <ClCompile Include="src\AIChatThemeManager.cpp">
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -643,6 +644,7 @@
     <ClInclude Include="src\AIChatMcpClient.h" />
     <ClInclude Include="src\AIChatMcpConfig.h" />
     <ClInclude Include="src\AIChatMcpConfigDialog.h" />
+    <ClInclude Include="src\AIChatHistoryAdapter.h" />
     <ClInclude Include="src\AIChatSessionStore.h" />
     <ClInclude Include="src\AIChatThemeManager.h" />
     <ClInclude Include="src\AIChatUserInputRequest.h" />

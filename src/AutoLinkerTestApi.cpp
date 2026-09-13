@@ -891,7 +891,8 @@ public:
 		BadRequestAlways,
 		ToolThenTransportFailure,
 		ToolThenForbiddenThenSuccess,
-		HangUntilDisconnect
+		HangUntilDisconnect,
+		ImageToolBatchThenSuccess
 	};
 
 	~MockIntegrationHttpServer()
@@ -1148,8 +1149,42 @@ private:
 		}
 	}
 
-	std::pair<int, std::string> BuildAiResponse(AiRoute route, int attempt) const
+	std::pair<int, std::string> BuildAiResponse(AiRoute route, int attempt, const std::string& body) const
 	{
+		if (aiScriptMode_.load() == AiScriptMode::ImageToolBatchThenSuccess) {
+			if (attempt == 1) {
+				nlohmann::json calls = nlohmann::json::array();
+				for (int i = 0; i < 3; ++i) {
+					calls.push_back({{"id", "image_" + std::to_string(i)}, {"type", "function"},
+						{"function", {{"name", "view_image"},
+						 {"arguments", nlohmann::json{{"path", "image_" + std::to_string(i) + ".png"}}.dump()}}}});
+				}
+				return {200, nlohmann::json{{"choices", nlohmann::json::array({
+					{{"message", {{"role", "assistant"}, {"content", ""}, {"tool_calls", calls}}},
+					 {"finish_reason", "tool_calls"}}
+				})}}.dump()};
+			}
+			const auto request = nlohmann::json::parse(body, nullptr, false);
+			if (request.is_object() && request.contains("messages")) {
+				const auto& messages = request["messages"];
+				for (size_t i = 0; i + 6 < messages.size(); ++i) {
+					if (messages[i].value("role", "") != "assistant" ||
+						!messages[i].contains("tool_calls")) continue;
+					bool valid = messages[i]["tool_calls"].size() == 3;
+					for (size_t j = 0; j < 3; ++j) {
+						const auto& tool = messages[i + 1 + j];
+						const auto& image = messages[i + 4 + j];
+						valid = valid && tool.value("role", "") == "tool" &&
+							tool.value("tool_call_id", "") == "image_" + std::to_string(j) &&
+							image.value("role", "") == "user" && image["content"].is_array() &&
+							image["content"].size() == 2 &&
+							image["content"][1].value("type", "") == "image_url";
+					}
+					if (valid) return {200, BuildSuccessfulAiResponse(route)};
+				}
+			}
+			return {400, R"({"error":{"message":"image tool batch must have three consecutive results followed by three images"}})"};
+		}
 		if (aiScriptMode_.load() == AiScriptMode::ToolThenTransportFailure) {
 			return attempt == 1
 				? std::make_pair(200, BuildToolAiResponse(route))
@@ -1324,7 +1359,8 @@ private:
 			}
 			const auto [status, responseBody] = BuildAiResponse(
 				aiRoute,
-				attempt);
+				attempt,
+				body);
 			const std::string response = BuildHttpResponse(status, responseBody, false);
 			send(client, response.data(), static_cast<int>(response.size()), 0);
 			return;
@@ -1525,6 +1561,64 @@ bool RunMcpMockRoundtripSelfTest(nlohmann::json& outCheck)
 		outCheck["error"] = "unknown exception";
 		return false;
 	}
+}
+
+// 通过真实聊天执行入口检查批量图片的 HTTP 消息顺序及检查点恢复。
+bool RunAIChatImageToolBatchSelfTest(nlohmann::json& outCheck)
+{
+	outCheck = {{"name", "openai_chat_image_tool_batch_http"}, {"ok", false}};
+	MockIntegrationHttpServer server;
+	std::string error;
+	if (!server.Start(error)) {
+		outCheck["error"] = error;
+		return false;
+	}
+	server.SetAiScriptMode(MockIntegrationHttpServer::AiScriptMode::ImageToolBatchThenSuccess);
+	const auto path = std::filesystem::temp_directory_path() /
+		std::format("autolinker_batch_image_{}_{}.png", GetCurrentProcessId(), GetTickCount64());
+	struct Cleanup {
+		std::filesystem::path path;
+		~Cleanup() { std::error_code ec; std::filesystem::remove(path, ec); }
+	} cleanup{path};
+	{
+		std::ofstream image(path, std::ios::binary);
+		image << "test image bytes";
+		if (!image.good()) return false;
+	}
+	AISettings settings;
+	settings.protocolType = AIProtocolType::OpenAI;
+	settings.baseUrl = server.BaseUrl();
+	settings.apiKey = "mock-key";
+	settings.model = "mock-model";
+	settings.imageInputMode = AIImageInputMode::Enabled;
+	settings.retryCount = 0;
+	settings.timeoutMs = 10000;
+	int executions = 0;
+	const auto toolCallback = [&](const std::string& name, const std::string&, bool& ok) {
+		++executions;
+		ok = name == "view_image";
+		const auto pathUtf8 = path.u8string();
+		return nlohmann::json{{"ok", ok}, {"_ai_image_attachments", nlohmann::json::array({
+			{{"asset_path", std::string(pathUtf8.begin(), pathUtf8.end())},
+			 {"mime_type", "image/png"}, {"detail", "high"}}
+		})}}.dump(-1, ' ', true);
+	};
+	AIChatRunCheckpoint checkpoint;
+	AIChatRunOptions options;
+	options.checkpointCallback = [&](const AIChatRunCheckpoint& value) { checkpoint = value; };
+	const auto result = AIService::ExecuteChatWithTools(
+		{{"user", "read three images", "", ""}}, settings, toolCallback, {}, {}, nullptr, options);
+	outCheck["initial_ok"] = result.ok;
+	outCheck["http_status"] = result.httpStatus;
+	// 保留原检查点，恢复回调不得修改正在被读取的恢复源。
+	const AIChatRunCheckpoint saved = checkpoint;
+	options.resumeCheckpoint = &saved;
+	const auto resumed = AIService::ExecuteChatWithTools(
+		{}, settings, toolCallback, {}, {}, nullptr, options);
+	outCheck["resume_ok"] = resumed.ok;
+	outCheck["tool_executions"] = executions;
+	outCheck["ok"] = result.ok && resumed.ok && executions == 3;
+	return outCheck.value("ok", false);
 }
 
 bool RunAIChatSharedRetryBudgetSelfTest(nlohmann::json& outCheck)
@@ -3232,6 +3326,18 @@ extern "C" int AutoLinkerTest_RunAIEndpointConfigSelfTest(char* buffer, int buff
 	return CopyStringToBuffer(AIService::BuildEndpointConfigSelfTestJson(), buffer, bufferSize);
 }
 
+extern "C" int AutoLinkerTest_RunAIImageToolBatchSelfTest(char* buffer, int bufferSize)
+{
+	nlohmann::json httpCheck;
+	RunAIChatImageToolBatchSelfTest(httpCheck);
+	const auto imageCheck = nlohmann::json::parse(AIService::BuildImageInputSelfTestJson());
+	const nlohmann::json report = {
+		{"ok", httpCheck.value("ok", false) && imageCheck.value("ok", false)},
+		{"checks", nlohmann::json::array({httpCheck, imageCheck})}
+	};
+	return CopyStringToBuffer(DumpJsonPrettySafe(report), buffer, bufferSize);
+}
+
 extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 {
 	nlohmann::json report = nlohmann::json::parse(AIChatMcpClient::BuildSelfTestReportJson(), nullptr, false);
@@ -3928,6 +4034,10 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	nlohmann::json mockRoundtripCheck;
 	RunMcpMockRoundtripSelfTest(mockRoundtripCheck);
 	report["checks"].push_back(mockRoundtripCheck);
+
+	nlohmann::json imageToolBatchCheck;
+	RunAIChatImageToolBatchSelfTest(imageToolBatchCheck);
+	report["checks"].push_back(std::move(imageToolBatchCheck));
 
 	nlohmann::json sharedRetryBudgetCheck;
 	RunAIChatSharedRetryBudgetSelfTest(sharedRetryBudgetCheck);

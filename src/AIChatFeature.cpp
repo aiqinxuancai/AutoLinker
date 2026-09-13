@@ -961,6 +961,8 @@ std::wstring EscapeJsSingleQuotedWide(const std::wstring& text)
 	for (wchar_t ch : text) {
 		switch (ch)
 		{
+		// WebView 的脚本参数以 NUL 结尾，二进制工具输出中的空字符必须转义。
+		case L'\0': out += L"\\u0000"; break;
 		case L'\\': out += L"\\\\"; break;
 		case L'\'': out += L"\\'"; break;
 		case L'\r': out += L"\\r"; break;
@@ -980,6 +982,8 @@ std::wstring EscapeJsDoubleQuotedWide(const std::wstring& text)
 	for (wchar_t ch : text) {
 		switch (ch)
 		{
+		// WebView 的脚本参数以 NUL 结尾，二进制工具输出中的空字符必须转义。
+		case L'\0': out += L"\\u0000"; break;
 		case L'\\': out += L"\\\\"; break;
 		case L'"': out += L"\\\""; break;
 		case L'\r': out += L"\\r"; break;
@@ -3329,12 +3333,25 @@ void SyncHistoryPresentation(ChatDialogContext* ctx)
 
 std::string BuildHistoryWebViewShellHtml();
 
-void ExecuteWebViewScript(ChatDialogContext* ctx, const std::wstring& script)
+void ExecuteWebViewScript(ChatDialogContext* ctx, const std::wstring& script, bool expectSuccess = false)
 {
 	if (ctx == nullptr || !ctx->webViewReady || !ctx->webViewContentReady || ctx->webView == nullptr || script.empty()) {
 		return;
 	}
-	ctx->webView->ExecuteScript(script.c_str(), nullptr);
+	const HRESULT hr = ctx->webView->ExecuteScript(script.c_str(),
+		Microsoft::WRL::Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+			[expectSuccess](HRESULT errorCode, LPCWSTR result) -> HRESULT {
+				if (FAILED(errorCode) || (expectSuccess && (result == nullptr || wcscmp(result, L"true") != 0))) {
+					Logger::Instance().Write("AI Chat", std::format(
+						"WebView script failed hr=0x{:08X} history_update={}",
+						static_cast<unsigned long>(errorCode), expectSuccess));
+				}
+				return S_OK;
+			}).Get());
+	if (FAILED(hr)) {
+		Logger::Instance().Write("AI Chat", std::format(
+			"WebView script dispatch failed hr=0x{:08X}", static_cast<unsigned long>(hr)));
+	}
 }
 
 void ApplyCurrentThemeToWebView(ChatDialogContext* ctx)
@@ -4056,6 +4073,8 @@ const AIChatStoredSessionListEntry* FindSessionMenuEntryById(const ChatDialogCon
 	return nullptr;
 }
 
+void FlushHistoryWebViewHtml(ChatDialogContext* ctx);
+
 void UpdateHistoryWebViewHtml(ChatDialogContext* ctx, const std::string& htmlLocal, const std::string& sessionId)
 {
 	if (ctx == nullptr) {
@@ -4063,33 +4082,41 @@ void UpdateHistoryWebViewHtml(ChatDialogContext* ctx, const std::string& htmlLoc
 	}
 	ctx->pendingHistoryHtml = htmlLocal;
 	ctx->pendingHistorySessionId = sessionId;
-	if (!ctx->webViewReady || ctx->webView == nullptr) {
+	if (!ctx->webViewReady || !ctx->webViewContentReady || ctx->webView == nullptr ||
+		ctx->webViewFlushScheduled) {
 		return;
 	}
-	ctx->webViewFlushScheduled = true;
+	// 合并待显示内容，但不重置已安排的定时器，避免持续输出导致刷新一直被推迟。
 	if (g_chatDialog != nullptr && IsWindow(g_chatDialog)) {
-		SetTimer(g_chatDialog, kHistoryWebViewFlushTimerId, 80, nullptr);
+		ctx->webViewFlushScheduled =
+			SetTimer(g_chatDialog, kHistoryWebViewFlushTimerId, 80, nullptr) != 0;
+		if (!ctx->webViewFlushScheduled) {
+			FlushHistoryWebViewHtml(ctx);
+		}
 	}
 }
 
 void FlushHistoryWebViewHtml(ChatDialogContext* ctx)
 {
-	if (ctx == nullptr || !ctx->webViewReady || ctx->webView == nullptr || !ctx->webViewContentReady) {
+	if (ctx == nullptr) {
+		return;
+	}
+	// 消费刷新任务后先释放调度状态，页面尚未就绪时也能在加载完成后重新安排。
+	ctx->webViewFlushScheduled = false;
+	if (g_chatDialog != nullptr && IsWindow(g_chatDialog)) {
+		KillTimer(g_chatDialog, kHistoryWebViewFlushTimerId);
+	}
+	if (!ctx->webViewReady || ctx->webView == nullptr || !ctx->webViewContentReady) {
 		return;
 	}
 
 	const std::wstring htmlWide = WideFromLocal(ctx->pendingHistoryHtml);
-	if (htmlWide.empty()) {
-		ctx->webViewFlushScheduled = false;
-		return;
-	}
-	ctx->webViewFlushScheduled = false;
-	std::wstring script = L"window.autolinkerSetChatHtml('";
+	std::wstring script = L"(function(){window.autolinkerSetChatHtml('";
 	script += EscapeJsSingleQuotedWide(htmlWide);
 	script += L"', '";
 	script += EscapeJsSingleQuotedWide(WideFromUtf8Text(ctx->pendingHistorySessionId));
-	script += L"');";
-	ExecuteWebViewScript(ctx, script);
+	script += L"');return true;})();";
+	ExecuteWebViewScript(ctx, script, true);
 }
 
 void TryInitializeHistoryWebView(HWND hWnd, ChatDialogContext* ctx)

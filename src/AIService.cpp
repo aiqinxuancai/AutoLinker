@@ -19,6 +19,7 @@
 #include "..\\thirdparty\\json.hpp"
 
 #include "AIChatMcpClient.h"
+#include "AIChatHistoryAdapter.h"
 #include "AIHttpTrace.h"
 #include "AIProviderCache.h"
 #include "AIToolCatalogGuard.h"
@@ -4830,6 +4831,52 @@ nlohmann::json BuildResponsesTextMessage(const std::string& role, const std::str
 	};
 }
 
+// 历史记录可能来自其他节点；在协议边界重建消息并转换工具调用，避免透传私有字段。
+void AppendResponsesContextMessage(const AIChatMessage& message, nlohmann::json& input)
+{
+	const std::string role = ToLowerAsciiCopy(AIService::Trim(message.role));
+	nlohmann::json raw;
+	if (TryParseRawChatMessageJson(message.rawMessageJsonUtf8, raw)) {
+		std::string ignoredResponseId;
+		if (TryGetResponsesPreviousResponseId(raw, ignoredResponseId)) {
+			return;
+		}
+		if (!raw.value("type", std::string()).empty() && IsResponsesInputItem(raw)) {
+			input.push_back(std::move(raw));
+			return;
+		}
+		if (role == "tool" && HasNonEmptyJsonString(raw, "tool_call_id")) {
+			input.push_back({{"type", "function_call_output"},
+				{"call_id", raw["tool_call_id"]},
+				{"output", HasNonEmptyJsonString(raw, "content")
+					? raw["content"].get<std::string>() : LocalToUtf8(message.content)}});
+			return;
+		}
+	}
+	if (role != "user" && role != "assistant") {
+		return;
+	}
+	nlohmann::json converted = BuildResponsesMessage(message);
+	// 原始字符串保留完整正文；附件仍由统一的多模态构造器处理。
+	if (message.attachments.empty() && raw.is_object() && HasNonEmptyJsonString(raw, "content")) {
+		converted = BuildResponsesTextMessage(role, raw["content"].get<std::string>());
+	}
+	input.push_back(std::move(converted));
+	if (role == "assistant" && raw.is_object() && raw.contains("tool_calls") && raw["tool_calls"].is_array()) {
+		for (const auto& call : raw["tool_calls"]) {
+			if (!call.is_object() || !HasNonEmptyJsonString(call, "id") ||
+				!call.contains("function") || !call["function"].is_object()) {
+				continue;
+			}
+			const auto& function = call["function"];
+			if (HasNonEmptyJsonString(function, "name") && HasNonEmptyJsonString(function, "arguments")) {
+				input.push_back({{"type", "function_call"}, {"call_id", call["id"]},
+					{"name", function["name"]}, {"arguments", function["arguments"]}});
+			}
+		}
+	}
+}
+
 void AppendResponsesOutputItemsToInput(const nlohmann::json& parsed, nlohmann::json& input)
 {
 	if (!input.is_array() || !parsed.contains("output") || !parsed["output"].is_array()) {
@@ -5212,19 +5259,7 @@ AIResult ExecuteCodexCompactionRequest(
 		operation = "openai-responses-compaction";
 		nlohmann::json input = nlohmann::json::array();
 		for (const AIChatMessage& message : controller.ContextMessages()) {
-			const std::string role = ToLowerAsciiCopy(AIService::Trim(message.role));
-			if (role == "system") {
-				continue;
-			}
-			nlohmann::json rawInputItem;
-			if (TryParseRawChatMessageJson(message.rawMessageJsonUtf8, rawInputItem) &&
-				IsResponsesInputItem(rawInputItem)) {
-				input.push_back(std::move(rawInputItem));
-				continue;
-			}
-			if (role == "user" || role == "assistant") {
-				input.push_back(BuildResponsesMessage(message));
-			}
+			AppendResponsesContextMessage(message, input);
 		}
 		input.push_back(BuildResponsesTextMessage("user", promptUtf8));
 		PrepareResponsesInputItemsForStatelessRequest(input);
@@ -5271,6 +5306,8 @@ AIResult ExecuteCodexCompactionRequest(
 				messages.push_back(BuildOpenAIChatMessage(message));
 			}
 		}
+		AIChatHistoryAdapter::ConvertResponsesItemsToChat(messages, IsDeepSeekCompatibleSettings(settings));
+		RepairOpenAIChatToolMessageSequence(messages);
 		messages.push_back({{"role", "user"}, {"content", promptUtf8}});
 		requestBody["model"] = LocalToUtf8(settings.model);
 		ApplyOpenAITemperatureIfSupported(requestBody, settings);
@@ -5505,6 +5542,21 @@ void AppendToolImagesToController(
 		"",
 		attachments
 	});
+}
+
+// 工具图片必须位于整批 tool 消息之后；请求与检查点共用同一批图片消息。
+void AppendOpenAIChatToolBatchImages(
+	nlohmann::json& requestMessages,
+	AIChatRunController& controller,
+	const std::vector<AIChatMessage>& imageMessages)
+{
+	for (const AIChatMessage& imageMessage : imageMessages) {
+		requestMessages.push_back(BuildOpenAIChatMessage(imageMessage));
+		controller.AppendContextMessage(imageMessage);
+	}
+	if (!imageMessages.empty()) {
+		controller.PublishCheckpoint();
+	}
 }
 
 AIChatResult ExecuteChatWithToolsClaude(
@@ -6303,22 +6355,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 
 	nlohmann::json input = nlohmann::json::array();
 	for (const AIChatMessage& msg : runController.ContextMessages()) {
-		const std::string role = ToLowerAsciiCopy(AIService::Trim(msg.role));
-		nlohmann::json rawInputItem;
-		if (TryParseRawChatMessageJson(msg.rawMessageJsonUtf8, rawInputItem)) {
-			std::string ignoredResponseId;
-			if (TryGetResponsesPreviousResponseId(rawInputItem, ignoredResponseId)) {
-				continue;
-			}
-			if (IsResponsesInputItem(rawInputItem)) {
-				input.push_back(std::move(rawInputItem));
-				continue;
-			}
-		}
-		if (role != "user" && role != "assistant") {
-			continue;
-		}
-		input.push_back(BuildResponsesMessage(msg));
+		AppendResponsesContextMessage(msg, input);
 	}
 
 	const std::string skillPromptLocal = BuildSkillRuntimePrompt(runController.ContextMessages());
@@ -7561,6 +7598,178 @@ std::string AIService::BuildImageInputSelfTestJson()
 		SupportsImageInput(explicitEnabled) &&
 		!SupportsImageInput(explicitDisabled);
 
+	// DeepSeek 切换到 Responses：保留正文、并行工具结果和图片，不发送私有推理字段。
+	{
+		const nlohmann::json deepseek = {{"role", "assistant"}, {"content", "before tools"},
+			{"reasoning_content", "private thinking"}, {"tool_calls", nlohmann::json::array({
+				{{"id", "call_a"}, {"type", "function"}, {"function", {{"name", "lookup"}, {"arguments", "{}"}}}},
+				{{"id", "call_b"}, {"type", "function"}, {"function", {{"name", "lookup"}, {"arguments", "{}"}}}}
+			})}};
+		const std::string original = deepseek.dump();
+		nlohmann::json input = nlohmann::json::array();
+		AppendResponsesContextMessage(BuildRawCheckpointMessage("assistant", "before tools", deepseek), input);
+		for (const auto& id : {"call_a", "call_b"}) {
+			AppendResponsesContextMessage(BuildRawCheckpointMessage("tool", "result",
+				{{"role", "tool"}, {"tool_call_id", id}, {"name", "lookup"}, {"content", "result"}}), input);
+		}
+		AppendResponsesContextMessage(withText, input);
+		AppendResponsesContextMessage(AIChatMessage{"user", "continue", "", ""}, input);
+		PrepareResponsesInputItemsForStatelessRequest(input);
+		report["checks"]["deepseek_to_responses_history"] = input.size() == 7 &&
+			input[0] == BuildResponsesTextMessage("assistant", "before tools") &&
+			input[1] == nlohmann::json({{"type", "function_call"}, {"call_id", "call_a"}, {"name", "lookup"}, {"arguments", "{}"}}) &&
+			input[2]["call_id"] == "call_b" && input[3] == nlohmann::json({{"type", "function_call_output"}, {"call_id", "call_a"}, {"output", "result"}}) &&
+			input[4]["call_id"] == "call_b" && input[5] == expectedResponses &&
+			input[6] == BuildResponsesTextMessage("user", "continue") &&
+			input.dump().find("reasoning_content") == std::string::npos &&
+			input.dump().find("tool_calls") == std::string::npos && deepseek.dump() == original;
+
+		nlohmann::json native = nlohmann::json::array();
+		const nlohmann::json reasoning = {{"type", "reasoning"}, {"id", "rs_old"},
+			{"encrypted_content", "encrypted"}, {"summary", nlohmann::json::array()}};
+		AppendResponsesContextMessage(BuildRawCheckpointMessage("assistant", "", reasoning), native);
+		AppendResponsesContextMessage(BuildRawCheckpointMessage("assistant", "",
+			{{"type", "previous_response_ref"}, {"response_id", "resp_old"}}), native);
+		AppendResponsesContextMessage(BuildRawCheckpointMessage("assistant", "",
+			{{"role", "assistant"}, {"content", nullptr}, {"reasoning_content", "thinking"},
+			 {"tool_calls", deepseek["tool_calls"]}}), native);
+		PrepareResponsesInputItemsForStatelessRequest(native);
+		auto expectedReasoning = reasoning;
+		expectedReasoning.erase("id");
+		report["checks"]["responses_native_reasoning_and_unpaired_deepseek_calls"] =
+			native == nlohmann::json::array({expectedReasoning, BuildResponsesTextMessage("assistant", "")});
+	}
+
+	// 混合会话反向转换：原生 DeepSeek 推理保留，GPT 并行工具批次和图片完整往返。
+	{
+		const nlohmann::json oldDeepSeek = {{"role", "assistant"}, {"content", "old answer"},
+			{"reasoning_content", "original deepseek reasoning"}};
+		const nlohmann::json responseText = {{"type", "message"}, {"role", "assistant"},
+			{"id", "msg_old"}, {"status", "completed"}, {"content", nlohmann::json::array({
+				{{"type", "output_text"}, {"text", "GPT text"}, {"annotations", nlohmann::json::array()}}
+			})}};
+		nlohmann::json mixed = nlohmann::json::array({oldDeepSeek,
+			{{"type", "reasoning"}, {"role", "assistant"}, {"content", "duplicated aggregate"},
+			 {"encrypted_content", "opaque"}, {"summary", nlohmann::json::array()}},
+			responseText,
+			{{"type", "previous_response_ref"}, {"response_id", "resp_old"}}
+		});
+		for (const auto& id : {"gpt_a", "gpt_b"}) {
+			mixed.push_back({{"type", "function_call"}, {"role", "assistant"},
+				{"content", "duplicated aggregate"}, {"call_id", id}, {"name", "lookup"}, {"arguments", "{}"}});
+		}
+		mixed.push_back({{"type", "function_call_output"}, {"call_id", "gpt_a"}, {"output", "first result"}});
+		mixed.push_back(expectedOpenAIChat);
+		mixed.push_back({{"type", "function_call_output"}, {"call_id", "gpt_b"}, {"output", "second result"}});
+		mixed.push_back({{"role", "user"}, {"content", "continue"}});
+		AIChatHistoryAdapter::ConvertResponsesItemsToChat(mixed, true);
+		const auto stats = RepairOpenAIChatToolMessageSequence(mixed);
+		const nlohmann::json expected = nlohmann::json::array({oldDeepSeek,
+			{{"role", "assistant"}, {"content", "GPT text"}, {"reasoning_content", ""},
+			 {"tool_calls", nlohmann::json::array({
+				{{"id", "gpt_a"}, {"type", "function"}, {"function", {{"name", "lookup"}, {"arguments", "{}"}}}},
+				{{"id", "gpt_b"}, {"type", "function"}, {"function", {{"name", "lookup"}, {"arguments", "{}"}}}}
+			 })}},
+			{{"role", "tool"}, {"tool_call_id", "gpt_a"}, {"content", "first result"}},
+			{{"role", "tool"}, {"tool_call_id", "gpt_b"}, {"content", "second result"}},
+			expectedOpenAIChat, {{"role", "user"}, {"content", "continue"}}
+		});
+		report["checks"]["responses_to_deepseek_mixed_history"] = mixed == expected && stats.removedMessages == 0;
+		auto twice = mixed;
+		AIChatHistoryAdapter::ConvertResponsesItemsToChat(twice, true);
+		report["checks"]["chat_history_conversion_idempotent"] = twice == mixed;
+
+		// 再切回 GPT，然后切回 DeepSeek：调用 ID、参数和结果不变。
+		nlohmann::json responsesRoundTrip = nlohmann::json::array();
+		for (const auto& item : mixed) {
+			if (item == expectedOpenAIChat) {
+				AppendResponsesContextMessage(withText, responsesRoundTrip);
+				continue;
+			}
+			AppendResponsesContextMessage(BuildRawCheckpointMessage(item.value("role", std::string()),
+				item.value("content", std::string()), item), responsesRoundTrip);
+		}
+		PrepareResponsesInputItemsForStatelessRequest(responsesRoundTrip);
+		// Responses 的助手输出明确标记为 message；用户图片由统一附件构造器构造。
+		for (auto& item : responsesRoundTrip) {
+			if (item.contains("role")) item["type"] = "message";
+		}
+		AIChatHistoryAdapter::ConvertResponsesItemsToChat(responsesRoundTrip, true);
+		const auto roundTripStats = RepairOpenAIChatToolMessageSequence(responsesRoundTrip);
+		// 原 DeepSeek 消息在实际会话中不会被覆盖；纯协议往返无法恢复已经过滤的推理内容。
+		// 连续助手文本合并到一个输出批次，工具调用和图片仍须精确保留。
+		report["checks"]["responses_chat_round_trip_tools"] = roundTripStats.removedMessages == 0 &&
+			responsesRoundTrip.size() == 5 && responsesRoundTrip[0]["tool_calls"] == expected[1]["tool_calls"] &&
+			responsesRoundTrip[1] == expected[2] && responsesRoundTrip[2] == expected[3] &&
+			responsesRoundTrip[3] == expected[4] && responsesRoundTrip[4] == expected[5];
+
+		nlohmann::json plain = nlohmann::json::array({responseText});
+		AIChatHistoryAdapter::ConvertResponsesItemsToChat(plain, false);
+		report["checks"]["responses_to_standard_chat_text"] =
+			plain == nlohmann::json::array({{{"role", "assistant"}, {"content", "GPT text"}}});
+	}
+
+	// 覆盖无图、单图、三图及中间工具失败的混合批次，并验证检查点恢复不丢消息。
+	for (const unsigned imageMask : {0u, 1u, 7u, 5u}) {
+		AISettings settings;
+		AIChatRunCheckpoint published;
+		AIChatRunOptions options;
+		options.checkpointCallback = [&published](const AIChatRunCheckpoint& checkpoint) {
+			published = checkpoint;
+		};
+		AIChatRunController controller(settings, {}, options);
+		nlohmann::json assistant = {{"role", "assistant"}, {"content", ""},
+			{"tool_calls", nlohmann::json::array()}};
+		std::vector<AIChatCheckpointToolCall> calls;
+		for (size_t i = 0; i < 3; ++i) {
+			const std::string id = "image_call_" + std::to_string(i);
+			assistant["tool_calls"].push_back({{"id", id}, {"type", "function"},
+				{"function", {{"name", "view_image"}, {"arguments", "{}"}}}});
+			calls.push_back({id, "view_image", "{}"});
+		}
+		controller.AppendContextMessage(BuildRawCheckpointMessage("assistant", "", assistant));
+		controller.BeginToolBatch(calls);
+		nlohmann::json batch = nlohmann::json::array({assistant});
+		std::vector<AIChatMessage> images;
+		for (size_t i = 0; i < calls.size(); ++i) {
+			const bool toolOk = imageMask != 5u || i != 1;
+			const std::string result = toolOk ? "ok" : "image unavailable";
+			nlohmann::json tool = {{"role", "tool"}, {"tool_call_id", calls[i].callId},
+				{"name", "view_image"}, {"content", result}};
+			batch.push_back(tool);
+			controller.CompleteToolCall(i, result, toolOk, BuildRawCheckpointMessage("tool", result, tool));
+			if ((imageMask & (1u << i)) != 0) {
+				images.push_back({"user", "Image returned by view_image.", "", "",
+					{i == 1 ? second : first}});
+			}
+		}
+		AppendOpenAIChatToolBatchImages(batch, controller, images);
+		nlohmann::json expected = nlohmann::json::array({assistant});
+		for (size_t i = 0; i < calls.size(); ++i) {
+			expected.push_back(batch[i + 1]);
+		}
+		for (const auto& image : images) {
+			expected.push_back(BuildOpenAIChatMessage(image));
+		}
+		const auto stats = RepairOpenAIChatToolMessageSequence(batch);
+		AIChatRunOptions resumeOptions;
+		resumeOptions.resumeCheckpoint = &published;
+		AIChatRunController resumed(settings, {}, resumeOptions);
+		nlohmann::json restored = nlohmann::json::array();
+		for (const AIChatMessage& message : resumed.ContextMessages()) {
+			nlohmann::json raw;
+			restored.push_back(TryParseRawChatMessageJson(message.rawMessageJsonUtf8, raw)
+				? raw : BuildOpenAIChatMessage(message));
+		}
+		const auto restoredStats = RepairOpenAIChatToolMessageSequence(restored);
+		report["checks"]["tool_batch_images_mask_" + std::to_string(imageMask)] =
+			filesWritten && batch == expected && restored == expected &&
+			batch.size() == 4 + images.size() && stats.removedMessages == 0 &&
+			restoredStats.removedMessages == 0 && published.toolCalls.size() == 3 &&
+			std::all_of(published.toolCalls.begin(), published.toolCalls.end(),
+				[](const AIChatCheckpointToolCall& call) { return call.completed; });
+	}
+
 	report["checks"]["unicode_asset_read"] = filesWritten && openAIChat == expectedOpenAIChat;
 	report["checks"]["openai_chat"] = openAIChat == expectedOpenAIChat;
 	report["checks"]["openai_responses"] = responses == expectedResponses;
@@ -8267,6 +8476,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		}
 		requestMessages.push_back(std::move(requestMessage));
 	}
+	AIChatHistoryAdapter::ConvertResponsesItemsToChat(requestMessages, IsDeepSeekCompatibleSettings(settings));
 	const OpenAIChatToolSequenceRepairStats repairStats = RepairOpenAIChatToolMessageSequence(requestMessages);
 	if (repairStats.removedMessages > 0) {
 		Logger::Instance().Write(
@@ -8538,6 +8748,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			}
 			runController.BeginToolBatch(std::move(checkpointCalls));
 
+			std::vector<AIChatMessage> toolBatchImages;
 			size_t toolCallIndex = 0;
 			for (const auto& toolCall : message["tool_calls"]) {
 				std::string callId;
@@ -8597,13 +8808,13 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 					BuildRawCheckpointMessage("tool", toolResultLocal, toolMessage));
 				requestMessages.push_back(std::move(toolMessage));
 				if (!toolExecution.attachments.empty()) {
-					requestMessages.push_back(BuildOpenAIChatMessage(AIChatMessage{
+					toolBatchImages.push_back(AIChatMessage{
 						"user", "Image returned by " + toolName + ".", "", "", toolExecution.attachments
-					}));
+					});
 				}
-				AppendToolImagesToController(runController, toolName, toolExecution.attachments);
 				++toolCallIndex;
 			}
+			AppendOpenAIChatToolBatchImages(requestMessages, runController, toolBatchImages);
 			ApplyPostToolRetryLimit(retry, runOptions);
 			if (runController.IsStalled()) {
 				result.paused = true;

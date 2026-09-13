@@ -38,6 +38,9 @@ AUTOLINKER_TEST_API int AutoLinkerTest_GetVersionText(char* buffer, int bufferSi
 // 返回 AI 对话配色设置载荷，用于验证内置配色与颜色字段。
 AUTOLINKER_TEST_API int AutoLinkerTest_GetAIChatThemeConfigPayload(char* buffer, int bufferSize);
 
+// 验证批量工具图片的消息顺序、HTTP 续轮和检查点恢复，无需 IDE 或外网。
+AUTOLINKER_TEST_API int AutoLinkerTest_RunAIImageToolBatchSelfTest(char* buffer, int bufferSize);
+
 // 执行 GameAnalytics 客户端无网络自检，并输出 JSON 结果。
 AUTOLINKER_TEST_API int AutoLinkerTest_RunGameAnalyticsSelfTest(char* buffer, int bufferSize);
 
