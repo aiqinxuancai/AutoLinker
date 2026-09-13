@@ -2136,7 +2136,6 @@ OpenAIUsageMetrics ParseOpenAIUsage(
 
 void RecordOpenAIUsage(
 	AIChatRunController& controller,
-	const AIChatRunOptions& runOptions,
 	const OpenAIUsageMetrics& metrics,
 	const char* tag)
 {
@@ -2155,10 +2154,8 @@ void RecordOpenAIUsage(
 	Logger::Instance().Write(
 		"AI",
 		std::format(
-			"[AI Chat][Cache] tag={} key_present={} key={} usage_reported={} cache_details_reported={} input_tokens={} cached_input_tokens={} cache_write_input_tokens={} cache_hit_percent={}",
+			"[AI Chat][Cache] tag={} usage_reported={} cache_details_reported={} input_tokens={} cached_input_tokens={} cache_write_input_tokens={} cache_hit_percent={}",
 			tag == nullptr ? "openai" : tag,
-			runOptions.promptCacheKey.empty() ? 0 : 1,
-			runOptions.promptCacheKey.empty() ? "<none>" : runOptions.promptCacheKey,
 			metrics.hasUsage ? 1 : 0,
 			metrics.hasCacheDetails ? 1 : 0,
 			metrics.inputTokens,
@@ -5009,9 +5006,6 @@ AIResult ExecuteTaskOpenAIResponses(
 	});
 	requestBody["stream"] = false;
 	requestBody["store"] = false;
-	if (!settings.model.empty()) {
-		requestBody["prompt_cache_key"] = AIService::BuildPromptCacheKey(settings.model);
-	}
 	ApplyThinkingConfigToOpenAIResponsesRequest(requestBody, settings);
 	NormalizeJsonStringsToUtf8InPlace(requestBody);
 
@@ -5078,7 +5072,6 @@ AIResult ExecuteTaskOpenAIWithPrompt(
 	requestBody["model"] = LocalToUtf8(settings.model);
 	ApplyOpenAITemperatureIfSupported(requestBody, settings);
 	requestBody["stream"] = false;
-	requestBody["prompt_cache_key"] = AIService::BuildPromptCacheKey(settings.model);
 	requestBody["messages"] = nlohmann::json::array({
 		{{"role", "system"}, {"content", LocalToUtf8(systemPrompt)}},
 		{{"role", "user"}, {"content", LocalToUtf8(inputText)}}
@@ -5242,7 +5235,6 @@ AIResult ExecuteCodexCompactionRequest(
 		requestBody["input"] = std::move(input);
 		requestBody["stream"] = false;
 		requestBody["store"] = false;
-		requestBody["prompt_cache_key"] = AIService::BuildPromptCacheKey(settings.model);
 		ApplyThinkingConfigToOpenAIResponsesRequest(requestBody, settings);
 	}
 	else {
@@ -5283,7 +5275,6 @@ AIResult ExecuteCodexCompactionRequest(
 		requestBody["model"] = LocalToUtf8(settings.model);
 		ApplyOpenAITemperatureIfSupported(requestBody, settings);
 		requestBody["stream"] = false;
-		requestBody["prompt_cache_key"] = AIService::BuildPromptCacheKey(settings.model);
 		requestBody["messages"] = std::move(messages);
 		ApplyThinkingConfigToOpenAIChatRequest(requestBody, settings);
 	}
@@ -6354,9 +6345,6 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		requestBody["parallel_tool_calls"] = true;
 		requestBody["stream"] = true;
 		requestBody["store"] = false;
-		if (!runOptions.promptCacheKey.empty()) {
-			requestBody["prompt_cache_key"] = runOptions.promptCacheKey;
-		}
 		ApplyThinkingConfigToOpenAIResponsesRequest(requestBody, roundSettings);
 		NormalizeJsonStringsToUtf8InPlace(requestBody);
 
@@ -6415,7 +6403,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 			statusCode,
 			responseBody);
 		if (retryableAttempt) {
-			RecordOpenAIUsage(runController, runOptions, streamState.usage, "openai-responses-chat");
+			RecordOpenAIUsage(runController, streamState.usage, "openai-responses-chat");
 			const DWORD retryDelayMs = ComputeOpenAIResponsesRetryDelayMs(
 				streamState,
 				retry.RetriesPerformed() + 1,
@@ -6498,10 +6486,10 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		if (usage != nullptr) {
 			const OpenAIUsageMetrics metrics = ParseOpenAIUsage(
 				*usage, "input_tokens", "output_tokens", "total_tokens");
-			RecordOpenAIUsage(runController, runOptions, metrics, "openai-responses-chat");
+			RecordOpenAIUsage(runController, metrics, "openai-responses-chat");
 		}
 		else if (streamState.usage.hasUsage) {
-			RecordOpenAIUsage(runController, runOptions, streamState.usage, "openai-responses-chat");
+			RecordOpenAIUsage(runController, streamState.usage, "openai-responses-chat");
 		}
 		if (!toolCalls.empty() || !textUtf8.empty()) {
 			runController.RecordModelRound();
@@ -8310,9 +8298,6 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		requestBody["stream"] = true;
 		requestBody["stream_options"] = { {"include_usage", true} };
 		requestBody["messages"] = requestMessages;
-		if (!runOptions.promptCacheKey.empty()) {
-			requestBody["prompt_cache_key"] = runOptions.promptCacheKey;
-		}
 		requestBody["tools"] = tools;
 		if (!IsDeepSeekCompatibleSettings(settings)) {
 			requestBody["tool_choice"] = "auto";
@@ -8392,7 +8377,6 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		if (retryableAttempt) {
 			RecordOpenAIUsage(
 				runController,
-				runOptions,
 				OpenAIUsageMetrics{
 					streamState.hasUsage,
 					streamState.promptTokens,
@@ -8437,7 +8421,6 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 
 		RecordOpenAIUsage(
 			runController,
-			runOptions,
 			OpenAIUsageMetrics{
 				streamState.hasUsage,
 				streamState.promptTokens,
@@ -8484,7 +8467,6 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 			if (parsed.contains("usage") && parsed["usage"].is_object()) {
 				RecordOpenAIUsage(
 					runController,
-					runOptions,
 					ParseOpenAIUsage(
 						parsed["usage"],
 						"prompt_tokens",
@@ -10191,34 +10173,6 @@ std::string AIService::Trim(const std::string& text)
 		--end;
 	}
 	return text.substr(begin, end - begin);
-}
-
-std::string AIService::BuildPromptCacheKey(const std::string& sessionId)
-{
-	const std::string trimmed = Trim(sessionId);
-	std::string key = "autolinker:v1:";
-	for (const unsigned char ch : trimmed) {
-		if (std::isalnum(ch) != 0 || ch == '-' || ch == '_' || ch == '.' || ch == ':') {
-			key.push_back(static_cast<char>(ch));
-		}
-		else if (key.back() != '-') {
-			key.push_back('-');
-		}
-	}
-	if (key == "autolinker:v1:") {
-		key += "default";
-	}
-	if (key.size() <= 64) {
-		return key;
-	}
-
-	// 超长或历史异常会话 ID 使用稳定摘要，避免截断造成缓存键碰撞。
-	std::uint64_t hash = 14695981039346656037ull;
-	for (const unsigned char ch : trimmed) {
-		hash ^= ch;
-		hash *= 1099511628211ull;
-	}
-	return std::format("autolinker:v1:{:016X}", hash);
 }
 
 std::string AIService::BuildEndpoint(const std::string& baseUrl)

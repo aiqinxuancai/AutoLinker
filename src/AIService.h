@@ -165,8 +165,6 @@ struct AIChatRunCheckpoint {
 
 // AI 长任务运行选项。
 struct AIChatRunOptions {
-	// 同一内置聊天会话的稳定提示缓存分区键；为空时不发送缓存键。
-	std::string promptCacheKey;
 	const AIChatRunCheckpoint* resumeCheckpoint = nullptr;
 	std::function<void(const AIChatRunCheckpoint& checkpoint)> checkpointCallback;
 	// 工具完成后的模型续轮最多重试次数；负数表示沿用端点配置。
@@ -275,8 +273,6 @@ public:
 	// 解析 HTTP 错误 JSON，字段按 UTF-8 返回，避免依赖固定中文文案。
 	static AIHttpErrorDetails ParseHttpErrorDetails(int statusCode, const std::string& responseBody);
 	static std::string NormalizeModelOutputToCode(const std::string& modelText);
-	// 根据持久化会话 ID 生成符合 API 长度限制的稳定缓存键。
-	static std::string BuildPromptCacheKey(const std::string& sessionId);
 	static std::string Trim(const std::string& text);
 
 private:

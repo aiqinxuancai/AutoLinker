@@ -302,7 +302,6 @@ struct ChatDialogContext {
 struct AIChatAsyncRequest {
 	unsigned long long requestId = 0;
 	AISettings settings = {};
-	std::string promptCacheKey;
 	std::string sourceFilePathLocal;
 	std::vector<AIChatMessage> contextMessages;
 	std::shared_ptr<AIChatRequestCancellation> cancellation;
@@ -6849,7 +6848,6 @@ void RunAIChatWorker(void* pParams)
 			}
 			else {
 				AIChatRunOptions runOptions;
-				runOptions.promptCacheKey = request->promptCacheKey;
 				runOptions.streamContentBytesCallback = [requestId = request->requestId](size_t bytes) {
 					{
 						std::lock_guard<std::mutex> guard(g_session.mutex);
@@ -7092,7 +7090,6 @@ bool StartChatRequest(
 
 		request->requestId = g_session.nextRequestId++;
 		request->settings = settings;
-		request->promptCacheKey = AIService::BuildPromptCacheKey(g_session.activeSessionId);
 		request->sourceFilePathLocal = g_session.sourceFilePathLocal;
 		request->contextMessages = BuildContextMessagesLocked(g_session);
 		request->cancellation = std::make_shared<AIChatRequestCancellation>();
