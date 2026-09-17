@@ -4117,11 +4117,6 @@ bool IsSelectionReplacePreferredProgramTreeItem(unsigned int itemData)
 	}
 }
 
-bool IsProjectCacheVerificationPreferredProgramTreeItem(unsigned int itemData)
-{
-	return (itemData >> 28) == 6;
-}
-
 bool IsEditorPageTypeCompatibleWithProgramTreeItem(unsigned int itemData, unsigned int pageType)
 {
 	switch (itemData >> 28) {
@@ -8814,11 +8809,21 @@ bool ReplaceRealPageCodeByEditorObject(
 bool ReplaceRealPageCodeByProgramTreeItemData(
 	unsigned int itemData,
 	std::uintptr_t moduleBase,
-	const std::string& newPageCode,
+	const std::string& requestedPageCode,
 	const std::string* rollbackPageCode,
 	bool preserveConstLongText,
 	NativeRealPageAccessResult* outResult)
 {
+	// 常量文本缺少版本头时，IDE 会按旧版声明布局解析并插入额外空槽。
+	// 在进入长文本保护和原生解析之前补齐头部，保留调用方提供的已有版本。
+	const std::string trimmedCode = TrimAsciiCopyLocal(requestedPageCode);
+	constexpr size_t versionDirectiveLength = sizeof(".版本") - 1;
+	const bool hasVersionHeader = trimmedCode.starts_with(".版本") &&
+		(trimmedCode.size() == versionDirectiveLength ||
+		 std::isspace(static_cast<unsigned char>(trimmedCode[versionDirectiveLength])) != 0);
+	const std::string newPageCode = (itemData >> 28) == 6 && !hasVersionHeader
+		? BuildDirectWholePageHeaderText() + requestedPageCode
+		: requestedPageCode;
 	AppendPageEditTraceLine(
 		"ReplaceByTreeItem.begin|item_data=" + std::to_string(itemData) +
 		"|item_type=" + std::to_string(itemData >> 28) +
@@ -9007,8 +9012,8 @@ bool ReplaceRealPageCodeByProgramTreeItemData(
 	NativeRealPageAccessResult localResult{};
 	const bool deleteSelectionFirst =
 		!IsSelectionReplacePreferredProgramTreeItem(itemData);
-	const bool skipVerifyRead =
-		IsProjectCacheVerificationPreferredProgramTreeItem(itemData);
+	// 最终写入必须读回核验；缓存或请求文本不能充当真实源码及其哈希。
+	const bool skipVerifyRead = false;
 	const bool ok = ReplaceRealPageCodeByEditorObjectInternal(
 		editorObject,
 		moduleBase,

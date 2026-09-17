@@ -4971,7 +4971,15 @@ std::string ExecuteFileMappedRealPageToolForAI(
 		const bool fixedTableHasNoDeclaration =
 			(mirrorReadOk && !HasConcreteFixedTableDeclarationForAI(mirrorCode, item.kind)) ||
 			(!mirrorReadOk && mirrorReadError.rfind("file not found in workspace mirror:", 0) == 0);
-		if (fixedTableHasNoDeclaration) {
+		// 固定表写入不会更新镜像文件；镜像为空不能证明 IDE 真实表仍为空。
+		// 首次创建后以真实声明为准，避免后续局部编辑再次插入默认条目。
+		std::string liveTableCode;
+		std::string liveTableTrace;
+		std::string liveTableError;
+		const bool liveTableHasDeclaration = fixedTableHasNoDeclaration &&
+			TryReadFixedTableRealPageCodeForAI(programItem, liveTableCode, liveTableTrace, liveTableError) &&
+			HasConcreteFixedTableDeclarationForAI(liveTableCode, item.kind);
+		if (fixedTableHasNoDeclaration && !liveTableHasDeclaration) {
 			fixedTableCreateAttempted = true;
 			WorkspaceMirror::InvalidateMirror();
 			std::string createError;
