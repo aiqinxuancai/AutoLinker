@@ -3612,14 +3612,8 @@ nlohmann::json SanitizeGeminiSchema(const nlohmann::json& schema)
 	copyNumber("maxItems");
 	copyNumber("minProperties");
 	copyNumber("maxProperties");
-	if (schema.contains("additionalProperties")) {
-		if (schema["additionalProperties"].is_boolean()) {
-			out["additionalProperties"] = schema["additionalProperties"];
-		}
-		else if (schema["additionalProperties"].is_object()) {
-			out["additionalProperties"] = SanitizeGeminiSchema(schema["additionalProperties"]);
-		}
-	}
+	// parameters 使用 Gemini 原生 Schema，不接受 JSON Schema 的 additionalProperties。
+	// 仅在协议转换时忽略此约束，公共工具定义仍保留它用于本地参数校验。
 	if (schema.contains("items") && schema["items"].is_object()) {
 		out["items"] = SanitizeGeminiSchema(schema["items"]);
 	}
@@ -10208,6 +10202,43 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"content_count", history.size()},
 			{"response_part_count", history.size() > 2 ? history[2]["parts"].size() : 0},
 			{"model_content_preserved", history.size() > 1 && history[1] == originalModelContent}
+		});
+		allOk = allOk && ok;
+	}
+
+	{
+		const nlohmann::json leaf = {
+			{"type", "object"},
+			{"additionalProperties", false},
+			{"properties", {{"additionalProperties", {{"type", "string"}}}}},
+			{"required", nlohmann::json::array({"additionalProperties"})}
+		};
+		const nlohmann::json expectedLeaf = {
+			{"type", "object"},
+			{"properties", {{"additionalProperties", {{"type", "string"}}}}},
+			{"required", nlohmann::json::array({"additionalProperties"})}
+		};
+		bool ok = true;
+		for (const auto& additional : nlohmann::json::array({false, true, {{"type", "string"}}})) {
+			const nlohmann::json schema = {
+				{"type", "object"}, {"additionalProperties", additional},
+				{"properties", {
+					{"nested", leaf},
+					{"rows", {{"type", "array"}, {"items", leaf}}},
+					{"choice", {{"anyOf", nlohmann::json::array({leaf})}}}
+				}}
+			};
+			const nlohmann::json original = schema;
+			const nlohmann::json sanitized = SanitizeGeminiSchema(schema);
+			ok = ok && !sanitized.contains("additionalProperties") &&
+				sanitized["properties"]["nested"] == expectedLeaf &&
+				sanitized["properties"]["rows"]["items"] == expectedLeaf &&
+				sanitized["properties"]["choice"]["anyOf"][0] == expectedLeaf &&
+				schema == original;
+		}
+		checks.push_back({
+			{"name", "gemini_tool_schema_additional_properties_compatibility"},
+			{"ok", ok}
 		});
 		allOk = allOk && ok;
 	}
