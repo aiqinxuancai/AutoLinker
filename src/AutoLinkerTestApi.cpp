@@ -27,6 +27,7 @@
 #include "AIChatToolPolicy.h"
 #include "AIImageAttachment.h"
 #include "AIService.h"
+#include "BlackMoonCompileCoordinator.h"
 #include "AutoLinkerVersion.h"
 #include "AutoLinkerSettingsDialog.h"
 #include "ExecCommandSessionManager.h"
@@ -3324,6 +3325,11 @@ extern "C" int AutoLinkerTest_RunGoalModeSelfTest(char* buffer, int bufferSize)
 extern "C" int AutoLinkerTest_RunAIEndpointConfigSelfTest(char* buffer, int bufferSize)
 {
 	return CopyStringToBuffer(AIService::BuildEndpointConfigSelfTestJson(), buffer, bufferSize);
+}
+
+extern "C" int AutoLinkerTest_RunBlackMoonSelfTest(char* buffer, int bufferSize)
+{
+	return CopyStringToBuffer(BlackMoonCompileCoordinator::SelfTest().dump(), buffer, bufferSize);
 }
 
 extern "C" int AutoLinkerTest_RunAIImageToolBatchSelfTest(char* buffer, int bufferSize)

@@ -37,6 +37,7 @@ struct HeadlessLauncherOptions {
 	std::string resultPath;
 	std::string target = "auto";
 	bool staticCompile = false;
+	bool staticCompileSpecified = false;
 	std::string compiler = "eide";
 	std::string blackMoonMode;
 	bool hideWindow = true;
@@ -964,6 +965,7 @@ int RunHeadlessCompile(int argc, char* argv[])
 		const std::string arg = argv[i];
 		if (arg == "--static") {
 			options.staticCompile = true;
+			options.staticCompileSpecified = true;
 		}
 		else if (arg == "--show-window") {
 			options.hideWindow = false;
@@ -1036,7 +1038,8 @@ int RunHeadlessCompile(int argc, char* argv[])
 	appendCommandLineArg(std::to_wstring(options.timeoutSeconds));
 	appendCommandLineArg(L"--autolinker-invocation-id");
 	appendCommandLineArg(Utf8ToWide(options.invocationId));
-	appendCommandLineArg(options.staticCompile ? L"--autolinker-static" : L"--autolinker-no-static");
+	if (options.staticCompileSpecified) appendCommandLineArg(L"--autolinker-static");
+	else if (_stricmp(options.compiler.c_str(), "blackmoon") != 0) appendCommandLineArg(L"--autolinker-no-static");
 	appendCommandLineArg(L"--autolinker-compiler");
 	appendCommandLineArg(Utf8ToWide(options.compiler));
 	if (!options.blackMoonMode.empty()) {
@@ -2196,6 +2199,7 @@ void PrintUsage()
 	std::cout << "  AutoLinkerTest gemini-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest claude-model-test <api-key> <model> [base-url] [--out result.json]" << std::endl;
 	std::cout << "  AutoLinkerTest headless-compile <e.exe> <input.e> <output> [--target auto|win_exe|win_console_exe|win_dll|ecom] [--static] [--blackmoon asm|cxx|vcxx] [--result path] [--timeout seconds]" << std::endl;
+	std::cout << "  AutoLinkerTest blackmoon-self-test  (no IDE; configuration and parameter regression)" << std::endl;
 }
 
 }
@@ -2212,6 +2216,13 @@ int main(int argc, char* argv[])
 	}
 	if (commandName == "headless-compile") {
 		return RunHeadlessCompile(argc, argv);
+	}
+	if (commandName == "blackmoon-self-test") {
+		std::vector<char> buffer(1024 * 1024);
+		const int count = AutoLinkerTest_RunBlackMoonSelfTest(buffer.data(), static_cast<int>(buffer.size()));
+		if (count < 0) return EXIT_FAILURE;
+		std::cout << buffer.data() << std::endl;
+		return nlohmann::json::parse(buffer.data()).value("ok", false) ? EXIT_SUCCESS : EXIT_FAILURE;
 	}
 	if (commandName == "deepseek-model-test") {
 		return RunDeepSeekModelIntegrationTest(argc, argv);

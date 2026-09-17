@@ -21,6 +21,8 @@
 #include "ConfigManager.h"
 #include "CompileConcurrencyManager.h"
 #include "CompileDiagnostics.h"
+#include "BlackMoonCompileCoordinator.h"
+#include "SilentCompileOutputPathLease.h"
 #include "DependencyCatalogCache.h"
 #include "IDEFacade.h"
 #include "EideEditorObjectResolver.h"
@@ -5542,13 +5544,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["project_type_label"] = LocalToUtf8Text(projectTypeLabel);
 		r["project_supported_compile_modes"] = compileModes;
 		r["project_supported_compile_targets"] = compileTargets;
-		HMODULE blackMoonModule = GetModuleHandleA("BlackMoon.fne");
-		if (blackMoonModule == nullptr) blackMoonModule = GetModuleHandleA("BlackMoon.dll");
-		const bool blackMoonLoaded = blackMoonModule != nullptr &&
-			GetProcAddress(blackMoonModule, "BMCompile") != nullptr &&
-			GetProcAddress(blackMoonModule, "GetBMVersion") != nullptr;
-		r["blackmoon_plugin_loaded"] = blackMoonLoaded;
-		r["blackmoon_supported_compile_modes"] = nlohmann::json::array({"asm", "cxx", "vcxx"});
+		r.update(BlackMoonCompileCoordinator::Inspect());
 		r["project_default_compile_target"] = projectType == "ecom"
 			? "win_console_exe"
 			: projectType;
@@ -5607,6 +5603,11 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			return JsonToLocalTextForAI(r);
 		}
 
+		nlohmann::json argumentError;
+		if (!BlackMoonCompileCoordinator::ValidateArguments(args, argumentError)) {
+			return JsonToLocalTextForAI(argumentError);
+		}
+		const bool useBlackMoon = args["compiler"] == "blackmoon";
 		const std::string requestedTarget = args.contains("target") && args["target"].is_string()
 			? ToLowerAsciiCopyLocal(args["target"].get<std::string>())
 			: std::string();
@@ -5617,7 +5618,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		if (TrimAsciiCopy(outputPath).empty()) {
 			return R"({"ok":false,"error":"output_path is required"})";
 		}
-		if (target == "auto") {
+		if (target == "auto" || useBlackMoon) {
 			std::string mainWindowTitle;
 			if (HWND mainWindow = IDEFacade::Instance().GetMainWindow();
 				mainWindow != nullptr && IsWindow(mainWindow)) {
@@ -5625,7 +5626,15 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 				GetWindowTextA(mainWindow, title, static_cast<int>(sizeof(title)));
 				mainWindowTitle = title;
 			}
-			target = ResolveAutoCompileTarget(mainWindowTitle);
+			const auto actualTarget = ResolveAutoCompileTarget(mainWindowTitle);
+			if (useBlackMoon && (mainWindowTitle.find(" Windows易语言模块 ") != std::string::npos ||
+				(target != "auto" && target != actualTarget))) {
+				return JsonToLocalTextForAI(nlohmann::json({{"ok", false},
+					{"error", "blackmoon_target_override_not_supported"}, {"requested_target", target},
+					{"actual_target", mainWindowTitle.find(" Windows易语言模块 ") != std::string::npos ? "ecom" : actualTarget},
+					{"hint", "BlackMoon compiles the current EXE/DLL project type. Use target=auto for an EXE/DLL project; use compiler=eide for module projects or target conversion."}}));
+			}
+			target = actualTarget;
 			if (target.empty()) {
 				nlohmann::json r;
 				r["ok"] = false;
@@ -5656,35 +5665,9 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			return JsonToLocalTextForAI(r);
 		}
 		const bool staticCompile = ResolveCompileStaticMode(args, kind);
-		std::string blackMoonMode;
-		if (args.contains("blackmoon_mode") && args["blackmoon_mode"].is_string()) {
-			blackMoonMode = ToLowerAsciiCopyLocal(args["blackmoon_mode"].get<std::string>());
-		}
-		else if (args.contains("compile_mode") && args["compile_mode"].is_string()) {
-			blackMoonMode = ToLowerAsciiCopyLocal(args["compile_mode"].get<std::string>());
-		}
-		const bool useBlackMoon =
-			(args.contains("compiler") && args["compiler"].is_string() &&
-			 ToLowerAsciiCopyLocal(args["compiler"].get<std::string>()) == "blackmoon") ||
-			!blackMoonMode.empty();
-		IDEFacade::BlackMoonCompileMode blackMoonCompileMode = IDEFacade::BlackMoonCompileMode::Vcxx;
-		if (useBlackMoon) {
-			if (blackMoonMode == "asm" || blackMoonMode == "assembly" || blackMoonMode == "0" || blackMoonMode == "汇编模式") {
-				blackMoonCompileMode = IDEFacade::BlackMoonCompileMode::Asm;
-			}
-			else if (blackMoonMode == "c" || blackMoonMode == "cxx" || blackMoonMode == "c/c++" || blackMoonMode == "1" || blackMoonMode == "c/c++模式") {
-				blackMoonCompileMode = IDEFacade::BlackMoonCompileMode::Cxx;
-			}
-			else if (blackMoonMode == "" || blackMoonMode == "vc" || blackMoonMode == "vcxx" || blackMoonMode == "vc++" || blackMoonMode == "2" || blackMoonMode == "vc++模式") {
-				blackMoonCompileMode = IDEFacade::BlackMoonCompileMode::Vcxx;
-			}
-			else {
-				nlohmann::json r;
-				r["ok"] = false;
-				r["error"] = "unsupported blackmoon compile mode";
-				return JsonToLocalTextForAI(r);
-			}
-		}
+		const std::string blackMoonMode = args.value("blackmoon_mode", std::string());
+		const auto blackMoonCompileMode = blackMoonMode == "asm" ? IDEFacade::BlackMoonCompileMode::Asm :
+			blackMoonMode == "cxx" ? IDEFacade::BlackMoonCompileMode::Cxx : IDEFacade::BlackMoonCompileMode::Vcxx;
 
 		std::string normalizedPath;
 		std::string normalizeDiagnostics;
@@ -5724,9 +5707,12 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			IDEFacade::Instance().GetOutputWindowText(preOutputText) && preOutputText.empty();
 		CompileOutputCaptureSession outputCaptureSession(outputControlCleared);
 
+		// 配置会话覆盖调用及产物确认阶段；路径请求在所有退出路径上自动取消。
+		BlackMoonCompileCoordinator blackMoonSession;
+		SilentCompileOutputPathLease outputPathLease;
 		std::string diagnostics;
 		const bool compileOk = useBlackMoon
-			? IDEFacade::Instance().CompileWithBlackMoonOutputPath(
+			? blackMoonSession.Invoke(
 				kind, outputPath, blackMoonCompileMode, &normalizedPath, &diagnostics)
 			: IDEFacade::Instance().CompileWithOutputPath(
 				kind, outputPath, staticCompile, &normalizedPath, &diagnostics);
@@ -5790,13 +5776,20 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		};
 
 		if (!compileOk) {
+			std::string restoreError;
+			const bool restored = blackMoonSession.Finish(restoreError);
 			// 编译入口调用失败不等于源码报错，不读取或操作当前编辑器。
 			const CompileOutputSelection outputCapture = outputCaptureSession.Finish(preOutputText);
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = diagnostics.empty() ? "compile_with_output_path_failed" : diagnostics;
 			r["target"] = target;
-			r["static_compile"] = staticCompile;
+			r["static_compile"] = useBlackMoon ? nlohmann::json(nullptr) : nlohmann::json(staticCompile);
+			r["backend_invoked"] = false;
+			if (useBlackMoon) {
+				r["config_restored"] = restored;
+				if (!restored) r["config_restore_error"] = restoreError;
+			}
 			r["compiler"] = useBlackMoon ? "blackmoon" : "eide";
 			if (useBlackMoon) r["blackmoon_mode"] = blackMoonMode.empty() ? "vcxx" : blackMoonMode;
 			r["output_path"] = LocalToUtf8Text(normalizedPath);
@@ -5826,6 +5819,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		}
 
 		std::string compileWaitOutcome = "not_required";
+		bool outputPathInjected = WasSilentCompileOutputPathRequestConsumed();
 		long long compileWaitElapsedMs = 0;
 		if (diagnostics == "compile_invoked_dialog_pending" ||
 			diagnostics == "compile_invoked_dialog_suppressed" ||
@@ -5833,9 +5827,9 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			diagnostics == "blackmoon_compile_invoked_dialog_suppressed") {
 			const auto waitStartedAt = std::chrono::steady_clock::now();
 			Logger::Instance().WriteAndIde("Tool", std::format(
-				"compile_artifact_wait_start output={} stage=artifact_confirmation timeout_ms=30000",
+				"compile_artifact_wait_start output={} stage=artifact_confirmation timeout_ms=120000",
 				normalizedPath));
-			const auto waitDeadline = waitStartedAt + std::chrono::seconds(30);
+			const auto waitDeadline = waitStartedAt + std::chrono::seconds(120);
 			compileWaitOutcome = "timeout";
 			bool outputFileReadySeen = false;
 			std::chrono::steady_clock::time_point outputFileReadySince = {};
@@ -5863,7 +5857,8 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 
 				const bool requestConsumed = WasSilentCompileOutputPathRequestConsumed();
 				if (requestConsumed) {
-					diagnostics = "compile_invoked_dialog_suppressed";
+					outputPathInjected = true;
+					diagnostics = useBlackMoon ? "blackmoon_compile_invoked_dialog_suppressed" : "compile_invoked_dialog_suppressed";
 				}
 				if (!IsSilentCompileOutputPathRequestActive() && !requestConsumed) {
 					compileWaitOutcome = "request_inactive";
@@ -5913,8 +5908,10 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 				normalizedPath,
 				compileWaitOutcome,
 				compileWaitElapsedMs));
-			CancelSilentCompileOutputPathRequest();
+			outputPathInjected = outputPathInjected || WasSilentCompileOutputPathRequestConsumed();
 		}
+		std::string restoreError;
+		const bool configRestored = blackMoonSession.Finish(restoreError);
 
 		// 只有明确收到编译错误输出后才读取错误位置；超时/请求失效不代表
 		// IDE 已结束编译，不能继续执行编辑器操作来补充可选诊断。
@@ -5938,10 +5935,17 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 
 		nlohmann::json r;
 		const bool artifactVerified = outputFileExists && outputFileModifiedAfterCompile;
-		r["ok"] = artifactVerified;
+		r["ok"] = artifactVerified && configRestored;
+		r["backend_invoked"] = true;
+		r["output_path_injected"] = outputPathInjected;
+		if (useBlackMoon) {
+			r["config_restored"] = configRestored;
+			r["effective_target"] = target;
+			r["target_controlled_by_backend"] = false;
+		}
 		r["requested_target"] = requestedTarget;
 		r["target"] = target;
-		r["static_compile"] = staticCompile;
+		r["static_compile"] = useBlackMoon ? nlohmann::json(nullptr) : nlohmann::json(staticCompile);
 		r["compiler"] = useBlackMoon ? "blackmoon" : "eide";
 		if (useBlackMoon) r["blackmoon_mode"] = blackMoonMode.empty() ? "vcxx" : blackMoonMode;
 		r["output_path"] = LocalToUtf8Text(normalizedPath);
@@ -5982,9 +5986,13 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		r["caret_page_name"] = LocalToUtf8Text(caretPageName);
 		r["caret_page_type"] = LocalToUtf8Text(caretPageType);
 		if (!artifactVerified) {
-			r["error"] = "compile artifact was not created or updated";
+			r["error"] = !useBlackMoon ? "compile artifact was not created or updated" :
+				compileWaitOutcome == "compile_error_output" ? "blackmoon_compile_error_output" :
+				!outputPathInjected ? "blackmoon_output_path_not_consumed" : "blackmoon_artifact_not_updated";
+			r["hint"] = "Inspect output_window_text and diagnostics. Verify the plugin, project target and output path; do not treat backend_invoked as compilation success.";
 		}
-		outOk = artifactVerified;
+		if (!configRestored) { r["error"] = restoreError; r["config_restore_error"] = restoreError; }
+		outOk = artifactVerified && configRestored;
 		Logger::Instance().Write("Tool", std::format(
 			"compile_result_collect_end stage=complete artifact_verified={} wait_outcome={}",
 			artifactVerified, compileWaitOutcome));
@@ -6044,6 +6052,7 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 		ResolveAutoCompileTarget(moduleWindowTitle) == "win_console_exe" &&
 		ResolveAutoCompileTarget("Demo - Windows窗口程序 - Test") == "win_exe";
 	const auto diagnosticsCheck = nlohmann::json::parse(CompileDiagnostics::BuildSelfTestJson());
+	const auto blackMoonCheck = BlackMoonCompileCoordinator::SelfTest();
 	nlohmann::json outputCaptureCheck = nlohmann::json::parse(
 		IdeCompileOutputCapture::BuildSelfTestJson(),
 		nullptr,
@@ -6131,7 +6140,8 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 			staticCompileDefaultsPassed && autoCompileTargetsPassed &&
 			outputCaptureCheckPassed && dialogGuardCheckPassed &&
 			logStoreCheckPassed && outputControlCaptureCheckPassed && logViewerCheckPassed &&
-			compileConcurrencyCheckPassed},
+			compileConcurrencyCheckPassed && blackMoonCheck.value("ok", false)},
+		{"blackmoon", blackMoonCheck},
 		{"creation_detected", creationDetected},
 		{"unchanged_rejected", unchangedRejected},
 		{"update_detected", updateDetected},

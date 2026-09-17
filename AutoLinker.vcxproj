@@ -492,6 +492,9 @@
     <ClCompile Include="src\EPackagerIntegration.cpp" />
     <ClCompile Include="src\ConfigManager.cpp" />
     <ClCompile Include="src\CompileConcurrencyManager.cpp" />
+    <ClCompile Include="src\BlackMoonCompileCoordinator.cpp">
+      <AdditionalOptions>/execution-charset:utf-8 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
     <ClCompile Include="src\AIJsonConfig.cpp" />
 	<ClCompile Include="src\AISkillLocalPackage.cpp">
 	  <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -662,6 +665,8 @@
     <ClInclude Include="src\WorkspaceFileTools.h" />
     <ClInclude Include="src\ConfigManager.h" />
     <ClInclude Include="src\CompileConcurrencyManager.h" />
+    <ClInclude Include="src\BlackMoonCompileCoordinator.h" />
+    <ClInclude Include="src\SilentCompileOutputPathLease.h" />
     <ClInclude Include="src\ComponentUpdateStatus.h" />
     <ClInclude Include="src\DependencyCatalogCache.h" />
     <ClInclude Include="src\DownloadProgressReporter.h" />

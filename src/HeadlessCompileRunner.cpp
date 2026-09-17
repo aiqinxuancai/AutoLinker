@@ -40,6 +40,7 @@ struct HeadlessCompileRequest {
 	std::string outputPath;
 	std::string projectSourcePath;
 	bool staticCompile = false;
+	bool staticCompileSpecified = false;
 	std::string compiler = "eide";
 	std::string blackMoonMode;
 	bool hideWindow = true;
@@ -296,24 +297,24 @@ nlohmann::json BuildCompileDialogsJson(const nlohmann::json& compileResult)
 	}
 
 	const std::string trace = compileResult.value("trace", std::string());
-	if (trace == "compile_invoked_dialog_suppressed") {
+	if (trace == "compile_invoked_dialog_suppressed" || trace == "blackmoon_compile_invoked_dialog_suppressed") {
 		rows.push_back({
 			{"kind", "info"},
 			{"type", "compile_output_target"},
 			{"mode", "auto_suppressed"},
 			{"target", compileResult.value("target", std::string())},
-			{"static_compile", compileResult.value("static_compile", false)},
+			{"static_compile", compileResult.value("static_compile", nlohmann::json(nullptr))},
 			{"output_path", compileResult.value("output_path", std::string())},
 			{"trace", trace}
 		});
 	}
-	else if (trace == "compile_invoked_dialog_pending") {
+	else if (trace == "compile_invoked_dialog_pending" || trace == "blackmoon_compile_invoked_dialog_pending") {
 		rows.push_back({
 			{"kind", "warning"},
 			{"type", "compile_output_target"},
 			{"mode", "pending"},
 			{"target", compileResult.value("target", std::string())},
-			{"static_compile", compileResult.value("static_compile", false)},
+			{"static_compile", compileResult.value("static_compile", nlohmann::json(nullptr))},
 			{"output_path", compileResult.value("output_path", std::string())},
 			{"trace", trace}
 		});
@@ -511,6 +512,7 @@ void ApplyJsonRequest(const nlohmann::json& json, HeadlessCompileRequest& reques
 	request.outputPath = GetJsonString(json, "output_path", request.outputPath);
 	request.projectSourcePath = GetJsonString(json, "project_source_path", request.projectSourcePath);
 	request.staticCompile = GetJsonBool(json, "static_compile", request.staticCompile);
+	if (json.contains("static_compile")) request.staticCompileSpecified = true;
 	request.compiler = GetJsonString(json, "compiler", request.compiler);
 	request.blackMoonMode = GetJsonString(json, "blackmoon_mode", request.blackMoonMode);
 	if (request.blackMoonMode.empty()) request.blackMoonMode = GetJsonString(json, "compile_mode", request.blackMoonMode);
@@ -556,12 +558,13 @@ void ApplyEnvironmentRequest(HeadlessCompileRequest& request)
 			target = WideToUtf8(value);
 		}
 	};
-	const auto applyBoolEnv = [](const wchar_t* name, bool& target) {
+	const auto applyBoolEnv = [&request](const wchar_t* name, bool& target) {
 		const std::wstring value = GetEnvironmentVariableWide(name);
 		if (!value.empty()) {
 			bool parsed = target;
 			if (TryParseBoolText(WideToUtf8(value), parsed)) {
 				target = parsed;
+				if (&target == &request.staticCompile) request.staticCompileSpecified = true;
 			}
 		}
 	};
@@ -1007,7 +1010,6 @@ void ApplyCommandLineRequest(HeadlessCompileRequest& request)
 			continue;
 		}
 		if (name == "autolinker-blackmoon-mode" || name == "autolinker-compile-mode") {
-			request.compiler = "blackmoon";
 			request.blackMoonMode = hasValue ? value : ReadNextArgumentValue(args, i);
 			continue;
 		}
@@ -1016,6 +1018,7 @@ void ApplyCommandLineRequest(HeadlessCompileRequest& request)
 			continue;
 		}
 		if (name == "autolinker-static" || name == "autolinker-static-compile") {
+			request.staticCompileSpecified = true;
 			request.staticCompile = true;
 			if (hasValue) {
 				bool parsed = true;
@@ -1026,6 +1029,7 @@ void ApplyCommandLineRequest(HeadlessCompileRequest& request)
 			continue;
 		}
 		if (name == "autolinker-no-static") {
+			request.staticCompileSpecified = true;
 			request.staticCompile = false;
 			continue;
 		}
@@ -1607,6 +1611,7 @@ nlohmann::json BuildRequestJson(const HeadlessCompileRequest& request)
 		{"output_path", request.outputPath},
 		{"project_source_path", request.projectSourcePath},
 		{"static_compile", request.staticCompile},
+		{"static_compile_specified", request.staticCompileSpecified},
 		{"compiler", request.compiler},
 		{"blackmoon_mode", request.blackMoonMode},
 		{"hide_window", request.hideWindow},
@@ -1700,10 +1705,12 @@ void HeadlessWorkerMain()
 	nlohmann::json compileArgs = {
 		{"target", resolvedTarget},
 		{"output_path", request.outputPath},
-		{"static_compile", request.staticCompile},
 		{"compiler", request.compiler},
 		{"blackmoon_mode", request.blackMoonMode}
 	};
+	// 普通无头编译保留原默认值；黑月只转发显式静态参数，交由工具给出纠正指示。
+	if (request.staticCompileSpecified || ToLowerAsciiCopyLocal(request.compiler) != "blackmoon")
+		compileArgs["static_compile"] = request.staticCompile;
 
 	OutputStringToELog(std::format(
 		"[HeadlessCompile] 开始编译 target={} static={} output={}",

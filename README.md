@@ -130,6 +130,13 @@ url = "http://127.0.0.1:19207/mcp"
 ## 其他功能
 
 ### ⭐ 无头命令行编译
+
+黑月编译使用 `--blackmoon asm|cxx|vcxx`，不要同时传 `--static`。直接调用
+`compile_with_output_path` 时必须显式设置 `compiler="blackmoon"`，完全省略
+`static_compile`，目标仅允许 `auto` 或当前 EXE/DLL 工程类型。普通编译省略
+`blackmoon_mode`；参数冲突会返回 `error` 和可操作的 `hint`，不会隐式切换编译器。
+配置在跨进程锁保护下临时切换，编译结果收集后恢复。详细说明及回归方法见
+[黑月编译验证](docs/blackmoon-compile-verification.md)。
 推荐用 `AutoLinkerTest headless-compile` 启动 e.exe：自动关闭启动期弹窗、隐藏 IDE、调用 `compile_with_output_path`，并把结果 JSON 输出到控制台。该启动器支持多个进程同时调用：同一 `.e` 工程按调用顺序排队，不同工程可并行编译；输出路径仍应由调用方自行保持唯一。
 
 ```powershell

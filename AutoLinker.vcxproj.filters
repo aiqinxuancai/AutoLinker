@@ -134,6 +134,9 @@
     <ClCompile Include="src\CompileConcurrencyManager.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
+    <ClCompile Include="src\BlackMoonCompileCoordinator.cpp">
+      <Filter>Utils</Filter>
+    </ClCompile>
     <ClCompile Include="src\HeadlessCompileRunner.cpp">
       <Filter>Utils</Filter>
     </ClCompile>
@@ -337,6 +340,12 @@
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\CompileConcurrencyManager.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\BlackMoonCompileCoordinator.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
+    <ClInclude Include="src\SilentCompileOutputPathLease.h">
       <Filter>Utils</Filter>
     </ClInclude>
     <ClInclude Include="src\AIConfigDialog.h">

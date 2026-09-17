@@ -167,13 +167,6 @@ public:
 		bool staticCompile,
 		std::string* outNormalizedPath = nullptr,
 		std::string* outDiagnostics = nullptr) const;
-	// 通过已加载的 BlackMoon.fne 触发黑月编译，并临时选择指定模式。
-	bool CompileWithBlackMoonOutputPath(
-		CompileOutputKind kind,
-		const std::string& outputPath,
-		BlackMoonCompileMode mode,
-		std::string* outNormalizedPath = nullptr,
-		std::string* outDiagnostics = nullptr) const;
 	bool AddOutputTab(HWND hWnd, const std::string& caption, const std::string& toolTip, HICON hIcon = nullptr) const;
 	// 向 IDE 输出窗口追加文本/行文本（行文本会自动追加 CRLF）。
 	bool AppendOutputWindowText(const std::string& text) const;

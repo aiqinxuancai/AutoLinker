@@ -44,7 +44,7 @@ std::mutex g_detourHookMutex;
 bool g_messageBoxHookInstalled = false;
 bool g_fullHookInstalled = false;
 
-constexpr auto kSilentCompileOutputPathTimeout = std::chrono::seconds(30);
+constexpr auto kSilentCompileOutputPathTimeout = std::chrono::seconds(120);
 constexpr auto kSilentCompileMessageBoxGuardTimeout = std::chrono::minutes(10);
 
 std::string NormalizeSilentCompileOutputPath(const std::string& outputPath)

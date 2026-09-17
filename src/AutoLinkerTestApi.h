@@ -14,6 +14,9 @@ constexpr int AUTOLINKER_TEST_STRING_BUFFER_TOO_SMALL = -2;
 
 extern "C" {
 
+// 黑月参数校验、跨线程锁竞争、原子配置恢复和崩溃恢复自检。
+AUTOLINKER_TEST_API int AutoLinkerTest_RunBlackMoonSelfTest(char* buffer, int bufferSize);
+
 // 比较两个版本号字符串，成功时通过 outResult 返回 -1/0/1。
 AUTOLINKER_TEST_API bool AutoLinkerTest_CompareVersion(const char* left, const char* right, int* outResult);
 

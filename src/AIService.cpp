@@ -3388,15 +3388,15 @@ nlohmann::json BuildPublicToolCatalog()
 	});
 	tools.push_back({
 		{"name", "compile_with_output_path"},
-		{"description", "Compile the current project with a specified output path, suppressing the IDE save-file dialog. target=auto selects the default compile target. For an E-language module project, auto builds a win_console_exe test program; use target=ecom only to publish the module as .ec. Static compilation is the default for supported targets. Set compiler=blackmoon and blackmoon_mode to asm, cxx, or vcxx to use the BlackMoon plugin; the plugin must be loaded and its three profiles available. A successful result requires the output artifact to exist and be updated."},
+		{"description", "Compile the current project to output_path. compiler defaults to eide: omit blackmoon_mode and optionally set static_compile (default true for EXE/DLL). For eide module projects, auto builds a win_console_exe test; target=ecom publishes .ec. BlackMoon requires compiler=blackmoon, an EXE/DLL project, and an available profile; omit static_compile entirely, set blackmoon_mode=asm/cxx/vcxx (default vcxx), and use target=auto or the actual project type. A stray blackmoon_mode never switches the compiler: conflicting parameters return error and hint explaining how to correct the call. Success requires an updated output artifact and successful configuration restoration."},
 		{"inputSchema", {
 			{"type", "object"},
 			{"properties", {
 				{"target", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "win_exe", "win_console_exe", "win_dll", "ecom"})}, {"description", "Defaults to auto. For module-project compile verification, use win_console_exe; ecom publishes a .ec module."}}},
 				{"output_path", {{"type", "string"}}},
-				{"static_compile", {{"type", "boolean"}, {"description", "Defaults to true for win_exe, win_console_exe, and win_dll. target=ecom does not support static compilation and defaults to false, but a module project can be compiled as a static win_console_exe for testing. Set false only when the user explicitly requests non-static compilation or module publishing."}}},
+				{"static_compile", {{"type", "boolean"}, {"description", "Only for compiler=eide: defaults to true for EXE/DLL and false for ecom. For compiler=blackmoon omit this field entirely, including false."}}},
 				{"compiler", {{"type", "string"}, {"enum", nlohmann::json::array({"eide", "blackmoon"})}}},
-				{"blackmoon_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"asm", "cxx", "vcxx"})}, {"description", "BlackMoon BMType: asm=汇编模式, cxx=C/C++模式, vcxx=VC++模式."}}}
+				{"blackmoon_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"asm", "cxx", "vcxx"})}, {"description", "Only for explicit compiler=blackmoon; omit for ordinary eide compilation. Default vcxx. asm=汇编模式, cxx=C/C++模式, vcxx=VC++模式. Use get_current_eide_info to inspect installed modes."}}}
 			}},
 			{"required", nlohmann::json::array({"output_path"})},
 			{"additionalProperties", false}
@@ -3861,7 +3861,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			"11) 固定表文件 src/.数据类型.txt、src/.DLL声明.txt、src/.常量.txt、src/.全局变量.txt 可作为对应真实表页的编辑目标。\n"
 			"12) 需要预览改动用 diff_file；需要回滚最近写入用 restore_file_snapshot。\n"
 			"13) 用户明确要求时可以编辑和写入常量页中的普通常量；必须保留现有长文本常量的占位符及元数据，不能新增、删除或改变长文本内容。普通常量按规范格式写入，避免无理由地改用变量替代用户要求的常量。\n"
-			"14) 只有用户要求编译验证时，才调用 compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type、project_supported_compile_targets 和可用编译模式。对 win_exe、win_console_exe、win_dll 默认使用 static_compile=true；只有用户明确要求动态编译或不使用静态编译时才设为 false。当 project_type=ecom 且目的是编译验证/调试测试时，默认使用 target=win_console_exe 和 static_compile=true 生成静态控制台程序；只有用户明确要求发布/生成 .ec 模块时才使用 target=ecom 和 static_compile=false。\n"
+			"14) 只有用户要求编译验证时，才调用 compile_with_output_path。编译前可用 get_current_eide_info 确认 project_type、project_supported_compile_targets 和可用编译模式。使用 compiler=eide 时，对 win_exe、win_console_exe、win_dll 默认使用 static_compile=true；只有用户明确要求动态编译或不使用静态编译时才设为 false。当 project_type=ecom 且目的是编译验证/调试测试时，默认使用 target=win_console_exe 和 static_compile=true 生成静态控制台程序；只有用户明确要求发布/生成 .ec 模块时才使用 target=ecom 和 static_compile=false。若用户要求黑月，必须显式传 compiler=blackmoon，仅针对当前 EXE/DLL 工程，使用 target=auto、blackmoon_mode=asm/cxx/vcxx 并完全省略 static_compile；普通编译必须省略 blackmoon_mode。收到参数错误时按 hint 纠正参数，不要原样重试。\n"
 			"15) 除非用户明确要求搜索、刷新、列出、添加或移除模块/支持库，否则不要调用 refresh_dependency_catalog、search_available_modules、search_available_support_libraries、list_imported_modules、add_module_to_project、remove_module_from_project、add_support_library_to_project。\n"
 			"16) 仅当用户明确要求解析、查看、参考或复刻外部 .e/.ec 文件时，才调用 e_packager；结果位于 unimported_code/{文件名}/。用 list_files/search_code 定位文件，再用 read_file/read_files 读取；不要对未引用源码调用 read_code_item，也不得用写工具修改。\n\n"
 			"其他工具：\n"
@@ -8966,7 +8966,7 @@ std::string AIService::BuildExternalMcpInstructions()
 		"- 窗口程序集代码请编辑对应 src/*.txt；可修改已有控件事件子程序的代码实现，但新增事件子程序不代表已经建立控件事件绑定。ecom/、elib/、header/ 是依赖与公开信息参考，可读可搜不可写。\n\n"
 
 		"【验证】\n"
-		"- 需要编译时用 compile_with_output_path（可先用 get_current_eide_info 确认工程类型、支持的输出目标与编译模式），不要用你自带的构建/脚本能力去编译。win_exe、win_console_exe、win_dll 默认使用 static_compile=true；只有用户明确要求动态编译或不使用静态编译时才使用 false。模块工程进行编译验证/调试测试时，默认使用 target=win_console_exe 和 static_compile=true；只有明确发布/生成 .ec 模块时才使用 target=ecom 和 static_compile=false。\n"
+		"- 需要编译时用 compile_with_output_path（可先用 get_current_eide_info 确认工程类型、支持的输出目标与编译模式），不要用你自带的构建/脚本能力去编译。使用 compiler=eide 时，win_exe、win_console_exe、win_dll 默认使用 static_compile=true；只有用户明确要求动态编译或不使用静态编译时才使用 false。模块工程进行编译验证/调试测试时，默认使用 target=win_console_exe 和 static_compile=true；只有明确发布/生成 .ec 模块时才使用 target=ecom 和 static_compile=false。若用户要求黑月，必须显式传 compiler=blackmoon，仅针对当前 EXE/DLL 工程，使用 target=auto、blackmoon_mode=asm/cxx/vcxx 并完全省略 static_compile；普通编译必须省略 blackmoon_mode。收到参数错误时按 hint 纠正参数，不要原样重试。\n"
 		"- 需要联网查资料时用 search_web_tavily / extract_web_document / fetch_url。\n\n"
 
 		"【易语言语法要点（最易出错处，务必遵守）】\n"
