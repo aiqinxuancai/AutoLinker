@@ -830,13 +830,10 @@ bool RefreshMirrorMainOnlyLocked(const std::filesystem::path& sourcePath, std::s
 	return true;
 }
 
-bool EnsureMirrorFreshLocked(std::string& outError)
+// 源码查询可能同步通知工程切换并清理镜像，必须由调用方在获取 g_mutex 前完成。
+bool EnsureMirrorFreshLocked(const std::filesystem::path& sourcePath, std::string& outError)
 {
 	outError.clear();
-	std::filesystem::path sourcePath;
-	if (!EPackagerIntegration::GetCurrentSourcePath(sourcePath, outError)) {
-		return false;
-	}
 	if (g_state.valid && !g_state.mirrorRoot.empty() && IsSamePath(g_state.sourcePath, sourcePath)) {
 		std::error_code ec;
 		if (std::filesystem::exists(g_state.mirrorRoot, ec) &&
@@ -937,8 +934,12 @@ bool CountRegularFiles(
 
 bool EnsureMirrorFresh(std::string& outError)
 {
+	std::filesystem::path sourcePath;
+	if (!EPackagerIntegration::GetCurrentSourcePath(sourcePath, outError)) {
+		return false;
+	}
 	std::lock_guard<std::mutex> guard(g_mutex);
-	return EnsureMirrorFreshLocked(outError);
+	return EnsureMirrorFreshLocked(sourcePath, outError);
 }
 
 bool PrepareFileAccess(std::string& outError)
@@ -1000,7 +1001,6 @@ bool ResolvePreparedFilePath(
 
 bool RefreshMirror(std::string& outError, std::string* outMode, RefreshMode mode)
 {
-	std::lock_guard<std::mutex> guard(g_mutex);
 	outError.clear();
 	if (outMode != nullptr) {
 		outMode->clear();
@@ -1011,6 +1011,8 @@ bool RefreshMirror(std::string& outError, std::string* outMode, RefreshMode mode
 		return false;
 	}
 
+	// GetCurrentSourcePath 可重入 ResetAndCleanup，不能放在镜像锁内。
+	std::lock_guard<std::mutex> guard(g_mutex);
 	if (mode == RefreshMode::Full) {
 		if (!RebuildMirrorLocked(sourcePath, outError)) {
 			return false;
@@ -1222,9 +1224,12 @@ bool UpdateMirrorTextFile(
 	const std::string& textLocal,
 	std::string& outError)
 {
+	std::filesystem::path sourcePath;
+	if (!EPackagerIntegration::GetCurrentSourcePath(sourcePath, outError)) {
+		return false;
+	}
 	std::lock_guard<std::mutex> guard(g_mutex);
-	outError.clear();
-	if (!EnsureMirrorFreshLocked(outError)) {
+	if (!EnsureMirrorFreshLocked(sourcePath, outError)) {
 		return false;
 	}
 
@@ -1267,8 +1272,13 @@ void ResetAndCleanup()
 
 bool GetMirrorRoot(std::filesystem::path& outRoot, std::string& outError)
 {
+	outRoot.clear();
+	std::filesystem::path sourcePath;
+	if (!EPackagerIntegration::GetCurrentSourcePath(sourcePath, outError)) {
+		return false;
+	}
 	std::lock_guard<std::mutex> guard(g_mutex);
-	if (!EnsureMirrorFreshLocked(outError)) {
+	if (!EnsureMirrorFreshLocked(sourcePath, outError)) {
 		outRoot.clear();
 		return false;
 	}
@@ -1288,8 +1298,12 @@ bool ResolveFilePath(
 	std::string& outRelativePathUtf8,
 	std::string& outError)
 {
+	std::filesystem::path sourcePath;
+	if (!EPackagerIntegration::GetCurrentSourcePath(sourcePath, outError)) {
+		return false;
+	}
 	std::lock_guard<std::mutex> guard(g_mutex);
-	if (!EnsureMirrorFreshLocked(outError)) {
+	if (!EnsureMirrorFreshLocked(sourcePath, outError)) {
 		return false;
 	}
 
@@ -1318,8 +1332,12 @@ bool ResolveFileToProgramItem(
 	std::string& outError)
 {
 	outItem = {};
+	std::filesystem::path sourcePath;
+	if (!EPackagerIntegration::GetCurrentSourcePath(sourcePath, outError)) {
+		return false;
+	}
 	std::lock_guard<std::mutex> guard(g_mutex);
-	if (!EnsureMirrorFreshLocked(outError)) {
+	if (!EnsureMirrorFreshLocked(sourcePath, outError)) {
 		return false;
 	}
 
@@ -1347,8 +1365,12 @@ bool ResolveFileToProgramItem(
 bool ListMirrorFiles(std::vector<std::string>& outRelativePathsUtf8, std::string& outError)
 {
 	outRelativePathsUtf8.clear();
+	std::filesystem::path sourcePath;
+	if (!EPackagerIntegration::GetCurrentSourcePath(sourcePath, outError)) {
+		return false;
+	}
 	std::lock_guard<std::mutex> guard(g_mutex);
-	if (!EnsureMirrorFreshLocked(outError)) {
+	if (!EnsureMirrorFreshLocked(sourcePath, outError)) {
 		return false;
 	}
 

@@ -39,6 +39,7 @@ struct ReferenceUnpackResult {
 	std::uint64_t generation = 0;
 };
 
+// 访问当前源码的接口须在 IDE 主线程调用；源码变化通知在镜像加锁前完成。
 // 确保当前源码的解包镜像可用；必要时导出内存快照并重新解包。
 bool EnsureMirrorFresh(std::string& outError);
 
