@@ -414,6 +414,10 @@
     <ClInclude Include="src\AIJsonConfig.h">
       <Filter>AI</Filter>
     </ClInclude>
+    <ClInclude Include="src\IdeOutputQueue.h"><Filter>AI</Filter></ClInclude>
+    <ClInclude Include="src\BackgroundCleanup.h"><Filter>AI</Filter></ClInclude>
+    <ClInclude Include="src\IdeToolScheduler.h"><Filter>AI</Filter></ClInclude>
+    <ClInclude Include="src\ScopedTreeDragGuard.h"><Filter>AI</Filter></ClInclude>
     <ClInclude Include="src\WorkspaceMirror.h">
       <Filter>AI</Filter>
     </ClInclude>

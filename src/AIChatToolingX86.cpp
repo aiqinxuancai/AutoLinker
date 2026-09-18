@@ -3369,15 +3369,8 @@ std::string BuildAddModuleToProjectJsonOnMainThread(const std::string& arguments
 
 void AppendFullMirrorRefreshResult(nlohmann::json& r)
 {
-	std::string refreshError;
-	std::string refreshMode;
-	if (WorkspaceMirror::RefreshMirror(refreshError, &refreshMode, WorkspaceMirror::RefreshMode::Full)) {
-		r["workspace_mirror_refreshed"] = true;
-		r["refresh_mode"] = refreshMode;
-		return;
-	}
-	r["workspace_mirror_refreshed"] = false;
-	r["refresh_error"] = refreshError.empty() ? "refresh workspace mirror failed" : refreshError;
+    WorkspaceMirror::InvalidateMirror();
+    r["workspace_refresh_pending"] = true;
 }
 
 void PumpPendingIdeMessagesForAI()
@@ -3957,66 +3950,15 @@ std::string BuildAddNewFileJsonOnMainThread(const std::string& argumentsJson, bo
 	if (!writeError.empty()) {
 		r["write_error"] = LocalToUtf8Text(writeError);
 	}
-	AppendFullMirrorRefreshResult(r);
-	bool treeItemResolved = false;
-	int treeResolveAttempts = 0;
-	if (renamed && r.value("workspace_mirror_refreshed", false)) {
-		for (int attempt = 0; attempt < 20; ++attempt) {
-			treeResolveAttempts = attempt + 1;
-			PumpPendingIdeMessagesForAI();
-			ProgramTreeItemInfo candidate;
-			if (TryFindProgramTreeItemByExactNameForAI(
-					requestedName,
-					expectedTypeKey,
-					candidate,
-					nullptr) &&
-				(candidate.itemData >> 28) == 1u) {
-				finalItem = std::move(candidate);
-				treeItemResolved = true;
-				break;
-			}
-			Sleep(25);
-		}
-	}
-	r["program_tree_item_resolved"] = treeItemResolved;
-	r["program_tree_resolve_attempts"] = treeResolveAttempts;
-	if (treeItemResolved) {
-		r["item_data"] = finalItem.itemData;
-	}
-
-	std::string mirrorFilePath;
-	std::string mirrorPathError;
-	const bool mirrorPathResolved = r.value("workspace_mirror_refreshed", false) &&
-		renamed &&
-		TryResolveNewMirrorFilePathForAI(requestedName, mirrorFilePath, mirrorPathError);
-	r["mirror_file_resolved"] = mirrorPathResolved;
-	if (mirrorPathResolved) {
-		r["file_path"] = mirrorFilePath;
-	}
-	else if (!mirrorPathError.empty()) {
-		r["mirror_file_error"] = LocalToUtf8Text(mirrorPathError);
-	}
-
-	const bool ok = renamed && codeVerified && classLifecycleComplete && treeItemResolved &&
-		r.value("workspace_mirror_refreshed", false) && mirrorPathResolved;
-	r["ok"] = ok;
-	r["verified"] = ok;
-	if (!ok) {
-		r["error"] = !renamed
-			? "new program item name verification failed"
-			: (!classLifecycleComplete
-				? "new class lifecycle function preparation failed"
-				: (!codeVerified
-				? "new program item source verification failed"
-				: "workspace mirror refresh or new file mapping failed"));
-	}
-	outOk = ok;
-	if (renamed && finalReadOk) {
-		PageCodeCacheManager::Instance().Remove(defaultName, expectedTypeKey);
-		PageCodeCacheEntry cacheEntry;
-		PutPageCodeCacheEntryForAI(finalItem, verifiedCode, nullptr, &cacheEntry);
-	}
-	return JsonToLocalTextForAI(r);
+    AppendFullMirrorRefreshResult(r);
+    outOk = renamed && codeVerified && classLifecycleComplete;
+    r["ok"] = outOk;
+    if (renamed && finalReadOk) {
+        PageCodeCacheManager::Instance().Remove(defaultName, expectedTypeKey);
+        PageCodeCacheEntry cacheEntry;
+        PutPageCodeCacheEntryForAI(finalItem, verifiedCode, nullptr, &cacheEntry);
+    }
+    return JsonToLocalTextForAI(r);
 }
 
 std::string BuildRemoveModuleFromProjectJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
@@ -5184,9 +5126,12 @@ std::string ExecuteFileMappedRealPageToolForAI(
 			result.contains("code") &&
 			result["code"].is_string()) {
 			const std::string finalCodeLocal = Utf8ToLocalText(result["code"].get<std::string>());
-			mirrorUpdated = WorkspaceMirror::UpdateMirrorTextFile(filePathUtf8, finalCodeLocal, mirrorUpdateError);
+			// 调度器在后台生成写后候选镜像，事务完成前不运行下一项 IDE 操作。
+			result["workspace_sync_pending"] = true;
+			result["_mirror_text"] = result["code"];
+			mirrorUpdated = true;
 			if (mirrorUpdated) {
-				result["workspace_mirror_updated"] = true;
+				result["workspace_mirror_updated"] = false;
 				result["workspace_mirror_invalidated"] = false;
 			}
 		}
@@ -5359,7 +5304,7 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		}
 		std::string error;
 		std::string mode;
-		if (!WorkspaceMirror::RefreshMirror(error, &mode, refreshMode)) {
+		if (!WorkspaceMirror::EnsureMirrorFresh(error)) {
 			nlohmann::json r;
 			r["ok"] = false;
 			r["error"] = error.empty() ? "refresh workspace mirror failed" : error;
@@ -6164,12 +6109,80 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 // 过程、穿过 Win32 消息派发边界，触发 MSVC 运行时 abort（“abnormal program
 // termination”），整个 IDE 进程崩溃。这里统一兜底，把异常转成失败结果返回，
 // 保证无论工具内部发生什么都不会崩进程。
+std::string FinalizeNewFileAfterMirrorRefresh(const std::string& resultLocal, bool& outOk)
+{
+    auto r = nlohmann::json::parse(LocalToUtf8Text(resultLocal));
+    if (!r.contains("requested_name")) { outOk = false; return resultLocal; }
+    const std::string requestedName = Utf8ToLocalText(r.value("requested_name", std::string()));
+    const std::string expectedTypeKey = r.value("type_key", std::string("assembly"));
+    ProgramTreeItemInfo finalItem;
+	bool treeItemResolved = false;
+	int treeResolveAttempts = 0;
+	if (r.value("renamed", false) && r.value("workspace_mirror_refreshed", false)) {
+		for (int attempt = 0; attempt < 20; ++attempt) {
+			treeResolveAttempts = attempt + 1;
+			PumpPendingIdeMessagesForAI();
+			ProgramTreeItemInfo candidate;
+			if (TryFindProgramTreeItemByExactNameForAI(
+					requestedName,
+					expectedTypeKey,
+					candidate,
+					nullptr) &&
+				(candidate.itemData >> 28) == 1u) {
+				finalItem = std::move(candidate);
+				treeItemResolved = true;
+				break;
+			}
+			Sleep(25);
+		}
+	}
+	r["program_tree_item_resolved"] = treeItemResolved;
+	r["program_tree_resolve_attempts"] = treeResolveAttempts;
+	if (treeItemResolved) {
+		r["item_data"] = finalItem.itemData;
+	}
+
+	std::string mirrorFilePath;
+	std::string mirrorPathError;
+	const bool mirrorPathResolved = r.value("workspace_mirror_refreshed", false) &&
+		r.value("renamed", false) &&
+		TryResolveNewMirrorFilePathForAI(requestedName, mirrorFilePath, mirrorPathError);
+	r["mirror_file_resolved"] = mirrorPathResolved;
+	if (mirrorPathResolved) {
+		r["file_path"] = mirrorFilePath;
+	}
+	else if (!mirrorPathError.empty()) {
+		r["mirror_file_error"] = LocalToUtf8Text(mirrorPathError);
+	}
+
+	const bool ok = r.value("renamed", false) && r.value("code_verified", false) && r.value("class_lifecycle_complete", false) && treeItemResolved &&
+		r.value("workspace_mirror_refreshed", false) && mirrorPathResolved;
+	r["ok"] = ok;
+	r["verified"] = ok;
+	if (!ok) {
+		r["error"] = !r.value("renamed", false)
+			? "new program item name verification failed"
+			: (!r.value("class_lifecycle_complete", false)
+				? "new class lifecycle function preparation failed"
+				: (!r.value("code_verified", false)
+				? "new program item source verification failed"
+				: "workspace mirror refresh or new file mapping failed"));
+	}
+    outOk = ok;
+    return JsonToLocalTextForAI(r);
+}
+
 std::string ExecuteToolCallOnMainThread(
 	const std::string& toolName,
 	const std::string& argumentsJson,
 	bool& outOk,
 	bool enableMcpAutoSave)
 {
+    const HWND mainWindow = GetAIChatMainWindowForTooling();
+    if (!mainWindow || GetWindowThreadProcessId(mainWindow, nullptr) != GetCurrentThreadId()) {
+        outOk = false;
+        return R"({"ok":false,"error":"IDE tool called outside main thread"})";
+    }
 	try {
 		std::string resultLocal = ExecuteToolCallOnMainThreadImpl(toolName, argumentsJson, outOk);
 		if (!enableMcpAutoSave) {

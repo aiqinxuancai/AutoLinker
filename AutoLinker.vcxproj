@@ -662,6 +662,10 @@
 	<ClInclude Include="src\AISkillLocalPackage.h" />
 	<ClInclude Include="src\AISkillManager.h" />
 	<ClInclude Include="src\AISkillConfigDialog.h" />
+    <ClInclude Include="src\IdeOutputQueue.h" />
+    <ClInclude Include="src\BackgroundCleanup.h" />
+    <ClInclude Include="src\IdeToolScheduler.h" />
+    <ClInclude Include="src\ScopedTreeDragGuard.h" />
     <ClInclude Include="src\WorkspaceMirror.h" />
     <ClInclude Include="src\WorkspaceFileTools.h" />
     <ClInclude Include="src\ConfigManager.h" />

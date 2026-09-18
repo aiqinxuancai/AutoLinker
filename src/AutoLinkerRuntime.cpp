@@ -15,6 +15,7 @@
 #include "Global.h"
 #include "HeadlessCompileRunner.h"
 #include "IDEFacade.h"
+#include "IdeOutputQueue.h"
 #include "Logger.h"
 #include "LocalMcpServer.h"
 #include "PageCodeCacheManager.h"
@@ -80,8 +81,8 @@ void OutputStringToELog(const std::string& szbuf)
 		? line
 		: line.substr(0, 256 * 1024) + "\r\n[AutoLinker] 单条输出过长，IDE 窗口已截断，完整内容已写入日志文件。";
 	OutputDebugStringA((line + "\n").c_str());
-	IDEFacade::Instance().AppendOutputWindowLine(ideLine);
 	Logger::Instance().WriteGbk(line);
+	IdeOutputQueue::Instance().Push(g_hwnd, ideLine);
 }
 
 std::string NormalizeSourcePathForRuntime(const std::string& text)

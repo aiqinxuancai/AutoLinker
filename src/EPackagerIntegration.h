@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include "ComponentUpdateStatus.h"
 
@@ -47,6 +48,8 @@ void CleanupSnapshotRoot(const std::filesystem::path& snapshotRoot);
 
 // 确认 e-packager.exe 可用；每 7 天检查一次并自动更新，失败时继续使用已有版本。
 bool EnsureToolReady(std::filesystem::path& outToolPath, std::string& outError);
+// 镜像任务只使用已安装工具；联网更新由独立组件更新入口负责，避免关闭时等待网络。
+bool GetInstalledTool(std::filesystem::path& outToolPath, std::string& outError);
 
 // 后台检查 e-packager.exe 的最新版本，不执行下载或安装。
 void CheckForToolUpdatesInBackground();
@@ -66,6 +69,7 @@ ProcessRunResult RunProcessAndCapture(
 	const std::filesystem::path& exePath,
 	const std::vector<std::wstring>& args,
 	const std::filesystem::path& workingDirectory,
-	unsigned long timeoutMs = 180000);
+	unsigned long timeoutMs = 180000,
+	const std::function<bool()>& cancelled = {});
 
 } // namespace EPackagerIntegration

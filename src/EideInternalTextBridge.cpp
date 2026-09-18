@@ -1,6 +1,7 @@
 ﻿#include "EideInternalTextBridge.h"
 
 #include <afxwin.h>
+#include "ScopedTreeDragGuard.h"
 #include <Windows.h>
 
 #include <detours.h>
@@ -750,6 +751,14 @@ bool IsE595DirectTextPackageWriteSupported(std::string* outTrace = nullptr)
 			trace;
 	}
 	return supported;
+}
+
+// 仅用于启动隔离测试进程时强制覆盖不匹配版本的 UI 回退路径。
+bool ForceTreeFallbackForTest()
+{
+    static const bool enabled = [] { wchar_t value[2]{};
+        return GetEnvironmentVariableW(L"AUTOLINKER_TEST_FORCE_TREE_FALLBACK", value, 2) == 1 && value[0] == L'1'; }();
+    return enabled;
 }
 
 bool IsProgramTreeEditorResolverSupported(std::string* outTrace = nullptr)
@@ -3352,7 +3361,10 @@ bool DispatchPendingMessageSafely(MSG* msg)
 void PumpPendingMessages()
 {
 	MSG msg = {};
-	while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+	const ULONGLONG deadline = GetTickCount64() + 10;
+	unsigned count = 0;
+	while (count++ < 64 && GetTickCount64() < deadline && PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+		if (msg.message == WM_QUIT) { PostQuitMessage(static_cast<int>(msg.wParam)); break; }
 		if (!DispatchPendingMessageSafely(&msg)) {
 			AppendPageEditTraceLine("PumpPendingMessages.dispatch_exception");
 			break;
@@ -5058,8 +5070,9 @@ bool DispatchProgramTreeItemDoubleClick(HWND treeHwnd, HTREEITEM item, std::stri
 		return false;
 	}
 
-	POINT clickPoint = {};
-	const DWORD rectStartTick = GetTickCount();
+    ScopedTreeDragGuard disableDrag(treeHwnd);
+    POINT clickPoint = {};
+    const DWORD rectStartTick = GetTickCount();
 	if (!TryGetProgramTreeItemClickPoint(treeHwnd, item, &clickPoint)) {
 		if (outTrace != nullptr) {
 			*outTrace = "tree_double_click_item_rect_failed";
@@ -5343,7 +5356,7 @@ bool TryResolveProgramTreeItemEditorObjectByUi(
 			const std::string activeTitle = WindowTextToString(activeChild);
 			const bool titleMatches =
 				DoesProgramItemTitleMatchWindowTitle(itemText, activeTitle);
-			if (activeChild == activeBefore && !titleMatches) {
+			if (!titleMatches) {
 				Sleep(25);
 				continue;
 			}
@@ -7762,7 +7775,7 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 	int resolverResolvedIndex = -1;
 	int resolverBucketData = 0;
 	const DWORD noActivateStartTick = GetTickCount();
-	const bool noActivateResolved = ResolveEditorObjectByProgramTreeItemDataNoActivate(
+	const bool noActivateResolved = !ForceTreeFallbackForTest() && ResolveEditorObjectByProgramTreeItemDataNoActivate(
 			itemData,
 			moduleBase,
 			&editorObject,
@@ -7820,7 +7833,7 @@ bool ResolveEditorObjectByProgramTreeItemDataInternal(
 	resolverResolvedIndex = -1;
 	resolverBucketData = 0;
 	const DWORD activateStartTick = GetTickCount();
-	const bool resolverResolved = ResolveEditorObjectByProgramTreeItemData(
+	const bool resolverResolved = !ForceTreeFallbackForTest() && ResolveEditorObjectByProgramTreeItemData(
 			itemData,
 			moduleBase,
 			&editorObject,
@@ -8460,7 +8473,7 @@ bool GetRealPageCodeByProgramTreeItemData(
 		hiddenNeedRestore = false;
 	};
 	std::string hiddenSupportTrace;
-	if (IsProgramTreeEditorResolverSupported(&hiddenSupportTrace)) {
+	if (!ForceTreeFallbackForTest() && IsProgramTreeEditorResolverSupported(&hiddenSupportTrace)) {
 		hiddenAttemptState = "attempt";
 		if (!hiddenOriginalCaptured) {
 			hiddenOriginalCaptured =

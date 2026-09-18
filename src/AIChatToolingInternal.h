@@ -6,6 +6,9 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <cstdint>
+#include <atomic>
+#include "WorkspaceMirror.h"
 
 class AIJsonConfig;
 class ConfigManager;
@@ -17,7 +20,22 @@ struct ToolExecutionRequest {
 	std::string resultJson;
 	bool bypassInteractiveApproval = false; // 19207 外部 MCP 调用不弹出交互审批。
 	bool approvalOnly = false;              // 仅通过 AI 对话完成审批，实际操作仍由请求线程执行。
-	bool ok = false;
+	// 以下调度字段仅由 IDE 主线程读写。
+    std::uint64_t contextEpoch = 0;
+    UINT_PTR id = 0;
+    ULONGLONG enqueuedAt = 0, resumeAt = 0;
+    enum class Stage { Queued, Approval, Capture, Background, Execute, Complete };
+    std::atomic<Stage> stage = Stage::Queued;
+    WorkspaceMirror::FileAccessSnapshot preparedSnapshot;
+    bool approved = false;
+    bool prepared = false;
+    bool postRefresh = false;
+    bool textUpdate = false;
+    bool referenceUnpack = false;
+    std::string refreshMode;
+    std::string savedResult;
+    bool savedOk = false;
+    bool ok = false;
 	bool done = false;
 	bool cancelled = false;
 	std::mutex mutex;

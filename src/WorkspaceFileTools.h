@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <string>
+#include "WorkspaceMirror.h"
 
 // 基于 WorkspaceMirror 的统一文件读取、搜索和列出工具。
 namespace WorkspaceFileTools {
@@ -12,7 +13,8 @@ std::string ExecuteTool(
 	const std::string& toolName,
 	const std::string& argumentsJson,
 	bool& outOk,
-	const std::function<bool()>& cancelCallback = {});
+	const std::function<bool()>& cancelCallback = {},
+	const WorkspaceMirror::FileAccessSnapshot* preparedSnapshot = nullptr);
 
 // 构建分页与精确省略范围元数据的内部自测报告。
 std::string BuildPaginationSelfTestJson();

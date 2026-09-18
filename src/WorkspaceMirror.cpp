@@ -20,6 +20,7 @@
 
 #include "EPackagerIntegration.h"
 #include "Global.h"
+#include "BackgroundCleanup.h"
 
 namespace WorkspaceMirror {
 namespace {
@@ -30,6 +31,7 @@ struct MirrorState {
 	std::filesystem::path sourcePath;
 	std::filesystem::path mirrorRoot;
 	bool valid = false;
+	std::shared_ptr<void> lifetime;
 	std::unordered_map<std::string, ProgramItemRef> itemByRelativePath;
 	std::vector<std::string> relativePathsUtf8;
 };
@@ -37,6 +39,7 @@ struct MirrorState {
 std::mutex g_mutex;
 MirrorState g_state;
 std::uint64_t g_generation = 1;
+std::uint64_t g_contextEpoch = 1;
 std::optional<std::uint64_t> g_initialUnpackDurationMs;
 
 constexpr DWORD kMaxWorkspaceUnpackTimeoutMs = 180000;
@@ -54,22 +57,6 @@ DWORD CurrentWorkspaceUnpackTimeoutMs()
 	return static_cast<DWORD>((std::min)(
 		calculated,
 		static_cast<std::uint64_t>(kMaxWorkspaceUnpackTimeoutMs)));
-}
-
-void RecordInitialUnpackDuration(
-	const EPackagerIntegration::ProcessRunResult& result,
-	const char* unpackKind)
-{
-	if (g_initialUnpackDurationMs.has_value() || !result.ok) {
-		return;
-	}
-
-	g_initialUnpackDurationMs = result.elapsedMs;
-	OutputStringToELog(std::format(
-		"[WorkspaceMirror] initial {} unpack completed in {} ms; subsequent timeout={} ms",
-		unpackKind,
-		result.elapsedMs,
-		CurrentWorkspaceUnpackTimeoutMs()));
 }
 
 std::wstring WideFromCodePage(const std::string& text, UINT codePage, DWORD flags = 0)
@@ -199,16 +186,8 @@ bool StartsWithAsciiInsensitive(const std::string& text, const std::string& pref
 
 bool IsSamePath(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
 {
-	std::error_code ec;
-	const auto left = std::filesystem::weakly_canonical(lhs, ec);
-	if (ec) {
-		return _wcsicmp(lhs.wstring().c_str(), rhs.wstring().c_str()) == 0;
-	}
-	const auto right = std::filesystem::weakly_canonical(rhs, ec);
-	if (ec) {
-		return _wcsicmp(lhs.wstring().c_str(), rhs.wstring().c_str()) == 0;
-	}
-	return _wcsicmp(left.wstring().c_str(), right.wstring().c_str()) == 0;
+    // 源码路径在 IDE 查询处规范化；状态锁内比较不得触发文件系统 IO。
+    return _wcsicmp(lhs.lexically_normal().c_str(), rhs.lexically_normal().c_str()) == 0;
 }
 
 bool IsPathInside(const std::filesystem::path& root, const std::filesystem::path& child)
@@ -397,7 +376,7 @@ void CleanupSiblingMirrors(
 		if (!TryParseMirrorOwnerProcessId(name, ownerProcessId)) {
 			continue;
 		}
-		if (ownerProcessId != GetCurrentProcessId() && !IsProcessDefinitelyStopped(ownerProcessId)) {
+		if (ownerProcessId == GetCurrentProcessId() || !IsProcessDefinitelyStopped(ownerProcessId)) {
 			continue;
 		}
 		RemoveMirrorRootIfSafe(entry.path());
@@ -435,7 +414,7 @@ bool BuildUniqueMirrorRoot(std::filesystem::path& outRoot, std::string& outError
 		outError = "创建系统临时镜像目录失败：" + ec.message();
 		return false;
 	}
-	CleanupSiblingMirrors(baseDir, g_state.mirrorRoot);
+	CleanupSiblingMirrors(baseDir, {});
 
 	const DWORD pid = GetCurrentProcessId();
 	const ULONGLONG tick = GetTickCount64();
@@ -457,7 +436,9 @@ bool BuildSnapshot(const std::filesystem::path& sourcePath, std::filesystem::pat
 		}
 		std::error_code ec;
 		if (std::filesystem::exists(sourcePath, ec) && std::filesystem::is_regular_file(sourcePath, ec)) {
-			outSnapshotPath = sourcePath;
+            std::filesystem::create_directories(outSnapshotPath.parent_path(), ec);
+            if (!ec) std::filesystem::copy_file(sourcePath, outSnapshotPath, std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec) { outError = "saved snapshot copy failed: " + ec.message(); return false; }
 			const std::string memoryError = outError;
 			outError.clear();
 			outTrace =
@@ -586,265 +567,12 @@ bool RebuildFileIndexLocked(MirrorState& state, std::string& outError)
 	return true;
 }
 
-enum class ReferenceDirectoryTransfer {
-	None,
-	Moved,
-	Copied
-};
-
-bool PreserveReferenceDirectory(
-	const std::filesystem::path& oldMirrorRoot,
-	const std::filesystem::path& newMirrorRoot,
-	ReferenceDirectoryTransfer& outTransfer,
-	std::string& outError)
-{
-	outTransfer = ReferenceDirectoryTransfer::None;
-	if (oldMirrorRoot.empty() || newMirrorRoot.empty() || IsSamePath(oldMirrorRoot, newMirrorRoot)) {
-		return true;
-	}
-
-	const std::filesystem::path oldReferenceRoot = oldMirrorRoot / L"unimported_code";
-	const std::filesystem::path newReferenceRoot = newMirrorRoot / L"unimported_code";
-	std::error_code ec;
-	if (!std::filesystem::exists(oldReferenceRoot, ec) ||
-		!std::filesystem::is_directory(oldReferenceRoot, ec)) {
-		return true;
-	}
-	if (std::filesystem::exists(newReferenceRoot, ec)) {
-		outError = "新工程镜像已存在 unimported_code，无法保留外部参考源码";
-		return false;
-	}
-
-	std::filesystem::rename(oldReferenceRoot, newReferenceRoot, ec);
-	if (!ec) {
-		outTransfer = ReferenceDirectoryTransfer::Moved;
-		return true;
-	}
-
-	ec.clear();
-	std::filesystem::copy(
-		oldReferenceRoot,
-		newReferenceRoot,
-		std::filesystem::copy_options::recursive,
-		ec);
-	if (ec) {
-		std::error_code cleanupError;
-		std::filesystem::remove_all(newReferenceRoot, cleanupError);
-		outError = "保留外部参考源码目录失败：" + ec.message();
-		return false;
-	}
-	outTransfer = ReferenceDirectoryTransfer::Copied;
-	return true;
-}
-
-void RollbackMovedReferenceDirectory(
-	const std::filesystem::path& oldMirrorRoot,
-	const std::filesystem::path& newMirrorRoot,
-	ReferenceDirectoryTransfer transfer)
-{
-	if (transfer != ReferenceDirectoryTransfer::Moved) {
-		return;
-	}
-	std::error_code ec;
-	std::filesystem::rename(
-		newMirrorRoot / L"unimported_code",
-		oldMirrorRoot / L"unimported_code",
-		ec);
-	if (ec) {
-		OutputStringToELog("[WorkspaceMirror] restore preserved reference directory failed: " + ec.message());
-	}
-}
-
-bool RebuildMirrorLocked(const std::filesystem::path& sourcePath, std::string& outError)
-{
-	if (!g_state.sourcePath.empty() && !IsSamePath(g_state.sourcePath, sourcePath)) {
-		g_initialUnpackDurationMs.reset();
-		OutputStringToELog("[WorkspaceMirror] source changed; reset unpack timing baseline");
-	}
-
-	MirrorState nextState;
-	if (!BuildUniqueMirrorRoot(nextState.mirrorRoot, outError)) {
-		return false;
-	}
-	nextState.sourcePath = sourcePath;
-
-	std::filesystem::path snapshotPath;
-	std::string snapshotTrace;
-	if (!BuildSnapshot(sourcePath, snapshotPath, snapshotTrace, outError)) {
-		return false;
-	}
-	const bool snapshotIsTemporary = !IsSamePath(snapshotPath, sourcePath);
-
-	std::filesystem::path toolPath;
-	if (!EPackagerIntegration::EnsureToolReady(toolPath, outError)) {
-		if (snapshotIsTemporary) {
-			EPackagerIntegration::CleanupSnapshotRoot(snapshotPath.parent_path());
-		}
-		return false;
-	}
-
-	std::error_code ec;
-	std::filesystem::create_directories(nextState.mirrorRoot, ec);
-	if (ec) {
-		outError = "创建工程镜像目录失败：" + ec.message();
-		if (snapshotIsTemporary) {
-			EPackagerIntegration::CleanupSnapshotRoot(snapshotPath.parent_path());
-		}
-		return false;
-	}
-
-	const DWORD unpackTimeoutMs = CurrentWorkspaceUnpackTimeoutMs();
-	OutputStringToELog(std::format(
-		"[WorkspaceMirror] preparing workspace mirror: {} timeout={} ms{}",
-		LocalFromPath(nextState.mirrorRoot),
-		unpackTimeoutMs,
-		g_initialUnpackDurationMs.has_value()
-			? std::format(" baseline={} ms", g_initialUnpackDurationMs.value())
-			: std::string(" baseline=pending")));
-	const EPackagerIntegration::ProcessRunResult result = EPackagerIntegration::RunProcessAndCapture(
-		toolPath,
-		{ L"unpack", snapshotPath.wstring(), nextState.mirrorRoot.wstring() },
-		toolPath.parent_path(),
-		unpackTimeoutMs);
-	if (snapshotIsTemporary) {
-		EPackagerIntegration::CleanupSnapshotRoot(snapshotPath.parent_path());
-	}
-
-	if (!result.ok) {
-		outError = std::format(
-			"e-packager unpack failed, exitCode={} {}",
-			result.exitCode,
-			result.error);
-		if (!result.stdErrBytes.empty()) {
-			outError += " stderr=" + result.stdErrBytes;
-		}
-		RemoveMirrorRootIfSafe(nextState.mirrorRoot);
-		return false;
-	}
-
-	if (!ParseMetadata(nextState, outError)) {
-		RemoveMirrorRootIfSafe(nextState.mirrorRoot);
-		return false;
-	}
-
-	const std::filesystem::path oldMirrorRoot = g_state.mirrorRoot;
-	ReferenceDirectoryTransfer referenceTransfer = ReferenceDirectoryTransfer::None;
-	if (!g_state.mirrorRoot.empty() && IsSamePath(g_state.sourcePath, sourcePath) &&
-		!PreserveReferenceDirectory(oldMirrorRoot, nextState.mirrorRoot, referenceTransfer, outError)) {
-		RemoveMirrorRootIfSafe(nextState.mirrorRoot);
-		return false;
-	}
-	if (!RebuildFileIndexLocked(nextState, outError)) {
-		RollbackMovedReferenceDirectory(oldMirrorRoot, nextState.mirrorRoot, referenceTransfer);
-		RemoveMirrorRootIfSafe(nextState.mirrorRoot);
-		return false;
-	}
-	RecordInitialUnpackDuration(result, "full workspace");
-
-	nextState.valid = true;
-	g_state = std::move(nextState);
-	RemoveMirrorRootIfSafe(oldMirrorRoot);
-	++g_generation;
-	OutputStringToELog("[WorkspaceMirror] workspace mirror ready: " + LocalFromPath(g_state.mirrorRoot));
-	return true;
-}
-
-bool RefreshMirrorMainOnlyLocked(const std::filesystem::path& sourcePath, std::string& outError)
-{
-	if (g_state.mirrorRoot.empty() || !IsSamePath(g_state.sourcePath, sourcePath)) {
-		return false;
-	}
-
-	std::error_code ec;
-	if (!std::filesystem::exists(g_state.mirrorRoot, ec) ||
-		!std::filesystem::is_directory(g_state.mirrorRoot, ec)) {
-		return false;
-	}
-
-	std::filesystem::path snapshotPath;
-	std::string snapshotTrace;
-	if (!BuildSnapshot(sourcePath, snapshotPath, snapshotTrace, outError)) {
-		return false;
-	}
-	const bool snapshotIsTemporary = !IsSamePath(snapshotPath, sourcePath);
-
-	std::filesystem::path toolPath;
-	if (!EPackagerIntegration::EnsureToolReady(toolPath, outError)) {
-		if (snapshotIsTemporary) {
-			EPackagerIntegration::CleanupSnapshotRoot(snapshotPath.parent_path());
-		}
-		return false;
-	}
-
-	if (!RemoveMainProjectArtifacts(g_state.mirrorRoot, outError)) {
-		if (snapshotIsTemporary) {
-			EPackagerIntegration::CleanupSnapshotRoot(snapshotPath.parent_path());
-		}
-		return false;
-	}
-
-	auto runMainOnlyUnpack = [&]() {
-		return EPackagerIntegration::RunProcessAndCapture(
-			toolPath,
-			{ L"unpack", snapshotPath.wstring(), g_state.mirrorRoot.wstring(), L"--main-only" },
-			toolPath.parent_path(),
-			CurrentWorkspaceUnpackTimeoutMs());
-	};
-
-	OutputStringToELog(std::format(
-		"[WorkspaceMirror] refreshing main workspace mirror: {} timeout={} ms{}",
-		LocalFromPath(g_state.mirrorRoot),
-		CurrentWorkspaceUnpackTimeoutMs(),
-		g_initialUnpackDurationMs.has_value()
-			? std::format(" baseline={} ms", g_initialUnpackDurationMs.value())
-			: std::string(" baseline=pending")));
-	EPackagerIntegration::ProcessRunResult result = runMainOnlyUnpack();
-	if (snapshotIsTemporary) {
-		EPackagerIntegration::CleanupSnapshotRoot(snapshotPath.parent_path());
-	}
-
-	if (!result.ok) {
-		outError = std::format(
-			"e-packager main-only unpack failed, exitCode={} {}",
-			result.exitCode,
-			result.error);
-		if (!result.stdErrBytes.empty()) {
-			outError += " stderr=" + result.stdErrBytes;
-		}
-		return false;
-	}
-
-	if (!ParseMetadata(g_state, outError)) {
-		g_state.valid = false;
-		return false;
-	}
-	if (!RebuildFileIndexLocked(g_state, outError)) {
-		g_state.valid = false;
-		return false;
-	}
-	RecordInitialUnpackDuration(result, "main-only workspace");
-
-	g_state.valid = true;
-	++g_generation;
-	OutputStringToELog("[WorkspaceMirror] main workspace mirror refreshed: " + LocalFromPath(g_state.mirrorRoot));
-	return true;
-}
-
-// 源码查询可能同步通知工程切换并清理镜像，必须由调用方在获取 g_mutex 前完成。
 bool EnsureMirrorFreshLocked(const std::filesystem::path& sourcePath, std::string& outError)
 {
-	outError.clear();
-	if (g_state.valid && !g_state.mirrorRoot.empty() && IsSamePath(g_state.sourcePath, sourcePath)) {
-		std::error_code ec;
-		if (std::filesystem::exists(g_state.mirrorRoot, ec) &&
-			std::filesystem::is_directory(g_state.mirrorRoot, ec) &&
-			!g_state.itemByRelativePath.empty() &&
-			!g_state.relativePathsUtf8.empty()) {
-			return true;
-		}
-		g_state.valid = false;
-	}
-	return RebuildMirrorLocked(sourcePath, outError);
+    outError.clear();
+    if (g_state.valid && !g_state.mirrorRoot.empty() && IsSamePath(g_state.sourcePath, sourcePath)) return true;
+    outError = "workspace mirror is not prepared";
+    return false;
 }
 
 bool BuildSafeRelativePath(const std::string& filePathUtf8, std::filesystem::path& outRelative, std::string& outRelativeUtf8, std::string& outError)
@@ -932,6 +660,243 @@ bool CountRegularFiles(
 
 } // namespace
 
+struct RefreshTask {
+    std::shared_ptr<BackgroundCleanup> cleanup = BackgroundCleanup::Shared();
+    MirrorState previous;
+    MirrorState candidate;
+    enum class Kind { Refresh, Reference, TextUpdate } kind = Kind::Refresh;
+    std::filesystem::path referenceSource;
+    std::string relativePath, text;
+    ReferenceUnpackResult referenceResult;
+    std::filesystem::path snapshot;
+    std::uint64_t generation = 0, epoch = 0;
+    DWORD timeoutMs = 180000;
+    RefreshMode requestedMode = RefreshMode::Auto;
+    std::string mode, error;
+    std::atomic_bool cancelled = false;
+    bool ok = false;
+    std::uint64_t elapsedMs = 0;
+    ~RefreshTask() {
+        if (!snapshot.empty() && !IsSamePath(snapshot, candidate.sourcePath)) {
+            const auto root = snapshot.parent_path();
+            cleanup->Enqueue([root] { EPackagerIntegration::CleanupSnapshotRoot(root); });
+        }
+    }
+};
+
+std::shared_ptr<void> MakeDirectoryLease(const std::filesystem::path& path)
+{
+    const auto cleanup = BackgroundCleanup::Shared();
+    return std::shared_ptr<void>(new std::filesystem::path(path), [cleanup](void* pointer) {
+        std::unique_ptr<std::filesystem::path> owned(static_cast<std::filesystem::path*>(pointer));
+        const auto path = *owned;
+        cleanup->Enqueue([path] { RemoveMirrorRootIfSafe(path); });
+    });
+}
+
+std::uint64_t GetContextEpoch()
+{
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return g_contextEpoch;
+}
+
+std::shared_ptr<RefreshTask> CaptureRefreshInputOnMainThread(RefreshMode mode, std::string& error)
+{
+    error.clear();
+    auto task = std::make_shared<RefreshTask>();
+    if (!EPackagerIntegration::GetCurrentSourcePath(task->candidate.sourcePath, error)) return {};
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        task->previous = g_state;
+        task->generation = g_generation;
+        task->epoch = g_contextEpoch;
+        task->timeoutMs = CurrentWorkspaceUnpackTimeoutMs();
+    }
+    task->requestedMode = mode;
+    std::string trace;
+    if (!BuildSnapshot(task->candidate.sourcePath, task->snapshot, trace, error)) return {};
+    if (!trace.empty()) OutputStringToELog("[WorkspaceMirror] captured " + trace);
+    return task;
+}
+
+std::shared_ptr<RefreshTask> CaptureMirrorMutation(std::string& error)
+{
+    auto task = std::make_shared<RefreshTask>();
+    if (!EPackagerIntegration::GetCurrentSourcePath(task->candidate.sourcePath, error)) return {};
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!EnsureMirrorFreshLocked(task->candidate.sourcePath, error)) return {};
+    task->previous = g_state;
+    task->generation = g_generation;
+    task->epoch = g_contextEpoch;
+    task->timeoutMs = CurrentWorkspaceUnpackTimeoutMs();
+    return task;
+}
+
+std::shared_ptr<RefreshTask> CaptureReferenceInputOnMainThread(const std::string& pathUtf8, std::string& error)
+{
+    auto task = CaptureMirrorMutation(error);
+    if (!task) return {};
+    task->kind = RefreshTask::Kind::Reference;
+    task->referenceSource = PathFromUtf8(pathUtf8);
+    if (task->referenceSource.is_relative()) task->referenceSource = task->previous.sourcePath.parent_path() / task->referenceSource;
+    task->referenceSource = std::filesystem::weakly_canonical(task->referenceSource);
+    if (pathUtf8.empty() || !IsReferenceSourceExtension(task->referenceSource) || !std::filesystem::is_regular_file(task->referenceSource)) {
+        error = "file_path must name an existing .e or .ec file"; return {};
+    }
+    return task;
+}
+
+std::shared_ptr<RefreshTask> CaptureTextUpdateOnMainThread(const std::string& pathUtf8, const std::string& textLocal, std::string& error)
+{
+    auto task = CaptureMirrorMutation(error);
+    if (!task) return {};
+    std::filesystem::path relative;
+    if (!BuildSafeRelativePath(pathUtf8, relative, task->relativePath, error)) return {};
+    task->kind = RefreshTask::Kind::TextUpdate;
+    task->text = Utf8FromLocal(textLocal);
+    return task;
+}
+
+ReferenceUnpackResult GetReferenceResult(const std::shared_ptr<RefreshTask>& task)
+{
+    return task ? task->referenceResult : ReferenceUnpackResult{};
+}
+
+void CancelRefresh(const std::shared_ptr<RefreshTask>& task)
+{
+    if (task) task->cancelled.store(true);
+}
+
+bool CopyCandidateTree(const std::filesystem::path& source, const std::filesystem::path& destination,
+    const std::shared_ptr<RefreshTask>& task)
+{
+    std::filesystem::create_directories(destination);
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(source)) {
+        if (task->cancelled) { task->error = "cancelled"; return false; }
+        const auto target = destination / entry.path().lexically_relative(source);
+        if (entry.is_symlink()) { task->error = "mirror contains unsupported symbolic link"; return false; }
+        if (entry.is_directory()) std::filesystem::create_directories(target);
+        else if (entry.is_regular_file()) {
+            BOOL cancel = FALSE;
+            const auto progress = [](LARGE_INTEGER, LARGE_INTEGER, LARGE_INTEGER, LARGE_INTEGER, DWORD, DWORD, HANDLE, HANDLE, LPVOID data) -> DWORD {
+                return static_cast<RefreshTask*>(data)->cancelled ? PROGRESS_CANCEL : PROGRESS_CONTINUE;
+            };
+            if (!CopyFileExW(entry.path().c_str(), target.c_str(), progress, task.get(), &cancel, 0)) {
+                task->error = task->cancelled ? "cancelled" : "mirror copy failed: " + std::to_string(GetLastError());
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+void BuildRefreshCandidate(const std::shared_ptr<RefreshTask>& task)
+{
+    if (!task) return;
+    try {
+        if (task->cancelled) { task->error = "cancelled"; return; }
+        if (task->kind != RefreshTask::Kind::Refresh) {
+            if (!BuildUniqueMirrorRoot(task->candidate.mirrorRoot, task->error)) return;
+            task->candidate.lifetime = MakeDirectoryLease(task->candidate.mirrorRoot);
+            std::filesystem::create_directories(task->candidate.mirrorRoot);
+            if (!CopyCandidateTree(task->previous.mirrorRoot, task->candidate.mirrorRoot, task)) return;
+            if (task->cancelled) { task->error = "cancelled"; return; }
+            if (task->kind == RefreshTask::Kind::TextUpdate) {
+                const auto output = task->candidate.mirrorRoot / PathFromUtf8(task->relativePath);
+                if (!IsPathInside(task->candidate.mirrorRoot, output) || !std::filesystem::is_regular_file(output)) {
+                    task->error = "mirror file not found"; return;
+                }
+                if (!WriteUtf8BomFile(output, task->text, task->error)) return;
+                task->mode = "text_update";
+            } else {
+                std::filesystem::path tool;
+                if (!EPackagerIntegration::GetInstalledTool(tool, task->error)) return;
+                const auto relative = std::filesystem::path(L"unimported_code") / task->referenceSource.filename();
+                const auto output = task->candidate.mirrorRoot / relative;
+                std::filesystem::remove_all(output);
+                std::filesystem::create_directories(output);
+                auto result = EPackagerIntegration::RunProcessAndCapture(tool,
+                    {L"unpack", task->referenceSource.wstring(), output.wstring()}, tool.parent_path(), task->timeoutMs,
+                    [task] { return task->cancelled.load(); });
+                if (!result.ok) { task->error = "reference unpack failed: " + result.error; return; }
+                task->referenceResult.sourcePathUtf8 = Utf8FromPath(task->referenceSource);
+                task->referenceResult.outputDirectoryUtf8 = NormalizeRelativePathUtf8(Utf8FromPath(relative));
+                if (!CountRegularFiles(output, task->referenceResult.fileCount, task->error) || !task->referenceResult.fileCount) {
+                    task->error = "reference unpack produced no files"; return;
+                }
+                task->mode = "reference";
+            }
+            task->ok = ParseMetadata(task->candidate, task->error) && RebuildFileIndexLocked(task->candidate, task->error);
+            task->candidate.valid = task->ok;
+            return;
+        }
+        std::filesystem::path tool;
+        if (!EPackagerIntegration::GetInstalledTool(tool, task->error)) return;
+        const bool sameProject = IsSamePath(task->previous.sourcePath, task->candidate.sourcePath);
+        bool mainOnly = task->requestedMode != RefreshMode::Full && sameProject && task->previous.valid;
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            if (task->cancelled) { task->error = "cancelled"; return; }
+            task->candidate.lifetime.reset();
+            if (!BuildUniqueMirrorRoot(task->candidate.mirrorRoot, task->error)) return;
+            task->candidate.lifetime = MakeDirectoryLease(task->candidate.mirrorRoot);
+            std::filesystem::create_directories(task->candidate.mirrorRoot);
+            if (sameProject && !task->previous.mirrorRoot.empty()) {
+                if (mainOnly) {
+                    if (!CopyCandidateTree(task->previous.mirrorRoot, task->candidate.mirrorRoot, task)) return;
+                    if (!RemoveMainProjectArtifacts(task->candidate.mirrorRoot, task->error)) return;
+                } else {
+                    const auto reference = task->previous.mirrorRoot / L"unimported_code";
+                    if (std::filesystem::exists(reference) && !CopyCandidateTree(reference,
+                        task->candidate.mirrorRoot / L"unimported_code", task)) return;
+                }
+            }
+            auto args = std::vector<std::wstring>{L"unpack", task->snapshot.wstring(), task->candidate.mirrorRoot.wstring()};
+            if (mainOnly) args.push_back(L"--main-only");
+            const auto result = EPackagerIntegration::RunProcessAndCapture(tool, args, tool.parent_path(), task->timeoutMs,
+                [task] { return task->cancelled.load(); });
+            task->elapsedMs = result.elapsedMs;
+            task->mode = mainOnly ? "main_only" : "full";
+            task->error = result.error;
+            if (result.ok && ParseMetadata(task->candidate, task->error) &&
+                RebuildFileIndexLocked(task->candidate, task->error)) {
+                task->candidate.valid = true;
+                task->ok = true;
+                return;
+            }
+            if (task->error.empty()) task->error = "e-packager failed: " + std::to_string(result.exitCode);
+            if (!mainOnly) return;
+            mainOnly = false;
+        }
+    } catch (const std::exception& ex) { task->error = ex.what(); }
+    catch (...) { task->error = "workspace build exception"; }
+}
+
+bool CommitRefreshOnMainThread(const std::shared_ptr<RefreshTask>& task, std::string& error, std::string& mode)
+{
+    mode.clear(); error.clear();
+    if (!task) { error = "invalid refresh task"; return false; }
+    if (task->cancelled) { error = "cancelled"; return false; }
+    if (!task->ok) { error = task->error; return false; }
+    std::filesystem::path currentSource;
+    if (!EPackagerIntegration::GetCurrentSourcePath(currentSource, error)) return false;
+    MirrorState retired;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (task->epoch != g_contextEpoch || task->generation != g_generation ||
+            !IsSamePath(currentSource, task->candidate.sourcePath)) {
+            error = "workspace_changed"; return false;
+        }
+        retired = std::move(g_state);
+        g_state = std::move(task->candidate);
+        ++g_generation;
+        if (task->kind == RefreshTask::Kind::Refresh && !g_initialUnpackDurationMs) g_initialUnpackDurationMs = task->elapsedMs;
+        task->referenceResult.generation = g_generation;
+    }
+    mode = task->mode;
+    OutputStringToELog("[WorkspaceMirror] published candidate mode=" + mode);
+    return true;
+}
+
 bool EnsureMirrorFresh(std::string& outError)
 {
 	std::filesystem::path sourcePath;
@@ -956,15 +921,10 @@ bool GetPreparedFileAccessSnapshot(FileAccessSnapshot& outSnapshot, std::string&
 		outError = "workspace mirror is not prepared";
 		return false;
 	}
-	std::error_code ec;
-	if (!std::filesystem::exists(g_state.mirrorRoot, ec) ||
-		!std::filesystem::is_directory(g_state.mirrorRoot, ec)) {
-		outError = "prepared workspace mirror directory is unavailable";
-		return false;
-	}
 	outSnapshot.mirrorRoot = g_state.mirrorRoot;
 	outSnapshot.relativePathsUtf8 = g_state.relativePathsUtf8;
 	outSnapshot.generation = g_generation;
+	outSnapshot.lifetime = g_state.lifetime;
 	return true;
 }
 
@@ -999,219 +959,6 @@ bool ResolvePreparedFilePath(
 	return true;
 }
 
-bool RefreshMirror(std::string& outError, std::string* outMode, RefreshMode mode)
-{
-	outError.clear();
-	if (outMode != nullptr) {
-		outMode->clear();
-	}
-
-	std::filesystem::path sourcePath;
-	if (!EPackagerIntegration::GetCurrentSourcePath(sourcePath, outError)) {
-		return false;
-	}
-
-	// GetCurrentSourcePath 可重入 ResetAndCleanup，不能放在镜像锁内。
-	std::lock_guard<std::mutex> guard(g_mutex);
-	if (mode == RefreshMode::Full) {
-		if (!RebuildMirrorLocked(sourcePath, outError)) {
-			return false;
-		}
-		if (outMode != nullptr) {
-			*outMode = "full";
-		}
-		return true;
-	}
-
-	if (RefreshMirrorMainOnlyLocked(sourcePath, outError)) {
-		if (outMode != nullptr) {
-			*outMode = "main_only";
-		}
-		return true;
-	}
-
-	if (!outError.empty()) {
-		OutputStringToELog("[WorkspaceMirror] main-only refresh failed, rebuilding mirror: " + outError);
-		outError.clear();
-	}
-	else if (mode == RefreshMode::MainOnly) {
-		OutputStringToELog("[WorkspaceMirror] main-only refresh unavailable, rebuilding mirror");
-	}
-	if (!RebuildMirrorLocked(sourcePath, outError)) {
-		return false;
-	}
-	if (outMode != nullptr) {
-		*outMode = "full";
-	}
-	return true;
-}
-
-bool UnpackReferenceSource(
-	const std::string& sourceFilePathUtf8,
-	ReferenceUnpackResult& outResult,
-	std::string& outError)
-{
-	outResult = {};
-	outError.clear();
-	std::lock_guard<std::mutex> guard(g_mutex);
-	if (!g_state.valid || g_state.mirrorRoot.empty()) {
-		outError = "workspace mirror is not prepared";
-		return false;
-	}
-
-	std::filesystem::path sourcePath = PathFromUtf8(sourceFilePathUtf8);
-	if (sourcePath.empty()) {
-		outError = "file_path is required";
-		return false;
-	}
-	if (sourcePath.is_relative()) {
-		sourcePath = g_state.sourcePath.parent_path() / sourcePath;
-	}
-	std::error_code ec;
-	sourcePath = std::filesystem::weakly_canonical(sourcePath, ec);
-	if (ec || sourcePath.empty()) {
-		outError = "解析待解包文件路径失败";
-		if (ec) {
-			outError += "：" + ec.message();
-		}
-		return false;
-	}
-	if (!IsReferenceSourceExtension(sourcePath)) {
-		outError = "e_packager 仅支持解包 .e 或 .ec 文件";
-		return false;
-	}
-	if (!std::filesystem::exists(sourcePath, ec) ||
-		!std::filesystem::is_regular_file(sourcePath, ec)) {
-		outError = "待解包文件不存在或不是普通文件：" + Utf8FromPath(sourcePath);
-		return false;
-	}
-
-	std::filesystem::path toolPath;
-	if (!EPackagerIntegration::EnsureToolReady(toolPath, outError)) {
-		return false;
-	}
-
-	const std::filesystem::path referenceRoot = g_state.mirrorRoot / L"unimported_code";
-	std::filesystem::create_directories(referenceRoot, ec);
-	if (ec) {
-		outError = "创建外部参考源码目录失败：" + ec.message();
-		return false;
-	}
-	const std::filesystem::path directoryName = sourcePath.filename();
-	if (directoryName.empty() || directoryName == L"." || directoryName == L"..") {
-		outError = "无法从 file_path 生成安全的解包目录名";
-		return false;
-	}
-
-	const std::wstring uniqueSuffix = std::format(
-		L"{}-{}-{}",
-		GetCurrentProcessId(),
-		GetCurrentThreadId(),
-		GetTickCount64());
-	const std::filesystem::path stagingPath =
-		referenceRoot / (L".autolinker-import-" + uniqueSuffix);
-	const std::filesystem::path backupPath =
-		referenceRoot / (L".autolinker-backup-" + uniqueSuffix);
-	const std::filesystem::path outputPath = referenceRoot / directoryName;
-	std::filesystem::create_directories(stagingPath, ec);
-	if (ec) {
-		outError = "创建 e-packager 临时输出目录失败：" + ec.message();
-		return false;
-	}
-
-	const auto cleanupStaging = [&]() {
-		std::error_code cleanupError;
-		std::filesystem::remove_all(stagingPath, cleanupError);
-	};
-	const DWORD referenceUnpackTimeoutMs = CurrentWorkspaceUnpackTimeoutMs();
-	OutputStringToELog(std::format(
-		"[WorkspaceMirror] unpacking reference source: {} timeout={} ms{}",
-		LocalFromPath(sourcePath),
-		referenceUnpackTimeoutMs,
-		g_initialUnpackDurationMs.has_value()
-			? std::format(" baseline={} ms", g_initialUnpackDurationMs.value())
-			: std::string(" baseline=pending")));
-	const EPackagerIntegration::ProcessRunResult processResult = EPackagerIntegration::RunProcessAndCapture(
-		toolPath,
-		{ L"unpack", sourcePath.wstring(), stagingPath.wstring() },
-		toolPath.parent_path(),
-		referenceUnpackTimeoutMs);
-	if (!processResult.ok) {
-		cleanupStaging();
-		outError = std::format(
-			"e-packager reference unpack failed, exitCode={} {}",
-			processResult.exitCode,
-			processResult.error);
-		const std::string stderrText = ProcessBytesToUtf8(processResult.stdErrBytes);
-		if (!stderrText.empty()) {
-			outError += " stderr=" + stderrText;
-		}
-		return false;
-	}
-
-	std::uint64_t fileCount = 0;
-	if (!CountRegularFiles(stagingPath, fileCount, outError) || fileCount == 0) {
-		cleanupStaging();
-		if (outError.empty()) {
-			outError = "e-packager 解包成功但没有生成任何文件";
-		}
-		return false;
-	}
-
-	const bool hadPreviousOutput = std::filesystem::exists(outputPath, ec);
-	if (hadPreviousOutput) {
-		std::filesystem::rename(outputPath, backupPath, ec);
-		if (ec) {
-			cleanupStaging();
-			outError = "暂存旧的外部参考源码失败：" + ec.message();
-			return false;
-		}
-	}
-	std::filesystem::rename(stagingPath, outputPath, ec);
-	if (ec) {
-		if (hadPreviousOutput) {
-			std::error_code restoreError;
-			std::filesystem::rename(backupPath, outputPath, restoreError);
-		}
-		cleanupStaging();
-		outError = "提交 e-packager 解包结果失败：" + ec.message();
-		return false;
-	}
-
-	if (!RebuildFileIndexLocked(g_state, outError)) {
-		std::error_code rollbackError;
-		std::filesystem::remove_all(outputPath, rollbackError);
-		if (hadPreviousOutput) {
-			rollbackError.clear();
-			std::filesystem::rename(backupPath, outputPath, rollbackError);
-		}
-		std::string restoreIndexError;
-		if (!RebuildFileIndexLocked(g_state, restoreIndexError)) {
-			g_state.valid = false;
-			if (!restoreIndexError.empty()) {
-				outError += "；恢复原索引失败：" + restoreIndexError;
-			}
-		}
-		return false;
-	}
-	if (hadPreviousOutput) {
-		std::error_code cleanupError;
-		std::filesystem::remove_all(backupPath, cleanupError);
-	}
-
-	g_state.valid = true;
-	++g_generation;
-	outResult.sourcePathUtf8 = Utf8FromPath(sourcePath);
-	outResult.outputDirectoryUtf8 = NormalizeRelativePathUtf8(
-		Utf8FromPath(std::filesystem::path(L"unimported_code") / directoryName));
-	outResult.fileCount = fileCount;
-	outResult.generation = g_generation;
-	OutputStringToELog(
-		"[WorkspaceMirror] reference source ready: " +
-		LocalFromUtf8(outResult.outputDirectoryUtf8));
-	return true;
-}
-
 void InvalidateMirror()
 {
 	std::lock_guard<std::mutex> guard(g_mutex);
@@ -1219,55 +966,17 @@ void InvalidateMirror()
 	++g_generation;
 }
 
-bool UpdateMirrorTextFile(
-	const std::string& filePathUtf8,
-	const std::string& textLocal,
-	std::string& outError)
-{
-	std::filesystem::path sourcePath;
-	if (!EPackagerIntegration::GetCurrentSourcePath(sourcePath, outError)) {
-		return false;
-	}
-	std::lock_guard<std::mutex> guard(g_mutex);
-	if (!EnsureMirrorFreshLocked(sourcePath, outError)) {
-		return false;
-	}
-
-	std::filesystem::path relativePath;
-	std::string relativePathUtf8;
-	if (!BuildSafeRelativePath(filePathUtf8, relativePath, relativePathUtf8, outError)) {
-		return false;
-	}
-
-	const std::filesystem::path fullPath = g_state.mirrorRoot / relativePath;
-	if (!IsPathInside(g_state.mirrorRoot, fullPath)) {
-		outError = "file_path resolves outside workspace mirror";
-		return false;
-	}
-
-	std::error_code ec;
-	if (!std::filesystem::exists(fullPath, ec) || !std::filesystem::is_regular_file(fullPath, ec)) {
-		outError = "file not found in workspace mirror: " + relativePathUtf8;
-		return false;
-	}
-
-	if (!WriteUtf8BomFile(fullPath, Utf8FromLocal(textLocal), outError)) {
-		return false;
-	}
-
-	g_state.valid = true;
-	++g_generation;
-	OutputStringToELog("[WorkspaceMirror] mirror text file updated: " + relativePathUtf8);
-	return true;
-}
-
 void ResetAndCleanup()
 {
-	std::lock_guard<std::mutex> guard(g_mutex);
-	RemoveMirrorRootIfSafe(g_state.mirrorRoot);
-	g_state = {};
-	g_initialUnpackDurationMs.reset();
-	++g_generation;
+    MirrorState retired;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        retired = std::move(g_state);
+        g_state = {};
+        g_initialUnpackDurationMs.reset();
+        ++g_generation;
+        ++g_contextEpoch;
+    }
 }
 
 bool GetMirrorRoot(std::filesystem::path& outRoot, std::string& outError)
@@ -1292,38 +1001,12 @@ std::uint64_t GetGeneration()
 	return g_generation;
 }
 
-bool ResolveFilePath(
-	const std::string& filePathUtf8,
-	std::filesystem::path& outFullPath,
-	std::string& outRelativePathUtf8,
-	std::string& outError)
+bool ResolveFilePath(const std::string& filePathUtf8, std::filesystem::path& outFullPath,
+    std::string& outRelativePathUtf8, std::string& outError)
 {
-	std::filesystem::path sourcePath;
-	if (!EPackagerIntegration::GetCurrentSourcePath(sourcePath, outError)) {
-		return false;
-	}
-	std::lock_guard<std::mutex> guard(g_mutex);
-	if (!EnsureMirrorFreshLocked(sourcePath, outError)) {
-		return false;
-	}
-
-	std::filesystem::path relativePath;
-	if (!BuildSafeRelativePath(filePathUtf8, relativePath, outRelativePathUtf8, outError)) {
-		return false;
-	}
-
-	const std::filesystem::path fullPath = g_state.mirrorRoot / relativePath;
-	if (!IsPathInside(g_state.mirrorRoot, fullPath)) {
-		outError = "file_path resolves outside workspace mirror";
-		return false;
-	}
-	std::error_code ec;
-	if (!std::filesystem::exists(fullPath, ec) || !std::filesystem::is_regular_file(fullPath, ec)) {
-		outError = "file not found in workspace mirror: " + outRelativePathUtf8;
-		return false;
-	}
-	outFullPath = fullPath;
-	return true;
+    FileAccessSnapshot snapshot;
+    if (!EnsureMirrorFresh(outError) || !GetPreparedFileAccessSnapshot(snapshot, outError)) return false;
+    return ResolvePreparedFilePath(snapshot, filePathUtf8, outFullPath, outRelativePathUtf8, outError);
 }
 
 bool ResolveFileToProgramItem(

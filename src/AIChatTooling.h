@@ -12,6 +12,9 @@ std::string ExecuteToolCallOnMainThread(
 	bool& outOk,
 	bool enableMcpAutoSave = false);
 
+// 新建程序项的异步镜像发布完成后，在主线程验证程序树与文件映射。
+std::string FinalizeNewFileAfterMirrorRefresh(const std::string& resultLocal, bool& outOk);
+
 // 构建编译产物指纹判定的无 IDE 自检报告。
 std::string BuildCompileArtifactFingerprintSelfTestJson();
 

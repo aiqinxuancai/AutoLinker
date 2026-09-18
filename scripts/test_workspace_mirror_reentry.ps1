@@ -14,7 +14,7 @@ $mirrorSource = Join-Path $repo 'src\WorkspaceMirror.cpp'
 @echo off
 call "$vcvars" >nul
 if errorlevel 1 exit /b 1
-cl /nologo /EHsc /std:c++20 /utf-8 /MD /DWIN32 /D_WINDOWS "$testSource" "$mirrorSource" /Fe:WorkspaceMirrorReentryTests.exe /link user32.lib
+cl /nologo /EHsc /std:c++20 /utf-8 /MD /DWIN32 /D_WINDOWS "$testSource" "$mirrorSource" /Fe:WorkspaceMirrorReentryTests.exe /link user32.lib comctl32.lib
 exit /b %errorlevel%
 "@ | Set-Content -LiteralPath $buildFile -Encoding Default
 Push-Location $output

@@ -530,7 +530,8 @@ bool RequestToolExecutionFromMainThread(
 	bool& outOk,
 	bool bypassInteractiveApproval = false,
 	bool approvalOnly = false,
-	const std::function<bool()>& cancelCallback = {})
+	const std::function<bool()>& cancelCallback = {},
+    WorkspaceMirror::FileAccessSnapshot* preparedSnapshot = nullptr)
 {
 	outResultJson.clear();
 	outOk = false;
@@ -548,18 +549,10 @@ bool RequestToolExecutionFromMainThread(
 
 	const auto dispatchStart = std::chrono::steady_clock::now();
 	const DWORD mainThreadId = GetWindowThreadProcessId(mainWindow, nullptr);
-	if (mainThreadId != 0 && mainThreadId == GetCurrentThreadId()) {
-		if (approvalOnly) {
-			outResultJson = R"({"ok":false,"error":"interactive approval cannot block the AI chat UI thread"})";
-			return false;
-		}
-		outResultJson = ExecuteToolCallOnMainThread(
-			toolName,
-			argumentsJson,
-			outOk,
-			bypassInteractiveApproval);
-		return true;
-	}
+    if (mainThreadId != 0 && mainThreadId == GetCurrentThreadId()) {
+        outResultJson = R"({"ok":false,"error":"synchronous tool dispatch cannot wait on IDE thread"})";
+        return false;
+    }
 
 	const UINT_PTR requestId = RegisterToolExecutionRequestForTooling(request);
 	if (requestId == 0) {
@@ -603,7 +596,7 @@ bool RequestToolExecutionFromMainThread(
 					"main_thread_dispatch_waiting tool={} elapsed_ms={} stage={}",
 					toolName.empty() ? "unknown_tool" : toolName,
 					elapsedMs,
-					toolName == "compile_with_output_path" ? "compile" : "main_thread_tool"));
+					std::to_string(static_cast<int>(request->stage.load()))));
 				lock.lock();
 				nextWaitLogAt = now + std::chrono::seconds(30);
 			}
@@ -619,6 +612,7 @@ bool RequestToolExecutionFromMainThread(
 			dispatchMs));
 	}
 
+	if (preparedSnapshot) *preparedSnapshot = request->preparedSnapshot;
 	outResultJson = request->resultJson;
 	outOk = request->ok;
 	return true;
@@ -1065,6 +1059,7 @@ std::string ExecuteToolCallImpl(
 	}
 
 	if (WorkspaceFileTools::CanHandleTool(toolName)) {
+		WorkspaceMirror::FileAccessSnapshot snapshot;
 		std::string prepareResult;
 		bool prepareOk = false;
 		if (!RequestToolExecutionFromMainThread(
@@ -1074,7 +1069,7 @@ std::string ExecuteToolCallImpl(
 				prepareOk,
 				false,
 				false,
-				cancelCallback)) {
+				cancelCallback, &snapshot)) {
 			return prepareResult.empty()
 				? R"({"ok":false,"error":"prepare workspace file access transport failed"})"
 				: prepareResult;
@@ -1083,79 +1078,11 @@ std::string ExecuteToolCallImpl(
 			outOk = false;
 			return prepareResult;
 		}
-		return WorkspaceFileTools::ExecuteTool(toolName, argumentsJson, outOk, cancelCallback);
+		return WorkspaceFileTools::ExecuteTool(toolName, argumentsJson, outOk, cancelCallback, &snapshot);
 	}
 
-	if (toolName == "e_packager") {
-		return JsonToLocalText(EPackagerTool::Execute(argumentsJson, outOk));
-	}
 
-	if (toolName == "add_new_file") {
-		std::string createResult;
-		bool createOk = false;
-		if (!RequestToolExecutionFromMainThread(
-				toolName,
-				argumentsJson,
-				createResult,
-				createOk,
-				ShouldBypassToolApprovalForScope(approvalScope),
-				false,
-				cancelCallback)) {
-			return createResult.empty()
-				? R"({"ok":false,"error":"add_new_file create stage transport failed"})"
-				: createResult;
-		}
-		if (!createOk) {
-			outOk = false;
-			return createResult;
-		}
-
-		nlohmann::json createJson;
-		nlohmann::json finishArgs;
-		try {
-			createJson = nlohmann::json::parse(LocalToUtf8Text(createResult));
-			finishArgs = argumentsJson.empty()
-				? nlohmann::json::object()
-				: nlohmann::json::parse(argumentsJson);
-		}
-		catch (const std::exception& ex) {
-			nlohmann::json r;
-			r["ok"] = false;
-			r["error"] = std::string("add_new_file stage result parse failed: ") + ex.what();
-			outOk = false;
-			return JsonToLocalText(r);
-		}
-		if (!createJson.value("pending_finish", false)) {
-			outOk = createJson.value("ok", false);
-			return createResult;
-		}
-		const std::string defaultName = createJson.value("default_name", std::string());
-		if (defaultName.empty()) {
-			return R"({"ok":false,"error":"add_new_file create stage returned no default_name"})";
-		}
-
-		// The E IDE creates the editor controls only after the create handler returns to its message loop.
-		Sleep(75);
-		finishArgs["__finish_default_name"] = defaultName;
-		std::string finishResult;
-		bool finishOk = false;
-		if (!RequestToolExecutionFromMainThread(
-				toolName,
-				finishArgs.dump(),
-				finishResult,
-				finishOk,
-				ShouldBypassToolApprovalForScope(approvalScope),
-				false,
-				cancelCallback)) {
-			return finishResult.empty()
-				? R"({"ok":false,"error":"add_new_file finish stage transport failed"})"
-				: finishResult;
-		}
-		outOk = finishOk;
-		return finishResult;
-	}
-
-	if (toolName == "read_real_file" ||
+	if (toolName == "add_new_file" || toolName == "e_packager" || toolName == "read_real_file" ||
 		toolName == "update_plan" ||
 		toolName == "refresh_workspace_mirror" ||
 		toolName == "get_current_page_info" ||
@@ -1276,3 +1203,11 @@ bool ShouldBypassToolApprovalForScope(const std::string& approvalScope)
 		approvalScope.compare(0, kExternalMcpPrefix.size(), kExternalMcpPrefix) == 0;
 }
 
+
+#if !defined(_M_IX86)
+std::string FinalizeNewFileAfterMirrorRefresh(const std::string& resultLocal, bool& outOk)
+{
+    outOk = false;
+    return resultLocal;
+}
+#endif

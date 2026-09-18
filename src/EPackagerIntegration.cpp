@@ -318,7 +318,8 @@ std::filesystem::path BuildCurrentProjectSnapshotRoot()
 {
 	const ULONGLONG tick = GetTickCount64();
 	const DWORD pid = GetCurrentProcessId();
-	return GetTempDirectory() / L"AutoLinker" / L"unpack-snapshots" / std::format(L"{}.{}", pid, tick);
+	static std::atomic_uint64_t sequence{0};
+	return GetTempDirectory() / L"AutoLinker" / L"unpack-snapshots" / std::format(L"{}.{}.{}", pid, tick, ++sequence);
 }
 
 std::filesystem::path BuildCurrentProjectSnapshotPath(const std::filesystem::path& sourcePath)
@@ -456,50 +457,14 @@ std::wstring QuoteCommandLineArg(const std::wstring& arg)
 	return quoted;
 }
 
-void ReadPipeToBytes(HANDLE pipe, std::string* output, std::atomic_bool* done)
-{
-	if (pipe == nullptr || output == nullptr) {
-		if (done != nullptr) {
-			done->store(true, std::memory_order_release);
-		}
-		return;
-	}
-
-	char buffer[4096] = {};
-	DWORD bytesRead = 0;
-	while (ReadFile(pipe, buffer, static_cast<DWORD>(sizeof(buffer)), &bytesRead, nullptr) != FALSE && bytesRead > 0) {
-		output->append(buffer, bytesRead);
-	}
-	if (done != nullptr) {
-		done->store(true, std::memory_order_release);
-	}
-}
-
 constexpr DWORD kEPackagerProcessTimeoutMs = 180000;
-
-bool IsIdeMainThread()
-{
-	if (g_hwnd == nullptr || !IsWindow(g_hwnd)) {
-		return false;
-	}
-	const DWORD threadId = GetWindowThreadProcessId(g_hwnd, nullptr);
-	return threadId != 0 && threadId == GetCurrentThreadId();
-}
-
-bool IsSafeMessageToDispatchWhileWaiting(const UINT message)
-{
-	return message == WM_PAINT ||
-		message == WM_NCPAINT ||
-		message == WM_ERASEBKGND ||
-		message == WM_TIMER ||
-		message == WM_SETCURSOR;
-}
 
 ProcessRunResult RunProcessAndCaptureImpl(
 	const std::filesystem::path& exePath,
 	const std::vector<std::wstring>& args,
 	const std::filesystem::path& workingDirectory,
-	const DWORD timeoutMs = kEPackagerProcessTimeoutMs)
+	const DWORD timeoutMs = kEPackagerProcessTimeoutMs,
+	const std::function<bool()>& cancelled = {})
 {
 	ProcessRunResult result = {};
 	const DWORD effectiveTimeoutMs = timeoutMs == 0
@@ -589,7 +554,7 @@ ProcessRunResult RunProcessAndCaptureImpl(
 		nullptr,
 		nullptr,
 		TRUE,
-		CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
+		CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED,
 		nullptr,
 		cwd.empty() ? nullptr : cwd.c_str(),
 		reinterpret_cast<LPSTARTUPINFOW>(&si),
@@ -608,142 +573,58 @@ ProcessRunResult RunProcessAndCaptureImpl(
 	}
 	const ULONGLONG processStartTick = GetTickCount64();
 
-	HANDLE job = CreateJobObjectW(nullptr, nullptr);
-	if (job == nullptr) {
-		const DWORD jobError = GetLastError();
-		OutputStringToELog(std::format(
-			"[e-packager] CreateJobObjectW unavailable, continuing without child cleanup job, error={}",
-			jobError));
-	}
-	if (job != nullptr) {
-		JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo = {};
-		jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-		if (SetInformationJobObject(
-				job,
-				JobObjectExtendedLimitInformation,
-				&jobInfo,
-				static_cast<DWORD>(sizeof(jobInfo))) == FALSE ||
-			AssignProcessToJobObject(job, pi.hProcess) == FALSE) {
-			const DWORD jobAssignError = GetLastError();
-			OutputStringToELog(std::format(
-				"[e-packager] child cleanup job unavailable, continuing without it, error={}",
-				jobAssignError));
-			CloseHandle(job);
-			job = nullptr;
-		}
-	}
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo = {};
+    jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &jobInfo, sizeof(jobInfo)) ||
+        !AssignProcessToJobObject(job, pi.hProcess)) {
+        result.error = "cannot establish e-packager process cleanup job";
+        TerminateProcess(pi.hProcess, 126);
+        WaitForSingleObject(pi.hProcess, 5000);
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        CloseHandle(stdOutRead); CloseHandle(stdErrRead);
+        if (job) CloseHandle(job);
+        return result;
+    }
+    if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1)) {
+        result.error = "cannot resume e-packager process";
+        TerminateJobObject(job, 126);
+        CloseHandle(job); CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        CloseHandle(stdOutRead); CloseHandle(stdErrRead);
+        return result;
+    }
 
-	std::atomic_bool stdoutDone = false;
-	std::atomic_bool stderrDone = false;
-	std::thread stdoutReader(ReadPipeToBytes, stdOutRead, &result.stdOutBytes, &stdoutDone);
-	std::thread stderrReader(ReadPipeToBytes, stdErrRead, &result.stdErrBytes, &stderrDone);
-
-	DWORD waitResult = WAIT_FAILED;
-	std::vector<MSG> deferredMessages;
-	if (!IsIdeMainThread()) {
-		waitResult = WaitForSingleObject(pi.hProcess, effectiveTimeoutMs);
-	}
-	else {
-		// WorkspaceMirror is invoked by the IDE window procedure. Waiting on the
-		// child directly would stop painting and make the IDE appear hung while a
-		// large project is unpacked. Pump only redraw/timer messages here; tool,
-		// command, and input messages are deferred to avoid re-entering the mirror
-		// lock and are posted back after the child finishes.
-		const ULONGLONG deadline = processStartTick + effectiveTimeoutMs;
-		for (;;) {
-			const ULONGLONG now = GetTickCount64();
-			if (now >= deadline) {
-				waitResult = WAIT_TIMEOUT;
-				break;
-			}
-			const DWORD remaining = static_cast<DWORD>((std::min)(
-				deadline - now,
-				static_cast<ULONGLONG>(MAXDWORD)));
-			const DWORD messageWait = MsgWaitForMultipleObjectsEx(
-				1,
-				&pi.hProcess,
-				remaining,
-				QS_ALLINPUT,
-				MWMO_INPUTAVAILABLE);
-			if (messageWait == WAIT_OBJECT_0) {
-				waitResult = WAIT_OBJECT_0;
-				break;
-			}
-			if (messageWait == WAIT_TIMEOUT) {
-				waitResult = WAIT_TIMEOUT;
-				break;
-			}
-			if (messageWait != WAIT_OBJECT_0 + 1) {
-				waitResult = WAIT_FAILED;
-				break;
-			}
-
-			MSG message = {};
-			while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE) != FALSE) {
-				if (message.message == WM_QUIT) {
-					deferredMessages.push_back(message);
-					continue;
-				}
-				if (IsSafeMessageToDispatchWhileWaiting(message.message)) {
-					TranslateMessage(&message);
-					DispatchMessageW(&message);
-				}
-				else if (deferredMessages.size() < 1024) {
-					deferredMessages.push_back(message);
-				}
-			}
-		}
-	}
-	for (const MSG& message : deferredMessages) {
-		if (message.message == WM_QUIT) {
-			PostQuitMessage(static_cast<int>(message.wParam));
-		}
-		else if (message.hwnd != nullptr) {
-			PostMessageW(message.hwnd, message.message, message.wParam, message.lParam);
-		}
-		else {
-			PostThreadMessageW(GetCurrentThreadId(), message.message, message.wParam, message.lParam);
-		}
-	}
-	if (waitResult == WAIT_TIMEOUT) {
-		result.error = std::format("e-packager timed out after {} ms", effectiveTimeoutMs);
-		OutputStringToELog("[e-packager] " + result.error);
-		TerminateProcess(pi.hProcess, 124);
-		WaitForSingleObject(pi.hProcess, 5000);
-	}
-	else if (waitResult == WAIT_FAILED) {
-		result.error = std::format("WaitForSingleObject failed, error={}", GetLastError());
-		TerminateProcess(pi.hProcess, 126);
-		WaitForSingleObject(pi.hProcess, 5000);
-	}
-	result.elapsedMs = GetTickCount64() - processStartTick;
-	DWORD exitCode = 0;
-	if (GetExitCodeProcess(pi.hProcess, &exitCode) != FALSE) {
-		result.exitCode = exitCode;
-	}
-
-	CloseHandle(pi.hThread);
-	CloseHandle(pi.hProcess);
-
-	const auto finishPipeReader = [](std::thread& reader, std::atomic_bool& done) {
-		if (!reader.joinable()) {
-			return;
-		}
-		// Give a normally exiting process a short chance to drain its final bytes.
-		for (int attempt = 0; attempt < 20 && !done.load(std::memory_order_acquire); ++attempt) {
-			Sleep(5);
-		}
-		if (!done.load(std::memory_order_acquire)) {
-			// A leaked descendant handle can leave ReadFile blocked forever.
-			CancelSynchronousIo(static_cast<HANDLE>(reader.native_handle()));
-		}
-		reader.join();
-	};
-	finishPipeReader(stdoutReader, stdoutDone);
-	finishPipeReader(stderrReader, stderrDone);
-	CloseHandle(stdOutRead);
-	CloseHandle(stdErrRead);
-	CloseHandle(job);
+    // 只读取管道中已经存在的字节，不创建可能永久阻塞在 ReadFile/join 的线程。
+    const auto drain = [](HANDLE pipe, std::string& output) {
+        char buffer[4096];
+        for (unsigned batch = 0; batch < 256; ++batch) {
+            DWORD available = 0, read = 0;
+            if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr) || !available) break;
+            if (!ReadFile(pipe, buffer, (std::min)(available, static_cast<DWORD>(sizeof(buffer))), &read, nullptr) || !read) break;
+            output.append(buffer, read);
+        }
+    };
+    for (;;) {
+        drain(stdOutRead, result.stdOutBytes);
+        drain(stdErrRead, result.stdErrBytes);
+        const DWORD wait = WaitForSingleObject(pi.hProcess, 20);
+        if (wait == WAIT_OBJECT_0) break;
+        if ((cancelled && cancelled()) || GetTickCount64() - processStartTick >= effectiveTimeoutMs || wait == WAIT_FAILED) {
+            result.error = (cancelled && cancelled()) ? "cancelled" :
+                (wait == WAIT_FAILED ? "process wait failed" : "e-packager timed out");
+            if (job) TerminateJobObject(job, 124); else TerminateProcess(pi.hProcess, 124);
+            WaitForSingleObject(pi.hProcess, 5000);
+            break;
+        }
+    }
+    result.elapsedMs = GetTickCount64() - processStartTick;
+    GetExitCodeProcess(pi.hProcess, &result.exitCode);
+    // 先关闭作业，防止后代持有写端；最终读取仅消费已经缓冲的数据。
+    if (job) CloseHandle(job);
+    drain(stdOutRead, result.stdOutBytes);
+    drain(stdErrRead, result.stdErrBytes);
+    CloseHandle(stdOutRead); CloseHandle(stdErrRead);
+    CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
 
 	result.ok = result.exitCode == 0 && result.error.empty();
 	return result;
@@ -1586,6 +1467,9 @@ bool GetCurrentSourcePath(std::filesystem::path& outSourcePath, std::string& out
 {
 	outSourcePath.clear();
 	outError.clear();
+    if (!g_hwnd || GetWindowThreadProcessId(g_hwnd, nullptr) != GetCurrentThreadId()) {
+        outError = "source query requires IDE main thread"; return false;
+    }
 	UpdateCurrentOpenSourceFile();
 	if (g_nowOpenSourceFilePath.empty()) {
 		outError = "当前没有打开易语言源码文件";
@@ -1612,12 +1496,24 @@ bool WriteCurrentProjectSnapshot(
 	std::string& outTrace,
 	std::string& outError)
 {
+    if (!g_hwnd || GetWindowThreadProcessId(g_hwnd, nullptr) != GetCurrentThreadId()) {
+        outBytesWritten = 0; outTrace.clear(); outError = "snapshot capture requires IDE main thread"; return false;
+    }
 	return WriteCurrentProjectSnapshotImpl(snapshotPath, outBytesWritten, outTrace, outError);
 }
 
 void CleanupSnapshotRoot(const std::filesystem::path& snapshotRoot)
 {
 	CleanupSnapshotRootImpl(snapshotRoot);
+}
+
+bool GetInstalledTool(std::filesystem::path& outToolPath, std::string& outError)
+{
+    outToolPath = GetEPackagerExePath();
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(outToolPath, ec)) { outError.clear(); return true; }
+    outError = "e-packager 未安装，请先通过组件更新菜单安装。" + BuildManualEPackagerInstallGuidance();
+    outToolPath.clear(); return false;
 }
 
 bool EnsureToolReady(std::filesystem::path& outToolPath, std::string& outError)
@@ -1704,9 +1600,10 @@ ProcessRunResult RunProcessAndCapture(
 	const std::filesystem::path& exePath,
 	const std::vector<std::wstring>& args,
 	const std::filesystem::path& workingDirectory,
-	const unsigned long timeoutMs)
+	const unsigned long timeoutMs,
+	const std::function<bool()>& cancelled)
 {
-	return RunProcessAndCaptureImpl(exePath, args, workingDirectory, timeoutMs);
+	return RunProcessAndCaptureImpl(exePath, args, workingDirectory, timeoutMs, cancelled);
 }
 
 std::wstring BuildUnpackMenuTitle()

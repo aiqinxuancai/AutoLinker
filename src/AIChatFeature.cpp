@@ -1,4 +1,6 @@
-﻿#include "AIChatFeature.h"
+﻿#include "EPackagerTool.h"
+#include "IdeToolScheduler.h"
+#include "AIChatFeature.h"
 
 #include <algorithm>
 #include <array>
@@ -439,6 +441,9 @@ unsigned long long g_nextPlanUserInputId = 1;
 UINT g_msgAIChatDone = 0;
 UINT g_msgAIChatToolDialog = 0;
 UINT g_msgAIChatToolExec = 0;
+IdeToolScheduler g_toolScheduler;
+void PumpToolScheduler();
+void EnqueueToolRequest(const std::shared_ptr<ToolExecutionRequest>& request);
 UINT g_msgAIChatDebugRun = 0;
 std::mutex g_toolDialogRequestMutex;
 std::unordered_map<UINT_PTR, std::shared_ptr<ToolDialogRequest>> g_pendingToolDialogRequests;
@@ -446,9 +451,6 @@ UINT_PTR g_nextToolDialogRequestId = 1;
 std::mutex g_toolExecutionRequestMutex;
 std::unordered_map<UINT_PTR, std::shared_ptr<ToolExecutionRequest>> g_pendingToolExecutionRequests;
 UINT_PTR g_nextToolExecutionRequestId = 1;
-std::mutex g_compileToolQueueMutex;
-std::deque<std::shared_ptr<ToolExecutionRequest>> g_queuedCompileToolRequests;
-bool g_compileToolExecutionActive = false;
 std::condition_variable g_chatRequestDoneCv;
 unsigned long long g_lastCompletedRequestId = 0;
 AIChatResult g_lastCompletedChatResult = {};
@@ -1845,6 +1847,7 @@ void FinishToolExecutionRequest(
 		request->ok = ok;
 		request->resultJson = resultJson;
 		request->done = true;
+        request->stage = ToolExecutionRequest::Stage::Complete;
 		// Notify under the lock so the waiter cannot wake, return, and destroy
 		// the condition_variable before notify_one() runs.
 		request->cv.notify_one();
@@ -2565,6 +2568,18 @@ void RebindChatSessionToCurrentSourceIfNeeded()
 	PostRefreshDialog();
 }
 
+bool RefreshWorkspaceFromChatWorker(std::string& error, std::string& mode)
+{
+    bool ok = false;
+    const std::string result = ExecuteToolCall("refresh_workspace_mirror", R"({"mode":"full"})", ok, true, [] {
+        std::lock_guard<std::mutex> lock(g_session.mutex);
+        return g_session.cancellation && g_session.cancellation->IsCancelled();
+    });
+    mode = "full";
+    if (!ok) error = result;
+    return ok;
+}
+
 bool PrepareWorkspaceMirrorForChat(
 	unsigned long long requestId,
 	const std::string& sourceFilePathLocal,
@@ -2576,10 +2591,7 @@ bool PrepareWorkspaceMirrorForChat(
 	if (!hasOpenSource) {
 		outError = LocalFromWide(L"当前没有打开易语言源码文件");
 	}
-	else if (WorkspaceMirror::RefreshMirror(
-			outError,
-			&mode,
-			WorkspaceMirror::RefreshMode::Full)) {
+	else if (RefreshWorkspaceFromChatWorker(outError, mode)) {
 		const std::uint64_t currentGeneration = WorkspaceMirror::GetGeneration();
 		{
 			std::lock_guard<std::mutex> guard(g_session.mutex);
@@ -2659,10 +2671,7 @@ bool EnsureWorkspaceMirrorForInternalSourceTool(
 	// 避免把可恢复的状态错误交给模型后反复重放同一个写入调用。
 	std::string refreshError;
 	std::string refreshMode;
-	if (WorkspaceMirror::RefreshMirror(
-		refreshError,
-		&refreshMode,
-		WorkspaceMirror::RefreshMode::Full)) {
+	if (RefreshWorkspaceFromChatWorker(refreshError, refreshMode)) {
 		const std::uint64_t refreshedGeneration = WorkspaceMirror::GetGeneration();
 		{
 			std::lock_guard<std::mutex> guard(g_session.mutex);
@@ -6702,10 +6711,13 @@ UINT_PTR RegisterToolExecutionRequest(const std::shared_ptr<ToolExecutionRequest
 	}
 
 	std::lock_guard<std::mutex> guard(g_toolExecutionRequestMutex);
+	if (g_pendingToolExecutionRequests.size() >= 128) return 0;
 	const UINT_PTR id = g_nextToolExecutionRequestId++;
 	if (g_nextToolExecutionRequestId == 0) {
 		g_nextToolExecutionRequestId = 1;
 	}
+	request->id = id;
+	request->enqueuedAt = GetTickCount64();
 	g_pendingToolExecutionRequests[id] = request;
 	return id;
 }
@@ -9631,9 +9643,10 @@ void CompletePendingToolApproval(
 		return;
 	}
 
-	bool ok = false;
-	const std::string resultJson = ExecuteToolCallOnMainThread(pending.toolName, pending.argumentsJson, ok);
-	FinishToolExecutionRequest(pending.request, ok, resultJson);
+	pending.request->approved = true;
+    pending.request->prepared = false;
+	pending.request->argumentsJson = pending.argumentsJson;
+	EnqueueToolRequest(pending.request);
 	PostRefreshDialog();
 	if (hWnd != nullptr && IsWindow(hWnd)) {
 		RefreshChatDialog(hWnd);
@@ -9696,9 +9709,10 @@ bool BeginToolApprovalRequest(const std::shared_ptr<ToolExecutionRequest>& reque
 					R"({"ok":true,"approved":true})");
 			}
 			else {
-				bool ok = false;
-				const std::string resultJson = ExecuteToolCallOnMainThread(request->toolName, effectiveArgumentsJson, ok);
-				FinishToolExecutionRequest(request, ok, resultJson);
+				request->approved = true;
+                request->prepared = false;
+				request->argumentsJson = effectiveArgumentsJson;
+				EnqueueToolRequest(request);
 			}
 		}
 		else {
@@ -9799,178 +9813,234 @@ std::string AppendAutoWriteDiffMessageForTool(const std::string& toolName, const
 	return effectiveArgumentsJson;
 }
 
-bool IsCompileToolExecutionRequest(const std::shared_ptr<ToolExecutionRequest>& request)
+void TraceScheduledTool(const std::shared_ptr<ToolExecutionRequest>& request, const char* phase)
 {
-	return request != nullptr && _stricmp(request->toolName.c_str(), "compile_with_output_path") == 0;
+    if (request) Logger::Instance().Write("Tool", std::format(
+        "request={} tid={} epoch={} tool={} phase={} elapsed_ms={}", request->id, GetCurrentThreadId(),
+        request->contextEpoch, request->toolName, phase, GetTickCount64() - request->enqueuedAt));
 }
 
-bool QueueCompileToolExecutionIfActive(const std::shared_ptr<ToolExecutionRequest>& request)
+void FinishScheduledTool(bool ok, const std::string& result)
 {
-	std::lock_guard<std::mutex> guard(g_compileToolQueueMutex);
-	if (g_compileToolExecutionActive) {
-		g_queuedCompileToolRequests.push_back(request);
-		return true;
-	}
-	g_compileToolExecutionActive = true;
-	return false;
+    auto request = std::move(g_toolScheduler.active);
+    if (g_toolScheduler.queued.empty()) KillTimer(g_mainWindow, IdeToolScheduler::TimerId);
+    TraceScheduledTool(request, "complete");
+    g_toolScheduler.refresh.reset();
+    FinishToolExecutionRequest(request, ok, result);
+    PostMessageW(g_mainWindow, g_toolScheduler.Message(), 0, 0);
 }
 
-std::shared_ptr<ToolExecutionRequest> TakeNextQueuedCompileToolExecution()
+bool StartScheduledRefresh(const std::shared_ptr<ToolExecutionRequest>& request, WorkspaceMirror::RefreshMode mode)
 {
-	std::lock_guard<std::mutex> guard(g_compileToolQueueMutex);
-	if (g_queuedCompileToolRequests.empty()) {
-		g_compileToolExecutionActive = false;
-		return nullptr;
-	}
-	std::shared_ptr<ToolExecutionRequest> request = std::move(g_queuedCompileToolRequests.front());
-	g_queuedCompileToolRequests.pop_front();
-	return request;
+    std::string error;
+    request->stage = ToolExecutionRequest::Stage::Capture;
+    TraceScheduledTool(request, "capture");
+    g_toolScheduler.refresh = WorkspaceMirror::CaptureRefreshInputOnMainThread(mode, error);
+    if (!g_toolScheduler.refresh && request->postRefresh) {
+        auto result = nlohmann::json::parse(LocalToUtf8Text(request->savedResult));
+        result.erase("workspace_refresh_pending"); result["workspace_mirror_refreshed"] = false;
+        result["refresh_error"] = LocalToUtf8Text(error);
+        FinishScheduledTool(request->savedOk, Utf8ToLocalText(DumpJsonUtf8(result))); return false;
+    }
+    if (!g_toolScheduler.refresh) {
+        FinishScheduledTool(false, Utf8ToLocalText(DumpJsonUtf8(nlohmann::json{{"ok", false}, {"error", LocalToUtf8Text(error)}})));
+        return false;
+    }
+    const auto task = g_toolScheduler.refresh;
+    request->stage = ToolExecutionRequest::Stage::Background;
+    TraceScheduledTool(request, "background_build");
+    g_toolScheduler.Start(g_mainWindow, [task] { WorkspaceMirror::BuildRefreshCandidate(task); });
+    return true;
 }
 
-bool HandleCompileToolExecutionRequest(const std::shared_ptr<ToolExecutionRequest>& firstRequest)
+void ExecuteScheduledTool()
 {
-	if (QueueCompileToolExecutionIfActive(firstRequest)) {
-		return true;
-	}
-
-	std::shared_ptr<ToolExecutionRequest> request = firstRequest;
-	while (request != nullptr) {
-		if (IsToolExecutionRequestCancelled(request)) {
-			FinishToolExecutionRequest(
-				request,
-				false,
-				R"({"ok":false,"error":"main thread tool request was cancelled"})");
-		}
-		else if (request->approvalOnly) {
-			FinishToolExecutionRequest(
-				request,
-				true,
-				R"({"ok":true,"approved":true})");
-		}
-		else {
-			PostRefreshDialog();
-			bool ok = false;
-			const std::string resultJson = ExecuteToolCallOnMainThread(
-				request->toolName,
-				request->argumentsJson,
-				ok,
-				request->bypassInteractiveApproval);
-			FinishToolExecutionRequest(request, ok, resultJson);
-		}
-		request = TakeNextQueuedCompileToolExecution();
-	}
-	return true;
+    auto request = g_toolScheduler.active;
+    if (!request) return;
+    if (request->resumeAt && GetTickCount64() < request->resumeAt) return;
+    request->resumeAt = 0;
+    if (IsToolExecutionRequestCancelled(request)) {
+        FinishScheduledTool(false, R"({"ok":false,"error":"cancelled"})"); return;
+    }
+    UpdateCurrentOpenSourceFile();
+    if (request->contextEpoch != WorkspaceMirror::GetContextEpoch()) {
+        FinishScheduledTool(false, R"({"ok":false,"error":"workspace_changed"})"); return;
+    }
+    if (!request->approved && ShouldRequestInteractiveApproval(request->toolName,
+        request->bypassInteractiveApproval, IsAutoAllowWritesEnabled())) {
+        // 审批对话可泵消息；暂时保留 executing 防止预览期间嵌套执行。
+        g_toolScheduler.active.reset();
+        request->stage = ToolExecutionRequest::Stage::Approval;
+        TraceScheduledTool(request, "approval");
+        BeginToolApprovalRequest(request);
+        PostMessageW(g_mainWindow, g_toolScheduler.Message(), 0, 0);
+        return;
+    }
+    if (request->approvalOnly) { FinishScheduledTool(true, R"({"ok":true,"approved":true})"); return; }
+    const bool explicitRefresh = request->toolName == "refresh_workspace_mirror";
+    if (!request->prepared && (explicitRefresh || request->toolName == "__prepare_workspace_file_access" ||
+        AIChatToolRegistry::RequiresWorkspaceRefresh(request->toolName))) {
+        WorkspaceMirror::FileAccessSnapshot snapshot;
+        std::string error;
+        if (explicitRefresh || !WorkspaceMirror::GetPreparedFileAccessSnapshot(snapshot, error)) {
+            auto mode = WorkspaceMirror::RefreshMode::Auto;
+            if (explicitRefresh) {
+                auto args = nlohmann::json::parse(request->argumentsJson.empty() ? "{}" : request->argumentsJson);
+                auto name = LowerAsciiCopy(TrimAsciiCopy(args.value("mode", std::string("auto"))));
+                if (name == "full") mode = WorkspaceMirror::RefreshMode::Full;
+                else if (name == "main_only" || name == "source_only") mode = WorkspaceMirror::RefreshMode::MainOnly;
+                else if (name != "auto" && !name.empty()) {
+                    FinishScheduledTool(false, R"({"ok":false,"error":"mode must be auto, main_only, or full"})"); return;
+                }
+            }
+            StartScheduledRefresh(request, mode); return;
+        }
+        request->prepared = true;
+    }
+    if (request->toolName == "e_packager") {
+        auto args = nlohmann::json::parse(request->argumentsJson);
+        std::string error;
+        auto task = WorkspaceMirror::CaptureReferenceInputOnMainThread(args.value("file_path", std::string()), error);
+        if (!task) { FinishScheduledTool(false, Utf8ToLocalText(DumpJsonUtf8(nlohmann::json{{"ok", false}, {"error", LocalToUtf8Text(error)}}))); return; }
+        request->referenceUnpack = true;
+        g_toolScheduler.refresh = task;
+        g_toolScheduler.Start(g_mainWindow, [task] { WorkspaceMirror::BuildRefreshCandidate(task); });
+        return;
+    }
+    if (request->toolName == "__prepare_workspace_file_access") {
+        std::string error;
+        bool ok = WorkspaceMirror::GetPreparedFileAccessSnapshot(request->preparedSnapshot, error);
+        FinishScheduledTool(ok, ok ? R"({"ok":true,"prepared":true})" :
+            Utf8ToLocalText(DumpJsonUtf8(nlohmann::json{{"ok",false},{"error",LocalToUtf8Text(error)}})));
+        return;
+    }
+    request->stage = ToolExecutionRequest::Stage::Execute;
+    TraceScheduledTool(request, "execute");
+    const std::string arguments = AppendAutoWriteDiffMessageForTool(request->toolName, request->argumentsJson);
+    if (request->contextEpoch != WorkspaceMirror::GetContextEpoch() || IsToolExecutionRequestCancelled(request)) {
+        FinishScheduledTool(false, R"({"ok":false,"error":"workspace_changed_or_cancelled"})"); return;
+    }
+    bool ok = false;
+    std::string result = ExecuteToolCallOnMainThread(request->toolName, arguments, ok, request->bypassInteractiveApproval);
+    if (explicitRefresh && ok) {
+        auto json = nlohmann::json::parse(LocalToUtf8Text(result));
+        json["refresh_mode"] = request->refreshMode;
+        result = Utf8ToLocalText(DumpJsonUtf8(json));
+    }
+    // 模块等结构修改的后置完整刷新也属于当前事务，不能同步启动子进程。
+    auto json = nlohmann::json::parse(LocalToUtf8Text(result), nullptr, false);
+    if (request->contextEpoch != WorkspaceMirror::GetContextEpoch() && json.is_object()) {
+        json.erase("_mirror_text"); json.erase("workspace_sync_pending"); json.erase("workspace_refresh_pending");
+        json["workspace_mirror_updated"] = false; json["mirror_updated"] = false;
+        json["workspace_mirror_update_error"] = "workspace_changed";
+        FinishScheduledTool(ok, Utf8ToLocalText(DumpJsonUtf8(json))); return;
+    }
+    if (ok && request->toolName == "add_new_file" && json.is_object() && json.value("pending_finish", false)) {
+        auto args = nlohmann::json::parse(request->argumentsJson.empty() ? "{}" : request->argumentsJson);
+        args["__finish_default_name"] = json.at("default_name");
+        request->argumentsJson = args.dump(); request->approved = true;
+        request->resumeAt = GetTickCount64() + 75;
+        SetTimer(g_mainWindow, IdeToolScheduler::TimerId, 100, nullptr);
+        return;
+    }
+    if (ok && json.is_object() && json.value("workspace_sync_pending", false)) {
+        request->savedResult = result; request->savedOk = ok; request->textUpdate = true;
+        std::string error;
+        auto task = WorkspaceMirror::CaptureTextUpdateOnMainThread(json.value("file_path", std::string()),
+            Utf8ToLocalText(json.value("_mirror_text", std::string())), error);
+        if (!task) {
+            WorkspaceMirror::InvalidateMirror();
+            json.erase("_mirror_text"); json.erase("workspace_sync_pending"); json["workspace_mirror_invalidated"] = true;
+            json["workspace_mirror_update_error"] = LocalToUtf8Text(error);
+            FinishScheduledTool(ok, Utf8ToLocalText(DumpJsonUtf8(json))); return;
+        }
+        g_toolScheduler.refresh = task;
+        g_toolScheduler.Start(g_mainWindow, [task] { WorkspaceMirror::BuildRefreshCandidate(task); });
+        return;
+    }
+    if (json.is_object() && json.value("workspace_refresh_pending", false)) {
+        request->savedResult = result; request->savedOk = ok; request->postRefresh = true;
+        StartScheduledRefresh(request, WorkspaceMirror::RefreshMode::Full); return;
+    }
+    FinishScheduledTool(ok, result);
 }
 
-// 镜像刷新可能需要启动 e-packager 并处理较大的工程文件。它不应在窗口
-// 线程同步执行，否则 WebView 的输入/刷新消息会在整个刷新期间无法派发。
-struct DeferredToolExecutionContext {
-	std::shared_ptr<ToolExecutionRequest> request;
-	std::string argumentsJson;
-};
-
-void RunDeferredToolExecution(void* parameter)
+void PumpToolScheduler()
 {
-	std::unique_ptr<DeferredToolExecutionContext> context(
-		reinterpret_cast<DeferredToolExecutionContext*>(parameter));
-	if (!context || !context->request) {
-		return;
-	}
-
-	const std::shared_ptr<ToolExecutionRequest>& request = context->request;
-	if (IsToolExecutionRequestCancelled(request)) {
-		FinishToolExecutionRequest(
-			request,
-			false,
-			R"({"ok":false,"error":"main thread tool request was cancelled"})");
-		return;
-	}
-
-	bool ok = false;
-	const std::string resultJson = ExecuteToolCallOnMainThread(
-		request->toolName,
-		context->argumentsJson,
-		ok,
-		request->bypassInteractiveApproval);
-	FinishToolExecutionRequest(request, ok, resultJson);
-	PostRefreshDialog();
+    if (g_toolScheduler.stopped || g_toolScheduler.executing) return;
+    g_toolScheduler.executing = true;
+    struct ResetExecuting { ~ResetExecuting() { g_toolScheduler.executing = false; } } reset;
+    try {
+        if (g_toolScheduler.HasWorker()) {
+            if (g_toolScheduler.active && IsToolExecutionRequestCancelled(g_toolScheduler.active))
+                WorkspaceMirror::CancelRefresh(g_toolScheduler.refresh);
+            if (!g_toolScheduler.WorkerDone()) return;
+            g_toolScheduler.JoinCompleted(g_mainWindow);
+            std::string error, mode;
+            const auto task = g_toolScheduler.refresh;
+            const bool ok = WorkspaceMirror::CommitRefreshOnMainThread(task, error, mode);
+            const auto referenceResult = WorkspaceMirror::GetReferenceResult(task);
+            g_toolScheduler.refresh.reset();
+            auto request = g_toolScheduler.active;
+            if (!request) return;
+            if (request->referenceUnpack) {
+                auto result = EPackagerTool::BuildResult(referenceResult, ok, LocalToUtf8Text(error));
+                FinishScheduledTool(ok, Utf8ToLocalText(DumpJsonUtf8(result))); return;
+            }
+            if (request->textUpdate) {
+                auto result = nlohmann::json::parse(LocalToUtf8Text(request->savedResult));
+                result.erase("_mirror_text"); result.erase("workspace_sync_pending");
+                result["workspace_mirror_updated"] = ok; result["mirror_updated"] = ok;
+                result["workspace_mirror_invalidated"] = !ok;
+                if (!ok) {
+                    if (request->contextEpoch == WorkspaceMirror::GetContextEpoch()) WorkspaceMirror::InvalidateMirror();
+                    result["workspace_mirror_update_error"] = LocalToUtf8Text(error);
+                }
+                FinishScheduledTool(request->savedOk, Utf8ToLocalText(DumpJsonUtf8(result))); return;
+            }
+            if (request->postRefresh) {
+                auto result = nlohmann::json::parse(LocalToUtf8Text(request->savedResult));
+                result.erase("workspace_refresh_pending"); result["workspace_mirror_refreshed"] = ok;
+                if (ok) result["refresh_mode"] = mode; else result["refresh_error"] = LocalToUtf8Text(error);
+                auto finalResult = Utf8ToLocalText(DumpJsonUtf8(result));
+                bool finalOk = request->savedOk;
+                if (request->toolName == "add_new_file") finalResult = FinalizeNewFileAfterMirrorRefresh(finalResult, finalOk);
+                FinishScheduledTool(finalOk, finalResult); return;
+            }
+            if (!ok) {
+                FinishScheduledTool(false, Utf8ToLocalText(DumpJsonUtf8(nlohmann::json{{"ok", false}, {"error", LocalToUtf8Text(error)}}))); return;
+            }
+            request->prepared = true; request->refreshMode = mode;
+        }
+        if (!g_toolScheduler.active && !g_toolScheduler.queued.empty()) {
+            g_toolScheduler.active = std::move(g_toolScheduler.queued.front());
+            g_toolScheduler.queued.pop_front();
+        }
+        ExecuteScheduledTool();
+    } catch (const std::exception& ex) {
+        FinishScheduledTool(false, Utf8ToLocalText(DumpJsonUtf8(nlohmann::json{{"ok", false}, {"error", ex.what()}})));
+    } catch (...) { FinishScheduledTool(false, R"({"ok":false,"error":"tool scheduler exception"})"); }
 }
 
-bool BeginDeferredToolExecution(
-	const std::shared_ptr<ToolExecutionRequest>& request,
-	const std::string& argumentsJson)
+void EnqueueToolRequest(const std::shared_ptr<ToolExecutionRequest>& request)
 {
-	if (!request) {
-		return false;
-	}
-	auto* context = new (std::nothrow) DeferredToolExecutionContext();
-	if (!context) {
-		return false;
-	}
-	context->request = request;
-	context->argumentsJson = argumentsJson;
-	const uintptr_t threadId = _beginthread(RunDeferredToolExecution, 0, context);
-	if (threadId == static_cast<uintptr_t>(-1L)) {
-		delete context;
-		return false;
-	}
-	return true;
+    if (!request) return;
+    if (g_toolScheduler.stopped || g_toolScheduler.queued.size() >= 128) {
+        FinishToolExecutionRequest(request, false, g_toolScheduler.stopped ?
+            R"({"ok":false,"error":"shutting_down"})" : R"({"ok":false,"error":"tool_queue_full"})"); return;
+    }
+    if (!request->contextEpoch) request->contextEpoch = WorkspaceMirror::GetContextEpoch();
+    request->stage = ToolExecutionRequest::Stage::Queued;
+    TraceScheduledTool(request, "queued");
+    g_toolScheduler.queued.push_back(request);
+    SetTimer(g_mainWindow, IdeToolScheduler::TimerId, 100, nullptr);
+    PostMessageW(g_mainWindow, g_toolScheduler.Message(), 0, 0);
 }
 
 bool HandleToolExecRequest(LPARAM lParam)
 {
-	const UINT_PTR requestId = static_cast<UINT_PTR>(lParam);
-	std::shared_ptr<ToolExecutionRequest> request = TakeToolExecutionRequest(requestId);
-	if (request == nullptr) {
-		return true;
-	}
-	if (IsToolExecutionRequestCancelled(request)) {
-		FinishToolExecutionRequest(
-			request,
-			false,
-			R"({"ok":false,"error":"main thread tool request was cancelled"})");
-		return true;
-	}
-	if (IsCompileToolExecutionRequest(request)) {
-		return HandleCompileToolExecutionRequest(request);
-	}
-
-	if (ShouldRequestInteractiveApproval(
-			request->toolName,
-			request->bypassInteractiveApproval,
-			IsAutoAllowWritesEnabled())) {
-		return BeginToolApprovalRequest(request);
-	}
-	if (request->approvalOnly) {
-		FinishToolExecutionRequest(
-			request,
-			true,
-			R"({"ok":true,"approved":true})");
-		return true;
-	}
-
-	const std::string effectiveArgumentsJson = AppendAutoWriteDiffMessageForTool(
-		request->toolName,
-		request->argumentsJson);
-	PostRefreshDialog();
-	if (_stricmp(request->toolName.c_str(), "refresh_workspace_mirror") == 0) {
-		if (!BeginDeferredToolExecution(request, effectiveArgumentsJson)) {
-			FinishToolExecutionRequest(
-				request,
-				false,
-				R"({"ok":false,"error":"failed to start background workspace mirror refresh"})");
-		}
-		return true;
-	}
-
-	bool ok = false;
-	const std::string resultJson = ExecuteToolCallOnMainThread(
-		request->toolName,
-		effectiveArgumentsJson,
-		ok,
-		request->bypassInteractiveApproval);
-	FinishToolExecutionRequest(request, ok, resultJson);
-	return true;
+    EnqueueToolRequest(TakeToolExecutionRequest(static_cast<UINT_PTR>(lParam)));
+    return true;
 }
 } // namespace
 
@@ -10738,6 +10808,13 @@ void Shutdown()
 		false);
 	ShutdownInternalExecSessions();
 	std::vector<std::shared_ptr<ToolExecutionRequest>> executionRequests;
+    g_toolScheduler.Stop(g_mainWindow);
+    if (g_toolScheduler.active) executionRequests.push_back(std::move(g_toolScheduler.active));
+    while (!g_toolScheduler.queued.empty()) {
+        executionRequests.push_back(std::move(g_toolScheduler.queued.front()));
+        g_toolScheduler.queued.pop_front();
+    }
+
 	{
 		std::lock_guard<std::mutex> guard(g_toolExecutionRequestMutex);
 		for (auto& [requestId, request] : g_pendingToolExecutionRequests) {
@@ -10745,13 +10822,6 @@ void Shutdown()
 			executionRequests.push_back(std::move(request));
 		}
 		g_pendingToolExecutionRequests.clear();
-	}
-	{
-		std::lock_guard<std::mutex> guard(g_compileToolQueueMutex);
-		while (!g_queuedCompileToolRequests.empty()) {
-			executionRequests.push_back(std::move(g_queuedCompileToolRequests.front()));
-			g_queuedCompileToolRequests.pop_front();
-		}
 	}
 	ToolApprovalRequestState pendingApproval = TakePendingToolApproval(0);
 	if (pendingApproval.request != nullptr) {
@@ -10860,6 +10930,9 @@ void OnCurrentSourceFilePathChanged(const std::string& previousPath, const std::
 
 bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+    if (uMsg == g_toolScheduler.Message() || (uMsg == WM_TIMER && wParam == IdeToolScheduler::TimerId)) {
+        PumpToolScheduler(); return true;
+    }
 	(void)wParam;
 	if (g_msgAIChatDone != 0 && uMsg == g_msgAIChatDone) {
 		HandleChatTaskDone(lParam);

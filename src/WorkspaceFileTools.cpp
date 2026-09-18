@@ -1999,11 +1999,12 @@ std::string ExecuteTool(
 	const std::string& toolName,
 	const std::string& argumentsJson,
 	bool& outOk,
-	const std::function<bool()>& cancelCallback)
+	const std::function<bool()>& cancelCallback,
+	const WorkspaceMirror::FileAccessSnapshot* preparedSnapshot)
 {
-	WorkspaceMirror::FileAccessSnapshot snapshot;
+	WorkspaceMirror::FileAccessSnapshot snapshot = preparedSnapshot ? *preparedSnapshot : WorkspaceMirror::FileAccessSnapshot{};
 	std::string snapshotError;
-	if (!WorkspaceMirror::GetPreparedFileAccessSnapshot(snapshot, snapshotError)) {
+	if (!preparedSnapshot && !WorkspaceMirror::GetPreparedFileAccessSnapshot(snapshot, snapshotError)) {
 		outOk = false;
 		return BuildError(snapshotError);
 	}

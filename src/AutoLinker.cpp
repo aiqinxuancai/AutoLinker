@@ -1,4 +1,6 @@
-﻿#include "AutoLinker.h"
+﻿#include "BackgroundCleanup.h"
+#include "IdeOutputQueue.h"
+#include "AutoLinker.h"
 #include "AutoLinkerInternal.h"
 
 #include <Windows.h>
@@ -276,13 +278,21 @@ LRESULT CALLBACK MainWindowSubclassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPA
 		HandleAiApplyMessage(lParam);
 		return 0;
 	}
+	if (uMsg == IdeOutputQueue::Instance().Message()) {
+		for (const auto& line : IdeOutputQueue::Instance().Take(hWnd)) {
+			IDEFacade::Instance().AppendOutputWindowLine(line);
+		}
+		return 0;
+	}
 	if (uMsg == WM_NCDESTROY) {
+		IdeOutputQueue::Instance().Stop();
 		IdeCompileOutputCapture::Shutdown(hWnd);
 		GameAnalyticsClient::Shutdown();
 		IdeLogViewer::Shutdown();
 		AIChatFeature::Shutdown();
 		LocalMcpServer::Shutdown();
 		WorkspaceMirror::ResetAndCleanup();
+		BackgroundCleanup::Shared()->Stop();
 		g_mainWindowSubclassInstalled = false;
 		RemoveWindowSubclass(hWnd, MainWindowSubclassProc, uIdSubclass);
 		return DefSubclassProc(hWnd, uMsg, wParam, lParam);
