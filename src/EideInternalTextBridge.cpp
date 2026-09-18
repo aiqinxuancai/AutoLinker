@@ -25,6 +25,8 @@
 #include "EideEditorObjectResolver.h"
 #include "EideHiddenTypeWriteSupport.h"
 #include "EideConstLongTextProtection.h"
+#include "IdeBinaryDiagnostics.h"
+#include "Logger.h"
 
 namespace e571 {
 namespace {
@@ -9480,7 +9482,10 @@ bool SetConstEditorCaretRow(
 		0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89,
 	};
 	if (!MatchRvaSignature(moduleBase, kE595SetEditorCaretPositionRva, kSetCaretSignature)) {
-		outTrace = "set_const_row_unsupported_signature";
+		outTrace = "set_const_row_unsupported_signature|" + BuildIdeSignatureDiagnostics(
+			moduleBase, kE595SetEditorCaretPositionRva - kImageBase, kSetCaretSignature);
+		AppendPageEditTraceLine(outTrace);
+		Logger::Instance().Write("IDE", outTrace);
 		return false;
 	}
 

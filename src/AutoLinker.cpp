@@ -31,6 +31,7 @@
 #include "IdeLogViewer.h"
 #include "LocalMcpServer.h"
 #include "Logger.h"
+#include "IdeBinaryDiagnostics.h"
 #include "MemFind.h"
 #include "MouseBack.h"
 #include "PathHelper.h"
@@ -352,6 +353,7 @@ bool FneInit()
 
 	TraceInitStep("进入 FneInit");
 	Logger::Instance().OpenIfNeeded(GetAutoLinkerLogFilePath("autolinker.log").string());
+	Logger::Instance().Write("IDE", GetIdeBinaryIdentity());
 	OutputStringToELog("开始初始化");
 	const bool headlessCompileMode = HeadlessCompileRunner::HasHeadlessCompileRequest();
 
