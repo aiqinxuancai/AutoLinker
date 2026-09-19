@@ -1,4 +1,5 @@
 ﻿#include "WorkspaceFileTools.h"
+#include "StaticJson.h"
 
 #include <Windows.h>
 
@@ -12,7 +13,6 @@
 #include <string>
 #include <vector>
 
-#include "..\\thirdparty\\json.hpp"
 
 #include "RealPageCodeToolSupport.h"
 #include "WorkspaceMirror.h"
@@ -2128,22 +2128,18 @@ std::string BuildPaginationSelfTestJson()
 
 			std::string generationError;
 			initialZeroGenerationAccepted = ValidateMirrorGeneration(
-				json({{"mirror_generation", 0}, {"offset", 0}}),
+				AUTOLINKER_STATIC_JSON(R"json({"mirror_generation":0,"offset":0})json"),
 				snapshot,
 				generationError);
 			missingContinuationGenerationAccepted = ValidateMirrorGeneration(
-				json({{"offset", 10}}),
+				AUTOLINKER_STATIC_JSON(R"json({"offset":10})json"),
 				snapshot,
 				generationError);
 			bool rangedReadToolOk = false;
 			const json rangedReadResult = json::parse(
 				ExecuteReadFile(
 					snapshot,
-					json({
-						{"file_path", "src/Large.txt"},
-						{"offset", 10},
-						{"limit", 5}
-					}).dump(),
+					AUTOLINKER_STATIC_JSON(R"json({"file_path":"src/Large.txt","offset":10,"limit":5})json").dump(),
 					rangedReadToolOk),
 				nullptr,
 				false);
@@ -2154,39 +2150,26 @@ std::string BuildPaginationSelfTestJson()
 				rangedReadResult.value("requested_offset", -1) == 10 &&
 				rangedReadResult.value("returned_lines", 0) == 5;
 			zeroContinuationGenerationRejected = !ValidateMirrorGeneration(
-				json({{"mirror_generation", 0}, {"offset", 10}}),
+				AUTOLINKER_STATIC_JSON(R"json({"mirror_generation":0,"offset":10})json"),
 				snapshot,
 				generationError);
 			currentContinuationGenerationAccepted = ValidateMirrorGeneration(
-				json({{"mirror_generation", 42}, {"offset", 10}}),
+				AUTOLINKER_STATIC_JSON(R"json({"mirror_generation":42,"offset":10})json"),
 				snapshot,
 				generationError);
-			json nestedContinuationArgs = {
-				{"files", json::array({json({
-					{"file_path", "src/Large.txt"},
-					{"byte_offset", 1024},
-					{"mirror_generation", 42}
-				})})}
-			};
+			json nestedContinuationArgs = AUTOLINKER_STATIC_JSON(R"json({"files":[{"file_path":"src/Large.txt","byte_offset":1024,"mirror_generation":42}]})json");
 			nestedContinuationGenerationAccepted =
 				NormalizeReadFilesNestedMirrorGeneration(nestedContinuationArgs, generationError) &&
 				ValidateMirrorGeneration(nestedContinuationArgs, snapshot, generationError);
-			json conflictingNestedGenerationArgs = {
-				{"mirror_generation", 42},
-				{"files", json::array({json({
-					{"file_path", "src/Large.txt"},
-					{"byte_offset", 1024},
-					{"mirror_generation", 41}
-				})})}
-			};
+			json conflictingNestedGenerationArgs = AUTOLINKER_STATIC_JSON(R"json({"mirror_generation":42,"files":[{"file_path":"src/Large.txt","byte_offset":1024,"mirror_generation":41}]})json");
 			conflictingNestedGenerationRejected =
 				!NormalizeReadFilesNestedMirrorGeneration(conflictingNestedGenerationArgs, generationError);
 			staleInitialGenerationIgnored = ValidateMirrorGeneration(
-				json({{"mirror_generation", 41}}),
+				AUTOLINKER_STATIC_JSON(R"json({"mirror_generation":41})json"),
 				snapshot,
 				generationError);
 			staleContinuationGenerationRejected = !ValidateMirrorGeneration(
-				json({{"mirror_generation", 41}, {"offset", 10}}),
+				AUTOLINKER_STATIC_JSON(R"json({"mirror_generation":41,"offset":10})json"),
 				snapshot,
 				generationError);
 		}

@@ -1,10 +1,10 @@
 ﻿// Claude/Gemini 缓存请求适配和用量解析，不依赖 IDE 或网络，便于离线验证。
 #pragma once
 
+#include "StaticJson.h"
 #include <algorithm>
 #include <cstdint>
 #include <limits>
-#include "..\\thirdparty\\json.hpp"
 
 namespace AIProviderCache {
 using Json = nlohmann::json;
@@ -93,7 +93,7 @@ inline bool MarkLastBlock(Json& content)
         if (*type != "text" && *type != "tool_result" && *type != "image" && *type != "document") continue;
         if (it->contains("cache_control")) return false;
         if (*type == "text" && (!it->contains("text") || (*it)["text"] == "")) continue;
-        (*it)["cache_control"] = {{"type", "ephemeral"}};
+        (*it)["cache_control"] = AUTOLINKER_STATIC_JSON(R"json({"type":"ephemeral"})json");
         return true;
     }
     return false;

@@ -5,6 +5,19 @@
 
 namespace CompileDiagnostics {
 namespace {
+bool IsFailureSummary(const std::string& line)
+{
+    return line.rfind("编译现行易程序失败或被中止", 0) == 0;
+}
+bool IsErrorLine(const std::string& line)
+{
+    // IDE 终止消息覆盖汇编器等外部编译阶段；不要用泛化的“错误”误判普通输出。
+    return line.rfind("错误(", 0) == 0 || line.rfind("错误（", 0) == 0 ||
+        line.rfind("语法错误", 0) == 0 || line.rfind("编译错误", 0) == 0 ||
+        IsFailureSummary(line) ||
+        line.rfind("error:", 0) == 0 || line.find(": error:") != std::string::npos ||
+        line.rfind("fatal error:", 0) == 0 || line.find(": fatal error:") != std::string::npos;
+}
 bool MentionsSourceSymbol(const std::string& message, const std::string& text)
 {
     // 当前光标可能仍停留在旧行。仅接受本次错误明确引用且在原生行中出现的符号。
@@ -14,9 +27,20 @@ bool MentionsSourceSymbol(const std::string& message, const std::string& text)
         text.find(message.substr(begin + 3, end - begin - 3)) != std::string::npos;
 }
 }
+bool ContainsFailure(const std::string& output)
+{
+    std::istringstream stream(output);
+    std::string line;
+    while (std::getline(stream, line)) {
+        const auto start = line.find_first_not_of(" \t");
+        if (start != std::string::npos && IsErrorLine(line.substr(start))) return true;
+    }
+    return false;
+}
 nlohmann::json Build(const std::string& output, const Location& location, bool compilationFailed)
 {
     auto result = nlohmann::json::array();
+    std::string failureSummary;
     std::istringstream stream(output);
     std::string line;
     while (std::getline(stream, line)) {
@@ -24,11 +48,18 @@ nlohmann::json Build(const std::string& output, const Location& location, bool c
         const auto start = line.find_first_not_of(" \t");
         if (start == std::string::npos) continue;
         line.erase(0, start);
-        const bool error = line.rfind("错误(", 0) == 0 || line.rfind("错误（", 0) == 0 ||
-            line.rfind("语法错误", 0) == 0 || line.rfind("编译错误", 0) == 0;
+        // 终止摘要只在缺少具体错误时补充，避免重复计数破坏单个错误的位置验证。
+        if (IsFailureSummary(line)) { failureSummary = line; continue; }
+        const bool error = IsErrorLine(line);
         const bool warning = line.rfind("警告(", 0) == 0 || line.rfind("警告（", 0) == 0;
         if (!error && !warning) continue;
         result.push_back({{"severity", error ? "error" : "warning"}, {"message", line},
+            {"file", nullptr}, {"line", nullptr}, {"location_verified", false},
+            {"location_status", "compiler_did_not_provide_verified_source_location"}});
+    }
+    if (!failureSummary.empty() && std::none_of(result.begin(), result.end(),
+        [](const auto& diagnostic) { return diagnostic["severity"] == "error"; })) {
+        result.push_back({{"severity", "error"}, {"message", failureSummary},
             {"file", nullptr}, {"line", nullptr}, {"location_verified", false},
             {"location_status", "compiler_did_not_provide_verified_source_location"}});
     }
@@ -106,7 +137,19 @@ std::string BuildSelfTestJson()
     const bool unmapped = !Build(error, location, true)[0].value("location_verified", false);
     const bool sourceName = GetSourcePageName(".版本 2\r\n\r\n.程序集 第二页, , , 基类\r\n") == "第二页" &&
         GetSourcePageName(".程序集变量 变量, 整数型\r\n").empty();
-    return nlohmann::json({{"ok", mapped && stale && multiple && success && unmapped && sourceName},
+    const std::string asmError = "__启动窗口_创建完毕:2 (mov eax, [ebx ; 故意错误: [ebx 缺右括号) : error: expecting ] at end of memory operand\r\n";
+    const std::string aborted = "编译现行易程序失败或被中止！\r\n";
+    const auto asmDiagnostics = Build(asmError + aborted, location, true);
+    const bool assemblerFailure = ContainsFailure(asmError) && ContainsFailure(aborted) &&
+        ContainsFailure("  " + asmError + aborted + "[AutoLinker]compile start\r\n") &&
+        Build(aborted, location, true).size() == 1 &&
+        asmDiagnostics.size() == 1 && asmDiagnostics[0]["message"] == asmError.substr(0, asmError.size() - 2) &&
+        !asmDiagnostics[0].value("location_verified", false);
+    const bool ordinaryOutput = !ContainsFailure("正在编译...\r\n编译成功\r\n") &&
+        !ContainsFailure("[AutoLinker][Tool] output=C:\\编译错误测试.exe\r\n") &&
+        !ContainsFailure("警告(1): 没有错误\r\n");
+    return nlohmann::json({{"ok", mapped && stale && multiple && success && unmapped && sourceName && assemblerFailure && ordinaryOutput},
+        {"assembler_failure_detected", assemblerFailure}, {"ordinary_output_rejected", ordinaryOutput},
         {"source_page_name", sourceName},
         {"name", "compile-diagnostics"}, {"mapped", mapped}, {"stale_rejected", stale},
         {"multiple_rejected", multiple}, {"success_rejected", success}, {"unmapped_rejected", unmapped}}).dump();

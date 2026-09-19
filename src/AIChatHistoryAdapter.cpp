@@ -1,4 +1,5 @@
 ﻿#include "AIChatHistoryAdapter.h"
+#include "StaticJson.h"
 
 #include <string>
 #include <utility>
@@ -97,7 +98,7 @@ void AIChatHistoryAdapter::ConvertResponsesItemsToChat(Json& messages, bool incl
 	Json assistant;
 	const auto ensureAssistant = [&]() {
 		if (assistant.is_null()) {
-			assistant = {{"role", "assistant"}, {"content", ""}};
+			assistant = AUTOLINKER_STATIC_JSON(R"json({"role":"assistant","content":""})json");
 			if (includeReasoningContent) {
 				// GPT 的加密推理无法转换；只为目标协议提供空值，绝不伪造思考正文。
 				assistant["reasoning_content"] = "";

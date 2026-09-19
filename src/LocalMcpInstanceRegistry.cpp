@@ -1,4 +1,5 @@
 ﻿#include "LocalMcpInstanceRegistry.h"
+#include "StaticJson.h"
 
 #include <Windows.h>
 
@@ -14,7 +15,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "..\\thirdparty\\json.hpp"
 
 namespace {
 
@@ -631,10 +631,7 @@ bool LoadInstances(std::vector<InstanceRecord>& outRecords, std::string* outErro
 
 std::string BuildSelfTestReportJson()
 {
-	nlohmann::json report = {
-		{"name", "local-mcp-instance-registry-isolation"},
-		{"ok", false}
-	};
+	nlohmann::json report = AUTOLINKER_STATIC_JSON(R"json({"name":"local-mcp-instance-registry-isolation","ok":false})json");
 
 	std::error_code ec;
 	const std::filesystem::path baseDirectory =

@@ -1,4 +1,5 @@
 ﻿#include "AIChatMcpClient.h"
+#include "StaticJson.h"
 
 #include <Windows.h>
 
@@ -1444,6 +1445,20 @@ JsonRpcResult PostHttpJsonRpc(
 	return result;
 }
 
+// HTTP 与 stdio 共用固定握手参数，版本仍来自项目的唯一版本常量。
+const nlohmann::json& GetInitializeParams()
+{
+    static const nlohmann::json params = [] {
+        nlohmann::json value;
+        value["protocolVersion"] = kMcpProtocolVersion;
+        value["capabilities"] = nlohmann::json::object();
+        value["clientInfo"]["name"] = "AutoLinker";
+        value["clientInfo"]["version"] = AUTOLINKER_VERSION;
+        return value;
+    }();
+    return params;
+}
+
 bool InitializeHttpSession(
 	const AIChatMcpServerConfig& server,
 	std::string& sessionId,
@@ -1453,14 +1468,7 @@ bool InitializeHttpSession(
 	outError.clear();
 	sessionId.clear();
 
-	nlohmann::json params = {
-		{"protocolVersion", kMcpProtocolVersion},
-		{"capabilities", nlohmann::json::object()},
-		{"clientInfo", {
-			{"name", "AutoLinker"},
-			{"version", AUTOLINKER_VERSION}
-		}}
-	};
+	const nlohmann::json& params = GetInitializeParams();
 	JsonRpcResult init = PostHttpJsonRpc(server, "initialize", params, 1, false, sessionId, cancellation);
 	if (!init.ok) {
 		outError = init.error.empty() ? "initialize failed" : init.error;
@@ -1491,14 +1499,7 @@ bool InitializeStdioSession(
 	HttpRequestCancellation* cancellation)
 {
 	outError.clear();
-	nlohmann::json params = {
-		{"protocolVersion", kMcpProtocolVersion},
-		{"capabilities", nlohmann::json::object()},
-		{"clientInfo", {
-			{"name", "AutoLinker"},
-			{"version", AUTOLINKER_VERSION}
-		}}
-	};
+	const nlohmann::json& params = GetInitializeParams();
 	LogMcpJsonRpcRequest(server, "initialize", params);
 	JsonRpcResult init = session.Post(server, "initialize", params, 1, false, cancellation);
 	if (!init.ok) {
@@ -1566,7 +1567,7 @@ bool ListToolsFromInitializedTransport(
 		const std::string originalName = item["name"].get<std::string>();
 		nlohmann::json normalizedSchema;
 		std::string schemaError;
-		const nlohmann::json inputSchema = item.value("inputSchema", nlohmann::json::object({ {"type", "object"}, {"properties", nlohmann::json::object()} }));
+		const nlohmann::json inputSchema = item.value("inputSchema", AUTOLINKER_STATIC_JSON(R"json({"type":"object","properties":{}})json"));
 		if (!NormalizeInputSchema(inputSchema, normalizedSchema, schemaError)) {
 			LogMcpLine(std::format("skip MCP tool {}.{}: {}", server.id, originalName, schemaError));
 			continue;
@@ -2088,10 +2089,7 @@ AIChatMcpExecutionResult ExecuteTool(
 
 std::string BuildSelfTestReportJson()
 {
-	nlohmann::json report = {
-		{"ok", true},
-		{"name", "mcp-self-test"}
-	};
+	nlohmann::json report = AUTOLINKER_STATIC_JSON(R"json({"ok":true,"name":"mcp-self-test"})json");
 	nlohmann::json checks = nlohmann::json::array();
 	const auto addCheck = [&report, &checks](const std::string& name, bool ok, const std::string& error = std::string()) {
 		checks.push_back({ {"name", name}, {"ok", ok}, {"error", error} });
@@ -2109,50 +2107,63 @@ std::string BuildSelfTestReportJson()
 			configOk && parsedConfig.version == kAIChatMcpConfigVersion && parsedConfig.servers.empty(),
 			error);
 
-		nlohmann::json schema = {
-			{"type", "object"},
-			{"properties", {
-				{"text", {{"type", "string"}, {"description", "hello"}}}
-			}},
-			{"required", nlohmann::json::array({"text"})}
-		};
+		nlohmann::json schema = AUTOLINKER_STATIC_JSON(R"json({"type":"object","properties":{"text":{"type":"string","description":"hello"}},"required":["text"]})json");
 		nlohmann::json normalized;
 		const bool schemaOk = NormalizeInputSchema(schema, normalized, error);
 		addCheck("schema_normalize", schemaOk && normalized.value("type", "") == "object", error);
 
-		nlohmann::json idaLikeCombinatorSchema = {
-			{"type", "object"},
-			{"properties", {
-				{"queries", {
-					{"anyOf", nlohmann::json::array({
-						{
-							{"type", "array"},
-							{"items", {
-								{"type", "object"},
-								{"properties", {
-									{"filter", {{"type", "string"}, {"description", "Name glob/regex"}}},
-									{"offset", {{"type", "integer"}}},
-									{"count", {{"type", "integer"}}}
-								}},
-								{"additionalProperties", false}
-							}}
-						},
-						{
-							{"type", "object"},
-							{"properties", {
-								{"filter", {{"type", "string"}}},
-								{"offset", {{"type", "integer"}}},
-								{"count", {{"type", "integer"}}}
-							}},
-							{"additionalProperties", false}
-						},
-						{{"type", "string"}}
-					})},
-					{"description", "IDA query accepts array, object, or string"}
-				}}
-			}},
-			{"required", nlohmann::json::array({"queries"})}
-		};
+		nlohmann::json idaLikeCombinatorSchema = AUTOLINKER_STATIC_JSON(R"json(
+{
+  "type": "object",
+  "properties": {
+    "queries": {
+      "anyOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "filter": {
+                "type": "string",
+                "description": "Name glob/regex"
+              },
+              "offset": {
+                "type": "integer"
+              },
+              "count": {
+                "type": "integer"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        {
+          "type": "object",
+          "properties": {
+            "filter": {
+              "type": "string"
+            },
+            "offset": {
+              "type": "integer"
+            },
+            "count": {
+              "type": "integer"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "string"
+        }
+      ],
+      "description": "IDA query accepts array, object, or string"
+    }
+  },
+  "required": [
+    "queries"
+  ]
+}
+)json");
 		const bool combinatorOk = NormalizeInputSchema(idaLikeCombinatorSchema, normalized, error);
 		addCheck(
 			"schema_combinator_normalize",
@@ -2162,24 +2173,37 @@ std::string BuildSelfTestReportJson()
 				normalized["properties"]["queries"].contains("anyOf"),
 			error.empty() ? normalized.dump() : error);
 
-		nlohmann::json refSchema = {
-			{"$defs", {
-				{"query", {
-					{"type", "object"},
-					{"properties", {
-						{"addr", {{"type", "string"}}},
-						{"max_instructions", {{"type", "integer"}, {"maximum", 50000}}}
-					}},
-					{"required", nlohmann::json::array({"addr"})},
-					{"additionalProperties", false}
-				}}
-			}},
-			{"type", "object"},
-			{"properties", {
-				{"request", {{"$ref", "#/$defs/query"}}}
-			}},
-			{"required", nlohmann::json::array({"request"})}
-		};
+		nlohmann::json refSchema = AUTOLINKER_STATIC_JSON(R"json(
+{
+  "$defs": {
+    "query": {
+      "type": "object",
+      "properties": {
+        "addr": {
+          "type": "string"
+        },
+        "max_instructions": {
+          "type": "integer",
+          "maximum": 50000
+        }
+      },
+      "required": [
+        "addr"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "properties": {
+    "request": {
+      "$ref": "#/$defs/query"
+    }
+  },
+  "required": [
+    "request"
+  ]
+}
+)json");
 		const bool refOk = NormalizeInputSchema(refSchema, normalized, error);
 		addCheck(
 			"schema_ref_resolved",
@@ -2203,12 +2227,7 @@ std::string BuildSelfTestReportJson()
 		mapping.tool.originalName = "echo";
 		mapping.tool.modelName = modelName;
 		mapping.tool.schemaHash = schemaHash;
-		nlohmann::json result = {
-			{"content", nlohmann::json::array({
-				{{"type", "text"}, {"text", "hello"}}
-			})},
-			{"structuredContent", {{"value", 1}}}
-		};
+		nlohmann::json result = AUTOLINKER_STATIC_JSON(R"json({"content":[{"type":"text","text":"hello"}],"structuredContent":{"value":1}})json");
 		const nlohmann::json envelope = BuildMcpResultEnvelope(mapping, R"({"text":"hello"})", result, true, 200);
 		addCheck("result_envelope", envelope.value("source", "") == "mcp" && envelope.value("ok", false), envelope.dump());
 

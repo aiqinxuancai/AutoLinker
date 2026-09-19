@@ -1,4 +1,5 @@
 ﻿#include "AIChatUserInputRequest.h"
+#include "StaticJson.h"
 
 #include <algorithm>
 #include <cctype>
@@ -6,7 +7,6 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "..\\thirdparty\\json.hpp"
 
 namespace {
 constexpr size_t kMaxQuestionIdBytes = 64;
@@ -110,30 +110,33 @@ const AIChatUserInputQuestion* FindQuestion(
 
 nlohmann::json BuildExpectedArguments()
 {
-	return {
-		{"questions", nlohmann::json::array({
-			{
-				{"id", "target_scope"},
-				{"header", "范围"},
-				{"question", "请选择实现范围？"},
-				{"options", nlohmann::json::array({
-					{
-						{"label", "完整支持 (Recommended)"},
-						{"description", "实现完整流程。"}
-					},
-					{
-						{"label", "最小支持"},
-						{"description", "只实现基础选择。"}
-					}
-				})}
-			}
-		})}
-	};
+	return AUTOLINKER_STATIC_JSON(R"json(
+{
+  "questions": [
+    {
+      "id": "target_scope",
+      "header": "\u8303\u56f4",
+      "question": "\u8bf7\u9009\u62e9\u5b9e\u73b0\u8303\u56f4\uff1f",
+      "options": [
+        {
+          "label": "\u5b8c\u6574\u652f\u6301 (Recommended)",
+          "description": "\u5b9e\u73b0\u5b8c\u6574\u6d41\u7a0b\u3002"
+        },
+        {
+          "label": "\u6700\u5c0f\u652f\u6301",
+          "description": "\u53ea\u5b9e\u73b0\u57fa\u7840\u9009\u62e9\u3002"
+        }
+      ]
+    }
+  ]
+}
+)json");
 }
 
-nlohmann::json BuildToolDefinition()
+const nlohmann::json& BuildToolDefinition()
 {
-	nlohmann::json definition = nlohmann::json::parse(R"json(
+	static const nlohmann::json cached = [] {
+		nlohmann::json definition = nlohmann::json::parse(R"json(
 {
   "name": "request_user_input",
   "description": "Request user input for one to three short questions and wait for the response. Use only for high-impact ambiguities during plan mode. Prefer one question. Provide two or three mutually exclusive choices, put the recommended option first, and suffix its label with (Recommended). The client adds a free-form Other option automatically.",
@@ -177,14 +180,16 @@ nlohmann::json BuildToolDefinition()
   }
 }
 )json");
-	auto& questionProperties = definition["inputSchema"]["properties"]["questions"]["items"]["properties"];
-	questionProperties["id"]["maxLength"] = kMaxQuestionIdBytes;
-	questionProperties["header"]["maxLength"] = kMaxHeaderCharacters;
-	questionProperties["question"]["maxLength"] = kMaxQuestionCharacters;
-	auto& optionProperties = questionProperties["options"]["items"]["properties"];
-	optionProperties["label"]["maxLength"] = kMaxLabelCharacters;
-	optionProperties["description"]["maxLength"] = kMaxDescriptionCharacters;
-	return definition;
+		auto& questionProperties = definition["inputSchema"]["properties"]["questions"]["items"]["properties"];
+		questionProperties["id"]["maxLength"] = kMaxQuestionIdBytes;
+		questionProperties["header"]["maxLength"] = kMaxHeaderCharacters;
+		questionProperties["question"]["maxLength"] = kMaxQuestionCharacters;
+		auto& optionProperties = questionProperties["options"]["items"]["properties"];
+		optionProperties["label"]["maxLength"] = kMaxLabelCharacters;
+		optionProperties["description"]["maxLength"] = kMaxDescriptionCharacters;
+		return definition;
+	}();
+	return cached;
 }
 } // namespace
 

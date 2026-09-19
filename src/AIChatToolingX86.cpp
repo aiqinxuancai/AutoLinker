@@ -1,4 +1,5 @@
 ﻿#include "AIChatTooling.h"
+#include "StaticJson.h"
 #include "AIChatToolingInternal.h"
 #include <Windows.h>
 
@@ -14,7 +15,6 @@
 #include <unordered_set>
 #include <vector>
 
-#include "..\\thirdparty\\json.hpp"
 #include "AIService.h"
 #include "AIChatFeature.h"
 #include "AIChatToolRegistry.h"
@@ -119,14 +119,6 @@ std::string ExtractCompileOutputDelta(const std::string& before, const std::stri
 		return after.substr(before.size());
 	}
 	return after;
-}
-
-bool ContainsCompileFailureMarker(const std::string& output)
-{
-	return output.find("错误(") != std::string::npos ||
-		output.find("错误（") != std::string::npos ||
-		output.find("语法错误") != std::string::npos ||
-		output.find("编译错误") != std::string::npos;
 }
 
 struct CompileOutputSelection {
@@ -457,6 +449,11 @@ std::string LocalToUtf8Text(const std::string& text)
 		return text;
 	}
 	return ConvertCodePage(text, CP_ACP, CP_UTF8, 0);
+}
+
+bool ContainsCompileFailureMarker(const std::string& output)
+{
+	return CompileDiagnostics::ContainsFailure(LocalToUtf8Text(output));
 }
 
 std::string Utf8ToLocalText(const std::string& text)
@@ -5985,13 +5982,16 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 		ExtractCompileOutputDelta(oldOutput, "语法错误：表达式不完整\r\n"));
 	const bool unchangedHistoricalErrorRejected = !ContainsCompileFailureMarker(
 		ExtractCompileOutputDelta(oldOutput, oldOutput));
+	const bool assemblerFailureDetected = ContainsCompileFailureMarker(
+        "__启动窗口_创建完毕:2 (mov eax, [ebx) : error: expecting ] at end of memory operand\r\n") &&
+        ContainsCompileFailureMarker("编译现行易程序失败或被中止！\r\n");
 	const bool staticCompileDefaultsPassed =
 		ResolveCompileStaticMode(nlohmann::json::object(), IDEFacade::CompileOutputKind::WinExe) &&
 		ResolveCompileStaticMode(nlohmann::json::object(), IDEFacade::CompileOutputKind::WinConsoleExe) &&
 		ResolveCompileStaticMode(nlohmann::json::object(), IDEFacade::CompileOutputKind::WinDll) &&
 		!ResolveCompileStaticMode(nlohmann::json::object(), IDEFacade::CompileOutputKind::Ecom) &&
-		!ResolveCompileStaticMode({{"static_compile", false}}, IDEFacade::CompileOutputKind::WinExe) &&
-		ResolveCompileStaticMode({{"static_compile", true}}, IDEFacade::CompileOutputKind::WinExe);
+		!ResolveCompileStaticMode(AUTOLINKER_STATIC_JSON(R"json({"static_compile":false})json"), IDEFacade::CompileOutputKind::WinExe) &&
+		ResolveCompileStaticMode(AUTOLINKER_STATIC_JSON(R"json({"static_compile":true})json"), IDEFacade::CompileOutputKind::WinExe);
 	const std::string moduleWindowTitle = "Demo - C:\\Demo.e - Windows易语言模块 - [程序集: Test]";
 	const bool autoCompileTargetsPassed =
 		ResolveAutoCompileTarget(moduleWindowTitle) == "win_console_exe" &&
@@ -6005,11 +6005,7 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 	const bool outputCaptureCheckPassed = outputCaptureCheck.is_object() &&
 		outputCaptureCheck.value("ok", false);
 	if (!outputCaptureCheck.is_object()) {
-		outputCaptureCheck = {
-			{"name", "ide-compile-output-capture"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		outputCaptureCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"ide-compile-output-capture","ok":false,"error":"invalid self-test json"})json");
 	}
 	nlohmann::json dialogGuardCheck = nlohmann::json::parse(
 		IdeCompileDialogGuard::BuildSelfTestJson(),
@@ -6018,11 +6014,7 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 	const bool dialogGuardCheckPassed = dialogGuardCheck.is_object() &&
 		dialogGuardCheck.value("ok", false);
 	if (!dialogGuardCheck.is_object()) {
-		dialogGuardCheck = {
-			{"name", "ide-compile-dialog-guard"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		dialogGuardCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"ide-compile-dialog-guard","ok":false,"error":"invalid self-test json"})json");
 	}
 	nlohmann::json logStoreCheck = nlohmann::json::parse(
 		IdeLogStore::BuildSelfTestJson(),
@@ -6031,11 +6023,7 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 	const bool logStoreCheckPassed = logStoreCheck.is_object() &&
 		logStoreCheck.value("ok", false);
 	if (!logStoreCheck.is_object()) {
-		logStoreCheck = {
-			{"name", "ide-log-store"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		logStoreCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"ide-log-store","ok":false,"error":"invalid self-test json"})json");
 	}
 	nlohmann::json outputControlCaptureCheck = nlohmann::json::parse(
 		IdeOutputControlCapture::BuildSelfTestJson(),
@@ -6044,11 +6032,7 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 	const bool outputControlCaptureCheckPassed = outputControlCaptureCheck.is_object() &&
 		outputControlCaptureCheck.value("ok", false);
 	if (!outputControlCaptureCheck.is_object()) {
-		outputControlCaptureCheck = {
-			{"name", "ide-output-control-capture"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		outputControlCaptureCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"ide-output-control-capture","ok":false,"error":"invalid self-test json"})json");
 	}
 	nlohmann::json logViewerCheck = nlohmann::json::parse(
 		IdeLogViewer::BuildSelfTestJson(),
@@ -6057,11 +6041,7 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 	const bool logViewerCheckPassed = logViewerCheck.is_object() &&
 		logViewerCheck.value("ok", false);
 	if (!logViewerCheck.is_object()) {
-		logViewerCheck = {
-			{"name", "ide-log-viewer-resource"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		logViewerCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"ide-log-viewer-resource","ok":false,"error":"invalid self-test json"})json");
 	}
 	nlohmann::json compileConcurrencyCheck = nlohmann::json::parse(
 		CompileConcurrencyManager::BuildSelfTestJson(),
@@ -6070,18 +6050,14 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 	const bool compileConcurrencyCheckPassed = compileConcurrencyCheck.is_object() &&
 		compileConcurrencyCheck.value("ok", false);
 	if (!compileConcurrencyCheck.is_object()) {
-		compileConcurrencyCheck = {
-			{"name", "compile-concurrency-manager"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		compileConcurrencyCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"compile-concurrency-manager","ok":false,"error":"invalid self-test json"})json");
 	}
 	std::filesystem::remove(path, error);
 	return nlohmann::json({
 		{"name", "compile-artifact-fingerprint"},
 		{"diagnostics", diagnosticsCheck},
 		{"ok", diagnosticsCheck.value("ok", false) && creationDetected && unchangedRejected && updateDetected &&
-			appendedErrorDetected && rewrittenErrorDetected && unchangedHistoricalErrorRejected &&
+			appendedErrorDetected && rewrittenErrorDetected && unchangedHistoricalErrorRejected && assemblerFailureDetected &&
 			staticCompileDefaultsPassed && autoCompileTargetsPassed &&
 			outputCaptureCheckPassed && dialogGuardCheckPassed &&
 			logStoreCheckPassed && outputControlCaptureCheckPassed && logViewerCheckPassed &&
@@ -6091,6 +6067,7 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 		{"unchanged_rejected", unchangedRejected},
 		{"update_detected", updateDetected},
 		{"appended_error_detected", appendedErrorDetected},
+		{"assembler_failure_detected", assemblerFailureDetected},
 		{"rewritten_error_detected", rewrittenErrorDetected},
 		{"unchanged_historical_error_rejected", unchangedHistoricalErrorRejected},
 		{"static_compile_defaults", staticCompileDefaultsPassed},

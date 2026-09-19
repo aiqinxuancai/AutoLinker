@@ -1,4 +1,5 @@
 ﻿#include "LocalMcpProxyTransport.h"
+#include "StaticJson.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -11,7 +12,6 @@
 #include <thread>
 #include <unordered_map>
 
-#include "..\\thirdparty\\json.hpp"
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -411,10 +411,7 @@ bool ProbeInstance(
 
 std::string BuildSelfTestReportJson()
 {
-	nlohmann::json report = {
-		{"name", "local-mcp-loopback-transport"},
-		{"ok", false}
-	};
+	nlohmann::json report = AUTOLINKER_STATIC_JSON(R"json({"name":"local-mcp-loopback-transport","ok":false})json");
 	WinsockScope winsock;
 	if (!winsock.Started()) {
 		report["error"] = "WSAStartup failed";

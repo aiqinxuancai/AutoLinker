@@ -1,4 +1,5 @@
 ﻿#include "AIChatMcpConfig.h"
+#include "StaticJson.h"
 
 #include <Windows.h>
 
@@ -12,7 +13,6 @@
 #include <system_error>
 #include <unordered_map>
 
-#include "..\\thirdparty\\json.hpp"
 
 #include "PathHelper.h"
 
@@ -233,69 +233,71 @@ void ReadEnvConfig(const nlohmann::json& value, std::vector<AIChatMcpEnvConfig>&
 	}
 }
 
-const std::vector<nlohmann::json>& GetLegacyDefaultServerJsons()
+const nlohmann::json& GetLegacyDefaultServerJsons()
 {
-	// 配置 JSON 始终使用 UTF-8，避免窄字符串被系统代码页转换。
-	constexpr const char* kLegacyStdioExampleNameUtf8 =
-		"\xE6\x9C\xAC\xE5\x9C\xB0 stdio MCP \xE7\xA4\xBA\xE4\xBE\x8B";
-	static const std::vector<nlohmann::json> defaults = {
-		{
-			{"id", "ida-pro"},
-			{"name", "IDA Pro"},
-			{"url", "http://127.0.0.1:8765/mcp"},
-			{"enabled", false},
-			{"timeout_ms", 120000},
-			{"headers", nlohmann::json::array()}
-		},
-		{
-			{"id", "design-mcp"},
-			{"name", "Design MCP"},
-			{"url", "http://127.0.0.1:8770/mcp"},
-			{"enabled", false},
-			{"timeout_ms", 120000},
-			{"headers", nlohmann::json::array()}
-		},
-		{
-			{"id", "ida-pro"},
-			{"name", "IDA Pro"},
-			{"transport", "streamable_http"},
-			{"url", "http://127.0.0.1:8765/mcp"},
-			{"command", ""},
-			{"arguments", nlohmann::json::array()},
-			{"working_directory", ""},
-			{"enabled", false},
-			{"timeout_ms", 120000},
-			{"headers", nlohmann::json::array()},
-			{"env", nlohmann::json::array()}
-		},
-		{
-			{"id", "design-mcp"},
-			{"name", "Design MCP"},
-			{"transport", "streamable_http"},
-			{"url", "http://127.0.0.1:8770/mcp"},
-			{"command", ""},
-			{"arguments", nlohmann::json::array()},
-			{"working_directory", ""},
-			{"enabled", false},
-			{"timeout_ms", 120000},
-			{"headers", nlohmann::json::array()},
-			{"env", nlohmann::json::array()}
-		},
-		{
-			{"id", "stdio-example"},
-			{"name", kLegacyStdioExampleNameUtf8},
-			{"transport", "stdio"},
-			{"url", ""},
-			{"command", "npx"},
-			{"arguments", nlohmann::json::array({"-y", "@modelcontextprotocol/server-filesystem", "D:\\git"})},
-			{"working_directory", ""},
-			{"enabled", false},
-			{"timeout_ms", 120000},
-			{"headers", nlohmann::json::array()},
-			{"env", nlohmann::json::array()}
-		}
-	};
-	return defaults;
+    return AUTOLINKER_STATIC_JSON(R"json(
+[
+  {
+    "id": "ida-pro",
+    "name": "IDA Pro",
+    "url": "http://127.0.0.1:8765/mcp",
+    "enabled": false,
+    "timeout_ms": 120000,
+    "headers": []
+  },
+  {
+    "id": "design-mcp",
+    "name": "Design MCP",
+    "url": "http://127.0.0.1:8770/mcp",
+    "enabled": false,
+    "timeout_ms": 120000,
+    "headers": []
+  },
+  {
+    "id": "ida-pro",
+    "name": "IDA Pro",
+    "transport": "streamable_http",
+    "url": "http://127.0.0.1:8765/mcp",
+    "command": "",
+    "arguments": [],
+    "working_directory": "",
+    "enabled": false,
+    "timeout_ms": 120000,
+    "headers": [],
+    "env": []
+  },
+  {
+    "id": "design-mcp",
+    "name": "Design MCP",
+    "transport": "streamable_http",
+    "url": "http://127.0.0.1:8770/mcp",
+    "command": "",
+    "arguments": [],
+    "working_directory": "",
+    "enabled": false,
+    "timeout_ms": 120000,
+    "headers": [],
+    "env": []
+  },
+  {
+    "id": "stdio-example",
+    "name": "\u672c\u5730 stdio MCP \u793a\u4f8b",
+    "transport": "stdio",
+    "url": "",
+    "command": "npx",
+    "arguments": [
+      "-y",
+      "@modelcontextprotocol/server-filesystem",
+      "D:\\git"
+    ],
+    "working_directory": "",
+    "enabled": false,
+    "timeout_ms": 120000,
+    "headers": [],
+    "env": []
+  }
+]
+)json");
 }
 
 bool HasApprovalGrantForServer(const nlohmann::json& root, const std::string& serverId)

@@ -12,7 +12,7 @@
 #include <vector>
 #include <wrl.h>
 
-#include "..\\thirdparty\\json.hpp"
+#include "StaticJson.h"
 #include "..\\thirdparty\\WebView2.h"
 
 #include "AIChatMcpConfigDialog.h"
@@ -1385,17 +1385,31 @@ AutoLinkerSettingsResult ShowAutoLinkerSettingsDialog(HWND owner, AutoLinkerSett
 std::string BuildAutoLinkerSettingsSelfTestJson()
 {
 	using nlohmann::json;
-	const json pages = {
-		"ai_service", "ai_other", "mcp", "skills", "chat_theme", "project_agents", "linker",
-		"ec_switch", "force_link_lib", "project_build", "log_optimization", "about"
-	};
-	const json links = {
-		"https://github.com/aiqinxuancai/AutoLinker",
-		"https://github.com/aiqinxuancai/AutoLinker/releases",
-		"https://github.com/aiqinxuancai/AutoLinker/blob/main/CONFIG.md",
-		"https://github.com/aiqinxuancai/Awesome-E-Agent",
-		"https://github.com/aiqinxuancai/e-packager"
-	};
+	const json pages = AUTOLINKER_STATIC_JSON(R"json(
+[
+  "ai_service",
+  "ai_other",
+  "mcp",
+  "skills",
+  "chat_theme",
+  "project_agents",
+  "linker",
+  "ec_switch",
+  "force_link_lib",
+  "project_build",
+  "log_optimization",
+  "about"
+]
+)json");
+	const json links = AUTOLINKER_STATIC_JSON(R"json(
+[
+  "https://github.com/aiqinxuancai/AutoLinker",
+  "https://github.com/aiqinxuancai/AutoLinker/releases",
+  "https://github.com/aiqinxuancai/AutoLinker/blob/main/CONFIG.md",
+  "https://github.com/aiqinxuancai/Awesome-E-Agent",
+  "https://github.com/aiqinxuancai/e-packager"
+]
+)json");
 	const bool hookDependencyValid =
 		!IdeCompileOutputCapture::IsDebugOutputOptimizationEnabled() ||
 		IdeCompileOutputCapture::IsCaptureHookEnabled();

@@ -1,4 +1,5 @@
 ﻿#include "AISkillManager.h"
+#include "StaticJson.h"
 
 #include <Windows.h>
 
@@ -1536,15 +1537,15 @@ std::string ExecuteReadSkillResourceTool(const std::string& argumentsJson, bool&
 	std::error_code ec;
 	const auto canonical = std::filesystem::weakly_canonical(requested, ec);
 	if (ec || !IsPathInside(canonical, selected->directory) || !std::filesystem::is_regular_file(canonical, ec)) {
-		return json({{"ok", false}, {"error", "resource path is outside the skill or is not a file"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"resource path is outside the skill or is not a file"})json").dump();
 	}
 	const auto size = std::filesystem::file_size(canonical, ec);
 	if (ec || static_cast<unsigned long long>(byteOffset) > size) {
-		return json({{"ok", false}, {"error", "invalid byte_offset"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"invalid byte_offset"})json").dump();
 	}
 	std::ifstream input(canonical, std::ios::binary);
 	if (!input.is_open()) {
-		return json({{"ok", false}, {"error", "failed to open skill resource"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"failed to open skill resource"})json").dump();
 	}
 	input.seekg(byteOffset);
 	const size_t remaining = static_cast<size_t>((std::min<unsigned long long>)(size - byteOffset, maxBytes));
@@ -1552,7 +1553,7 @@ std::string ExecuteReadSkillResourceTool(const std::string& argumentsJson, bool&
 	input.read(content.data(), static_cast<std::streamsize>(content.size()));
 	content.resize(static_cast<size_t>(input.gcount()));
 	if (content.find('\0') != std::string::npos) {
-		return json({{"ok", false}, {"error", "binary skill resources cannot be returned as text"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"binary skill resources cannot be returned as text"})json").dump();
 	}
 	if (byteOffset == 0 && content.size() >= 3 && static_cast<unsigned char>(content[0]) == 0xEF &&
 		static_cast<unsigned char>(content[1]) == 0xBB && static_cast<unsigned char>(content[2]) == 0xBF) {
@@ -1575,7 +1576,7 @@ std::string SearchSkillsSh(const std::string& query)
 {
 	const std::string trimmed = TrimAscii(query);
 	if (trimmed.size() < 2) {
-		return json({{"ok", false}, {"error", "请输入至少两个字符"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"\u8bf7\u8f93\u5165\u81f3\u5c11\u4e24\u4e2a\u5b57\u7b26"})json").dump();
 	}
 	const auto response = PerformGetRequest(
 		"https://skills.sh/api/search?q=" + UrlEncode(trimmed) + "&limit=100",
@@ -1586,7 +1587,7 @@ std::string SearchSkillsSh(const std::string& query)
 	}
 	json root = json::parse(response.first, nullptr, false);
 	if (!root.is_object() || !root.contains("skills") || !root["skills"].is_array()) {
-		return json({{"ok", false}, {"error", "skills.sh 返回格式无效"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"skills.sh \u8fd4\u56de\u683c\u5f0f\u65e0\u6548"})json").dump();
 	}
 	json results = json::array();
 	for (const auto& item : root["skills"]) {
@@ -1610,7 +1611,7 @@ std::string GetSkillsShSkillDetails(const std::string& source, const std::string
 	if (sourceParts.size() != 2 || skillParts.empty() ||
 		!IsGithubIdentifier(sourceParts[0]) || !IsGithubIdentifier(sourceParts[1]) ||
 		!std::all_of(skillParts.begin(), skillParts.end(), IsGithubIdentifier)) {
-		return json({{"ok", false}, {"error", "skills.sh 技能来源或标识无效"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"skills.sh \u6280\u80fd\u6765\u6e90\u6216\u6807\u8bc6\u65e0\u6548"})json").dump();
 	}
 	std::string detailUrl = "https://skills.sh/" + UrlEncode(sourceParts[0]) + "/" + UrlEncode(sourceParts[1]);
 	for (const auto& part : skillParts) {
@@ -1624,11 +1625,11 @@ std::string GetSkillsShSkillDetails(const std::string& source, const std::string
 		return json({{"ok", false}, {"error", std::format("读取 skills.sh 技能详情失败：HTTP {}", response.second)}}).dump();
 	}
 	if (response.first.size() > 8 * 1024 * 1024) {
-		return json({{"ok", false}, {"error", "skills.sh 技能详情页超过大小限制"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"skills.sh \u6280\u80fd\u8be6\u60c5\u9875\u8d85\u8fc7\u5927\u5c0f\u9650\u5236"})json").dump();
 	}
 	json details;
 	if (!ParseSkillsShDetailDocument(response.first, details)) {
-		return json({{"ok", false}, {"error", "skills.sh 技能详情中没有可用的结构化介绍"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"skills.sh \u6280\u80fd\u8be6\u60c5\u4e2d\u6ca1\u6709\u53ef\u7528\u7684\u7ed3\u6784\u5316\u4ecb\u7ecd"})json").dump();
 	}
 	std::string description = details.value("description", std::string());
 	if (description.size() > 16 * 1024) {
@@ -1692,7 +1693,7 @@ std::string InstallFromGitHub(
 {
 	const auto requestedProjectRoot = scope == AISkillScope::Repo ? GetProjectSkillsRoot() : std::nullopt;
 	if (scope == AISkillScope::Repo && !requestedProjectRoot) {
-		return json({{"ok", false}, {"error", "当前没有打开可定位的易语言项目"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"\u5f53\u524d\u6ca1\u6709\u6253\u5f00\u53ef\u5b9a\u4f4d\u7684\u6613\u8bed\u8a00\u9879\u76ee"})json").dump();
 	}
 	PreparedRepository repository;
 	std::string error;
@@ -1756,7 +1757,7 @@ std::string InstallFromLocal(
 	const auto requestedProjectRoot = scope == AISkillScope::Repo ? GetProjectSkillsRoot() : std::nullopt;
 	const auto projectDirectory = scope == AISkillScope::Repo ? CurrentProjectDirectory() : std::nullopt;
 	if (scope == AISkillScope::Repo && (!requestedProjectRoot || !projectDirectory)) {
-		return json({{"ok", false}, {"error", "当前没有打开可定位的易语言项目"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"\u5f53\u524d\u6ca1\u6709\u6253\u5f00\u53ef\u5b9a\u4f4d\u7684\u6613\u8bed\u8a00\u9879\u76ee"})json").dump();
 	}
 	PreparedLocalSkills prepared;
 	std::string error;
@@ -1778,7 +1779,7 @@ std::string InstallFromLocal(
 	if (mode == AISkillLocalInstallMode::Reference) {
 		if (prepared.source.kind == AISkillLocalSourceKind::ZipArchive) {
 			CleanupPreparedLocalSkills(prepared);
-			return json({{"ok", false}, {"error", "ZIP 来源只能复制安装，不能引用临时解压路径"}}).dump();
+			return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"ZIP \u6765\u6e90\u53ea\u80fd\u590d\u5236\u5b89\u88c5\uff0c\u4e0d\u80fd\u5f15\u7528\u4e34\u65f6\u89e3\u538b\u8def\u5f84"})json").dump();
 		}
 		std::lock_guard<std::recursive_mutex> guard(g_skillMutex);
 		const auto globalRoot = GetGlobalSkillsRoot();
@@ -1786,7 +1787,12 @@ std::string InstallFromLocal(
 		if (IsPathInside(selectedSkillFile, globalRoot) ||
 			(currentProjectRoot && IsPathInside(selectedSkillFile, *currentProjectRoot))) {
 			CleanupPreparedLocalSkills(prepared);
-			return json({{"ok", false}, {"error", "该技能已经位于 AutoLinker 管理目录中，无需登记外部引用"}}).dump();
+			return AUTOLINKER_STATIC_JSON(R"json(
+{
+  "ok": false,
+  "error": "\u8be5\u6280\u80fd\u5df2\u7ecf\u4f4d\u4e8e AutoLinker \u7ba1\u7406\u76ee\u5f55\u4e2d\uff0c\u65e0\u9700\u767b\u8bb0\u5916\u90e8\u5f15\u7528"
+}
+)json").dump();
 		}
 		SkillConfig config = LoadConfig();
 		SkillConfig::ExternalReference reference;
@@ -1819,7 +1825,7 @@ std::string InstallFromLocal(
 	const auto target = root / Utf8ToPath(SanitizeDirectoryName(selectedName));
 	if (PathsOverlap(selectedDirectory, target)) {
 		CleanupPreparedLocalSkills(prepared);
-		return json({{"ok", false}, {"error", "技能来源目录与安装目标重叠，拒绝自复制"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"\u6280\u80fd\u6765\u6e90\u76ee\u5f55\u4e0e\u5b89\u88c5\u76ee\u6807\u91cd\u53e0\uff0c\u62d2\u7edd\u81ea\u590d\u5236"})json").dump();
 	}
 	if (!ReplaceDirectoryAtomically(selectedDirectory, target, allowReplace, error, true)) {
 		const bool conflict = std::filesystem::exists(target);
@@ -1847,7 +1853,7 @@ std::string UpdateInstalledSkill(const std::string& skillFilePath)
 		const auto skills = DiscoverSkillsUnlocked();
 		const AISkillInfo* found = FindSkillByPath(skills, Utf8ToPath(skillFilePath));
 		if (found == nullptr || found->sourceRepository.empty()) {
-			return json({{"ok", false}, {"error", "该技能不是由 AutoLinker 从 GitHub 安装，无法自动更新"}}).dump();
+			return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"\u8be5\u6280\u80fd\u4e0d\u662f\u7531 AutoLinker \u4ece GitHub \u5b89\u88c5\uff0c\u65e0\u6cd5\u81ea\u52a8\u66f4\u65b0"})json").dump();
 		}
 		skill = *found;
 	}
@@ -1862,25 +1868,25 @@ std::string RemoveInstalledSkill(const std::string& skillFilePath)
 	const auto skills = DiscoverSkillsUnlocked();
 	const AISkillInfo* skill = FindSkillByPath(skills, Utf8ToPath(skillFilePath));
 	if (skill == nullptr) {
-		return json({{"ok", false}, {"error", "未找到技能"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"\u672a\u627e\u5230\u6280\u80fd"})json").dump();
 	}
 	if (skill->externalReference) {
 		SkillConfig config = LoadConfig();
 		if (!RemoveExternalReference(config, skill->skillFile, skill->scope, CurrentProjectDirectory())) {
-			return json({{"ok", false}, {"error", "未找到对应的原路径引用配置"}}).dump();
+			return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"\u672a\u627e\u5230\u5bf9\u5e94\u7684\u539f\u8def\u5f84\u5f15\u7528\u914d\u7f6e"})json").dump();
 		}
 		config.disabledPaths.erase(NormalizePathKey(skill->skillFile));
 		std::string saveError;
 		if (!SaveConfig(config, saveError)) {
 			return json({{"ok", false}, {"error", "移除技能引用失败：" + saveError}}).dump();
 		}
-		return json({{"ok", true}, {"message", "技能引用已移除，原路径文件未被删除"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":true,"message":"\u6280\u80fd\u5f15\u7528\u5df2\u79fb\u9664\uff0c\u539f\u8def\u5f84\u6587\u4ef6\u672a\u88ab\u5220\u9664"})json").dump();
 	}
 	const auto globalRoot = GetGlobalSkillsRoot();
 	const auto projectRoot = GetProjectSkillsRoot();
 	if (!IsPathStrictlyInside(skill->directory, globalRoot) &&
 		(!projectRoot || !IsPathStrictlyInside(skill->directory, *projectRoot))) {
-		return json({{"ok", false}, {"error", "拒绝删除技能根目录本身或根目录外的路径"}}).dump();
+		return AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"\u62d2\u7edd\u5220\u9664\u6280\u80fd\u6839\u76ee\u5f55\u672c\u8eab\u6216\u6839\u76ee\u5f55\u5916\u7684\u8def\u5f84"})json").dump();
 	}
 	std::error_code ec;
 	std::filesystem::remove_all(skill->directory, ec);
@@ -1891,7 +1897,7 @@ std::string RemoveInstalledSkill(const std::string& skillFilePath)
 	config.disabledPaths.erase(NormalizePathKey(skill->skillFile));
 	std::string saveError;
 	SaveConfig(config, saveError);
-	return json({{"ok", true}, {"message", "技能已卸载"}}).dump();
+	return AUTOLINKER_STATIC_JSON(R"json({"ok":true,"message":"\u6280\u80fd\u5df2\u5378\u8f7d"})json").dump();
 }
 
 bool SetSkillEnabled(const std::string& skillFilePath, bool enabled, std::string& outError)

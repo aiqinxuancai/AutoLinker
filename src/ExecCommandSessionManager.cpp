@@ -1,4 +1,5 @@
 ﻿#include "ExecCommandSessionManager.h"
+#include "StaticJson.h"
 
 #include <Windows.h>
 
@@ -23,7 +24,6 @@
 #include <utility>
 #include <vector>
 
-#include "..\thirdparty\json.hpp"
 
 namespace {
 constexpr size_t kOutputBufferBytes = 1024 * 1024;
@@ -986,10 +986,7 @@ void ExecCommandSessionManager::TerminateAll()
 
 std::string ExecCommandSessionManager::BuildSelfTestJson()
 {
-	nlohmann::json report = {
-		{"name", "exec-command-session"},
-		{"ok", false}
-	};
+	nlohmann::json report = AUTOLINKER_STATIC_JSON(R"json({"name":"exec-command-session","ok":false})json");
 	const std::string owner = "exec-command-self-test";
 
 	ExecCommandRequest shortRequest;

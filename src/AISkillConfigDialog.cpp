@@ -1,4 +1,5 @@
 ﻿#include "AISkillConfigDialog.h"
+#include "StaticJson.h"
 
 #include <Windows.h>
 #include <Shellapi.h>
@@ -13,7 +14,6 @@
 #include <thread>
 #include <wrl.h>
 
-#include "..\\thirdparty\\json.hpp"
 #include "..\\thirdparty\\WebView2.h"
 
 #include "AISkillManager.h"
@@ -131,7 +131,7 @@ void SendWebPayload(SkillPageContext* context, const std::string& action, const 
 	}
 	json result = json::parse(resultText, nullptr, false);
 	if (result.is_discarded()) {
-		result = json({{"ok", false}, {"error", "本机返回了无效 JSON"}});
+		result = AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"\u672c\u673a\u8fd4\u56de\u4e86\u65e0\u6548 JSON"})json");
 	}
 	const std::string payload = json({{"action", action}, {"result", std::move(result)}})
 		.dump(-1, ' ', false, json::error_handler_t::replace);

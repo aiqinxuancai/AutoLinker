@@ -1,4 +1,5 @@
 ﻿#include "AIService.h"
+#include "StaticJson.h"
 
 #include <algorithm>
 #include <array>
@@ -16,7 +17,6 @@
 #include <utility>
 #include <Windows.h>
 
-#include "..\\thirdparty\\json.hpp"
 
 #include "AIChatMcpClient.h"
 #include "AIChatHistoryAdapter.h"
@@ -1655,10 +1655,7 @@ void ApplyThinkingConfigToOpenAIChatRequest(nlohmann::json& requestBody, const A
 {
 	if (IsKimiK27CodeModel(settings.model)) {
 		// K2.7 Code 始终启用 Preserved Thinking，不能由通用“思考等级”关闭或降级。
-		requestBody["thinking"] = {
-			{"type", "enabled"},
-			{"keep", "all"}
-		};
+		requestBody["thinking"] = AUTOLINKER_STATIC_JSON(R"json({"type":"enabled","keep":"all"})json");
 		return;
 	}
 	if (IsKimiK3Model(settings.model)) {
@@ -1668,15 +1665,11 @@ void ApplyThinkingConfigToOpenAIChatRequest(nlohmann::json& requestBody, const A
 	}
 	if (IsDeepSeekCompatibleSettings(settings)) {
 		if (settings.thinkingLevel == AIThinkingLevel::Off) {
-			requestBody["thinking"] = {
-				{"type", "disabled"}
-			};
+			requestBody["thinking"] = AUTOLINKER_STATIC_JSON(R"json({"type":"disabled"})json");
 			return;
 		}
 
-		requestBody["thinking"] = {
-			{"type", "enabled"}
-		};
+		requestBody["thinking"] = AUTOLINKER_STATIC_JSON(R"json({"type":"enabled"})json");
 		requestBody["reasoning_effort"] = GetDeepSeekReasoningEffort(settings);
 		return;
 	}
@@ -1711,7 +1704,7 @@ void ApplyThinkingConfigToOpenAIResponsesRequest(nlohmann::json& requestBody, co
 	requestBody["reasoning"] = {
 		{"effort", GetOpenAIReasoningEffort(settings.thinkingLevel)}
 	};
-	requestBody["include"] = nlohmann::json::array({ "reasoning.encrypted_content" });
+	requestBody["include"] = AUTOLINKER_STATIC_JSON(R"json(["reasoning.encrypted_content"])json");
 }
 
 void ApplyThinkingConfigToClaudeRequest(nlohmann::json& requestBody, const AISettings& settings)
@@ -1720,16 +1713,12 @@ void ApplyThinkingConfigToClaudeRequest(nlohmann::json& requestBody, const AISet
 		const std::string effort = GetClaudeEffort(settings.thinkingLevel);
 		if (effort.empty()) {
 			if (!IsClaudeMythosPreviewModel(settings.model)) {
-				requestBody["thinking"] = {
-					{"type", "disabled"}
-				};
+				requestBody["thinking"] = AUTOLINKER_STATIC_JSON(R"json({"type":"disabled"})json");
 			}
 			return;
 		}
 
-		requestBody["thinking"] = {
-			{"type", "adaptive"}
-		};
+		requestBody["thinking"] = AUTOLINKER_STATIC_JSON(R"json({"type":"adaptive"})json");
 		if (!requestBody.contains("output_config") || !requestBody["output_config"].is_object()) {
 			requestBody["output_config"] = nlohmann::json::object();
 		}
@@ -3000,485 +2989,10 @@ OpenAIChatToolSequenceRepairStats RepairOpenAIChatToolMessageSequence(nlohmann::
 
 nlohmann::json BuildPublicToolCatalog()
 {
-	nlohmann::json tools = nlohmann::json::array();
-	tools.push_back({
-		{"name", "refresh_workspace_mirror"},
-		{"description", "Refresh the current e-packager workspace mirror from live IDE memory. External MCP clients MUST call this successfully before their first source read/edit tool in each MCP session. Built-in AI chat automatically performs a full refresh before each request, while this tool remains available for explicit retries or later refreshes. mode=auto keeps the default strategy, main_only refreshes only main source files when possible, and full rebuilds the complete mirror."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"mode", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "main_only", "full"})}, {"description", "Defaults to auto."}}}
-			}},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "e_packager"},
-		{"description", "Only call this tool when the user explicitly asks to parse, inspect, reference, or reproduce an external .e/.ec file. It unpacks that file with e-packager into unimported_code/{file name}/ inside the current workspace mirror. The unpacked files are read-only reference code: use list_files or search_code to locate them, then read_file/read_files to read their contents. Relative file_path values resolve from the current project's directory; existing output for the same file name is replaced only after unpack succeeds."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"file_path", {{"type", "string"}, {"minLength", 1}, {"maxLength", 32768}, {"description", "Absolute path to an existing .e/.ec file, or a path relative to the current project directory."}}}
-			}},
-			{"required", nlohmann::json::array({"file_path"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "update_plan"},
-		{"description", "Update the visible task plan for routine work whenever it has two or more meaningful steps or progress tracking would help. Prefer it for everyday implementation, diagnosis, and verification; skip only trivial one-step actions. It does not modify source code and does not replace the <proposed_plan> approval flow in plan mode."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"explanation", {{"type", "string"}, {"description", "Optional short note about why the plan changed."}}},
-				{"plan", {{"type", "array"}, {"items", {
-					{"type", "object"},
-					{"properties", {
-						{"step", {{"type", "string"}}},
-						{"status", {{"type", "string"}, {"enum", nlohmann::json::array({"pending", "in_progress", "completed"})}}}
-					}},
-					{"required", nlohmann::json::array({"step", "status"})},
-					{"additionalProperties", false}
-				}}, {"description", "Task steps. At most one item may be in_progress."}}}
-			}},
-			{"required", nlohmann::json::array({"plan"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "read_skill_resource"},
-		{"description", "Read SKILL.md or a text resource inside one enabled AutoLinker skill. Call this before using a skill that clearly matches the task but was not explicitly injected with $skill-name. Relative paths are restricted to the selected skill directory; continue large resources with next_byte_offset."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"skill_name", {{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
-				{"relative_path", {{"type", "string"}, {"maxLength", 2048}, {"description", "Defaults to SKILL.md."}}},
-				{"byte_offset", {{"type", "integer"}, {"minimum", 0}}},
-				{"max_bytes", {{"type", "integer"}, {"minimum", 4096}, {"maximum", 262144}}}
-			}},
-			{"required", nlohmann::json::array({"skill_name"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "list_files"},
-		{"description", "List files in the current e-packager workspace mirror. Paths are relative to the mirror root. Requires a prepared mirror; external MCP calls refresh_workspace_mirror, while built-in chat prepares it automatically. By default focuses on src, ecom, elib, header and unimported_code text areas. Continue paginated results with next_offset."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"glob", {{"type", "string"}, {"description", "Optional glob such as src/**/*.txt or ecom/**/*.txt."}}},
-				{"path", {{"type", "string"}, {"description", "Optional relative path prefix."}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Pagination continuation only. MUST omit when offset is 0 or no previous page generation is available; never guess a value such as 1. For offset > 0, pass the exact generation returned by the previous page."}}},
-				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based result offset for pagination. Use next_offset from the prior result."}}},
-				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 5000}}}
-			}},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "search_code"},
-		{"description", "Batch-stream search complete text files inside the current e-packager workspace mirror. Requires a prepared mirror; external MCP calls refresh_workspace_mirror, while built-in chat prepares it automatically. Literal substring search is the default; set regex=true only for simple bounded regular expressions. Use patterns to match up to 16 related names in one file pass."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"pattern", {{"type", "string"}, {"maxLength", 1024}, {"description", "Single literal substring by default; set regex=true for regular-expression search."}}},
-				{"patterns", {{"type", "array"}, {"maxItems", 16}, {"items", {{"type", "string"}, {"maxLength", 1024}}}, {"description", "Optional batch of patterns using the same regex/case/glob/context options."}}},
-				{"glob", {{"type", "string"}, {"description", "Optional file glob filter such as src/**/*.txt."}}},
-				{"output_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"files_with_matches", "content", "count"})}}},
-				{"regex", {{"type", "boolean"}, {"description", "Defaults to false."}}},
-				{"case_insensitive", {{"type", "boolean"}}},
-				{"context", {{"type", "integer"}, {"minimum", 0}, {"maximum", 20}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Pagination continuation only. MUST omit when offset is 0 or no previous search page generation is available; never guess a value such as 1. For offset > 0, pass the exact generation returned by the previous page."}}},
-				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based result offset. Continue with next_offset returned by the previous page."}}},
-				{"head_limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}}}
-			}},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "read_file"},
-		{"description", "Read one text file from the current e-packager workspace mirror. Requires a prepared mirror; external MCP calls refresh_workspace_mirror, while built-in chat prepares it automatically. Returns numbered text, line pagination, mirror_generation and a 1 MiB source byte window. Continue large files with next_source_byte_offset as byte_offset."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"file_path", {{"type", "string"}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Pagination continuation only. MUST omit when offset and byte_offset are 0 or no previous read generation is available; never guess. For continuation, pass the exact generation returned by the previous page."}}},
-				{"byte_offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Source byte cursor for files larger than the 1 MiB read window. Continue with next_source_byte_offset and reset line offset to 0."}}},
-				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Zero-based line offset. Positive initial offsets are allowed; include mirror_generation when continuing a prior page for cross-refresh consistency."}}},
-				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 20000}}}
-			}},
-			{"required", nlohmann::json::array({"file_path"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "read_files"},
-		{"description", "Batch read one or more text files or byte windows from the current e-packager workspace mirror. Requires a prepared mirror; external MCP calls refresh_workspace_mirror, while built-in chat prepares it automatically. Prefer this over repeated read_file calls. Partial failures are explicit and large files continue with per-file next_source_byte_offset."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"file_paths", {{"type", "array"}, {"maxItems", 12}, {"items", {{"type", "string"}}}, {"description", "Simple list of up to 12 mirror-relative file paths."}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Pagination continuation only. MUST omit for an initial batch read or when no previous read generation is available; never guess. For continuation, pass the exact generation returned by the previous page."}}},
-				{"files", {{"type", "array"}, {"maxItems", 12}, {"items", {
-					{"type", "object"},
-					{"properties", {
-						{"file_path", {{"type", "string"}}},
-						{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Compatibility alias for the top-level mirror_generation. If present in multiple entries, all values must match."}}},
-						{"byte_offset", {{"type", "integer"}, {"minimum", 0}}},
-						{"offset", {{"type", "integer"}, {"minimum", 0}}},
-						{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}}}
-					}},
-					{"required", nlohmann::json::array({"file_path"})},
-					{"additionalProperties", false}
-				}}, {"description", "Optional per-file offset/limit entries, up to 12 per call."}}},
-				{"byte_offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Default source byte cursor for all entries."}}},
-				{"offset", {{"type", "integer"}, {"minimum", 0}, {"description", "Default offset for file_paths/files entries."}}},
-				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 2000}, {"description", "Default per-file line limit."}}}
-			}},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "read_code_item"},
-		{"description", "Stream-locate and read one complete E-language top-level code item (especially a .子程序), including items beyond the first 1 MiB. Requires a prepared mirror; external MCP calls refresh_workspace_mirror, while built-in chat prepares it automatically. Use occurrence to disambiguate duplicate names. Optional include_references adds a bounded case-insensitive literal reference search."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"file_path", {{"type", "string"}}},
-				{"item_name", {{"type", "string"}}},
-				{"occurrence", {{"type", "integer"}, {"minimum", 1}, {"description", "Select the Nth matching declaration when duplicate top-level names exist."}}},
-				{"mirror_generation", {{"type", "integer"}, {"minimum", 1}, {"description", "Pagination continuation only. MUST omit when offset is 0 or no prior generation is available; never guess. For continuation, pass the exact generation returned by the previous result."}}},
-				{"include_references", {{"type", "boolean"}, {"description", "Defaults to false."}}},
-				{"reference_glob", {{"type", "string"}, {"description", "Optional reference search glob such as src/**/*.txt."}}},
-				{"reference_limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 50}}}
-			}},
-			{"required", nlohmann::json::array({"file_path", "item_name"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "read_real_file"},
-		{"description", "Read a bounded numbered view directly from the live IDE page mapped by mirror-relative file_path. Requires a prepared mirror; external MCP calls refresh_workspace_mirror, while built-in chat prepares it automatically. Returns code_hash plus paginated content; continue with next_offset when has_more=true. Call it immediately before editing and base old_text/full_code/expected_base_hash on this live real_source view."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"file_path", {{"type", "string"}}},
-				{"offset", {{"type", "integer"}, {"minimum", 0}}},
-				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 20000}}}
-			}},
-			{"required", nlohmann::json::array({"file_path"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "edit_file"},
-		{"description", "Edit one current-project source file by mirror-relative file_path. Requires a prepared mirror; external MCP calls refresh_workspace_mirror, while built-in chat prepares it automatically. The edit is always based on the live IDE page; expected_base_hash optionally rejects a stale caller base. Successful results are verified."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"file_path", {{"type", "string"}}},
-				{"old_text", {{"type", "string"}, {"description", "Exact match text. ASCII and IDE-style left/right double quotes are treated as equivalent."}}},
-				{"new_text", {{"type", "string"}}},
-				{"expected_base_hash", {{"type", "string"}, {"description", "code_hash from read_real_file; required for external MCP calls and rejects stale live source."}}}
-			}},
-			{"required", nlohmann::json::array({"file_path", "old_text", "new_text"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "multi_edit_file"},
-		{"description", "Apply multiple text edits to one current-project source file. Requires a prepared mirror; external MCP calls refresh_workspace_mirror, while built-in chat prepares it automatically. The edits are always based on the live IDE page; expected_base_hash optionally rejects stale live source."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"file_path", {{"type", "string"}}},
-				{"edits", {{"type", "array"}, {"items", {
-					{"type", "object"},
-					{"properties", {
-						{"old_text", {{"type", "string"}, {"description", "Exact match text. ASCII and IDE-style left/right double quotes are treated as equivalent."}}},
-						{"new_text", {{"type", "string"}}},
-						{"replace_all", {{"type", "boolean"}}}
-					}},
-					{"required", nlohmann::json::array({"old_text", "new_text"})},
-					{"additionalProperties", false}
-				}}}},
-				{"fail_on_unmatched", {{"type", "boolean"}}},
-				{"atomic", {{"type", "boolean"}}},
-				{"expected_base_hash", {{"type", "string"}, {"description", "code_hash from read_real_file; required for external MCP calls and rejects stale live source."}}}
-			}},
-			{"required", nlohmann::json::array({"file_path", "edits"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "write_file"},
-		{"description", "Overwrite one current-project source file with full_code. Requires a prepared mirror; external MCP calls refresh_workspace_mirror, while built-in chat prepares it automatically. expected_base_hash detects stale source. Successful results include verified=true and do not require confirmation reads."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"file_path", {{"type", "string"}}},
-				{"full_code", {{"type", "string"}}},
-				{"expected_base_hash", {{"type", "string"}, {"description", "code_hash from read_real_file; required for external MCP calls."}}}
-			}},
-			{"required", nlohmann::json::array({"file_path", "full_code"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "diff_file"},
-		{"description", "Preview a structured diff for one current-project source file without writing anything. The diff is based on the live IDE page. Requires a prepared mirror; external MCP calls refresh_workspace_mirror, while built-in chat prepares it automatically. Accepts new_code/full_code or text edit parameters."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"file_path", {{"type", "string"}}},
-				{"new_code", {{"type", "string"}}},
-				{"full_code", {{"type", "string"}}},
-				{"old_text", {{"type", "string"}, {"description", "Exact match text. ASCII and IDE-style left/right double quotes are treated as equivalent."}}},
-				{"new_text", {{"type", "string"}}},
-				{"edits", {{"type", "array"}, {"items", {
-					{"type", "object"},
-					{"properties", {
-						{"old_text", {{"type", "string"}, {"description", "Exact match text. ASCII and IDE-style left/right double quotes are treated as equivalent."}}},
-						{"new_text", {{"type", "string"}}},
-						{"replace_all", {{"type", "boolean"}}}
-					}},
-					{"required", nlohmann::json::array({"old_text", "new_text"})},
-					{"additionalProperties", false}
-				}}}},
-				{"fail_on_unmatched", {{"type", "boolean"}}},
-				{"expected_base_hash", {{"type", "string"}, {"description", "code_hash from read_real_file; required for external MCP calls and rejects stale live source."}}}
-			}},
-			{"required", nlohmann::json::array({"file_path"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "restore_file_snapshot"},
-		{"description", "Restore one current-project source file from the latest real-page snapshot or a specified snapshot_id. Requires a prepared mirror; external MCP calls refresh_workspace_mirror, while built-in chat prepares it automatically. The current live page is read first; expected_current_hash optionally prevents overwriting newer changes."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"file_path", {{"type", "string"}}},
-				{"snapshot_id", {{"type", "string"}}},
-				{"restore_latest", {{"type", "boolean"}}},
-				{"expected_current_hash", {{"type", "string"}, {"description", "Current live code hash; required for external MCP restore calls."}}}
-			}},
-			{"required", nlohmann::json::array({"file_path"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "add_new_file"},
-		{"description", "Create a new assembly or class in the current E-language project, optionally write its complete source, verify the final IDE object name, and rebuild the full workspace mirror. full_code may include a .程序集 header; its name is normalized to the requested name."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"file_type", {{"type", "string"}, {"enum", nlohmann::json::array({"assembly", "class"})}, {"description", "Create a normal assembly or a class module."}}},
-				{"name", {{"type", "string"}, {"minLength", 1}, {"maxLength", 255}, {"description", "Final assembly or class name."}}},
-				{"full_code", {{"type", "string"}, {"description", "Optional complete E-language page source. If omitted, the IDE-generated default body is retained and only the header name changes."}}}
-			}},
-			{"required", nlohmann::json::array({"file_type", "name"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "get_current_page_info"},
-		{"description", "Get current IDE page name, page type and the trace/source used to resolve that page name."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", nlohmann::json::object()},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "get_current_eide_info"},
-		{"description", "Get current E-language IDE instance information, including current source file path, current page info, MCP port/endpoint, process id, executable path and supported compile modes."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", nlohmann::json::object()},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "refresh_dependency_catalog"},
-		{"description", "Explicit-user-request only. Refresh AutoLinker dependency catalog cache for available .ec modules under ecom and .fne support libraries under lib."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"force", {{"type", "boolean"}, {"description", "Rebuild cache directories. Defaults to false."}}},
-				{"wait", {{"type", "boolean"}, {"description", "Wait until refresh finishes. Defaults to false so the IDE main thread is not blocked."}}},
-				{"timeout_ms", {{"type", "integer"}, {"minimum", 0}, {"maximum", 600000}, {"description", "Defaults to 30000 when wait=true; 0 also uses the bounded default."}}}
-			}},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "search_available_modules"},
-		{"description", "Explicit-user-request only. Search currently available .ec modules from the E-language ecom directory by module name, path, or cached main source."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"query", {{"type", "string"}, {"description", "Module name, file name, path or source keyword. Empty query lists top cached modules."}}},
-				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}},
-				{"include_snippets", {{"type", "boolean"}}}
-			}},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "search_available_support_libraries"},
-		{"description", "Explicit-user-request only. Search currently available .fne support libraries from the E-language lib directory by library name, file name, path, or decoded GetNewInf information."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"query", {{"type", "string"}, {"description", "Support library name, file name, path, command name or type keyword. Empty query lists top cached libraries."}}},
-				{"limit", {{"type", "integer"}, {"minimum", 1}, {"maximum", 200}}},
-				{"include_snippets", {{"type", "boolean"}}}
-			}},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "list_imported_modules"},
-		{"description", "Explicit-user-request only. List .ec modules currently imported by the active E-language project."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", nlohmann::json::object()},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "add_module_to_project"},
-		{"description", "Explicit-user-request only. Import one .ec module into the current project by module_path or module_name. Real import requires allow_blocking_import=true."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"module_path", {{"type", "string"}, {"description", "Absolute .ec file path."}}},
-				{"module_name", {{"type", "string"}, {"description", "Module name or file name to resolve from the E-language module directory."}}},
-				{"prefer_new_method", {{"type", "boolean"}, {"description", "Optional diagnostic switch. false uses the legacy IDE import path; true tries the newer AddECOM2 path first."}}},
-				{"allow_blocking_import", {{"type", "boolean"}, {"description", "Required true to execute the real IDE module import call. Default false only resolves the module and avoids blocking MCP if the IDE API hangs."}}}
-			}},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "remove_module_from_project"},
-		{"description", "Explicit-user-request only. Remove one imported .ec module from the current project by module_index, module_path, or module_name."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"module_index", {{"type", "integer"}, {"minimum", 0}}},
-				{"module_path", {{"type", "string"}}},
-				{"module_name", {{"type", "string"}}}
-			}},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "add_support_library_to_project"},
-		{"description", "Explicit-user-request only. Add one .fne support library to the current project by library_path or library_name, then verify it is loaded."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"library_path", {{"type", "string"}, {"description", "Absolute .fne file path, or path relative to the E-language lib directory."}}},
-				{"library_name", {{"type", "string"}, {"description", "Support library name or file name to resolve from the E-language lib directory."}}}
-			}},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "compile_with_output_path"},
-		{"description", "Compile the current project to output_path. compiler defaults to eide: omit blackmoon_mode and optionally set static_compile (default true for EXE/DLL). For eide module projects, auto builds a win_console_exe test; target=ecom publishes .ec. BlackMoon requires compiler=blackmoon, an EXE/DLL project, and an available profile; omit static_compile entirely, set blackmoon_mode=asm/cxx/vcxx (default vcxx), and use target=auto or the actual project type. A stray blackmoon_mode never switches the compiler: conflicting parameters return error and hint explaining how to correct the call. Success requires an updated output artifact and successful configuration restoration."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"target", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "win_exe", "win_console_exe", "win_dll", "ecom"})}, {"description", "Defaults to auto. For module-project compile verification, use win_console_exe; ecom publishes a .ec module."}}},
-				{"output_path", {{"type", "string"}}},
-				{"static_compile", {{"type", "boolean"}, {"description", "Only for compiler=eide: defaults to true for EXE/DLL and false for ecom. For compiler=blackmoon omit this field entirely, including false."}}},
-				{"compiler", {{"type", "string"}, {"enum", nlohmann::json::array({"eide", "blackmoon"})}}},
-				{"blackmoon_mode", {{"type", "string"}, {"enum", nlohmann::json::array({"asm", "cxx", "vcxx"})}, {"description", "Only for explicit compiler=blackmoon; omit for ordinary eide compilation. Default vcxx. asm=汇编模式, cxx=C/C++模式, vcxx=VC++模式. Use get_current_eide_info to inspect installed modes."}}}
-			}},
-			{"required", nlohmann::json::array({"output_path"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "exec_command"},
-		{"description", "Runs a command in a non-interactive local shell and returns output or a session ID for ongoing polling. The command starts only after explicit user confirmation. tty=true is not supported by AutoLinker; use write_stdin with an empty chars value to poll a running session."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"cmd", {{"type", "string"}, {"description", "Shell command to execute."}}},
-				{"workdir", {{"type", "string"}, {"description", "Working directory. Defaults to the current e-language project directory."}}},
-				{"tty", {{"type", "boolean"}, {"description", "Only false is supported; AutoLinker does not provide ConPTY."}}},
-				{"yield_time_ms", {{"type", "integer"}, {"description", "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms, with a 2000 ms Windows initial floor."}}},
-				{"max_output_tokens", {{"type", "integer"}, {"description", "Output token budget. Defaults to 10000; larger requests are capped by policy."}}},
-				{"shell", {{"type", "string"}, {"description", "Shell executable. Defaults to powershell.exe."}}},
-				{"login", {{"type", "boolean"}, {"description", "Use login/profile shell semantics. Defaults to true."}}}
-			}},
-			{"required", nlohmann::json::array({"cmd"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "write_stdin"},
-		{"description", "Writes characters to an existing non-TTY exec_command session and returns recent output. Empty chars polls the session; only Ctrl-C is accepted as non-empty input because AutoLinker uses pipes rather than ConPTY."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"session_id", {{"type", "integer"}, {"description", "Identifier of the running exec_command session."}}},
-				{"chars", {{"type", "string"}, {"description", "Bytes to write. Defaults to empty, which polls without writing."}}},
-				{"yield_time_ms", {{"type", "integer"}, {"description", "Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms."}}},
-				{"max_output_tokens", {{"type", "integer"}, {"description", "Output token budget. Defaults to 10000; larger requests are capped by policy."}}}
-			}},
-			{"required", nlohmann::json::array({"session_id"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "search_web_tavily"},
-		{"description", "Search the public web via Tavily and return normalized result snippets."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"query", {{"type", "string"}}},
-				{"max_results", {{"type", "integer"}, {"minimum", 1}, {"maximum", 10}}},
-				{"topic", {{"type", "string"}}}
-			}},
-			{"required", nlohmann::json::array({"query"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "fetch_url"},
-		{"description", "Fetch one URL via HTTP GET and return normalized text response plus basic HTTP metadata."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"url", {{"type", "string"}}},
-				{"timeout_seconds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 300}}},
-				{"max_bytes", {{"type", "integer"}, {"minimum", 4096}, {"maximum", 2097152}}}
-			}},
-			{"required", nlohmann::json::array({"url"})},
-			{"additionalProperties", false}
-		}}
-	});
-	tools.push_back({
-		{"name", "extract_web_document"},
-		{"description", "Fetch one web page or text document and extract readable plain-text content, title and a small set of links."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"url", {{"type", "string"}}},
-				{"timeout_seconds", {{"type", "integer"}, {"minimum", 1}, {"maximum", 300}}},
-				{"max_bytes", {{"type", "integer"}, {"minimum", 4096}, {"maximum", 2097152}}}
-			}},
-			{"required", nlohmann::json::array({"url"})},
-			{"additionalProperties", false}
-		}}
-	});
-	NormalizeJsonStringsToUtf8InPlace(tools);
-	return tools;
+    static constexpr char kCatalogJson[] =
+#include "AIChatPublicToolCatalog.inc"
+    ;
+    return AUTOLINKER_STATIC_JSON(kCatalogJson);
 }
 
 bool IsRealPageReadToolVisible(AISourceEditMode mode)
@@ -3649,48 +3163,74 @@ nlohmann::json BuildRequestUserInputToolDefinition()
 
 nlohmann::json BuildGetGoalToolDefinition()
 {
-	return {
-		{"name", "get_goal"},
-		{"description", "Get the current persistent Goal, including its objective, state, elapsed execution time, and token usage."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", nlohmann::json::object()},
-			{"additionalProperties", false}
-		}}
-	};
+	return AUTOLINKER_STATIC_JSON(R"json(
+{
+  "name": "get_goal",
+  "description": "Get the current persistent Goal, including its objective, state, elapsed execution time, and token usage.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  }
+}
+)json");
 }
 
 nlohmann::json BuildUpdateGoalToolDefinition()
 {
-	return {
-		{"name", "update_goal"},
-		{"description", "End the current persistent Goal only when it is genuinely complete or blocked. Use complete after the objective is fully achieved. Use blocked only when progress cannot continue without user input or an external state change."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"status", {{"type", "string"}, {"enum", nlohmann::json::array({"complete", "blocked"})}}}
-			}},
-			{"required", nlohmann::json::array({"status"})},
-			{"additionalProperties", false}
-		}}
-	};
+	return AUTOLINKER_STATIC_JSON(R"json(
+{
+  "name": "update_goal",
+  "description": "End the current persistent Goal only when it is genuinely complete or blocked. Use complete after the objective is fully achieved. Use blocked only when progress cannot continue without user input or an external state change.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": "string",
+        "enum": [
+          "complete",
+          "blocked"
+        ]
+      }
+    },
+    "required": [
+      "status"
+    ],
+    "additionalProperties": false
+  }
+}
+)json");
 }
 
 nlohmann::json BuildViewImageToolDefinition()
 {
-	return {
-		{"name", "view_image"},
-		{"description", "Load and analyze an image from an arbitrary local disk path. Use this for screenshots created by PowerShell or when the user provides an image path. The user may be asked to approve access."},
-		{"inputSchema", {
-			{"type", "object"},
-			{"properties", {
-				{"path", {{"type", "string"}, {"description", "Absolute image path, or a path relative to the current project directory."}}},
-				{"detail", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "low", "high"})}}}
-			}},
-			{"required", nlohmann::json::array({"path"})},
-			{"additionalProperties", false}
-		}}
-	};
+	return AUTOLINKER_STATIC_JSON(R"json(
+{
+  "name": "view_image",
+  "description": "Load and analyze an image from an arbitrary local disk path. Use this for screenshots created by PowerShell or when the user provides an image path. The user may be asked to approve access.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Absolute image path, or a path relative to the current project directory."
+      },
+      "detail": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "low",
+          "high"
+        ]
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false
+  }
+}
+)json");
 }
 
 nlohmann::json BuildInternalToolCatalog(
@@ -5637,7 +5177,7 @@ AIChatResult ExecuteChatWithToolsClaude(
 		requestBody["system"] = systemUtf8;
 		requestBody["messages"] = messages;
 		requestBody["tools"] = tools;
-		requestBody["tool_choice"] = { {"type", "auto"} };
+		requestBody["tool_choice"] = AUTOLINKER_STATIC_JSON(R"json({"type":"auto"})json");
 		requestBody["stream"] = false;
 		ApplyThinkingConfigToClaudeRequest(requestBody, roundSettings);
 		AIProviderCache::ApplyClaude(requestBody);
@@ -7324,7 +6864,14 @@ nlohmann::json BuildOpenAIChatMessage(const AIChatMessage& message)
 		});
 	}
 	if (content.empty()) {
-		content.push_back({{"type", "text"}, {"text", "[图片附件为空]"}});
+		// 保留原执行字符集中的本地文本字节，不能直接作为 UTF-8 JSON 文本解析。
+		static const nlohmann::json emptyImage = [] {
+			nlohmann::json value;
+			value["type"] = "text";
+			value["text"] = "[图片附件为空]";
+			return value;
+		}();
+		content.push_back(emptyImage);
 	}
 	return {{"role", "user"}, {"content", std::move(content)}};
 }
@@ -7354,7 +6901,7 @@ nlohmann::json BuildClaudeMessage(const AIChatMessage& message)
 		}
 	}
 	if (content.empty()) {
-		content.push_back({{"type", "text"}, {"text", ""}});
+		content.push_back(AUTOLINKER_STATIC_JSON(R"json({"type":"text","text":""})json"));
 	}
 	return {{"role", role}, {"content", std::move(content)}};
 }
@@ -7380,7 +6927,7 @@ nlohmann::json BuildGeminiContent(const AIChatMessage& message)
 		}
 	}
 	if (parts.empty()) {
-		parts.push_back({{"text", ""}});
+		parts.push_back(AUTOLINKER_STATIC_JSON(R"json({"text":""})json"));
 	}
 	return {{"role", role == "assistant" ? "model" : "user"}, {"parts", std::move(parts)}};
 }
@@ -7408,7 +6955,14 @@ nlohmann::json BuildResponsesMessage(const AIChatMessage& message)
 		});
 	}
 	if (content.empty()) {
-		content.push_back({{"type", "input_text"}, {"text", "[图片附件为空]"}});
+		// 保留原执行字符集中的本地文本字节，不能直接作为 UTF-8 JSON 文本解析。
+		static const nlohmann::json emptyImage = [] {
+			nlohmann::json value;
+			value["type"] = "input_text";
+			value["text"] = "[图片附件为空]";
+			return value;
+		}();
+		content.push_back(emptyImage);
 	}
 	return {{"role", "user"}, {"content", std::move(content)}};
 }
@@ -7489,11 +7043,7 @@ bool AIService::SupportsImageInput(const AISettings& settings)
 
 std::string AIService::BuildImageInputSelfTestJson()
 {
-	nlohmann::json report = {
-		{"name", "ai-image-provider-serialization"},
-		{"ok", false},
-		{"checks", nlohmann::json::object()}
-	};
+	nlohmann::json report = AUTOLINKER_STATIC_JSON(R"json({"name":"ai-image-provider-serialization","ok":false,"checks":{}})json");
 	const std::filesystem::path tempRoot = std::filesystem::temp_directory_path() /
 		(L"AutoLinker-\u591a\u6a21\u6001\u81ea\u68c0-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
 	const std::filesystem::path firstPath = tempRoot / L"\u56fe\u7247-a.png";
@@ -7526,7 +7076,7 @@ std::string AIService::BuildImageInputSelfTestJson()
 	const nlohmann::json expectedOpenAIChat = {
 		{"role", "user"},
 		{"content", nlohmann::json::array({
-			{{"type", "text"}, {"text", "inspect"}},
+			AUTOLINKER_STATIC_JSON(R"json({"type":"text","text":"inspect"})json"),
 			{{"type", "image_url"}, {"image_url", {{"url", firstDataUrl}, {"detail", "high"}}}},
 			{{"type", "image_url"}, {"image_url", {{"url", secondDataUrl}, {"detail", "low"}}}}
 		})}
@@ -7535,29 +7085,62 @@ std::string AIService::BuildImageInputSelfTestJson()
 	const nlohmann::json expectedResponses = {
 		{"role", "user"},
 		{"content", nlohmann::json::array({
-			{{"type", "input_text"}, {"text", "inspect"}},
+			AUTOLINKER_STATIC_JSON(R"json({"type":"input_text","text":"inspect"})json"),
 			{{"type", "input_image"}, {"image_url", firstDataUrl}, {"detail", "high"}},
 			{{"type", "input_image"}, {"image_url", secondDataUrl}, {"detail", "low"}}
 		})}
 	};
 	const nlohmann::json claude = BuildClaudeMessage(withText);
-	const nlohmann::json expectedClaude = {
-		{"role", "user"},
-		{"content", nlohmann::json::array({
-			{{"type", "text"}, {"text", "inspect"}},
-			{{"type", "image"}, {"source", {{"type", "base64"}, {"media_type", "image/png"}, {"data", "YWJj"}}}},
-			{{"type", "image"}, {"source", {{"type", "base64"}, {"media_type", "image/jpeg"}, {"data", "ZGVm"}}}}
-		})}
-	};
+	const nlohmann::json expectedClaude = AUTOLINKER_STATIC_JSON(R"json(
+{
+  "role": "user",
+  "content": [
+    {
+      "type": "text",
+      "text": "inspect"
+    },
+    {
+      "type": "image",
+      "source": {
+        "type": "base64",
+        "media_type": "image/png",
+        "data": "YWJj"
+      }
+    },
+    {
+      "type": "image",
+      "source": {
+        "type": "base64",
+        "media_type": "image/jpeg",
+        "data": "ZGVm"
+      }
+    }
+  ]
+}
+)json");
 	const nlohmann::json gemini = BuildGeminiContent(withText);
-	const nlohmann::json expectedGemini = {
-		{"role", "user"},
-		{"parts", nlohmann::json::array({
-			{{"text", "inspect"}},
-			{{"inlineData", {{"mimeType", "image/png"}, {"data", "YWJj"}}}},
-			{{"inlineData", {{"mimeType", "image/jpeg"}, {"data", "ZGVm"}}}}
-		})}
-	};
+	const nlohmann::json expectedGemini = AUTOLINKER_STATIC_JSON(R"json(
+{
+  "role": "user",
+  "parts": [
+    {
+      "text": "inspect"
+    },
+    {
+      "inlineData": {
+        "mimeType": "image/png",
+        "data": "YWJj"
+      }
+    },
+    {
+      "inlineData": {
+        "mimeType": "image/jpeg",
+        "data": "ZGVm"
+      }
+    }
+  ]
+}
+)json");
 
 	const nlohmann::json openAIImageOnly = BuildOpenAIChatMessage(imageOnly);
 	const nlohmann::json responsesImageOnly = BuildResponsesMessage(imageOnly);
@@ -7594,11 +7177,31 @@ std::string AIService::BuildImageInputSelfTestJson()
 
 	// DeepSeek 切换到 Responses：保留正文、并行工具结果和图片，不发送私有推理字段。
 	{
-		const nlohmann::json deepseek = {{"role", "assistant"}, {"content", "before tools"},
-			{"reasoning_content", "private thinking"}, {"tool_calls", nlohmann::json::array({
-				{{"id", "call_a"}, {"type", "function"}, {"function", {{"name", "lookup"}, {"arguments", "{}"}}}},
-				{{"id", "call_b"}, {"type", "function"}, {"function", {{"name", "lookup"}, {"arguments", "{}"}}}}
-			})}};
+		const nlohmann::json deepseek = AUTOLINKER_STATIC_JSON(R"json(
+{
+  "role": "assistant",
+  "content": "before tools",
+  "reasoning_content": "private thinking",
+  "tool_calls": [
+    {
+      "id": "call_a",
+      "type": "function",
+      "function": {
+        "name": "lookup",
+        "arguments": "{}"
+      }
+    },
+    {
+      "id": "call_b",
+      "type": "function",
+      "function": {
+        "name": "lookup",
+        "arguments": "{}"
+      }
+    }
+  ]
+}
+)json");
 		const std::string original = deepseek.dump();
 		nlohmann::json input = nlohmann::json::array();
 		AppendResponsesContextMessage(BuildRawCheckpointMessage("assistant", "before tools", deepseek), input);
@@ -7611,19 +7214,18 @@ std::string AIService::BuildImageInputSelfTestJson()
 		PrepareResponsesInputItemsForStatelessRequest(input);
 		report["checks"]["deepseek_to_responses_history"] = input.size() == 7 &&
 			input[0] == BuildResponsesTextMessage("assistant", "before tools") &&
-			input[1] == nlohmann::json({{"type", "function_call"}, {"call_id", "call_a"}, {"name", "lookup"}, {"arguments", "{}"}}) &&
-			input[2]["call_id"] == "call_b" && input[3] == nlohmann::json({{"type", "function_call_output"}, {"call_id", "call_a"}, {"output", "result"}}) &&
+			input[1] == AUTOLINKER_STATIC_JSON(R"json({"type":"function_call","call_id":"call_a","name":"lookup","arguments":"{}"})json") &&
+			input[2]["call_id"] == "call_b" && input[3] == AUTOLINKER_STATIC_JSON(R"json({"type":"function_call_output","call_id":"call_a","output":"result"})json") &&
 			input[4]["call_id"] == "call_b" && input[5] == expectedResponses &&
 			input[6] == BuildResponsesTextMessage("user", "continue") &&
 			input.dump().find("reasoning_content") == std::string::npos &&
 			input.dump().find("tool_calls") == std::string::npos && deepseek.dump() == original;
 
 		nlohmann::json native = nlohmann::json::array();
-		const nlohmann::json reasoning = {{"type", "reasoning"}, {"id", "rs_old"},
-			{"encrypted_content", "encrypted"}, {"summary", nlohmann::json::array()}};
+		const nlohmann::json reasoning = AUTOLINKER_STATIC_JSON(R"json({"type":"reasoning","id":"rs_old","encrypted_content":"encrypted","summary":[]})json");
 		AppendResponsesContextMessage(BuildRawCheckpointMessage("assistant", "", reasoning), native);
 		AppendResponsesContextMessage(BuildRawCheckpointMessage("assistant", "",
-			{{"type", "previous_response_ref"}, {"response_id", "resp_old"}}), native);
+			AUTOLINKER_STATIC_JSON(R"json({"type":"previous_response_ref","response_id":"resp_old"})json")), native);
 		AppendResponsesContextMessage(BuildRawCheckpointMessage("assistant", "",
 			{{"role", "assistant"}, {"content", nullptr}, {"reasoning_content", "thinking"},
 			 {"tool_calls", deepseek["tool_calls"]}}), native);
@@ -7636,37 +7238,52 @@ std::string AIService::BuildImageInputSelfTestJson()
 
 	// 混合会话反向转换：原生 DeepSeek 推理保留，GPT 并行工具批次和图片完整往返。
 	{
-		const nlohmann::json oldDeepSeek = {{"role", "assistant"}, {"content", "old answer"},
-			{"reasoning_content", "original deepseek reasoning"}};
-		const nlohmann::json responseText = {{"type", "message"}, {"role", "assistant"},
-			{"id", "msg_old"}, {"status", "completed"}, {"content", nlohmann::json::array({
-				{{"type", "output_text"}, {"text", "GPT text"}, {"annotations", nlohmann::json::array()}}
-			})}};
+		const nlohmann::json oldDeepSeek = AUTOLINKER_STATIC_JSON(R"json({"role":"assistant","content":"old answer","reasoning_content":"original deepseek reasoning"})json");
+		const nlohmann::json responseText = AUTOLINKER_STATIC_JSON(R"json({"type":"message","role":"assistant","id":"msg_old","status":"completed","content":[{"type":"output_text","text":"GPT text","annotations":[]}]})json");
 		nlohmann::json mixed = nlohmann::json::array({oldDeepSeek,
-			{{"type", "reasoning"}, {"role", "assistant"}, {"content", "duplicated aggregate"},
-			 {"encrypted_content", "opaque"}, {"summary", nlohmann::json::array()}},
+			AUTOLINKER_STATIC_JSON(R"json({"type":"reasoning","role":"assistant","content":"duplicated aggregate","encrypted_content":"opaque","summary":[]})json"),
 			responseText,
-			{{"type", "previous_response_ref"}, {"response_id", "resp_old"}}
+			AUTOLINKER_STATIC_JSON(R"json({"type":"previous_response_ref","response_id":"resp_old"})json")
 		});
 		for (const auto& id : {"gpt_a", "gpt_b"}) {
 			mixed.push_back({{"type", "function_call"}, {"role", "assistant"},
 				{"content", "duplicated aggregate"}, {"call_id", id}, {"name", "lookup"}, {"arguments", "{}"}});
 		}
-		mixed.push_back({{"type", "function_call_output"}, {"call_id", "gpt_a"}, {"output", "first result"}});
+		mixed.push_back(AUTOLINKER_STATIC_JSON(R"json({"type":"function_call_output","call_id":"gpt_a","output":"first result"})json"));
 		mixed.push_back(expectedOpenAIChat);
-		mixed.push_back({{"type", "function_call_output"}, {"call_id", "gpt_b"}, {"output", "second result"}});
-		mixed.push_back({{"role", "user"}, {"content", "continue"}});
+		mixed.push_back(AUTOLINKER_STATIC_JSON(R"json({"type":"function_call_output","call_id":"gpt_b","output":"second result"})json"));
+		mixed.push_back(AUTOLINKER_STATIC_JSON(R"json({"role":"user","content":"continue"})json"));
 		AIChatHistoryAdapter::ConvertResponsesItemsToChat(mixed, true);
 		const auto stats = RepairOpenAIChatToolMessageSequence(mixed);
 		const nlohmann::json expected = nlohmann::json::array({oldDeepSeek,
-			{{"role", "assistant"}, {"content", "GPT text"}, {"reasoning_content", ""},
-			 {"tool_calls", nlohmann::json::array({
-				{{"id", "gpt_a"}, {"type", "function"}, {"function", {{"name", "lookup"}, {"arguments", "{}"}}}},
-				{{"id", "gpt_b"}, {"type", "function"}, {"function", {{"name", "lookup"}, {"arguments", "{}"}}}}
-			 })}},
-			{{"role", "tool"}, {"tool_call_id", "gpt_a"}, {"content", "first result"}},
-			{{"role", "tool"}, {"tool_call_id", "gpt_b"}, {"content", "second result"}},
-			expectedOpenAIChat, {{"role", "user"}, {"content", "continue"}}
+			AUTOLINKER_STATIC_JSON(R"json(
+{
+  "role": "assistant",
+  "content": "GPT text",
+  "reasoning_content": "",
+  "tool_calls": [
+    {
+      "id": "gpt_a",
+      "type": "function",
+      "function": {
+        "name": "lookup",
+        "arguments": "{}"
+      }
+    },
+    {
+      "id": "gpt_b",
+      "type": "function",
+      "function": {
+        "name": "lookup",
+        "arguments": "{}"
+      }
+    }
+  ]
+}
+)json"),
+			AUTOLINKER_STATIC_JSON(R"json({"role":"tool","tool_call_id":"gpt_a","content":"first result"})json"),
+			AUTOLINKER_STATIC_JSON(R"json({"role":"tool","tool_call_id":"gpt_b","content":"second result"})json"),
+			expectedOpenAIChat, AUTOLINKER_STATIC_JSON(R"json({"role":"user","content":"continue"})json")
 		});
 		report["checks"]["responses_to_deepseek_mixed_history"] = mixed == expected && stats.removedMessages == 0;
 		auto twice = mixed;
@@ -7700,7 +7317,7 @@ std::string AIService::BuildImageInputSelfTestJson()
 		nlohmann::json plain = nlohmann::json::array({responseText});
 		AIChatHistoryAdapter::ConvertResponsesItemsToChat(plain, false);
 		report["checks"]["responses_to_standard_chat_text"] =
-			plain == nlohmann::json::array({{{"role", "assistant"}, {"content", "GPT text"}}});
+			plain == AUTOLINKER_STATIC_JSON(R"json([{"role":"assistant","content":"GPT text"}])json");
 	}
 
 	// 覆盖无图、单图、三图及中间工具失败的混合批次，并验证检查点恢复不丢消息。
@@ -7712,13 +7329,12 @@ std::string AIService::BuildImageInputSelfTestJson()
 			published = checkpoint;
 		};
 		AIChatRunController controller(settings, {}, options);
-		nlohmann::json assistant = {{"role", "assistant"}, {"content", ""},
-			{"tool_calls", nlohmann::json::array()}};
+		nlohmann::json assistant = AUTOLINKER_STATIC_JSON(R"json({"role":"assistant","content":"","tool_calls":[]})json");
 		std::vector<AIChatCheckpointToolCall> calls;
 		for (size_t i = 0; i < 3; ++i) {
 			const std::string id = "image_call_" + std::to_string(i);
 			assistant["tool_calls"].push_back({{"id", id}, {"type", "function"},
-				{"function", {{"name", "view_image"}, {"arguments", "{}"}}}});
+				{"function", AUTOLINKER_STATIC_JSON(R"json({"name":"view_image","arguments":"{}"})json")}});
 			calls.push_back({id, "view_image", "{}"});
 		}
 		controller.AppendContextMessage(BuildRawCheckpointMessage("assistant", "", assistant));
@@ -7785,11 +7401,7 @@ std::string AIService::BuildImageInputSelfTestJson()
 
 std::string AIService::BuildEndpointConfigSelfTestJson()
 {
-	nlohmann::json report = {
-		{ "name", "ai-endpoint-config" },
-		{ "ok", false },
-		{ "checks", nlohmann::json::object() }
-	};
+	nlohmann::json report = AUTOLINKER_STATIC_JSON(R"json({"name":"ai-endpoint-config","ok":false,"checks":{}})json");
 	std::error_code error;
 	const std::filesystem::path tempRoot = std::filesystem::temp_directory_path(error) /
 		std::format("autolinker_endpoint_config_{}_{}", GetCurrentProcessId(), GetTickCount64());
@@ -7801,13 +7413,15 @@ std::string AIService::BuildEndpointConfigSelfTestJson()
 	}
 
 	try {
-		const nlohmann::json flatLegacy = {
-			{ "base_url", "https://legacy.example/v1" },
-			{ "api_key", "legacy-key" },
-			{ "model", "legacy-model" },
-			{ "source_edit_mode", "mirror_source_base" },
-			{ "tavily_api_key", "tavily-key" }
-		};
+		const nlohmann::json flatLegacy = AUTOLINKER_STATIC_JSON(R"json(
+{
+  "base_url": "https://legacy.example/v1",
+  "api_key": "legacy-key",
+  "model": "legacy-model",
+  "source_edit_mode": "mirror_source_base",
+  "tavily_api_key": "tavily-key"
+}
+)json");
 		{
 			std::ofstream file(configPath, std::ios::binary | std::ios::trunc);
 			file << flatLegacy.dump(2);
@@ -7827,33 +7441,35 @@ std::string AIService::BuildEndpointConfigSelfTestJson()
 		report["checks"]["missing_temperature_keeps_legacy_default"] =
 			flatSettings.temperature.has_value() && *flatSettings.temperature == 0.2;
 
-		const nlohmann::json legacy = {
-			{ "active_profile_id", "second" },
-			{ "source_edit_mode", "mirror_source_base" },
-			{ "profiles", nlohmann::json::array({
-				{
-					{ "id", "first" },
-					{ "name", "First" },
-					{ "values", {
-						{ "base_url", "https://first.example/v1" },
-						{ "api_key", "key-first" },
-						{ "model", "model-first" },
-						{ "context_window", "1000" }
-					} }
-				},
-				{
-					{ "id", "second" },
-					{ "name", "Second" },
-					{ "values", {
-						{ "base_url", "https://second.example/v1" },
-						{ "api_key", "key-second" },
-						{ "model", "model-second" },
-						{ "temperature", "0.20" },
-						{ "context_window", "2000" }
-					} }
-				}
-			}) }
-		};
+		const nlohmann::json legacy = AUTOLINKER_STATIC_JSON(R"json(
+{
+  "active_profile_id": "second",
+  "source_edit_mode": "mirror_source_base",
+  "profiles": [
+    {
+      "id": "first",
+      "name": "First",
+      "values": {
+        "base_url": "https://first.example/v1",
+        "api_key": "key-first",
+        "model": "model-first",
+        "context_window": "1000"
+      }
+    },
+    {
+      "id": "second",
+      "name": "Second",
+      "values": {
+        "base_url": "https://second.example/v1",
+        "api_key": "key-second",
+        "model": "model-second",
+        "temperature": "0.20",
+        "context_window": "2000"
+      }
+    }
+  ]
+}
+)json");
 		{
 			std::ofstream file(configPath, std::ios::binary | std::ios::trunc);
 			file << legacy.dump(2);
@@ -8500,7 +8116,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		requestBody["model"] = LocalToUtf8(settings.model);
 		ApplyOpenAITemperatureIfSupported(requestBody, roundSettings);
 		requestBody["stream"] = true;
-		requestBody["stream_options"] = { {"include_usage", true} };
+		requestBody["stream_options"] = AUTOLINKER_STATIC_JSON(R"json({"include_usage":true})json");
 		requestBody["messages"] = requestMessages;
 		requestBody["tools"] = tools;
 		if (!IsDeepSeekCompatibleSettings(settings)) {
@@ -9201,20 +8817,69 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 	}
 
 	{
-		nlohmann::json messages = nlohmann::json::array({
-			{{"role", "system"}, {"content", "system"}},
-			{{"role", "tool"}, {"tool_call_id", "orphan"}, {"content", "bad"}},
-			{{"role", "assistant"}, {"content", ""}, {"tool_calls", nlohmann::json::array({
-				{{"id", "call_ok"}, {"type", "function"}, {"function", {{"name", "read_file"}, {"arguments", "{}"}}}}
-			})}},
-			{{"role", "tool"}, {"tool_call_id", "call_ok"}, {"content", "ok"}},
-			{{"role", "assistant"}, {"content", ""}, {"tool_calls", nlohmann::json::array({
-				{{"id", "call_missing_a"}, {"type", "function"}, {"function", {{"name", "read_file"}, {"arguments", "{}"}}}},
-				{{"id", "call_missing_b"}, {"type", "function"}, {"function", {{"name", "read_file"}, {"arguments", "{}"}}}}
-			})}},
-			{{"role", "tool"}, {"tool_call_id", "call_missing_a"}, {"content", "partial"}},
-			{{"role", "user"}, {"content", "continue"}}
-		});
+		nlohmann::json messages = AUTOLINKER_STATIC_JSON(R"json(
+[
+  {
+    "role": "system",
+    "content": "system"
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "orphan",
+    "content": "bad"
+  },
+  {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+      {
+        "id": "call_ok",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "call_ok",
+    "content": "ok"
+  },
+  {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+      {
+        "id": "call_missing_a",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{}"
+        }
+      },
+      {
+        "id": "call_missing_b",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{}"
+        }
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "call_missing_a",
+    "content": "partial"
+  },
+  {
+    "role": "user",
+    "content": "continue"
+  }
+]
+)json");
 		const OpenAIChatToolSequenceRepairStats stats = RepairOpenAIChatToolMessageSequence(messages);
 		const bool ok = messages.size() == 4 &&
 			messages[0].value("role", std::string()) == "system" &&
@@ -9531,9 +9196,11 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 		// 覆盖用户报告的全文大小、重复读取、非零偏移分页及最大允许页大小。
 		bool ok = true;
 		for (const size_t totalBytes : {size_t(11989), size_t(262144 + 97)}) {
+			// JSON 和分页边界均以 UTF-8 字节计数，不依赖当前执行字符集。
+			const std::string unitUtf8 = "\xE6\x8A\x80\xE8\x83\xBD"; // 技能
 			std::string sourceContent;
-			while (sourceContent.size() + 6 <= totalBytes) {
-				sourceContent += "技能";
+			while (sourceContent.size() + unitUtf8.size() <= totalBytes) {
+				sourceContent += unitUtf8;
 			}
 			sourceContent.append(totalBytes - sourceContent.size(), 'x');
 			for (const size_t pageBytes : {size_t(4098), size_t(262144)}) {
@@ -9604,7 +9271,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			{"total_results", 40},
 			{"has_more", true},
 			{"next_offset", 25},
-			{"visible_result_range", {{"start_offset", 10}, {"end_offset_exclusive", 25}}}
+			{"visible_result_range", AUTOLINKER_STATIC_JSON(R"json({"start_offset":10,"end_offset_exclusive":25})json")}
 		};
 		const CompactToolResultPayload compact = BuildCompactToolResultPayload(
 			"list_files",
@@ -10028,7 +9695,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			userInputTool.value("name", std::string()) == "request_user_input" &&
 			userInputSchema.value("type", std::string()) == "object" &&
 			userInputSchema.value("additionalProperties", true) == false &&
-			userInputSchema.value("required", nlohmann::json::array()) == nlohmann::json::array({"questions"}) &&
+			userInputSchema.value("required", nlohmann::json::array()) == AUTOLINKER_STATIC_JSON(R"json(["questions"])json") &&
 			userInputProperties.size() == 1 &&
 			questionsSchema.value("type", std::string()) == "array" &&
 			questionsSchema.value("minItems", 0) == 1 &&
@@ -10036,7 +9703,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			questionSchema.value("type", std::string()) == "object" &&
 			questionSchema.value("additionalProperties", true) == false &&
 			questionSchema.value("required", nlohmann::json::array()) ==
-				nlohmann::json::array({"id", "header", "question", "options"}) &&
+				AUTOLINKER_STATIC_JSON(R"json(["id","header","question","options"])json") &&
 			questionProperties.size() == 4 &&
 			questionProperties.value("id", nlohmann::json::object()).value("type", std::string()) == "string" &&
 			questionProperties.value("id", nlohmann::json::object()).value("pattern", std::string()) ==
@@ -10055,7 +9722,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			optionSchema.value("type", std::string()) == "object" &&
 			optionSchema.value("additionalProperties", true) == false &&
 			optionSchema.value("required", nlohmann::json::array()) ==
-				nlohmann::json::array({"label", "description"}) &&
+				AUTOLINKER_STATIC_JSON(R"json(["label","description"])json") &&
 			optionProperties.size() == 2 &&
 			optionProperties.value("label", nlohmann::json::object()).value("type", std::string()) == "string" &&
 			optionProperties.value("label", nlohmann::json::object()).value("minLength", 0) == 1 &&
@@ -10082,50 +9749,37 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 	}
 
 	{
-		const nlohmann::json originalModelContent = {
-			{"role", "model"},
-			{"parts", nlohmann::json::array({
-				{
-					{"functionCall", {
-						{"id", "call_paris"},
-						{"name", "get_weather"},
-						{"args", {{"city", "Paris"}}}
-					}},
-					{"thoughtSignature", "signature"}
-				},
-				{
-					{"functionCall", {
-						{"id", "call_london"},
-						{"name", "get_weather"},
-						{"args", {{"city", "London"}}}
-					}}
-				}
-			})}
-		};
+		const nlohmann::json originalModelContent = AUTOLINKER_STATIC_JSON(R"json(
+{
+  "role": "model",
+  "parts": [
+    {
+      "functionCall": {
+        "id": "call_paris",
+        "name": "get_weather",
+        "args": {
+          "city": "Paris"
+        }
+      },
+      "thoughtSignature": "signature"
+    },
+    {
+      "functionCall": {
+        "id": "call_london",
+        "name": "get_weather",
+        "args": {
+          "city": "London"
+        }
+      }
+    }
+  ]
+}
+)json");
 		nlohmann::json history = nlohmann::json::array({
-			{
-				{"role", "user"},
-				{"parts", nlohmann::json::array({{{"text", "Check both cities"}}})}
-			},
+			AUTOLINKER_STATIC_JSON(R"json({"role":"user","parts":[{"text":"Check both cities"}]})json"),
 			originalModelContent,
-			{
-				{"role", "user"},
-				{"parts", nlohmann::json::array({
-					{{"functionResponse", {
-						{"name", "get_weather"},
-						{"response", {{"temperature", 15}}}
-					}}}
-				})}
-			},
-			{
-				{"role", "user"},
-				{"parts", nlohmann::json::array({
-					{{"functionResponse", {
-						{"name", "get_weather"},
-						{"response", {{"temperature", 12}}}
-					}}}
-				})}
-			}
+			AUTOLINKER_STATIC_JSON(R"json({"role":"user","parts":[{"functionResponse":{"name":"get_weather","response":{"temperature":15}}}]})json"),
+			AUTOLINKER_STATIC_JSON(R"json({"role":"user","parts":[{"functionResponse":{"name":"get_weather","response":{"temperature":12}}}]})json")
 		});
 		NormalizeGeminiFunctionCallHistory(history);
 		const bool parallelOk =
@@ -10139,10 +9793,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 		nlohmann::json truncatedHistory = nlohmann::json::array({
 			originalModelContent,
 			history[2],
-			{
-				{"role", "user"},
-				{"parts", nlohmann::json::array({{{"text", "Continue after truncation"}}})}
-			}
+			AUTOLINKER_STATIC_JSON(R"json({"role":"user","parts":[{"text":"Continue after truncation"}]})json")
 		});
 		const GeminiFunctionHistoryRepairStats truncatedStats =
 			NormalizeGeminiFunctionCallHistory(truncatedHistory);
@@ -10154,35 +9805,12 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			truncatedHistory[0]["parts"][0].value("text", std::string()) == "Continue after truncation";
 
 		nlohmann::json repeatedUserTurns = nlohmann::json::array({
-			{
-				{"role", "user"},
-				{"parts", nlohmann::json::array({{{"text", "Check both cities"}}})}
-			},
+			AUTOLINKER_STATIC_JSON(R"json({"role":"user","parts":[{"text":"Check both cities"}]})json"),
 			originalModelContent,
 			history[2],
-			{
-				{"role", "user"},
-				{"parts", nlohmann::json::array({{{"text", "Recovery hint"}}})}
-			},
-			{
-				{"role", "model"},
-				{"parts", nlohmann::json::array({{
-					{"functionCall", {
-						{"id", "call_berlin"},
-						{"name", "get_weather"},
-						{"args", {{"city", "Berlin"}}}
-					}}
-				}})}
-			},
-			{
-				{"role", "user"},
-				{"parts", nlohmann::json::array({{
-					{"functionResponse", {
-						{"name", "get_weather"},
-						{"response", {{"temperature", 10}}}
-					}}
-				}})}
-			}
+			AUTOLINKER_STATIC_JSON(R"json({"role":"user","parts":[{"text":"Recovery hint"}]})json"),
+			AUTOLINKER_STATIC_JSON(R"json({"role":"model","parts":[{"functionCall":{"id":"call_berlin","name":"get_weather","args":{"city":"Berlin"}}}]})json"),
+			AUTOLINKER_STATIC_JSON(R"json({"role":"user","parts":[{"functionResponse":{"name":"get_weather","response":{"temperature":10}}}]})json")
 		});
 		const GeminiFunctionHistoryRepairStats repeatedStats =
 			NormalizeGeminiFunctionCallHistory(repeatedUserTurns);
@@ -10207,19 +9835,10 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 	}
 
 	{
-		const nlohmann::json leaf = {
-			{"type", "object"},
-			{"additionalProperties", false},
-			{"properties", {{"additionalProperties", {{"type", "string"}}}}},
-			{"required", nlohmann::json::array({"additionalProperties"})}
-		};
-		const nlohmann::json expectedLeaf = {
-			{"type", "object"},
-			{"properties", {{"additionalProperties", {{"type", "string"}}}}},
-			{"required", nlohmann::json::array({"additionalProperties"})}
-		};
+		const nlohmann::json leaf = AUTOLINKER_STATIC_JSON(R"json({"type":"object","additionalProperties":false,"properties":{"additionalProperties":{"type":"string"}},"required":["additionalProperties"]})json");
+		const nlohmann::json expectedLeaf = AUTOLINKER_STATIC_JSON(R"json({"type":"object","properties":{"additionalProperties":{"type":"string"}},"required":["additionalProperties"]})json");
 		bool ok = true;
-		for (const auto& additional : nlohmann::json::array({false, true, {{"type", "string"}}})) {
+		for (const auto& additional : AUTOLINKER_STATIC_JSON(R"json([false,true,{"type":"string"}])json")) {
 			const nlohmann::json schema = {
 				{"type", "object"}, {"additionalProperties", additional},
 				{"properties", {
@@ -10244,14 +9863,33 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 	}
 
 	{
-		const nlohmann::json sanitized = SanitizeGeminiSchema({
-			{"type", "object"},
-			{"properties", {
-				{"tty", {{"type", "boolean"}, {"enum", nlohmann::json::array({false})}}},
-				{"mode", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", "manual"})}}},
-				{"mixed", {{"type", "string"}, {"enum", nlohmann::json::array({"auto", false})}}}
-			}}
-		});
+		const nlohmann::json sanitized = SanitizeGeminiSchema(AUTOLINKER_STATIC_JSON(R"json(
+{
+  "type": "object",
+  "properties": {
+    "tty": {
+      "type": "boolean",
+      "enum": [
+        false
+      ]
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "manual"
+      ]
+    },
+    "mixed": {
+      "type": "string",
+      "enum": [
+        "auto",
+        false
+      ]
+    }
+  }
+}
+)json"));
 		const nlohmann::json properties = sanitized.value("properties", nlohmann::json::object());
 
 		bool builtInTtyEnumRemoved = false;
@@ -10272,7 +9910,7 @@ std::string AIService::BuildAgentOptimizationSelfTestJson()
 			properties.contains("tty") && !properties["tty"].contains("enum") &&
 			properties.contains("mode") &&
 			properties["mode"].value("enum", nlohmann::json::array()) ==
-				nlohmann::json::array({"auto", "manual"}) &&
+				AUTOLINKER_STATIC_JSON(R"json(["auto","manual"])json") &&
 			properties.contains("mixed") && !properties["mixed"].contains("enum") &&
 			builtInTtyEnumRemoved;
 		checks.push_back({

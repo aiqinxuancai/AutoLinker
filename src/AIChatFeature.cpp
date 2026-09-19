@@ -1,4 +1,5 @@
 ﻿#include "EPackagerTool.h"
+#include "StaticJson.h"
 #include "IdeToolScheduler.h"
 #include "AIChatFeature.h"
 
@@ -29,7 +30,6 @@
 #include <tlhelp32.h>
 #include <wrl.h>
 
-#include "..\\thirdparty\\json.hpp"
 #include "..\\thirdparty\\WebView2.h"
 
 #include "AIConfigDialog.h"
@@ -2011,7 +2011,7 @@ bool TryExecuteGoalTool(
 	}
 	catch (...) {
 		outOk = false;
-		outResultLocal = BuildGoalToolResultLocal({{"ok", false}, {"error", "invalid goal tool arguments"}});
+		outResultLocal = BuildGoalToolResultLocal(AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"invalid goal tool arguments"})json"));
 		return true;
 	}
 
@@ -2021,7 +2021,7 @@ bool TryExecuteGoalTool(
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		if (!g_session.requestInFlight || g_session.activeRequestId != requestId ||
 			!AIChatGoalManager::HasGoal(g_session.goal)) {
-			result = {{"ok", false}, {"error", "no active goal for this request"}};
+			result = AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"no active goal for this request"})json");
 		}
 		else if (_stricmp(toolName.c_str(), "get_goal") == 0) {
 			result = {
@@ -2044,7 +2044,7 @@ bool TryExecuteGoalTool(
 				changed = AIChatGoalManager::Block(g_session.goal, nowMs);
 			}
 			if (!changed) {
-				result = {{"ok", false}, {"error", "goal status must be complete or blocked and the goal must be active"}};
+				result = AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"goal status must be complete or blocked and the goal must be active"})json");
 			}
 			else {
 				result = {
@@ -10640,10 +10640,10 @@ std::string ExecuteDebugRunAIChatTool(const std::string& argumentsJson, bool& ou
 	const std::string promptUtf8 = GetJsonStringArgumentUtf8(args, "prompt");
 	const std::string promptLocal = Utf8ToLocalText(promptUtf8);
 	if (TrimAsciiCopy(promptLocal).empty()) {
-		return DumpJsonUtf8({ {"ok", false}, {"error", "prompt is required"} });
+		return DumpJsonUtf8(AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"prompt is required"})json"));
 	}
 	if (g_mainWindow == nullptr || !IsWindow(g_mainWindow) || g_msgAIChatDebugRun == 0) {
-		return DumpJsonUtf8({ {"ok", false}, {"error", "AI chat is not initialized"} });
+		return DumpJsonUtf8(AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"AI chat is not initialized"})json"));
 	}
 
 	AIChatDebugRunRequest request;
@@ -10663,7 +10663,7 @@ std::string ExecuteDebugRunAIChatTool(const std::string& argumentsJson, bool& ou
 		SMTO_ABORTIFHUNG,
 		15000,
 		&sendResult) == 0) {
-		return DumpJsonUtf8({ {"ok", false}, {"error", "send debug chat request failed or timed out"} });
+		return DumpJsonUtf8(AUTOLINKER_STATIC_JSON(R"json({"ok":false,"error":"send debug chat request failed or timed out"})json"));
 	}
 
 	{
@@ -11223,10 +11223,7 @@ std::string BuildPlanModeSelfTestJson()
 			{"id", id},
 			{"header", "Header"},
 			{"question", "Question?"},
-			{"options", nlohmann::json::array({
-				{{"label", "Option A"}, {"description", "First option."}},
-				{{"label", "Option B"}, {"description", "Second option."}}
-			})}
+			{"options", AUTOLINKER_STATIC_JSON(R"json([{"label":"Option A","description":"First option."},{"label":"Option B","description":"Second option."}])json")}
 		});
 	};
 	nlohmann::json stepUiPayload = {

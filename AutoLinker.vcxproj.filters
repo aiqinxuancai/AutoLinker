@@ -669,4 +669,8 @@
       <Filter>Utils</Filter>
     </ResourceCompile>
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\StaticJson.h"><Filter>AI</Filter></ClInclude>
+    <None Include="src\AIChatPublicToolCatalog.inc"><Filter>AI</Filter></None>
+  </ItemGroup>
 </Project>

@@ -1,4 +1,5 @@
 ﻿#include "AutoLinkerTestApi.h"
+#include "StaticJson.h"
 
 #include <algorithm>
 #include <atomic>
@@ -13,7 +14,6 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
-#include "..\\thirdparty\\json.hpp"
 
 #include "AIChatTooling.h"
 #include "AIChatFeature.h"
@@ -114,10 +114,7 @@ std::string LocalToUtf8ForTest(const std::string& text)
 
 bool RunAIChatToolPolicySelfTest(nlohmann::json& outCheck)
 {
-	outCheck = {
-		{"name", "ai_chat_tool_policy"},
-		{"ok", false}
-	};
+	outCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"ai_chat_tool_policy","ok":false})json");
 
 	AIChatToolPolicy::Session duplicatePolicy;
 	const std::string readArgs = R"({"file_path":"src/Test.txt","offset":0,"limit":10})";
@@ -228,10 +225,7 @@ bool WriteSelfTestJsonFile(const std::filesystem::path& path, const nlohmann::js
 
 bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 {
-	outCheck = {
-		{"name", "ai_chat_long_task"},
-		{"ok", false}
-	};
+	outCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"ai_chat_long_task","ok":false})json");
 
 	AISettings settings = {};
 	settings.protocolType = AIProtocolType::OpenAI;
@@ -489,9 +483,7 @@ bool RunAIChatLongTaskSelfTest(nlohmann::json& outCheck)
 				{"schema_version", schemaVersion},
 				{"session_id", std::format("legacy-v{}", schemaVersion)},
 				{"plan_mode_state", schemaVersion >= 3 ? "normal" : ""},
-				{"messages", nlohmann::json::array({
-					{{"role", "user"}, {"content", "legacy"}}
-				})}
+				{"messages", AUTOLINKER_STATIC_JSON(R"json([{"role":"user","content":"legacy"}])json")}
 			};
 			AIChatStoredSession loaded;
 			outLoaded = WriteSelfTestJsonFile(path, value) &&
@@ -1253,37 +1245,38 @@ private:
 	static std::string BuildRpcBody(const nlohmann::json& request)
 	{
 		const std::string method = request.value("method", std::string());
-		nlohmann::json response = {
-			{"jsonrpc", "2.0"}
-		};
+		nlohmann::json response = AUTOLINKER_STATIC_JSON(R"json({"jsonrpc":"2.0"})json");
 		if (request.contains("id")) {
 			response["id"] = request["id"];
 		}
 
 		if (method == "initialize") {
-			response["result"] = {
-				{"protocolVersion", "2025-11-25"},
-				{"capabilities", {{"tools", nlohmann::json::object()}}},
-				{"serverInfo", {{"name", "AutoLinkerTest Mock MCP"}, {"version", "1.0"}}}
-			};
+			response["result"] = AUTOLINKER_STATIC_JSON(R"json({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"AutoLinkerTest Mock MCP","version":"1.0"}})json");
 		}
 		else if (method == "tools/list") {
-			response["result"] = {
-				{"tools", nlohmann::json::array({
-					{
-						{"name", "echo"},
-						{"description", "Echo UTF-8 text for AutoLinker MCP tests."},
-						{"inputSchema", {
-							{"type", "object"},
-							{"properties", {
-								{"text", {{"type", "string"}, {"description", "Text to echo."}}}
-							}},
-							{"required", nlohmann::json::array({"text"})},
-							{"additionalProperties", false}
-						}}
-					}
-				})}
-			};
+			response["result"] = AUTOLINKER_STATIC_JSON(R"json(
+{
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo UTF-8 text for AutoLinker MCP tests.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Text to echo."
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}
+)json");
 		}
 		else if (method == "tools/call") {
 			const nlohmann::json params = request.value("params", nlohmann::json::object());
@@ -1424,10 +1417,7 @@ private:
 
 bool RunMcpMockRoundtripSelfTest(nlohmann::json& outCheck)
 {
-	outCheck = {
-		{"name", "mock_streamable_http_roundtrip"},
-		{"ok", false}
-	};
+	outCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"mock_streamable_http_roundtrip","ok":false})json");
 
 	ScopedMcpConfigBackup configBackup;
 	MockIntegrationHttpServer server;
@@ -1567,7 +1557,7 @@ bool RunMcpMockRoundtripSelfTest(nlohmann::json& outCheck)
 // 通过真实聊天执行入口检查批量图片的 HTTP 消息顺序及检查点恢复。
 bool RunAIChatImageToolBatchSelfTest(nlohmann::json& outCheck)
 {
-	outCheck = {{"name", "openai_chat_image_tool_batch_http"}, {"ok", false}};
+	outCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"openai_chat_image_tool_batch_http","ok":false})json");
 	MockIntegrationHttpServer server;
 	std::string error;
 	if (!server.Start(error)) {
@@ -1624,11 +1614,7 @@ bool RunAIChatImageToolBatchSelfTest(nlohmann::json& outCheck)
 
 bool RunAIChatSharedRetryBudgetSelfTest(nlohmann::json& outCheck)
 {
-	outCheck = {
-		{"name", "ai_chat_shared_retry_budget"},
-		{"ok", false},
-		{"protocols", nlohmann::json::array()}
-	};
+	outCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"ai_chat_shared_retry_budget","ok":false,"protocols":[]})json");
 
 	struct ProtocolCase {
 		AIProtocolType protocol;
@@ -1848,11 +1834,7 @@ bool RunAIChatSharedRetryBudgetSelfTest(nlohmann::json& outCheck)
 
 bool RunAIChatPostToolReleaseSelfTest(nlohmann::json& outCheck)
 {
-	outCheck = {
-		{"name", "ai_chat_post_tool_release"},
-		{"ok", false},
-		{"protocols", nlohmann::json::array()}
-	};
+	outCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"ai_chat_post_tool_release","ok":false,"protocols":[]})json");
 
 	struct ProtocolCase {
 		AIProtocolType protocol;
@@ -1986,10 +1968,7 @@ bool RunAIChatPostToolReleaseSelfTest(nlohmann::json& outCheck)
 
 bool RunHttpCancellationSelfTest(nlohmann::json& outCheck)
 {
-	outCheck = {
-		{"name", "http_cancellation_nonblocking"},
-		{"ok", false}
-	};
+	outCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"http_cancellation_nonblocking","ok":false})json");
 	MockIntegrationHttpServer server;
 	std::string error;
 	if (!server.Start(error)) {
@@ -2050,10 +2029,7 @@ bool RunHttpCancellationSelfTest(nlohmann::json& outCheck)
 
 bool RunMcpStdioRoundtripSelfTest(nlohmann::json& outCheck)
 {
-	outCheck = {
-		{"name", "mock_stdio_roundtrip"},
-		{"ok", false}
-	};
+	outCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"mock_stdio_roundtrip","ok":false})json");
 
 	ScopedMcpConfigBackup configBackup;
 	std::string error;
@@ -2124,7 +2100,7 @@ bool RunMcpStdioRoundtripSelfTest(nlohmann::json& outCheck)
 // duplicate-id de-duplication, and explicit-transport handling.
 bool RunMcpConfigInvariantsSelfTest(nlohmann::json& outCheck)
 {
-	outCheck = { {"name", "config_invariants"}, {"ok", false} };
+	outCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"config_invariants","ok":false})json");
 	std::vector<std::string> failures;
 	ScopedMcpConfigBackup configBackup;
 
@@ -2304,9 +2280,7 @@ bool RunMcpConfigInvariantsSelfTest(nlohmann::json& outCheck)
 					[](const nlohmann::json& server) {
 						return server.is_object() && server.value("owner", std::string()) == "user";
 					});
-			const nlohmann::json expectedMcpServers = {
-				{"external", {{"command", "custom-server"}, {"enabled", false}}}
-			};
+			const nlohmann::json expectedMcpServers = AUTOLINKER_STATIC_JSON(R"json({"external":{"command":"custom-server","enabled":false}})json");
 			if (persisted.is_discarded() ||
 				persisted.value("version", 0) != kAIChatMcpConfigVersion ||
 				!persisted.contains("future_root_field") ||
@@ -2396,7 +2370,7 @@ bool RunMcpConfigInvariantsSelfTest(nlohmann::json& outCheck)
 
 bool RunPowerShellRunnerSelfTest(nlohmann::json& outCheck)
 {
-	outCheck = { {"name", "powershell-runner"}, {"ok", false} };
+	outCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"powershell-runner","ok":false})json");
 	const PowerShellRunResult nonZero = PowerShellToolRunner::Run(
 		"[Console]::Error.Write('expected-error'); exit 7",
 		"",
@@ -3279,7 +3253,7 @@ extern "C" int AutoLinkerTest_RunGoalModeSelfTest(char* buffer, int bufferSize)
 		nullptr,
 		false);
 	if (report.is_discarded() || !report.is_object()) {
-		report = {{"name", "goal-mode-state-machine"}, {"ok", false}};
+		report = AUTOLINKER_STATIC_JSON(R"json({"name":"goal-mode-state-machine","ok":false})json");
 	}
 
 	const std::filesystem::path tempDir = std::filesystem::temp_directory_path() /
@@ -3348,20 +3322,13 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 {
 	nlohmann::json report = nlohmann::json::parse(AIChatMcpClient::BuildSelfTestReportJson(), nullptr, false);
 	if (report.is_discarded() || !report.is_object()) {
-		report = {
-			{"ok", false},
-			{"name", "mcp-self-test"},
-			{"checks", nlohmann::json::array()}
-		};
+		report = AUTOLINKER_STATIC_JSON(R"json({"ok":false,"name":"mcp-self-test","checks":[]})json");
 	}
 	if (!report.contains("checks") || !report["checks"].is_array()) {
 		report["checks"] = nlohmann::json::array();
 	}
 
-	nlohmann::json publicCatalogCheck = {
-		{"name", "public_catalog_excludes_mcp"},
-		{"ok", true}
-	};
+	nlohmann::json publicCatalogCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"public_catalog_excludes_mcp","ok":true})json");
 	try {
 		const nlohmann::json catalog = nlohmann::json::parse(AIService::BuildPublicToolCatalogJson(), nullptr, false);
 		if (catalog.is_discarded() || !catalog.is_array()) {
@@ -3440,11 +3407,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		nullptr,
 		false);
 	if (optimizationCheck.is_discarded() || !optimizationCheck.is_object()) {
-		optimizationCheck = {
-			{"name", "agent-optimization-self-test"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		optimizationCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"agent-optimization-self-test","ok":false,"error":"invalid self-test json"})json");
 	}
 	report["checks"].push_back(std::move(optimizationCheck));
 
@@ -3453,11 +3416,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		nullptr,
 		false);
 	if (planModeCheck.is_discarded() || !planModeCheck.is_object()) {
-		planModeCheck = {
-			{"name", "plan-mode-approval-compat"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		planModeCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"plan-mode-approval-compat","ok":false,"error":"invalid self-test json"})json");
 	}
 	report["checks"].push_back(std::move(planModeCheck));
 
@@ -3466,11 +3425,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		nullptr,
 		false);
 	if (checkpointResumeCheck.is_discarded() || !checkpointResumeCheck.is_object()) {
-		checkpointResumeCheck = {
-			{"name", "active-checkpoint-resume"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		checkpointResumeCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"active-checkpoint-resume","ok":false,"error":"invalid self-test json"})json");
 	}
 	report["checks"].push_back(std::move(checkpointResumeCheck));
 
@@ -3479,11 +3434,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		nullptr,
 		false);
 	if (paginationCheck.is_discarded() || !paginationCheck.is_object()) {
-		paginationCheck = {
-			{"name", "workspace-file-pagination"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		paginationCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"workspace-file-pagination","ok":false,"error":"invalid self-test json"})json");
 	}
 	report["checks"].push_back(std::move(paginationCheck));
 
@@ -3492,11 +3443,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		nullptr,
 		false);
 	if (mirrorSafetyCheck.is_discarded() || !mirrorSafetyCheck.is_object()) {
-		mirrorSafetyCheck = {
-			{"name", "workspace-mirror-safety"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		mirrorSafetyCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"workspace-mirror-safety","ok":false,"error":"invalid self-test json"})json");
 	}
 	report["checks"].push_back(std::move(mirrorSafetyCheck));
 
@@ -3505,11 +3452,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		nullptr,
 		false);
 	if (compileFingerprintCheck.is_discarded() || !compileFingerprintCheck.is_object()) {
-		compileFingerprintCheck = {
-			{"name", "compile-artifact-fingerprint"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		compileFingerprintCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"compile-artifact-fingerprint","ok":false,"error":"invalid self-test json"})json");
 	}
 	report["checks"].push_back(std::move(compileFingerprintCheck));
 
@@ -3963,11 +3906,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		nullptr,
 		false);
 	if (refreshGateCheck.is_discarded() || !refreshGateCheck.is_object()) {
-		refreshGateCheck = {
-			{"name", "external_mcp_workspace_refresh_gate"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		refreshGateCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"external_mcp_workspace_refresh_gate","ok":false,"error":"invalid self-test json"})json");
 	}
 	report["checks"].push_back(std::move(refreshGateCheck));
 
@@ -3976,11 +3915,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		nullptr,
 		false);
 	if (multiInstanceRoutingCheck.is_discarded() || !multiInstanceRoutingCheck.is_object()) {
-		multiInstanceRoutingCheck = {
-			{"name", "local-mcp-multi-instance-routing"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		multiInstanceRoutingCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"local-mcp-multi-instance-routing","ok":false,"error":"invalid self-test json"})json");
 	}
 	report["checks"].push_back(std::move(multiInstanceRoutingCheck));
 
@@ -3989,11 +3924,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		nullptr,
 		false);
 	if (loopbackTransportCheck.is_discarded() || !loopbackTransportCheck.is_object()) {
-		loopbackTransportCheck = {
-			{"name", "local-mcp-loopback-transport"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		loopbackTransportCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"local-mcp-loopback-transport","ok":false,"error":"invalid self-test json"})json");
 	}
 	report["checks"].push_back(std::move(loopbackTransportCheck));
 
@@ -4002,11 +3933,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		nullptr,
 		false);
 	if (instanceRegistryCheck.is_discarded() || !instanceRegistryCheck.is_object()) {
-		instanceRegistryCheck = {
-			{"name", "local-mcp-instance-registry-isolation"},
-			{"ok", false},
-			{"error", "invalid self-test json"}
-		};
+		instanceRegistryCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"local-mcp-instance-registry-isolation","ok":false,"error":"invalid self-test json"})json");
 	}
 	report["checks"].push_back(std::move(instanceRegistryCheck));
 
@@ -4021,7 +3948,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 	bool externalExecOk = true;
 	const std::string externalExecResult = ExecuteToolCall(
 		"exec_command",
-		nlohmann::json({{"cmd", "Write-Output 'external-exec-must-be-rejected'"}}).dump(),
+		AUTOLINKER_STATIC_JSON(R"json({"cmd":"Write-Output 'external-exec-must-be-rejected'"})json").dump(),
 		externalExecOk,
 		false,
 		{},
@@ -4070,11 +3997,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 		nullptr,
 		false);
 	if (execCommandCheck.is_discarded() || !execCommandCheck.is_object()) {
-		execCommandCheck = {
-			{"name", "exec-command-session"},
-			{"ok", false},
-			{"error", "invalid exec command self-test json"}
-		};
+		execCommandCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"exec-command-session","ok":false,"error":"invalid exec command self-test json"})json");
 	}
 	report["checks"].push_back(std::move(execCommandCheck));
 
@@ -4083,11 +4006,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 			WebDocumentExtractor::BuildSelfTestReportJson() }) {
 		nlohmann::json webCheck = nlohmann::json::parse(webSelfTest, nullptr, false);
 		if (webCheck.is_discarded() || !webCheck.is_object()) {
-			webCheck = {
-				{"name", "web-document-self-test"},
-				{"ok", false},
-				{"error", "invalid self-test json"}
-			};
+			webCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"web-document-self-test","ok":false,"error":"invalid self-test json"})json");
 		}
 		report["checks"].push_back(std::move(webCheck));
 	}
@@ -4106,11 +4025,7 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 			IdeLogViewer::BuildSelfTestJson() }) {
 		nlohmann::json settingsCheck = nlohmann::json::parse(settingsSelfTest, nullptr, false);
 		if (settingsCheck.is_discarded() || !settingsCheck.is_object()) {
-			settingsCheck = {
-				{"name", "autolinker-settings-self-test"},
-				{"ok", false},
-				{"error", "invalid self-test json"}
-			};
+			settingsCheck = AUTOLINKER_STATIC_JSON(R"json({"name":"autolinker-settings-self-test","ok":false,"error":"invalid self-test json"})json");
 		}
 		report["checks"].push_back(std::move(settingsCheck));
 	}

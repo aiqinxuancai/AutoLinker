@@ -1,4 +1,5 @@
 ﻿#include "BlackMoonCompileCoordinator.h"
+#include "StaticJson.h"
 #include "Global.h"
 #include "ECOMEx.h"
 #include "Logger.h"
@@ -257,31 +258,31 @@ json BlackMoonCompileCoordinator::SelfTest()
 {
 	json checks = json::object();
 	json error;
-	json args = {{"compiler", "eide"}, {"blackmoon_mode", "asm"}};
+	json args = AUTOLINKER_STATIC_JSON(R"json({"compiler":"eide","blackmoon_mode":"asm"})json");
 	checks["ordinary_mode_rejected_with_hint"] = !ValidateArguments(args, error) && error.value("error", "") == "blackmoon_mode_requires_blackmoon" && error.contains("hint");
-	args = {{"blackmoon_mode", "vcxx"}};
+	args = AUTOLINKER_STATIC_JSON(R"json({"blackmoon_mode":"vcxx"})json");
 	checks["implicit_backend_rejected"] = !ValidateArguments(args, error);
-	args = {{"compiler", "blackmoon"}, {"static_compile", false}};
+	args = AUTOLINKER_STATIC_JSON(R"json({"compiler":"blackmoon","static_compile":false})json");
 	checks["false_static_rejected"] = !ValidateArguments(args, error);
-	args = {{"compiler", "blackmoon"}};
+	args = AUTOLINKER_STATIC_JSON(R"json({"compiler":"blackmoon"})json");
 	checks["default_vcxx"] = ValidateArguments(args, error) && args["blackmoon_mode"] == "vcxx";
-	args = {{"compiler", "typo"}};
+	args = AUTOLINKER_STATIC_JSON(R"json({"compiler":"typo"})json");
 	checks["unknown_backend_rejected"] = !ValidateArguments(args, error);
-	args = {{"compiler", "blackmoon"}, {"blackmoon_mode", 2}};
+	args = AUTOLINKER_STATIC_JSON(R"json({"compiler":"blackmoon","blackmoon_mode":2})json");
 	checks["wrong_type_rejected"] = !ValidateArguments(args, error);
-	args = {{"compiler", "eide"}, {"static_compile", false}};
+	args = AUTOLINKER_STATIC_JSON(R"json({"compiler":"eide","static_compile":false})json");
 	checks["ordinary_dynamic_allowed"] = ValidateArguments(args, error);
-	args = {{"compiler", "blackmoon"}, {"blackmoon_mode", "invalid"}};
+	args = AUTOLINKER_STATIC_JSON(R"json({"compiler":"blackmoon","blackmoon_mode":"invalid"})json");
 	checks["unknown_mode_rejected"] = !ValidateArguments(args, error) && error.contains("hint");
-	args = {{"compiler", "blackmoon"}, {"blackmoon_mode", "VC++"}};
+	args = AUTOLINKER_STATIC_JSON(R"json({"compiler":"blackmoon","blackmoon_mode":"VC++"})json");
 	checks["alias_normalized"] = ValidateArguments(args, error) && args["blackmoon_mode"] == "vcxx";
-	args = {{"compiler", "eide"}, {"static_compile", "false"}};
+	args = AUTOLINKER_STATIC_JSON(R"json({"compiler":"eide","static_compile":"false"})json");
 	checks["string_boolean_rejected"] = !ValidateArguments(args, error);
 	const auto dir = std::filesystem::temp_directory_path() / std::format("AutoLinker-BM-test-{}-{}", GetCurrentProcessId(), GetTickCount64());
 	std::filesystem::create_directory(dir);
 	const auto path = dir / "Config.json";
 	try {
-		json config = {{"Use", "VC++模式"}, {"Config", json::object()}};
+		json config = AUTOLINKER_STATIC_JSON(R"json({"Use":"VC++\u6a21\u5f0f","Config":{}})json");
 		for (int i = 0; i < 3; ++i) config["Config"][kProfiles[i]] = {{"Normal", {{"BMType", std::to_string(i)}}}};
 		const auto original = Convert(config.dump(4), CP_UTF8, CP_ACP);
 		if (!WriteAtomic(path, original)) throw std::runtime_error("fixture_write_failed");

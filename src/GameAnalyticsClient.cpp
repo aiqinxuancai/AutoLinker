@@ -1,4 +1,5 @@
 ﻿#include "GameAnalyticsClient.h"
+#include "StaticJson.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -25,7 +26,6 @@
 #include <utility>
 #include <vector>
 
-#include "..\\thirdparty\\json.hpp"
 
 #include "AutoLinkerVersion.h"
 #include "ConfigManager.h"
@@ -1042,17 +1042,32 @@ std::string BuildDeviceLabel(const std::string& deviceId)
 
 bool ParseRemoteConfigExampleOk()
 {
-	const nlohmann::json sample = {
-		{"server_ts", 1546300000},
-		{"configs_hash", "124595093888900"},
-		{"ab_id", "aaabc"},
-		{"ab_variant_id", "1"},
-		{"configs", nlohmann::json::array({
-			{{"key", "feature_enabled"}, {"value", "true"}, {"type", "string"}, {"end_ts", nullptr}},
-			{{"key", "sample_rate"}, {"value", "50"}, {"type", "number"}},
-			{{"key", "NEWS-LINK"}, {"value", R"([{"title":"AutoLinker","url":"https://github.com/aiqinxuancai/AutoLinker"}])"}, {"type", "json"}}
-		})}
-	};
+	const nlohmann::json sample = AUTOLINKER_STATIC_JSON(R"json(
+{
+  "server_ts": 1546300000,
+  "configs_hash": "124595093888900",
+  "ab_id": "aaabc",
+  "ab_variant_id": "1",
+  "configs": [
+    {
+      "key": "feature_enabled",
+      "value": "true",
+      "type": "string",
+      "end_ts": null
+    },
+    {
+      "key": "sample_rate",
+      "value": "50",
+      "type": "number"
+    },
+    {
+      "key": "NEWS-LINK",
+      "value": "[{\"title\":\"AutoLinker\",\"url\":\"https://github.com/aiqinxuancai/AutoLinker\"}]",
+      "type": "json"
+    }
+  ]
+}
+)json");
 	UpdateRemoteSnapshotSuccess(201, sample);
 	const auto snapshot = GameAnalyticsClient::GetRemoteConfigs();
 	return snapshot.ready &&
@@ -1470,7 +1485,7 @@ std::optional<std::string> GetRemoteConfigValue(const std::string& key)
 nlohmann::json BuildWorkerIntegrationSelfTest()
 {
 	using Batcher = GameAnalyticsEventBatcher;
-	nlohmann::json report = {{"ok", false}};
+	nlohmann::json report = AUTOLINKER_STATIC_JSON(R"json({"ok":false})json");
 	{
 		std::lock_guard<std::mutex> lock(g_mutex);
 		if (g_worker.joinable()) {
@@ -1679,10 +1694,7 @@ std::string BuildLiveBatchTestReportJson(
 	const std::string& gameKey,
 	const std::string& secretKey)
 {
-	nlohmann::json report = {
-		{"ok", false},
-		{"step", "validate_credentials"}
-	};
+	nlohmann::json report = AUTOLINKER_STATIC_JSON(R"json({"ok":false,"step":"validate_credentials"})json");
 	const bool gameKeyValid = gameKey.size() >= 8 && gameKey.size() <= 128 &&
 		std::all_of(gameKey.begin(), gameKey.end(), [](unsigned char ch) {
 			return std::isalnum(ch) != 0 || ch == '-' || ch == '_';

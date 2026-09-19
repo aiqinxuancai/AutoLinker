@@ -1,4 +1,5 @@
 ﻿#include "LocalMcpServer.h"
+#include "StaticJson.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -19,7 +20,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include "..\\thirdparty\\json.hpp"
 
 #include "AIChatFeature.h"
 #include "AIChatToolRegistry.h"
@@ -1230,11 +1230,7 @@ nlohmann::json BuildInitializeResult(const nlohmann::json& params)
 			: std::string("no_source_open. Do not call project read/write tools until a .e source file is opened."));
 	return {
 		{"protocolVersion", NegotiateProtocolVersion(params)},
-		{"capabilities", {
-			{"tools", {
-				{"listChanged", false}
-			}}
-		}},
+		{"capabilities", AUTOLINKER_STATIC_JSON(R"json({"tools":{"listChanged":false}})json")},
 		{"serverInfo", {
 			{"name", kServerName},
 			{"version", kServerVersion}
@@ -1256,31 +1252,33 @@ bool TryBuildToolListResult(nlohmann::json& outResult, std::string& outError)
 			outError = "public tool catalog must be an array";
 			return false;
 		}
-		tools.push_back({
-			{"name", kListInstancesToolName},
-			{"description", "List running AutoLinker IDE instances and show the instance selected for this MCP session."},
-			{"inputSchema", {
-				{"type", "object"},
-				{"properties", nlohmann::json::object()},
-				{"additionalProperties", false}
-			}}
-		});
-		tools.push_back({
-			{"name", kSelectInstanceToolName},
-			{"description", "Select one AutoLinker IDE instance for subsequent tool calls in this MCP session. Use list_instances first."},
-			{"inputSchema", {
-				{"type", "object"},
-				{"properties", {
-					{"instance_id", {
-						{"type", "string"},
-						{"minLength", 1},
-						{"description", "Stable instance_id returned by list_instances."}
-					}}
-				}},
-				{"required", nlohmann::json::array({"instance_id"})},
-				{"additionalProperties", false}
-			}}
-		});
+        static const nlohmann::json instanceTools = [] {
+            nlohmann::json definitions = nlohmann::json::parse(R"json(
+[
+  {
+    "description": "List running AutoLinker IDE instances and show the instance selected for this MCP session.",
+    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false}
+  },
+  {
+    "description": "Select one AutoLinker IDE instance for subsequent tool calls in this MCP session. Use list_instances first.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "instance_id": {"type": "string", "minLength": 1, "description": "Stable instance_id returned by list_instances."}
+      },
+      "required": ["instance_id"],
+      "additionalProperties": false
+    }
+  }
+]
+)json");
+            definitions[0]["name"] = kListInstancesToolName;
+            definitions[1]["name"] = kSelectInstanceToolName;
+            return definitions;
+        }();
+        for (const auto& definition : instanceTools) {
+            tools.push_back(definition);
+        }
 		outResult = {{"tools", tools}};
 		return true;
 	}
@@ -1389,11 +1387,7 @@ bool TryBuildToolCallResult(
 	}
 	const nlohmann::json inputSchema = toolDefinition.value(
 		"inputSchema",
-		nlohmann::json::object({
-			{"type", "object"},
-			{"properties", nlohmann::json::object()},
-			{"additionalProperties", false}
-		}));
+		AUTOLINKER_STATIC_JSON(R"json({"type":"object","properties":{},"additionalProperties":false})json"));
 	std::string validationError;
 	if (!AIChatToolRegistry::ValidateArguments(arguments, inputSchema, validationError)) {
 		outError = "invalid tool arguments: " + validationError;
@@ -1438,12 +1432,14 @@ bool TryBuildToolCallResult(
 	std::string resultJsonUtf8;
 	bool toolOk = false;
 	if (AIChatToolRegistry::RequiresWorkspaceRefresh(toolName) && !IsExternalWorkspaceRefreshed(sessionId)) {
-		resultJsonUtf8 = nlohmann::json({
-			{"ok", false},
-			{"error", "workspace_refresh_required"},
-			{"required_tool", "refresh_workspace_mirror"},
-			{"hint", "External MCP clients must call refresh_workspace_mirror successfully before source read/edit tools in each MCP session."}
-		}).dump();
+		resultJsonUtf8 = AUTOLINKER_STATIC_JSON(R"json(
+{
+  "ok": false,
+  "error": "workspace_refresh_required",
+  "required_tool": "refresh_workspace_mirror",
+  "hint": "External MCP clients must call refresh_workspace_mirror successfully before source read/edit tools in each MCP session."
+}
+)json").dump();
 	}
 	else {
 		if (!AIChatFeature::ExecutePublicTool(
@@ -1663,20 +1659,14 @@ bool TryHandleJsonRpc(
 	}
 
 	if (!payload.is_object()) {
-		SetMcpLogResponseJson(outLogContext, {
-			{"code", -32600},
-			{"message", "request must be a JSON object"}
-		});
+		SetMcpLogResponseJson(outLogContext, AUTOLINKER_STATIC_JSON(R"json({"code":-32600,"message":"request must be a JSON object"})json"));
 		outBody = DumpJsonSafe(BuildJsonRpcError(nullptr, -32600, "request must be a JSON object"));
 		return true;
 	}
 
 	const nlohmann::json id = payload.contains("id") ? payload["id"] : nlohmann::json(nullptr);
 	if (!payload.contains("method") || !payload["method"].is_string()) {
-		SetMcpLogResponseJson(outLogContext, {
-			{"code", -32600},
-			{"message", "method is required"}
-		});
+		SetMcpLogResponseJson(outLogContext, AUTOLINKER_STATIC_JSON(R"json({"code":-32600,"message":"method is required"})json"));
 		outBody = DumpJsonSafe(BuildJsonRpcError(id, -32600, "method is required"));
 		return true;
 	}
@@ -1708,11 +1698,15 @@ bool TryHandleJsonRpc(
 		const nlohmann::json error = {
 			{"jsonrpc", "2.0"},
 			{"id", id},
-			{"error", {
-				{"code", -32001},
-				{"message", "MCP session is unknown or expired. Send initialize again before calling tools."},
-				{"data", {{"error", "mcp_session_not_found"}}}
-			}}
+			{"error", AUTOLINKER_STATIC_JSON(R"json(
+{
+  "code": -32001,
+  "message": "MCP session is unknown or expired. Send initialize again before calling tools.",
+  "data": {
+    "error": "mcp_session_not_found"
+  }
+}
+)json")}
 		};
 		SetMcpLogResponseJson(outLogContext, error["error"]);
 		outBody = DumpJsonSafe(error);
@@ -1826,10 +1820,7 @@ bool TryHandleJsonRpc(
 		return true;
 	}
 
-	SetMcpLogResponseJson(outLogContext, {
-		{"code", -32601},
-		{"message", "method not found"}
-	});
+	SetMcpLogResponseJson(outLogContext, AUTOLINKER_STATIC_JSON(R"json({"code":-32601,"message":"method not found"})json"));
 	outBody = DumpJsonSafe(BuildJsonRpcError(id, -32601, "method not found"));
 	return true;
 }
@@ -2361,10 +2352,7 @@ std::string BuildWorkspaceRefreshGateSelfTestJson()
 	nlohmann::json result;
 	std::string error;
 	const bool handled = TryBuildToolCallResult(
-		{
-			{"name", "read_files"},
-			{"arguments", {{"file_paths", nlohmann::json::array({"src/Test.txt"})}}}
-		},
+		AUTOLINKER_STATIC_JSON(R"json({"name":"read_files","arguments":{"file_paths":["src/Test.txt"]}})json"),
 		sessionId,
 		result,
 		error);
@@ -2380,10 +2368,7 @@ std::string BuildWorkspaceRefreshGateSelfTestJson()
 	nlohmann::json hiddenResult;
 	std::string hiddenError;
 	const bool hiddenHandled = TryBuildToolCallResult(
-		{
-			{"name", "update_plan"},
-			{"arguments", {{"plan", nlohmann::json::array()}}}
-		},
+		AUTOLINKER_STATIC_JSON(R"json({"name":"update_plan","arguments":{"plan":[]}})json"),
 		sessionId,
 		hiddenResult,
 		hiddenError);
@@ -2392,14 +2377,7 @@ std::string BuildWorkspaceRefreshGateSelfTestJson()
 	nlohmann::json missingHashResult;
 	std::string missingHashError;
 	const bool missingHashHandled = TryBuildToolCallResult(
-		{
-			{"name", "edit_file"},
-			{"arguments", {
-				{"file_path", "src/Test.txt"},
-				{"old_text", "a"},
-				{"new_text", "b"}
-			}}
-		},
+		AUTOLINKER_STATIC_JSON(R"json({"name":"edit_file","arguments":{"file_path":"src/Test.txt","old_text":"a","new_text":"b"}})json"),
 		sessionId,
 		missingHashResult,
 		missingHashError);
@@ -2412,10 +2390,7 @@ std::string BuildWorkspaceRefreshGateSelfTestJson()
 	nlohmann::json noSourceResult;
 	std::string noSourceError;
 	const bool noSourceHandled = TryBuildToolCallResult(
-		{
-			{"name", "read_files"},
-			{"arguments", {{"file_paths", nlohmann::json::array({"src/Test.txt"})}}}
-		},
+		AUTOLINKER_STATIC_JSON(R"json({"name":"read_files","arguments":{"file_paths":["src/Test.txt"]}})json"),
 		sessionId,
 		noSourceResult,
 		noSourceError);
