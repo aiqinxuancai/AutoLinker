@@ -23,7 +23,9 @@ AutoLinker 是易语言的 AI Agent 支持库，通过逆向让 AI 全自动编�
 ### ⭐ AI Agent 会话页签
 告诉 AI 你要做什么，它会自动搜索、读取、编辑当前工程源码。
 
-<img width="611" alt="AI Agent 会话页签" src="https://github.com/user-attachments/assets/301f5ecf-5078-4c30-a9d6-c23284c2a22e" />
+<img width="715" height="638" alt="image" src="https://github.com/user-attachments/assets/929cbf71-ac2b-4963-a520-3f7f09d09181" />
+
+
 
 ### ⭐ 右键菜单 AI 功能
 - **AI 优化函数** — 对当前函数做等价优化
