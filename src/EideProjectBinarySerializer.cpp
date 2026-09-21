@@ -18,6 +18,7 @@
 
 #include "EideInternalTextBridge.h"
 #include "Global.h"
+#include "Logger.h"
 #include "MemFind.h"
 #include "WindowHelper.h"
 
@@ -702,8 +703,8 @@ void ProjectBinarySerializer::ConfigureFileSerializer(void* serializeToFileFunct
 {
 #if defined(_M_IX86)
 	g_fileSerializerFunction.store(serializeToFileFunction, std::memory_order_release);
-	OutputStringToELog(
-		std::string("[ProjectBinarySerializer] file serializer configured address=") +
+	Logger::Instance().Write("",
+		std::string("[AutoLinker][ProjectBinarySerializer] file serializer configured address=") +
 		std::to_string(reinterpret_cast<std::uintptr_t>(serializeToFileFunction)));
 #else
 	(void)serializeToFileFunction;

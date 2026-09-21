@@ -699,7 +699,9 @@ void StartHookCreateFileA()
 			DetourAttach(&(PVOID&)originalProjectSerializeToFile, MyProjectSerializeToFile);
 		}
 		else {
-			OutputStringToELog("[ProjectBinarySerializer] hook serialize_to_file address unavailable");
+			Logger::Instance().WriteSplit("ProjectBinarySerializer",
+				"hook serialize_to_file address unavailable",
+				reinterpret_cast<const char*>(u8"无法定位工程文件序列化函数，未能安装工程保存钩子。"));
 		}
 	}
 #endif
@@ -714,7 +716,8 @@ void StartHookCreateFileA()
 			moduleBase,
 			&hiddenTypeAttachTrace);
 		if (!hiddenTypeAttachQueued) {
-			OutputStringToELog("[HiddenTypeResolver] " + hiddenTypeAttachTrace);
+			Logger::Instance().WriteSplit("HiddenTypeResolver", hiddenTypeAttachTrace,
+				reinterpret_cast<const char*>(u8"安装隐藏通用型解析钩子失败，详细原因请查看日志。"));
 		}
 	}
 
@@ -729,7 +732,13 @@ void StartHookCreateFileA()
 		error == NO_ERROR,
 		&hiddenTypeCompleteTrace);
 	if (fullHiddenTypeHookRequested && hiddenTypeAttachQueued) {
-		OutputStringToELog("[HiddenTypeResolver] " + hiddenTypeCompleteTrace);
+		if (error == NO_ERROR) {
+			Logger::Instance().Write("", "[AutoLinker][HiddenTypeResolver] " + hiddenTypeCompleteTrace);
+		}
+		else {
+			Logger::Instance().WriteSplit("HiddenTypeResolver", hiddenTypeCompleteTrace,
+				std::format("{}{}", reinterpret_cast<const char*>(u8"隐藏通用型解析钩子安装失败：钩子事务提交失败，错误码="), error));
+		}
 	}
 	IdeCompileOutputCapture::CompleteHookInstallation(error == NO_ERROR);
 	if (error == NO_ERROR) {
@@ -743,7 +752,9 @@ void StartHookCreateFileA()
 		}
 	}
 	else {
-		OutputStringToELog(std::format("hook transaction failed, error={}", error));
+		Logger::Instance().WriteSplit("Hook",
+			std::format("hook transaction failed, error={}", error),
+			std::format("{}{}", reinterpret_cast<const char*>(u8"钩子事务提交失败，错误码="), error));
 	}
 }
 
