@@ -9489,14 +9489,25 @@ bool SetConstEditorCaretRow(
 	}
 
 	// e5.95 的记录导航命令最终调用此函数写入编辑器对象的当前行、列字段。
-	// 先校验版本锁定入口，避免把固定 RVA 用到其他 IDE 版本。
-	constexpr std::array<std::uint8_t, 16> kSetCaretSignature = {
+	// 磁盘档案确认版本；运行时只允许前两条完整指令被入口跳转覆盖。
+	// 不覆盖第三方补丁，仍从原入口调用，使助手的 Hook 链保持有效。
+	constexpr std::array<std::uint8_t, 64> kSetCaretSignature = {
 		0x6A, 0xFF, 0x68, 0xD8, 0xF1, 0x5E, 0x00, 0x64,
 		0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x64, 0x89,
+		0x25, 0x00, 0x00, 0x00, 0x00, 0x81, 0xEC, 0x90,
+		0x00, 0x00, 0x00, 0x8B, 0x84, 0x24, 0xA0, 0x00,
+		0x00, 0x00, 0x55, 0x56, 0x57, 0x8B, 0xF1, 0x50,
+		0x89, 0x74, 0x24, 0x14, 0xE8, 0x5F, 0x12, 0x00,
+		0x00, 0x6A, 0x00, 0x6A, 0x00, 0x6A, 0x00, 0x6A,
+		0x00, 0x6A, 0x00, 0x8D, 0x8C, 0x24, 0x88, 0x00,
 	};
-	if (!MatchRvaSignature(moduleBase, kE595SetEditorCaretPositionRva, kSetCaretSignature)) {
+	const IdeEntryProfile profile{
+		0x64F03484, 0x349000, kE595SetEditorCaretPositionRva - kImageBase, kSetCaretSignature, 7,
+	};
+	std::string entryTrace;
+	if (!ValidateIdeCallableEntry(moduleBase, profile, entryTrace)) {
 		outTrace = "set_const_row_unsupported_signature|" + BuildIdeSignatureDiagnostics(
-			moduleBase, kE595SetEditorCaretPositionRva - kImageBase, kSetCaretSignature);
+			moduleBase, profile.rva, kSetCaretSignature) + "|" + entryTrace;
 		AppendPageEditTraceLine(outTrace);
 		Logger::Instance().Write("IDE", outTrace);
 		return false;
@@ -9524,7 +9535,7 @@ bool SetConstEditorCaretRow(
 		"|actual_row=" + std::to_string(actualRow) +
 		"|actual_column=" + std::to_string(actualColumn) +
 		"|ret=" + std::to_string(invokeResult) +
-		"|exc=" + std::to_string(invokeThrew ? 1 : 0);
+		"|exc=" + std::to_string(invokeThrew ? 1 : 0) + "|" + entryTrace;
 	return invoked && !invokeThrew && actualRow == static_cast<int>(rowIndex) && actualColumn == 0;
 }
 
