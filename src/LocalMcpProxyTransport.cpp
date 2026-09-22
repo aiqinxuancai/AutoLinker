@@ -1,11 +1,13 @@
 ﻿#include "LocalMcpProxyTransport.h"
 #include "StaticJson.h"
+#include "ToolExecutionTimeouts.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <format>
 #include <string>
@@ -165,13 +167,34 @@ bool SendAll(SOCKET socketValue, const std::string& data, std::string& outError)
 bool ReadHttpResponse(
 	SOCKET socketValue,
 	LocalMcpProxyTransport::HttpResponse& outResponse,
-	std::string& outError)
+	std::string& outError,
+	int timeoutMs)
 {
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+	// 每次接收使用剩余预算，分片响应不能无限延长等待。
+	auto receive = [&](char* buffer, int size) {
+		const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+			deadline - std::chrono::steady_clock::now()).count();
+		if (remaining <= 0) {
+			outResponse.responseTimedOut = true;
+			WSASetLastError(WSAETIMEDOUT);
+			return SOCKET_ERROR;
+		}
+		const DWORD waitMs = static_cast<DWORD>((std::max)(1LL, remaining));
+		if (setsockopt(socketValue, SOL_SOCKET, SO_RCVTIMEO,
+			reinterpret_cast<const char*>(&waitMs), sizeof(waitMs)) == SOCKET_ERROR) return SOCKET_ERROR;
+		const int received = recv(socketValue, buffer, size, 0);
+		if (received == SOCKET_ERROR && WSAGetLastError() == WSAETIMEDOUT) {
+			outResponse.responseTimedOut = true;
+		}
+		if (received == 0) WSASetLastError(0);
+		return received;
+	};
 	std::string raw;
 	std::size_t headerEnd = std::string::npos;
 	while ((headerEnd = raw.find("\r\n\r\n")) == std::string::npos) {
 		char buffer[4096];
-		const int received = recv(socketValue, buffer, static_cast<int>(sizeof(buffer)), 0);
+		const int received = receive(buffer, static_cast<int>(sizeof(buffer)));
 		if (received <= 0) {
 			outError = "read loopback response header failed, error=" + std::to_string(WSAGetLastError());
 			return false;
@@ -231,7 +254,7 @@ bool ReadHttpResponse(
 	}
 	while (body.size() < contentLength) {
 		char buffer[4096];
-		const int received = recv(socketValue, buffer, static_cast<int>(sizeof(buffer)), 0);
+		const int received = receive(buffer, static_cast<int>(sizeof(buffer)));
 		if (received <= 0) {
 			outError = "read loopback response body failed, error=" + std::to_string(WSAGetLastError());
 			return false;
@@ -254,7 +277,8 @@ bool SendLoopbackRequest(
 	bool proxied,
 	LocalMcpProxyTransport::HttpResponse& outResponse,
 	std::string& outError,
-	int timeoutMs)
+	int timeoutMs,
+	int connectTimeoutMs)
 {
 	outResponse = {};
 	outError.clear();
@@ -262,7 +286,7 @@ bool SendLoopbackRequest(
 		outError = "loopback instance port is invalid";
 		return false;
 	}
-	if (timeoutMs <= 0) {
+	if (timeoutMs <= 0 || connectTimeoutMs <= 0) {
 		outError = "loopback timeout is invalid";
 		return false;
 	}
@@ -278,10 +302,13 @@ bool SendLoopbackRequest(
 		outError = "create loopback socket failed, error=" + std::to_string(WSAGetLastError());
 		return false;
 	}
-	DWORD socketTimeout = static_cast<DWORD>(timeoutMs);
-	setsockopt(socketScope.Get(), SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&socketTimeout), sizeof(socketTimeout));
-	setsockopt(socketScope.Get(), SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&socketTimeout), sizeof(socketTimeout));
-	if (!ConnectWithTimeout(socketScope.Get(), port, timeoutMs, outError)) {
+	DWORD socketTimeout = ToolExecutionTimeouts::kSendMs;
+	if (setsockopt(socketScope.Get(), SOL_SOCKET, SO_SNDTIMEO,
+		reinterpret_cast<const char*>(&socketTimeout), sizeof(socketTimeout)) == SOCKET_ERROR) {
+		outError = "set loopback send timeout failed";
+		return false;
+	}
+	if (!ConnectWithTimeout(socketScope.Get(), port, connectTimeoutMs, outError)) {
 		return false;
 	}
 
@@ -306,8 +333,9 @@ bool SendLoopbackRequest(
 		body.size(),
 		headers,
 		body);
-	return SendAll(socketScope.Get(), request, outError) &&
-		ReadHttpResponse(socketScope.Get(), outResponse, outError);
+	if (!SendAll(socketScope.Get(), request, outError)) return false;
+	outResponse.requestSent = true;
+	return ReadHttpResponse(socketScope.Get(), outResponse, outError, timeoutMs);
 }
 
 bool ReadMockRequest(SOCKET socketValue, std::string& outRaw)
@@ -370,7 +398,8 @@ bool PostJsonRpc(
 	const std::string& sessionId,
 	HttpResponse& outResponse,
 	std::string& outError,
-	int timeoutMs)
+	int timeoutMs,
+	int connectTimeoutMs)
 {
 	return SendLoopbackRequest(
 		port,
@@ -380,7 +409,8 @@ bool PostJsonRpc(
 		true,
 		outResponse,
 		outError,
-		timeoutMs);
+		timeoutMs,
+		connectTimeoutMs);
 }
 
 bool ProbeInstance(
@@ -390,7 +420,7 @@ bool ProbeInstance(
 	int timeoutMs)
 {
 	HttpResponse response;
-	if (!SendLoopbackRequest(port, "GET", std::string(), std::string(), false, response, outError, timeoutMs)) {
+	if (!SendLoopbackRequest(port, "GET", std::string(), std::string(), false, response, outError, timeoutMs, timeoutMs)) {
 		return false;
 	}
 	if (response.statusCode != 200) {
@@ -442,7 +472,7 @@ std::string BuildSelfTestReportJson()
 	std::string getRequest;
 	std::string postRequest;
 	std::thread mockServer([&]() {
-		for (int requestIndex = 0; requestIndex < 2; ++requestIndex) {
+		for (int requestIndex = 0; requestIndex < 5; ++requestIndex) {
 			SOCKET accepted = accept(listenSocket, nullptr, nullptr);
 			if (accepted == INVALID_SOCKET) {
 				return;
@@ -459,7 +489,16 @@ std::string BuildSelfTestReportJson()
 				SendMockResponse(accepted, R"({"ok":true,"instance_id":"mock-instance"})");
 			}
 			else {
-				postRequest = raw;
+				if (requestIndex == 1) postRequest = raw;
+				if (requestIndex == 4) {
+					std::string ignored;
+					SendAll(accepted, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{", ignored);
+					std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+					continue;
+				}
+				if (requestIndex >= 2) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(requestIndex == 2 ? 250 : 1500));
+				}
 				SendMockResponse(accepted, R"({"jsonrpc":"2.0","id":7,"result":{"ok":true}})");
 			}
 		}
@@ -476,6 +515,21 @@ std::string BuildSelfTestReportJson()
 		response,
 		postError,
 		2000);
+	HttpResponse delayedResponse, timeoutResponse;
+	std::string delayedError, timeoutError;
+	const bool delayedOk = PostJsonRpc(port, R"({"method":"ping"})", "",
+		delayedResponse, delayedError, 2000, 50) && delayedResponse.requestSent &&
+		!delayedResponse.responseTimedOut && delayedResponse.statusCode == 200;
+	const bool timeoutOk = !PostJsonRpc(port, R"({"method":"ping"})", "",
+		timeoutResponse, timeoutError, 100, 50) && timeoutResponse.requestSent &&
+		timeoutResponse.responseTimedOut;
+	HttpResponse bodyTimeoutResponse;
+	std::string bodyTimeoutError;
+	// 上一个请求的服务端仍在等待；先留足时间让它结束，再验证正文接收超时。
+	std::this_thread::sleep_for(std::chrono::milliseconds(1600));
+	const bool bodyTimeoutOk = !PostJsonRpc(port, R"({"method":"ping"})", "",
+		bodyTimeoutResponse, bodyTimeoutError, 100, 50) && bodyTimeoutResponse.statusCode == 200 &&
+		bodyTimeoutResponse.requestSent && bodyTimeoutResponse.responseTimedOut;
 	shutdown(listenSocket, SD_BOTH);
 	if (mockServer.joinable()) {
 		mockServer.join();
@@ -487,7 +541,12 @@ std::string BuildSelfTestReportJson()
 	const nlohmann::json responseJson = nlohmann::json::parse(response.body, nullptr, false);
 	const bool responseOk = postOk && response.statusCode == 200 &&
 		!responseJson.is_discarded() && responseJson.value("jsonrpc", std::string()) == "2.0";
-	report["ok"] = probeOk && responseOk && headersOk && !getRequest.empty();
+	report["ok"] = probeOk && responseOk && headersOk && !getRequest.empty() && delayedOk && timeoutOk && bodyTimeoutOk;
+	report["body_timeout_classified"] = bodyTimeoutOk;
+	report["delayed_response_ok"] = delayedOk;
+	report["response_timeout_classified"] = timeoutOk;
+	report["delayed_error"] = delayedError;
+	report["timeout_error"] = timeoutError;
 	report["probe_ok"] = probeOk;
 	report["post_ok"] = responseOk;
 	report["headers_ok"] = headersOk;

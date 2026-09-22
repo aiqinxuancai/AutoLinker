@@ -706,6 +706,7 @@
     <ClInclude Include="src\LinkerManager.h" />
     <ClInclude Include="src\LocalMcpInstanceRegistry.h" />
     <ClInclude Include="src\LocalMcpProxyTransport.h" />
+    <ClInclude Include="src\ToolExecutionTimeouts.h" />
     <ClInclude Include="src\Logger.h" />
     <ClInclude Include="src\LocalMcpServer.h" />
     <ClInclude Include="src\McpAutoSaveManager.h" />

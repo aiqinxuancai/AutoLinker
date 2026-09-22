@@ -29,6 +29,7 @@
 #include "IDEFacade.h"
 #include "LocalMcpInstanceRegistry.h"
 #include "LocalMcpProxyTransport.h"
+#include "ToolExecutionTimeouts.h"
 #include "Logger.h"
 #include "PathHelper.h"
 #include "WorkspaceMirror.h"
@@ -1578,16 +1579,45 @@ bool TryForwardSelectedToolCall(
 	}
 
 	LocalMcpProxyTransport::HttpResponse response;
+	const auto payload = nlohmann::json::parse(request.body, nullptr, false);
+	std::string toolName;
+	if (payload.is_object() && payload.contains("params") && payload["params"].is_object()) {
+		const auto name = payload["params"].find("name");
+		if (name != payload["params"].end() && name->is_string()) toolName = name->get<std::string>();
+	}
+	const int responseTimeoutMs = ToolExecutionTimeouts::ResponseMs(toolName);
+	auto reportUnknownResult = [&](const std::string& detail) {
+		const nlohmann::json error = {
+			{"jsonrpc", "2.0"}, {"id", id},
+			{"error", {
+				{"code", -32003},
+				{"message", "Tool result unavailable; execution may still be in progress. Do not automatically retry."},
+				{"data", {
+					{"error", response.responseTimedOut ? "tool_response_timeout" : "tool_response_unavailable"},
+					{"instance_id", selectedInstanceId}, {"tool", toolName},
+					{"response_timeout_ms", responseTimeoutMs}, {"execution_state", "unknown"},
+					{"may_still_be_running", true}, {"retry_safe", false}, {"detail", detail}
+				}}
+			}}
+		};
+		SetMcpLogResponseJson(outLogContext, error["error"]);
+		outBody = DumpJsonSafe(error);
+		return true;
+	};
 	if (!LocalMcpProxyTransport::PostJsonRpc(
 			target->port,
 			request.body,
 			sessionId == "legacy" ? std::string() : sessionId,
 			response,
 			proxyError,
-			30000) ||
+			responseTimeoutMs,
+			ToolExecutionTimeouts::kConnectMs) ||
 		response.statusCode != 200) {
 		if (proxyError.empty()) {
 			proxyError = std::format("target returned HTTP {} {}", response.statusCode, response.reason);
+		}
+		if (response.requestSent) {
+			return reportUnknownResult(proxyError);
 		}
 		const nlohmann::json error = BuildInstanceRoutingError(
 			id,
@@ -1601,17 +1631,10 @@ bool TryForwardSelectedToolCall(
 
 	const nlohmann::json remote = nlohmann::json::parse(response.body, nullptr, false);
 	if (remote.is_discarded() || !remote.is_object() ||
-		!remote.contains("jsonrpc") || remote.value("jsonrpc", std::string()) != "2.0" ||
+		!remote.contains("jsonrpc") || remote["jsonrpc"] != "2.0" ||
 		!remote.contains("id") || remote["id"] != id ||
 		(!remote.contains("result") && !remote.contains("error"))) {
-		const nlohmann::json error = BuildInstanceRoutingError(
-			id,
-			selectedInstanceId,
-			"target returned an invalid or mismatched JSON-RPC response",
-			sessionId);
-		SetMcpLogResponseJson(outLogContext, error["error"]);
-		outBody = DumpJsonSafe(error);
-		return true;
+		return reportUnknownResult("target returned an invalid or mismatched JSON-RPC response");
 	}
 
 	SetMcpLogResponseJson(

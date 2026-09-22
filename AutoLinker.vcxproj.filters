@@ -523,6 +523,9 @@
     <ClInclude Include="src\LocalMcpProxyTransport.h">
       <Filter>Utils</Filter>
     </ClInclude>
+    <ClInclude Include="src\ToolExecutionTimeouts.h">
+      <Filter>Utils</Filter>
+    </ClInclude>
     <ClInclude Include="src\Logger.h">
       <Filter>Utils</Filter>
     </ClInclude>

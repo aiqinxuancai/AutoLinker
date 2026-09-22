@@ -23,6 +23,7 @@
 #include "CompileDiagnostics.h"
 #include "BlackMoonCompileCoordinator.h"
 #include "SilentCompileOutputPathLease.h"
+#include "ToolExecutionTimeouts.h"
 #include "DependencyCatalogCache.h"
 #include "IDEFacade.h"
 #include "EideEditorObjectResolver.h"
@@ -5653,6 +5654,8 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 		BlackMoonCompileCoordinator blackMoonSession;
 		SilentCompileOutputPathLease outputPathLease;
 		std::string diagnostics;
+		const auto compileDeadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(ToolExecutionTimeouts::kCompileMs);
 		const bool compileOk = useBlackMoon
 			? blackMoonSession.Invoke(
 				kind, outputPath, blackMoonCompileMode, &normalizedPath, &diagnostics)
@@ -5769,9 +5772,10 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 			diagnostics == "blackmoon_compile_invoked_dialog_suppressed") {
 			const auto waitStartedAt = std::chrono::steady_clock::now();
 			Logger::Instance().WriteAndIde("Tool", std::format(
-				"compile_artifact_wait_start output={} stage=artifact_confirmation timeout_ms=120000",
-				normalizedPath));
-			const auto waitDeadline = waitStartedAt + std::chrono::seconds(120);
+				"compile_artifact_wait_start output={} stage=artifact_confirmation timeout_ms={}",
+				normalizedPath, (std::max)(0LL, std::chrono::duration_cast<std::chrono::milliseconds>(
+					compileDeadline - waitStartedAt).count())));
+			const auto waitDeadline = compileDeadline;
 			compileWaitOutcome = "timeout";
 			bool outputFileReadySeen = false;
 			std::chrono::steady_clock::time_point outputFileReadySince = {};

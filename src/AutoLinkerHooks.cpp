@@ -27,6 +27,7 @@
 #include "MemFind.h"
 #include "PathHelper.h"
 #include "StringHelper.h"
+#include "ToolExecutionTimeouts.h"
 
 namespace {
 
@@ -44,8 +45,8 @@ std::mutex g_detourHookMutex;
 bool g_messageBoxHookInstalled = false;
 bool g_fullHookInstalled = false;
 
-constexpr auto kSilentCompileOutputPathTimeout = std::chrono::seconds(120);
-constexpr auto kSilentCompileMessageBoxGuardTimeout = std::chrono::minutes(10);
+constexpr auto kSilentCompileOutputPathTimeout = std::chrono::milliseconds(ToolExecutionTimeouts::kCompileMs);
+constexpr auto kSilentCompileMessageBoxGuardTimeout = kSilentCompileOutputPathTimeout;
 
 std::string NormalizeSilentCompileOutputPath(const std::string& outputPath)
 {
