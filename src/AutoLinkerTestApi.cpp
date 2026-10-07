@@ -3343,7 +3343,14 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 			bool multiEditCasSchemaOk = false;
 			bool diffCasSchemaOk = false;
 			bool restoreCasSchemaOk = false;
-			bool hiddenDependencyTools = true;
+			bool hiddenOtherDependencyTools = true;
+			bool hasPublicImportedModuleList = false;
+			bool publicImportedModuleListRequiresExplicitRequest = false;
+			bool hasPublicModuleImport = false;
+			bool publicModuleImportRequiresExplicitRequest = false;
+			bool publicModuleImportRequiresBlockingOptIn = false;
+			bool hasPublicModuleRemoval = false;
+			bool publicModuleRemovalRequiresExplicitRequest = false;
 			for (const auto& item : catalog) {
 				if (item.is_object() && AIChatMcpClient::IsMcpModelToolName(item.value("name", std::string()))) {
 					publicCatalogCheck["ok"] = false;
@@ -3368,8 +3375,27 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 				restoreCasSchemaOk = restoreCasSchemaOk || (name == "restore_file_snapshot" && properties.contains("expected_current_hash"));
 				if (name == "refresh_dependency_catalog" ||
 					name == "search_available_modules" ||
-					name == "add_module_to_project") {
-					hiddenDependencyTools = false;
+					name == "search_available_support_libraries" ||
+					name == "add_support_library_to_project") {
+					hiddenOtherDependencyTools = false;
+				}
+				const std::string description = item.value("description", std::string());
+				if (name == "list_imported_modules") {
+					hasPublicImportedModuleList = true;
+					publicImportedModuleListRequiresExplicitRequest =
+						description.find("Explicit-user-request only") != std::string::npos;
+				}
+				if (name == "add_module_to_project") {
+					hasPublicModuleImport = true;
+					publicModuleImportRequiresExplicitRequest =
+						description.find("Explicit-user-request only") != std::string::npos;
+					publicModuleImportRequiresBlockingOptIn =
+						properties.contains("allow_blocking_import");
+				}
+				if (name == "remove_module_from_project") {
+					hasPublicModuleRemoval = true;
+					publicModuleRemovalRequiresExplicitRequest =
+						description.find("Explicit-user-request only") != std::string::npos;
 				}
 				if (name == "refresh_workspace_mirror" &&
 					item.value("description", std::string()).find("MUST") != std::string::npos) {
@@ -3377,7 +3403,11 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 				}
 			}
 			const bool casSchemasOk = editCasSchemaOk && multiEditCasSchemaOk && diffCasSchemaOk && restoreCasSchemaOk;
-			if (!hasReadCodeItem || !hasEPackager || !hasRequiredRefreshDescription || !casSchemasOk || !hiddenDependencyTools) {
+			if (!hasReadCodeItem || !hasEPackager || !hasRequiredRefreshDescription || !casSchemasOk ||
+				!hiddenOtherDependencyTools || !hasPublicImportedModuleList ||
+				!publicImportedModuleListRequiresExplicitRequest || !hasPublicModuleImport ||
+				!publicModuleImportRequiresExplicitRequest || !publicModuleImportRequiresBlockingOptIn ||
+				!hasPublicModuleRemoval || !publicModuleRemovalRequiresExplicitRequest) {
 				publicCatalogCheck["ok"] = false;
 				publicCatalogCheck["error"] = "public catalog visibility or CAS schema invariant failed";
 			}
@@ -3385,7 +3415,14 @@ extern "C" int AutoLinkerTest_RunAIChatMcpSelfTest(char* buffer, int bufferSize)
 			publicCatalogCheck["has_e_packager"] = hasEPackager;
 			publicCatalogCheck["has_required_refresh_description"] = hasRequiredRefreshDescription;
 			publicCatalogCheck["cas_schemas_ok"] = casSchemasOk;
-			publicCatalogCheck["dependency_tools_hidden"] = hiddenDependencyTools;
+			publicCatalogCheck["other_dependency_tools_hidden"] = hiddenOtherDependencyTools;
+			publicCatalogCheck["has_public_imported_module_list"] = hasPublicImportedModuleList;
+			publicCatalogCheck["public_imported_module_list_requires_explicit_request"] = publicImportedModuleListRequiresExplicitRequest;
+			publicCatalogCheck["has_public_module_import"] = hasPublicModuleImport;
+			publicCatalogCheck["public_module_import_requires_explicit_request"] = publicModuleImportRequiresExplicitRequest;
+			publicCatalogCheck["public_module_import_requires_blocking_opt_in"] = publicModuleImportRequiresBlockingOptIn;
+			publicCatalogCheck["has_public_module_removal"] = hasPublicModuleRemoval;
+			publicCatalogCheck["public_module_removal_requires_explicit_request"] = publicModuleRemovalRequiresExplicitRequest;
 		}
 	}
 	catch (const std::exception& ex) {

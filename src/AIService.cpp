@@ -8575,6 +8575,9 @@ std::string AIService::BuildExternalMcpInstructions()
 		"- src/*.xml 是易语言原生窗口界面 XML，只读；不支持调整窗口或控件的位置、大小、层级和属性，不支持添加、删除控件，也不支持新增、删除或修改控件事件绑定。禁止写入窗口 XML 或声称已完成这些界面修改。\n"
 		"- 窗口程序集代码请编辑对应 src/*.txt；可修改已有控件事件子程序的代码实现，但新增事件子程序不代表已经建立控件事件绑定。ecom/、elib/、header/ 是依赖与公开信息参考，可读可搜不可写。\n\n"
 
+		"【模块管理】\n"
+		"- 只有用户明确要求列出当前工程的模块时，才调用 list_imported_modules；只有用户明确要求将指定 .ec 模块添加到当前工程时，才调用 add_module_to_project；只有用户明确要求移除指定已导入模块时，才调用 remove_module_from_project。不得为探索、分析或推测依赖而调用。添加时必须提供 module_path 或 module_name，并且仅在确实需要执行导入时设置 allow_blocking_import=true。\n\n"
+
 		"【验证】\n"
 		"- 需要编译时用 compile_with_output_path（可先用 get_current_eide_info 确认工程类型、支持的输出目标与编译模式），不要用你自带的构建/脚本能力去编译。使用 compiler=eide 时，win_exe、win_console_exe、win_dll 默认使用 static_compile=true；只有用户明确要求动态编译或不使用静态编译时才使用 false。模块工程进行编译验证/调试测试时，默认使用 target=win_console_exe 和 static_compile=true；只有明确发布/生成 .ec 模块时才使用 target=ecom 和 static_compile=false。若用户要求黑月，必须显式传 compiler=blackmoon，仅针对当前 EXE/DLL 工程，使用 target=auto、blackmoon_mode=asm/cxx/vcxx 并完全省略 static_compile；普通编译必须省略 blackmoon_mode。收到参数错误时按 hint 纠正参数，不要原样重试。\n"
 		"- 需要联网查资料时用 search_web_tavily / extract_web_document / fetch_url。\n\n"
