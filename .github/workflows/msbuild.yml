@@ -150,6 +150,14 @@ jobs:
         Compress-Archive -LiteralPath $fnePath -DestinationPath $updateAssetName
         Compress-Archive -LiteralPath $pdbPath -DestinationPath $symbolsAssetName
 
+    - name: Generate Update Manifest
+      shell: pwsh
+      env:
+        RELEASE_TAG: ${{ steps.release_meta.outputs.raw_tag }}
+        UPDATE_ASSET: ${{ steps.release_meta.outputs.update_asset_name }}
+      run: |
+        ./scripts/generate_update_manifest.ps1 -Tag $env:RELEASE_TAG -AssetPath $env:UPDATE_ASSET -OutputPath update.json
+
     - name: Generate AI Release Notes
       shell: pwsh
       env:
@@ -167,7 +175,7 @@ jobs:
       with:
         tag: ${{ steps.release_meta.outputs.raw_tag }}
         name: AutoLinker ${{ steps.release_meta.outputs.version_label }}
-        artifacts: "${{steps.release_meta.outputs.update_asset_name}},${{steps.release_meta.outputs.symbols_asset_name}}"
+        artifacts: "${{steps.release_meta.outputs.update_asset_name}},${{steps.release_meta.outputs.symbols_asset_name}},update.json"
         bodyFile: release_notes.md
         prerelease: ${{ steps.release_meta.outputs.prerelease }}
         makeLatest: ${{ steps.release_meta.outputs.make_latest }}
@@ -205,7 +213,7 @@ jobs:
         tag: ${{ steps.release_meta.outputs.raw_tag }}
         commit: ${{ steps.mirror_repo_meta.outputs.default_branch }}
         name: AutoLinker ${{ steps.release_meta.outputs.version_label }}
-        artifacts: "${{steps.release_meta.outputs.update_asset_name}},${{steps.release_meta.outputs.symbols_asset_name}}"
+        artifacts: "${{steps.release_meta.outputs.update_asset_name}},${{steps.release_meta.outputs.symbols_asset_name}},update.json"
         bodyFile: release_notes.md
         prerelease: ${{ steps.release_meta.outputs.prerelease }}
         makeLatest: ${{ steps.release_meta.outputs.make_latest }}

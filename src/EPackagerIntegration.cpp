@@ -347,7 +347,8 @@ bool WriteCurrentProjectSnapshotImpl(
 		return false;
 	}
 
-	return e571::ProjectBinarySerializer::Instance().WriteCurrentProjectToFile(
+	// 镜像需要完整工程文件；内存句柄序列化不包含 IDE 保存时生成的辅助事件索引。
+	return e571::ProjectBinarySerializer::Instance().WriteCurrentProjectFileSnapshot(
 		localPath,
 		&outBytesWritten,
 		&outError,

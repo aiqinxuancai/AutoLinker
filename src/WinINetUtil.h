@@ -108,4 +108,6 @@ std::pair<std::string, int> PerformGetRequest(
 	int timeout,
 	bool AutoCookies,
 	bool NeverRedirect,
-	const HttpDownloadProgressCallback& onProgress);
+	const HttpDownloadProgressCallback& onProgress,
+	// 可选返回自动重定向后的最终地址。
+	std::string* finalUrl = nullptr);

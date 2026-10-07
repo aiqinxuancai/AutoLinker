@@ -434,20 +434,7 @@ bool BuildSnapshot(const std::filesystem::path& sourcePath, std::filesystem::pat
 		if (!snapshotTrace.empty()) {
 			outTrace = outTrace.empty() ? snapshotTrace : (outTrace + "|" + snapshotTrace);
 		}
-		std::error_code ec;
-		if (std::filesystem::exists(sourcePath, ec) && std::filesystem::is_regular_file(sourcePath, ec)) {
-            std::filesystem::create_directories(outSnapshotPath.parent_path(), ec);
-            if (!ec) std::filesystem::copy_file(sourcePath, outSnapshotPath, std::filesystem::copy_options::overwrite_existing, ec);
-            if (ec) { outError = "saved snapshot copy failed: " + ec.message(); return false; }
-			const std::string memoryError = outError;
-			outError.clear();
-			outTrace =
-				(outTrace.empty() ? std::string() : (outTrace + "|")) +
-				"snapshot_kind=saved_file_fallback|memory_snapshot_error=" +
-				memoryError;
-			OutputStringToELog("[WorkspaceMirror] memory snapshot unavailable, unpack saved file: " + LocalFromPath(sourcePath));
-			return true;
-		}
+		// 镜像必须反映当前内存；读取失败时不能把磁盘旧文件冒充未保存工程。
 		EPackagerIntegration::CleanupSnapshotRoot(outSnapshotPath.parent_path());
 		if (!outTrace.empty()) {
 			outError += " trace=" + outTrace;

@@ -639,7 +639,11 @@ std::pair<std::string, int> PerformGetRequest(
 	int timeout,
 	bool AutoCookies,
 	bool NeverRedirect,
-	const HttpDownloadProgressCallback& onProgress) {
+	const HttpDownloadProgressCallback& onProgress,
+	std::string* finalUrl) {
+	if (finalUrl != nullptr) {
+		finalUrl->clear();
+	}
     HINTERNET hInternet, hConnect, hRequest;
     std::string response;
     DWORD statusCode = 0;
@@ -726,6 +730,17 @@ std::pair<std::string, int> PerformGetRequest(
     else {
         statusCode = 0;
     }
+
+	if (finalUrl != nullptr) {
+		DWORD urlLength = 0;
+		InternetQueryOptionA(hRequest, INTERNET_OPTION_URL, nullptr, &urlLength);
+		if (urlLength > 0) {
+			std::vector<char> urlBuffer(urlLength + 1, '\0');
+			if (InternetQueryOptionA(hRequest, INTERNET_OPTION_URL, urlBuffer.data(), &urlLength)) {
+				*finalUrl = urlBuffer.data();
+			}
+		}
+	}
 
 	const std::uint64_t totalBytes = QueryResponseContentLength(hRequest);
 	std::uint64_t downloadedBytes = 0;

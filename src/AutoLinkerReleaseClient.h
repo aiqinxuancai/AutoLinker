@@ -16,7 +16,7 @@ struct AutoLinkerReleaseInfo {
 	AutoLinkerReleaseAsset asset;
 };
 
-// GitHub Release 客户端：读取最新版本并下载、校验更新包。
+// GitHub Release 客户端：读取 update.json 清单并下载、校验更新包，无需 API Token。
 class AutoLinkerReleaseClient {
 public:
 	static bool FetchLatest(AutoLinkerReleaseInfo& outInfo, std::string& outError);

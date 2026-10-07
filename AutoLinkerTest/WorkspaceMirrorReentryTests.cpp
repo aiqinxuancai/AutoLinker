@@ -15,6 +15,7 @@
 namespace {
 bool sourceChanged = false;
 bool sourceAvailable = true;
+bool failSnapshot = false;
 unsigned sourceNumber = 0;
 unsigned resetCount = 0;
 unsigned unpackCount = 0;
@@ -59,13 +60,17 @@ bool GetCurrentSourcePath(std::filesystem::path& path, std::string& error)
 }
 std::filesystem::path BuildCurrentProjectSnapshotPathForSource(const std::filesystem::path& path)
 {
-    return path;
+    return path.wstring() + L".snapshot";
 }
 bool WriteCurrentProjectSnapshot(const std::filesystem::path&, size_t& bytes, std::string& trace, std::string& error)
 {
     bytes = 1;
     trace.clear();
     error.clear();
+    if (failSnapshot) {
+        error = "simulated memory snapshot failure";
+        return false;
+    }
     return true;
 }
 void CleanupSnapshotRoot(const std::filesystem::path&) {}
@@ -126,6 +131,23 @@ int main() {
             Check(WorkspaceMirror::EnsureMirrorFresh(error),"prepared access");
         }
         std::cout<<"PASS capture reentry and old-directory leases\n";
+        // 即使磁盘源码存在，也不能在内存序列化失败时发布旧内容。
+        std::filesystem::path savedSource;
+        Check(EPackagerIntegration::GetCurrentSourcePath(savedSource,error),"saved source path");
+        Check(!std::filesystem::exists(savedSource),"test source already exists");
+        std::ofstream(savedSource)<<"stale saved source";
+        const auto snapshotFailureGeneration=WorkspaceMirror::GetGeneration();
+        const auto snapshotFailureUnpacks=unpackCount;
+        failSnapshot=true;
+        const bool snapshotFailureAccepted=Refresh(WorkspaceMirror::RefreshMode::Full,error);
+        failSnapshot=false;
+        std::filesystem::remove(savedSource);
+        std::filesystem::remove(EPackagerIntegration::BuildCurrentProjectSnapshotPathForSource(savedSource));
+        Check(!snapshotFailureAccepted&&error.find("simulated memory snapshot failure")!=std::string::npos,
+            "disk fallback hid memory snapshot failure");
+        Check(unpackCount==snapshotFailureUnpacks&&WorkspaceMirror::GetGeneration()==snapshotFailureGeneration,
+            "failed snapshot changed mirror");
+        std::cout<<"PASS memory snapshot failure does not publish saved source\n";
         auto stale=WorkspaceMirror::CaptureRefreshInputOnMainThread(WorkspaceMirror::RefreshMode::Full,error);
         WorkspaceMirror::BuildRefreshCandidate(stale);
         WorkspaceMirror::ResetAndCleanup(); // A -> B -> A，即使路径相同也必须拒绝。

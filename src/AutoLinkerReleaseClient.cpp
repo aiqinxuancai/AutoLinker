@@ -20,13 +20,14 @@ namespace {
 
 using json = nlohmann::json;
 
-constexpr const char* kLatestReleaseApi =
-	"https://api.github.com/repos/aiqinxuancai/AutoLinker/releases/latest";
+constexpr const char* kReleaseBaseUrl = "https://github.com/aiqinxuancai/AutoLinker/releases/";
+constexpr const char* kUpdateManifestUrl =
+	"https://github.com/aiqinxuancai/AutoLinker/releases/latest/download/update.json";
 constexpr const char* kGitHubBaseUrl = "https://github.com/";
 constexpr const char* kGitHubAcceleratorBaseUrl = "https://github-fast.apptest.dev/";
 constexpr const char* kGitHubHeaders =
 	"User-Agent: AutoLinker\r\n"
-	"Accept: application/vnd.github+json\r\n";
+	"Accept: */*\r\n";
 constexpr int kReleaseRequestTimeoutMs = 60000;
 constexpr int kDownloadTimeoutMs = 300000;
 
@@ -64,11 +65,6 @@ std::string ToLowerAscii(std::string text)
 		return static_cast<char>(std::tolower(ch));
 	});
 	return text;
-}
-
-bool EqualsInsensitive(const std::string& left, const std::string& right)
-{
-	return ToLowerAscii(left) == ToLowerAscii(right);
 }
 
 std::string BuildUpdateAssetName(const std::string& releaseTag)
@@ -213,59 +209,100 @@ bool ValidateDownloadedArchive(
 	return true;
 }
 
+// 标签只允许版本号使用的 ASCII 字符，禁止路径、转义和查询参数。
+bool IsSafeReleaseTag(const std::string& tag)
+{
+	if (tag.empty() || tag.size() > 128) {
+		return false;
+	}
+	const size_t start = (tag.front() == 'v' || tag.front() == 'V') ? 1 : 0;
+	return start < tag.size() && tag[start] >= '0' && tag[start] <= '9' &&
+		std::all_of(tag.begin(), tag.end(), [](unsigned char ch) {
+			return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') ||
+				(ch >= 'A' && ch <= 'Z') || ch == '.' || ch == '-' || ch == '+';
+		});
+}
+
+std::string BuildReleaseDownloadUrl(const AutoLinkerReleaseInfo& info)
+{
+	return std::string(kReleaseBaseUrl) + "download/" + info.tag + "/" + info.asset.name;
+}
+
+bool ParseUpdateManifest(const std::string& body, AutoLinkerReleaseInfo& outInfo, std::string& outError)
+{
+	const json manifest = json::parse(body, nullptr, false);
+	if (!manifest.is_object() || !manifest.contains("schema_version") ||
+		!manifest["schema_version"].is_number_unsigned() || manifest["schema_version"] != 1 ||
+		!manifest.contains("tag") || !manifest["tag"].is_string() ||
+		!manifest.contains("asset") || !manifest["asset"].is_object()) {
+		outError = "AutoLinker 更新清单格式无效或版本不受支持";
+		return false;
+	}
+	AutoLinkerReleaseInfo info;
+	info.tag = manifest["tag"].get<std::string>();
+	const auto& asset = manifest["asset"];
+	if (!IsSafeReleaseTag(info.tag) ||
+		!asset.contains("name") || !asset["name"].is_string() ||
+		!asset.contains("size") || !asset["size"].is_number_unsigned() ||
+		!asset.contains("sha256") || !asset["sha256"].is_string()) {
+		outError = "AutoLinker 更新清单缺少有效的版本号、文件名、大小或 SHA-256";
+		return false;
+	}
+	info.asset.name = asset["name"].get<std::string>();
+	info.asset.size = asset["size"].get<unsigned long long>();
+	const std::string hash = ToLowerAscii(asset["sha256"].get<std::string>());
+	if (info.asset.name != BuildUpdateAssetName(info.tag) || info.asset.size == 0 ||
+		hash.size() != 64 || !std::all_of(hash.begin(), hash.end(), [](unsigned char ch) {
+			return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+		})) {
+		outError = "AutoLinker 更新清单的更新包名称、大小或 SHA-256 不合法";
+		return false;
+	}
+	info.asset.digest = "sha256:" + hash;
+	info.asset.downloadUrl = BuildReleaseDownloadUrl(info);
+	outInfo = std::move(info);
+	return true;
+}
+
+bool FetchLegacyRelease(AutoLinkerReleaseInfo& outInfo, std::string& outError)
+{
+	std::string finalUrl;
+	const auto response = PerformGetRequest(
+		std::string(kReleaseBaseUrl) + "latest", kGitHubHeaders,
+		kReleaseRequestTimeoutMs, false, false, {}, &finalUrl);
+	if (response.second != 200) {
+		outError = "读取旧版 AutoLinker Release 页面失败：" + DescribeHttpFailure(response);
+		return false;
+	}
+	const std::string prefix = std::string(kReleaseBaseUrl) + "tag/";
+	AutoLinkerReleaseInfo info;
+	if (finalUrl.rfind(prefix, 0) != 0 || !IsSafeReleaseTag(finalUrl.substr(prefix.size()))) {
+		outError = "无法从 AutoLinker Release 页面重定向地址获取有效版本号";
+		return false;
+	}
+	info.tag = finalUrl.substr(prefix.size());
+	info.asset.name = BuildUpdateAssetName(info.tag);
+	info.asset.downloadUrl = BuildReleaseDownloadUrl(info);
+	OutputUpdateLog("[AutoLinker更新] 此 Release 尚无 update.json，使用旧版兼容方式（无文件大小和 SHA-256 校验）");
+	outInfo = std::move(info);
+	return true;
+}
+
 } // namespace
 
 bool AutoLinkerReleaseClient::FetchLatest(AutoLinkerReleaseInfo& outInfo, std::string& outError)
 {
+	outError.clear();
 	const auto response = PerformGetRequest(
-		kLatestReleaseApi,
-		kGitHubHeaders,
-		kReleaseRequestTimeoutMs,
-		false,
-		false);
+		kUpdateManifestUrl, kGitHubHeaders, kReleaseRequestTimeoutMs, false, false);
+	if (response.second == 404) {
+		return FetchLegacyRelease(outInfo, outError);
+	}
 	if (response.second != 200) {
-		outError = "读取 AutoLinker 最新 Release 失败：" + DescribeHttpFailure(response);
+		outError = "读取 AutoLinker 更新清单失败：" + DescribeHttpFailure(response);
 		return false;
 	}
-
-	const json release = json::parse(response.first, nullptr, false);
-	if (!release.is_object()) {
-		outError = "GitHub 返回的 AutoLinker Release JSON 无效";
-		return false;
-	}
-
-	AutoLinkerReleaseInfo info;
-	info.tag = release.value("tag_name", std::string());
-	if (info.tag.empty()) {
-		outError = "GitHub 返回的 AutoLinker Release 缺少版本 Tag";
-		return false;
-	}
-
-	const std::string expectedAssetName = BuildUpdateAssetName(info.tag);
-	const json assets = release.value("assets", json::array());
-	for (const auto& asset : assets) {
-		if (!asset.is_object()) {
-			continue;
-		}
-		const std::string name = asset.value("name", std::string());
-		if (!EqualsInsensitive(name, expectedAssetName)) {
-			continue;
-		}
-		info.asset.name = name;
-		info.asset.downloadUrl = asset.value("browser_download_url", std::string());
-		info.asset.digest = asset.value("digest", std::string());
-		info.asset.size = asset.value("size", 0ULL);
-		break;
-	}
-
-	if (info.asset.name.empty() || info.asset.downloadUrl.empty()) {
-		outError = "最新 Release 中未找到指定更新包 " + expectedAssetName +
-			"（PDB/符号包不会用于自动更新）";
-		return false;
-	}
-
-	outInfo = std::move(info);
-	return true;
+	return ParseUpdateManifest(response.first, outInfo, outError);
 }
 
 bool AutoLinkerReleaseClient::DownloadArchive(
