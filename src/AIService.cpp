@@ -3294,8 +3294,10 @@ nlohmann::json BuildResponsesToolDefinitions(
 	const nlohmann::json catalog = BuildInternalToolCatalog(settings, enablePlanUserInput, enableGoalTools);
 	nlohmann::json tools = nlohmann::json::array();
 	for (const auto& item : catalog) {
+		// 保留可选字段的省略语义，避免 Responses 自动严格化后将其全部设为必填。
 		tools.push_back({
 			{"type", "function"},
+			{"strict", false},
 			{"name", item.value("name", "")},
 			{"description", item.value("description", "")},
 			{"parameters", item.contains("inputSchema") ? item["inputSchema"] : nlohmann::json::object()}
