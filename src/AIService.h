@@ -75,6 +75,8 @@ struct AIEndpointSettings {
 struct AISettings : AIEndpointSettings {
 	AISourceEditMode sourceEditMode = AISourceEditMode::RealPageFirst;
 	std::string tavilyApiKey;
+	bool promptCacheKeyEnabled = false; // 是否在 OpenAI 对话请求中传递缓存 Key。
+	std::string promptCacheSessionId; // 运行时会话 ID，直接用作缓存 Key，不写入全局设置。
 	std::vector<AIEndpointSettings> endpointCandidates;
 	std::string activeTargetType = "endpoint";
 	std::string activeTargetId;

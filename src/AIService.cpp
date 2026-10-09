@@ -142,6 +142,15 @@ int GetChatStreamIdleTimeoutMs(const AISettings& settings)
 		kAiMaxStreamIdleTimeoutMs);
 }
 
+// 与 Codex 普通会话一致：直接传递持久化会话 ID，续轮、重试和历史恢复均不生成新 Key。
+void ApplyOpenAIPromptCacheKey(nlohmann::json& requestBody, const AISettings& settings)
+{
+	if (settings.promptCacheKeyEnabled && !settings.promptCacheSessionId.empty() &&
+		(settings.protocolType == AIProtocolType::OpenAI || settings.protocolType == AIProtocolType::OpenAIResponses)) {
+		requestBody["prompt_cache_key"] = settings.promptCacheSessionId;
+	}
+}
+
 void ReportChatActivity(
 	const AIChatRunOptions& runOptions,
 	const std::string& line)
@@ -4801,6 +4810,7 @@ AIResult ExecuteCodexCompactionRequest(
 		PrepareResponsesInputItemsForStatelessRequest(input);
 		requestBody["model"] = LocalToUtf8(settings.model);
 		ApplyOpenAITemperatureIfSupported(requestBody, settings);
+		ApplyOpenAIPromptCacheKey(requestBody, settings);
 		requestBody["instructions"] = BuildResponsesInstructions(
 			controller.ContextMessages(), settings, skillPromptLocal);
 		requestBody["input"] = std::move(input);
@@ -4847,6 +4857,7 @@ AIResult ExecuteCodexCompactionRequest(
 		messages.push_back({{"role", "user"}, {"content", promptUtf8}});
 		requestBody["model"] = LocalToUtf8(settings.model);
 		ApplyOpenAITemperatureIfSupported(requestBody, settings);
+		ApplyOpenAIPromptCacheKey(requestBody, settings);
 		requestBody["stream"] = false;
 		requestBody["messages"] = std::move(messages);
 		ApplyThinkingConfigToOpenAIChatRequest(requestBody, settings);
@@ -5910,6 +5921,7 @@ AIChatResult ExecuteChatWithToolsOpenAIResponses(
 		nlohmann::json requestBody;
 		requestBody["model"] = LocalToUtf8(settings.model);
 		ApplyOpenAITemperatureIfSupported(requestBody, roundSettings);
+		ApplyOpenAIPromptCacheKey(requestBody, roundSettings);
 		requestBody["instructions"] = instructionsUtf8;
 		nlohmann::json requestInput = input;
 		PrepareResponsesInputItemsForStatelessRequest(requestInput);
@@ -6402,6 +6414,7 @@ bool AIService::LoadSettings(AIJsonConfig& jsonConfig, ConfigManager* iniConfig,
 
 	outSettings.sourceEditMode = ParseSourceEditMode(jsonConfig.getGlobalValue("source_edit_mode"));
 	outSettings.tavilyApiKey = jsonConfig.getGlobalValueLocal("tavily_api_key");
+	outSettings.promptCacheKeyEnabled = jsonConfig.getGlobalValue("prompt_cache_key_enabled") == "true";
 	const auto endpointSnapshots = jsonConfig.getEndpointsLocal();
 	std::map<std::string, AIEndpointSettings> endpointsById;
 	for (const auto& snapshot : endpointSnapshots) {
@@ -6464,6 +6477,7 @@ void AIService::SaveSettings(AIJsonConfig& jsonConfig, const AISettings& setting
 	});
 	jsonConfig.setGlobalValues({
 		{ "source_edit_mode", SourceEditModeToString(settings.sourceEditMode) },
+		{ "prompt_cache_key_enabled", settings.promptCacheKeyEnabled ? "true" : "false" },
 		{ "tavily_api_key",   settings.tavilyApiKey }
 	});
 }
@@ -8117,6 +8131,7 @@ AIChatResult AIService::ExecuteChatWithToolsSingle(
 		nlohmann::json requestBody;
 		requestBody["model"] = LocalToUtf8(settings.model);
 		ApplyOpenAITemperatureIfSupported(requestBody, roundSettings);
+		ApplyOpenAIPromptCacheKey(requestBody, roundSettings);
 		requestBody["stream"] = true;
 		requestBody["stream_options"] = AUTOLINKER_STATIC_JSON(R"json({"include_usage":true})json");
 		requestBody["messages"] = requestMessages;

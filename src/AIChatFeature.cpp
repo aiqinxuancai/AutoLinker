@@ -7129,6 +7129,7 @@ bool StartChatRequest(
 
 		request->requestId = g_session.nextRequestId++;
 		request->settings = settings;
+		request->settings.promptCacheSessionId = g_session.activeSessionId;
 		request->sourceFilePathLocal = g_session.sourceFilePathLocal;
 		request->contextMessages = BuildContextMessagesLocked(g_session);
 		request->cancellation = std::make_shared<AIChatRequestCancellation>();

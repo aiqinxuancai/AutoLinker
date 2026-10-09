@@ -29,6 +29,13 @@
         </label>
       </div>
       <div class="setting">
+        <label class="setting-label" for="promptCacheKeyEnabled">传递会话缓存 Key</label>
+        <label class="toggle" title="在 OpenAI / Responses 对话中传递固定的会话缓存 Key；同一会话始终使用相同值，默认关闭">
+          <input id="promptCacheKeyEnabled" type="checkbox">
+          <span class="toggle-track" aria-hidden="true"></span>
+        </label>
+      </div>
+      <div class="setting">
         <div><label class="setting-label" for="tavilyApiKey">Tavily API 密钥</label><a id="tavilyLink" class="link" href="https://tavily.com">官网</a></div>
         <div class="secret-row">
           <input id="tavilyApiKey" class="control" type="password" autocomplete="off">
@@ -74,13 +81,14 @@ window.autolinkerApplyAiOtherSettings=function(payload){
   $("tavilyApiKey").value=data.tavilyApiKey||"";
   $("mcpAutoSaveAfterWrite").checked=data.mcpAutoSaveAfterWrite===true;
   $("aiDebugLogEnabled").checked=data.aiDebugLogEnabled===true;
+  $("promptCacheKeyEnabled").checked=data.promptCacheKeyEnabled===true;
   $("status").textContent=data.notice||"";
   $("status").className="status"+(data.noticeIsError?" error":"");
   if(data.notice&&!data.noticeIsError&&window.autolinkerShowSettingsToast){window.autolinkerShowSettingsToast({message:"设置已保存"})}
 };
 $("toggleKey").addEventListener("click",function(){var input=$("tavilyApiKey");input.type=input.type==="password"?"text":"password";this.textContent=input.type==="password"?"显示":"隐藏"});
 $("tavilyLink").addEventListener("click",function(event){event.preventDefault();post({action:"open_tavily"})});
-$("saveBtn").addEventListener("click",function(){post({action:"save",data:{sourceEditMode:$("sourceEditMode").value,tavilyApiKey:$("tavilyApiKey").value||"",mcpAutoSaveAfterWrite:$("mcpAutoSaveAfterWrite").checked,aiDebugLogEnabled:$("aiDebugLogEnabled").checked}})});
+$("saveBtn").addEventListener("click",function(){post({action:"save",data:{sourceEditMode:$("sourceEditMode").value,tavilyApiKey:$("tavilyApiKey").value||"",mcpAutoSaveAfterWrite:$("mcpAutoSaveAfterWrite").checked,aiDebugLogEnabled:$("aiDebugLogEnabled").checked,promptCacheKeyEnabled:$("promptCacheKeyEnabled").checked}})});
 document.addEventListener("DOMContentLoaded",function(){post({action:"ready"})});
 </script>
 <div id="autolinkerSettingsToastRegion" class="pointer-events-none fixed inset-x-[16px] top-[16px] z-[100] flex justify-center sm:inset-x-auto sm:right-[20px] sm:top-[20px] sm:block" aria-live="polite" aria-atomic="true">

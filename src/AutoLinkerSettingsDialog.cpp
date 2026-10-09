@@ -440,6 +440,7 @@ std::string BuildAiOtherSettingsPayload(
 		{"tavilyApiKey", g_aiJsonConfig.getGlobalValue("tavily_api_key")},
 		{"mcpAutoSaveAfterWrite", McpAutoSaveManager::IsEnabled(g_aiJsonConfig)},
 		{"aiDebugLogEnabled", debugLogEnabled},
+		{"promptCacheKeyEnabled", g_aiJsonConfig.getGlobalValue("prompt_cache_key_enabled") == "true"},
 		{"notice", notice},
 		{"noticeIsError", noticeIsError}
 	});
@@ -614,6 +615,7 @@ void HandleSettingsWebViewMessage(
 		}
 		g_aiJsonConfig.setGlobalValues({
 			{"source_edit_mode", sourceEditMode},
+			{"prompt_cache_key_enabled", data.value("promptCacheKeyEnabled", false) ? "true" : "false"},
 			{"tavily_api_key", data.value("tavilyApiKey", std::string())},
 			{std::string(McpAutoSaveManager::kConfigKey),
 				data.value("mcpAutoSaveAfterWrite", false) ? "true" : "false"},
