@@ -443,6 +443,7 @@ UINT g_msgAIChatDone = 0;
 UINT g_msgAIChatToolDialog = 0;
 UINT g_msgAIChatToolExec = 0;
 IdeToolScheduler g_toolScheduler;
+std::atomic_bool g_projectRestoreActive{false};
 void PumpToolScheduler();
 void EnqueueToolRequest(const std::shared_ptr<ToolExecutionRequest>& request);
 UINT g_msgAIChatDebugRun = 0;
@@ -7054,6 +7055,7 @@ bool StartChatRequest(
 {
 	const std::string trimmed = TrimAsciiCopy(userInput);
 	const bool explicitResume = resumeCheckpoint != nullptr;
+	if (g_projectRestoreActive) return false;
 	if (trimmed.empty() && attachments.empty() && !explicitResume) {
 		return false;
 	}
@@ -9997,7 +9999,7 @@ void ExecuteScheduledTool()
 
 void PumpToolScheduler()
 {
-    if (g_toolScheduler.stopped || g_toolScheduler.executing) return;
+    if (g_projectRestoreActive || g_toolScheduler.stopped || g_toolScheduler.executing) return;
     g_toolScheduler.executing = true;
     struct ResetExecuting { ~ResetExecuting() { g_toolScheduler.executing = false; } } reset;
     try {
@@ -10956,6 +10958,30 @@ void OnCurrentSourceFilePathChanged(const std::string& previousPath, const std::
 	(void)currentPath;
 	WorkspaceMirror::ResetAndCleanup();
 	RebindChatSessionToCurrentSourceIfNeeded();
+}
+
+bool BeginProjectRestore()
+{
+    if (GetCurrentThreadId() != GetWindowThreadProcessId(g_mainWindow, nullptr)) return false;
+    std::lock_guard<std::mutex> guard(g_session.mutex);
+    if (g_projectRestoreActive || g_session.requestInFlight || g_toolScheduler.executing ||
+        g_toolScheduler.active || g_toolScheduler.HasWorker() || !g_toolScheduler.queued.empty()) return false;
+    g_projectRestoreActive = true;
+    WorkspaceMirror::ResetAndCleanup();
+    return true;
+}
+
+bool IsProjectRestoreActive()
+{
+    return g_projectRestoreActive.load();
+}
+
+void EndProjectRestore()
+{
+    WorkspaceMirror::ResetAndCleanup();
+    g_projectRestoreActive = false;
+    UpdateCurrentOpenSourceFile();
+    PostMessageW(g_mainWindow, g_toolScheduler.Message(), 0, 0);
 }
 
 bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)

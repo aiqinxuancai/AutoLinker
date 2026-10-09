@@ -1,6 +1,9 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
+    <None Include="src\webview\backup_restore_settings.html" />
+  </ItemGroup>
+  <ItemGroup>
     <ClCompile Include="detours\disasm.cpp">
       <Filter>detours</Filter>
     </ClCompile>
@@ -680,5 +683,13 @@
     <ClInclude Include="src\AIChatSourceBackup.h"><Filter>AI</Filter></ClInclude>
     <ClCompile Include="src\AIChatSourceBackup.cpp"><Filter>AI</Filter></ClCompile>
     <ClCompile Include="src\AIChatSourceBackupStore.cpp"><Filter>AI</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\EideProjectRestore.cpp"><Filter>Utils</Filter></ClCompile>
+    <ClInclude Include="src\EideProjectRestore.h"><Filter>Utils</Filter></ClInclude>
+    <ClCompile Include="src\BackupRestore.cpp"><Filter>Utils</Filter></ClCompile>
+    <ClInclude Include="src\BackupRestore.h"><Filter>Utils</Filter></ClInclude>
+    <ClCompile Include="src\BackupRestorePage.cpp"><Filter>Utils</Filter></ClCompile>
+    <ClInclude Include="src\BackupRestorePage.h"><Filter>Utils</Filter></ClInclude>
   </ItemGroup>
 </Project>

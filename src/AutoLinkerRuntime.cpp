@@ -249,6 +249,7 @@ void LogAIPerfCost(uint64_t traceId, const std::string& step, long long costMs, 
 
 void UpdateCurrentOpenSourceFile()
 {
+	if (AIChatFeature::IsProjectRestoreActive()) return;
 	const std::string previousSourceFile = NormalizeSourcePathForRuntime(g_nowOpenSourceFilePath);
 	const std::string currentSourceFile = NormalizeSourcePathForRuntime(GetSourceFilePath());
 	const bool sourceChanged = !AreSameSourcePathForRuntime(previousSourceFile, currentSourceFile);

@@ -4,6 +4,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 class AIJsonConfig;
 
@@ -27,5 +28,10 @@ std::wstring BuildRequestLabel(std::wstring_view request);
 // 写入成功后才清理旧备份；回调写出完整工程文件，便于无 IDE 测试。
 using SnapshotWriter = std::function<bool(const std::filesystem::path&, std::string&)>;
 bool CreateBackup(const std::filesystem::path& source, std::wstring_view request,
-    int keepCount, const SnapshotWriter& writer, std::filesystem::path& output, std::string& error);
+    int keepCount, const SnapshotWriter& writer, std::filesystem::path& output, std::string& error,
+    bool pruneAfterWrite = true);
+
+// 列举本工程的自动备份，最新在前；恢复安全备份允许延后清理。
+std::vector<std::filesystem::path> ListBackups(const std::filesystem::path& source);
+void PruneBackups(const std::filesystem::path& source, const std::filesystem::path& newest, int keepCount);
 } // namespace AIChatSourceBackup

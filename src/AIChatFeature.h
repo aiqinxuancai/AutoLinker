@@ -16,6 +16,11 @@ void ActivateTab();
 void OpenDialog();
 void SetUpdateAvailable(const std::string& latestVersion);
 void OnCurrentSourceFilePathChanged(const std::string& previousPath, const std::string& currentPath);
+// 主线程恢复事务：仅空闲时进入，防止消息重入期间执行 AI/MCP。
+bool BeginProjectRestore();
+void EndProjectRestore();
+// 恢复加载中的短暂空工程状态不应触发会话/工程切换。
+bool IsProjectRestoreActive();
 bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam);
 bool ExecutePublicTool(
 	const std::string& toolName,

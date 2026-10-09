@@ -68,7 +68,7 @@ std::wstring BuildRequestLabel(std::wstring_view request)
 }
 
 bool CreateBackup(const std::filesystem::path& source, std::wstring_view request,
-    int keepCount, const SnapshotWriter& writer, std::filesystem::path& output, std::string& error)
+    int keepCount, const SnapshotWriter& writer, std::filesystem::path& output, std::string& error, bool pruneAfterWrite)
 {
     output.clear(); error.clear();
     try {
@@ -109,12 +109,32 @@ bool CreateBackup(const std::filesystem::path& source, std::wstring_view request
                 error = "publish_snapshot_failed: " + std::to_string(code); return false;
             }
         }
-        Prune(directory, output, keepCount);
+        if (pruneAfterWrite) Prune(directory, output, keepCount);
         return true;
     } catch (const std::exception& ex) {
         error = ex.what();
         // 清理失败时已发布的新快照仍然有效，调用方同时报告警告。
         return !output.empty();
     }
+}
+std::vector<std::filesystem::path> ListBackups(const std::filesystem::path& source)
+{
+    std::vector<std::filesystem::path> result;
+    const auto directory = source.parent_path() / (source.filename().wstring() + L".BAK");
+    if (!std::filesystem::exists(directory)) return result;
+    for (const auto& entry : std::filesystem::directory_iterator(directory)) {
+        if (entry.is_regular_file() && !entry.is_symlink() && IsBackupName(entry.path().filename().wstring()))
+            result.push_back(entry.path());
+    }
+    std::sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
+        const auto ta = std::filesystem::last_write_time(a), tb = std::filesystem::last_write_time(b);
+        return ta != tb ? ta > tb : a.filename() > b.filename();
+    });
+    return result;
+}
+void PruneBackups(const std::filesystem::path& source, const std::filesystem::path& newest, int keepCount)
+{
+    Prune(source.parent_path() / (source.filename().wstring() + L".BAK"), newest,
+        std::clamp(keepCount, 1, kMaxKeepCount));
 }
 } // namespace AIChatSourceBackup

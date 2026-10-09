@@ -32,6 +32,8 @@
 #include "Logger.h"
 #include "McpAutoSaveManager.h"
 #include "AIChatSourceBackup.h"
+#include "BackupRestore.h"
+#include "EideProjectRestore.h"
 #include "ProjectAgentsConfigDialog.h"
 #include "ProjectBuildConfigDialog.h"
 #include "resource.h"
@@ -60,16 +62,19 @@ constexpr int kSettingsInitialHeight = 760;
 constexpr UINT kNavigationCommandBase = 0x5200;
 constexpr UINT_PTR kSettingsWebViewInitTimerId = 0xAC08;
 constexpr UINT kSettingsWebViewInitTimeoutMs = 12000;
+constexpr UINT kRestoreBackupMessage = WM_APP + 0x3AF;
 
 enum class SettingsWebViewPageKind {
 	AiOther,
 	LogOptimization,
-	About
+	About,
+	BackupRestore
 };
 
 struct NativeSettingsPageContext {
 	std::wstring unavailableMessage;
 	HFONT normalFont = nullptr;
+
 };
 
 struct SettingsWebViewPageContext {
@@ -77,6 +82,12 @@ struct SettingsWebViewPageContext {
 	HWND hostWindow = nullptr;
 	HWND loadingLabel = nullptr;
 	bool webViewReady = false;
+	bool restoring = false;
+	bool restorePending = false;
+	std::filesystem::path pendingSource, pendingBackup;
+	std::filesystem::path backupSource;
+	std::vector<std::filesystem::path> backupEntries;
+	unsigned long long backupRevision = 0;
 	Microsoft::WRL::ComPtr<ICoreWebView2Environment> environment;
 	Microsoft::WRL::ComPtr<ICoreWebView2Controller> controller;
 	Microsoft::WRL::ComPtr<ICoreWebView2> webView;
@@ -95,6 +106,7 @@ struct SettingsWindowContext {
 constexpr std::array<const wchar_t*, static_cast<size_t>(AutoLinkerSettingsPageId::Count)> kPageTitles = {
 	L"AI 模型",
 	L"AI 其他设置",
+	L"备份与恢复",
 	L"MCP 服务",
 	L"SKILL",
 	L"AI 对话配色",
@@ -110,6 +122,7 @@ constexpr std::array<const wchar_t*, static_cast<size_t>(AutoLinkerSettingsPageI
 constexpr std::array<const char*, static_cast<size_t>(AutoLinkerSettingsPageId::Count)> kPageConfigIds = {
 	"ai_service",
 	"ai_other",
+	"backup_restore",
 	"mcp",
 	"skills",
 	"chat_theme",
@@ -449,6 +462,36 @@ std::string BuildAiOtherSettingsPayload(
 	});
 }
 
+std::string BuildBackupRestorePayload(SettingsWebViewPageContext* context, const std::string& notice = {}, bool noticeIsError = false)
+{
+	using nlohmann::json;
+	json backups = json::array();
+	context->backupEntries.clear();
+	std::filesystem::path source;
+	context->backupSource.clear();
+	++context->backupRevision;
+	std::string readError;
+	try {
+		source = BackupRestore::CurrentSource();
+		context->backupSource = source;
+		if (!source.empty() && source.is_absolute()) {
+			context->backupEntries = AIChatSourceBackup::ListBackups(source);
+			for (const auto& path : context->backupEntries) {
+				std::error_code ec;
+				const auto size = std::filesystem::file_size(path, ec);
+				const std::string name = Utf8FromWide(path.filename().wstring());
+				const std::string timestamp = name.size() >= 14 ? name.substr(0, 4) + "-" + name.substr(4, 2) + "-" + name.substr(6, 2) + " " + name.substr(8, 2) + ":" + name.substr(10, 2) + ":" + name.substr(12, 2) : name;
+				backups.push_back({{"name", name}, {"timestamp", timestamp}, {"size", ec ? 0 : size}});
+			}
+		}
+	} catch (...) {
+		context->backupEntries.clear();
+		backups = json::array();
+		readError = "读取备份目录失败，请检查目录权限后刷新。";
+	}
+	return DumpWebViewJson({{"revision", context->backupRevision}, {"canRestore", readError.empty() && source.is_absolute() && _wcsicmp(source.extension().c_str(), L".e") == 0}, {"supported", EideProjectRestore::IsSupported()}, {"sourcePath", Utf8FromWide(source.wstring())}, {"backups", backups}, {"notice", readError.empty() ? notice : readError}, {"noticeIsError", noticeIsError || !readError.empty()}});
+}
+
 void ExecuteSettingsWebViewScript(
 	SettingsWebViewPageContext* context,
 	const wchar_t* functionName,
@@ -471,7 +514,7 @@ void ApplySettingsWebViewData(
 	const std::string& notice = {},
 	bool noticeIsError = false) noexcept
 {
-	if (context == nullptr) {
+	if (context == nullptr || context->restoring || context->restorePending || !context->webViewReady) {
 		return;
 	}
 	try {
@@ -486,6 +529,9 @@ void ApplySettingsWebViewData(
 				context,
 				L"autolinkerApplyLogOptimization",
 				BuildLogOptimizationPayload(notice, noticeIsError));
+		}
+		else if (context->kind == SettingsWebViewPageKind::BackupRestore) {
+			ExecuteSettingsWebViewScript(context, L"autolinkerApplyBackupRestore", BuildBackupRestorePayload(context, notice, noticeIsError));
 		}
 		else {
 			ExecuteSettingsWebViewScript(context, L"autolinkerApplyAbout", BuildAboutPayload());
@@ -593,7 +639,7 @@ void HandleSettingsWebViewMessage(
 	SettingsWebViewPageContext* context,
 	const std::string& message)
 {
-	if (context == nullptr) {
+	if (context == nullptr || context->restoring || context->restorePending) {
 		return;
 	}
 	const nlohmann::json payload = nlohmann::json::parse(message);
@@ -644,6 +690,24 @@ void HandleSettingsWebViewMessage(
 		HandleLogOptimizationAction(context, action, payload.value("enabled", false));
 		return;
 	}
+	if (context->kind == SettingsWebViewPageKind::BackupRestore) {
+		if (action == "refresh") { ApplySettingsWebViewData(context); return; }
+		if (action == "restore") {
+			const auto source = context->backupSource;
+			const int index = payload.value("index", -1);
+			const auto entries = context->backupEntries;
+			if (payload.value("revision", 0ULL) != context->backupRevision || index < 0 || static_cast<size_t>(index) >= entries.size()) { ApplySettingsWebViewData(context, "所选备份不存在，请刷新列表。", true); return; }
+			// WebView2 回调中不能进入 IDE 加载器的模态消息循环。
+			context->pendingSource = source;
+			context->pendingBackup = entries[static_cast<size_t>(index)];
+			context->restorePending = true;
+			if (!PostMessageW(page, kRestoreBackupMessage, 0, 0)) {
+				context->restorePending = false;
+				ApplySettingsWebViewData(context, "无法调度恢复，请重试。", true);
+			}
+		}
+		return;
+	}
 	if (action == "open_link") {
 		const auto data = payload.value("data", nlohmann::json::object());
 		OpenAboutLink(page, data.value("id", ""));
@@ -664,6 +728,39 @@ void HandleSettingsWebViewMessage(
 		EPackagerIntegration::RunToolUpdateInBackground();
 		ApplySettingsWebViewData(context);
 	}
+}
+
+void PerformPendingBackupRestore(HWND page, SettingsWebViewPageContext* context)
+{
+	if (!context || !context->restorePending || context->restoring) return;
+	const auto source = context->pendingSource;
+	const auto backup = context->pendingBackup;
+	context->restorePending = false;
+	std::filesystem::path safety; std::wstring result;
+	bool ok = false;
+	{
+		// 内部加载会泵送消息；禁止重入，异常时也必须恢复窗口状态。
+		struct RestoreUiGuard {
+			SettingsWebViewPageContext* context;
+			HWND root;
+			BOOL wasEnabled;
+			RestoreUiGuard(SettingsWebViewPageContext* c, HWND window)
+				: context(c), root(window), wasEnabled(IsWindowEnabled(window)) {
+				context->restoring = true;
+				EnableWindow(root, FALSE);
+			}
+			~RestoreUiGuard() {
+				context->restoring = false;
+				if (wasEnabled) EnableWindow(root, TRUE);
+			}
+		} guard(context, GetAncestor(page, GA_ROOT));
+		try {
+			ok = BackupRestore::Restore(source, backup, safety, result);
+		} catch (...) {
+			result = L"恢复操作异常，请检查恢复前安全备份。";
+		}
+	}
+	ApplySettingsWebViewData(context, Utf8FromWide(result), !ok);
 }
 
 void LayoutSettingsWebViewPage(HWND page, SettingsWebViewPageContext* context)
@@ -700,6 +797,9 @@ std::string LoadSettingsWebViewHtml(SettingsWebViewPageKind kind)
 {
 	if (kind == SettingsWebViewPageKind::AiOther) {
 		return LoadUtf8HtmlResourceText(IDR_HTML_AI_OTHER_SETTINGS);
+	}
+	if (kind == SettingsWebViewPageKind::BackupRestore) {
+		return LoadUtf8HtmlResourceText(IDR_HTML_BACKUP_RESTORE_SETTINGS);
 	}
 	return LoadUtf8HtmlResourceText(kind == SettingsWebViewPageKind::LogOptimization
 		? IDR_HTML_LOG_OPTIMIZATION_SETTINGS
@@ -859,6 +959,7 @@ LRESULT CALLBACK NativeSettingsPageProc(HWND page, UINT message, WPARAM wParam, 
 			return -1;
 		}
 		context->normalFont = CreateUiFont(10);
+
 		ApplyFont(
 			CreateWindowExW(
 				0, L"STATIC", context->unavailableMessage.c_str(),
@@ -894,6 +995,9 @@ LRESULT CALLBACK SettingsWebViewPageProc(HWND page, UINT message, WPARAM wParam,
 	auto* context = reinterpret_cast<SettingsWebViewPageContext*>(
 		GetWindowLongPtrW(page, GWLP_USERDATA));
 	switch (message) {
+	case kRestoreBackupMessage:
+		PerformPendingBackupRestore(page, context);
+		return 0;
 	case WM_NCCREATE: {
 		const auto* create = reinterpret_cast<CREATESTRUCTW*>(lParam);
 		SetWindowLongPtrW(page, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
@@ -909,9 +1013,8 @@ LRESULT CALLBACK SettingsWebViewPageProc(HWND page, UINT message, WPARAM wParam,
 			0, 0, 0, 0, page, nullptr, GetCurrentModuleHandle(), nullptr);
 		context->loadingLabel = CreateLabel(
 			page,
-			context->kind == SettingsWebViewPageKind::LogOptimization
-				? L"正在初始化 WebView2 IDE 增强页面..."
-				: L"正在初始化 WebView2 关于页面...",
+			(context->kind == SettingsWebViewPageKind::LogOptimization) ? L"正在初始化 WebView2 IDE 增强页面..." :
+			(context->kind == SettingsWebViewPageKind::BackupRestore) ? L"正在初始化 WebView2 备份与恢复页面..." : L"正在初始化 WebView2 关于页面...",
 			SS_LEFT, 20, 18, 600, 28,
 			reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
 		if (context->kind == SettingsWebViewPageKind::About) {
@@ -1030,9 +1133,9 @@ AutoLinkerSettingsPageId NormalizePageId(AutoLinkerSettingsPageId requested)
 	}
 	try {
 		const int legacyIndex = std::stoi(storedValue);
-		// 旧版顺序中没有 AiOther；从 MCP 开始的索引统一后移一位。
-		if (legacyIndex >= 0 && legacyIndex < static_cast<int>(AutoLinkerSettingsPageId::Count) - 1) {
-			return static_cast<AutoLinkerSettingsPageId>(legacyIndex == 0 ? 0 : legacyIndex + 1);
+		// 旧版数字顺序没有 AiOther 和 BackupRestore；MCP 起后移两位。
+		if (legacyIndex >= 0 && legacyIndex < 11) {
+			return static_cast<AutoLinkerSettingsPageId>(legacyIndex == 0 ? 0 : legacyIndex + 2);
 		}
 	}
 	catch (...) {
@@ -1047,6 +1150,8 @@ HWND CreateSettingsPage(HWND window, AutoLinkerSettingsPageId pageId)
 		return CreateAIConfigSettingsPage(window);
 	case AutoLinkerSettingsPageId::AiOther:
 		return CreateSettingsWebViewPage(window, SettingsWebViewPageKind::AiOther);
+	case AutoLinkerSettingsPageId::BackupRestore:
+		return CreateSettingsWebViewPage(window, SettingsWebViewPageKind::BackupRestore);
 	case AutoLinkerSettingsPageId::Mcp:
 		return CreateAIChatMcpConfigSettingsPage(window);
 	case AutoLinkerSettingsPageId::Skills:
@@ -1229,7 +1334,7 @@ LRESULT CALLBACK SettingsWindowProc(HWND window, UINT message, WPARAM wParam, LP
 		auto* minMax = reinterpret_cast<MINMAXINFO*>(lParam);
 		if (minMax != nullptr) {
 			minMax->ptMinTrackSize.x = (std::max)(minMax->ptMinTrackSize.x, 1080L);
-			minMax->ptMinTrackSize.y = (std::max)(minMax->ptMinTrackSize.y, 660L);
+			minMax->ptMinTrackSize.y = (std::max)(minMax->ptMinTrackSize.y, 720L);
 		}
 		return 0;
 	}
@@ -1402,6 +1507,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 [
   "ai_service",
   "ai_other",
+  "backup_restore",
   "mcp",
   "skills",
   "chat_theme",
@@ -1429,6 +1535,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 	const std::string logOptimizationHtml = LoadUtf8HtmlResourceText(IDR_HTML_LOG_OPTIMIZATION_SETTINGS);
 	const std::string aiOtherHtml = LoadUtf8HtmlResourceText(IDR_HTML_AI_OTHER_SETTINGS);
 	const std::string aboutHtml = LoadUtf8HtmlResourceText(IDR_HTML_ABOUT_SETTINGS);
+	const std::string backupRestoreHtml = LoadUtf8HtmlResourceText(IDR_HTML_BACKUP_RESTORE_SETTINGS);
 	const std::string projectBuildHtml = LoadUtf8HtmlResourceText(IDR_HTML_PROJECT_BUILD_CONFIG_DIALOG);
 	const std::string aboutIconDataUrl = LoadAboutIconDataUrl();
 	const bool mcpAutoSaveUiValid =
@@ -1454,6 +1561,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		logOptimizationHtml.find("fullGenericToggle") != std::string::npos &&
 		projectBuildHtml.find("autolinkerProjectBuildSaveResult") != std::string::npos &&
 		aboutHtml.find("autolinkerApplyAbout") != std::string::npos &&
+		backupRestoreHtml.find("autolinkerApplyBackupRestore") != std::string::npos &&
 		!aboutIconDataUrl.empty();
 	const bool ePackagerTwoStepUpdateValid =
 		aboutHtml.find("check_e_packager") != std::string::npos &&

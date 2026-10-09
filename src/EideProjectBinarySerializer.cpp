@@ -17,6 +17,7 @@
 #include <set>
 
 #include "EideInternalTextBridge.h"
+#include "EideProjectRestore.h"
 #include "Global.h"
 #include "Logger.h"
 #include "MemFind.h"
@@ -1025,6 +1026,11 @@ bool ProjectBinarySerializer::WriteCurrentProjectFileSnapshot(
 		resolveTrace = "route=verified_context|serializer_this=" +
 			std::to_string(reinterpret_cast<std::uintptr_t>(serializerThis)) +
 			"|source=" + serializerSourcePath;
+	}
+	else if ((serializerThis = EideProjectRestore::CurrentSerializerObject()) != nullptr &&
+		IsLikelySerializerObjectAddress(serializerThis, addrs.moduleBase)) {
+		// e5.95 全局文档内嵌对象已经签名/状态验证；设计页同样可取完整快照。
+		resolveTrace = "route=e595_document_serializer";
 	}
 	else {
 		std::string fieldError;

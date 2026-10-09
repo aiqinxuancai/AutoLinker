@@ -41,6 +41,12 @@ int main()
         Check(!CreateBackup(source, L"失败", 1, [](const auto& p, auto& e) { std::ofstream f(p); f << "partial"; e = "simulated failure"; return false; }, output, error), "snapshot failure");
         Check(count() == 11, "failure does not prune existing backups");
         Check(CreateBackup(source, L"保留一份", 1, writer, output, error) && count() == 2, "configurable retention");
+        const auto selected = output;
+        Check(CreateBackup(source, L"恢复前安全备份", 1, writer, output, error, false), "safety snapshot without pruning");
+        Check(std::filesystem::exists(selected) && ListBackups(source).size() == 2, "selected backup survives safety capture");
+        Check(ListBackups(source).front() == output, "newest safety snapshot listed first");
+        PruneBackups(source, output, 1);
+        Check(ListBackups(source).size() == 1 && ListBackups(source).front() == output, "retention protects safety snapshot");
         Check(!CreateBackup(root / L"missing.e", L"test", 10, writer, output, error), "unsaved source skipped");
         Check(Read(source) == "original", "original preserved");
         std::filesystem::remove_all(root);

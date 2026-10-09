@@ -760,6 +760,7 @@
     <None Include="src\webview\force_link_lib_config_dialog.src.html" />
     <None Include="src\webview\project_agents_config_dialog.html" />
     <None Include="src\webview\project_agents_config_dialog.src.html" />
+    <None Include="src\webview\backup_restore_settings.html" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
@@ -767,5 +768,13 @@
   <ItemGroup>
     <ClInclude Include="src\StaticJson.h" />
     <None Include="src\AIChatPublicToolCatalog.inc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\EideProjectRestore.cpp" />
+    <ClInclude Include="src\EideProjectRestore.h" />
+    <ClCompile Include="src\BackupRestore.cpp" />
+    <ClInclude Include="src\BackupRestore.h" />
+    <ClCompile Include="src\BackupRestorePage.cpp" />
+    <ClInclude Include="src\BackupRestorePage.h" />
   </ItemGroup>
 </Project>

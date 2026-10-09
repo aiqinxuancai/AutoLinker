@@ -10,6 +10,7 @@ enum class AutoLinkerSettingsPageId {
 	LastUsed = -1,
 	AiService = 0,
 	AiOther,
+	BackupRestore,
 	Mcp,
 	Skills,
 	ChatTheme,
