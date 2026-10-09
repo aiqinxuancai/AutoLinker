@@ -40,6 +40,7 @@
 #include "AIChatGoalManager.h"
 #include "AIChatMarkdownTableRenderer.h"
 #include "AIChatSessionStore.h"
+#include "AIChatSourceBackup.h"
 #include "AIImageAttachment.h"
 #include "AIChatThemeManager.h"
 #include "AIChatToolRegistry.h"
@@ -7357,6 +7358,8 @@ void HandleChatSubmitUi(
 	// 所有提交都先进入统一队列并预显示到历史。这样即使当前请求刚好在
 	// 工具结束/远端失败的边界切换，用户也能立即看到消息，而不会被工程镜像
 	// 准备或请求启动延迟误导为“没有发送”。空闲时再立即取出队首启动请求。
+	// 入队前同步捕获发送时状态，防止后台安全点先消费新消息。
+	AIChatSourceBackup::CaptureBeforeSend(g_aiJsonConfig, LocalToUtf8Text(trimmed));
 	const bool accepted = EnqueuePendingUserInput(trimmed, effectiveAttachments);
 	if (accepted && !inFlight) {
 		StartNextPendingInputRequest();
@@ -7377,7 +7380,8 @@ void HandleChatSubmitUi(
 bool CompletePlanUserInputRequest(
 	unsigned long long requestId,
 	const std::vector<AIChatUserInputAnswer>& answers,
-	std::string& outError)
+	std::string& outError,
+	bool captureBackup = true)
 {
 	outError.clear();
 	std::shared_ptr<PlanUserInputRequestState> pending;
@@ -7397,6 +7401,20 @@ bool CompletePlanUserInputRequest(
 			responseJsonUtf8,
 			outError)) {
 		return false;
+	}
+	{
+		std::lock_guard<std::mutex> guard(pending->mutex);
+		if (pending->done) { outError = "the question request has already been completed"; return false; }
+	}
+	if (captureBackup) {
+		std::string requestUtf8;
+		for (const auto& answer : answers) {
+			if (!requestUtf8.empty()) requestUtf8 += " ";
+			requestUtf8 += answer.selectedLabelUtf8;
+			if (!answer.selectedLabelUtf8.empty() && !answer.noteUtf8.empty()) requestUtf8 += " ";
+			requestUtf8 += answer.noteUtf8;
+		}
+		AIChatSourceBackup::CaptureBeforeSend(g_aiJsonConfig, requestUtf8);
 	}
 	{
 		std::lock_guard<std::mutex> guard(pending->mutex);
@@ -7466,7 +7484,7 @@ bool TrySubmitNativePlanUserInput(HWND hWnd, ChatDialogContext* ctx, const std::
 	std::vector<AIChatUserInputAnswer> completedAnswers;
 	unsigned long long requestId = 0;
 	{
-		std::lock_guard<std::mutex> guard(pending->mutex);
+		std::unique_lock<std::mutex> guard(pending->mutex);
 		if (pending->done || pending->nativeAnswers.size() >= pending->questions.size()) {
 			return true;
 		}
@@ -7498,6 +7516,11 @@ bool TrySubmitNativePlanUserInput(HWND hWnd, ChatDialogContext* ctx, const std::
 		else {
 			answer.noteUtf8 = LocalToUtf8Text(trimmed);
 		}
+		const auto answerCount = pending->nativeAnswers.size();
+		guard.unlock();
+		AIChatSourceBackup::CaptureBeforeSend(g_aiJsonConfig, LocalToUtf8Text(trimmed));
+		guard.lock();
+		if (pending->done || pending->nativeAnswers.size() != answerCount) return true;
 		pending->nativeAnswers.push_back(std::move(answer));
 		if (pending->nativeAnswers.size() < pending->questions.size()) {
 			PostRefreshDialog();
@@ -7508,7 +7531,7 @@ bool TrySubmitNativePlanUserInput(HWND hWnd, ChatDialogContext* ctx, const std::
 	}
 
 	std::string error;
-	if (!CompletePlanUserInputRequest(requestId, completedAnswers, error)) {
+	if (!CompletePlanUserInputRequest(requestId, completedAnswers, error, false)) {
 		MessageBoxA(
 			hWnd,
 			Utf8ToLocalText(error).c_str(),
@@ -7568,6 +7591,8 @@ void HandleDebugRunAIChatRequest(LPARAM lParam)
 		}
 	}
 
+	if (!TrimAsciiCopy(request->promptLocal).empty())
+		AIChatSourceBackup::CaptureBeforeSend(g_aiJsonConfig, LocalToUtf8Text(request->promptLocal));
 	started = StartChatRequest(request->promptLocal);
 	if (started) {
 		std::lock_guard<std::mutex> guard(g_session.mutex);
@@ -8219,7 +8244,9 @@ void HandleChatApprovePlanUi(HWND hWnd, ChatDialogContext* ctx)
 		ClearWebViewInput(ctx);
 	}
 	SaveChatSessionSnapshotNow();
-	StartChatRequest(LocalFromWide(L"\u6211\u6279\u51c6\u6b64\u8ba1\u5212\uff0c\u8bf7\u6309\u8ba1\u5212\u5f00\u59cb\u6267\u884c\u3002"));
+	const auto prompt = LocalFromWide(L"\u6211\u6279\u51c6\u6b64\u8ba1\u5212\uff0c\u8bf7\u6309\u8ba1\u5212\u5f00\u59cb\u6267\u884c\u3002");
+	AIChatSourceBackup::CaptureBeforeSend(g_aiJsonConfig, LocalToUtf8Text(prompt));
+	StartChatRequest(prompt);
 	RefreshChatDialog(hWnd);
 }
 
@@ -8258,6 +8285,8 @@ void HandleChatRevisePlanUi(HWND hWnd, ChatDialogContext* ctx, const std::string
 		ClearWebViewInput(ctx);
 	}
 	SaveChatSessionSnapshotNow();
+	AIChatSourceBackup::CaptureBeforeSend(g_aiJsonConfig,
+		LocalToUtf8Text(trimmedFeedback.empty() ? prompt : trimmedFeedback));
 	StartChatRequest(prompt);
 	RefreshChatDialog(hWnd);
 }

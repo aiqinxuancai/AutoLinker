@@ -49,6 +49,18 @@
           <span class="toggle-track" aria-hidden="true"></span>
         </label>
       </div>
+      <div class="setting">
+        <label class="setting-label" for="sourceBackupEnabled">AI 对话发送前自动备份源码</label>
+        <label class="toggle" title="默认开启；每次发送需求时备份当前工程内存状态，不保存或覆盖原源码">
+          <input id="sourceBackupEnabled" type="checkbox" checked>
+          <span class="toggle-track" aria-hidden="true"></span>
+        </label>
+      </div>
+      <div class="setting">
+        <label class="setting-label" for="sourceBackupKeepCount">源码备份保留数量</label>
+        <div><input id="sourceBackupKeepCount" class="control" type="number" min="1" max="1000" step="1" value="10" required>
+          <p>默认保留最近 10 份，范围 1–1000。保存到源码所在目录的“完整文件名.BAK”文件夹（例如 项目.e.BAK）。未保存的工程请先手动保存一次。</p></div>
+      </div>
     </section>
   </div>
   <footer class="footer">
@@ -80,6 +92,8 @@ window.autolinkerApplyAiOtherSettings=function(payload){
   $("sourceEditMode").value=data.sourceEditMode==="mirror_source_base"?"mirror_source_base":"real_page_first";
   $("tavilyApiKey").value=data.tavilyApiKey||"";
   $("mcpAutoSaveAfterWrite").checked=data.mcpAutoSaveAfterWrite===true;
+  $("sourceBackupEnabled").checked=data.sourceBackupEnabled!==false;
+  $("sourceBackupKeepCount").value=data.sourceBackupKeepCount||10;
   $("aiDebugLogEnabled").checked=data.aiDebugLogEnabled===true;
   $("promptCacheKeyEnabled").checked=data.promptCacheKeyEnabled===true;
   $("status").textContent=data.notice||"";
@@ -88,7 +102,7 @@ window.autolinkerApplyAiOtherSettings=function(payload){
 };
 $("toggleKey").addEventListener("click",function(){var input=$("tavilyApiKey");input.type=input.type==="password"?"text":"password";this.textContent=input.type==="password"?"显示":"隐藏"});
 $("tavilyLink").addEventListener("click",function(event){event.preventDefault();post({action:"open_tavily"})});
-$("saveBtn").addEventListener("click",function(){post({action:"save",data:{sourceEditMode:$("sourceEditMode").value,tavilyApiKey:$("tavilyApiKey").value||"",mcpAutoSaveAfterWrite:$("mcpAutoSaveAfterWrite").checked,aiDebugLogEnabled:$("aiDebugLogEnabled").checked,promptCacheKeyEnabled:$("promptCacheKeyEnabled").checked}})});
+$("saveBtn").addEventListener("click",function(){if(!$("sourceBackupKeepCount").reportValidity())return;post({action:"save",data:{sourceBackupEnabled:$("sourceBackupEnabled").checked,sourceBackupKeepCount:Number($("sourceBackupKeepCount").value),sourceEditMode:$("sourceEditMode").value,tavilyApiKey:$("tavilyApiKey").value||"",mcpAutoSaveAfterWrite:$("mcpAutoSaveAfterWrite").checked,aiDebugLogEnabled:$("aiDebugLogEnabled").checked,promptCacheKeyEnabled:$("promptCacheKeyEnabled").checked}})});
 document.addEventListener("DOMContentLoaded",function(){post({action:"ready"})});
 </script>
 <div id="autolinkerSettingsToastRegion" class="pointer-events-none fixed inset-x-[16px] top-[16px] z-[100] flex justify-center sm:inset-x-auto sm:right-[20px] sm:top-[20px] sm:block" aria-live="polite" aria-atomic="true">

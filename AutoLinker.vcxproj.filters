@@ -676,4 +676,9 @@
     <ClInclude Include="src\StaticJson.h"><Filter>AI</Filter></ClInclude>
     <None Include="src\AIChatPublicToolCatalog.inc"><Filter>AI</Filter></None>
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\AIChatSourceBackup.h"><Filter>AI</Filter></ClInclude>
+    <ClCompile Include="src\AIChatSourceBackup.cpp"><Filter>AI</Filter></ClCompile>
+    <ClCompile Include="src\AIChatSourceBackupStore.cpp"><Filter>AI</Filter></ClCompile>
+  </ItemGroup>
 </Project>

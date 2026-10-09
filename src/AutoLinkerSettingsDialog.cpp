@@ -31,6 +31,7 @@
 #include "IdeLogViewer.h"
 #include "Logger.h"
 #include "McpAutoSaveManager.h"
+#include "AIChatSourceBackup.h"
 #include "ProjectAgentsConfigDialog.h"
 #include "ProjectBuildConfigDialog.h"
 #include "resource.h"
@@ -439,6 +440,8 @@ std::string BuildAiOtherSettingsPayload(
 		{"sourceEditMode", sourceEditMode},
 		{"tavilyApiKey", g_aiJsonConfig.getGlobalValue("tavily_api_key")},
 		{"mcpAutoSaveAfterWrite", McpAutoSaveManager::IsEnabled(g_aiJsonConfig)},
+		{"sourceBackupEnabled", AIChatSourceBackup::IsEnabled(g_aiJsonConfig)},
+		{"sourceBackupKeepCount", AIChatSourceBackup::GetKeepCount(g_aiJsonConfig)},
 		{"aiDebugLogEnabled", debugLogEnabled},
 		{"promptCacheKeyEnabled", g_aiJsonConfig.getGlobalValue("prompt_cache_key_enabled") == "true"},
 		{"notice", notice},
@@ -613,7 +616,15 @@ void HandleSettingsWebViewMessage(
 			ApplySettingsWebViewData(context, "源码编辑模式无效。", true);
 			return;
 		}
+		const auto backupCount = data.find("sourceBackupKeepCount");
+		if (backupCount == data.end() || !backupCount->is_number_integer() ||
+			*backupCount < 1 || *backupCount > AIChatSourceBackup::kMaxKeepCount) {
+			ApplySettingsWebViewData(context, "备份保留数量必须是 1 到 1000 的整数。", true);
+			return;
+		}
 		g_aiJsonConfig.setGlobalValues({
+			{AIChatSourceBackup::kEnabledKey, data.value("sourceBackupEnabled", true) ? "true" : "false"},
+			{AIChatSourceBackup::kKeepCountKey, std::to_string(backupCount->get<int>())},
 			{"source_edit_mode", sourceEditMode},
 			{"prompt_cache_key_enabled", data.value("promptCacheKeyEnabled", false) ? "true" : "false"},
 			{"tavily_api_key", data.value("tavilyApiKey", std::string())},
