@@ -30,6 +30,32 @@ with sync_playwright() as p:
  payload['backups']=[]
  page.evaluate('d=>window.autolinkerApplyBackupRestore(d)',payload)
  assert '暂无' in page.locator('#rows').inner_text()
+ payload['canRestore']=True
+ payload['backups']=[{'name':'chat.e','kind':0},{'name':'timer.e','kind':1},{'name':'tool.e','kind':2}]
+ payload['settings']=[{'enabled':True,'keepCount':10},{'enabled':False,'keepCount':20},{'enabled':False,'keepCount':20}]
+ payload['intervalMinutes']=5
+ page.evaluate('d=>window.autolinkerApplyBackupRestore(d)',payload)
+ page.get_by_role('tab',name='定时快照',exact=True).click()
+ assert page.locator('#rows td').nth(1).inner_text()=='timer.e'
+ assert page.locator('#interval').is_visible()
+ page.locator('#enabled').check();page.locator('#keep').fill('3');page.locator('#interval').fill('1')
+ page.get_by_role('button',name='保存设置',exact=True).click()
+ assert page.evaluate('window.messages.at(-1)')=={'action':'save','kind':1,'enabled':True,'keepCount':3,'intervalMinutes':1}
+ n=page.evaluate('window.messages.length');page.locator('#keep').fill('0')
+ page.get_by_role('button',name='保存设置',exact=True).click()
+ assert page.evaluate('window.messages.length')==n
+ page.get_by_role('tab',name='MCP / 内部工具写入',exact=True).click()
+ assert page.locator('#rows td').nth(1).inner_text()=='tool.e'
+ assert page.locator('#interval').is_hidden()
+ restore=page.get_by_role('button',name='恢复',exact=True);restore.hover()
+ colors=restore.evaluate('(e)=>({fg:getComputedStyle(e).color,bg:getComputedStyle(e).backgroundColor})')
+ assert colors['fg']!=colors['bg']
+ restore.click()
+ assert page.evaluate('window.messages.at(-1)')=={'action':'restore','index':2,'revision':42}
+ assert page.get_by_role('tab',name='定时快照',exact=True).is_disabled()
+ page.evaluate('d=>window.autolinkerApplyBackupRestore(d)',payload)
+ assert page.get_by_role('tab',name='定时快照',exact=True).is_enabled()
+ page.screenshot(path=str(out/'three-tabs.png'))
  b.close()
-(out/'result.json').write_text(json.dumps({'passed':True,'browser':'Edge headless','checks':['Unicode rendering','restore index and revision','busy state','completion resets controls','unsupported IDE disables restore','non .e disables restore','empty list']},ensure_ascii=False,indent=2),encoding='utf-8')
-print('PASS: 7 browser checks')
+(out/'result.json').write_text(json.dumps({'passed':True,'browser':'Edge headless','checks':['Unicode rendering','restore index and revision','busy state','completion resets controls','unsupported IDE disables restore','non .e disables restore','empty list','category filters','timed settings','invalid retention rejected','original restore index after filtering','hover contrast','tabs disabled during restore']},ensure_ascii=False,indent=2),encoding='utf-8')
+print('PASS: browser regression checks')

@@ -47,6 +47,20 @@ int main()
         Check(ListBackups(source).front() == output, "newest safety snapshot listed first");
         PruneBackups(source, output, 1);
         Check(ListBackups(source).size() == 1 && ListBackups(source).front() == output, "retention protects safety snapshot");
+        const auto chat = output;
+        const auto legacy = directory / L"20261009000000-[定时].e";
+        { std::ofstream f(legacy); f << "legacy"; }
+        Check(GetBackupKind(legacy) == Kind::Chat, "legacy summary cannot impersonate type");
+        for (const auto kind : {Kind::Timed, Kind::ToolWrite}) {
+            for (int i = 0; i < 4; ++i) {
+                Check(CreateBackup(source, L"类型测试", 2, writer, output, error, true, kind), "typed backup");
+                Check(GetBackupKind(output) == kind, "typed classification");
+            }
+        }
+        Check(std::filesystem::exists(chat) && std::filesystem::exists(legacy), "other categories preserve chat and legacy");
+        Check(ListBackups(source).size() == 6, "independent retention per category");
+        PruneBackups(source, chat, 1);
+        Check(ListBackups(source).size() == 5 && std::filesystem::exists(chat), "chat retention excludes other categories");
         Check(!CreateBackup(root / L"missing.e", L"test", 10, writer, output, error), "unsaved source skipped");
         Check(Read(source) == "original", "original preserved");
         std::filesystem::remove_all(root);

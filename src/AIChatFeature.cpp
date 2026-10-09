@@ -9953,7 +9953,12 @@ void ExecuteScheduledTool()
         FinishScheduledTool(false, R"({"ok":false,"error":"workspace_changed_or_cancelled"})"); return;
     }
     bool ok = false;
-    std::string result = ExecuteToolCallOnMainThread(request->toolName, arguments, ok, request->bypassInteractiveApproval);
+    // MCP 和内部工具共享调度器；审批和工作区检查通过后、写入前抓取一次。
+    if (!request->sourceBackupAttempted) {
+        request->sourceBackupAttempted = true;
+        AIChatSourceBackup::CaptureBeforeTool(g_aiJsonConfig, request->toolName);
+    }
+    std::string result = ExecuteToolCallOnMainThread(request->toolName, arguments, ok);
     if (explicitRefresh && ok) {
         auto json = nlohmann::json::parse(LocalToUtf8Text(result));
         json["refresh_mode"] = request->refreshMode;
@@ -10812,6 +10817,7 @@ void Initialize(HWND mainWindow, ConfigManager* configManager, AIJsonConfig* aiJ
 	g_mainWindow = mainWindow;
 	g_configManager = configManager;
 	g_aiJsonConfig = aiJsonConfig;
+	SetTimer(mainWindow, AIChatSourceBackup::kTimerId, 1000, nullptr);
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
 		if (!g_session.requestInFlight) {
@@ -10827,6 +10833,7 @@ void Initialize(HWND mainWindow, ConfigManager* configManager, AIJsonConfig* aiJ
 
 void Shutdown()
 {
+	KillTimer(g_mainWindow, AIChatSourceBackup::kTimerId);
 	std::shared_ptr<AIChatRequestCancellation> chatCancellation;
 	{
 		std::lock_guard<std::mutex> guard(g_session.mutex);
@@ -10986,6 +10993,11 @@ void EndProjectRestore()
 
 bool HandleMainWindowMessage(UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+    if (uMsg == WM_TIMER && wParam == AIChatSourceBackup::kTimerId) {
+        AIChatSourceBackup::Tick(g_aiJsonConfig, g_toolScheduler.executing || g_toolScheduler.active ||
+            g_toolScheduler.HasWorker() || !g_toolScheduler.queued.empty() || !IsWindowEnabled(g_mainWindow));
+        return true;
+    }
     if (uMsg == g_toolScheduler.Message() || (uMsg == WM_TIMER && wParam == IdeToolScheduler::TimerId)) {
         PumpToolScheduler(); return true;
     }

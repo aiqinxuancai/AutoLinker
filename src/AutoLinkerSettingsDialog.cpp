@@ -30,7 +30,6 @@
 #include "IdeCompileOutputCapture.h"
 #include "IdeLogViewer.h"
 #include "Logger.h"
-#include "McpAutoSaveManager.h"
 #include "AIChatSourceBackup.h"
 #include "BackupRestore.h"
 #include "EideProjectRestore.h"
@@ -452,9 +451,6 @@ std::string BuildAiOtherSettingsPayload(
 	return DumpWebViewJson({
 		{"sourceEditMode", sourceEditMode},
 		{"tavilyApiKey", g_aiJsonConfig.getGlobalValue("tavily_api_key")},
-		{"mcpAutoSaveAfterWrite", McpAutoSaveManager::IsEnabled(g_aiJsonConfig)},
-		{"sourceBackupEnabled", AIChatSourceBackup::IsEnabled(g_aiJsonConfig)},
-		{"sourceBackupKeepCount", AIChatSourceBackup::GetKeepCount(g_aiJsonConfig)},
 		{"aiDebugLogEnabled", debugLogEnabled},
 		{"promptCacheKeyEnabled", g_aiJsonConfig.getGlobalValue("prompt_cache_key_enabled") == "true"},
 		{"notice", notice},
@@ -481,7 +477,7 @@ std::string BuildBackupRestorePayload(SettingsWebViewPageContext* context, const
 				const auto size = std::filesystem::file_size(path, ec);
 				const std::string name = Utf8FromWide(path.filename().wstring());
 				const std::string timestamp = name.size() >= 14 ? name.substr(0, 4) + "-" + name.substr(4, 2) + "-" + name.substr(6, 2) + " " + name.substr(8, 2) + ":" + name.substr(10, 2) + ":" + name.substr(12, 2) : name;
-				backups.push_back({{"name", name}, {"timestamp", timestamp}, {"size", ec ? 0 : size}});
+				backups.push_back({{"kind", static_cast<int>(AIChatSourceBackup::GetBackupKind(path))}, {"name", name}, {"timestamp", timestamp}, {"size", ec ? 0 : size}});
 			}
 		}
 	} catch (...) {
@@ -489,7 +485,10 @@ std::string BuildBackupRestorePayload(SettingsWebViewPageContext* context, const
 		backups = json::array();
 		readError = "读取备份目录失败，请检查目录权限后刷新。";
 	}
-	return DumpWebViewJson({{"revision", context->backupRevision}, {"canRestore", readError.empty() && source.is_absolute() && _wcsicmp(source.extension().c_str(), L".e") == 0}, {"supported", EideProjectRestore::IsSupported()}, {"sourcePath", Utf8FromWide(source.wstring())}, {"backups", backups}, {"notice", readError.empty() ? notice : readError}, {"noticeIsError", noticeIsError || !readError.empty()}});
+	json settings = json::array();
+    for (const auto kind : {AIChatSourceBackup::Kind::Chat, AIChatSourceBackup::Kind::Timed, AIChatSourceBackup::Kind::ToolWrite})
+        settings.push_back({{"enabled", AIChatSourceBackup::IsEnabled(g_aiJsonConfig, kind)}, {"keepCount", AIChatSourceBackup::GetKeepCount(g_aiJsonConfig, kind)}});
+    return DumpWebViewJson({{"settings", settings}, {"intervalMinutes", AIChatSourceBackup::GetIntervalMinutes(g_aiJsonConfig)}, {"revision", context->backupRevision}, {"canRestore", readError.empty() && source.is_absolute() && _wcsicmp(source.extension().c_str(), L".e") == 0}, {"supported", EideProjectRestore::IsSupported()}, {"sourcePath", Utf8FromWide(source.wstring())}, {"backups", backups}, {"notice", readError.empty() ? notice : readError}, {"noticeIsError", noticeIsError || !readError.empty()}});
 }
 
 void ExecuteSettingsWebViewScript(
@@ -662,20 +661,10 @@ void HandleSettingsWebViewMessage(
 			ApplySettingsWebViewData(context, "源码编辑模式无效。", true);
 			return;
 		}
-		const auto backupCount = data.find("sourceBackupKeepCount");
-		if (backupCount == data.end() || !backupCount->is_number_integer() ||
-			*backupCount < 1 || *backupCount > AIChatSourceBackup::kMaxKeepCount) {
-			ApplySettingsWebViewData(context, "备份保留数量必须是 1 到 1000 的整数。", true);
-			return;
-		}
 		g_aiJsonConfig.setGlobalValues({
-			{AIChatSourceBackup::kEnabledKey, data.value("sourceBackupEnabled", true) ? "true" : "false"},
-			{AIChatSourceBackup::kKeepCountKey, std::to_string(backupCount->get<int>())},
 			{"source_edit_mode", sourceEditMode},
 			{"prompt_cache_key_enabled", data.value("promptCacheKeyEnabled", false) ? "true" : "false"},
 			{"tavily_api_key", data.value("tavilyApiKey", std::string())},
-			{std::string(McpAutoSaveManager::kConfigKey),
-				data.value("mcpAutoSaveAfterWrite", false) ? "true" : "false"},
 			{"ai_debug_log_enabled", data.value("aiDebugLogEnabled", false) ? "true" : "false"}
 		});
 		PostMessageW(
@@ -692,6 +681,24 @@ void HandleSettingsWebViewMessage(
 	}
 	if (context->kind == SettingsWebViewPageKind::BackupRestore) {
 		if (action == "refresh") { ApplySettingsWebViewData(context); return; }
+        if (action == "save") {
+            const auto kind = payload.find("kind"), count = payload.find("keepCount"), enabled = payload.find("enabled"), interval = payload.find("intervalMinutes");
+            if (kind == payload.end() || !kind->is_number_integer() || *kind < 0 || *kind > 2 ||
+                count == payload.end() || !count->is_number_integer() || *count < 1 || *count > 1000 ||
+                enabled == payload.end() || !enabled->is_boolean() ||
+                (*kind == 1 && (interval == payload.end() || !interval->is_number_integer() || *interval < 1 || *interval > 1440))) {
+                ApplySettingsWebViewData(context, "保留数量应为 1–1000，定时间隔应为 1–1440 分钟（整数）。", true); return;
+            }
+            const int category = kind->get<int>();
+            const char* enabledKeys[] = {AIChatSourceBackup::kEnabledKey, AIChatSourceBackup::kTimedEnabledKey, AIChatSourceBackup::kToolEnabledKey};
+            const char* countKeys[] = {AIChatSourceBackup::kKeepCountKey, AIChatSourceBackup::kTimedKeepKey, AIChatSourceBackup::kToolKeepKey};
+            if (category == 1) g_aiJsonConfig.setGlobalValues({
+                {enabledKeys[category], enabled->get<bool>() ? "true" : "false"}, {countKeys[category], std::to_string(count->get<int>())},
+                {AIChatSourceBackup::kIntervalKey, std::to_string(interval->get<int>())}});
+            else g_aiJsonConfig.setGlobalValues({
+                {enabledKeys[category], enabled->get<bool>() ? "true" : "false"}, {countKeys[category], std::to_string(count->get<int>())}});
+            ApplySettingsWebViewData(context, "备份设置已保存。新数量在下次成功备份时生效。"); return;
+        }
 		if (action == "restore") {
 			const auto source = context->backupSource;
 			const int index = payload.value("index", -1);
@@ -1538,10 +1545,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 	const std::string backupRestoreHtml = LoadUtf8HtmlResourceText(IDR_HTML_BACKUP_RESTORE_SETTINGS);
 	const std::string projectBuildHtml = LoadUtf8HtmlResourceText(IDR_HTML_PROJECT_BUILD_CONFIG_DIALOG);
 	const std::string aboutIconDataUrl = LoadAboutIconDataUrl();
-	const bool mcpAutoSaveUiValid =
-		aiOtherHtml.find("mcpAutoSaveAfterWrite") != std::string::npos &&
-		aiOtherHtml.find("每次MCP写入或修改代码后自动保存代码") != std::string::npos;
-	const bool mcpAutoSaveToolScopeValid =
+	const bool projectWriteToolScopeValid =
 		AIChatToolRegistry::ModifiesProject("edit_file") &&
 		AIChatToolRegistry::ModifiesProject("multi_edit_file") &&
 		AIChatToolRegistry::ModifiesProject("write_file") &&
@@ -1555,7 +1559,6 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		!AIChatToolRegistry::ModifiesProject("exec_command");
 	const bool webViewResourcesValid =
 		aiOtherHtml.find("autolinkerApplyAiOtherSettings") != std::string::npos &&
-		mcpAutoSaveUiValid &&
 		logOptimizationHtml.find("autolinkerApplyLogOptimization") != std::string::npos &&
 		logOptimizationHtml.find("mcpGenericToggle") != std::string::npos &&
 		logOptimizationHtml.find("fullGenericToggle") != std::string::npos &&
@@ -1582,15 +1585,14 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		{"name", "unified-settings-self-test"},
 		{"ok", pages.size() == static_cast<size_t>(AutoLinkerSettingsPageId::Count) &&
 			hookDependencyValid && links.size() == 5 && webViewResourcesValid &&
-			invalidUtf8PayloadSafe && ePackagerTwoStepUpdateValid && mcpAutoSaveToolScopeValid},
+			invalidUtf8PayloadSafe && ePackagerTwoStepUpdateValid && projectWriteToolScopeValid},
 		{"page_count", pages.size()},
 		{"pages", pages},
 		{"about_fixed_links", links},
 		{"compile_hook_default_enabled", false},
 		{"mcp_generic_type_default_enabled", false},
 		{"full_generic_type_default_enabled", false},
-		{"mcp_auto_save_default_enabled", false},
-		{"mcp_auto_save_tool_scope", mcpAutoSaveToolScopeValid},
+		{"project_write_tool_scope", projectWriteToolScopeValid},
 		{"debug_optimization_requires_compile_hook", hookDependencyValid},
 		{"log_optimization_webview2", !logOptimizationHtml.empty()},
 		{"ai_other_webview2", !aiOtherHtml.empty()},
@@ -1603,8 +1605,7 @@ std::string BuildAutoLinkerSettingsSelfTestJson()
 		{"compile_hook_config_key", kCompileOutputCaptureHookConfigKey},
 		{"debug_optimization_config_key", kDebugOutputOptimizationConfigKey},
 		{"mcp_generic_type_config_key", kMcpWriteHiddenGenericTypeConfigKey},
-		{"full_generic_type_config_key", kFullHiddenGenericTypeConfigKey},
-		{"mcp_auto_save_config_key", std::string(McpAutoSaveManager::kConfigKey)}
+		{"full_generic_type_config_key", kFullHiddenGenericTypeConfigKey}
 	};
 	return report.dump();
 }

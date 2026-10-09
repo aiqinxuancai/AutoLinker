@@ -15,6 +15,8 @@ class ConfigManager;
 
 // 主线程工具执行请求。
 struct ToolExecutionRequest {
+    // 同一个工具的异步续阶段不重复备份。
+    bool sourceBackupAttempted = false;
 	std::string toolName;
 	std::string argumentsJson;
 	std::string resultJson;

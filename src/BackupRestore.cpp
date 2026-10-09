@@ -112,9 +112,10 @@ bool Restore(const std::filesystem::path& expectedSource, const std::filesystem:
         if (!AIChatFeature::BeginProjectRestore()) { message = L"AI 或 MCP 任务正在执行，请等待完成后恢复。"; return false; }
         Transaction transaction;
         std::string error;
-        const int keep = AIChatSourceBackup::GetKeepCount(g_aiJsonConfig);
+        const auto kind = AIChatSourceBackup::GetBackupKind(backup);
+        const int keep = AIChatSourceBackup::GetKeepCount(g_aiJsonConfig, kind);
         // 无论自动备份是否开启，恢复前都要保存；此时不清理旧文件。
-        if (!AIChatSourceBackup::CreateBackup(source, L"恢复前安全备份", keep, WriteSnapshot, safetyBackup, error, false)) {
+        if (!AIChatSourceBackup::CreateBackup(source, L"恢复前安全备份", keep, WriteSnapshot, safetyBackup, error, false, kind)) {
             message = L"恢复前安全备份失败，未执行恢复。";
             Logger::Instance().WriteAndIde("Backup Restore", error); return false;
         }

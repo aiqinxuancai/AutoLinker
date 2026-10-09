@@ -5,12 +5,11 @@
 
 class HttpRequestCancellation;
 
-// 在主线程执行工具调用；enableMcpAutoSave 仅由外部 MCP 请求开启。
+// 在主线程执行工具调用。
 std::string ExecuteToolCallOnMainThread(
 	const std::string& toolName,
 	const std::string& argumentsJson,
-	bool& outOk,
-	bool enableMcpAutoSave = false);
+	bool& outOk);
 
 // 新建程序项的异步镜像发布完成后，在主线程验证程序树与文件映射。
 std::string FinalizeNewFileAfterMirrorRefresh(const std::string& resultLocal, bool& outOk);

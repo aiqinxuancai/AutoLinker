@@ -13,8 +13,17 @@ struct TemporarySnapshot {
     ~TemporarySnapshot() { std::error_code ec; std::filesystem::remove_all(directory, ec); }
 };
 
-bool IsBackupName(const std::wstring& name)
+bool IsBackupName(std::wstring name)
 {
+    if (name.size() < 18) return false;
+    // 类型标记使用独立括号段，旧摘要恰好为“定时”也不会误分类。
+    for (const auto prefix : {L"-[对话]-[", L"-[定时]-[", L"-[工具写入]-["}) {
+        const std::wstring marker(prefix);
+        if (name.substr(14, marker.size()) == marker) {
+            name = name.substr(0, 14) + L"-[" + name.substr(14 + marker.size());
+            break;
+        }
+    }
     const auto dot = name.rfind(L'.');
     if (dot == std::wstring::npos || (name.substr(dot) != L".e" && name.substr(dot) != L".ec")) return false;
     if (dot < 18 || name.substr(14, 2) != L"-[") return false;
@@ -32,7 +41,7 @@ void Prune(const std::filesystem::path& directory, const std::filesystem::path& 
     struct Entry { std::filesystem::path path; std::filesystem::file_time_type time; };
     std::vector<Entry> entries;
     for (const auto& entry : std::filesystem::directory_iterator(directory)) {
-        if (!entry.is_regular_file() || entry.is_symlink() || !IsBackupName(entry.path().filename().wstring())) continue;
+        if (!entry.is_regular_file() || entry.is_symlink() || !IsBackupName(entry.path().filename().wstring()) || GetBackupKind(entry.path()) != GetBackupKind(newest)) continue;
         entries.push_back({entry.path(), entry.last_write_time()});
     }
     std::sort(entries.begin(), entries.end(), [&](const Entry& a, const Entry& b) {
@@ -45,6 +54,14 @@ void Prune(const std::filesystem::path& directory, const std::filesystem::path& 
     }
 }
 } // namespace
+
+Kind GetBackupKind(const std::filesystem::path& backup)
+{
+    const auto name = backup.filename().wstring();
+    if (name.size() > 14 && name.compare(14, 7, L"-[定时]-[") == 0) return Kind::Timed;
+    if (name.size() > 14 && name.compare(14, 9, L"-[工具写入]-[") == 0) return Kind::ToolWrite;
+    return Kind::Chat;
+}
 
 std::wstring BuildRequestLabel(std::wstring_view request)
 {
@@ -68,7 +85,7 @@ std::wstring BuildRequestLabel(std::wstring_view request)
 }
 
 bool CreateBackup(const std::filesystem::path& source, std::wstring_view request,
-    int keepCount, const SnapshotWriter& writer, std::filesystem::path& output, std::string& error, bool pruneAfterWrite)
+    int keepCount, const SnapshotWriter& writer, std::filesystem::path& output, std::string& error, bool pruneAfterWrite, Kind kind)
 {
     output.clear(); error.clear();
     try {
@@ -92,8 +109,8 @@ bool CreateBackup(const std::filesystem::path& source, std::wstring_view request
         }
         const auto snapshot = temporary.directory / (L"snapshot" + extension);
         SYSTEMTIME time{}; GetLocalTime(&time);
-        const auto stem = std::format(L"{:04}{:02}{:02}{:02}{:02}{:02}-[{}]",
-            time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond, BuildRequestLabel(request));
+        const auto stem = std::format(L"{:04}{:02}{:02}{:02}{:02}{:02}-[{}]-[{}]",
+            time.wYear, time.wMonth, time.wDay, time.wHour, time.wMinute, time.wSecond, kind == Kind::Timed ? L"定时" : kind == Kind::ToolWrite ? L"工具写入" : L"对话", BuildRequestLabel(request));
         if (!writer(snapshot, error)) return false;
         if (!std::filesystem::is_regular_file(snapshot) || std::filesystem::file_size(snapshot) == 0) {
             error = "empty_snapshot"; return false;
