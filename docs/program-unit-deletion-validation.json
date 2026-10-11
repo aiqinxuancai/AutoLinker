@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-11",
+  "configuration": "fne_release|Win32",
+  "build_warnings": 0,
+  "build_errors": 0,
+  "binary_sha256": "3eed9fa1166e809dd3424542bc7dc86716eb03be48dc34472284752e8196b363",
+  "ide_version_verified": "5.95",
+  "case_count": 27,
+  "projects": [
+    {
+      "ok": true,
+      "source_sha256": "0c30a98743fbc477016fb0f929ec3ddec87fe7250488a79efea4f6e79ab1f0cd",
+      "cases": [
+        "assembly_stale_hash_preserves_page",
+        "assembly_changed_source_requires_new_hash",
+        "assembly_missing_window_metadata_rejected",
+        "assembly_delete_nonactive_page_and_repeat",
+        "assembly_recreate_same_name_and_delete_active_page",
+        "class_stale_hash_preserves_page",
+        "class_changed_source_requires_new_hash",
+        "class_missing_window_metadata_rejected",
+        "class_delete_nonactive_page_and_repeat",
+        "class_recreate_same_name_and_delete_active_page",
+        "fixed_table_missing_file_and_path_traversal_rejected",
+        "all_original_sources_preserved_and_disk_unchanged",
+        "project_compiles_after_deletions"
+      ],
+      "fixture": "e-console-exe-full-test.e",
+      "delete_traces": [
+        "program_tree_delete|mirror_program_unit_metadata_ok|native_delete_selected_program_item|command=0x82020017|reported_ok=1"
+      ]
+    },
+    {
+      "ok": true,
+      "source_sha256": "62c4756ae84e83786076f3945da3095034b3bfe60335f349d7525e08ca670816",
+      "cases": [
+        "assembly_stale_hash_preserves_page",
+        "assembly_changed_source_requires_new_hash",
+        "assembly_missing_window_metadata_rejected",
+        "assembly_delete_nonactive_page_and_repeat",
+        "assembly_recreate_same_name_and_delete_active_page",
+        "class_stale_hash_preserves_page",
+        "class_changed_source_requires_new_hash",
+        "class_missing_window_metadata_rejected",
+        "class_delete_nonactive_page_and_repeat",
+        "class_recreate_same_name_and_delete_active_page",
+        "fixed_table_missing_file_and_path_traversal_rejected",
+        "window_bound_assembly_preserved",
+        "all_original_sources_preserved_and_disk_unchanged",
+        "project_compiles_after_deletions"
+      ],
+      "fixture": "e-window-exe-full.e",
+      "delete_traces": [
+        "program_tree_delete|mirror_program_unit_metadata_ok|native_delete_selected_program_item|command=0x82020017|reported_ok=1"
+      ]
+    }
+  ],
+  "e571": {
+    "status": "blocked_before_deletion",
+    "operation": "refresh_workspace_mirror",
+    "error": "restore current serializer source path failed",
+    "trace": "restore_call=0|restore_verify=1",
+    "native_delete_tested": false
+  },
+  "prototype_before_implementation": {
+    "ide_version": "5.95",
+    "cases_passed": 12,
+    "result": "tree command 0x82020017 verified before replacing implementation"
+  }
+}

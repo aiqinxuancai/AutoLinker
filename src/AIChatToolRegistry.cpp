@@ -10,7 +10,7 @@
 namespace AIChatToolRegistry {
 namespace {
 
-constexpr std::array<ToolMetadata, 34> kTools = {{
+constexpr std::array<ToolMetadata, 35> kTools = {{
 	{"refresh_workspace_mirror", true, false, false, false, false, false},
 	{"e_packager", true, false, true, false, false, false},
 	{"update_plan", false, false, false, false, false, false},
@@ -29,6 +29,7 @@ constexpr std::array<ToolMetadata, 34> kTools = {{
 	{"diff_file", true, false, true, false, false, false},
 	{"restore_file_snapshot", true, false, true, true, true, false},
 	{"add_new_file", true, false, false, true, true, false},
+	{"delete_file", true, false, true, true, true, false},
 	{"get_current_page_info", true, false, false, false, false, false},
 	{"get_current_eide_info", true, false, false, false, false, false},
 	{"refresh_dependency_catalog", false, true, false, false, false, false},

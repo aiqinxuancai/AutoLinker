@@ -88,7 +88,8 @@ bool IsWriteTool(const std::string& toolName)
 		toolName == "multi_edit_file" ||
 		toolName == "write_file" ||
 		toolName == "restore_file_snapshot" ||
-		toolName == "add_new_file";
+		toolName == "add_new_file" ||
+		toolName == "delete_file";
 }
 
 bool IsCompileTool(const std::string& toolName)

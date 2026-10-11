@@ -28,6 +28,7 @@
 #include "IDEFacade.h"
 #include "EideEditorObjectResolver.h"
 #include "EideInternalTextBridge.h"
+#include "EideProgramUnitSupport.h"
 #include "Global.h"
 #include "IdeCompileDialogGuard.h"
 #include "IdeCompileOutputCapture.h"
@@ -3958,6 +3959,74 @@ std::string BuildAddNewFileJsonOnMainThread(const std::string& argumentsJson, bo
     return JsonToLocalTextForAI(r);
 }
 
+std::string BuildDeleteFileJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
+{
+	outOk = false;
+	const auto args = nlohmann::json::parse(argumentsJson, nullptr, false);
+	nlohmann::json result = {{"ok", false}, {"deleted", false}, {"verified", false}};
+	auto fail = [&](const std::string& error) {
+		result["error"] = error;
+		return JsonToLocalTextForAI(result);
+	};
+	if (!args.is_object() || !args.contains("file_path") || !args["file_path"].is_string() ||
+		!args.contains("expected_base_hash") || !args["expected_base_hash"].is_string()) {
+		return fail("file_path and expected_base_hash are required");
+	}
+	const auto filePath = args["file_path"].get<std::string>();
+	const auto expectedHash = ToLowerAsciiCopyLocal(TrimAsciiCopy(args["expected_base_hash"].get<std::string>()));
+	if (expectedHash.empty()) return fail("expected_base_hash is required; call read_real_file first");
+	result["file_path"] = filePath;
+	WorkspaceMirror::ProgramItemRef mapped;
+	std::string error;
+	if (!WorkspaceMirror::ResolveFileToProgramItem(filePath, mapped, error)) return fail(error);
+	if (!mapped.editable || mapped.fixedTable || mapped.formXml) {
+		return fail("only local assembly and class source files can be deleted");
+	}
+	std::vector<ProgramTreeItemInfo> before;
+	if (!TryListProgramTreeItemsForAI(before, &error)) return fail(error);
+	ProgramTreeItemInfo target;
+	size_t matches = 0;
+	for (const auto& item : before) {
+		if (item.name == mapped.pageNameLocal) {
+			target = item;
+			++matches;
+		}
+	}
+	if (matches != 1) return fail(matches == 0 ? "program item not found" : "program item name is ambiguous");
+	if ((target.itemData >> 28) != 1 || (target.itemData & 0xFFFF) != 0) {
+		return fail("target is not an assembly or class");
+	}
+	result["name"] = LocalToUtf8Text(target.name);
+	std::string code;
+	e571::NativeRealPageAccessResult readResult;
+	if (!TryReadRealPageCodeForAI(target, code, readResult, error)) return fail(error);
+	const auto liveHash = BuildStableTextHashForRealCode(code);
+	result["code_hash"] = liveHash;
+	if (liveHash != expectedHash) {
+		PutPageCodeCacheEntryForAI(target, code, nullptr);
+		return fail("expected_base_hash mismatch; read_real_file and review the current source before deleting");
+	}
+	std::string fileType, trace;
+	if (!e571::DeleteProgramUnitByTreeItemData(target.itemData, target.name, filePath, fileType, trace)) {
+		result["trace"] = trace;
+		return fail("native program unit deletion rejected");
+	}
+	result["trace"] = trace;
+	result["file_type"] = fileType;
+	// 删除后索引和编辑器对象可能失效，整个真实页缓存失效；后置完整刷新由调度器完成。
+	PageCodeCacheManager::Instance().Clear();
+	AppendFullMirrorRefreshResult(result);
+	result["_delete_before_items"] = nlohmann::json::array();
+	for (const auto& item : before) {
+		result["_delete_before_items"].push_back({{"name", LocalToUtf8Text(item.name)}, {"item_data", item.itemData}});
+	}
+	result["item_data"] = target.itemData;
+	// IDE 延迟更新程序树。保留当前工具事务，镜像刷新完成后再验证，期间绝不再次执行删除。
+	result["ok"] = true;
+	outOk = true;
+	return JsonToLocalTextForAI(result);
+}
+
 std::string BuildRemoveModuleFromProjectJsonOnMainThread(const std::string& argumentsJson, bool& outOk)
 {
 	nlohmann::json args;
@@ -5373,6 +5442,9 @@ std::string ExecuteToolCallOnMainThreadImpl(const std::string& toolName, const s
 	if (toolName == "add_new_file") {
 		return BuildAddNewFileJsonOnMainThread(argumentsJson, outOk);
 	}
+	if (toolName == "delete_file") {
+		return BuildDeleteFileJsonOnMainThread(argumentsJson, outOk);
+	}
 
 	if (toolName == "get_current_page_info") {
 		const std::string sourceFilePath = RefreshCurrentSourceFilePathForAI();
@@ -6089,6 +6161,46 @@ std::string BuildCompileArtifactFingerprintSelfTestJson()
 // 过程、穿过 Win32 消息派发边界，触发 MSVC 运行时 abort（“abnormal program
 // termination”），整个 IDE 进程崩溃。这里统一兜底，把异常转成失败结果返回，
 // 保证无论工具内部发生什么都不会崩进程。
+std::string FinalizeDeletedFileAfterMirrorRefresh(const std::string& resultLocal, bool& outOk)
+{
+	auto result = nlohmann::json::parse(LocalToUtf8Text(resultLocal));
+	auto before = result.at("_delete_before_items");
+	result.erase("_delete_before_items");
+	outOk = false;
+	result["ok"] = false;
+	auto fail = [&](const std::string& error) {
+		result["error"] = error;
+		return JsonToLocalTextForAI(result);
+	};
+	std::vector<ProgramTreeItemInfo> after;
+	std::string error;
+	if (!TryListProgramTreeItemsForAI(after, &error)) return fail("verify deletion failed: " + error);
+	const auto name = Utf8ToLocalText(result.at("name").get<std::string>());
+	if (std::any_of(after.begin(), after.end(), [&](const auto& item) { return item.name == name; })) {
+		return fail("IDE did not delete the requested program unit");
+	}
+	result["deleted"] = true;
+	if (after.size() + 1 != before.size()) return fail("unexpected program tree changes after deletion");
+	for (const auto& item : before) {
+		if (item.at("item_data") == result.at("item_data")) continue;
+		const auto originalName = Utf8ToLocalText(item.at("name").get<std::string>());
+		const auto originalType = item.at("item_data").get<unsigned int>() >> 28;
+		if (std::none_of(after.begin(), after.end(), [&](const auto& remaining) {
+			return remaining.name == originalName && (remaining.itemData >> 28) == originalType;
+		})) return fail("another program item changed during deletion");
+	}
+	if (!result.value("workspace_mirror_refreshed", false)) return fail("deleted but workspace mirror refresh failed");
+	std::vector<std::string> files;
+	if (!WorkspaceMirror::ListMirrorFiles(files, error)) return fail("verify mirror deletion failed: " + error);
+	if (std::find(files.begin(), files.end(), result.at("file_path").get<std::string>()) != files.end()) {
+		return fail("deleted source still exists in workspace mirror");
+	}
+	result["ok"] = true;
+	result["verified"] = true;
+	outOk = true;
+	return JsonToLocalTextForAI(result);
+}
+
 std::string FinalizeNewFileAfterMirrorRefresh(const std::string& resultLocal, bool& outOk)
 {
     auto r = nlohmann::json::parse(LocalToUtf8Text(resultLocal));

@@ -20,9 +20,18 @@ namespace {
 
 using json = nlohmann::json;
 
-constexpr const char* kReleaseBaseUrl = "https://github.com/aiqinxuancai/AutoLinker/releases/";
-constexpr const char* kUpdateManifestUrl =
-	"https://github.com/aiqinxuancai/AutoLinker/releases/latest/download/update.json";
+const char* ReleaseBaseUrl(ReleaseComponent component)
+{
+	return component == ReleaseComponent::EPackager
+		? "https://github.com/aiqinxuancai/e-packager/releases/"
+		: "https://github.com/aiqinxuancai/AutoLinker/releases/";
+}
+
+const char* LogPrefix(ReleaseComponent component)
+{
+	return component == ReleaseComponent::EPackager ? "[e-packager]" : "[AutoLinker更新]";
+}
+
 constexpr const char* kGitHubBaseUrl = "https://github.com/";
 constexpr const char* kGitHubAcceleratorBaseUrl = "https://github-fast.apptest.dev/";
 constexpr const char* kGitHubHeaders =
@@ -67,8 +76,11 @@ std::string ToLowerAscii(std::string text)
 	return text;
 }
 
-std::string BuildUpdateAssetName(const std::string& releaseTag)
+std::string BuildUpdateAssetName(const std::string& releaseTag, ReleaseComponent component)
 {
+	if (component == ReleaseComponent::EPackager) {
+		return "e-packager-" + releaseTag + "-windows-win32.zip";
+	}
 	std::string versionLabel = releaseTag;
 	if (!versionLabel.empty() && (versionLabel.front() == 'v' || versionLabel.front() == 'V')) {
 		versionLabel.erase(versionLabel.begin());
@@ -223,19 +235,19 @@ bool IsSafeReleaseTag(const std::string& tag)
 		});
 }
 
-std::string BuildReleaseDownloadUrl(const AutoLinkerReleaseInfo& info)
+std::string BuildReleaseDownloadUrl(const AutoLinkerReleaseInfo& info, ReleaseComponent component)
 {
-	return std::string(kReleaseBaseUrl) + "download/" + info.tag + "/" + info.asset.name;
+	return std::string(ReleaseBaseUrl(component)) + "download/" + info.tag + "/" + info.asset.name;
 }
 
-bool ParseUpdateManifest(const std::string& body, AutoLinkerReleaseInfo& outInfo, std::string& outError)
+bool ParseUpdateManifest(const std::string& body, AutoLinkerReleaseInfo& outInfo, std::string& outError, ReleaseComponent component)
 {
 	const json manifest = json::parse(body, nullptr, false);
 	if (!manifest.is_object() || !manifest.contains("schema_version") ||
 		!manifest["schema_version"].is_number_unsigned() || manifest["schema_version"] != 1 ||
 		!manifest.contains("tag") || !manifest["tag"].is_string() ||
 		!manifest.contains("asset") || !manifest["asset"].is_object()) {
-		outError = "AutoLinker 更新清单格式无效或版本不受支持";
+		outError = "组件更新清单格式无效或版本不受支持";
 		return false;
 	}
 	AutoLinkerReleaseInfo info;
@@ -245,73 +257,73 @@ bool ParseUpdateManifest(const std::string& body, AutoLinkerReleaseInfo& outInfo
 		!asset.contains("name") || !asset["name"].is_string() ||
 		!asset.contains("size") || !asset["size"].is_number_unsigned() ||
 		!asset.contains("sha256") || !asset["sha256"].is_string()) {
-		outError = "AutoLinker 更新清单缺少有效的版本号、文件名、大小或 SHA-256";
+		outError = "组件更新清单缺少有效的版本号、文件名、大小或 SHA-256";
 		return false;
 	}
 	info.asset.name = asset["name"].get<std::string>();
 	info.asset.size = asset["size"].get<unsigned long long>();
 	const std::string hash = ToLowerAscii(asset["sha256"].get<std::string>());
-	if (info.asset.name != BuildUpdateAssetName(info.tag) || info.asset.size == 0 ||
+	if (info.asset.name != BuildUpdateAssetName(info.tag, component) || info.asset.size == 0 ||
 		hash.size() != 64 || !std::all_of(hash.begin(), hash.end(), [](unsigned char ch) {
 			return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
 		})) {
-		outError = "AutoLinker 更新清单的更新包名称、大小或 SHA-256 不合法";
+		outError = "组件更新清单的更新包名称、大小或 SHA-256 不合法";
 		return false;
 	}
 	info.asset.digest = "sha256:" + hash;
-	info.asset.downloadUrl = BuildReleaseDownloadUrl(info);
+	info.asset.downloadUrl = BuildReleaseDownloadUrl(info, component);
 	outInfo = std::move(info);
 	return true;
 }
 
-bool FetchLegacyRelease(AutoLinkerReleaseInfo& outInfo, std::string& outError)
+bool FetchLegacyRelease(AutoLinkerReleaseInfo& outInfo, std::string& outError, ReleaseComponent component)
 {
 	std::string finalUrl;
 	const auto response = PerformGetRequest(
-		std::string(kReleaseBaseUrl) + "latest", kGitHubHeaders,
+		std::string(ReleaseBaseUrl(component)) + "latest", kGitHubHeaders,
 		kReleaseRequestTimeoutMs, false, false, {}, &finalUrl);
 	if (response.second != 200) {
-		outError = "读取旧版 AutoLinker Release 页面失败：" + DescribeHttpFailure(response);
+		outError = "读取旧版组件 Release 页面失败：" + DescribeHttpFailure(response);
 		return false;
 	}
-	const std::string prefix = std::string(kReleaseBaseUrl) + "tag/";
+	const std::string prefix = std::string(ReleaseBaseUrl(component)) + "tag/";
 	AutoLinkerReleaseInfo info;
 	if (finalUrl.rfind(prefix, 0) != 0 || !IsSafeReleaseTag(finalUrl.substr(prefix.size()))) {
-		outError = "无法从 AutoLinker Release 页面重定向地址获取有效版本号";
+		outError = "无法从组件 Release 页面重定向地址获取有效版本号";
 		return false;
 	}
 	info.tag = finalUrl.substr(prefix.size());
-	info.asset.name = BuildUpdateAssetName(info.tag);
-	info.asset.downloadUrl = BuildReleaseDownloadUrl(info);
-	OutputUpdateLog("[AutoLinker更新] 此 Release 尚无 update.json，使用旧版兼容方式（无文件大小和 SHA-256 校验）");
+	info.asset.name = BuildUpdateAssetName(info.tag, component);
+	info.asset.downloadUrl = BuildReleaseDownloadUrl(info, component);
+	OutputUpdateLog(std::string(LogPrefix(component)) + " 此 Release 尚无 update.json，使用旧版兼容方式（无文件大小和 SHA-256 校验）");
 	outInfo = std::move(info);
 	return true;
 }
 
 } // namespace
 
-bool AutoLinkerReleaseClient::FetchLatest(AutoLinkerReleaseInfo& outInfo, std::string& outError)
+bool AutoLinkerReleaseClient::FetchLatest(AutoLinkerReleaseInfo& outInfo, std::string& outError, ReleaseComponent component)
 {
 	outError.clear();
 	const auto response = PerformGetRequest(
-		kUpdateManifestUrl, kGitHubHeaders, kReleaseRequestTimeoutMs, false, false);
+		std::string(ReleaseBaseUrl(component)) + "latest/download/update.json", kGitHubHeaders, kReleaseRequestTimeoutMs, false, false);
 	if (response.second == 404) {
-		return FetchLegacyRelease(outInfo, outError);
+		return FetchLegacyRelease(outInfo, outError, component);
 	}
 	if (response.second != 200) {
-		outError = "读取 AutoLinker 更新清单失败：" + DescribeHttpFailure(response);
+		outError = "读取组件更新清单失败：" + DescribeHttpFailure(response);
 		return false;
 	}
-	return ParseUpdateManifest(response.first, outInfo, outError);
+	return ParseUpdateManifest(response.first, outInfo, outError, component);
 }
 
 bool AutoLinkerReleaseClient::DownloadArchive(
 	const AutoLinkerReleaseAsset& asset,
 	std::string& outBytes,
-	std::string& outError)
+	std::string& outError, ReleaseComponent component)
 {
-	const auto download = [&asset](const std::string& url) {
-		DownloadProgressReporter progress("[AutoLinker更新]", asset.size);
+	const auto download = [&asset, component](const std::string& url) {
+		DownloadProgressReporter progress(LogPrefix(component), asset.size);
 		return PerformGetRequest(
 			url,
 			kGitHubHeaders,
@@ -326,7 +338,7 @@ bool AutoLinkerReleaseClient::DownloadArchive(
 	};
 
 	const std::string acceleratedUrl = BuildAcceleratedGitHubUrl(asset.downloadUrl);
-	OutputUpdateLog("[AutoLinker更新] 通过 GitHub 加速地址下载：" + acceleratedUrl);
+	OutputUpdateLog(std::string(LogPrefix(component)) + " 通过 GitHub 加速地址下载：" + acceleratedUrl);
 	auto response = download(acceleratedUrl);
 	std::string validationError;
 	if (response.second == 200 && ValidateDownloadedArchive(response.first, asset, validationError)) {
@@ -337,7 +349,7 @@ bool AutoLinkerReleaseClient::DownloadArchive(
 	const std::string acceleratedError = response.second == 200
 		? validationError
 		: DescribeHttpFailure(response);
-	OutputUpdateLog("[AutoLinker更新] 加速地址下载失败，将尝试原始 GitHub 地址：" + acceleratedError);
+	OutputUpdateLog(std::string(LogPrefix(component)) + " 加速地址下载失败，将尝试原始 GitHub 地址：" + acceleratedError);
 	response = download(asset.downloadUrl);
 	validationError.clear();
 	if (response.second == 200 && ValidateDownloadedArchive(response.first, asset, validationError)) {

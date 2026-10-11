@@ -3393,7 +3393,7 @@ std::string BuildChatSystemPrompt(const AISettings& settings)
 			+ workspaceRefreshRule +
 			"3) 源码探索不设置固定调用次数上限，以任务完成或用户取消为终止条件。已有上下文足够时立即实施；若仍缺少影响正确性的事实，可继续调用必要的只读工具。独立查询应在同一响应中一次发出，多个文件必须使用 read_files，不要串行重复 read_file。\n"
 			+ sourceReadRule +
-			"5) 修改已有源码时只能用 edit_file / multi_edit_file / write_file / diff_file / restore_file_snapshot，并以 file_path 作为目标；新建程序集或类使用 add_new_file。\n"
+			"5) 修改已有源码时只能用 edit_file / multi_edit_file / write_file / diff_file / restore_file_snapshot，并以 file_path 作为目标；新建程序集或类使用 add_new_file；删除普通程序集或类使用 delete_file，先 read_real_file 获取 expected_base_hash。\n"
 			+ std::string(mirrorSourceBase
 				? "6) edit_file / multi_edit_file / write_file / diff_file 的匹配和 expected_base_hash 校验基于 read_files/read_code_item 的镜像文本；大块修改优先一次生成 full_code 后调用 write_file，避免反复 exact old_text 失败。\n"
 				  "7) 写入前不会读取真实页源码；写入仍会按 file_path 映射到 IDE 程序项并整页写回。\n"
@@ -8586,7 +8586,7 @@ std::string AIService::BuildExternalMcpInstructions()
 		"- 编辑当前工程源码前，必须先对同一 file_path 调用 read_real_file，取得 real_source（真实页文本）与 code_hash 作为编辑基准；不要用其它来源的文本臆测当前内容。\n\n"
 
 		"【写入】\n"
-		"- 修改已有源码只能用 edit_file / multi_edit_file / write_file / diff_file，并以 file_path 作为目标；新建程序集或类用 add_new_file。\n"
+		"- 修改已有源码只能用 edit_file / multi_edit_file / write_file / diff_file，并以 file_path 作为目标；新建程序集或类用 add_new_file；删除普通程序集或类用 delete_file，先 read_real_file 获取 expected_base_hash。\n"
 		"- 写工具的 old_text / full_code 与 expected_base_hash 必须基于刚才 read_real_file 返回的 real_source / code_hash；expected_base_hash 对外部调用为必填，用于拒绝过期基准。\n"
 		"- 写工具返回 ok=true、verified=true 即表示写入与结构校验已完成，不要为确认而再次读取同一源码。\n"
 		"- src/*.xml 是易语言原生窗口界面 XML，只读；不支持调整窗口或控件的位置、大小、层级和属性，不支持添加、删除控件，也不支持新增、删除或修改控件事件绑定。禁止写入窗口 XML 或声称已完成这些界面修改。\n"

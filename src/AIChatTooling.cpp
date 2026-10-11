@@ -1082,7 +1082,7 @@ std::string ExecuteToolCallImpl(
 	}
 
 
-	if (toolName == "add_new_file" || toolName == "e_packager" || toolName == "read_real_file" ||
+	if (toolName == "add_new_file" || toolName == "delete_file" || toolName == "e_packager" || toolName == "read_real_file" ||
 		toolName == "update_plan" ||
 		toolName == "refresh_workspace_mirror" ||
 		toolName == "get_current_page_info" ||
@@ -1205,6 +1205,12 @@ bool ShouldBypassToolApprovalForScope(const std::string& approvalScope)
 
 
 #if !defined(_M_IX86)
+std::string FinalizeDeletedFileAfterMirrorRefresh(const std::string& resultLocal, bool& outOk)
+{
+    outOk = false;
+    return resultLocal;
+}
+
 std::string FinalizeNewFileAfterMirrorRefresh(const std::string& resultLocal, bool& outOk)
 {
     outOk = false;

@@ -112,6 +112,7 @@ bool IsSourceWriteTool(const std::string& toolName)
 		normalized == "multi_edit_file" ||
 		normalized == "write_file" ||
 		normalized == "add_new_file" ||
+		normalized == "delete_file" ||
 		normalized == "restore_file_snapshot";
 }
 

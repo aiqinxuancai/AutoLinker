@@ -608,6 +608,30 @@ R"json(
     }
   },
   {
+    "name": "delete_file",
+    "description": "Delete one local assembly or class and all its subroutines from the live E-language project using the native IDE command, verify its removal, and rebuild the workspace mirror. Read read_real_file first and pass code_hash as expected_base_hash. Does not rewrite references in other pages. Window-bound assemblies, form XML, fixed tables and imported module files are rejected. Does not save the project to disk.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact workspace mirror source path returned by list_files or add_new_file."
+        },
+        "expected_base_hash": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Live source code_hash from read_real_file; deletion is rejected if the page has changed."
+        }
+      },
+      "required": [
+        "file_path",
+        "expected_base_hash"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
     "name": "get_current_page_info",
     "description": "Get current IDE page name, page type and the trace/source used to resolve that page name.",
     "inputSchema": {

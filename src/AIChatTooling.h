@@ -11,6 +11,9 @@ std::string ExecuteToolCallOnMainThread(
 	const std::string& argumentsJson,
 	bool& outOk);
 
+// 删除程序项的异步镜像发布完成后，验证程序树及镜像均已移除目标。
+std::string FinalizeDeletedFileAfterMirrorRefresh(const std::string& resultLocal, bool& outOk);
+
 // 新建程序项的异步镜像发布完成后，在主线程验证程序树与文件映射。
 std::string FinalizeNewFileAfterMirrorRefresh(const std::string& resultLocal, bool& outOk);
 

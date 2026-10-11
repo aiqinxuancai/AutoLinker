@@ -23,11 +23,10 @@
 
 #include "AutoLinkerInternal.h"
 #include "ArchiveExtractor.h"
-#include "DownloadProgressReporter.h"
+#include "AutoLinkerReleaseClient.h"
 #include "EideProjectBinarySerializer.h"
 #include "Global.h"
 #include "PathHelper.h"
-#include "WinINetUtil.h"
 
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -37,12 +36,6 @@ namespace {
 
 using json = nlohmann::json;
 
-constexpr const char* kLatestReleaseApi = "https://api.github.com/repos/aiqinxuancai/e-packager/releases/latest";
-constexpr const char* kGitHubBaseUrl = "https://github.com/";
-constexpr const char* kGitHubAcceleratorBaseUrl = "https://github-fast.apptest.dev/";
-constexpr const char* kGitHubHeaders =
-	"User-Agent: AutoLinker\r\n"
-	"Accept: application/vnd.github+json\r\n";
 constexpr long long kUpdateCheckIntervalSeconds = 7LL * 24LL * 60LL * 60LL;
 
 std::atomic_bool g_unpackTaskRunning = false;
@@ -114,6 +107,7 @@ struct LatestReleaseInfo {
 	std::string assetName;
 	std::string downloadUrl;
 	std::uint64_t assetSize = 0;
+	std::string digest;
 };
 
 LatestReleaseInfo g_checkedRelease;
@@ -271,14 +265,6 @@ std::string TrimAsciiCopy(std::string text)
 		--end;
 	}
 	return text.substr(begin, end - begin);
-}
-
-bool EndsWithInsensitive(const std::string& text, const std::string& suffix)
-{
-	if (text.size() < suffix.size()) {
-		return false;
-	}
-	return ToLowerAscii(text.substr(text.size() - suffix.size())) == ToLowerAscii(suffix);
 }
 
 std::string StripLeadingVersionPrefix(std::string version)
@@ -733,45 +719,16 @@ bool IsUpdateCheckDue(bool toolExists)
 bool FetchLatestRelease(LatestReleaseInfo& outInfo, std::string& outError)
 {
 	OutputStringToELog("[e-packager] 正在检查最新版本...");
-	auto response = PerformGetRequest(kLatestReleaseApi, kGitHubHeaders, 60000, false, false);
-	if (response.second != 200) {
-		outError = response.second == 0
-			? std::string("GitHub API 请求失败，未收到 HTTP 响应")
-			: std::format("GitHub API HTTP {}", response.second);
-		if (!response.first.empty()) {
-			outError += ": " + response.first.substr(0, (std::min<size_t>)(response.first.size(), 300));
-		}
+	AutoLinkerReleaseInfo release;
+	if (!AutoLinkerReleaseClient::FetchLatest(release, outError, ReleaseComponent::EPackager)) {
 		return false;
 	}
-
-	json release = json::parse(response.first, nullptr, false);
-	if (!release.is_object()) {
-		outError = "GitHub API 返回的 release JSON 无效";
-		return false;
-	}
-
-	LatestReleaseInfo info = {};
-	info.tag = release.value("tag_name", std::string());
-	const json assets = release.value("assets", json::array());
-	for (const auto& asset : assets) {
-		if (!asset.is_object()) {
-			continue;
-		}
-		const std::string name = asset.value("name", std::string());
-		const std::string lowered = ToLowerAscii(name);
-		if (lowered.find("windows-win32") == std::string::npos || !EndsWithInsensitive(name, ".zip")) {
-			continue;
-		}
-		info.assetName = name;
-		info.downloadUrl = asset.value("browser_download_url", std::string());
-		info.assetSize = asset.value("size", 0ULL);
-		break;
-	}
-
-	if (info.tag.empty() || info.assetName.empty() || info.downloadUrl.empty()) {
-		outError = "未找到 e-packager Windows Win32 zip 资源";
-		return false;
-	}
+	LatestReleaseInfo info;
+	info.tag = release.tag;
+	info.assetName = release.asset.name;
+	info.downloadUrl = release.asset.downloadUrl;
+	info.assetSize = release.asset.size;
+	info.digest = release.asset.digest;
 
 	outInfo = std::move(info);
 	OutputStringToELog(std::format("[e-packager] 最新版本：{} ({})", outInfo.tag, outInfo.assetName));
@@ -826,77 +783,21 @@ bool WriteBinaryFile(const std::filesystem::path& path, const std::string& bytes
 	return true;
 }
 
-std::string BuildAcceleratedGitHubUrl(const std::string& url)
-{
-	const std::string githubBaseUrl = kGitHubBaseUrl;
-	if (url.rfind(githubBaseUrl, 0) != 0) {
-		return url;
-	}
-	return std::string(kGitHubAcceleratorBaseUrl) + url.substr(githubBaseUrl.size());
-}
-
-bool IsZipResponse(const std::string& bytes)
-{
-	if (bytes.size() < 4 || bytes[0] != 'P' || bytes[1] != 'K') {
-		return false;
-	}
-	return (bytes[2] == '\x03' && bytes[3] == '\x04') ||
-		(bytes[2] == '\x05' && bytes[3] == '\x06') ||
-		(bytes[2] == '\x07' && bytes[3] == '\x08');
-}
-
-std::string DescribeDownloadFailure(const std::pair<std::string, int>& response)
-{
-	if (response.second == 200) {
-		return std::format("响应内容不是有效的 ZIP 文件（{} 字节）", response.first.size());
-	}
-
-	std::string error = response.second == 0
-		? std::string("未收到 HTTP 响应")
-		: std::format("HTTP {}", response.second);
-	if (!response.first.empty()) {
-		error += ": " + response.first.substr(0, (std::min<size_t>)(response.first.size(), 300));
-	}
-	return error;
-}
-
 bool DownloadZip(const LatestReleaseInfo& info, const std::filesystem::path& zipPath, std::string& outError)
 {
-	const auto download = [&info](const std::string& url) {
-		DownloadProgressReporter progress("[e-packager]", info.assetSize);
-		return PerformGetRequest(
-			url,
-			kGitHubHeaders,
-			300000,
-			false,
-			false,
-			[&progress](std::uint64_t downloadedBytes, std::uint64_t totalBytes) {
-				if (const auto message = progress.Update(downloadedBytes, totalBytes)) {
-					OutputStringToELog(LocalFromUtf8(*message));
-				}
-			});
-	};
-
-	const std::string acceleratedUrl = BuildAcceleratedGitHubUrl(info.downloadUrl);
-	OutputStringToELog(std::format("[e-packager] 通过 GitHub 加速地址下载：{}", acceleratedUrl));
-	auto response = download(acceleratedUrl);
-	if (response.second != 200 || !IsZipResponse(response.first)) {
-		const std::string acceleratedError = DescribeDownloadFailure(response);
-		OutputStringToELog("[e-packager] GitHub 加速地址下载失败，将尝试原始 GitHub 地址：" + acceleratedError);
-		OutputStringToELog(std::format("[e-packager] 通过原始 GitHub 地址下载：{}", info.downloadUrl));
-		response = download(info.downloadUrl);
-		if (response.second != 200 || !IsZipResponse(response.first)) {
-			outError = "GitHub 加速地址下载失败（" + acceleratedError + "）；原始 GitHub 地址下载失败（" +
-				DescribeDownloadFailure(response) + "）";
-			return false;
-		}
-	}
-
-	if (!WriteBinaryFile(zipPath, response.first, outError)) {
+	AutoLinkerReleaseAsset asset;
+	asset.name = info.assetName;
+	asset.downloadUrl = info.downloadUrl;
+	asset.size = info.assetSize;
+	asset.digest = info.digest;
+	std::string bytes;
+	if (!AutoLinkerReleaseClient::DownloadArchive(asset, bytes, outError, ReleaseComponent::EPackager)) {
 		return false;
 	}
-
-	OutputStringToELog(std::format("[e-packager] 下载完成，大小 {} 字节", response.first.size()));
+	if (!WriteBinaryFile(zipPath, bytes, outError)) {
+		return false;
+	}
+	OutputStringToELog(std::format("[e-packager] 下载完成，大小 {} 字节", bytes.size()));
 	return true;
 }
 

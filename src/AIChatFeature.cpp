@@ -1502,6 +1502,7 @@ bool IsPlanModeWriteBlockedTool(const std::string& toolName)
 		_stricmp(toolName.c_str(), "write_file") == 0 ||
 		_stricmp(toolName.c_str(), "restore_file_snapshot") == 0 ||
 		_stricmp(toolName.c_str(), "add_new_file") == 0 ||
+		_stricmp(toolName.c_str(), "delete_file") == 0 ||
 		_stricmp(toolName.c_str(), "add_module_to_project") == 0 ||
 		_stricmp(toolName.c_str(), "remove_module_from_project") == 0 ||
 		_stricmp(toolName.c_str(), "add_support_library_to_project") == 0 ||
@@ -1517,6 +1518,7 @@ bool IsToolRequiringInteractiveApproval(const std::string& toolName)
 		_stricmp(toolName.c_str(), "write_file") == 0 ||
 		_stricmp(toolName.c_str(), "restore_file_snapshot") == 0 ||
 		_stricmp(toolName.c_str(), "add_new_file") == 0 ||
+		_stricmp(toolName.c_str(), "delete_file") == 0 ||
 		_stricmp(toolName.c_str(), "add_module_to_project") == 0 ||
 		_stricmp(toolName.c_str(), "remove_module_from_project") == 0 ||
 		_stricmp(toolName.c_str(), "add_support_library_to_project") == 0 ||
@@ -1621,6 +1623,7 @@ std::string TruncateUtf8ForToolApproval(std::string text, size_t maxBytes)
 
 std::string ToolApprovalTitleLocal(const std::string& toolName)
 {
+	if (toolName == "delete_file") return LocalFromWide(L"批准删除程序集或类");
 	if (_stricmp(toolName.c_str(), "edit_file") == 0) {
 		return LocalFromWide(L"\u6279\u51c6\u5355\u5904\u4ee3\u7801\u4fee\u6539");
 	}
@@ -1705,6 +1708,13 @@ nlohmann::json BuildToolApprovalPayloadUtf8(
 	}
 	if (!filePathUtf8.empty()) {
 		payload["file_path"] = filePathUtf8;
+	}
+	if (toolName == "delete_file") {
+		payload["summary"] = LocalToUtf8Text(LocalFromWide(L"删除此程序集或类及其中全部子程序；其他页面中的引用不会自动修改。"));
+		payload["preview_kind"] = "text";
+		payload["preview_ok"] = !filePathUtf8.empty();
+		payload["preview_text"] = filePathUtf8;
+		return payload;
 	}
 	if (_stricmp(toolName.c_str(), "view_image") == 0) {
 		payload["summary"] = LocalToUtf8Text(LocalFromWide(
@@ -10042,6 +10052,7 @@ void PumpToolScheduler()
                 auto finalResult = Utf8ToLocalText(DumpJsonUtf8(result));
                 bool finalOk = request->savedOk;
                 if (request->toolName == "add_new_file") finalResult = FinalizeNewFileAfterMirrorRefresh(finalResult, finalOk);
+                if (request->toolName == "delete_file") finalResult = FinalizeDeletedFileAfterMirrorRefresh(finalResult, finalOk);
                 FinishScheduledTool(finalOk, finalResult); return;
             }
             if (!ok) {
