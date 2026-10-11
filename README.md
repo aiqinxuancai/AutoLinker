@@ -101,10 +101,14 @@ url = "http://127.0.0.1:19207/mcp"
 - 读取统一走镜像相对路径（`list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`）；大文件返回 `next_source_byte_offset` 用于续读。续页建议原样回传上一页的非零 `mirror_generation`；漏传时自动绑定当前镜像代次，显式传入的旧代次游标仍会被拒绝。
 - 编辑前用 `read_real_file` 取分页视图和 `code_hash` 作为 CAS 基线。写工具（`edit_file`、`multi_edit_file`、`write_file` 等）以 `file_path` 为目标，映射回 IDE 程序项后直接写回 IDE，不回包编译。
 - 写入须带 SHA-256 `expected_base_hash`（恢复用 `expected_current_hash`）防止旧基线覆盖新改动；结果仅返回哈希、快照、验证与变更统计，完整结果在 `structuredContent`。
+- 删除普通程序集或类使用 `delete_file`：先调用 `read_real_file`，再传入 `file_path` 和返回的 `code_hash` 作为 `expected_base_hash`。删除包含其成员与全部子程序，不自动改写其他页面的引用，也不自动保存工程；窗口绑定程序集、窗口 XML、固定表和导入模块文件不支持此入口。成功返回 `deleted=true`、`verified=true` 和 `workspace_mirror_refreshed=true`；若已删除但镜像刷新失败，应先刷新镜像，不要直接重试删除。
 - `src/*.xml` 为易语言原生窗口界面文件，仅供读取搜索。当前工具不支持调整窗口或控件的位置、大小、层级和属性，不支持添加、删除控件，也不支持新增、删除或修改控件事件绑定。对应 `src/*.txt` 中的窗口程序集代码和已有事件处理代码仍可编辑，但新增事件子程序不代表已经建立控件事件绑定。固定表（常量、全局变量、DLL 声明、数据类型）可经对应路径编辑，程序集变量写回会按 IDE 可接受格式处理。
+- 模块管理工具仅在用户明确要求列出、导入或移除模块时调用，不用于自动探索或推测依赖。移除工程引用使用 `remove_module_from_project`，不要使用 `delete_file`。
 - 同时打开多个 IDE 时，先调用 `list_instances` 查看目标工程，再用 `select_instance` 选择实例；选择按 `Mcp-Session-Id` 隔离，实例退出后不会静默切换。
 
 ### 公开工具（`tools/list`）
+
+当前代码对外公开 **26 个工具**（含两个实例路由工具）；连接后的实际清单以 `tools/list` 为准。下表只列外部 MCP 工具，内置 AI 的计划、技能读取、通用命令执行等工具不对外开放。
 
 | 类别 | 方法 | 说明 |
 | --- | --- | --- |
@@ -115,16 +119,20 @@ url = "http://127.0.0.1:19207/mcp"
 | 读取 | `read_file` / `read_files` | 读取单个 / 批量文件或区间，带行号 |
 | 读取 | `read_code_item` | 按顶层代码项名读取完整子程序 / 声明块 |
 | 读取 | `read_real_file` | 从 IDE 真实页返回分页视图与 `code_hash`（写前基线） |
-| 编辑 | `edit_file` / `multi_edit_file` | 精确文本替换（单个 / 批量） |
-| 编辑 | `write_file` | 完整源码覆盖真实页，支持 `expected_base_hash` |
-| 编辑 | `diff_file` | 预览结构化差异，不写回 |
-| 编辑 | `restore_file_snapshot` | 恢复写入前快照 |
+| 编辑 | `edit_file` / `multi_edit_file` | 精确文本替换（单个 / 批量），外部调用须带 `expected_base_hash` |
+| 编辑 | `write_file` | 以 `full_code` 完整覆盖真实页，外部调用须带 `expected_base_hash` |
+| 编辑 | `diff_file` | 基于真实页预览结构化差异，不写回；外部调用须带 `expected_base_hash` |
+| 编辑 | `restore_file_snapshot` | 恢复最近一次或指定 `snapshot_id` 的真实页快照，外部调用须带 `expected_current_hash` |
+| 编辑 | `add_new_file` | 新建程序集或类，可直接写入完整源码并刷新镜像 |
+| 编辑 | `delete_file` | 删除普通程序集或类及其全部子程序，须带 `expected_base_hash`；验证删除并刷新镜像，不自动保存工程 |
+| 模块 | `list_imported_modules` | 按用户明确要求列出当前工程已导入的 `.ec` 模块 |
+| 模块 | `add_module_to_project` | 按 `module_path` 或 `module_name` 导入指定模块，实际导入须设置 `allow_blocking_import=true` |
+| 模块 | `remove_module_from_project` | 按 `module_index`、`module_path` 或 `module_name` 移除工程中指定的模块引用 |
 | 当前页 | `get_current_page_info` | 当前页名称、类型与解析来源 |
 | 当前页 | `get_current_eide_info` | 源码路径、IDE 进程路径、MCP 端口等 |
 | 路由 | `list_instances` | 列出运行中的 AutoLinker IDE 实例和当前会话选择 |
 | 路由 | `select_instance` | 将当前 MCP 会话路由到指定实例 |
-| 编译 | `compile_with_output_path` | `target` 默认 `auto`，以产物指纹验证成功 |
-| 交互 | `run_powershell_command` | 经确认后执行 PowerShell，超时终止进程树 |
+| 编译 | `compile_with_output_path` | 编译到指定 `output_path`；支持易语言原生 / 黑月编译，`target` 默认 `auto`，以更新后的产物和配置恢复结果验证成功 |
 | 联网 | `search_web_tavily` | 联网搜索网页 |
 | 联网 | `fetch_url` | 抓取公网 HTTP(S) 文本，拦截回环 / 私网 / 重定向 |
 | 联网 | `extract_web_document` | 提取网页正文与绝对链接摘要 |
@@ -132,6 +140,13 @@ url = "http://127.0.0.1:19207/mcp"
 ## 其他功能
 
 ### ⭐ 无头命令行编译
+
+黑月编译使用 `--blackmoon asm|cxx|vcxx`，不要同时传 `--static`。直接调用
+`compile_with_output_path` 时必须显式设置 `compiler="blackmoon"`，完全省略
+`static_compile`，目标仅允许 `auto` 或当前 EXE/DLL 工程类型。普通编译省略
+`blackmoon_mode`；参数冲突会返回 `error` 和可操作的 `hint`，不会隐式切换编译器。
+配置在跨进程锁保护下临时切换，编译结果收集后恢复。详细说明及回归方法见
+[黑月编译验证](docs/blackmoon-compile-verification.md)。
 推荐用 `AutoLinkerTest headless-compile` 启动 e.exe：自动关闭启动期弹窗、隐藏 IDE、调用 `compile_with_output_path`，并把结果 JSON 输出到控制台。该启动器支持多个进程同时调用：同一 `.e` 工程按调用顺序排队，不同工程可并行编译；输出路径仍应由调用方自行保持唯一。
 
 ```powershell
@@ -140,7 +155,7 @@ url = "http://127.0.0.1:19207/mcp"
   --target auto --static --result "D:\demo\build\compile-result.json" --timeout 120
 ```
 
-`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL。省略 `--result` 时，每次调用生成独立的 `<输出文件>.headless.<invocation-id>.json`，并原子更新兼容文件 `<输出文件>.headless.json`。`{易语言目录}\AutoLinker\Log\headless_compile_last.json` 也是原子更新的“最近一次结果”，并发调用方不应依赖它区分各自结果。显式传入 `--result` 时，并发调用方应分别使用不同路径。
+`target` 支持 `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom`；`--static` 仅适用于 EXE/DLL。需要黑月编译时增加 `--blackmoon asm|cxx|vcxx`（分别对应汇编、C/C++、VC++模式），启动器会在 IDE 进程内确认 `BlackMoon.fne` 已加载且配置可用；不可用时直接返回错误。省略 `--result` 时，每次调用生成独立的 `<输出文件>.headless.<invocation-id>.json`，并原子更新兼容文件 `<输出文件>.headless.json`。`{易语言目录}\AutoLinker\Log\headless_compile_last.json` 也是原子更新的“最近一次结果”，并发调用方不应依赖它区分各自结果。显式传入 `--result` 时，并发调用方应分别使用不同路径。
 
 也可直接启动主程序（仅负责无头编译，早期弹窗和同一工程的并发启动协调仍建议用启动器）：
 
