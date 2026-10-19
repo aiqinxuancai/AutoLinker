@@ -4,7 +4,8 @@ description: >-
   AutoLinker 易语言 AI Agent 支持库使用指南。涵盖安装配置、AI 对话与图片输入、
   计划/目标模式、右键菜单、.AGENTS.md 规范、链接器切换、EC 模块管理、MCP 服务器、
   外部 Agent 配置、多实例路由、无界面编译、核心库重写。用于配置 AutoLinker、
-  连接外部 Agent 到易语言 IDE、理解代码读取原理、排查兼容性和连接问题。
+  连接外部 Agent 到易语言 IDE、理解代码读取原理，以及按错误原文和 trace 排查
+  快照、镜像、MCP、源码写入、编译、备份恢复和版本兼容性问题。
 ---
 
 # AutoLinker 使用指南
@@ -22,7 +23,7 @@ AutoLinker（`AutoLinker.fne`）是易语言支持库，在 IDE 启动时加载�
 1. 下载最新 Release，将 `AutoLinker.fne` 放入易语言 `lib` 目录，在 IDE 中启用该支持库。
 2. 使用易语言 **5.95**。其他版本不受支持。
 3. 不支持 Windows 7。
-4. IDE 启动时自动启动 MCP 服务器，日志写入 IDE 输出窗口和 `autolinker.log`。
+4. IDE 启动时自动启动 MCP 服务器，日志写入 IDE 输出窗口和 `AutoLinker\Log\autolinker_pid<PID>.log`。
 
 已安装后通过”工具菜单 → AutoLinker 设置 → 关于 → 组件更新”检查和更新 AutoLinker 或 e-packager。更新 AutoLinker 需退出 IDE 后替换 `AutoLinker.fne`。
 
@@ -283,15 +284,21 @@ MSBuild.exe ..\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platfor
 
 ## 兼容性和问题反馈前提
 
-回答或排查 AutoLinker 问题前，按以下顺序确认环境：
+回答或排查 AutoLinker 问题时，记录以下环境信息；缺少信息时先根据错误原文定位阶段，不要中断已有日志和代码的分析：
 
 1. 确认操作系统不是 Windows 7。
 2. 确认使用易语言 **5.95**；其他版本不在支持范围内。
 3. 确认已更新到**最新版 AutoLinker**。
-4. 确认没有同时加载其他第三方插件或支持库。遇到闪退、异常行为或疑似冲突时，先卸载或禁用其他插件，仅保留 AutoLinker 后重新测试。
-5. 只有在上述条件全部满足且问题仍可复现时，再按 AutoLinker 问题继续排查，并提供易语言版本、AutoLinker 版本、复现步骤和相关日志。
+4. 记录同时加载的其他第三方插件或支持库。遇到闪退、异常行为或疑似冲突时，在测试副本中逐项禁用额外插件作对照，保留工程所需依赖。
+5. 提供实际启动的 EXE 路径和哈希、AutoLinker 版本、复现步骤和对应 PID 的日志。用户不知道易语言版本时，可以直接检查其 EXE；文件名、目录名和版本资源均不足以证明内部接口兼容。
 
 不要在易语言版本不受支持、AutoLinker 不是最新版或插件冲突尚未排除时，直接将现象判定为 AutoLinker 缺陷。
+
+### 按错误原文定位原因
+
+收到报错、失败的工具结果或日志时，读取 [错误原因与排查参考](references/troubleshooting.md) 中对应类别。该参考包含原始错误/trace、源码触发条件、下一步验证、重试边界，以及已检查的 EXE 指纹。
+
+先解释错误能证明什么，再列仍需验证的原因。特别注意：`memory_entry_unavailable` 表示入口解析或校验失败，不能直接断言版本过旧、工程损坏或内存不足；`tool_response_timeout` 可能发生在操作已执行之后，不能自动重发写入或编译。需要核对 MCP 参数时再查 [MCP API 参考](references/mcp-api.md)。
 
 ## 常见问题
 

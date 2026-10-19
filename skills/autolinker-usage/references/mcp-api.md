@@ -566,13 +566,6 @@ HTTP GET 获取公开 URL 的规范化文本和基础响应元数据。仅允许
 
 ## 常见错误
 
-| 错误 | 含义和处理 |
-| --- | --- |
-| JSON-RPC `-32001` / `mcp_session_not_found` | 会话未知或过期；重新 `initialize` 并保存新会话头 |
-| JSON-RPC `-32602` | 工具名、参数类型、额外参数或外部 CAS 哈希不合法；对照本参考和 `tools/list` |
-| `no_source_open` | 目标 IDE 没打开 `.e`；打开工程后用 `get_current_eide_info` 确认 |
-| `workspace_refresh_required` | 当前会话尚未成功刷新；调用 `refresh_workspace_mirror` 后重试 |
-| generation mismatch | 分页跨越了镜像刷新；从第一页重新读取，不要复用旧 offset |
-| expected hash mismatch | IDE 真实页在读取后变化；重新 `read_real_file`，基于新内容重做修改 |
-| `instance_not_found` / `instance_unreachable` | 所选 IDE 已退出或注册失效；重新 `list_instances` 并选择 |
-| `browser_origin_not_allowed` | 请求来自浏览器上下文；改用原生 MCP 客户端，不要绕过 Origin 防护 |
+按错误原文查阅 [错误原因与排查参考](troubleshooting.md)，其中区分 MCP 会话/路由、镜像准备、源码 CAS、内存快照、编译和恢复失败。参数定义仍以本页及当前实例的 `tools/list` 为准。
+
+JSON-RPC `-32003` 的 `tool_response_timeout` / `tool_response_unavailable` 表示执行结果未知；先核查目标实例状态和日志，不要自动重发写入、恢复或编译请求。
