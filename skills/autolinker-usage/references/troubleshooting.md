@@ -1,6 +1,6 @@
 ﻿# AutoLinker 错误原因与排查参考
 
-根据 2026-10-19 工作区代码及本机 EXE 检查整理。错误文案会随版本变化；先匹配完整 `error` 和 `trace`，再在对应版本源码中核对。下列“触发条件”是代码事实，“检查方向”不表示已证实该用户的根因。不是所有错误都会带 trace。
+原始排查记录来自 2026-10-19；2026-11-08 补充跨版本恢复、窗口事务、EideCore 分发及日志路由。错误文案会随版本变化；先匹配完整 `error` 和 `trace`，再在对应版本源码中核对。“检查方向”不表示已证实该用户的根因。不是所有错误都会带 trace。
 
 ## 按失败阶段导航
 
@@ -84,7 +84,7 @@ MD5 仅用于关联既有样本，不作为可信性判断。磁盘上的 FNE �
 
 ## 已检查的 EXE
 
-以下为 2026-10-19 本机**静态检查**，地址按 image base `0x400000` 表示。文件名仅帮助辨认本地样本，匹配样本以哈希为准；通过单个序列化入口校验不扩大产品整体支持范围（使用指南仍要求 5.95）。
+以下为 2026-10-19 本机**静态检查**，地址按 image base `0x400000` 表示。文件名仅帮助辨认样本，匹配以哈希为准；通过单个入口不能证明整套功能。当前支持下限为 5.6 / x86；2026-11-08 窗口运行验证已覆盖 5.6、5.71、5.95 和增强补丁 v1.1，正版补丁仅完成 ABI 验证，运行测试受加密狗授权限制。
 
 | 本机样本 | MD5 | 序列化入口检查 |
 | --- | --- | --- |
@@ -96,7 +96,7 @@ MD5 仅用于关联既有样本，不作为可信性判断。磁盘上的 FNE �
 
 5.0 样本的内层序列化 call 之前只有 6 个栈参数，当前 5.95 布局为 7 个，属于实际调用契约差异；不能简单放宽模式。补丁目录样本的 Windows FileVersion / ProductVersion 均为 `5, 9, 0, 0`，不能仅凭该字段确定小版本。其 SHA-256 为 `f37e8adbd861cc4fca8c0be619e40dfbea343529000d5acb9125e05cb61d559a`。
 
-仓库 `docs/memory-snapshot-investigation.md` 与 `docs/memory-snapshot-*-validation.json` 另记录了本机 5.95 / 5.71 的历史运行时回归；不要将这些结果套用到补丁样本或用户未知 EXE。用户此次只说明“其他电脑、不知道版本”，尚无其 EXE 和现场日志，根因未最终确定。
+仓库 `docs/test-results/restore-abi-compatibility-20261108/README.md` 记录最新映像身份与测试边界。不要将已验证样本的结果套用到用户未知 EXE，仍需现场日志和实际二进制身份。
 
 ## 工作区镜像与解包
 
@@ -152,7 +152,7 @@ MD5 仅用于关联既有样本，不作为可信性判断。磁盘上的 FNE �
 | --- | --- |
 | `expected_base_hash is required; call read_real_file first` | 缺少真实页 CAS 基线；先 read_real_file，不能用镜像文件哈希代替 |
 | `expected_base_hash mismatch` | 实际页内容与编辑基线不同；重新读取，基于新内容重做修改，不替换哈希后盲目提交旧补丁 |
-| `file_path is not mapped to an editable current-project source page` | 路径未映射到可写当前工程页；核对 `src/` 文本路径。依赖镜像与窗口 XML 不能靠该工具强行写入 |
+| `file_path is not mapped to an editable current-project source page` | 核对当前镜像映射和 `src/` 路径；依赖镜像不可写。已有窗口 XML 使用支持窗口事务的写工具，新窗口用 `write_window`，不是普通 TXT 页 |
 | `old_text not found` / `old_text not found in active edit base` | 替换前文本在真实编辑基线不存在；核对页面、换行、空白及最新代码 |
 | `old_text matched multiple times` / `old_text matched multiple times in active edit base` | 匹配不唯一；增大有效上下文或按工具支持方式消除歧义 |
 | `whole page write verify failed` / `verify_mismatch` | 写入后的验证不符合预期；读取最终真实页与回滚日志，不能假定完全没写入后重复执行 |
@@ -193,7 +193,8 @@ MD5 仅用于关联既有样本，不作为可信性判断。磁盘上的 FNE �
 | `empty_snapshot` | 快照回调结束后文件不存在或大小为零；追查快照阶段，不发布空文件 |
 | `publish_snapshot_failed: <Win32码>` | 临时备份无法移动/复制到最终 `.BAK` 目录；检查目录权限、磁盘和具体系统码 |
 | `retention warning`（日志关键词） | 新备份可能已成功发布，仅旧备份清理异常；核对实际输出路径，不能一概说备份失败 |
-| `unsupported_ide_requires_e5.95` | 恢复功能的 EXE 基址、架构、镜像大小或固定签名校验失败；与序列化入口是独立检查，文件名叫 5.95 也不保证通过 |
+| `unsupported_ide_restore_abi` | 恢复 ABI 的锚点、调用链或运行时入口未通过验证；核对 x86、磁盘映像和 Hook trace，不能仅按版本名放行 |
+| `unsupported_ide_requires_e5.95`（旧版本） | 历史版本的固定布局检查失败；现版本使用动态 ABI 校验，先确认实际加载的 FNE |
 | `current_project_identity_unavailable` | 无法读取当前文档状态和路径字段；确认工程已打开、路径和对象有效 |
 | `restore_identity_missing` | 恢复时缺少原工程身份路径；停止该恢复流程，追查身份捕获 |
 | `restore_identity_mismatch` | native reload 后工程路径字段与原身份不一致；检查恢复及安全备份回滚结果，不继续叠加恢复 |
@@ -203,7 +204,24 @@ MD5 仅用于关联既有样本，不作为可信性判断。磁盘上的 FNE �
 
 工程恢复会替换 IDE 内存内容；调查请求不自动授权覆盖用户工作。已有明确恢复授权时按既定流程执行，先保留安全备份并检查回滚结果，不循环恢复未知状态。
 
+## 原生窗口事务
+
+`[AutoLinker][AbiResolver]` 的已知入口及 pattern_scan 诊断仅写入 `autolinker_pid<PID>.log`，不显示在 IDE 输出中。合法入口 Hook 可通过校验并保留原调用入口；循环跳转、不可执行目标、指令损坏或歧义布局会拒绝操作，不能为消除报错跳过校验。
+
+| 错误 / 字段 | 处理 |
+| --- | --- |
+| `expected_base_hash mismatch` | XML 重新 `read_real_file`；`code_files` 刷新后重新 `read_file`，合并改动后再提交 |
+| `window_isolated_validation_failed` | EideCore 加载预检失败；查看 `source_validation`，此阶段未修改当前 IDE |
+| `source_validation.performed=false` | 未安装 EideCore，跳过独立加载预检；不代表执行过编译校验 |
+| `window_event_handler_cannot_be_shared` | 每个事件绑定使用独立处理器，共用逻辑抽为普通子程序 |
+| `window_event_symbol_ambiguous` | 自动解绑改名无法确定符号归属，通过 `code_files` 显式提交方法和引用修改 |
+| `window_project_changed_after_reload` / `rollback_skipped` | 加载后存在外部修改，不能覆盖；先查真实状态及 `safety_snapshot`，不要盲目重发或恢复 |
+
+失败检查 `rolled_back`，成功检查 `verified`；XML 撤回需重交旧 XML 和相关代码，`restore_file_snapshot` 仅适用于 TXT 页。超时不能证明事务尚未执行。
+
 ## AI 接口与组件安装
+
+EideCore 普通启动缺失时只尝试下载安装一次，已安装后不检查更新；失败后在关于页手动重试。旧 Release 无 `components.eidecore` 或校验失败会拒绝安装，不回退到无哈希校验下载。文件被编译进程占用时保留旧文件，等待任务结束后重试，不要求管理员权限来绕过占用。显示旧 tag 可能是发布复用原附件，不表示安装失败。
 
 此类错误先参考主 skill 中的接口与组件安装说明。与本地序列化/镜像错误分开归因：修改 API Key 无法修复 `memory_entry_unavailable`。
 

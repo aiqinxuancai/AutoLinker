@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
   <img src="res/icon128.png" width="128" alt="AutoLinker" />
   <h1>AutoLinker</h1>
 </div>
@@ -10,9 +10,13 @@ AutoLinker 是易语言的 AI Agent 支持库，通过逆向让 AI 全自动编�
 > 📖 [易语言 × AI Agent 实践白皮书](https://github.com/aiqinxuancai/Awesome-E-Agent) ·
 > 📖 [e-packager：拆解 .e 为 txt 修改后再打包](https://github.com/aiqinxuancai/e-packager)
 
+仓库另包含 [EideCore 独立工程与编译核心](EideCore/README.md)：三个 x86 项目共用可重定位 COFF 核心，生成原生 DLL、静态 LIB 和 Console，在当前进程内加载、序列化、编译工程，无需原 IDE EXE 或旁置核心 DLL。链接器、支持库等通过外部目录提供；目前仍属于尚未完成全部 GUI 死代码裁剪及重定位审计的实验实现。
+
 ## 快速开始
 
 下载 Release 后，将 `AutoLinker.fne` 放入易语言 `lib` 目录并启用该支持库。
+
+支持下限为易语言 **5.6 / x86**，主要开发环境为 5.95；实际操作须通过 ABI 布局和入口校验。窗口事务已在 5.6、5.71、5.95 及 5.95 增强补丁 v1.1 上实测；5.93→5.95 正版补丁仅完成 ABI 验证，运行验证受加密狗授权限制。未知版本不按版本号自动放行，详见 [兼容报告](docs/test-results/restore-abi-compatibility-20261108/README.md)。
 
 > 🔧 [AI / MCP 功能配置指南（API Key、中转站、各平台配置）](./CONFIG.md)
 >
@@ -99,16 +103,18 @@ url = "http://127.0.0.1:19207/mcp"
 - 内置 AI 每轮请求前以 `full` 模式自动准备镜像；外部 MCP 会话首次读写前须调用 `refresh_workspace_mirror`。镜像由 e-packager 解包到 `%TEMP%/AutoLinker/workspace-mirror/`（含未保存改动），不污染源码目录。`mode` 支持 `auto` / `main_only` / `full`。
 - 仅当用户明确要求解析、查看、参考或复刻外部 `.e` / `.ec` 文件时，才调用 `e_packager`，且当前 MCP 会话必须先成功调用 `refresh_workspace_mirror`。参数为必填的 `file_path`（绝对路径，或相对当前工程目录的路径；只接受已存在的普通 `.e` / `.ec` 文件），会将文件解包到当前镜像的只读目录 `unimported_code/{文件名}/`；使用 `list_files` / `search_code` 定位文件，再用 `read_file` / `read_files` 读取，不对未引用源码使用 `read_code_item`，也不得使用写工具修改。同名目录仅在解包成功后替换；成功返回 `operation="unpack"`、`output_directory`、`file_count`、新的 `mirror_generation` 和 `read_hint`。解包会改变镜像代次，分页读取须从第一页重新开始。
 - 读取统一走镜像相对路径（`list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`）；大文件返回 `next_source_byte_offset` 用于续读。续页建议原样回传上一页的非零 `mirror_generation`；漏传时自动绑定当前镜像代次，显式传入的旧代次游标仍会被拒绝。
-- 编辑前用 `read_real_file` 取分页视图和 `code_hash` 作为 CAS 基线。写工具（`edit_file`、`multi_edit_file`、`write_file` 等）以 `file_path` 为目标，映射回 IDE 程序项后直接写回 IDE，不回包编译。
+- 编辑前用 `read_real_file` 取分页视图和 `code_hash` 作为 CAS 基线。写工具以 `file_path` 为目标：普通 TXT 直接写回 IDE 程序项，窗口 XML 使用下述完整工程事务。
 - 写入须带 SHA-256 `expected_base_hash`（恢复用 `expected_current_hash`）防止旧基线覆盖新改动；结果仅返回哈希、快照、验证与变更统计，完整结果在 `structuredContent`。
 - 删除普通程序集或类使用 `delete_file`：先调用 `read_real_file`，再传入 `file_path` 和返回的 `code_hash` 作为 `expected_base_hash`。删除包含其成员与全部子程序，不自动改写其他页面的引用，也不自动保存工程；窗口绑定程序集、窗口 XML、固定表和导入模块文件不支持此入口。成功返回 `deleted=true`、`verified=true` 和 `workspace_mirror_refreshed=true`；若已删除但镜像刷新失败，应先刷新镜像，不要直接重试删除。
-- `src/*.xml` 为易语言原生窗口界面文件，仅供读取搜索。当前工具不支持调整窗口或控件的位置、大小、层级和属性，不支持添加、删除控件，也不支持新增、删除或修改控件事件绑定。对应 `src/*.txt` 中的窗口程序集代码和已有事件处理代码仍可编辑，但新增事件子程序不代表已经建立控件事件绑定。固定表（常量、全局变量、DLL 声明、数据类型）可经对应路径编辑，程序集变量写回会按 IDE 可接受格式处理。
+- `src/*.xml` 为原生窗口 UI。已有窗口先用 `read_real_file` 取实时 XML 和哈希，再用 `write_file`、`edit_file`、`multi_edit_file` 或 `write_window` 修改控件、菜单、属性、层级与事件；新建窗口用 `write_window`，`expected_base_hash` 传空串。事务从未保存内存工程生成快照，经 e-packager 回包、内部恢复 ABI 加载并验证，不自动保存原 `.e`。详见 [原生窗口编辑](docs/native-window-editing.md)。
+- 事件代码可随 `write_window.code_files` 原子提交；仅新增子程序不等于绑定事件。每条绑定使用独立处理器，签名以真实 XML 事件定义为准。窗口整体删除、窗口改名和更换已有窗口所属程序集未开放；XML 撤回需重新提交旧 XML/代码，不用 `restore_file_snapshot`。视图重建可能重置撤销、光标及断点。
+- 固定表（常量、全局变量、DLL 声明、数据类型）可经对应 TXT 编辑。图片和声音资源表用资源工具管理，保存原始字节集，也可存任意二进制文件；增删后刷新镜像再读源码。
 - 模块管理工具仅在用户明确要求列出、导入或移除模块时调用，不用于自动探索或推测依赖。移除工程引用使用 `remove_module_from_project`，不要使用 `delete_file`。
 - 同时打开多个 IDE 时，先调用 `list_instances` 查看目标工程，再用 `select_instance` 选择实例；选择按 `Mcp-Session-Id` 隔离，实例退出后不会静默切换。
 
 ### 公开工具（`tools/list`）
 
-当前代码对外公开 **26 个工具**（含两个实例路由工具）；连接后的实际清单以 `tools/list` 为准。下表只列外部 MCP 工具，内置 AI 的计划、技能读取、通用命令执行等工具不对外开放。
+当前代码对外公开 **30 个工具**（含两个实例路由工具）；连接后的实际清单以 `tools/list` 为准。下表只列外部 MCP 工具，内置 AI 的计划、技能读取、通用命令执行等工具不对外开放。
 
 | 类别 | 方法 | 说明 |
 | --- | --- | --- |
@@ -124,6 +130,8 @@ url = "http://127.0.0.1:19207/mcp"
 | 编辑 | `diff_file` | 基于真实页预览结构化差异，不写回；外部调用须带 `expected_base_hash` |
 | 编辑 | `restore_file_snapshot` | 恢复最近一次或指定 `snapshot_id` 的真实页快照，外部调用须带 `expected_current_hash` |
 | 编辑 | `add_new_file` | 新建程序集或类，可直接写入完整源码并刷新镜像 |
+| 窗口 | `write_window` | 新建窗口或替换完整 XML，可原子提交事件代码；保留工程路径，不自动保存 |
+| 资源 | `list_resources` / `add_resource` / `delete_resource` | 列出、添加或按哈希删除本地图片/声音字节集；增删后刷新镜像 |
 | 编辑 | `delete_file` | 删除普通程序集或类及其全部子程序，须带 `expected_base_hash`；验证删除并刷新镜像，不自动保存工程 |
 | 模块 | `list_imported_modules` | 按用户明确要求列出当前工程已导入的 `.ec` 模块 |
 | 模块 | `add_module_to_project` | 按 `module_path` 或 `module_name` 导入指定模块，实际导入须设置 `allow_blocking_import=true` |
@@ -138,6 +146,18 @@ url = "http://127.0.0.1:19207/mcp"
 | 联网 | `extract_web_document` | 提取网页正文与绝对链接摘要 |
 
 ## 其他功能
+
+### EideCore 工具编译
+
+普通 IDE 启动时若 `tools/EideCore.exe` 缺失，会在后台尝试一次下载安装；失败可在“AutoLinker 设置 → 关于”手动重试。已安装后不自动检查或更新，只提供“手动更新”；无头编译启动不触发下载。也可从 AutoLinker Release 解压独立 EideCore 包到**易语言主程序目录**的 `tools` 文件夹。
+
+安装后，AI/MCP 的 `compile_with_output_path` 对普通、静态 EXE/DLL 编译自动使用独立核心。调用参数不变，返回 `backend="eidecore"`。未安装核心、黑月编译、发布 EC 模块，以及直接启动 e.exe 的无头编译仍使用原流程。
+
+新分支将当前 IDE **内存源码（含未保存修改）**写入源文件同目录的临时 `.e`，在无控制台窗口的子进程中编译；校验结果、目标 PE 类型和 SHA-256 后才替换目标文件，失败保留旧产物。首次未保存到 `.e` 路径的工程须先保存。错误返回真实数字错误码、代码片段和基于原生代码页文本的行号。详见 [接入说明与回归](docs/eidecore-tool-compile.md)。
+
+窗口编辑会使用已安装的 EideCore 做独立进程加载预检；未安装时跳过该预检并返回 `source_validation.performed=false`，`validate` 不等于编译检查。EideCore 显示实际构建 tag；发布时输入未变化且旧附件校验通过则原字节复用上一 Release，保留旧组件版本。SHA-256 只作完整性校验，不用于客户端更新判断。详见 [组件分发说明](docs/eidecore-distribution.md)。
+
+`[AutoLinker][AbiResolver]` 的入口匹配、Hook 校验和特征扫描诊断仅写入 `AutoLinker/Log/autolinker_pid<PID>.log`，不显示在 IDE 输出窗口。
 
 ### ⭐ 无头命令行编译
 

@@ -12,6 +12,7 @@ Streamable HTTP 接口。方法、参数和约束以 `src/LocalMcpServer.cpp`、
 - [多实例路由工具](#多实例路由工具)
 - [工作区与读取工具](#工作区与读取工具)
 - [源码编辑工具](#源码编辑工具)
+- [资源与模块工具](#资源与模块工具)
 - [IDE 状态与编译工具](#ide-状态与编译工具)
 - [网络工具](#网络工具)
 - [推荐调用流程](#推荐调用流程)
@@ -28,7 +29,7 @@ Streamable HTTP 接口。方法、参数和约束以 `src/LocalMcpServer.cpp`、
   30 分钟后可过期，服务器最多保留 256 个外部会话。
 - 服务器仅绑定 `127.0.0.1`，拒绝带非空 `Origin` 的浏览器请求，不提供 CORS 或
   Bearer Token。不要用反向代理把它暴露到局域网或互联网。
-- `tools/list` 当前返回 22 个工具：20 个 AutoLinker 原生公开工具和 2 个网关路由工具。
+- `tools/list` 当前返回 30 个工具：28 个 AutoLinker 原生公开工具和 2 个网关路由工具。
   所有工具的根参数都是对象；工具 Schema 均禁止未声明的顶层参数。
 
 ### 工程状态和刷新门禁
@@ -37,14 +38,14 @@ Streamable HTTP 接口。方法、参数和约束以 `src/LocalMcpServer.cpp`、
 `get_current_eide_info` 和三个网络工具。
 
 `refresh_workspace_mirror`、`get_current_page_info`、`add_new_file`、
-`compile_with_output_path` 要求当前实例已打开 `.e` 工程。
+`compile_with_output_path`、三个资源工具及三个模块管理工具要求当前实例已打开 `.e` 工程。
 
 下列工具同时要求已打开工程，并要求当前 MCP 会话已经成功调用
 `refresh_workspace_mirror`：
 
 - `e_packager`、`list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`
 - `read_real_file`、`edit_file`、`multi_edit_file`、`write_file`、`diff_file`
-- `restore_file_snapshot`
+- `restore_file_snapshot`、`write_window`、`delete_file`
 
 切换 IDE 实例后，应对新实例重新调用 `refresh_workspace_mirror`，再读取或编辑工程。
 
@@ -52,8 +53,11 @@ Streamable HTTP 接口。方法、参数和约束以 `src/LocalMcpServer.cpp`、
 
 - `file_path`、`path` 和 `glob` 都相对于 e-packager 工作区镜像根目录。
 - `src/` 是当前工程；其中 `src/*.txt` 可映射回 IDE 真实页面。
-- `src/*.xml` 是原生窗口 UI，只读。工具不能修改控件位置、大小、属性、层级、事件绑定，
-  也不能新增或删除控件。
+- `src/*.xml` 是原生窗口 UI。在通过 5.6 及以后 x86 ABI 校验的 IDE 中，可用 `read_real_file` 读取实时 XML，再用 `write_file`、`edit_file`、`multi_edit_file` 修改窗口/控件属性、层级及事件。
+- 新建窗口或同时提交事件处理代码使用 `write_window`；新窗口的 `expected_base_hash` 传空串，已有窗口传实时 XML 的 `code_hash`。`code_files` 中已有程序集传刷新后 `read_file` 的哈希，新程序集传空串。
+- 事件使用 `<按钮.事件 名称="被单击" 处理器="程序集::子程序"/>`；参数和返回类型以 XML 的 `.事件定义` 为准。IDE 会把处理器规范化为 `_控件名_事件名`；解绑时保留的旧处理器改成普通子程序名，结果通过 `detached_event_handlers` 告知。
+- 窗口事务保留工程路径及未保存内容，回包并通过内部恢复接口加载，不保存原 `.e`；安装 EideCore 时在独立进程预检。失败时仅在事务仍拥有当前工程状态时回滚；加载后有外部修改则保留安全快照并返回 `rollback_skipped`，避免覆盖新改动。视图重建可能重置撤销、光标及断点状态。
+- 涉及跨程序集引用的解绑须通过 `code_files` 显式同步引用；XML 撤回使用先前 XML/代码重新提交，`restore_file_snapshot` 用于 TXT 页。完整调用和验证见 [原生窗口编辑说明](../../../docs/native-window-editing.md)。
 - `ecom/`、`elib/`、`header/` 是依赖和公开接口参考，只能读取、列出和搜索。
 - 不要直接修改 `%TEMP%/AutoLinker/workspace-mirror/` 中的文件；写入必须使用 MCP 编辑工具。
 
@@ -73,7 +77,7 @@ Streamable HTTP 接口。方法、参数和约束以 `src/LocalMcpServer.cpp`、
 - 外部 MCP 调用 `edit_file`、`multi_edit_file`、`write_file`、`diff_file` 时，
   `expected_base_hash` 实际为必填，即使 JSON Schema 为兼容内置 AI 没把它列入 `required`。
 - `restore_file_snapshot` 同理必须传 `expected_current_hash`。
-- `read_file` 返回的是镜像哈希，不能代替 `read_real_file.code_hash` 作为外部写入基线。
+- 普通 TXT 写入和已有窗口 XML 使用 `read_real_file.code_hash`；`write_window.code_files` 中已有程序集专门要求刷新后 `read_file` 的镜像哈希，新文件传空串。不要混用这两种基线。
 - `read_real_file.content` 带有 `行号<TAB>` 显示前缀。构造 `old_text` 或 `full_code`
   时要移除这些前缀；它们不是易语言源码的一部分。
 
@@ -120,7 +124,7 @@ Streamable HTTP 接口。方法、参数和约束以 `src/LocalMcpServer.cpp`、
 
 ### `tools/list`
 
-列出当前全部 22 个工具和各自 `inputSchema`。`params` 传空对象；当前没有 cursor 分页，
+列出当前全部 30 个工具和各自 `inputSchema`。`params` 传空对象；当前没有 cursor 分页，
 响应结构为 `result.tools[]`。
 
 ### `tools/call`
@@ -354,12 +358,11 @@ e-packager 不可用或解包失败。
 
 ### `read_real_file`
 
-按镜像 `file_path` 映射并读取 IDE 当前真实页面。它是编辑已有源码前获取 CAS 基线的唯一
-正确工具；镜像内容可能与用户刚刚在 IDE 中修改的真实页不同。
+按镜像 `file_path` 读取 IDE 当前真实页面或窗口 XML，取得实时 CAS 基线。`write_window.code_files` 是例外：其中已有代码文件使用刷新后镜像的 `read_file.code_hash`。
 
 | 参数 | 类型 | 必填 | 默认/约束 | 说明 |
 | --- | --- | --- | --- | --- |
-| `file_path` | string | 是 | 可写 `src/*.txt` 路径 | 映射到 IDE 程序项 |
+| `file_path` | string | 是 | 可写 `src/*.txt` 或已有 `src/*.xml` | 映射到 IDE 程序项或实时窗口 |
 | `offset` | integer | 否 | `0` | 零基行偏移，使用 `next_offset` |
 | `limit` | integer | 否 | `20000` | 1 到 20000 行 |
 
@@ -369,9 +372,7 @@ e-packager 不可用或解包失败。
 
 ## 源码编辑工具
 
-这些工具只能写入当前工程可映射的 `src/*.txt` 页面。除 `add_new_file` 外，均先调用
-`read_real_file`。所有成功写入都会在写前保存快照，并对最终 IDE 页面做结构验证；成功结果
-通常含新的 `code_hash`、`snapshot_id` 和变更统计。
+普通编辑针对当前工程的 `src/*.txt`；`edit_file`、`multi_edit_file`、`write_file` 也支持已有窗口 XML，走完整工程事务。已有目标先 `read_real_file`；新窗口与原子事件代码见 `write_window`。TXT 快照和 XML 事务安全快照不同，不承诺 XML 返回可用于 `restore_file_snapshot` 的 `snapshot_id`。
 
 ### `edit_file`
 
@@ -380,7 +381,7 @@ e-packager 不可用或解包失败。
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `file_path` | string | 是 | 目标 `src/*.txt` 镜像路径 |
+| `file_path` | string | 是 | 目标 `src/*.txt` 或已有 `src/*.xml` 镜像路径 |
 | `old_text` | string | 是 | 非空、必须只匹配一次的原文 |
 | `new_text` | string | 是 | 替换文本，可为空以删除原文 |
 | `expected_base_hash` | string | 外部 MCP 必填 | 刚刚读取的 `read_real_file.code_hash` |
@@ -410,10 +411,14 @@ e-packager 不可用或解包失败。
 只有同时设置 `fail_on_unmatched=false` 和 `atomic=false` 才允许跳过失败项并写入成功项；
 默认行为是整批原子失败。
 
+XML 编辑始终是完整工程事务，不支持以 `atomic=false` 留下部分提交；未匹配项处理仍受 `fail_on_unmatched` 控制。
+
 ### `write_file`
 
 用完整源码覆盖一个真实页面。适合大范围重构；调用者必须先读取所有分页、移除显示行号，
 再构造完整 `full_code`。不要只把当前可见分页作为整页写回。
+
+已有窗口 XML 也使用 `full_code` 提交完整非空 XML；新增窗口用 `write_window`。下表中的 `file_path` 在此情况下为 `src/*.xml`。
 
 | 参数 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -466,6 +471,68 @@ e-packager 不可用或解包失败。
 类会保留/补齐 IDE 生命周期函数。成功结果包含最终 `file_path`、`name`、`code_hash`、
 `verified=true` 和新的镜像状态。它不能新建窗口或控件。
 
+### `write_window`
+
+新建窗口或替换完整 XML，同时可原子提交事件代码。
+
+| 参数 | 类型 | 必填 | 约束与说明 |
+| --- | --- | --- | --- |
+| `file_path` | string | 是 | 当前工程 `src/*.xml`，文件名须与 XML 窗口名一致 |
+| `full_xml` | string | 是 | 完整非空 XML，最多 16777216 字符 |
+| `expected_base_hash` | string | 是 | 已有窗口用实时 `read_real_file.code_hash`，新窗口为空串 |
+| `assembly_name` | string | 否 | 1–255 字符；默认 `窗口程序集_窗口名`，可给未绑定窗口附加程序集，不能切换已有绑定 |
+| `code_files` | object[] | 否 | 最多 16 个当前工程程序集 TXT，和 XML 原子提交 |
+
+`code_files[]` 每项必填 `file_path`、`full_code`、`expected_base_hash`，禁止其他字段。已有 TXT 使用最新刷新后 `read_file.code_hash`，新文件哈希为空串。提交完整程序集声明、处理器和参数／返回类型。
+
+事件名称与签名以真实 XML 的 `.事件定义` 为准；绑定形式为 `<按钮.事件 名称="被单击" 处理器="程序集::子程序"/>`。处理器必须属于窗口程序集，每条绑定使用独立处理器。解绑可能重命名保留方法；跨程序集引用需要通过 `code_files` 显式同步。
+
+成功检查 `ok`、`verified`、最终 `code_hash`、`source_path_preserved` 和 `project_saved=false`。失败检查 `rolled_back`、`rollback_skipped`、`safety_snapshot`；候选哈希不代表已提交状态。EideCore 缺失时 `source_validation.performed=false`；加载预检不等于编译验证。窗口整体删除、窗口改名和更换已有绑定程序集未开放；撤回成功事务需重交旧 XML/代码。
+
+### `delete_file`
+
+删除普通程序集或类及其全部子程序。必填 `file_path`（镜像路径）和 `expected_base_hash`（最新 `read_real_file.code_hash`），均为非空字符串。拒绝窗口绑定程序集、XML、固定表和导入模块。不会改写其他页引用或自动保存。成功返回 `deleted=true`、`verified=true` 和镜像刷新结果；若已删除但镜像刷新失败，先刷新，不直接重试删除。
+
+## 资源与模块工具
+
+### `list_resources`
+
+可选 `resource_type` 字符串：`all`（默认）、`picture`、`sound`。返回当前工程本地资源的 `resources`、`count`，不含导入模块资源。条目包含 ID、名称、引用、字节数、内容 SHA-256 及元数据加内容的 `resource_hash`。图片和声音表均保存原始字节集，可存任意二进制内容，用 `#名称` 引用。
+
+### `add_resource`
+
+| 参数 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `resource_type` | string | 是 | `picture` 或 `sound` |
+| `name` | string | 是 | 1–255 字符，唯一资源名 |
+| `file_path` | string | 是 | 1–32768 字符，UTF-8 绝对路径，现有普通文件，最大 64 MiB |
+| `comment` | string | 否 | 最多 4096 字符 |
+
+按原始字节添加，不检查或转换图像／音频格式。验证字节后使镜像失效，不自动保存；后续源码读取前先刷新镜像。
+
+### `delete_resource`
+
+必填 `resource_id`（整数，1–4294967295）和 `expected_hash`（64 字符字符串）。先 `list_resources`，传回其 `resource_hash`，不是纯内容 SHA-256。删除不改写 `#名称` 引用、不保存工程；成功后先刷新镜像再读取源码。
+
+### `list_imported_modules`
+
+仅在用户明确要求模块管理时调用，参数为空对象，列出当前工程已导入的 EC 模块。不要用于自动探索依赖，源码检索应读取 `ecom/` 镜像。
+
+### `add_module_to_project`
+
+仅按用户明确要求导入。参数均为可选字段，但须提供 `module_path` 或 `module_name` 定位目标。
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `module_path` | string | 绝对 `.ec` 文件路径 |
+| `module_name` | string | 从易语言模块目录解析的模块名或文件名 |
+| `prefer_new_method` | boolean | 默认 true；false 使用旧 IDE 导入路径，可能仅安装到系统模块目录 |
+| `allow_blocking_import` | boolean | 默认 false，仅解析目标；执行真实导入必须 true |
+
+### `remove_module_from_project`
+
+仅按用户明确要求移除工程引用。参数为 `module_index`（整数，最小 0）、`module_path` 或 `module_name`（字符串），至少提供一种定位方式。先依据当前模块列表核对目标；不要用 `delete_file` 删除模块引用。
+
 ## IDE 状态与编译工具
 
 ### `get_current_page_info`
@@ -487,15 +554,68 @@ e-packager 不可用或解包失败。
 编译当前工程并抑制 IDE 保存文件对话框。只有产物存在且相对编译前被创建或更新时才返回
 成功；不能仅凭 IDE 编译调用返回值判断成功。
 
+已安装 EideCore 时，普通及静态 EXE/DLL 编译使用独立核心，返回 `backend="eidecore"`；黑月、EC 发布和核心缺失时走原流程。独立核心编译未保存内存快照，校验输出 PE 和 SHA-256 后替换目标，失败保留旧产物。错误定位使用返回的原生源码片段，不直接套用镜像 TXT 行号。
+
+编译命令调用与后续产物确认共用 10 分钟等待预算；IDE 原生调用不能被强制中断，
+因此这不是终止编译进程的硬时限。跨实例 MCP 转发独立使用 2 秒连接超时、
+5 秒发送超时和 630 秒响应等待预算（普通工具为 30 秒）；外部客户端需设置更长的请求超时。
+等待响应超时返回 JSON-RPC 错误 `-32003`，`data.error=tool_response_timeout`，
+并标记 `execution_state=unknown`、`may_still_be_running=true`、`retry_safe=false`。
+目标可能仍在编译，应确认 IDE 状态及产物后再决定下一步，不要自动重试或重新选择实例。
+请求完整发送后发生其他响应故障时返回 `tool_response_unavailable`，同样不能推断编译未执行。
+
 | 参数 | 类型 | 必填 | 默认/约束 | 说明 |
 | --- | --- | --- | --- | --- |
 | `output_path` | string | 是 | 非空 | 输出文件路径，建议使用绝对路径；扩展名会按目标规范化 |
 | `target` | string | 否 | `auto` | `auto`、`win_exe`、`win_console_exe`、`win_dll`、`ecom` |
 | `static_compile` | boolean | 否 | EXE/DLL 为 `true`，`ecom` 为 `false` | 仅用户明确要求动态编译时对 EXE/DLL 传 `false` |
+| `compiler` | string | 否 | `eide` | `eide` 或 `blackmoon`；黑月须显式设置 |
+| `blackmoon_mode` | string | 否 | `vcxx` | `asm` / `cxx` / `vcxx`，普通编译省略 |
+
+黑月编译须完全省略 `static_compile`，目标仅允许 `auto` 或当前 EXE/DLL 工程类型。
 
 模块工程的 `target=auto` 会构建 `win_console_exe` 测试程序；只有发布 `.ec` 时才显式使用
 `target=ecom`，且该目标不支持静态编译。返回产物指纹验证、编译输出、等待状态和错误光标
 位置；判断结果以 `ok` / `artifact_verified` 为准。
+
+编译结果另含 `diagnostics[]`，每项包含 `severity`、`message`、`file`、`line`、
+`location_verified` 和 `location_status`。已核实的位置还包含 `code`、带行号的
+`code_excerpt`、`page_name`、`ide_row` / `ide_column`。这些诊断也包含在 MCP
+`content[].text` 摘要中，纯文本客户端无需依赖 `structuredContent` 才能读到错误代码。
+
+错误行文本优先通过 IDE SDK `FN_GET_PRG_TEXT` 取得，`code_source` 标明来源；
+源码行及节选通过真实页直接格式化器核实，不经整页复制或系统剪贴板。
+`code_excerpt` 包含前后各两行并以 `>` 标出错误行，`focus_line`、
+`excerpt_start_line` / `excerpt_end_line` 明确对应位置。SDK 不可用时允许原生行范围
+读取回退。原生编译命令在 IDE 中不可用时返回 `compile_command_not_enabled`。
+
+- `line` 从 1 开始，与 `read_real_file` 的实际源码行一致；`file` 为镜像相对路径。
+- `ide_row` / `ide_column` 是 IDE 原生的零基位置，不能把 `ide_row + 1` 当作源码行号。
+- 跨程序集诊断的页名优先取真实源码声明，并核对编辑器对象；IDE 自动跳转后的
+  页签标题可能过期，不能据此判定错误属于哪个文件。
+- 仅当原生行与整页源码映射、文件对应的编辑器对象、错误消息引用的符号均核实后，
+  才返回 `location_verified=true` 和可用于定位的源码行。前缀映射不能验证时，仅接受
+  唯一完整行匹配；存在歧义则 `file` / `line` 为 `null`，不猜测。
+- 当前支持易语言 `错误(...)`、`警告(...)`、语法错误和编译错误文本；外部链接器、
+  黑月或无源码位置的诊断可能只有原始输出，不能把当前光标当作它们的错误位置。
+- 兼容字段 `caret_*` 表示采集到的光标状态，消费者应以诊断的
+  `location_verified` 判断是否可以作为错误定位。
+
+输出归属由 `output_scope`、`output_cleared_before_compile` 和
+`output_belongs_to_current_compile` 描述：
+
+| `output_scope` | 含义 |
+| --- | --- |
+| `compile_session` | 来自本次编译期间的内部 Hook 捕获 |
+| `cleared_control_compile_session` | 编译前已清空并验证控件基线，本次读取的新输出 |
+| `appended_since_compile_start` | 无已验证的清空基线，仅返回追加差分 |
+| `replaced_since_compile_start` | 控件全文发生替换，不能排除历史文本 |
+| `unchanged` / `unavailable` | 无文本变化或无法读取输出 |
+
+前两种情况下 `output_belongs_to_current_compile=true`，否则为 `null`（未知）。
+编译开始会清空原生输出窗口；`output_window_text` 可能包含本次编译期间的
+AutoLinker 日志，并不保证其中每一行都是编译器消息。
+
 
 ## 网络工具
 

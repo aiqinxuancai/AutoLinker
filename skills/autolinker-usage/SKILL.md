@@ -3,7 +3,7 @@ name: autolinker-usage
 description: >-
   AutoLinker 易语言 AI Agent 支持库使用指南。涵盖安装配置、AI 对话与图片输入、
   计划/目标模式、右键菜单、.AGENTS.md 规范、链接器切换、EC 模块管理、MCP 服务器、
-  外部 Agent 配置、多实例路由、无界面编译、核心库重写。用于配置 AutoLinker、
+  外部 Agent 配置、多实例路由、原生窗口及事件编辑、EideCore 安装与编译。用于配置 AutoLinker、
   连接外部 Agent 到易语言 IDE、理解代码读取原理，以及按错误原文和 trace 排查
   快照、镜像、MCP、源码写入、编译、备份恢复和版本兼容性问题。
 ---
@@ -21,11 +21,13 @@ AutoLinker（`AutoLinker.fne`）是易语言支持库，在 IDE 启动时加载�
 ## 安装
 
 1. 下载最新 Release，将 `AutoLinker.fne` 放入易语言 `lib` 目录，在 IDE 中启用该支持库。
-2. 使用易语言 **5.95**。其他版本不受支持。
+2. 支持下限为易语言 **5.6 / x86**，主要开发环境为 5.95；按实际 ABI 布局和入口校验决定可用性，不按版本号放行未知版本。窗口事务实测覆盖 5.6、5.71、5.95 和增强补丁 v1.1；5.93→5.95 正版补丁仅完成 ABI 验证，运行验证受加密狗授权限制。
 3. 不支持 Windows 7。
 4. IDE 启动时自动启动 MCP 服务器，日志写入 IDE 输出窗口和 `AutoLinker\Log\autolinker_pid<PID>.log`。
 
 已安装后通过”工具菜单 → AutoLinker 设置 → 关于 → 组件更新”检查和更新 AutoLinker 或 e-packager。更新 AutoLinker 需退出 IDE 后替换 `AutoLinker.fne`。
+
+普通 IDE 启动时若 `tools/EideCore.exe` 缺失，后台尝试一次下载安装；失败可在关于页手动重试。已有 EideCore 不自动检查或更新，仅通过“手动更新”主动下载；无头编译启动不下载。也可将 AutoLinker Release 的 EideCore 包解压到易语言目录的 `tools`。组件显示实际编译 tag；发布复用旧附件时保留旧组件版本，SHA-256 只作完整性校验。
 
 AutoLinker 运行目录为 `{易语言安装目录}\AutoLinker\`，配置、日志、会话、配色、SKILL 等目录和文件**由 AutoLinker 启动时自动创建**，无需手工准备。工程级文件（`.AGENTS.md`、工程 SKILL）位于 `.e` 文件旁，仅在使用时创建。
 
@@ -135,7 +137,7 @@ AutoLinker 运行目录为 `{易语言安装目录}\AutoLinker\`，配置、日�
 | 编译配置 | 维护项目级输出目标、静态编译和前后置动作；执行入口在”主菜单 → 编译 → 按配置编译” |
 | 核心库函数重写 | 维护需要强制链接的 `.lib` 规则 |
 | 日志优化 | 调整编译内部日志 Hook 和调试输出快速路径 |
-| 关于 | 查看版本、项目链接，在”组件更新”中检查或更新 AutoLinker 与 e-packager |
+| 关于 | 查看版本、项目链接；检查或更新 AutoLinker 与 e-packager，下载安装或手动更新 EideCore |
 
 “AI 对话配色”提供默认和内置深色配色。内置配色不可直接修改，可先复制再编辑；自定义配色可调整 7 个主色，再按需展开高级颜色覆盖。右侧实时预览，保存后立即应用到 AI 对话界面。
 
@@ -228,17 +230,23 @@ AutoLinker 不直接解析或修改加密的 `.e` 文件。准备工作区时，
 
 - 内置 AI 每轮以 `full` 模式自动准备镜像。**外部 MCP 会话首次读写前必须调用一次 `refresh_workspace_mirror`**。`mode` 可取 `auto` / `main_only` / `full`。镜像由 e-packager 解包到 `%TEMP%/AutoLinker/workspace-mirror/`，包含未保存修改，不触碰源码目录。
 - 读取工具使用镜像相对路径（`list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`）。大文件返回 `next_source_byte_offset` 供分页；后续请求应传回上一页非零的 `mirror_generation`。
-- 编辑前，调用 `read_real_file` 获取分页视图和 `code_hash`（CAS 基线）。写入工具通过 `file_path` 定位目标，映射回 IDE 程序项后直接写入 IDE，不在写入时重新编译。
+- 编辑前，调用 `read_real_file` 获取分页视图和 `code_hash`（CAS 基线）。普通 TXT 直接写入 IDE；窗口 XML 经完整工程回包和恢复事务写入，不把加载预检当作编译。
 - 写入操作必须携带 SHA-256 `expected_base_hash`（恢复时使用 `expected_current_hash`），防止基于过期版本覆盖。
-- `src/*.xml` 是易语言原生窗口 UI 文件，仅支持读取/搜索。当前工具不支持修改窗口或控件的位置、大小、层级和属性，不支持添加、删除控件，也不支持新增、删除或修改控件事件绑定。不要尝试写入窗口 XML，也不要声称已完成这些界面修改。
+- `src/*.xml` 支持窗口、控件、菜单、属性、层级及事件编辑。已有窗口先 `read_real_file`，再用 `write_file`、`edit_file`、`multi_edit_file` 或 `write_window` 提交；新窗口用 `write_window`，基准哈希传空串，文件名须匹配窗口名。事务基于未保存内存快照，经 e-packager 回包、恢复 ABI 加载验证，不自动保存 `.e`。
+- `write_window.code_files` 可原子提交事件代码：已有程序集使用刷新镜像后 `read_file.code_hash`，新文件传空串；这与 XML 的实时 `read_real_file` 基线不同。每条绑定使用独立处理器，按实际 XML 事件定义匹配参数和返回类型。窗口整体删除、窗口改名和更换已有绑定程序集未开放。XML 撤回需重交旧 XML/代码，不用 `restore_file_snapshot`。
+- 重建视图可能重置撤销、光标和断点。检查 `verified`、`source_validation`、失败时的 `rolled_back` / `rollback_skipped`；并发修改或响应超时后先重新读取状态，不盲目重发。EideCore 已安装时做独立进程 `validate` 预检，缺失时跳过；加载成功不代表编译通过。详细参数见下方 MCP API 参考。
 - 窗口程序集代码仍可通过对应的 `src/*.txt` 编辑，包括修改已有控件事件子程序的代码实现；但新增事件子程序不代表已建立控件事件绑定。固定表（常量、全局变量、DLL 声明、数据类型）可通过对应路径编辑，程序集变量会以 IDE 可接受形式写回。
 - 需要了解模块或支持库时，使用 `list_files` / `search_code` / `read_files` 检索 `ecom/` 和 `elib/`。不要因为它们出现在镜像中就将其当作当前工程的可写源码。
 
 ### 工具集（`tools/list`）
 
-需要查询、生成或排查 MCP 请求时，必须读取 [完整 MCP API 参考](references/mcp-api.md)。该参考以当前代码中的公开目录和参数校验为准，包含协议级方法、HTTP 会话操作、21 个 `tools/list` 工具、所有参数及嵌套参数、默认值、取值范围、调用前置条件、关键返回字段和错误处理。
+需要查询、生成或排查 MCP 请求时，必须读取 [完整 MCP API 参考](references/mcp-api.md)。该参考以当前代码中的公开目录和参数校验为准，包含协议级方法、HTTP 会话操作、30 个 `tools/list` 工具、参数及嵌套参数、默认值、取值范围、调用前置条件、关键返回字段和错误处理。
 
 工具按用途分为：工作区刷新与镜像读取、真实页 CAS 编辑、IDE 状态与编译、公网页面访问、多实例路由。标准调用顺序是 `initialize` → 必要时 `list_instances` / `select_instance` → `get_current_eide_info` → `refresh_workspace_mirror` → 读取/编辑/编译工具。不要根据本节摘要猜测参数；实际调用前查阅子文档中的对应工具条目。
+
+## EideCore 工具编译
+
+安装 EideCore 后，AI/MCP 的普通及静态 EXE/DLL 编译使用独立核心，返回 `backend="eidecore"`；黑月、发布 EC、核心缺失或直接启动 e.exe 的无头编译使用原流程。编译当前未保存内存快照，校验目标 PE 与 SHA-256 后替换输出，失败保留旧产物；新工程需先建立 `.e` 磁盘路径。错误定位使用返回的源码片段，不将原生行号直接套到镜像 TXT。
 
 ## 无界面命令行编译
 
@@ -268,7 +276,7 @@ AutoLinker 不直接解析或修改加密的 `.e` 文件。准备工作区时，
 - `{易语言目录}\AutoLinker\Log\headless_compile_last.json` 是最近一次结果（原子更新），并发调用不应依赖它区分各自结果
 - 显式传入 `--autolinker-result` 时，并发调用方应使用不同路径
 
-配置在跨进程锁保护下临时切换，编译结果收集后恢复。详细说明及回归方法见 [黑月编译验证](docs/blackmoon-compile-verification.md)。
+配置在跨进程锁保护下临时切换，编译结果收集后恢复。详细说明及回归方法见 [黑月编译验证](../../docs/blackmoon-compile-verification.md)。
 
 ## 构建和测试 AutoLinker（贡献者）
 
@@ -287,7 +295,7 @@ MSBuild.exe ..\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platfor
 回答或排查 AutoLinker 问题时，记录以下环境信息；缺少信息时先根据错误原文定位阶段，不要中断已有日志和代码的分析：
 
 1. 确认操作系统不是 Windows 7。
-2. 确认使用易语言 **5.95**；其他版本不在支持范围内。
+2. 确认易语言为 **5.6 及以后 x86**，并核对具体功能的 ABI 校验和实际测试范围；不能仅按版本字符串推断兼容。
 3. 确认已更新到**最新版 AutoLinker**。
 4. 记录同时加载的其他第三方插件或支持库。遇到闪退、异常行为或疑似冲突时，在测试副本中逐项禁用额外插件作对照，保留工程所需依赖。
 5. 提供实际启动的 EXE 路径和哈希、AutoLinker 版本、复现步骤和对应 PID 的日志。用户不知道易语言版本时，可以直接检查其 EXE；文件名、目录名和版本资源均不足以证明内部接口兼容。
@@ -340,6 +348,10 @@ MSBuild.exe ..\AutoLinker.vcxproj /t:Build "/p:Configuration=fne_release;Platfor
 4. 重启易语言 IDE，再调用或重试 `refresh_workspace_mirror`。
 
 更新 `AutoLinker.fne` 时，如果自动解压、PowerShell 或退出后替换仍失败，先关闭易语言 IDE，从 AutoLinker Releases 或相关交流群群共享获取 `AutoLinker.fne`，再手动替换 `{易语言安装目录}\lib\AutoLinker.fne`。
+
+### AbiResolver 日志在哪里？
+
+入口匹配、Hook 校验和特征扫描只写入 `AutoLinker/Log/autolinker_pid<PID>.log`，不显示在 IDE 输出中。按 PID 和时间查日志；IDE 输出没有这些诊断不代表没有执行校验。
 
 ### 配置文件在哪里？
 
