@@ -25,7 +25,14 @@ AutoLinker 是易语言的 AI Agent 支持库，通过逆向让 AI 全自动编�
 ## 核心功能
 
 ### ⭐ AI Agent 会话页签
-告诉 AI 你要做什么，它会自动搜索、读取、编辑当前工程源码。
+告诉 AI 你要做什么，它会自动搜索、读取、编辑当前工程源码，并支持多协议流式对话（OpenAI Chat / OpenAI Responses / Claude / Gemini）、多模态图片输入、计划模式与长期目标模式。
+
+- **五级权限策略与命令白名单**：将源码写入与本机命令执行彻底解耦，提供「手动 / 只读 / 自动允许源码修改 / 命令白名单 / 全自动」五档模式切换，支持持久化只读命令白名单；Windows 10/11 优先使用原生 **ConPTY** 执行命令并清洗 ANSI 转义与实时回显尾部输出。
+- **上下文治理与并行调度**：输入 `@` 可视化选择工程页面/文件、输入 `$` 补全已装 SKILL；超长工具输出自动落盘并支持按 UTF-8 分页回读，结合微裁剪、手动压缩按钮与上下文溢出自动压缩；同批次只读工具自动并发执行。
+- **会话回退、分叉与搜索**：支持按消息轮次**回退对话（可选同步回滚该轮前的 `.BAK` 工程快照）**、从任意轮次**分叉新会话**、内联重命名与全文搜索。
+- **只读探索型子代理（`explore_codebase`）**：大工程源码调研或外部 `.ec` 解包分析时，主模型可委派只读子代理在隔离上下文中检索并返回精简结论，严禁写入/Shell/外部 MCP/递归；支持在「AI 其他设置 → 只读子代理」独立指定模型端点/分组与最大轮数，并在对话中以折叠卡片实时展示进度与结论。
+- **生命周期 Hooks（`hooks.json`）**：兼容 Codex / Claude `hooks.json` 子集，支持 `PreToolUse`（校验/阻断/改写入参且二次受 Plan Mode 与权限策略约束）、`PostToolUse`（执行后反馈检查）与 `Stop`（完成前门禁）；支持全局 `{易语言目录}\AutoLinker\hooks.json` 与项目级 `.autolinker\hooks.json` / `{文件名}.hooks.json`（项目级需经 SHA-256 信任确认后才执行）。
+- **外部 MCP 长连接会话池**：内置 AI 接入第三方 MCP 时支持 stdio / HTTP 长连接复用、工具目录磁盘缓存懒启动、按服务配置工具白名单/黑名单以及多模态图片返回透传。
 
 <img width="715" height="638" alt="image" src="https://github.com/user-attachments/assets/929cbf71-ac2b-4963-a520-3f7f09d09181" />
 
@@ -38,13 +45,14 @@ AutoLinker 是易语言的 AI Agent 支持库，通过逆向让 AI 全自动编�
 - **AI 翻译选中文本**
 - **AI 按当前页类型添加代码** — 依据当前页类型、上下文和你的需求生成新增代码
 
-### ⭐ 项目规范文件 `{文件名}.AGENTS.md`
-在 `.e` 源文件同目录下创建同名 `.AGENTS.md`，其内容会自动注入所有 AI 功能的系统提示词，作为项目规范（类似 Claude Code 的 `CLAUDE.md`、Codex 的 `AGENTS.md`）。
+### ⭐ 项目规范与跨会话记忆（`AGENTS.md` / `MEMORY.md`）
+- **分层项目规范（`AGENTS.md`）**：按「用户级（`%USERPROFILE%\.codex\AGENTS.md` / `.agents\AGENTS.md` / `AGENTS.md`）→ 项目目录层级 `AGENTS.md` → 当前源码同名 `{文件名}.AGENTS.md`」逐级加载并注入所有 AI 功能的系统提示词（类似 Claude Code 的 `CLAUDE.md`、Codex 的 `AGENTS.md`）。
+- **项目跨会话记忆（`{文件名}.MEMORY.md`）**：保存在 `.e`/`.ec` 同目录，用于沉淀工程架构约定、模块依赖、编译要点与避坑记录，自动注入聊天系统提示词（单次右键任务不注入）。支持点击工具栏「记忆」按钮手动提炼或由 AI 调用 `propose_project_memory` 主动提议，均会先生成**内联可编辑审阅卡片**，经你确认后才原子落盘；也可在【工具菜单 → AutoLinker 设置 → 当前项目 AGENTS.md】中通过双标签页分别编辑 `AGENTS.md` 与 `MEMORY.md`。
 
-| 源文件 | 规范文件（同目录） |
-| --- | --- |
-| `test_a.e` | `test_a.AGENTS.md` |
-| `MyProject.e` | `MyProject.AGENTS.md` |
+| 源文件 | 同目录规范文件 | 同目录项目记忆文件 |
+| --- | --- | --- |
+| `test_a.e` | `test_a.AGENTS.md` | `test_a.MEMORY.md` |
+| `MyProject.e` | `MyProject.AGENTS.md` | `MyProject.MEMORY.md` |
 
 ### ⭐ 不同 .e 源文件使用不同链接器
 再也不用手动来回切换链接器。在【工具菜单 → AutoLinker 设置 → 链接器】中添加多组 `link.ini` 配置，并在【主菜单 → 编译】下切换当前源文件所用的链接器。

@@ -12,6 +12,7 @@
 - [源码编辑与校验](#源码编辑与校验)：CAS、文本替换、写入回读、快照恢复。
 - [项目编译](#项目编译)：项目快照、子进程、结果文件、前后置动作。
 - [备份与工程恢复](#备份与工程恢复)：备份落盘、IDE 重新加载、身份恢复。
+- [生命周期 Hooks、只读子代理与项目记忆](#生命周期-hooks只读子代理与项目记忆)：Hooks 校验/信任/阻断、子代理隔离与上限、项目记忆落盘条件。
 - [AI 接口与组件安装](#ai-接口与组件安装)：网络/模型线路、下载与解压。
 
 ## 收集证据
@@ -218,6 +219,19 @@ MD5 仅用于关联既有样本，不作为可信性判断。磁盘上的 FNE �
 | `window_project_changed_after_reload` / `rollback_skipped` | 加载后存在外部修改，不能覆盖；先查真实状态及 `safety_snapshot`，不要盲目重发或恢复 |
 
 失败检查 `rolled_back`，成功检查 `verified`；XML 撤回需重交旧 XML 和相关代码，`restore_file_snapshot` 仅适用于 TXT 页。超时不能证明事务尚未执行。
+
+## 生命周期 Hooks、只读子代理与项目记忆
+
+源码：`src/AIHookManager.cpp`、`src/AIChatSubagent.cpp`、`src/AIProjectMemory.cpp`、`src/AIChatFeature.cpp`。
+
+| 现象 / 错误关键词 | 实际触发条件 | 检查方向与处理 |
+| --- | --- | --- |
+| 项目级 `hooks.json` 未执行或每次修改后重新弹窗 | 项目级 `.autolinker/hooks.json` / `{stem}.hooks.json` 按规范化路径与文件内容 SHA-256 校验信任（存储在 `AIHookTrust.json`）；未信任、本会话被拒绝或内容变更后不会静默执行 | 在「AI 其他设置 → 生命周期 Hooks」查看待确认/已信任列表，确认命令安全后点击「信任并启用」 |
+| `全局 hooks.json 校验失败` | JSON 语法错误、事件名不在 `PreToolUse`/`PostToolUse`/`Stop`、缺少合法 `command` 或 `matcher` 正则语法非法 | 对照「插入示例模板」修正结构与正则；校验失败不会覆盖原有配置 |
+| 工具在 `PreToolUse` 被阻断，或改写参数后仍弹窗/被拒 | Hook 返回退出码 `2` 或 JSON `decision: "block"` / `continue: false` 会阻断工具；`updatedInput` 改写后的入参仍会再次接受 Plan Mode 与 `AIChatPermissionPolicy` 校验 | 检查 Hook 脚本标准错误/JSON 输出，确认是否命中 Plan Mode 只读限制或权限模式限制 |
+| `Stop` Hook 未无限重跑 | 达到 `maxStopHookRetries` 保护上限，且续跑时已传入 `stop_hook_active=true` | 在 `Stop` Hook 中检查 `stop_hook_active` 字段，避免持续阻断 |
+| `explore_codebase` 拒绝执行写入/Shell/MCP 或并发受限 | 子代理采用双层只读白名单（禁止任何写入、Shell、外部 MCP 与递归调用），且进程内并发上限为 3；达到最大轮数或超时会主动收口 | 修改源码/执行命令须由主对话承担；可在「AI 其他设置 → 只读子代理」调整最大轮数（2~20）或切换更快的模型端点 |
+| 无法提炼或写入项目记忆（`MEMORY.md`） | 当前未打开已保存到磁盘的 `.e`/`.ec` 源码，或未点击审阅卡片上的「确认写入记忆」 | 先打开并保存目标工程；AI 与工具栏「记忆」按钮均只生成审阅卡片，绝不绕过确认直接写盘 |
 
 ## AI 接口与组件安装
 

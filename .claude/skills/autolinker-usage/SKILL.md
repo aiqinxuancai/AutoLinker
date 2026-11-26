@@ -2,15 +2,17 @@
 name: autolinker-usage
 description: >-
   How to use AutoLinker — the 易语言 (E-language) AI Agent support library and
-  local MCP server. Covers install, the AI Agent chat tab, right-click AI menu
-  actions, per-project .AGENTS.md conventions, per-source linker switching,
-  dynamic/static ec auto-swap, the e-packager workspace mirror and EC module /
-  support library dependency information, the local MCP HTTP server and its tool set,
-  external agent (Claude Code / Codex / Cursor) MCP config, multi-instance
-  routing, headless command-line compile, core-library C++ rewrite, and AI
-  provider/config setup (CONFIG.md). Use this whenever a task involves running,
-  configuring, or driving AutoLinker, understanding its code-reading model, or
-  connecting an external AI agent to an 易语言 IDE through it.
+  local MCP server. Covers install, unified multi-protocol streaming AI chat,
+  5-tier permission presets & command allowlist, session rewind/fork & @/$
+  context references, Plan/Goal modes, read-only exploration subagent
+  (explore_codebase), lifecycle Hooks (hooks.json), layered AGENTS.md &
+  cross-session project memory (MEMORY.md), right-click AI menu, per-source
+  linker switching, dynamic/static ec auto-swap, project build profiles,
+  EideCore compile, native window XML editing, external MCP session pool &
+  local MCP HTTP gateway, multi-instance routing, and provider setup (CONFIG.md).
+  Use this whenever a task involves running, configuring, or driving AutoLinker,
+  understanding its code-reading model, or connecting an external AI agent to an
+  易语言 IDE through it.
 ---
 
 # AutoLinker usage
@@ -41,15 +43,41 @@ For an existing install, use 工具菜单 → AutoLinker 设置 → 关于 → �
 check and update AutoLinker or e-packager. Updating AutoLinker replaces the
 loaded `AutoLinker.fne` after the current IDE exits; follow the page prompts.
 
-Config lives at `{易语言安装目录}\AutoLinker\AIConfig.json`; logs at
-`{易语言安装目录}\AutoLinker\Log`.
+Config lives at `{易语言安装目录}\AutoLinker\AIConfig.json`; global hooks at
+`{易语言安装目录}\AutoLinker\hooks.json` (project hook trust store at
+`AIHookTrust.json`); logs at `{易语言安装目录}\AutoLinker\Log`.
 
 ## Feature map (what a user can do)
 
 ### 1. AI Agent chat tab ("AutoLinker AI 对话")
-A left work-area tab. Tell the AI what you want; it searches, reads, edits,
-inserts code in the currently open project automatically. Type `$skillname` to
-force-activate a SKILL for that turn (e.g. `$pdf 分析这份文档`).
+A left work-area tab with a unified streaming Agent Loop across OpenAI Chat,
+OpenAI Responses, Claude, and Gemini (with multimodal image input, Plan Mode,
+and Goal Mode):
+- **Context references & governance**: type `@` to pick project pages/files and
+  `$` to complete installed skills (e.g. `$pdf 分析这份文档`). Large tool outputs
+  spill to per-session `tool-output/` files (read back with `read_tool_output`),
+  combined with old-output pruning, a manual compact button, and HTTP 400/413
+  overflow auto-compaction. Same-batch read-only tools execute in parallel.
+- **5-tier permission presets & ConPTY shell**: decouples source edits from
+  local shell execution (`手动` / `只读` / `自动允许源码修改` / `命令白名单` /
+  `全自动`) with persistent safe-command allowlist rules. Windows 10/11 prefers
+  native ConPTY with `write_stdin`, ANSI stripping, and live tail preview.
+- **Session rewind, fork & search**: rewind to any user turn (optionally rolling
+  back the `.BAK` project snapshot captured before that turn), fork a new
+  session from any turn, rename inline, and full-text search history.
+- **Read-only exploration subagent (`explore_codebase`)**: main chat can
+  delegate large codebase or external `.ec` investigation to an isolated
+  read-only subagent (double-enforced allowlist blocking writes, shell, external
+  MCP, and recursion; max concurrency 3; independent cancel/timeout; collapsible
+  card in chat; independent endpoint/group and max rounds 2–20 configurable
+  under **AI 其他设置 → 只读子代理**).
+- **Lifecycle Hooks (`hooks.json`)**: Codex/Claude-compatible subset supporting
+  `PreToolUse` (block or rewrite `updatedInput`, still checked against Plan Mode
+  and permission policy), `PostToolUse` (feedback injection), and `Stop`
+  (completion gate with `stop_hook_active` retry cap). Global hooks live in
+  `{易语言安装目录}\AutoLinker\hooks.json`; project hooks
+  (`.autolinker/hooks.json`, `{stem}.hooks.json`) require explicit user trust by
+  normalized path + SHA-256 (`AIHookTrust.json`) before running.
 
 ### 2. Right-click AI menu (in the code editor)
 - **AI优化函数** — equivalence-preserving optimize of the current function
@@ -58,12 +86,17 @@ force-activate a SKILL for that turn (e.g. `$pdf 分析这份文档`).
 - **AI翻译选中文本** — translate the selected text
 - **AI按当前页类型添加代码** — generate new code by current page type + context
 
-### 3. Per-project spec file `{文件名}.AGENTS.md`
-Create a same-named `.AGENTS.md` next to the `.e` file (e.g. `test_a.e` →
-`test_a.AGENTS.md`). Its content is injected into the system prompt of all AI
-features as the project convention — the E-language analogue of `CLAUDE.md`.
-The same file can be viewed and edited at 工具菜单 → AutoLinker 设置 → 当前项目
-AGENTS.md for the currently open project.
+### 3. Layered specs (`AGENTS.md`) & cross-session project memory (`MEMORY.md`)
+- **Layered `AGENTS.md`**: loads user-level (`%USERPROFILE%\.codex\AGENTS.md`,
+  `.agents\AGENTS.md`, `AGENTS.md`) → ancestor project `AGENTS.md` → same-dir
+  `{文件名}.AGENTS.md` (highest precedence), injected into all AI features.
+- **Cross-session memory (`{文件名}.MEMORY.md`)**: stored beside the `.e`/`.ec`
+  file (atomic UTF-8 BOM + CRLF) and injected into the stable chat system prompt
+  prefix (up to 16 KB, chat only). Two review-gated entry points — the toolbar
+  「记忆」 button and the internal `propose_project_memory` tool — never write
+  directly to disk; both emit an inline editable review card requiring user
+  confirmation. Both files can be edited via the two tabs in
+  工具菜单 → AutoLinker 设置 → 当前项目 AGENTS.md.
 
 ### 4. Per-source linker switching
 Add and edit `link.ini` configs at 工具菜单 → AutoLinker 设置 → 链接器, then
@@ -97,16 +130,19 @@ to a config file or an obsolete standalone dialog:
 
 | Settings tab | Location and purpose |
 | --- | --- |
-| AI 接口 | AutoLinker 设置 → AI 接口: provider profiles, API Key, protocol, model, source editing mode, and Tavily search |
-| MCP 服务 | AutoLinker 设置 → MCP 服务: inspect and manage MCP configuration for external agents |
-| AI SKILL | AutoLinker 设置 → AI SKILL: install, enable, disable, update, open, or remove global/project skills |
-| AI 对话配色 | AutoLinker 设置 → AI 对话配色: choose a built-in theme or create, copy, rename, delete, and edit custom themes |
-| 当前项目 AGENTS.md | AutoLinker 设置 → 当前项目 AGENTS.md: edit the convention file for the open `.e` project |
-| 链接器 | AutoLinker 设置 → 链接器: manage `link.ini`; select the active linker under 主菜单 → 编译 |
-| EC 模块切换 | AutoLinker 设置 → EC 模块切换: maintain dynamic/static ec switching rules |
-| 核心库函数重写 | AutoLinker 设置 → 核心库函数重写: maintain force-linked `.lib` rules |
-| 日志优化 | AutoLinker 设置 → 日志优化: compilation-log Hook and debug-output fast-path options |
-| 关于 | AutoLinker 设置 → 关于: version and project links; check/update AutoLinker and e-packager under 组件更新 |
+| AI 模型 | Configure endpoints, endpoint groups, API keys, protocols, thinking level, and image input |
+| AI 其他设置 | Three sub-tabs: 「常规与搜索」 (source edit mode, compile backend, project memory toggle, web search), 「只读子代理」 (subagent enable, endpoint/group override, max rounds), 「生命周期 Hooks」 (global `hooks.json` editor/template and project hook trust management) |
+| 备份与恢复 | Manage AI chat, scheduled, and tool-write `.BAK` snapshots and project restore |
+| MCP 服务 | Local MCP gateway access mode + external MCP servers (persistent session pool, lazy stdio, per-server tool filtering, image results) |
+| SKILL | Install, enable, disable, update, open, or remove global/project skills |
+| AI 对话配色 | Choose a built-in theme or create, copy, rename, delete, and edit custom themes |
+| 当前项目 AGENTS.md | Two-tab editor for `{文件名}.AGENTS.md` project specs and `{文件名}.MEMORY.md` cross-session memory |
+| 链接器 | Manage `link.ini`; select the active linker under 主菜单 → 编译 |
+| EC 模块切换 | Maintain dynamic/static ec switching rules |
+| 核心库函数重写 | Maintain force-linked `.lib` rules |
+| 编译配置 | Maintain per-project build targets, static compile, and pre/post PowerShell actions |
+| IDE 增强 | Log center, compile-log Hook, debug-output fast-path, and hidden generic-type options |
+| 关于 | Version and project links; check/update AutoLinker, e-packager, and EideCore |
 
 The AI 对话配色 page includes the default and built-in dark themes. Built-in
 themes are read-only; copy one before editing. A custom theme exposes seven
@@ -126,8 +162,9 @@ Key fields: 接口协议 (`OpenAI Chat` / `OpenAI Responses` / `Gemini` / `Claud
 接口地址 (Base URL), API 密钥, 模型 (`↻` fetches list), 上下文长度 (auto-compacts
 history at 95%; blank = model default), 思考等级 (`off`/`low`/`medium`/`high`/
 `xhigh`/`max` — lower it if the API rejects the param), 系统提示词, 自定义请求头
-(`Name: Value` per line), 源码编辑模式 (global: 真实页优先 [default] / 解包镜像基准
-[testing only]), Tavily API 密钥 (enables `search_web_tavily`).
+(`Name: Value` per line).
+
+In AI 其他设置, 源码编辑模式 defaults to 真实页优先. Use 解包镜像基准 for testing. Manage enabled web search platforms, their API keys, and the default platform on the same page. `search_web` uses Keenable by default. Leaving its API key blank uses the free public endpoint.
 
 Preset sites include Right (recommended relay), DeepSeek, 智谱 GLM, 千问/通义,
 Kimi, MiniMax, plus 豆包/OpenAI/Claude/Gemini via 使用预设站点新建.
@@ -217,10 +254,11 @@ to IDE program items, with real-page hashes protecting newer changes.
   (the CAS baseline). Write tools target `file_path`, map back to the IDE
   program item, and write straight into the IDE (no recompile-on-write).
 - Writes must carry a SHA-256 `expected_base_hash` (`expected_current_hash`
-  for restore) to prevent stale-baseline overwrites. `src/*.xml` are window UI
-  files — read/search only; fixed tables (constants, globals, DLL decls, data
-  types) are editable via their paths. Program-set variables are written back in
-  IDE-acceptable form.
+  for restore) to prevent stale-baseline overwrites. `src/*.xml` are native
+  window UI files editable via `write_window`, `write_file`, `edit_file`, and
+  `multi_edit_file` (full native binary transaction); fixed tables (constants,
+  globals, DLL decls, data types) are editable via their paths. Program-set
+  variables are written back in IDE-acceptable form.
 - To inspect modules or support libraries, search and read `ecom/` and `elib/`
   with the mirror tools. Their presence in the mirror does not make them
   writable current-project source.
@@ -242,7 +280,7 @@ to IDE program items, with real-page hashes protecting newer changes.
 | Current page | `get_current_page_info` | Current page name, type, parse source |
 | Current page | `get_current_eide_info` | Source path, IDE process path, MCP port, etc. |
 | Compile | `compile_with_output_path` | `target` default `auto`; verifies success by artifact fingerprint |
-| Web | `search_web_tavily` | Web search (needs Tavily key) |
+| Web | `search_web` | Search the web with the default or a specified enabled platform |
 | Web | `fetch_url` | Fetch public HTTP(S) text; blocks loopback/private/redirect |
 | Web | `extract_web_document` | Extract page body + absolute-link summary |
 | Gateway | `list_instances` / `select_instance` | Enumerate / route to a specific IDE instance |

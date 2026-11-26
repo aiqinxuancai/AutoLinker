@@ -1,11 +1,13 @@
-﻿---
+---
 name: autolinker-usage
 description: >-
-  AutoLinker 易语言 AI Agent 支持库使用指南。涵盖安装配置、AI 对话与图片输入、
-  计划/目标模式、右键菜单、.AGENTS.md 规范、链接器切换、EC 模块管理、MCP 服务器、
+  AutoLinker 易语言 AI Agent 支持库使用指南。涵盖安装配置、多协议流式 AI 对话与图片输入、
+  五级权限策略与命令白名单、计划/目标模式、会话回退/分叉与 @/$ 上下文引用、
+  只读探索子代理（explore_codebase）、生命周期 Hooks（hooks.json）、分层 .AGENTS.md 规范与
+  项目跨会话记忆（.MEMORY.md）、右键菜单、链接器切换、EC 模块管理、MCP 长连接会话池与本地网关、
   外部 Agent 配置、多实例路由、原生窗口及事件编辑、EideCore 安装与编译。用于配置 AutoLinker、
   连接外部 Agent 到易语言 IDE、理解代码读取原理，以及按错误原文和 trace 排查
-  快照、镜像、MCP、源码写入、编译、备份恢复和版本兼容性问题。
+  快照、镜像、MCP、Hooks、子代理、项目记忆、源码写入、编译、备份恢复和版本兼容性问题。
 ---
 
 # AutoLinker 使用指南
@@ -29,7 +31,7 @@ AutoLinker（`AutoLinker.fne`）是易语言支持库，在 IDE 启动时加载�
 
 普通 IDE 启动时若 `tools/EideCore.exe` 缺失，后台尝试一次下载安装；失败可在关于页手动重试。已有 EideCore 不自动检查或更新，仅通过“手动更新”主动下载；无头编译启动不下载。也可将 AutoLinker Release 的 EideCore 包解压到易语言目录的 `tools`。组件显示实际编译 tag；发布复用旧附件时保留旧组件版本，SHA-256 只作完整性校验。
 
-AutoLinker 运行目录为 `{易语言安装目录}\AutoLinker\`，配置、日志、会话、配色、SKILL 等目录和文件**由 AutoLinker 启动时自动创建**，无需手工准备。工程级文件（`.AGENTS.md`、工程 SKILL）位于 `.e` 文件旁，仅在使用时创建。
+AutoLinker 运行目录为 `{易语言安装目录}\AutoLinker\`，配置、日志、会话、配色、SKILL 等目录和文件**由 AutoLinker 启动时自动创建**，无需手工准备。工程级文件（`.AGENTS.md`、`.MEMORY.md`、`.autolinker\hooks.json` / `{stem}.hooks.json`、工程 SKILL）位于 `.e` 文件旁，仅在使用时创建。
 
 常用路径：
 
@@ -37,6 +39,8 @@ AutoLinker 运行目录为 `{易语言安装目录}\AutoLinker\`，配置、日�
 | --- | --- |
 | 运行根目录 | `{易语言安装目录}\AutoLinker\` |
 | AI 配置 | `{易语言安装目录}\AutoLinker\AIConfig.json` |
+| 全局 Hooks | `{易语言安装目录}\AutoLinker\hooks.json` |
+| 项目 Hooks 信任清单 | `{易语言安装目录}\AutoLinker\AIHookTrust.json` |
 | 日志 | `{易语言安装目录}\AutoLinker\Log\` |
 | 会话 | `{易语言安装目录}\AutoLinker\Session\` |
 | 全局 SKILL | `{易语言安装目录}\AutoLinker\Skills\` |
@@ -48,7 +52,38 @@ AutoLinker 运行目录为 `{易语言安装目录}\AutoLinker\`，配置、日�
 
 ### 1. AI Agent 对话页
 
-直接告诉 AI 你的需求，它会自动搜索、读取、编辑当前工程并插入代码。输入 `$skillname` 可强制激活指定 SKILL（如 `$pdf 分析这份文档`）。
+直接告诉 AI 你的需求，它会自动搜索、读取、编辑当前工程并插入代码。OpenAI Chat、OpenAI Responses、Claude、Gemini 四套协议均已统一走流式 Agent Loop：
+- **上下文引用补全**：输入 `@` 唤起当前工程页面/文件选择器，输入 `$` 唤起已装 SKILL 选择器（支持中文前缀触发、方向键/`Enter`/`Tab` 选中，如 `$pdf 分析这份文档`）。
+- **三段式上下文治理与并行调度**：超长工具输出自动落盘到会话 `tool-output/` 并通过 `read_tool_output` 按 UTF-8 分页回读；结合老旧工具输出微裁剪、工具栏「压缩」手动压缩及 HTTP 400/413 溢出自动压缩；同批次只读工具自动并行执行，写入工具串行经过 IDE 主线程。
+- **ConPTY 命令执行**：Windows 10/11 优先启用原生 ConPTY（失败时回退匿名管道），支持 `write_stdin` 交互、ANSI 转义清理、实时尾部输出预览与取消/切换会话时的进程回收。
+
+#### 权限模式与命令白名单
+
+源码写入与本机 Shell 执行完全解耦。在对话右下角模式菜单中切换五级权限预设：
+- **手动（`ask`）**：默认模式，写入源码、编译变更与本机命令执行前均请求确认。
+- **只读（`read_only`）**：仅允许只读检索与分析，禁止写入与命令执行。
+- **自动允许源码修改（`auto_source_edits`）**：自动放行源码类写入，本机命令仍需审批。
+- **命令白名单（`command_allowlist`）**：自动放行已加入持久白名单的安全命令（高危命令默认拦截）。
+- **全自动（`full_auto`）**：自动放行源码修改与常规命令执行。
+
+#### 会话回退、分叉与搜索
+
+- 历史会话浮层支持**全文搜索**（带命中预览）、**内联重命名**与多选批量删除。
+- 每条用户消息支持按轮次**回退（Rewind）**与**分叉（Fork）**：回退时可选择同步回滚该轮发送前保存的 `.BAK` 工程快照；分叉会复制对应轮次的图片与落盘工具输出并开启独立新会话。
+
+#### 只读探索型子代理（`explore_codebase`）
+
+需要大范围调研工程源码或分析外部 `.ec` 模块时，主对话模型可调用内部工具 `explore_codebase` 委派只读子代理在隔离上下文中检索并返回精简结论，避免撑爆主上下文：
+- **隔离边界**：双层只读白名单校验，默认允许只读源码/镜像工具（含串行 `e_packager` 解包外部 `.ec` 到镜像临时目录），严禁任何写工具、Shell、外部 MCP 或递归委派；不碰 IDE 写锁、不触发 Hooks。
+- **配置与并发**：在「工具菜单 → AutoLinker 设置 → AI 其他设置 → 只读子代理」可启停、单独选择模型端点/端点分组（留空继承主模型）及设置最大轮数（2~20，默认 12）。进程内并发上限为 3，支持独立超时与父请求取消联动。
+- **界面表现**：对话中实时插入可折叠的「只读子代理」卡片（运行中自动展开，结束后收起），展示模型名、探索轮数、只读工具清单与最终结论。
+
+#### 生命周期 Hooks（`hooks.json`）
+
+兼容 Codex / Claude `hooks.json` 子集，支持 `PreToolUse`、`PostToolUse` 与 `Stop` 三个生命周期阶段：
+- **配置文件**：全局 `{易语言安装目录}\AutoLinker\hooks.json` + 项目级 `<工程目录>\.autolinker\hooks.json` / `<工程目录>\{文件名}.hooks.json`。
+- **能力与安全**：`PreToolUse` 支持按正则 `matcher` 阻断（退出码 2 或 JSON `decision: "block"` / `continue: false`）或改写入参（`updatedInput`），改写后的参数仍会经过 Plan Mode 与权限策略校验；`PostToolUse` 用于执行后检查并注入反馈；`Stop` 作为完成前门禁（内置 `stop_hook_active` 防死循环上限）。
+- **项目级信任机制**：项目目录中的 `hooks.json` 按规范化路径 + 内容 SHA-256 持久化到 `AIHookTrust.json`；首次发现或文件内容变化时必须经用户确认信任才执行。全局编辑与项目信任管理位于「工具菜单 → AutoLinker 设置 → AI 其他设置 → 生命周期 Hooks」。
 
 #### 多模态图片输入
 
@@ -91,11 +126,14 @@ AutoLinker 运行目录为 `{易语言安装目录}\AutoLinker\`，配置、日�
 - **AI翻译选中文本**：翻译选中文本
 - **AI按当前页类型添加代码**：根据页面类型和上下文生成新代码
 
-### 3. 工程规范文件 `.AGENTS.md`
+### 3. 工程规范与跨会话记忆（`.AGENTS.md` / `.MEMORY.md`）
 
-在 `.e` 文件旁创建同名 `.AGENTS.md`（如 `test_a.e` 对应 `test_a.AGENTS.md`），内容会注入所有 AI 功能的系统提示词，相当于易语言的 `CLAUDE.md`。
+- **分层规范（`AGENTS.md`）**：按「用户级（`%USERPROFILE%\.codex\AGENTS.md` / `.agents\AGENTS.md` / `AGENTS.md`）→ 项目目录层级 `AGENTS.md` → 当前源码同名 `{文件名}.AGENTS.md`」逐级加载并注入所有 AI 功能的系统提示词，相当于易语言的 `CLAUDE.md`。
+- **项目跨会话记忆（`{文件名}.MEMORY.md`）**：位于 `.e`/`.ec` 同目录，用于记录工程架构、模块依赖、编译要点与已知坑点，自动注入聊天系统提示词稳定前缀（上限 16 KB UTF-8 安全截断；右键菜单等单次任务不注入）。
+  - **双入口 + 强制审阅**：点击聊天工具栏「记忆」按钮手动提炼，或由 AI 调用内部工具 `propose_project_memory` 主动提议；两者均**绝不直接写盘**，而是生成可编辑的内联审阅卡片，经用户确认后才原子写入（UTF-8 BOM + CRLF）。
+  - 开关位于「AI 其他设置 → 常规与搜索 → 启用项目跨会话记忆」。
 
-也可通过”工具菜单 → AutoLinker 设置 → 当前项目 AGENTS.md”直接查看和编辑。
+也可通过“工具菜单 → AutoLinker 设置 → 当前项目 AGENTS.md”中的双标签页（`项目规范 (AGENTS.md)` | `项目记忆 (MEMORY.md)`）直接查看和编辑。
 
 ### 4. 按源码切换链接器
 
@@ -127,16 +165,18 @@ AutoLinker 运行目录为 `{易语言安装目录}\AutoLinker\`，配置、日�
 
 | 设置页签 | 位置和用途 |
 | --- | --- |
-| AI 接口 | 管理模型服务配置组、API Key、协议、模型、源码编辑模式和 Tavily 联网搜索 |
-| MCP 服务 | 查看和管理外部 Agent 的 MCP 配置 |
-| AI SKILL | 安装、启停、更新、打开目录或卸载全局/工程级技能 |
+| AI 模型 | 管理模型端点、端点分组、API Key、协议、思考等级与图片输入 |
+| AI 其他设置 | 分三页签管理：「常规与搜索」（源码编辑模式、编译方式、项目跨会话记忆开关、联网搜索平台与密钥）、「只读子代理」（启停、独立模型目标、最大轮数）、「生命周期 Hooks」（全局 `hooks.json` 编辑器、示例模板与项目级信任管理） |
+| 备份与恢复 | 管理 AI 对话、定时快照与工具写入三类 `.BAK` 备份及工程恢复 |
+| MCP 服务 | 管理本地 MCP 网关访问模式，以及内置 AI 接入的第三方 MCP（支持长连接会话池、懒启动与工具过滤） |
+| SKILL | 安装、启停、更新、打开目录或卸载全局/工程级技能 |
 | AI 对话配色 | 选择内置配色，或新建、复制、重命名、删除和编辑自定义配色 |
-| 当前项目 AGENTS.md | 编辑当前工程的同名规范文件 |
-| 链接器 | 管理 `link.ini` 配置；实际切换在”主菜单 → 编译” |
+| 当前项目 AGENTS.md | 双标签页编辑当前工程的 `{文件名}.AGENTS.md` 项目规范与 `{文件名}.MEMORY.md` 项目跨会话记忆 |
+| 链接器 | 管理 `link.ini` 配置；实际切换在“主菜单 → 编译” |
 | EC 模块切换 | 维护调试/编译时动态、静态 ec 自动切换规则 |
-| 编译配置 | 维护项目级输出目标、静态编译和前后置动作；执行入口在”主菜单 → 编译 → 按配置编译” |
 | 核心库函数重写 | 维护需要强制链接的 `.lib` 规则 |
-| 日志优化 | 调整编译内部日志 Hook 和调试输出快速路径 |
+| 编译配置 | 维护项目级输出目标、静态编译和前后置动作；执行入口在“主菜单 → 编译 → 按配置编译” |
+| IDE 增强 | 调整日志中心、编译内部日志 Hook、调试输出快速路径及通用型支持 |
 | 关于 | 查看版本、项目链接；检查或更新 AutoLinker 与 e-packager，下载安装或手动更新 EideCore |
 
 “AI 对话配色”提供默认和内置深色配色。内置配色不可直接修改，可先复制再编辑；自定义配色可调整 7 个主色，再按需展开高级颜色覆盖。右侧实时预览，保存后立即应用到 AI 对话界面。
@@ -164,7 +204,7 @@ AutoLinker 运行目录为 `{易语言安装目录}\AutoLinker\`，配置、日�
 | 系统提示词 | 追加到内置提示词之后，不会替换内置规则 |
 | 自定义请求头 | 可选，每行一个 `Name: Value`，按中转站文档配置 |
 
-保持”源码编辑模式”为默认的**真实页优先**；”解包镜像基准”仅用于测试。MCP 写入后由用户手动保存；需要写入前快照时，在“备份与恢复”中启用。需要 AI 联网搜索时，填写 Tavily API 密钥以启用 `search_web_tavily`。
+保持“源码编辑模式”为默认的**真实页优先**。“解包镜像基准”仅用于测试。MCP 写入后由用户手动保存。需要写入前快照时，在“备份与恢复”中启用。使用 `search_web` 联网搜索，默认使用 Keenable 的无密钥接口。其他平台可在“AI 其他设置”中启用并填写 API 密钥。
 
 预设站点包括 Right（推荐中转）、DeepSeek、智谱 GLM、千问/通义、Kimi、MiniMax、豆包、OpenAI、Claude、Gemini。
 
@@ -228,13 +268,17 @@ AutoLinker 不直接解析或修改加密的 `.e` 文件。准备工作区时，
 
 ### 读写模型（外部 Agent 必读）
 
-- 内置 AI 每轮以 `full` 模式自动准备镜像。**外部 MCP 会话首次读写前必须调用一次 `refresh_workspace_mirror`**。`mode` 可取 `auto` / `main_only` / `full`。镜像由 e-packager 解包到 `%TEMP%/AutoLinker/workspace-mirror/`，包含未保存修改，不触碰源码目录。
+- 内置 AI 每轮以 `full` 模式自动准备镜像。**外部 MCP 会话首次访问镜像或 TXT 源码前必须调用一次 `refresh_workspace_mirror`**；默认原生窗口 XML 读写无需此步骤。`mode` 可取 `auto` / `main_only` / `full`。镜像由 e-packager 解包到 `%TEMP%/AutoLinker/workspace-mirror/`，包含未保存修改，不触碰源码目录。
 - 读取工具使用镜像相对路径（`list_files`、`search_code`、`read_file`、`read_files`、`read_code_item`）。大文件返回 `next_source_byte_offset` 供分页；后续请求应传回上一页非零的 `mirror_generation`。
-- 编辑前，调用 `read_real_file` 获取分页视图和 `code_hash`（CAS 基线）。普通 TXT 直接写入 IDE；窗口 XML 经完整工程回包和恢复事务写入，不把加载预检当作编译。
+- 编辑前，调用 `read_real_file` 获取分页视图和 `code_hash`（CAS 基线）。普通 TXT 直接写入 IDE；窗口 XML 经原生二进制模型事务写入，不依赖 e-packager/EideCore；结构验证不等于编译。
 - 写入操作必须携带 SHA-256 `expected_base_hash`（恢复时使用 `expected_current_hash`），防止基于过期版本覆盖。
-- `src/*.xml` 支持窗口、控件、菜单、属性、层级及事件编辑。已有窗口先 `read_real_file`，再用 `write_file`、`edit_file`、`multi_edit_file` 或 `write_window` 提交；新窗口用 `write_window`，基准哈希传空串，文件名须匹配窗口名。事务基于未保存内存快照，经 e-packager 回包、恢复 ABI 加载验证，不自动保存 `.e`。
-- `write_window.code_files` 可原子提交事件代码：已有程序集使用刷新镜像后 `read_file.code_hash`，新文件传空串；这与 XML 的实时 `read_real_file` 基线不同。每条绑定使用独立处理器，按实际 XML 事件定义匹配参数和返回类型。窗口整体删除、窗口改名和更换已有绑定程序集未开放。XML 撤回需重交旧 XML/代码，不用 `restore_file_snapshot`。
-- 重建视图可能重置撤销、光标和断点。检查 `verified`、`source_validation`、失败时的 `rolled_back` / `rollback_skipped`；并发修改或响应超时后先重新读取状态，不盲目重发。EideCore 已安装时做独立进程 `validate` 预检，缺失时跳过；加载成功不代表编译通过。详细参数见下方 MCP API 参考。
+- `src/*.xml` 支持窗口、控件、菜单、属性、层级及事件编辑。已有窗口先 `read_real_file`，再用 `write_file`、`edit_file`、`multi_edit_file` 或 `write_window` 提交；新窗口用 `write_window`，基准哈希传空串，文件名须匹配窗口名。默认使用原生二进制模型事务，不依赖 e-packager/EideCore；原始内存快照用于失败恢复，不自动保存 `.e`。XML 读写不要求镜像，后续 TXT 读取和搜索需刷新失效镜像。
+- 窗口直属同级控件按 XML 先后从前景到背景排列；底板标签放在覆盖内容之后。重叠控件未显示时先检查层叠顺序，不要删除图块、整体倒序或把普通标签当容器。`verified=true` 不是视觉或交互验证。
+- 新事件绑定 `所属程序集::_控件名_事件名`，由 IDE 自动生成正确签名。每条绑定用独立处理器；原生后端拒绝非空 `code_files`，正文刷新镜像并读取 TXT 后另行修改，两次操作不是原子提交。成功支持一次 Undo/Redo；窗口整体删除、改名和更换绑定程序集未开放。
+- 原生窗口事务支持一次 Undo/Redo，不调用 EideCore 预检；旧 `packager_research` 路线的工程重载可能重置撤销、光标和断点，并在 EideCore 可用时进行 `validate`。检查实际 backend、`verified`、失败时的 `rolled_back` / `rollback_skipped`；并发修改或响应超时后先核对状态，不盲目重发。结构验证或加载成功均不代表视觉、交互或编译验证通过。详细参数见下方 MCP API 参考。
+- 窗口整体替换必须读完 XML 分页并去掉行号，保留无关节点及已有原始属性。删除控件只移除目标控件及子树；解绑只移除对应 `.事件`，处理器正文默认保留，自动改名见 `event_handler_changes`；新增方法见 `generated_event_handlers`。不要因删除控件顺便删除方法。
+- 窗口结果先读 `transaction_status`：`no_changes` 没有执行原生提交；`committed` 是内存提交成功；`not_committed` 是本事务未提交；`rolled_back` 是已恢复原快照；`recovery_required` 必须先只读核对当前工程和安全快照。镜像刷新失败不等于提交失败，应先刷新镜像，不能重新执行已成功写入。
+- 失败按 `error_code/failure_stage/message/hint/retry_action` 处理。`/methods/N` 仅是差异位置，需比较字段值和两侧方法 ID/名称，不能直接断言事件错位或只能设计器删除。不原样重试失败写入，不换 `write_file/edit_file/write_window` 绕过同一事务，不清空扩展数据或删除源码来消除差异。超时后结果未知，先核对状态；准确步骤见 [窗口 API 与结果判读](references/mcp-api.md#write_window)。
 - 窗口程序集代码仍可通过对应的 `src/*.txt` 编辑，包括修改已有控件事件子程序的代码实现；但新增事件子程序不代表已建立控件事件绑定。固定表（常量、全局变量、DLL 声明、数据类型）可通过对应路径编辑，程序集变量会以 IDE 可接受形式写回。
 - 需要了解模块或支持库时，使用 `list_files` / `search_code` / `read_files` 检索 `ecom/` 和 `elib/`。不要因为它们出现在镜像中就将其当作当前工程的可写源码。
 
@@ -242,7 +286,7 @@ AutoLinker 不直接解析或修改加密的 `.e` 文件。准备工作区时，
 
 需要查询、生成或排查 MCP 请求时，必须读取 [完整 MCP API 参考](references/mcp-api.md)。该参考以当前代码中的公开目录和参数校验为准，包含协议级方法、HTTP 会话操作、30 个 `tools/list` 工具、参数及嵌套参数、默认值、取值范围、调用前置条件、关键返回字段和错误处理。
 
-工具按用途分为：工作区刷新与镜像读取、真实页 CAS 编辑、IDE 状态与编译、公网页面访问、多实例路由。标准调用顺序是 `initialize` → 必要时 `list_instances` / `select_instance` → `get_current_eide_info` → `refresh_workspace_mirror` → 读取/编辑/编译工具。不要根据本节摘要猜测参数；实际调用前查阅子文档中的对应工具条目。
+工具按用途分为：工作区刷新与镜像读取、真实页 CAS 编辑、IDE 状态与编译、公网页面访问、多实例路由。标准调用顺序是 `initialize` → 必要时 `list_instances` / `select_instance` → `get_current_eide_info` → 按工具需要准备镜像 → 读取/编辑/编译工具。仅进行默认原生 XML 读写时无需镜像；随后编辑事件正文前再刷新并读取 TXT。不要根据本节摘要猜测参数；实际调用前查阅子文档中的对应工具条目。
 
 ## EideCore 工具编译
 
